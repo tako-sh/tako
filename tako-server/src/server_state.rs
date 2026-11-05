@@ -16,6 +16,7 @@ use parking_lot::RwLock as SyncRwLock;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tako_core::{ServerRuntimeInfo, UpgradeMode};
 use tokio::sync::RwLock as AsyncRwLock;
@@ -100,6 +101,7 @@ pub struct ServerState {
     pub(crate) cold_start: Arc<crate::scaling::ColdStartManager>,
     pub(crate) state_store: Arc<SqliteStateStore>,
     pub(crate) server_mode: AsyncRwLock<UpgradeMode>,
+    pub(crate) drain_requested: Arc<AtomicBool>,
     pub(crate) runtime: ServerRuntimeConfig,
     pub(crate) workflows: Arc<crate::workflows::WorkflowManager>,
 }
@@ -184,6 +186,7 @@ impl ServerState {
             device_key,
         ));
         state_store.init()?;
+        let drain_requested = Arc::new(AtomicBool::new(state_store.drain_requested()?));
         let persisted_mode = state_store.server_mode()?;
         let persisted_owner = state_store.upgrade_lock_owner()?;
         let preserve_upgrade_mode = match expected_upgrade_owner {
@@ -344,6 +347,7 @@ impl ServerState {
                 crate::scaling::ColdStartConfig::default(),
             )),
             state_store,
+            drain_requested,
             server_mode: AsyncRwLock::new(server_mode),
             runtime,
             workflows,
@@ -352,6 +356,14 @@ impl ServerState {
 
     pub(crate) fn app_manager(&self) -> Arc<AppManager> {
         self.app_manager.clone()
+    }
+
+    pub fn is_draining(&self) -> bool {
+        self.drain_requested.load(Ordering::Acquire)
+    }
+
+    pub fn drain_flag(&self) -> Arc<AtomicBool> {
+        self.drain_requested.clone()
     }
 
     pub(crate) fn load_balancer(&self) -> Arc<LoadBalancer> {
@@ -543,39 +555,52 @@ impl ServerState {
         release_path: &std::path::Path,
         runtime_bin_path: Option<&str>,
     ) {
+        if self.is_draining() {
+            return;
+        }
+        if let Err(error) = self
+            .try_sync_app_workflows(app_name, release_path, runtime_bin_path)
+            .await
+        {
+            tracing::warn!(app = app_name, %error, "Failed to synchronize workflows");
+        }
+    }
+
+    async fn try_sync_app_workflows(
+        &self,
+        app_name: &str,
+        release_path: &std::path::Path,
+        runtime_bin_path: Option<&str>,
+    ) -> Result<(), StateStoreError> {
         let manifest = match crate::app_command::load_release_manifest(release_path) {
             Ok(manifest) => manifest,
             Err(e) => {
                 tracing::warn!(app = app_name, error = %e, "Skipping workflow engine: could not load release manifest");
-                return;
+                return Err(StateStoreError::InvalidData(e.to_string()));
             }
         };
         let app_path = match crate::app_command::safe_subdir(release_path, &manifest.app_dir) {
             Ok(path) => path,
             Err(e) => {
                 tracing::warn!(app = app_name, error = %e, "Skipping workflow engine: invalid app_dir in manifest");
-                return;
+                return Err(StateStoreError::InvalidData(e.to_string()));
             }
         };
         if manifest.release_kind == crate::app_command::ReleaseKind::Compose {
             self.workflows.retire(app_name).await;
-            return;
+            return Ok(());
         }
         let data_paths = match ensure_app_runtime_data_dirs(&self.runtime.data_dir, app_name) {
             Ok(paths) => paths,
             Err(error) => {
                 tracing::warn!(app = app_name, error = %error, "Skipping workflow engine: failed to prepare app data dirs");
-                return;
+                return Err(StateStoreError::InvalidData(error.to_string()));
             }
         };
-        if let Err(e) = self.workflows.start_socket() {
-            tracing::warn!(error = %e, "Failed to start internal socket");
-            return;
-        }
         let internal_socket = self.workflows.socket_path();
 
-        let secrets = self.state_store.get_secrets(app_name).unwrap_or_default();
-        let storages = self.state_store.get_storages(app_name).unwrap_or_default();
+        let secrets = self.state_store.get_secrets(app_name)?;
+        let storages = self.state_store.get_storages(app_name)?;
         let mut worker_env = manifest.env_vars.clone();
         inject_app_data_dir_env(&mut worker_env, &data_paths);
 
@@ -583,14 +608,14 @@ impl ServerState {
             "container" => {
                 let Some(run) = manifest.workflow_run.as_deref() else {
                     self.workflows.retire(app_name).await;
-                    return;
+                    return Ok(());
                 };
                 let engine = match detect_container_engine() {
                     Ok(engine) => engine,
                     Err(error) => {
                         tracing::warn!(app = app_name, error = %error, "Skipping workflow engine: container engine not available");
                         self.workflows.retire(app_name).await;
-                        return;
+                        return Err(StateStoreError::InvalidData(error.to_string()));
                     }
                 };
                 let image = match image_tag_for_manifest(&manifest) {
@@ -598,7 +623,7 @@ impl ServerState {
                     Err(error) => {
                         tracing::warn!(app = app_name, error = %error, "Skipping workflow engine: invalid container image tag");
                         self.workflows.retire(app_name).await;
-                        return;
+                        return Err(StateStoreError::InvalidData(error.to_string()));
                     }
                 };
                 worker_env.insert(
@@ -634,7 +659,7 @@ impl ServerState {
                     Err(error) => {
                         tracing::warn!(app = app_name, error = %error, "Skipping workflow engine: invalid container workflow run");
                         self.workflows.retire(app_name).await;
-                        return;
+                        return Err(StateStoreError::InvalidData(error.to_string()));
                     }
                 };
                 worker_env = container_env;
@@ -645,7 +670,7 @@ impl ServerState {
             "go" => {
                 let Some(worker_main) = manifest.workflow_worker_main.as_deref() else {
                     self.workflows.retire(app_name).await;
-                    return;
+                    return Ok(());
                 };
                 let worker_bin = app_path.join(worker_main);
                 if !worker_bin.exists() {
@@ -655,7 +680,9 @@ impl ServerState {
                         "Skipping workflow engine: Go worker binary not found in release"
                     );
                     self.workflows.retire(app_name).await;
-                    return;
+                    return Err(StateStoreError::InvalidData(
+                        "Go worker binary not found in release".into(),
+                    ));
                 }
                 match runtime_bin_path {
                     Some(bin) => vec![std::ffi::OsString::from(bin), worker_bin.into()],
@@ -675,7 +702,7 @@ impl ServerState {
                 };
                 if !workflows_dir.is_dir() {
                     self.workflows.retire(app_name).await;
-                    return;
+                    return Ok(());
                 }
 
                 let worker_entry = app_path
@@ -691,7 +718,9 @@ impl ServerState {
                         "Skipping workflow engine: worker entrypoint not found in release"
                     );
                     self.workflows.retire(app_name).await;
-                    return;
+                    return Err(StateStoreError::InvalidData(
+                        "worker entrypoint not found in release".into(),
+                    ));
                 }
 
                 let runtime_bin = runtime_bin_path
@@ -723,11 +752,12 @@ impl ServerState {
                 Ok(isolation) => Some(isolation),
                 Err(error) => {
                     tracing::warn!(app = app_name, error = %error, "Skipping workflow engine: failed to prepare app isolation");
-                    return;
+                    return Err(StateStoreError::InvalidData(error.to_string()));
                 }
             }
         };
 
+        self.ensure_internal_socket_started()?;
         let app = app_name.to_string();
         let app_for_spec = app.clone();
         let worker_cwd = app_path;
@@ -752,16 +782,21 @@ impl ServerState {
             })
             .await;
 
-        if let Err(e) = result {
-            tracing::warn!(
-                app = app_name,
-                error = %e,
-                "Failed to bring up workflow engine"
-            );
-        }
+        result.map_err(|error| StateStoreError::InvalidData(error.to_string()))
     }
 
     pub async fn restore_from_state_store(&self) -> Result<(), StateStoreError> {
+        if self.is_draining() {
+            return Ok(());
+        }
+        self.restore_apps_from_state_store(false).await
+    }
+
+    pub(crate) async fn restore_apps_from_state_store(
+        &self,
+        strict: bool,
+    ) -> Result<(), StateStoreError> {
+        let mut errors = Vec::new();
         let apps = self.state_store.load_apps()?;
         for (app, project) in self.state_store.pending_compose_deployments()? {
             let existing = apps
@@ -776,6 +811,7 @@ impl ServerState {
                     // owns these containers. Leave them and the recovery marker
                     // intact so a running committed release is not destroyed.
                     tracing::error!(%app, %error, "Cannot determine interrupted Compose deployment ownership");
+                    errors.push(format!("{app}: {error}"));
                     continue;
                 }
                 config.compose.is_some()
@@ -789,12 +825,16 @@ impl ServerState {
                 match tako_compose::cleanup_pending_project(&project).await {
                     Ok(()) => self.state_store.clear_compose_deployment(&app)?,
                     Err(error) => {
-                        tracing::error!(%app, %error, "Could not clean interrupted Compose deployment")
+                        tracing::error!(%app, %error, "Could not clean interrupted Compose deployment");
+                        errors.push(format!("{app}: {error}"));
                     }
                 }
             }
         }
         if apps.is_empty() {
+            if strict && !errors.is_empty() {
+                return Err(StateStoreError::InvalidData(errors.join("; ")));
+            }
             return Ok(());
         }
 
@@ -811,6 +851,7 @@ impl ServerState {
                     Ok(bin) => bin,
                     Err(error) => {
                         tracing::error!(app = %app_name, %error, "Failed to restore app runtime");
+                        errors.push(format!("{app_name}: {error}"));
                         continue;
                     }
                 };
@@ -820,6 +861,7 @@ impl ServerState {
                 runtime_bin_path.as_deref(),
             ) {
                 tracing::error!(app = %app_name, "Failed to restore app config: {}", error);
+                errors.push(format!("{app_name}: {error}"));
                 continue;
             }
             if config.compose.is_none() {
@@ -843,11 +885,13 @@ impl ServerState {
                 Ok(paths) => inject_app_data_dir_env(&mut config.env_vars, &paths),
                 Err(error) => {
                     tracing::error!(app = %app_name, "Failed to prepare app data dirs: {}", error);
+                    errors.push(format!("{app_name}: {error}"));
                     continue;
                 }
             }
             config.secrets = self.state_store.get_secrets(&app_name).unwrap_or_else(|e| {
                 tracing::warn!(app = %app_name, "Failed to read secrets: {}", e);
+                errors.push(format!("{app_name}: {e}"));
                 HashMap::new()
             });
             if matches!(config.launch, crate::instances::AppLaunch::Container { .. }) {
@@ -855,6 +899,7 @@ impl ServerState {
                     if let Err(error) = crate::container_runtime::cleanup_app_containers(path).await
                     {
                         tracing::error!(app = %app_name, %error, "Failed to reconcile app containers");
+                        errors.push(format!("{app_name}: {error}"));
                         continue;
                     }
                 }
@@ -864,6 +909,7 @@ impl ServerState {
                 .get_storages(&app_name)
                 .unwrap_or_else(|e| {
                     tracing::warn!(app = %app_name, "Failed to read storages: {}", e);
+                    errors.push(format!("{app_name}: {e}"));
                     HashMap::new()
                 });
 
@@ -879,8 +925,15 @@ impl ServerState {
                 );
             }
 
-            self.sync_app_workflows(&app_name, &release_path, runtime_bin_path.as_deref())
-                .await;
+            if let Err(error) = self
+                .try_sync_app_workflows(&app_name, &release_path, runtime_bin_path.as_deref())
+                .await
+            {
+                errors.push(format!("{app_name}: {error}"));
+            }
+            if strict && !errors.is_empty() {
+                break;
+            }
 
             if should_start {
                 match self.app_manager.start_app(&app_name).await {
@@ -904,6 +957,7 @@ impl ServerState {
                         app.set_state(AppState::Error);
                         app.set_last_error(format!("Restore startup failed: {}", e));
                         tracing::error!(app = %app_name, "Failed to start restored app: {}", e);
+                        errors.push(format!("{app_name}: {e}"));
                     }
                 }
             } else {
@@ -913,6 +967,9 @@ impl ServerState {
             }
         }
 
+        if strict && !errors.is_empty() {
+            return Err(StateStoreError::InvalidData(errors.join("; ")));
+        }
         Ok(())
     }
 
