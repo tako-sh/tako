@@ -119,13 +119,12 @@ fn service_generation_errors_preserve_both_generated_files() {
         "previous declarations"
     );
     assert_eq!(fs::read_to_string(&services).unwrap(), "previous services");
-    let error =
+    let result =
         write_tako_declarations_with_codegen_command(dir.path(), BuildAdapter::Bun, "src", &|| {
             Command::new(dir.path().join("missing-bun"))
         })
-        .unwrap_err();
-    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
-    assert!(error.to_string().contains("service generation failed"));
+        .unwrap();
+    assert!(!result.wrote_services);
     assert_eq!(fs::read_to_string(&services).unwrap(), "previous services");
 }
 

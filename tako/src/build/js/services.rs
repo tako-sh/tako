@@ -15,14 +15,23 @@ pub(super) fn generate(
     }
 
     let root = fs::canonicalize(root)?;
-    let output = codegen_command()
+    let output = match codegen_command()
         .args(["run", "tako-sh-gen-service-types"])
         .arg(root.join("services"))
         .current_dir(&root)
         .output()
-        .map_err(|err| {
-            std::io::Error::new(err.kind(), format!("service generation failed: {err}"))
-        })?;
+    {
+        Ok(output) => output,
+        // No JavaScript runtime on this machine: keep the committed contract, as
+        // channel and store generation do, instead of failing deploy and dev.
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(std::io::Error::new(
+                err.kind(),
+                format!("service generation failed: {err}"),
+            ));
+        }
+    };
     if !output.status.success() {
         return Err(std::io::Error::other(format!(
             "service generation failed: {}",
