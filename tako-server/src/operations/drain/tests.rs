@@ -204,6 +204,83 @@ async fn empty_resume_is_durable_and_idempotent() {
 }
 
 #[tokio::test]
+async fn compose_cleanup_can_finish_during_resume_and_expired_drain_retries() {
+    use std::os::unix::fs::PermissionsExt;
+
+    const CHILD: &str = "TAKO_COMPOSE_DRAIN_RETRY_TEST";
+    if std::env::var_os(CHILD).is_none() {
+        let dir = TempDir::new().unwrap();
+        let docker = dir.path().join("docker");
+        std::fs::write(
+            &docker,
+            "#!/bin/sh\n[ \"$1 $2\" = 'container ls' ] || exit 1\n/bin/sleep 0.05\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let output = tokio::time::timeout(
+            Duration::from_secs(10),
+            tokio::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "operations::drain::tests::compose_cleanup_can_finish_during_resume_and_expired_drain_retries",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env("PATH", dir.path())
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+
+    for resume in [false, true] {
+        let (dir, state) = fixture();
+        let application = app(&state, "compose");
+        let directory = dir.path().join("apps/compose/production/releases/v1");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("compose.yaml"), "services: {}\n").unwrap();
+        {
+            let mut config = application.config.write();
+            config.path = directory;
+            config.compose = Some(tako_core::compose::ComposeConfig {
+                file: "compose.yaml".into(),
+                service: "web".into(),
+                port: 8080,
+                health_path: "/".into(),
+                health_host: None,
+            });
+            config.env_vars.insert(
+                crate::release::TAKO_APP_DATA_DIR_ENV.into(),
+                dir.path().join("data").to_string_lossy().into_owned(),
+            );
+        }
+        if resume {
+            let response = state.drain_server(2).await;
+            assert_eq!(response.data().unwrap()["completed"], true);
+            let response = state.resume_server().await;
+            assert!(response.is_ok(), "{response:?}");
+            assert!(!state.is_draining());
+        } else {
+            state.state_store.request_drain_until(0).unwrap();
+            state.observe_drain_once().await.unwrap();
+            assert!(state.drain_activity.lock().is_none());
+            state.state_store.set_drain_requested(false).unwrap();
+            state.observe_drain_once().await.unwrap();
+            assert!(!state.is_draining());
+        }
+    }
+}
+
+#[tokio::test]
 async fn drained_dispatch_rejects_new_work_but_allows_inspection_and_cleanup() {
     let (_dir, state) = fixture();
     state.drain_server(0).await;

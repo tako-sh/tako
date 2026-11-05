@@ -57,7 +57,11 @@ impl ServerState {
                 let remaining = Duration::from_millis(
                     wall_deadline.saturating_sub(unix_millis()).min(3_600_000),
                 );
-                let report = self.drain_runtime_until(Instant::now() + remaining).await;
+                let report = if remaining.is_zero() {
+                    self.retry_runtime_drain().await
+                } else {
+                    self.drain_runtime_until(Instant::now() + remaining).await
+                };
                 if !report.completed {
                     return Err(format!(
                         "Local runtime cleanup remains incomplete: {}",
@@ -82,7 +86,7 @@ impl ServerState {
         {
             return Ok(());
         }
-        let cleanup = self.drain_runtime_until(Instant::now()).await;
+        let cleanup = self.retry_runtime_drain().await;
         if !cleanup.completed {
             return Err("Local cleanup remains incomplete before resume".into());
         }

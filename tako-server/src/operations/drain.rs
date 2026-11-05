@@ -6,6 +6,7 @@ use tako_core::{AppState, Command, InstanceState, Response};
 use tokio::time::Instant;
 
 const MAX_DRAIN_SECONDS: u64 = 3600;
+const CLEANUP_RETRY_SECONDS: u64 = 30;
 
 #[derive(Debug, Serialize)]
 pub(crate) struct DrainReport {
@@ -176,6 +177,21 @@ impl crate::ServerState {
     }
 
     pub(crate) async fn drain_runtime_until(&self, deadline: Instant) -> DrainReport {
+        self.drain_runtime_with_cleanup_until(deadline, deadline)
+            .await
+    }
+
+    pub(crate) async fn retry_runtime_drain(&self) -> DrainReport {
+        let now = Instant::now();
+        self.drain_runtime_with_cleanup_until(now, now + Duration::from_secs(CLEANUP_RETRY_SECONDS))
+            .await
+    }
+
+    async fn drain_runtime_with_cleanup_until(
+        &self,
+        deadline: Instant,
+        cleanup_deadline: Instant,
+    ) -> DrainReport {
         self.drain_requested.store(true, Ordering::Release);
         self.proxy_requests.begin_drain();
         self.workflows.begin_server_drain();
@@ -254,7 +270,7 @@ impl crate::ServerState {
             ));
         }
         for (app, instance) in instances {
-            match tokio::time::timeout_at(deadline, instance.kill()).await {
+            match tokio::time::timeout_at(cleanup_deadline, instance.kill()).await {
                 Ok(Ok(())) => {
                     app.remove_instance(&instance.id);
                     crate::metrics::remove_instance_metrics(&app.name(), &instance.id);
@@ -278,7 +294,9 @@ impl crate::ServerState {
             let config = app.config.read().clone();
             if config.compose.is_some() {
                 match crate::compose_runtime::for_config(&config) {
-                    Ok(compose) => match tokio::time::timeout_at(deadline, compose.stop()).await {
+                    Ok(compose) => match tokio::time::timeout_at(cleanup_deadline, compose.stop())
+                        .await
+                    {
                         Ok(Ok(())) => {}
                         Ok(Err(error)) => report.errors.push(format!("{}: {error}", app.name())),
                         Err(_) => {
@@ -326,7 +344,7 @@ impl crate::ServerState {
             Ok(value) => value,
             Err(error) => return Response::error(error.to_string()),
         };
-        let cleanup = self.drain_runtime_until(Instant::now()).await;
+        let cleanup = self.retry_runtime_drain().await;
         if !cleanup.completed {
             return Response::error(format!(
                 "Server remains drained; cleanup is incomplete: {}",
@@ -367,21 +385,21 @@ impl crate::ServerState {
             self.cold_start.reset(&name);
         }
         if let Err(error) = self.restore_apps_from_state_store(true).await {
-            let cleanup = self.drain_runtime_until(Instant::now()).await;
+            let cleanup = self.retry_runtime_drain().await;
             return Err(format!(
                 "Server remains drained; restore failed: {error}; cleanup completed: {}",
                 cleanup.completed
             ));
         }
         if !self.proxy_requests.resume() {
-            let cleanup = self.drain_runtime_until(Instant::now()).await;
+            let cleanup = self.retry_runtime_drain().await;
             return Err(format!(
                 "Server remains drained; proxy requests still active; cleanup completed: {}",
                 cleanup.completed
             ));
         }
         if clear_intent && let Err(error) = self.state_store.set_drain_requested(false) {
-            let cleanup = self.drain_runtime_until(Instant::now()).await;
+            let cleanup = self.retry_runtime_drain().await;
             return Err(format!(
                 "Server remains drained; could not persist resume: {error}; cleanup completed: {}",
                 cleanup.completed
