@@ -6,6 +6,8 @@ description: "Run tenant-style wildcard subdomains on a VPS with Tako routes, Cl
 image: ca44ba6463d9
 ---
 
+> **Networking update.** The server setup described here uses Tako’s legacy VPN integration. For new installations, see [native WireGuard networks](/blog/native-wireguard-networks-for-vps-apps/). For an existing Tailscale or NetBird host, follow the [migration guide](/blog/migrate-tailscale-to-tako-wireguard/).
+
 Wildcard subdomains are where a simple VPS setup usually starts to feel less simple.
 
 `app.example.com` is easy. Point a DNS record at the box, let HTTP-01 prove domain ownership, and serve the app. `alice.app.example.com`, `bob.app.example.com`, and every future tenant below `*.app.example.com` are different. You do not know all the hostnames ahead of time, and Let's Encrypt will not issue a wildcard certificate with HTTP-01.

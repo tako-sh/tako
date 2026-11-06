@@ -5,6 +5,8 @@ description: "Run several apps on one VPS with Tako routes, SNI certificate sele
 image: 97424f86ce07
 ---
 
+> **Networking update.** The server setup described here uses Tako’s legacy VPN integration. For new installations, see [native WireGuard networks](/blog/native-wireguard-networks-for-vps-apps/). For an existing Tailscale or NetBird host, follow the [migration guide](/blog/migrate-tailscale-to-tako-wireguard/).
+
 One VPS is enough for more apps than people give it credit for.
 
 The hard part is not CPU. The hard part is the pile of glue around the apps: one Nginx config per hostname, one process manager stanza per service, one Certbot renewal path, one static-file exception, one "why is `/api` hitting the wrong app?" debugging session. Do that three times and your small server starts feeling like a tiny operations department.

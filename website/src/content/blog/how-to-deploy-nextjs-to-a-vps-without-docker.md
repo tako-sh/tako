@@ -5,6 +5,8 @@ description: "Deploy Next.js to your own VPS with Tako: Linux and Tailscale prer
 image: e67599ab52d4
 ---
 
+> **Networking update.** The server setup described here uses Tako’s legacy VPN integration. For new installations, see [native WireGuard networks](/blog/native-wireguard-networks-for-vps-apps/). For an existing Tailscale or NetBird host, follow the [migration guide](/blog/migrate-tailscale-to-tako-wireguard/).
+
 This guide takes an existing Next.js app to a Linux VPS with [Tako](/docs/), using a native Node process and automatic HTTPS. If you are still choosing a host, start with [Vercel versus Tako for Next.js](/blog/open-source-vercel-alternative-nextjs-vps/).
 
 ## What you need

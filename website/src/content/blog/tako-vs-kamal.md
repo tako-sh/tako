@@ -6,6 +6,8 @@ description: "How Tako and Kamal approach self-hosted deployment differently —
 image: b111b39dbd57
 ---
 
+> **Networking update.** The server setup described here uses Tako’s legacy VPN integration. For new installations, see [native WireGuard networks](/blog/native-wireguard-networks-for-vps-apps/). For an existing Tailscale or NetBird host, follow the [migration guide](/blog/migrate-tailscale-to-tako-wireguard/).
+
 [Kamal](https://kamal-deploy.org/) and [Tako](/docs/) both deploy applications to servers you control. Kamal centers the workflow on Docker images and a registry. Tako defaults to native application releases and includes local development, routing, and app primitives.
 
 Choose Kamal if a Docker image is already your production artifact and you want deployment tooling around it. Consider Tako if you want native releases and an integrated local-to-production workflow, and are willing to use Tako's runtime contract.

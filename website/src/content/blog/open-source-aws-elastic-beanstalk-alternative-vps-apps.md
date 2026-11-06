@@ -6,6 +6,8 @@ description: "Compare AWS Elastic Beanstalk with Tako: app environments, rolling
 image: 2384f5f7a318
 ---
 
+> **Networking update.** The server setup described here uses Tako’s legacy VPN integration. For new installations, see [native WireGuard networks](/blog/native-wireguard-networks-for-vps-apps/). For an existing Tailscale or NetBird host, follow the [migration guide](/blog/migrate-tailscale-to-tako-wireguard/).
+
 [AWS Elastic Beanstalk](https://aws.amazon.com/elasticbeanstalk/) is the AWS service you reach for when you want a managed app environment instead of assembling EC2, load balancers, health checks, deployment policies, and logs yourself.
 
 That is a good category. "Here is my app, please run it as an environment" is still one of the clearest deployment ideas cloud platforms ever shipped.
