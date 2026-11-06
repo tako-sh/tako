@@ -124,7 +124,9 @@ jobs:
       - name: Run workspace tests
         env:
           TAKO_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:${{ job.services.postgres.ports[5432] }}/postgres
-        run: cargo test --workspace --locked --lib --bins
+        run: |
+          cargo test --workspace --locked --lib --bins
+          cargo test -p tako-network --locked --test '*'
 
       - name: Run Compose integration tests
         run: |

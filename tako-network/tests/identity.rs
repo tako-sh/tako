@@ -1,3 +1,5 @@
+include!("support/tempdir.rs");
+
 use tako_network::*;
 
 #[test]
@@ -192,7 +194,7 @@ fn address_is_stable_private_and_network_specific() {
 #[test]
 fn key_storage_is_private_exclusive_and_roundtrips_without_public_secret_leak() {
     use std::os::unix::fs::PermissionsExt;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = private_tempdir();
     let path = dir.path().join("device.keys");
     let keys = LocalDeviceKeys::generate().unwrap();
     keys.save_new(&path).unwrap();
@@ -233,7 +235,7 @@ fn key_storage_is_private_exclusive_and_roundtrips_without_public_secret_leak() 
 #[test]
 fn key_storage_rejects_symlink_components_and_hardlinks() {
     use std::os::unix::fs::symlink;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = private_tempdir();
     let keys = LocalDeviceKeys::generate().unwrap();
     let original = dir.path().join("original");
     keys.save_new(&original).unwrap();
@@ -254,7 +256,7 @@ fn key_storage_rejects_symlink_components_and_hardlinks() {
 #[test]
 fn concurrent_key_creation_has_one_winner_and_never_clobbers_it() {
     use std::sync::{Arc, Barrier};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = private_tempdir();
     let path = dir.path().join("keys");
     let start = Arc::new(Barrier::new(4));
     let writers: Vec<_> = (0..4)

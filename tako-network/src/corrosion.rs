@@ -23,10 +23,7 @@ use crate::{
 pub const MAX_REGISTRY_ROWS: usize = 10_000;
 pub const MAX_REGISTRY_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_RECORD_BYTES: usize = 128 * 1024;
-// Snapshots run several times per agent tick, so page size sets the number of
-// sequential loopback round-trips. Every response and the whole projection are
-// already bounded by MAX_REGISTRY_BYTES, so a page cannot exceed that cap unless
-// the registry itself is over capacity, which fails closed either way.
+// Start with large pages to minimize loopback round-trips for small records.
 const PAGE_ROWS: usize = 256;
 const MAX_ADMISSION_ROWS: usize = MAX_REGISTRY_ROWS / 2;
 const MAX_ADMISSION_BYTES: usize = MAX_REGISTRY_BYTES / 2;
@@ -182,15 +179,25 @@ impl CorrosionStore {
         };
         let upper = record_key(high)?;
         let mut cursor = (String::new(), String::new(), String::new());
+        let mut page_rows = PAGE_ROWS;
         loop {
-            let page = parse_query(&self.post("/v1/queries", &json!([
+            let result = self.post("/v1/queries", &json!([
                 "SELECT kind, record_id, digest, payload FROM tako_network_records WHERE (kind, record_id, digest) > (?, ?, ?) AND (kind, record_id, digest) <= (?, ?, ?) ORDER BY kind, record_id, digest LIMIT ?",
-                [cursor.0, cursor.1, cursor.2, upper.0, upper.1, upper.2, PAGE_ROWS]
-            ]))?)?;
+                [cursor.0, cursor.1, cursor.2, upper.0, upper.1, upper.2, page_rows]
+            ])).and_then(|bytes| parse_query(&bytes));
+            let page = match result {
+                // JSON framing and noncanonical payloads can outgrow the wire limit
+                // even when the projected registry fits. Retry from the same cursor.
+                Err(RuntimeError::Capacity("Corrosion response")) if page_rows > 1 => {
+                    page_rows /= 2;
+                    continue;
+                }
+                result => result?,
+            };
             if page.is_empty() {
                 break;
             }
-            if page.len() > PAGE_ROWS {
+            if page.len() > page_rows {
                 return Err(RuntimeError::Corrosion("page size"));
             }
             for row in page {

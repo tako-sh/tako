@@ -522,7 +522,7 @@ fn nested_member_publication_capacity_stays_latched_after_rollback() {
             false,
             2,
         );
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let server_keys = LocalDeviceKeys::generate().unwrap();
         server_keys.save_new(&dir.path().join("keys")).unwrap();
         let server = original

@@ -2,6 +2,8 @@
 
 pub use tako_network::*;
 
+include!("support/tempdir.rs");
+
 mod support;
 
 #[path = "support/corrosion_review_http.rs"]
