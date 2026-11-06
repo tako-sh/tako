@@ -22,12 +22,21 @@ export function incomingMessageToRequest(req: IncomingMessage): Request {
   }
 
   const hasBody = method !== "GET" && method !== "HEAD";
+  let cancelled = false;
   const body = hasBody
     ? new ReadableStream({
         start(controller) {
-          req.on("data", (chunk: Buffer) => controller.enqueue(chunk));
-          req.on("end", () => controller.close());
+          req.on("data", (chunk: Buffer) => {
+            if (!cancelled) controller.enqueue(chunk);
+          });
+          req.once("end", () => {
+            if (!cancelled) controller.close();
+          });
           req.on("error", (err) => controller.error(err));
+        },
+        cancel() {
+          // Keep draining the HTTP request so the handler can send its early response.
+          cancelled = true;
         },
       })
     : null;

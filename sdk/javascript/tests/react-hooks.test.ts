@@ -403,6 +403,35 @@ describe("useChannel (ws)", () => {
 });
 
 describe("channel recovery", () => {
+  test("an ephemeral event does not add an empty cursor to WebSocket authentication", async () => {
+    const sockets: MockWebSocket[] = [];
+    const { unmount } = renderHook(() =>
+      useChannel("chat", {
+        transport: "ws",
+        baseUrl: "http://test",
+        authorization: "token",
+        webSocketFactory: (url) => {
+          const socket = new MockWebSocket(url);
+          sockets.push(socket);
+          return socket;
+        },
+      }),
+    );
+    act(() => {
+      sockets[0]!.emitOpen();
+      sockets[0]!.emitMessage({ id: "", eventId: { origin: "one", sequence: 1 }, data: "live" });
+      sockets[0]!.emitClose();
+      globalThis.dispatchEvent(new Event("online"));
+    });
+    await waitFor(() => expect(sockets).toHaveLength(2));
+    await act(async () => sockets[1]!.emitOpen());
+    expect(JSON.parse(sockets[1]!.sent[0] as string)).toEqual({
+      type: "tako.auth",
+      token: "Bearer token",
+    });
+    unmount();
+  });
+
   test("4410 clears the URL and auth resume cursor without a business message", async () => {
     const sockets: MockWebSocket[] = [];
     const recoveries: string[] = [];
@@ -741,6 +770,32 @@ describe("usePresence", () => {
     });
     expect(new URL(sockets[1]!.url).searchParams.get("chatId")).toBe("two");
     expect(JSON.parse(sockets[1]!.sent.at(-1) as string).data).toEqual({ typing: false });
+    unmount();
+  });
+
+  test("switching accounts resets metadata even in the same room", () => {
+    const sockets: MockWebSocket[] = [];
+    const { result, rerender, unmount } = renderHook(
+      ({ account }) =>
+        usePresence("lobby", {
+          baseUrl: "http://test",
+          authorization: account,
+          data: { document: account },
+          webSocketFactory: (url) => {
+            const socket = new MockWebSocket(url);
+            sockets.push(socket);
+            return socket;
+          },
+        }),
+      { initialProps: { account: "one" } },
+    );
+    act(() => result.current.update({ document: "private-to-one" }));
+    rerender({ account: "two" });
+    act(() => {
+      sockets[1]!.emitOpen();
+      sockets[1]!.emitMessage({ type: "tako.presence.ready" });
+    });
+    expect(JSON.parse(sockets[1]!.sent.at(-1) as string).data).toEqual({ document: "two" });
     unmount();
   });
 

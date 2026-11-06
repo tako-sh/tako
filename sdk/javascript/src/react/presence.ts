@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useInsertionEffect, useRef, useState } from "react";
 import { Channel } from "../channels";
 import { PRESENCE_CHANNEL_PREFIX, type PresenceMember, type PresenceSnapshot } from "../presence";
 import type { ChannelConnectOptions } from "../types";
@@ -35,32 +35,34 @@ export function usePresence<T>(
 ): PresenceConnection<T> {
   const paramsKey = JSON.stringify(options.params ?? {});
   const headersKey = JSON.stringify(options.headers ?? {});
-  const scopeKey = JSON.stringify([name, paramsKey]);
   const connectionKey = JSON.stringify([
-    scopeKey,
+    name,
+    paramsKey,
     headersKey,
     options.baseUrl,
     options.authorization,
   ]);
   const latestKeyRef = useRef(connectionKey);
-  latestKeyRef.current = connectionKey;
+  const optionsRef = useRef(options);
+  useInsertionEffect(() => {
+    latestKeyRef.current = connectionKey;
+    optionsRef.current = options;
+  });
   const activeKeyRef = useRef<string | null>(null);
   const [stateKey, setStateKey] = useState(connectionKey);
   const [members, setMembers] = useState<PresenceMember<T>[]>([]);
   const [connectionId, setConnectionId] = useState<string | null>(null);
   const [status, setStatus] = useState<"connecting" | "open">("connecting");
   const [error, setError] = useState<Error | null>(null);
-  const optionsRef = useRef(options);
-  optionsRef.current = options;
-  const dataRef = useRef<{ scopeKey: string; data: T; payload?: string }>({
-    scopeKey,
+  const dataRef = useRef<{ connectionKey: string; data: T; payload?: string }>({
+    connectionKey,
     data: options.data,
   });
   const sendRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
-    if (dataRef.current.scopeKey !== scopeKey) {
-      dataRef.current = { scopeKey, data: optionsRef.current.data };
+    if (dataRef.current.connectionKey !== connectionKey) {
+      dataRef.current = { connectionKey, data: optionsRef.current.data };
     }
     activeKeyRef.current = connectionKey;
     setStateKey(connectionKey);
@@ -89,7 +91,7 @@ export function usePresence<T>(
           if (
             !ready ||
             latestKeyRef.current !== connectionKey ||
-            dataRef.current.scopeKey !== scopeKey
+            dataRef.current.connectionKey !== connectionKey
           )
             return;
           try {
@@ -167,20 +169,20 @@ export function usePresence<T>(
       clearInterval(heartbeat);
       close?.();
     };
-  }, [name, scopeKey, connectionKey]);
+  }, [name, connectionKey]);
 
   const update = useCallback(
     (data: T) => {
       if (latestKeyRef.current !== connectionKey) return;
       try {
         const payload = encodePresenceData(data);
-        dataRef.current = { scopeKey, data, payload };
+        dataRef.current = { connectionKey, data, payload };
         if (activeKeyRef.current === connectionKey) sendRef.current?.();
       } catch (err) {
         setError(err instanceof Error ? err : new Error(String(err)));
       }
     },
-    [connectionKey, scopeKey],
+    [connectionKey],
   );
   return stateKey === connectionKey
     ? { members, connectionId, status, error, update }
