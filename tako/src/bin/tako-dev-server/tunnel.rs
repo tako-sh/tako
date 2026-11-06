@@ -10,14 +10,16 @@ use crate::tunnel_wire::*;
 use futures_util::{SinkExt, StreamExt};
 use reqwest::header::{HeaderName, HeaderValue};
 use serde::Deserialize;
-use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::AbortHandle;
 use tokio_tungstenite::{
-    MaybeTlsStream, WebSocketStream,
+    WebSocketStream,
     tungstenite::{
-        Error as WebSocketError, Message, client::IntoClientRequest, http::StatusCode,
-        protocol::CloseFrame,
+        Error as WebSocketError, Message,
+        client::IntoClientRequest,
+        handshake::derive_accept_key,
+        http::StatusCode,
+        protocol::{CloseFrame, Role},
     },
 };
 
@@ -456,7 +458,28 @@ fn reconnect_delay(delay: Duration, entropy: u64) -> Duration {
 
 async fn connect_tunnel_socket(
     connect_url: &str,
-) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>, TunnelConnectError> {
+) -> Result<WebSocketStream<reqwest::Upgraded>, TunnelConnectError> {
+    // Use the same transport as registration: it honors HTTP(S)_PROXY,
+    // ALL_PROXY, NO_PROXY, and the platform certificate store. Tungstenite's
+    // connect_async opens a direct TCP socket and bypasses those settings.
+    let client = reqwest::Client::builder()
+        .http1_only()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(TUNNEL_CONNECT_TIMEOUT)
+        .build()
+        .map_err(|error| TunnelConnectError::Retry(error.to_string()))?;
+    tokio::time::timeout(
+        TUNNEL_CONNECT_TIMEOUT,
+        connect_tunnel_socket_with_client(connect_url, &client),
+    )
+    .await
+    .map_err(|_| TunnelConnectError::Retry("timed out connecting tunnel websocket".to_string()))?
+}
+
+async fn connect_tunnel_socket_with_client(
+    connect_url: &str,
+    client: &reqwest::Client,
+) -> Result<WebSocketStream<reqwest::Upgraded>, TunnelConnectError> {
     let mut request = connect_url
         .into_client_request()
         .map_err(|error| TunnelConnectError::Retry(error.to_string()))?;
@@ -464,18 +487,80 @@ async fn connect_tunnel_socket(
         "sec-websocket-protocol",
         HeaderValue::from_static(TUNNEL_PROTOCOL),
     );
+    let accept_key = derive_accept_key(request.headers()["sec-websocket-key"].as_bytes());
+    let mut url = reqwest::Url::parse(connect_url)
+        .map_err(|error| TunnelConnectError::Retry(error.to_string()))?;
+    let scheme = match url.scheme() {
+        "ws" => "http",
+        "wss" => "https",
+        _ => {
+            return Err(TunnelConnectError::Retry(
+                "invalid tunnel websocket scheme".into(),
+            ));
+        }
+    };
+    url.set_scheme(scheme)
+        .map_err(|_| TunnelConnectError::Retry("invalid tunnel websocket URL".into()))?;
+    let response = client
+        .get(url)
+        .headers(request.headers().clone())
+        .send()
+        .await
+        .map_err(|error| {
+            // The connection URL contains a session credential.
+            TunnelConnectError::Retry(format!(
+                "failed to connect tunnel websocket: {}",
+                error.without_url()
+            ))
+        })?;
+    if response.status() != StatusCode::SWITCHING_PROTOCOLS {
+        let status = response.status();
+        let body = response.bytes().await.ok().map(|body| body.to_vec());
+        let response = tokio_tungstenite::tungstenite::http::Response::builder()
+            .status(status)
+            .body(body)
+            .expect("valid tunnel HTTP status");
+        return Err(classify_tunnel_connect_error(WebSocketError::Http(
+            Box::new(response),
+        )));
+    }
+    validate_tunnel_upgrade(response.headers(), &accept_key)?;
+    let stream = response.upgrade().await.map_err(|error| {
+        TunnelConnectError::Retry(format!(
+            "failed to upgrade tunnel websocket: {}",
+            error.without_url()
+        ))
+    })?;
     let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
         .max_message_size(Some(MAX_WIRE_MESSAGE))
         .max_frame_size(Some(MAX_WIRE_MESSAGE));
-    let (socket, response) = tokio::time::timeout(
-        TUNNEL_CONNECT_TIMEOUT,
-        tokio_tungstenite::connect_async_with_config(request, Some(config), false),
-    )
-    .await
-    .map_err(|_| TunnelConnectError::Retry("timed out connecting tunnel websocket".to_string()))?
-    .map_err(classify_tunnel_connect_error)?;
-    if response
-        .headers()
+    Ok(WebSocketStream::from_raw_socket(stream, Role::Client, Some(config)).await)
+}
+
+fn validate_tunnel_upgrade(
+    headers: &reqwest::header::HeaderMap,
+    accept_key: &str,
+) -> Result<(), TunnelConnectError> {
+    let upgrade = headers.get("upgrade").and_then(|value| value.to_str().ok());
+    let connection_upgrade = headers.get_all("connection").iter().any(|value| {
+        value.to_str().is_ok_and(|value| {
+            value
+                .split(',')
+                .any(|token| token.trim().eq_ignore_ascii_case("upgrade"))
+        })
+    });
+    if !upgrade.is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
+        || !connection_upgrade
+        || headers
+            .get("sec-websocket-accept")
+            .is_none_or(|value| value != accept_key)
+        || headers.contains_key("sec-websocket-extensions")
+    {
+        return Err(TunnelConnectError::Retry(
+            "invalid tunnel websocket upgrade response".into(),
+        ));
+    }
+    if headers
         .get("sec-websocket-protocol")
         .is_none_or(|value| value != TUNNEL_PROTOCOL)
     {
@@ -483,7 +568,7 @@ async fn connect_tunnel_socket(
             "tunnel protocol mismatch; update Tako and the relay together".into(),
         ));
     }
-    Ok(socket)
+    Ok(())
 }
 
 fn classify_tunnel_connect_error(error: WebSocketError) -> TunnelConnectError {
@@ -2037,3 +2122,7 @@ mod tests {
 #[cfg(test)]
 #[path = "tunnel_benchmark.rs"]
 mod benchmark;
+
+#[cfg(test)]
+#[path = "tunnel_transport_tests.rs"]
+mod transport_tests;
