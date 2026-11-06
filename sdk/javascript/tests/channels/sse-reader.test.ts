@@ -471,7 +471,7 @@ test.each([
     const reader = new SseReader("http://test/events", {
       fetch: (async () => {
         if (++calls === 1) return new Response(null, { status });
-        return mockFetchStream(["data: business\n\n"])("http://test/events");
+        return mockFetchStream(["data: business\n\n"])();
       }) as typeof fetch,
       retryOnDisconnect: true,
       backoffBaseMs: 1,

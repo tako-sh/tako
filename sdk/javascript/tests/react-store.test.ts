@@ -1,11 +1,17 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { createElement, StrictMode, useLayoutEffect } from "react";
 import { renderToString } from "react-dom/server";
 import { useStore } from "../src/react/store";
 
-if (typeof document === "undefined") GlobalRegistrator.register();
+const registered = typeof document === "undefined";
+if (registered) GlobalRegistrator.register();
+
+// Later test files in the same run expect Bun's own globals, such as fetch.
+afterAll(async () => {
+  if (registered) await GlobalRegistrator.unregister();
+});
 
 interface PendingRead {
   signal: AbortSignal | null | undefined;
