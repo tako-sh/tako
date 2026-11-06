@@ -125,6 +125,15 @@ async fn promote(state: Arc<ServerState>, startup_exe: Option<PathBuf>) -> Resul
 }
 
 async fn retire_local_runtime(state: &ServerState, deadline: Instant) -> Result<(), String> {
+    // Admitted cold starts and replacements hold the read side of the spawn
+    // gate, and the drain flag does not stop one that is already past its
+    // check. Hold the write side so the instance snapshot below includes any
+    // replacement such a spawn allocates.
+    let _spawns = tokio::time::timeout_at(deadline, state.spawn_gate.write())
+        .await
+        .map_err(|_| {
+            "Local instance spawns did not settle before the retirement deadline".to_string()
+        })?;
     state.workflows.begin_server_drain();
     let forced_transports = state.proxy_requests.force_drain();
     let (forced_workers, worker_errors) = state.workflows.force_server_drain();
@@ -196,6 +205,56 @@ fn primary_arguments(arguments: impl IntoIterator<Item = OsString>) -> Vec<OsStr
 mod tests {
     use super::*;
     use std::os::unix::ffi::OsStringExt;
+
+    fn runtime_state(path: &Path) -> Arc<ServerState> {
+        let path = path.to_path_buf();
+        std::thread::spawn(move || {
+            Arc::new(
+                ServerState::new_with_runtime(
+                    path.clone(),
+                    Arc::new(crate::tls::CertManager::new(
+                        crate::tls::CertManagerConfig {
+                            cert_dir: path.join("certs"),
+                            ..Default::default()
+                        },
+                    )),
+                    None,
+                    Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
+                    crate::ServerRuntimeConfig::for_defaults(path),
+                )
+                .unwrap(),
+            )
+        })
+        .join()
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn retirement_waits_for_active_spawns_before_snapshotting_instances() {
+        let dir = crate::isolation::fixture::TestDataDir::new().unwrap();
+        let state = runtime_state(dir.path());
+        let app = state.app_manager.register_app(crate::instances::AppConfig {
+            name: "app".into(),
+            environment: "production".into(),
+            version: "v1".into(),
+            min_instances: 0,
+            ..Default::default()
+        });
+        state.load_balancer.register_app(app.clone());
+        // A replacement holds the read side while it allocates its instance.
+        let spawning = state.spawn_gate.read().await;
+        let instance = app.allocate_instance();
+        let error = retire_local_runtime(&state, Instant::now() + Duration::from_millis(100))
+            .await
+            .unwrap_err();
+        assert!(error.contains("spawns"), "{error}");
+        assert!(app.get_instance(&instance.id).is_some());
+        drop(spawning);
+        retire_local_runtime(&state, Instant::now() + Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert!(app.get_instances().is_empty());
+    }
 
     #[test]
     fn native_promotion_preserves_os_arguments_and_removes_only_standby_flag() {
