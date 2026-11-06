@@ -14,7 +14,7 @@ MAINTENANCE = SOURCE.split('cat > "$helper_dir/service" <<\'EOF\'\n', 1)[1].spli
 
 class NativeAgentLifecycleTests(unittest.TestCase):
     def test_native_binary_gets_no_file_capabilities(self):
-        for provider in ('native', 'tailscale', 'netbird'):
+        for provider in ('native',):
             for manager in ('systemd', 'none'):
                 with self.subTest(provider=provider, manager=manager):
                     result = subprocess.run(['sh', '-eu'], input='''
@@ -59,7 +59,7 @@ rm() { printf 'rm %s\\n' "$*"; command rm "$@"; }
                 self.assertTrue((root / 'etc/systemd/system/tako-network-agent.service').exists())
 
     def test_native_rollback_preserves_capability_free_executable(self):
-        for provider in ('native', 'tailscale', 'netbird'):
+        for provider in ('native',):
             with self.subTest(provider=provider):
                 root, result = self.maintenance('rollback', provider)
                 self.assertEqual(result.returncode, 0, result.stderr)

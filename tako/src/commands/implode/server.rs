@@ -46,15 +46,20 @@ pub async fn implode_server(
     )
     .await?;
 
-    // Remove server from local config
-    let mut servers = crate::config::ServersToml::load()?;
-    servers.remove(server_name)?;
-    servers.save()?;
-
-    output::success(&format!(
-        "Removed {} from local server list",
-        output::strong(server_name)
-    ));
+    if let Some(target) = &server.native {
+        output::hint(&format!(
+            "Revoke the removed server's membership with `tako network revoke {} --network {}` from a remaining administrator.",
+            target.server_id, target.network.name
+        ));
+    } else {
+        let mut servers = crate::config::ServersToml::load()?;
+        servers.remove(server_name)?;
+        servers.save()?;
+        output::success(&format!(
+            "Removed {} from local server list",
+            output::strong(server_name)
+        ));
+    }
 
     Ok(())
 }

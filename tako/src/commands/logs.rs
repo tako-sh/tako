@@ -519,7 +519,7 @@ async fn resolve_log_server_names(
             .await?
             .is_some()
             {
-                *servers = ServersToml::load()?;
+                *servers = crate::commands::helpers::load_management_servers(None, None).await?;
                 if servers.len() == 1 {
                     let only = servers.names()[0];
                     return Ok(vec![only.to_string()]);

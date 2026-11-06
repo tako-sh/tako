@@ -432,11 +432,7 @@ impl Cli {
                 let emit_generic = json
                     && !matches!(
                         &cmd,
-                        server::ServerCommands::List
-                            | server::ServerCommands::Add {
-                                network: Some(_),
-                                ..
-                            }
+                        server::ServerCommands::List | server::ServerCommands::Add { .. }
                     );
                 server::run(cmd)?;
                 if emit_generic {

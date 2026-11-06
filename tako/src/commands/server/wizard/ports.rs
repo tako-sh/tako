@@ -50,7 +50,3 @@ fn validate_public_ports(ports: ServerPublicPorts) -> Result<(), String> {
     }
     Ok(())
 }
-
-pub(super) fn install_public_ports(requested: Option<ServerPublicPorts>) -> ServerPublicPorts {
-    requested.unwrap_or_default()
-}

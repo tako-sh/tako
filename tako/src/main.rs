@@ -10,7 +10,6 @@ mod paths;
 pub mod shell;
 mod telemetry;
 mod ui;
-mod vpn;
 
 // Internal modules (moved from tako-core)
 pub mod app;

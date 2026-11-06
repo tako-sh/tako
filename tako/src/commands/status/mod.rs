@@ -75,7 +75,7 @@ pub async fn run(json: bool) -> Result<(), Box<dyn std::error::Error>> {
         .await?
         .is_some()
     {
-        servers = ServersToml::load()?;
+        servers = crate::commands::helpers::load_management_servers(None, None).await?;
     }
 
     run_global_status(&servers, json).await

@@ -3,21 +3,15 @@ use std::net::Ipv6Addr;
 use tako_network::{BootstrapRequest, BootstrapResponse};
 
 use super::super::error::{SshError, SshResult};
-use super::{InstallServerMode, ServerInstallPorts, SshClient};
+use super::{ServerInstallPorts, SshClient};
 
 impl SshClient {
     pub async fn install_native_tako_server(&self, ports: ServerInstallPorts) -> SshResult<()> {
         let key = self
             .authenticated_public_key()
             .ok_or_else(|| SshError::Authentication("No authenticated operator SSH key".into()))?;
-        let mut env = super::tako::install_server_env(
-            key,
-            Some(ports),
-            InstallServerMode::BootstrapOnly,
-            crate::vpn::VpnProvider::Tailscale,
-        );
-        env.push_str(" TAKO_VPN_PROVIDER=native");
-        let command = Self::run_with_root_or_sudo(&format!("{env} sh -s"));
+        let env = super::tako::install_server_env(key, Some(ports));
+        let command = Self::run_with_root_or_sudo(&format!("{env} TAKO_VPN_PROVIDER=native sh -s"));
         self.exec_checked_with_stdin(&command, super::tako::INSTALL_SERVER_SCRIPT.as_bytes())
             .await?;
         Ok(())

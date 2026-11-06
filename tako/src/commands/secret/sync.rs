@@ -111,7 +111,7 @@ pub(super) async fn sync_secrets(
     context: &crate::commands::project_context::ProjectContext,
     target_env: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use crate::config::{SecretsStore, ServersToml, TakoToml};
+    use crate::config::{SecretsStore, TakoToml};
     use crate::crypto::decrypt;
     let app_name = resolve_app_name(&context.config_path)?;
     let secrets = SecretsStore::load_from_dir(&context.project_dir)?;
@@ -131,7 +131,7 @@ pub(super) async fn sync_secrets(
         .await?
         .is_some()
     {
-        servers = ServersToml::load()?;
+        servers = crate::commands::helpers::load_management_servers(None, None).await?;
     }
 
     // Check for discrepancies first

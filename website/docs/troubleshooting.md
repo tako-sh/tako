@@ -84,7 +84,7 @@ For JS frameworks, make sure your preset matches the build output. TanStack Star
 
 ## Container Release Does Not Start
 
-Container releases require Podman on the target server. `tako servers add --install` installs it, and server upgrade installs it when missing.
+Container releases require Podman on the target server. `tako servers add --network <network>` installs it, and server upgrade installs it when missing.
 
 The container must:
 
@@ -154,7 +154,7 @@ On macOS, iCloud Keychain storage requires the signed `Tako.app` CLI. If Keychai
 
 ## Server Commands Fail
 
-Normal app operations use signed HTTP management on the server's selected Tailscale or NetBird address. SSH is used for setup, repair, reload, upgrade, and uninstall flows.
+Normal app operations use signed, pinned HTTPS with an enrolled device identity. SSH is used for setup, repair, reload, upgrade, and uninstall flows.
 
 If a server is unreachable:
 
@@ -162,6 +162,6 @@ If a server is unreachable:
 tako status
 ```
 
-Use `tako servers add --install <host>` or `tako servers add admin@host` to install or repair a server before adding it to `config.toml`.
+Use `tako servers add admin@host --network <network>` to install and enroll a server.
 
-Check the saved VPN provider (`tako servers list --json`), its connection and access policies, and SSH recovery access before choosing a repair action. Reload requires a reachable host and is not a diagnostic probe; follow [Servers](/servers/) for maintenance.
+Check network membership (`tako network status <network> --json`), HTTPS reachability, device permissions, and SSH recovery access before choosing a repair action. Reload requires a reachable host and is not a diagnostic probe; follow [Servers](/servers/) for maintenance.

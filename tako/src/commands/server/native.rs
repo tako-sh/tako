@@ -62,7 +62,10 @@ pub(super) async fn add(
     let default_name = host.split('.').next().unwrap_or("server").replace(':', "-");
     let name: DeviceName = name.unwrap_or(&default_name).parse()?;
     if output::is_dry_run() {
-        output::success("Would install and enroll the server in the native network");
+        output::dry_run_skip(&format!(
+            "Install and enroll server {name} ({host}) in network {}",
+            alias.name
+        ));
         if output::is_json() {
             output::json_result(
                 serde_json::json!({"dry_run": true, "network": alias.name, "server": name, "host": host, "operator": operator}),
@@ -315,6 +318,16 @@ pub(super) async fn add(
     ssh.start_native_tako_server(ports, network_id.address(&enrollment.request.wg_public_key))
         .await?;
     network::save_profile(&alias.name, &active)?;
+    if let Ok(mut history) = crate::config::CliHistoryToml::load() {
+        history.record_server_prompt_values(
+            &format!("{operator}@{host}"),
+            enrollment.request.name.as_str(),
+            ssh_port,
+        );
+        if let Err(error) = history.save() {
+            tracing::debug!("Could not save server prompt history: {error}");
+        }
+    }
     output::success(&format!(
         "Added {} to {}",
         enrollment.request.name, alias.name

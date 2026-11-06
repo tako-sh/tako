@@ -52,21 +52,11 @@ fn servers_uninstall_without_name_in_non_interactive_mode_shows_hint() {
     fs::create_dir_all(&home).unwrap();
     fs::create_dir_all(&tako_home).unwrap();
 
-    // Add a server so the list isn't empty
-    let add = run_tako_with_env(
-        &[
-            "servers",
-            "add",
-            "10.0.0.99",
-            "--name",
-            "test-srv",
-            "--no-test",
-        ],
-        &project_dir,
-        &home,
-        &tako_home,
-    );
-    assert!(add.status.success(), "add should succeed");
+    fs::write(
+        tako_home.join("config.toml"),
+        "[[servers]]\nname = 'real-srv'\nhost = '10.0.0.99'\n",
+    )
+    .unwrap();
 
     let uninstall = run_tako_with_env(&["servers", "uninstall"], &project_dir, &home, &tako_home);
     assert!(
@@ -92,21 +82,11 @@ fn servers_uninstall_nonexistent_name_fails() {
     fs::create_dir_all(&home).unwrap();
     fs::create_dir_all(&tako_home).unwrap();
 
-    // Add a server so the list isn't empty
-    let add = run_tako_with_env(
-        &[
-            "servers",
-            "add",
-            "10.0.0.99",
-            "--name",
-            "real-srv",
-            "--no-test",
-        ],
-        &project_dir,
-        &home,
-        &tako_home,
-    );
-    assert!(add.status.success(), "add should succeed");
+    fs::write(
+        tako_home.join("config.toml"),
+        "[[servers]]\nname = 'real-srv'\nhost = '10.0.0.99'\n",
+    )
+    .unwrap();
 
     let uninstall = run_tako_with_env(
         &["servers", "uninstall", "ghost-server", "--yes"],

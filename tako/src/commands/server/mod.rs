@@ -3,7 +3,7 @@ mod native;
 mod upgrade;
 mod wizard;
 
-pub use wizard::{AddServerOptions, add_server, prompt_to_add_server};
+pub use wizard::prompt_to_add_server;
 
 use crate::output;
 use clap::Subcommand;
@@ -15,25 +15,17 @@ pub enum ServerCommands {
         /// Server host. Use admin-user@host to install or repair with that SSH user.
         host: Option<String>,
 
-        /// VPN provider used for management
-        #[arg(long, value_enum)]
-        vpn: Option<crate::vpn::VpnProvider>,
-
-        /// Join a native Tako network by local alias or stable ID.
-        #[arg(long, conflicts_with_all = ["vpn", "no_test", "description"])]
+        /// Tako network alias or stable ID (defaults to the project or sole network).
+        #[arg(long)]
         network: Option<String>,
 
         /// Public WireGuard endpoint (defaults to the server's IP on UDP 51820).
-        #[arg(long, requires = "network")]
+        #[arg(long)]
         wireguard_endpoint: Option<std::net::SocketAddr>,
 
         /// Server name. Defaults to the host's first DNS label.
         #[arg(long)]
         name: Option<String>,
-
-        /// Optional description shown in server lists (e.g. "Primary EU region")
-        #[arg(long)]
-        description: Option<String>,
 
         /// SSH port
         #[arg(long, default_value_t = 22)]
@@ -50,14 +42,6 @@ pub enum ServerCommands {
         /// Public HTTPS port used by tako-server installs
         #[arg(long)]
         https_port: Option<u16>,
-
-        /// Install or repair tako-server without confirmation when needed
-        #[arg(long, conflicts_with = "no_test")]
-        install: bool,
-
-        /// Skip SSH connection test
-        #[arg(long, hide = true)]
-        no_test: bool,
     },
 
     /// Remove a server
@@ -111,71 +95,26 @@ async fn run_async(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>
     match cmd {
         ServerCommands::Add {
             host,
-            vpn,
             network,
             wireguard_endpoint,
             name,
-            description,
             port,
             ssh_key,
             http_port,
             https_port,
-            install,
-            no_test,
         } => {
             let public_ports = wizard::public_ports_from_cli(http_port, https_port)?;
-            if let Some(network) = network {
-                let host =
-                    host.ok_or("Native enrollment requires an operator SSH target: admin@host")?;
-                let parsed = parse_add_host(&host);
-                return native::add(
-                    &parsed.host,
-                    parsed.admin_user.as_deref().unwrap_or("root"),
-                    &network,
-                    name.as_deref(),
-                    port,
-                    ssh_key.as_deref(),
-                    public_ports.unwrap_or_default().into(),
-                    wireguard_endpoint,
-                )
-                .await;
-            }
-            if let Some(host) = host {
-                let parsed_host = parse_add_host(&host);
-                let parsed_admin_user = parsed_host.admin_user.as_deref();
-                let install_if_missing = !no_test && (install || parsed_admin_user.is_some());
-                let _ = add_server(
-                    &parsed_host.host,
-                    AddServerOptions {
-                        vpn,
-                        name: name.as_deref(),
-                        description: description.as_deref(),
-                        port,
-                        key_path: ssh_key.as_deref(),
-                        public_ports,
-                        no_test,
-                        pre_detected_target: None,
-                        pre_detected_public_ports: None,
-                        install_if_missing,
-                        allow_install_prompt: !no_test && !install_if_missing,
-                        admin_user: parsed_admin_user,
-                    },
-                )
-                .await?;
-                Ok(())
-            } else {
-                let _ = wizard::run_add_server_wizard(wizard::WizardDefaults {
-                    vpn,
-                    name: name.as_deref(),
-                    description: description.as_deref(),
-                    port,
-                    public_ports,
-                    test_ssh: !no_test,
-                    key_path: ssh_key.as_deref(),
-                })
-                .await?;
-                Ok(())
-            }
+            wizard::add(
+                host.as_deref(),
+                network.as_deref(),
+                name.as_deref(),
+                port,
+                ssh_key.as_deref(),
+                public_ports,
+                wireguard_endpoint,
+            )
+            .await?;
+            Ok(())
         }
         ServerCommands::Remove { name } => crud::remove_server(name.as_deref()).await,
         ServerCommands::List => crud::list_servers().await,
@@ -191,9 +130,7 @@ async fn uninstall_server_cmd(
     name: Option<&str>,
     assume_yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use crate::config::ServersToml;
-
-    let servers = ServersToml::load()?;
+    let servers = crate::commands::helpers::load_management_servers(None, None).await?;
 
     if servers.is_empty() {
         output::error("No servers configured.");

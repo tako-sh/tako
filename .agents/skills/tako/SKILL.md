@@ -92,7 +92,9 @@ Read `networks` before enrollment or network maintenance. Create a local alias w
 `tako network create`, enroll a server with `tako servers add --network`, then put
 the stable 32-character network ID in `[envs.<env>].network`. Do not combine it
 with `servers`. Targets are trusted server members, not manually copied inventory.
-Legacy Tailscale and NetBird inventories remain supported.
+External VPN integrations are removed. Re-enroll older servers in a Tako network,
+replace environment server mappings with the network ID, and remove old global
+inventory entries. Saved VPN provider fields fail with re-enrollment guidance.
 
 Every new laptop or sandbox runs `tako network request` to generate its own keys.
 An administrator approves the public request with exact `--deploy app/env`

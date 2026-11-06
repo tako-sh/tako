@@ -40,16 +40,12 @@ tako dev --tunnel
 Set up a deployment host:
 
 ```bash
-# Connect the host and your workstation to Tailscale or NetBird first.
-# If needed, servers add offers to install the service over SSH.
-sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"
-tako servers add my-server
-# Install/repair without the interactive confirmation:
-tako servers add my-server --install
-# Use a non-root administrator when root SSH access is disabled:
-tako servers add ubuntu@my-server
+tako network create production
+tako servers add ubuntu@203.0.113.10 --network production --name edge
+tako network list --json
+# Set [envs.production].network in tako.toml to the stable network ID.
 # Custom public ports:
-tako servers add my-server --http-port 8080 --https-port 8443
+tako servers add ubuntu@203.0.113.10 --network production --http-port 8080 --https-port 8443
 ```
 
 Deploy your app:

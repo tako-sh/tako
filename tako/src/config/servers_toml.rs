@@ -69,10 +69,6 @@ pub struct ServerEntry {
     #[serde(skip)]
     pub(crate) native: Option<crate::management_http::NativeTarget>,
 
-    /// VPN provider used for management. Existing entries use Tailscale.
-    #[serde(default)]
-    pub vpn: crate::vpn::VpnProvider,
-
     /// Server hostname or IP address
     pub host: String,
 
@@ -113,7 +109,6 @@ impl Default for ServerEntry {
     fn default() -> Self {
         Self {
             native: None,
-            vpn: Default::default(),
             host: String::new(),
             port: default_ssh_port(),
             http_port: default_http_port(),
@@ -188,6 +183,11 @@ impl ServersToml {
                         ConfigError::Validation("Server entry must have a 'name' field".to_string())
                     })?;
 
+                if server_value.get("vpn").is_some() {
+                    return Err(ConfigError::Validation(format!(
+                        "Server '{name}' uses a removed VPN provider. Enroll it with `tako servers add admin@host --network <network>`, then remove its old [[servers]] entry."
+                    )));
+                }
                 let host = server_value
                     .get("host")
                     .and_then(|v| v.as_str())
@@ -216,10 +216,6 @@ impl ServersToml {
 
                 let entry = ServerEntry {
                     native: None,
-                    vpn: match server_value.get("vpn") {
-                        Some(value) => value.clone().try_into()?,
-                        None => Default::default(),
-                    },
                     host: host.to_string(),
                     port,
                     http_port,
@@ -343,10 +339,6 @@ impl ServersToml {
             let mut table = toml::map::Map::new();
             table.insert("name".to_string(), toml::Value::String(name.to_string()));
             table.insert("host".to_string(), toml::Value::String(entry.host.clone()));
-            table.insert(
-                "vpn".to_string(),
-                toml::Value::String(entry.vpn.id().to_string()),
-            );
             if entry.port != default_ssh_port() {
                 table.insert("port".to_string(), toml::Value::Integer(entry.port as i64));
             }

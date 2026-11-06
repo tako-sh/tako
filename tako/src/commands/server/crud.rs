@@ -15,10 +15,19 @@ fn removal_option_label(name: &str, entry: &crate::config::ServerEntry) -> Strin
     }
 }
 
-pub(super) async fn remove_server(name: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
-    use crate::config::ServersToml;
+fn removal_prompt(name: &str, entry: &crate::config::ServerEntry) -> String {
+    if entry.native.is_some() {
+        format!(
+            "Revoke network membership and delegated approvals for {}?",
+            output::strong(name)
+        )
+    } else {
+        format!("Remove {}?", output::strong(name))
+    }
+}
 
-    let mut servers = ServersToml::load()?;
+pub(super) async fn remove_server(name: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    let servers = crate::commands::helpers::load_management_servers(None, None).await?;
 
     if servers.is_empty() {
         output::error("No servers configured.");
@@ -39,15 +48,14 @@ pub(super) async fn remove_server(name: Option<&str>) -> Result<(), Box<dyn std:
             return Ok(());
         }
 
-        let confirm = output::confirm(&format!("Remove {}?", output::strong(name)), false)?;
+        let confirm = output::confirm(&removal_prompt(name, servers.get(name).unwrap()), false)?;
 
         if !confirm {
             output::operation_cancelled();
             return Ok(());
         }
 
-        servers.remove(name)?;
-        servers.save()?;
+        remove_entry(name, servers.get(name).unwrap())?;
 
         output::success(&format!("Removed {}", output::strong(name)));
         return Ok(());
@@ -94,12 +102,11 @@ pub(super) async fn remove_server(name: Option<&str>) -> Result<(), Box<dyn std:
             // Step 1: Confirm
             1 => {
                 match output::confirm(
-                    &format!("Remove {}?", output::strong(&selected_name)),
+                    &removal_prompt(&selected_name, servers.get(&selected_name).unwrap()),
                     false,
                 ) {
                     Ok(true) => {
-                        servers.remove(&selected_name)?;
-                        servers.save()?;
+                        remove_entry(&selected_name, servers.get(&selected_name).unwrap())?;
                         output::success(&format!("Removed {}", output::strong(&selected_name)));
                         return Ok(());
                     }
@@ -118,10 +125,29 @@ pub(super) async fn remove_server(name: Option<&str>) -> Result<(), Box<dyn std:
     }
 }
 
-pub(super) async fn list_servers() -> Result<(), Box<dyn std::error::Error>> {
-    use crate::config::ServersToml;
+fn remove_entry(
+    name: &str,
+    entry: &crate::config::ServerEntry,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if output::is_dry_run() {
+        output::dry_run_skip(&format!("Remove server {}", output::strong(name)));
+        return Ok(());
+    }
+    if let Some(target) = &entry.native {
+        tokio::task::block_in_place(|| {
+            crate::network::revocation::run(&target.network, &target.server_id.to_string())?;
+            Ok(())
+        })
+    } else {
+        let mut servers = crate::config::ServersToml::load()?;
+        servers.remove(name)?;
+        servers.save()?;
+        Ok(())
+    }
+}
 
-    let servers = ServersToml::load()?;
+pub(super) async fn list_servers() -> Result<(), Box<dyn std::error::Error>> {
+    let servers = crate::commands::helpers::load_management_servers(None, None).await?;
 
     if servers.is_empty() {
         if output::is_json() {
@@ -176,7 +202,7 @@ pub(super) async fn list_servers() -> Result<(), Box<dyn std::error::Error>> {
                 serde_json::json!({
                     "name": name,
                     "host": entry.host,
-                    "vpn": entry.vpn.id(),
+                    "network": entry.native.as_ref().map(|target| &target.network.name),
                     "port": entry.port,
                     "http_port": entry.http_port,
                     "https_port": entry.https_port,
@@ -237,10 +263,9 @@ pub(super) async fn restart_server(
     name: &str,
     force: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use crate::config::ServersToml;
     use crate::ssh::{SshClient, SshConfig};
 
-    let servers = ServersToml::load()?;
+    let servers = crate::commands::helpers::load_management_servers(None, None).await?;
 
     let server = servers
         .get(name)
