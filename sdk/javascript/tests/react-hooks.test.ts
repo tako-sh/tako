@@ -765,6 +765,44 @@ describe("usePresence", () => {
     expect(connections).toBe(1);
     unmount();
   });
+  test("rejoins after a 4410 reset instead of treating it as a rejection", async () => {
+    const sockets: MockWebSocket[] = [];
+    const { result, unmount } = renderHook(() =>
+      usePresence("lobby", {
+        baseUrl: "http://test",
+        data: { typing: false },
+        webSocketFactory: (url: string) => {
+          const socket = new MockWebSocket(url);
+          sockets.push(socket);
+          return socket;
+        },
+      }),
+    );
+    const members = [{ connectionId: "tab-1", subject: "user-1", data: { typing: false } }];
+    act(() => {
+      sockets[0]!.emitOpen();
+      sockets[0]!.emitMessage({ type: "tako.presence.ready" });
+      sockets[0]!.emitMessage({ type: "tako.presence", connectionId: "tab-1", members });
+    });
+    expect(result.current.status).toBe("open");
+    act(() => sockets[0]!.emitClose(4410));
+    expect(result.current.status).toBe("connecting");
+    expect(result.current.error).toBeNull();
+    expect(result.current.members).toEqual([]);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    });
+    expect(sockets).toHaveLength(2);
+    act(() => {
+      sockets[1]!.emitOpen();
+      sockets[1]!.emitMessage({ type: "tako.presence.ready" });
+    });
+    expect(JSON.parse(sockets[1]!.sent[0] as string)).toEqual({
+      type: "tako.presence",
+      data: { typing: false },
+    });
+    unmount();
+  });
   test("joins, receives snapshots, replaces metadata, and leaves on unmount", () => {
     const socket = new MockWebSocket("");
     const { result, unmount } = renderHook(() =>

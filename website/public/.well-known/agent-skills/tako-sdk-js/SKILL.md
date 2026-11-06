@@ -468,6 +468,7 @@ retries.
 
 `useChannel` handles SSE recovery and WebSocket close code 4410. It reports
 `status: "connecting"` with no routine recovery error, then returns to `"open"`.
+`usePresence` rejoins after the same 4410 reset; other 44xx closes are terminal.
 Use optional `onRecovery` for diagnostics and `onResync` to reload authoritative
 application state after expired history:
 
