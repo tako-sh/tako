@@ -2,7 +2,7 @@ use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{self, Read};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, FileExt, MetadataExt};
+use std::os::unix::fs::{DirBuilderExt, FileExt, MetadataExt, PermissionsExt};
 use std::path::Path;
 
 use rustix::fs::{self, AtFlags, FileType, Mode, OFlags};
@@ -84,7 +84,10 @@ fn copy_snapshot_dir(parent: &File, relative: &Path, destination: &Path) -> io::
                 } else {
                     let mut output = File::create_new(dest)?;
                     io::copy(&mut file, &mut output)?;
-                    output.set_permissions(file.metadata()?.permissions())?;
+                    // The copy is owned by the service. Never publish set-ID
+                    // bits from an app-controlled executable in the archive.
+                    let mode = file.metadata()?.mode() & 0o777;
+                    output.set_permissions(std::fs::Permissions::from_mode(mode))?;
                 }
             }
             _ => {}
@@ -403,6 +406,22 @@ services:
             outside.join("value")
         );
         assert!(open_regular(&pinned, OsStr::new("link")).is_err());
+    }
+
+    #[test]
+    fn snapshot_preserves_execute_permissions_without_set_id_bits() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("app");
+        let dest = temp.path().join("snapshot");
+        std::fs::create_dir(&source).unwrap();
+        let program = source.join("program");
+        std::fs::write(&program, b"fixture").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o6755)).unwrap();
+        snapshot_data_tree(&source, Path::new(""), &dest).unwrap();
+        assert_eq!(
+            std::fs::metadata(dest.join("program")).unwrap().mode() & 0o7777,
+            0o755
+        );
     }
 
     #[test]
