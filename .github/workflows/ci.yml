@@ -127,6 +127,7 @@ jobs:
         run: |
           cargo test --workspace --locked --lib --bins
           cargo test -p tako-network --locked --test '*'
+          cargo test -p tako-server --locked --test backup_snapshot
 
       - name: Run Compose integration tests
         run: |
