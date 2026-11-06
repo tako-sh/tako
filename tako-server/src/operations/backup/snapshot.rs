@@ -163,7 +163,6 @@ pub(super) fn create_backup_archive(
                 .append_dir_all(name, &path)
                 .map_err(|e| format!("append {name} data to backup archive: {e}"))?,
             Ok(_) => return Err(format!("backup data root {name} is not a directory")),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(format!("read backup data root {name}: {error}")),
         }
     }
@@ -505,6 +504,8 @@ services:
         let extracted = temp.path().join("extracted");
 
         std::fs::create_dir_all(&app).unwrap();
+        assert!(create_backup_archive(&snapshot, &archive).is_err());
+        std::fs::create_dir(snapshot.join("tako")).unwrap();
         std::fs::write(&external, b"service-only").unwrap();
         std::os::unix::fs::symlink(&external, app.join("leak")).unwrap();
 
