@@ -165,30 +165,20 @@ impl RollingUpdater {
             }
         }
 
-        for instance in &new_instances {
-            if instance.state() != InstanceState::Healthy {
-                tracing::error!(
-                    app = %app.name(),
-                    instance = %instance.id,
-                    state = %instance.state(),
-                    "New instance became unhealthy before rollout cutover, rolling back"
-                );
-                Self::remove_new_instances(app, &new_instances).await;
-
-                return Ok(RollingUpdateResult {
-                    success: false,
-                    new_instances: 0,
-                    old_instances: 0,
-                    error: Some(format!(
-                        "Health check failed: Instance became {} before rollout cutover",
-                        instance.state()
-                    )),
-                });
-            }
-        }
-
-        for instance in &new_instances {
-            app.enable_instance_routing(instance);
+        if let Err((id, state)) = app.enable_rollout_routing(&new_instances) {
+            tracing::error!(
+                app = %app.name(), instance = %id, state = %state,
+                "New instance became unhealthy before rollout cutover, rolling back"
+            );
+            Self::remove_new_instances(app, &new_instances).await;
+            return Ok(RollingUpdateResult {
+                success: false,
+                new_instances: 0,
+                old_instances: 0,
+                error: Some(format!(
+                    "Health check failed: Instance became {state} before rollout cutover"
+                )),
+            });
         }
 
         for old_instance in &old_instances {
