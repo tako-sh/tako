@@ -226,8 +226,11 @@ async fn rollback_keeps_the_provisioned_backup_binding() {
             version: "v1".into(),
         })
         .await;
-    assert!(response.is_ok(), "{response:?}");
-    assert_eq!(state.state_store.get_backup(app_id).unwrap(), Some(backup));
+    assert!(response.is_ok(), "rollback should succeed");
+    assert!(
+        state.state_store.get_backup(app_id).unwrap() == Some(backup),
+        "rollback should preserve the provisioned backup binding"
+    );
     state.app_manager.stop_app(app_id).await.unwrap();
 }
 
