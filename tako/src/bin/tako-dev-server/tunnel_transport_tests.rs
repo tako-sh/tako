@@ -209,6 +209,43 @@ async fn upgrade_http_errors_keep_limit_classification() {
 }
 
 #[tokio::test]
+async fn oversized_upgrade_error_bodies_are_capped() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let relay = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            request.push(stream.read_u8().await.unwrap());
+            assert!(request.len() < 8192);
+        }
+        stream
+            .write_all(b"HTTP/1.1 429 Error\r\nContent-Length: 1000000000\r\n\r\n")
+            .await
+            .unwrap();
+        // Stream body until the client gives up and drops the connection.
+        let filler = vec![b'x'; 64 * 1024];
+        while stream.write_all(&filler).await.is_ok() {}
+    });
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let error = tokio::time::timeout(
+        Duration::from_secs(5),
+        connect_tunnel_socket_with_client(&format!("ws://{address}/"), &client),
+    )
+    .await
+    .expect("errors without reading the full body")
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        TunnelConnectError::Terminal {
+            reason: TunnelCloseReason::LimitExceeded,
+            ..
+        }
+    ));
+    relay.await.unwrap();
+}
+
+#[tokio::test]
 async fn connection_errors_do_not_expose_session_credentials() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
