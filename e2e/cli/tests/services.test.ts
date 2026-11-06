@@ -53,7 +53,7 @@ beforeAll(async () => {
   const packed = join(modules, "tako.sh");
   await mkdir(packed, { recursive: true });
   checked(["tar", "-xzf", archive, "--strip-components=1", "-C", packed], suite);
-  for (const name of ["@sinclair/typebox", "ajv"]) {
+  for (const name of ["@sinclair/typebox"]) {
     const destination = join(modules, name);
     await mkdir(dirname(destination), { recursive: true });
     await symlink(await realpath(join(sdk, "node_modules", name)), destination, "dir");
