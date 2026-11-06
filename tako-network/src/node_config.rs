@@ -333,7 +333,7 @@ mod tests {
     #[test]
     fn protected_files_reject_links_permissions_and_oversize() {
         use std::os::unix::fs::{PermissionsExt, symlink};
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::private_tempdir();
         std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let dir = protected::Directory::open(temp.path(), true).unwrap();
         dir.write("key", b"private").unwrap();
@@ -360,7 +360,7 @@ mod lock_tests {
     use super::protected::Directory;
     #[test]
     fn concurrent_agent_lock_never_replaces_the_inode() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::private_tempdir();
         let dir = Directory::open(temp.path(), true).unwrap();
         let held = dir.lock("agent-process-lock").unwrap();
         assert!(dir.lock("agent-process-lock").is_err());

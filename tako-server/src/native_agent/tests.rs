@@ -206,7 +206,7 @@ fn cached_projection_does_not_map_other_ssh_users_to_tako() {
 #[test]
 fn generated_corrosion_toml_uses_exact_local_api_and_mutual_tls() {
     let fixture = Fixture::new();
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::isolation::fixture::private_tempdir();
     let root = fixture.config.network_dir(temp.path());
     std::fs::create_dir_all(&root).unwrap();
     use std::os::unix::fs::PermissionsExt;
@@ -269,7 +269,7 @@ impl RegistryStore for MemoryStore {
 #[test]
 fn monotonic_cache_survives_restart_and_rejects_sql_rollback() {
     let fixture = Fixture::new();
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::isolation::fixture::private_tempdir();
     let original = fixture.config.bootstrap.clone();
     let shared = Rc::new(RefCell::new(original.clone()));
     let mut backend = MemoryStore(shared.clone());
@@ -301,7 +301,7 @@ fn monotonic_cache_survives_restart_and_rejects_sql_rollback() {
 fn actual_method_path_and_nonce_are_checked_by_guarded_runtime() {
     use tako_network::runtime::{RuntimeConfig, RuntimeLimits, ServerRuntime};
     let fixture = Fixture::new();
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::isolation::fixture::private_tempdir();
     let snapshot = fixture.config.bootstrap.clone();
     let guard = store::MonotonicStore::new(
         MemoryStore(Rc::new(RefCell::new(snapshot.clone()))),
@@ -368,7 +368,7 @@ fn compacted_or_omitted_ack_progress_never_blocks_authority_reads() {
 fn isolated_repair_config_uses_only_loopback_and_no_gossip_seeds() {
     use std::os::unix::fs::PermissionsExt;
     let fixture = Fixture::new();
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::isolation::fixture::private_tempdir();
     let root = fixture.config.network_dir(temp.path());
     std::fs::create_dir_all(&root).unwrap();
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -435,7 +435,7 @@ fn guarded_runtime_retries_exact_durable_denial_after_local_store_recovers() {
         }
     }
     let f = Fixture::new();
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::isolation::fixture::private_tempdir();
     let key_path = temp.path().join("keys");
     f.keys.save_new(&key_path).unwrap();
     let backend = Rc::new(RefCell::new(f.config.bootstrap.clone()));
@@ -586,7 +586,7 @@ fn trusted_authority_recheck_does_not_replay_or_consume_the_original_nonce() {
         runtime::{RuntimeConfig, RuntimeLimits, ServerRuntime},
     };
     let fixture = Fixture::new();
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::isolation::fixture::private_tempdir();
     let snapshot = fixture.config.bootstrap.clone();
     let backend = Rc::new(RefCell::new(snapshot.clone()));
     let guard = store::MonotonicStore::new(

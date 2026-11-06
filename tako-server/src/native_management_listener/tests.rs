@@ -334,7 +334,7 @@ async fn listener_task_set_bounds_admission_and_owns_cancellation() {
 
 #[test]
 fn old_owner_cleanup_keeps_a_replacement_and_cleans_its_own_inode() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::isolation::fixture::private_tempdir();
     let path = temp.path().join(SOCKET);
     fs::write(&path, b"old inode").unwrap();
     let old = SocketOwner {
@@ -360,7 +360,7 @@ fn old_owner_cleanup_keeps_a_replacement_and_cleans_its_own_inode() {
 
 #[test]
 fn cleanup_never_unlinks_while_another_publisher_holds_the_short_lock() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::isolation::fixture::private_tempdir();
     let path = temp.path().join(SOCKET);
     fs::write(&path, b"owned").unwrap();
     let owner = SocketOwner {
@@ -379,7 +379,7 @@ fn credentials_allow_only_the_installed_service_uid_or_root_and_paths_require_so
     assert!(allowed_uid(0, 1234));
     assert!(allowed_uid(1234, 1234));
     assert!(!allowed_uid(1235, 1234));
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::isolation::fixture::private_tempdir();
     let path = temp.path().join(SOCKET);
     fs::write(&path, b"not a socket").unwrap();
     assert!(check_socket(&path, unsafe { libc::geteuid() }).is_err());

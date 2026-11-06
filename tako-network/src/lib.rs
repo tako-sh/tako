@@ -29,3 +29,16 @@ pub use profile::{NetworkPublicProfile, PendingApprovalProfile};
 pub use registry::*;
 pub use server_identity::{ServerIdentity, ServerTlsPaths};
 pub use types::*;
+
+/// A temporary directory that is private regardless of the process umask.
+/// `tempfile::tempdir()` creates directories with mode 0o777 masked by the
+/// umask, so under the common 022 the root is 0o755 and the private-directory
+/// checks correctly refuse it.
+#[cfg(test)]
+pub(crate) fn private_tempdir() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+    tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .expect("private temporary directory")
+}

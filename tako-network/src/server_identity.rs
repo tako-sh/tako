@@ -1229,7 +1229,7 @@ mod tests {
 
     #[test]
     fn load_preserves_identity_and_exposes_the_local_keys_path() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::private_tempdir();
         let path = temp.path().join("identity");
         let first = prepare(&path).unwrap();
         let before = snapshot(&path);
@@ -1266,7 +1266,7 @@ mod tests {
 
     #[test]
     fn load_never_creates_or_completes_unprepared_state() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::private_tempdir();
         let missing = temp.path().join("missing");
         assert!(ServerIdentity::load(&missing).is_err());
         assert!(!missing.exists());
@@ -1286,7 +1286,7 @@ mod tests {
 
     #[test]
     fn restart_preserves_keys_request_and_public_pins() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::private_tempdir();
         let path = temp.path().join("identity");
         let first = prepare(&path).unwrap();
         let second = prepare(&path).unwrap();
@@ -1328,7 +1328,7 @@ mod tests {
 
     #[test]
     fn openssl_verifies_chain_sans_and_distinct_tls_roles() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::private_tempdir();
         let identity = prepare(temp.path()).unwrap();
         let names = certificate_names(&identity.prepared.config, identity.request()).unwrap();
         let tls = identity.tls_paths();
@@ -1400,7 +1400,7 @@ mod tests {
     #[test]
     fn all_tls_keys_are_independent_and_match_their_certificates() {
         use std::{collections::BTreeSet, fs};
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::private_tempdir();
         let first = prepare(&temp.path().join("first")).unwrap();
         let second = prepare(&temp.path().join("second")).unwrap();
         let mut public_keys = BTreeSet::new();
@@ -1456,7 +1456,7 @@ mod tests {
 
     #[test]
     fn challenge_rejects_other_requests_networks_and_expiry() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::private_tempdir();
         let identity = prepare(&temp.path().join("first")).unwrap();
         let other = prepare(&temp.path().join("other")).unwrap();
         let network = identity.prepared.config.network_id.clone();
@@ -1472,34 +1472,44 @@ mod tests {
     #[test]
     fn leaf_renewal_with_the_local_ca_preserves_public_pins() {
         use std::fs;
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::private_tempdir();
         let identity = prepare(temp.path()).unwrap();
-        for paths in [identity.tls_paths(), identity.gossip_paths()] {
-            let ca_key = fs::read(&paths.ca_private_key).unwrap();
+        let names = certificate_names(&identity.prepared.config, identity.request()).unwrap();
+        for (paths, gossip) in [
+            (identity.tls_paths(), false),
+            (identity.gossip_paths(), true),
+        ] {
+            let ca_key_pem = fs::read(&paths.ca_private_key).unwrap();
             let old_leaf = fs::read(&paths.certificate).unwrap();
-            let output = std::process::Command::new("openssl")
-                .args(["x509", "-in"])
-                .arg(&paths.certificate)
-                .arg("-CA")
-                .arg(&paths.ca_certificate)
-                .arg("-CAkey")
-                .arg(&paths.ca_private_key)
-                .args(["-set_serial", "99", "-days", "364"])
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            assert_ne!(output.stdout, old_leaf);
-            fs::write(&paths.certificate, &output.stdout).unwrap();
-            fs::write(
-                &paths.fullchain,
-                [output.stdout, fs::read(&paths.ca_certificate).unwrap()].concat(),
+            // An external renewal re-signs the existing leaf key with the local
+            // CA under a new serial and validity. (OpenSSL 3.0's `x509 -CA`
+            // refuses to re-sign a CA-issued certificate, so build it here.)
+            let ca =
+                openssl::x509::X509::from_pem(&fs::read(&paths.ca_certificate).unwrap()).unwrap();
+            let ca_key = openssl::pkey::PKey::private_key_from_pem(&ca_key_pem).unwrap();
+            let leaf_key =
+                openssl::pkey::PKey::private_key_from_pem(&fs::read(&paths.private_key).unwrap())
+                    .unwrap();
+            let now = current_time().unwrap();
+            let renewed = issue_leaf(
+                &ca,
+                &ca_key,
+                &leaf_key,
+                &names,
+                gossip,
+                now,
+                now + 364 * 86_400,
             )
             .unwrap();
-            assert_eq!(fs::read(&paths.ca_private_key).unwrap(), ca_key);
+            let leaf_pem = renewed.to_pem().unwrap();
+            assert_ne!(leaf_pem, old_leaf);
+            fs::write(&paths.certificate, &leaf_pem).unwrap();
+            fs::write(
+                &paths.fullchain,
+                [leaf_pem, fs::read(&paths.ca_certificate).unwrap()].concat(),
+            )
+            .unwrap();
+            assert_eq!(fs::read(&paths.ca_private_key).unwrap(), ca_key_pem);
         }
         let renewed = prepare(temp.path()).unwrap();
         assert_eq!(identity.request(), renewed.request());
@@ -1508,7 +1518,7 @@ mod tests {
 
     #[test]
     fn public_ipv6_endpoint_is_a_verified_ip_san() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::private_tempdir();
         let identity = ServerIdentity::prepare(
             temp.path(),
             NetworkId::random().unwrap(),
@@ -1552,7 +1562,7 @@ mod tests {
 
     #[test]
     fn every_configuration_change_is_explicit_and_never_overwrites() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::private_tempdir();
         let identity = prepare(temp.path()).unwrap();
         let original = snapshot(temp.path());
         for change in 0..6 {
@@ -1579,7 +1589,7 @@ mod tests {
 
     #[test]
     fn invalid_endpoints_fail_before_creating_any_files() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::private_tempdir();
         let seed = prepare(&temp.path().join("seed")).unwrap();
         for (index, endpoint) in [
             "127.0.0.1:51820",
@@ -1611,11 +1621,11 @@ mod tests {
 
     #[test]
     fn missing_files_and_interrupted_prepare_fail_closed() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::private_tempdir();
         let seed = prepare(&temp.path().join("seed")).unwrap();
         let files = snapshot(seed.tls_paths().certificate.parent().unwrap());
         for missing in files.keys().filter(|name| *name != "prepare-started") {
-            let case = tempfile::tempdir().unwrap();
+            let case = crate::private_tempdir();
             prepare(case.path()).unwrap();
             std::fs::remove_file(case.path().join(missing)).unwrap();
             let before = snapshot(case.path());
@@ -1630,7 +1640,7 @@ mod tests {
             "https-ca-key.pem",
             "unrelated",
         ] {
-            let case = tempfile::tempdir().unwrap();
+            let case = crate::private_tempdir();
             std::fs::write(case.path().join(filename), b"do not replace").unwrap();
             let before = snapshot(case.path());
             assert!(prepare(case.path()).is_err());
@@ -1640,7 +1650,7 @@ mod tests {
 
     #[test]
     fn metadata_is_bounded_strict_and_bound_to_keys_and_pins() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::private_tempdir();
         let identity = prepare(temp.path()).unwrap();
         let original = serde_json::to_value(&identity.prepared).unwrap();
         let mut unknown = original.clone();
@@ -1671,7 +1681,7 @@ mod tests {
 
     #[test]
     fn rejects_substituted_device_and_tls_keys() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::private_tempdir();
         let first_path = temp.path().join("first");
         let other_path = temp.path().join("other");
         let first = prepare(&first_path).unwrap();
@@ -1706,7 +1716,7 @@ mod tests {
             fs,
             os::unix::fs::{PermissionsExt, symlink},
         };
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::private_tempdir();
         let private = temp.path().join("private");
         let identity = prepare(&private).unwrap();
         let before = snapshot(&private);
@@ -1732,7 +1742,7 @@ mod tests {
             fs,
             os::unix::fs::{MetadataExt, PermissionsExt, symlink},
         };
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::private_tempdir();
         let path = temp.path().join("identity");
         prepare(&path).unwrap();
         assert_eq!(fs::metadata(&path).unwrap().mode() & 0o7777, 0o700);
@@ -1776,7 +1786,7 @@ mod tests {
 
     #[test]
     fn concurrent_prepare_never_replaces_the_winners_identity() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::private_tempdir();
         let barrier = std::sync::Barrier::new(4);
         let results = std::thread::scope(|scope| {
             let handles: Vec<_> = (0..4)
@@ -1834,7 +1844,7 @@ mod tests {
     fn native_renewal_preserves_keys_pins_and_renews_expiring_or_expired_leaves() {
         use std::{fs, os::unix::fs::MetadataExt};
         for remaining in [30 * DAY, -DAY] {
-            let temp = tempfile::tempdir().unwrap();
+            let temp = crate::private_tempdir();
             let first = prepare(temp.path()).unwrap();
             let original = snapshot(temp.path());
             let old = materials(&first);
@@ -1895,7 +1905,7 @@ mod tests {
 
     #[test]
     fn renewal_is_read_only_before_threshold_and_never_creates_identity() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::private_tempdir();
         let missing = temp.path().join("missing");
         assert!(ServerIdentity::renew(&missing).is_err());
         assert!(!missing.exists());
@@ -1917,7 +1927,7 @@ mod tests {
 
     #[test]
     fn renewal_caps_leaf_validity_and_refuses_expired_or_future_ca() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::private_tempdir();
         let identity = prepare(temp.path()).unwrap();
         let tls = materials(&identity);
         let ca_start = tls
@@ -1948,7 +1958,7 @@ mod tests {
 
     #[test]
     fn renewal_refuses_corrupt_bindings_and_future_leaf_before_any_writes() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::private_tempdir();
         let identity = prepare(temp.path()).unwrap();
         let original = snapshot(temp.path());
         let [tls, _] = materials(&identity);
@@ -2035,14 +2045,14 @@ mod tests {
 
     #[test]
     fn renewal_recovers_at_every_write_and_sync_boundary_including_recovery_itself() {
-        let seed = tempfile::tempdir().unwrap();
+        let seed = crate::private_tempdir();
         let original = prepare(seed.path()).unwrap();
         let before = snapshot(seed.path());
         let now = timestamp(materials(&original)[0].leaf.not_after()).unwrap() + DAY;
         let mut interrupted = Vec::new();
         let mut failures = 0;
         for boundary in 0..64 {
-            let case = tempfile::tempdir().unwrap();
+            let case = crate::private_tempdir();
             restore_snapshot(case.path(), &before);
             match interrupt_renewal(case.path(), now, boundary) {
                 Ok(_) => break,
@@ -2083,7 +2093,7 @@ mod tests {
         for (interrupted, expected_failures) in interrupted {
             let mut failures = 0;
             for boundary in 0..64 {
-                let case = tempfile::tempdir().unwrap();
+                let case = crate::private_tempdir();
                 restore_snapshot(case.path(), &interrupted);
                 if interrupt_renewal(case.path(), now, boundary).is_ok() {
                     break;
@@ -2097,7 +2107,7 @@ mod tests {
 
     #[test]
     fn recovery_discards_only_safe_uncommitted_staging_data() {
-        let seed = tempfile::tempdir().unwrap();
+        let seed = crate::private_tempdir();
         let original = prepare(seed.path()).unwrap();
         let before = snapshot(seed.path());
         let now = timestamp(materials(&original)[0].leaf.not_after()).unwrap() + DAY;
@@ -2107,7 +2117,7 @@ mod tests {
                 b"{\"version\":",
                 b"-----BEGIN CERTIFICATE-----\npartial",
             ] {
-                let case = tempfile::tempdir().unwrap();
+                let case = crate::private_tempdir();
                 restore_snapshot(case.path(), &before);
                 if committed {
                     assert!(interrupt_renewal(case.path(), now, 5).is_err());
@@ -2125,7 +2135,7 @@ mod tests {
 
     #[test]
     fn recovery_rejects_journal_tampering_and_unrelated_disk_state_without_writes() {
-        let seed = tempfile::tempdir().unwrap();
+        let seed = crate::private_tempdir();
         let identity = prepare(seed.path()).unwrap();
         let now = timestamp(materials(&identity)[0].leaf.not_after()).unwrap() + DAY;
         assert!(interrupt_renewal(seed.path(), now, 4).is_err());
@@ -2133,7 +2143,7 @@ mod tests {
         let journal: serde_json::Value =
             serde_json::from_slice(&baseline[std::ffi::OsStr::new(RENEWAL_JOURNAL)]).unwrap();
         for change in 0..9 {
-            let case = tempfile::tempdir().unwrap();
+            let case = crate::private_tempdir();
             restore_snapshot(case.path(), &baseline);
             let mut corrupted = journal.clone();
             match change {
@@ -2193,14 +2203,14 @@ mod tests {
             fs,
             os::unix::fs::{PermissionsExt, symlink},
         };
-        let seed = tempfile::tempdir().unwrap();
+        let seed = crate::private_tempdir();
         let identity = prepare(seed.path()).unwrap();
         let now = timestamp(materials(&identity)[0].leaf.not_after()).unwrap() + DAY;
         assert!(interrupt_renewal(seed.path(), now, 5).is_err());
         let baseline = snapshot(seed.path());
         for name in [RENEWAL_JOURNAL, RENEWAL_STAGE] {
             for change in 0..4 {
-                let case = tempfile::tempdir().unwrap();
+                let case = crate::private_tempdir();
                 let path = case.path().join("identity");
                 std::fs::create_dir(&path).unwrap();
                 fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
@@ -2238,7 +2248,7 @@ mod tests {
 
     #[test]
     fn concurrent_renewal_uses_exclusive_inode_lock_and_one_leaf_generation() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::private_tempdir();
         let identity = prepare(temp.path()).unwrap();
         let before = snapshot(temp.path());
         let now = timestamp(materials(&identity)[0].leaf.not_after()).unwrap() + DAY;
@@ -2275,7 +2285,7 @@ mod tests {
     }
     #[test]
     fn renewal_refuses_missing_or_wrong_eku_ca_leaf_and_mismatched_sans() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::private_tempdir();
         let identity = prepare(temp.path()).unwrap();
         let tls = materials(&identity);
         let names = certificate_names(&identity.prepared.config, identity.request()).unwrap();

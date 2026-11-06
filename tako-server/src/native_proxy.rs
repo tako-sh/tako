@@ -208,7 +208,7 @@ mod tests {
 
     #[test]
     fn old_proxy_cannot_overwrite_a_replacement_export() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::isolation::fixture::private_tempdir();
         let directory = Directory::open(temp.path(), true).unwrap();
         claim_export(&directory, "old").unwrap();
         assert!(publish_export(&directory, "old", b"old apps").unwrap());

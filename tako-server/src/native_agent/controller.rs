@@ -1130,7 +1130,7 @@ mod tests {
     fn startup_and_periodic_renewal_validate_paths_pins_and_fullchain() {
         let fixture = super::super::tests::Fixture::new();
         let mut config = fixture.config;
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::isolation::fixture::private_tempdir();
         let root = config.network_dir(temp.path());
         std::fs::create_dir_all(root.parent().unwrap()).unwrap();
         let identity = ServerIdentity::prepare(
@@ -1215,7 +1215,7 @@ mod tests {
     }
     #[test]
     fn initialized_empty_database_cannot_rebootstrap() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::isolation::fixture::private_tempdir();
         let directory = Directory::open(temp.path(), true).unwrap();
         directory.write("corrosion.db", b"").unwrap();
         directory.write("runtime.db", b"").unwrap();

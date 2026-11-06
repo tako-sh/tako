@@ -42,3 +42,16 @@ fn fixture_only_applies_to_its_live_data_root() {
     drop(fixture);
     assert!(super::app_process_isolation(&root, app).is_err());
 }
+
+/// A temporary directory that is private regardless of the process umask.
+/// `tempfile::tempdir()` creates directories with mode 0o777 masked by the
+/// umask, so under the common 022 the root is 0o755 and the private-directory
+/// checks correctly refuse it.
+#[cfg(test)]
+pub(crate) fn private_tempdir() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+    tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .expect("private temporary directory")
+}

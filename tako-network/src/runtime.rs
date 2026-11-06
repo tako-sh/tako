@@ -1091,7 +1091,7 @@ mod tests {
     }
     impl Fixture {
         fn new() -> Self {
-            let dir = tempfile::tempdir().unwrap();
+            let dir = crate::private_tempdir();
             let admin_keys = LocalDeviceKeys::generate().unwrap();
             let network = NetworkId::random().unwrap();
             let admin_id = admin_keys.device_id(&network, DeviceKind::Laptop).unwrap();
