@@ -307,9 +307,13 @@ fn bounded_json_reads_only_limit_plus_one_and_rejects_trailing_data() {
     }
     let read = Cell::new(0);
     let error = read_bounded_json::<serde_json::Value>(Infinite(&read)).unwrap_err();
-    assert!(error.to_string().contains("4 MiB"));
-    assert_eq!(read.get(), 4 * 1024 * 1024 + 1);
-    let mut exact = vec![b' '; 4 * 1024 * 1024];
+    assert!(
+        error
+            .to_string()
+            .contains(&format!("{} MiB", MAX_JSON_BYTES >> 20))
+    );
+    assert_eq!(read.get(), MAX_JSON_BYTES + 1);
+    let mut exact = vec![b' '; MAX_JSON_BYTES];
     exact[0..2].copy_from_slice(b"{}");
     assert_eq!(
         read_bounded_json::<serde_json::Value>(&exact[..]).unwrap(),
@@ -364,8 +368,31 @@ fn oversized_json_write_preserves_existing_output() {
     let path = directory.path().join("profile.json");
     write_json(&path, &serde_json::json!({"valid": true}), false).unwrap();
     let before = fs::read(&path).unwrap();
-    assert!(write_json(&path, &"x".repeat(4 * 1024 * 1024), true).is_err());
+    assert!(write_json(&path, &"x".repeat(MAX_JSON_BYTES), true).is_err());
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert!(write_json_within(&path, &"x".repeat(64), true, 64).is_err());
     assert_eq!(fs::read(path).unwrap(), before);
+}
+
+#[test]
+fn client_json_limits_cover_a_full_server_response_pretty_printed() {
+    assert!(MAX_JSON_BYTES >= 2 * tako_network::api::MAX_RESPONSE_BYTES);
+    assert!(tako_network::api::MAX_RESPONSE_BYTES >= tako_network::corrosion::MAX_REGISTRY_BYTES);
+}
+
+#[test]
+fn large_network_files_fall_back_to_compact_json_within_the_limit() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("profile.json");
+    // Pretty printing puts every element on its own indented line, which
+    // exceeds the limit long before the compact form the server bounds does.
+    let value = vec![0u8; 16];
+    write_json_within(&path, &value, false, 48).unwrap();
+    let bytes = fs::read(&path).unwrap();
+    assert_eq!(bytes, b"[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]\n");
+    assert_eq!(read_json::<Vec<u8>>(&path).unwrap(), value);
+    write_json_within(&path, &value, true, 256).unwrap();
+    assert!(fs::read(&path).unwrap().starts_with(b"[\n  0,\n"));
 }
 
 #[test]

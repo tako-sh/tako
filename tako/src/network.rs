@@ -494,11 +494,22 @@ pub(crate) fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T
     read_bounded_json(file)
 }
 
+/// Responses carry up to the listener's limit, and a profile persists such a
+/// snapshot pretty-printed, so files get the same headroom and fall back to
+/// compact JSON when pretty printing alone would exceed it.
+const MAX_JSON_BYTES: usize = 2 * tako_network::api::MAX_RESPONSE_BYTES;
+
 pub(crate) fn read_bounded_json<T: serde::de::DeserializeOwned>(reader: impl Read) -> Result<T> {
     let mut bytes = Vec::new();
-    reader.take(4 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
-    if bytes.len() > 4 * 1024 * 1024 {
-        return Err("Network response or file exceeds 4 MiB".into());
+    reader
+        .take(MAX_JSON_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_JSON_BYTES {
+        return Err(format!(
+            "Network response or file exceeds {} MiB",
+            MAX_JSON_BYTES >> 20
+        )
+        .into());
     }
     Ok(serde_json::from_slice(&bytes)?)
 }
@@ -514,10 +525,22 @@ pub(crate) fn write_bytes(path: &Path, bytes: &[u8], replace: bool) -> Result<()
 }
 
 pub(crate) fn write_json(path: &Path, value: &impl Serialize, replace: bool) -> Result<()> {
+    write_json_within(path, value, replace, MAX_JSON_BYTES)
+}
+
+fn write_json_within(
+    path: &Path,
+    value: &impl Serialize,
+    replace: bool,
+    limit: usize,
+) -> Result<()> {
     let mut bytes = serde_json::to_vec_pretty(value)?;
+    if bytes.len() >= limit {
+        bytes = serde_json::to_vec(value)?;
+    }
     bytes.push(b'\n');
-    if bytes.len() > 4 * 1024 * 1024 {
-        return Err("Network file exceeds 4 MiB".into());
+    if bytes.len() > limit {
+        return Err(format!("Network file exceeds {} MiB", limit >> 20).into());
     }
     write_bytes(path, &bytes, replace)
 }

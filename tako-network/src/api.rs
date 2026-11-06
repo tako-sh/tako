@@ -10,6 +10,10 @@ use crate::{
 pub const RPC_NAMESPACE: &str = "tako-network-rpc-v1";
 pub const MAX_RPC_BYTES: usize = 128 * 1024;
 pub const MAX_SIGNATURE_BYTES: usize = 2048;
+/// Largest body a native management listener relays to a client. Snapshot
+/// readers must accept at least this much; the registry projection inside is
+/// bounded by `corrosion::MAX_REGISTRY_BYTES`.
+pub const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 pub type RuntimeResult<T> = Result<T, RuntimeError>;
 
 #[derive(Debug, thiserror::Error)]
