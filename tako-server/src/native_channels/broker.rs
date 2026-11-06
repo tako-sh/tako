@@ -1,6 +1,6 @@
 mod presence;
 use super::{
-    MAX_APPS, error,
+    IO_TIMEOUT, MAX_APPS, error,
     ipc::{Notice, Notification, Reply, Request, Response},
     peer::Frame,
     wire,
@@ -113,7 +113,7 @@ impl Broker {
                     return Ok(());
                 }
                 let (request, _input) = request.into_parts();
-                let result = self.local(request).await?;
+                let result = self.local_until(request, deadline).await?;
                 let _ = reply.send((result, admission));
             }
             Command::Attach {
@@ -151,6 +151,7 @@ impl Broker {
         &mut self,
         app: AppEnv,
         postgres_url: Option<Zeroizing<String>>,
+        deadline: tokio::time::Instant,
     ) -> io::Result<()> {
         let replacing = match self.apps.get(&app) {
             Some(existing) if existing.postgres_url == postgres_url => return Ok(()),
@@ -172,7 +173,7 @@ impl Broker {
             .join("data/tako/channels.sqlite");
         let url = postgres_url.clone();
         let app_id = app.to_string();
-        let store = tokio::task::spawn_blocking(move || {
+        let open = tokio::task::spawn_blocking(move || {
             let store = if let Some(url) = url {
                 ChannelStore::open_postgres(&url, &app_id)
             } else {
@@ -185,9 +186,14 @@ impl Broker {
                 .invalidate_replay()
                 .map_err(|_| error("cannot fence channel replay"))?;
             Ok::<_, io::Error>(Arc::new(store))
-        })
-        .await
-        .map_err(|_| error("channel storage worker failed"))??;
+        });
+        // Commands run one at a time, so an unresponsive database must not hold
+        // the broker past the caller's deadline: the worker finishes or fails on
+        // its own, and other applications keep publishing meanwhile.
+        let store = match tokio::time::timeout_at(deadline, open).await {
+            Ok(joined) => joined.map_err(|_| error("channel storage worker failed"))??,
+            Err(_) => return Err(error("channel storage did not open before the deadline")),
+        };
         let publications = store.publications();
         if replacing {
             // A rotated credential or switched backend replaces the store beneath
@@ -216,7 +222,16 @@ impl Broker {
         );
         Ok(())
     }
+    #[cfg(test)]
     pub(super) async fn local(&mut self, request: Request) -> io::Result<Reply> {
+        self.local_until(request, tokio::time::Instant::now() + IO_TIMEOUT)
+            .await
+    }
+    pub(super) async fn local_until(
+        &mut self,
+        request: Request,
+        deadline: tokio::time::Instant,
+    ) -> io::Result<Reply> {
         let response = match request {
             Request::UpdatePresence {
                 app,
@@ -249,7 +264,7 @@ impl Broker {
                 }
             }
             Request::Register { app, postgres_url } => {
-                if self.register(app, postgres_url).await.is_ok() {
+                if self.register(app, postgres_url, deadline).await.is_ok() {
                     Response::Ok
                 } else {
                     Response::Rejected

@@ -1378,3 +1378,51 @@ async fn re_registration_with_a_changed_backend_replaces_the_store_and_signals_a
         .unwrap();
     assert_eq!(rows.last().map(|row| row.id.clone()), Some(after.id));
 }
+
+#[tokio::test]
+async fn unresponsive_backend_registration_ends_at_the_deadline_without_stalling_other_apps() {
+    let (_temp, mut broker) = new_broker().await;
+    // A server that accepts the connection and then never answers the startup
+    // message, released shortly after the broker's deadline so the worker exits.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        drop(socket);
+    });
+    let stalled: AppEnv = "stalled/production".parse().unwrap();
+    let started = tokio::time::Instant::now();
+    let reply = broker
+        .local_until(
+            Request::Register {
+                app: stalled.clone(),
+                postgres_url: Some(zeroize::Zeroizing::new(format!(
+                    "postgres://tako:secret@127.0.0.1:{port}/tako"
+                ))),
+            },
+            started + Duration::from_millis(300),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(reply, Reply::Response(Response::Rejected)));
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(!broker.apps.contains_key(&stalled));
+    // Other applications keep registering and publishing meanwhile.
+    let other: AppEnv = "other/production".parse().unwrap();
+    assert!(matches!(
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            broker.local(Request::Register {
+                app: other.clone(),
+                postgres_url: None
+            })
+        )
+        .await
+        .unwrap()
+        .unwrap(),
+        Reply::Response(Response::Ok)
+    ));
+    publish(&mut broker, 1).await;
+    server.await.unwrap();
+}

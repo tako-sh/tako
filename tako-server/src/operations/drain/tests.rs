@@ -714,3 +714,27 @@ async fn observer_read_error_neither_raises_the_gate_nor_restarts_applications()
     assert_eq!(instance.state(), InstanceState::Healthy);
     assert!(app.get_instance(&instance.id).is_some());
 }
+
+#[tokio::test]
+async fn drain_does_not_wait_past_its_deadline_for_active_spawns() {
+    let (_dir, state) = fixture();
+    let _app = app(&state, "app");
+    // A cold start or replacement holds the read side while it starts an instance.
+    let spawning = state.spawn_gate.read().await;
+    let response = tokio::time::timeout(Duration::from_secs(5), state.drain_server(0))
+        .await
+        .expect("a zero-second drain must not wait for a spawn to finish");
+    let report = response.data().unwrap();
+    assert_eq!(report["completed"], false);
+    assert_eq!(report["timed_out"], true);
+    assert!(
+        report["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| error.as_str().unwrap().contains("spawns"))
+    );
+    drop(spawning);
+    // Cleanup retries settle once the spawn has released the gate.
+    assert!(state.retry_runtime_drain().await.completed);
+}

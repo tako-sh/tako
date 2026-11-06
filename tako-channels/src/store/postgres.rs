@@ -14,8 +14,7 @@ pub(super) struct PostgresChannelStore {
 impl PostgresChannelStore {
     pub(super) fn open_reader(url: &str, schema: &str, app_id: &str) -> Result<Self, ChannelError> {
         validate_pg_identifier(schema)?;
-        let mut client =
-            Client::connect(url, NoTls).map_err(|e| ChannelError::Storage(e.to_string()))?;
+        let mut client = connect(url)?;
         client
             .batch_execute("SET default_transaction_read_only = on")
             .map_err(|e| ChannelError::Storage(e.to_string()))?;
@@ -31,8 +30,7 @@ impl PostgresChannelStore {
 
     pub(super) fn open(url: &str, schema: &str, app_id: &str) -> Result<Self, ChannelError> {
         validate_pg_identifier(schema)?;
-        let mut client =
-            Client::connect(url, NoTls).map_err(|e| ChannelError::Storage(e.to_string()))?;
+        let mut client = connect(url)?;
         init_postgres(&mut client, schema)?;
         Ok(Self {
             client: Mutex::new(client),
@@ -313,6 +311,20 @@ const POSTGRES_MIGRATIONS: &[&str] = &[
      ALTER TABLE {schema}.channel_metadata ALTER COLUMN highest_deleted_message_id SET DEFAULT 0;
      ALTER TABLE {schema}.channel_metadata ALTER COLUMN highest_deleted_message_id SET NOT NULL;",
 ];
+
+/// Connections without an explicit `connect_timeout` get a bounded one, so an
+/// unreachable server fails the open instead of holding a worker thread.
+fn connect(url: &str) -> Result<Client, ChannelError> {
+    let mut config: postgres::Config = url
+        .parse()
+        .map_err(|e: postgres::Error| ChannelError::Storage(e.to_string()))?;
+    if config.get_connect_timeout().is_none() {
+        config.connect_timeout(std::time::Duration::from_secs(10));
+    }
+    config
+        .connect(NoTls)
+        .map_err(|e| ChannelError::Storage(e.to_string()))
+}
 
 fn init_postgres(client: &mut Client, schema: &str) -> Result<(), ChannelError> {
     migrate_postgres(client, schema, POSTGRES_MIGRATIONS)

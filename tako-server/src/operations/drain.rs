@@ -195,8 +195,15 @@ impl crate::ServerState {
         self.drain_requested.store(true, Ordering::Release);
         self.proxy_requests.begin_drain();
         // In-flight cold starts and replacements finish under the read side first;
-        // later ones observe the flag and never spawn.
-        let _spawns = self.spawn_gate.write().await;
+        // later ones observe the flag and never spawn. A spawn still waiting for
+        // readiness must not extend the requested drain window, so the wait ends
+        // at the cleanup deadline and the report keeps cleanup pending for the
+        // observer, which retries once the spawn has released the gate.
+        let spawns_settled =
+            match tokio::time::timeout_at(cleanup_deadline, self.spawn_gate.write()).await {
+                Ok(guard) => Some(guard),
+                Err(_) => None,
+            };
         self.workflows.begin_server_drain();
         let apps: Vec<_> = self
             .app_manager
@@ -271,6 +278,12 @@ impl crate::ServerState {
             report.errors.push(format!(
                 "Failed to signal {workflow_errors} workflow workers"
             ));
+        }
+        if spawns_settled.is_none() {
+            report.timed_out = true;
+            report
+                .errors
+                .push("instance spawns were still active at the drain deadline".into());
         }
         for (app, instance) in instances {
             match tokio::time::timeout_at(cleanup_deadline, instance.kill()).await {
