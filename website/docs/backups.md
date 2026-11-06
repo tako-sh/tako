@@ -39,7 +39,7 @@ The server snapshots `/opt/tako/apps/<app>/<env>/data/`:
 | External databases, shared Postgres, or S3 object contents | Not copied by the app-data snapshot; protect them separately.  |
 | Release code and dependencies                              | Not part of the data snapshot; releases have separate history. |
 
-Deploy creates a backup after successful finalization when enabled. The server scheduler also creates due backups at roughly 24-hour intervals. Backups are per server; one server's local data does not automatically represent another's.
+Deploy creates a backup after successful finalization when enabled. The server scheduler also creates due backups at roughly 24-hour intervals. A release rollback preserves the current backup target and encryption keys. Each server backs up its own local data.
 
 ## Create and inspect
 

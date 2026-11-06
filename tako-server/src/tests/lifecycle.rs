@@ -176,6 +176,62 @@ async fn deploy_preserves_scaled_instance_count() {
 }
 
 #[tokio::test]
+async fn rollback_keeps_the_provisioned_backup_binding() {
+    let temp = TempDir::new().unwrap();
+    let state = ServerState::new(
+        temp.path().to_path_buf(),
+        Arc::new(CertManager::new(CertManagerConfig {
+            cert_dir: temp.path().join("certs"),
+            ..Default::default()
+        })),
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let app_id = "my-app/production";
+    let release = temp.path().join("apps/my-app/production/releases/v1");
+    std::fs::create_dir_all(&release).unwrap();
+    write_release_manifest(
+        &release,
+        "node",
+        "index.js",
+        &[
+            "/bin/sh",
+            "-c",
+            "cat <&3 >/dev/null; echo 43210 >&4; exec sleep 30",
+        ],
+        None,
+        300,
+    );
+    state.app_manager.register_app(AppConfig {
+        name: "my-app".into(),
+        environment: "production".into(),
+        version: "v2".into(),
+        min_instances: 0,
+        ..Default::default()
+    });
+    state
+        .routes
+        .write()
+        .set_app_routes(app_id.into(), vec!["my-app.localhost".into()]);
+    let backup = serde_json::from_value(serde_json::json!({
+        "storage": {"provider": "s3", "bucket": "archive"},
+        "backup_keys": [{"id": "key-1", "key_base64": "stored-key"}]
+    }))
+    .unwrap();
+    state.state_store.set_backup(app_id, Some(&backup)).unwrap();
+    let response = state
+        .handle_command(Command::Rollback {
+            app: app_id.into(),
+            version: "v1".into(),
+        })
+        .await;
+    assert!(response.is_ok(), "{response:?}");
+    assert_eq!(state.state_store.get_backup(app_id).unwrap(), Some(backup));
+    state.app_manager.stop_app(app_id).await.unwrap();
+}
+
+#[tokio::test]
 async fn delete_command_removes_persisted_state_for_next_boot() {
     let temp = TempDir::new().unwrap();
     let cert_manager = Arc::new(CertManager::new(CertManagerConfig {

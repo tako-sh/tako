@@ -15,7 +15,9 @@ async fn delete_command_removes_runtime_registration_and_routes() {
     )
     .unwrap();
 
-    let app_root = temp.path().join("apps").join("my-app");
+    let app_root = temp.path().join("apps/my-app/production");
+    let sibling = temp.path().join("apps/my-app/staging/data/app");
+    std::fs::create_dir_all(&sibling).unwrap();
     let release_dir = app_root.join("releases").join("v1");
     std::fs::create_dir_all(&release_dir).unwrap();
     std::fs::create_dir_all(app_root.join("data/app")).unwrap();
@@ -23,6 +25,7 @@ async fn delete_command_removes_runtime_registration_and_routes() {
 
     let config = AppConfig {
         name: "my-app".to_string(),
+        environment: "production".to_string(),
         version: "v1".to_string(),
         path: release_dir.clone(),
         command: vec![
@@ -38,7 +41,10 @@ async fn delete_command_removes_runtime_registration_and_routes() {
     state.load_balancer.register_app(app);
     {
         let mut route_table = state.routes.write();
-        route_table.set_app_routes("my-app".to_string(), vec!["api.example.com".to_string()]);
+        route_table.set_app_routes(
+            "my-app/production".to_string(),
+            vec!["api.example.com".to_string()],
+        );
     }
 
     let response = state
@@ -47,11 +53,12 @@ async fn delete_command_removes_runtime_registration_and_routes() {
         })
         .await;
     assert!(matches!(response, Response::Ok { .. }));
-    assert!(state.app_manager.get_app("my-app").is_none());
+    assert!(state.app_manager.get_app("my-app/production").is_none());
+    assert!(sibling.is_dir());
     assert!(!app_root.exists());
 
     let route_table = state.routes.read();
-    assert!(route_table.routes_for_app("my-app").is_empty());
+    assert!(route_table.routes_for_app("my-app/production").is_empty());
     assert_eq!(route_table.select("api.example.com", "/"), None);
 }
 

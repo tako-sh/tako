@@ -346,7 +346,7 @@ impl crate::ServerState {
                 runtime_credentials: None,
                 storages: None,
                 ssl,
-                backup: None,
+                backup: super::deploy::BackupUpdate::Preserve,
                 force: false,
             })
             .await;

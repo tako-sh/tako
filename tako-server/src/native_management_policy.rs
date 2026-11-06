@@ -264,10 +264,6 @@ pub(crate) fn authorize_command(
                 preserve_routes(provisioned, provisioned.routes)?;
                 preserve_ssl(provisioned, provisioned.ssl)?;
                 validate_local_storages(context.data_dir, scope, provisioned.storages)?;
-                // Existing rollback constructs Deploy with backup=None (clear).
-                if provisioned.backup.is_some() {
-                    return Err(BACKUP_DENIED);
-                }
             }
         }
         Command::BackupNow { backup, .. } => {
@@ -1026,13 +1022,13 @@ mod tests {
     }
 
     #[test]
-    fn backup_replacement_and_implicit_deletion_are_not_hidden_by_deploy_or_rollback() {
+    fn backup_binding_is_preserved_by_scoped_deploy_rollback_and_backup_now() {
         let mut f = Fixture::new();
         let unprovisioned = f.decode_command(json!({"command":"backup_now","backup":backup()}));
         assert_eq!(f.authorize(&unprovisioned), Err(BACKUP_DENIED));
         f.backup = Some(backup());
         assert_eq!(f.authorize(&f.command("deploy")), Err(BACKUP_DENIED));
-        assert_eq!(f.authorize(&f.command("rollback")), Err(BACKUP_DENIED));
+        assert_eq!(f.authorize(&f.command("rollback")), Ok(()));
         assert_eq!(f.authorize(&f.command("backup_now")), Ok(()));
         for name in ["deploy", "backup_now"] {
             assert_eq!(

@@ -286,7 +286,7 @@ mod tests {
 
     #[tokio::test]
     async fn dead_instances_are_handled_without_the_management_lock_and_not_during_drain() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::isolation::fixture::TestDataDir::new().unwrap();
         let state = ServerState::new(
             dir.path().into(),
             Arc::new(crate::tls::CertManager::new(
@@ -302,6 +302,9 @@ mod tests {
         let app = state.app_manager.register_app(crate::instances::AppConfig {
             name: "health".into(),
             environment: "production".into(),
+            path: dir.path().into(),
+            // Exercise a failed replacement without leaving a child process running.
+            command: vec!["./missing-app".into()],
             min_instances: 1,
             ..Default::default()
         });

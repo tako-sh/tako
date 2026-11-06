@@ -183,7 +183,7 @@ impl crate::ServerState {
                     runtime_credentials,
                     storages,
                     ssl,
-                    backup: backup.map(|backup| *backup),
+                    backup: super::deploy::BackupUpdate::Replace(backup),
                     force,
                 })
                 .await

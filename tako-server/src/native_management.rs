@@ -338,7 +338,8 @@ fn authorize_command(
         .map(|scope| state.state_store.get_ssl(scope.as_str()))
         .transpose()
         .map_err(fail)?
-        .flatten();
+        .flatten()
+        .unwrap_or_default();
     let credentials = scope
         .map(|scope| state.state_store.get_runtime_credentials(scope.as_str()))
         .transpose()
@@ -355,15 +356,14 @@ fn authorize_command(
     let app = match (
         scope,
         stored.as_ref(),
-        ssl.as_ref(),
         credentials.as_ref(),
         storages.as_ref(),
     ) {
-        (Some(scope), Some(stored), Some(ssl), Some(runtime_credentials), Some(storages)) => {
+        (Some(scope), Some(stored), Some(runtime_credentials), Some(storages)) => {
             Some(ProvisionedApp {
                 scope,
                 routes: &stored.routes,
-                ssl,
+                ssl: &ssl,
                 runtime_credentials,
                 storages,
                 backup: backup.as_ref(),
