@@ -718,15 +718,18 @@ async fn observer_read_error_neither_raises_the_gate_nor_restarts_applications()
 #[tokio::test]
 async fn drain_does_not_wait_past_its_deadline_for_active_spawns() {
     let (_dir, state) = fixture();
-    let _app = app(&state, "app");
+    let app = app(&state, "app");
     // A cold start or replacement holds the read side while it starts an instance.
     let spawning = state.spawn_gate.read().await;
+    let instance = app.allocate_instance();
     let response = tokio::time::timeout(Duration::from_secs(5), state.drain_server(0))
         .await
         .expect("a zero-second drain must not wait for a spawn to finish");
     let report = response.data().unwrap();
     assert_eq!(report["completed"], false);
     assert_eq!(report["timed_out"], true);
+    assert_eq!(report["remaining_instances"], 1);
+    assert!(app.get_instance(&instance.id).is_some());
     assert!(
         report["errors"]
             .as_array()
@@ -734,7 +737,18 @@ async fn drain_does_not_wait_past_its_deadline_for_active_spawns() {
             .iter()
             .any(|error| error.as_str().unwrap().contains("spawns"))
     );
+    // The process can attach after drain's deadline. Its instance must remain
+    // tracked so the observer can stop it once the spawn releases the gate.
+    instance.set_process(
+        tokio::process::Command::new("/bin/sleep")
+            .arg("60")
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap(),
+    );
+    assert!(instance.is_alive().await);
     drop(spawning);
-    // Cleanup retries settle once the spawn has released the gate.
     assert!(state.retry_runtime_drain().await.completed);
+    assert!(app.get_instances().is_empty());
+    assert!(instance.take_process().is_none());
 }

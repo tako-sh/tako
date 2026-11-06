@@ -285,30 +285,36 @@ impl crate::ServerState {
                 .errors
                 .push("instance spawns were still active at the drain deadline".into());
         }
-        for (app, instance) in instances {
-            match tokio::time::timeout_at(cleanup_deadline, instance.kill()).await {
-                Ok(Ok(())) => {
-                    app.remove_instance(&instance.id);
-                    crate::metrics::remove_instance_metrics(&app.name(), &instance.id);
-                }
-                Ok(Err(error)) => {
-                    report
-                        .errors
-                        .push(format!("{} / {}: {error}", app.name(), instance.id))
-                }
-                Err(_) => {
-                    report.timed_out = true;
-                    report.errors.push(format!(
-                        "{} / {}: stop deadline expired",
-                        app.name(),
-                        instance.id
-                    ));
+        // A spawn may have allocated an instance without attaching its process
+        // or container yet. Killing that placeholder succeeds immediately and
+        // removing it would orphan the runtime when startup later attaches it.
+        // Retain all ownership until the observer can acquire the exclusive gate.
+        if spawns_settled.is_some() {
+            for (app, instance) in instances {
+                match tokio::time::timeout_at(cleanup_deadline, instance.kill()).await {
+                    Ok(Ok(())) => {
+                        app.remove_instance(&instance.id);
+                        crate::metrics::remove_instance_metrics(&app.name(), &instance.id);
+                    }
+                    Ok(Err(error)) => {
+                        report
+                            .errors
+                            .push(format!("{} / {}: {error}", app.name(), instance.id))
+                    }
+                    Err(_) => {
+                        report.timed_out = true;
+                        report.errors.push(format!(
+                            "{} / {}: stop deadline expired",
+                            app.name(),
+                            instance.id
+                        ));
+                    }
                 }
             }
         }
         for app in apps {
             let config = app.config.read().clone();
-            if config.compose.is_some() {
+            if spawns_settled.is_some() && config.compose.is_some() {
                 match crate::compose_runtime::for_config(&config) {
                     Ok(compose) => match tokio::time::timeout_at(cleanup_deadline, compose.stop())
                         .await
