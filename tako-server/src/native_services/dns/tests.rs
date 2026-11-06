@@ -211,7 +211,9 @@ async fn serves_real_udp_and_tcp_queries_and_stops_on_shutdown() {
 async fn forwards_public_udp_and_tcp_and_rejects_mismatched_replies() {
     let udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let upstream = udp.local_addr().unwrap();
-    let query = query("example.com", RecordType::A);
+    // Forwarded queries arrive from the wire, where names are fully qualified;
+    // the reply comparison in `forward` holds only for such a query.
+    let query = Message::from_vec(&query("example.com", RecordType::A).to_vec().unwrap()).unwrap();
     let worker = tokio::spawn(async move {
         for tamper in [false, true] {
             let mut buffer = [0; 4096];
