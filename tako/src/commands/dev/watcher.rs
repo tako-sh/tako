@@ -19,19 +19,27 @@ pub enum WatchChange {
     GeneratedDeclarations,
 }
 
-// The mini debouncer discards event kinds, so filter reads before debouncing.
-struct ChangeWatcher(notify::RecommendedWatcher);
+/// Handle that keeps the watcher alive
+pub struct WatcherHandle {
+    _debouncer: Arc<Mutex<Debouncer<ChangesOnlyWatcher>>>,
+    _thread: std::thread::JoinHandle<()>,
+}
 
-impl Watcher for ChangeWatcher {
+// The mini debouncer erases event kinds. Filter access events first so loading
+// tako.toml (including during a reload) cannot schedule another reload on Linux.
+struct ChangesOnlyWatcher(notify::RecommendedWatcher);
+
+impl Watcher for ChangesOnlyWatcher {
     fn new<F: notify::EventHandler>(
         mut handler: F,
         config: notify::Config,
     ) -> notify::Result<Self> {
         notify::RecommendedWatcher::new(
             move |event: notify::Result<notify::Event>| {
-                if !event.as_ref().is_ok_and(|event| event.kind.is_access()) {
-                    handler.handle_event(event);
+                if event.as_ref().is_ok_and(|event| event.kind.is_access()) {
+                    return;
                 }
+                handler.handle_event(event);
             },
             config,
         )
@@ -49,12 +57,6 @@ impl Watcher for ChangeWatcher {
     fn kind() -> notify::WatcherKind {
         notify::RecommendedWatcher::kind()
     }
-}
-
-/// Handle that keeps the watcher alive
-pub struct WatcherHandle {
-    _debouncer: Arc<Mutex<Debouncer<ChangeWatcher>>>,
-    _thread: std::thread::JoinHandle<()>,
 }
 
 /// Watches files that affect Tako runtime metadata in a project directory.
@@ -82,7 +84,7 @@ impl ConfigWatcher {
 
     pub fn start(self) -> Result<WatcherHandle, Box<dyn std::error::Error>> {
         let (tx, rx) = std_mpsc::channel();
-        let debouncer = Arc::new(Mutex::new(new_debouncer_opt::<_, ChangeWatcher>(
+        let debouncer = Arc::new(Mutex::new(new_debouncer_opt::<_, ChangesOnlyWatcher>(
             Config::default().with_timeout(Duration::from_millis(150)),
             tx,
         )?));
@@ -193,7 +195,7 @@ impl ConfigWatcher {
 }
 
 fn watch_path(
-    debouncer: &Arc<Mutex<Debouncer<ChangeWatcher>>>,
+    debouncer: &Arc<Mutex<Debouncer<ChangesOnlyWatcher>>>,
     path: &Path,
     mode: RecursiveMode,
 ) -> notify::Result<()> {
@@ -264,6 +266,36 @@ fn is_preexisting_runtime_definition_event(path: &Path, cutoff: Option<SystemTim
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn reading_config_does_not_reload_but_editing_it_does() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project_dir = temp.path().canonicalize().unwrap();
+        let config_path = project_dir.join("tako.toml");
+        std::fs::write(&config_path, "name = \"before\"\n").unwrap();
+        let (tx, mut rx) = mpsc::channel(8);
+        let _watcher =
+            ConfigWatcher::new(project_dir.clone(), project_dir, config_path.clone(), tx)
+                .unwrap()
+                .start()
+                .unwrap();
+
+        // Loading the config during a reload must not schedule another reload.
+        std::fs::read_to_string(&config_path).unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(600), rx.recv())
+                .await
+                .is_err()
+        );
+
+        std::fs::write(&config_path, "name = \"after\"\n").unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                .await
+                .unwrap(),
+            Some(WatchChange::Config),
+        );
+    }
 
     #[test]
     fn service_inputs_regenerate_but_generated_modules_do_not_restart() {
