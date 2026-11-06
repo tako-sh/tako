@@ -1,13 +1,62 @@
 import hashlib
+import json
 import os
 from pathlib import Path
 import subprocess
 import tarfile
 import tempfile
+import textwrap
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+class ReleaseSourceTests(unittest.TestCase):
+    def test_only_successful_master_push_artifacts_can_be_signed(self):
+        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        step = workflow.split("      - name: Verify CI build\n")[1].split("\n  sign-darwin:")[0]
+        script = textwrap.dedent(step.split("        run: |\n")[1])
+        repo = "tako-sh/tako"
+        sha = "a" * 40
+        build = dict(id=17, event="push", head_branch="master", head_sha=sha,
+                     head_repository={"full_name": repo}, status="completed", conclusion="success")
+        mock_api = """
+gh() {
+  case "$*" in
+    "api --method GET repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs "*)
+      printf '%s\n' "$TEST_RUNS" ;;
+    "api --paginate repos/$GITHUB_REPOSITORY/actions/runs/17/jobs "*) echo success ;;
+    *) return 1 ;;
+  esac
+}
+"""
+        cases = [
+            ("push", {}, "17", "refs/heads/master", True),
+            ("manual", {}, "", "refs/heads/master", True),
+            ("fork", {"head_repository": {"full_name": "fork/tako"}}, "", "refs/heads/master", False),
+            ("PR", {"event": "pull_request"}, "", "refs/heads/master", False),
+            ("feature build", {"head_branch": "feature"}, "", "refs/heads/master", False),
+            ("wrong commit", {"head_sha": "b" * 40}, "", "refs/heads/master", False),
+            ("unsuccessful CI", {"conclusion": "failure"}, "", "refs/heads/master", False),
+            ("different triggering run", {"id": 18}, "17", "refs/heads/master", False),
+            ("manual branch", {}, "", "refs/heads/feature", False),
+            ("manual case variant", {}, "", "refs/heads/Master", False),
+            ("manual tag", {}, "", "refs/tags/master", False),
+        ]
+        for name, change, requested, ref, accepted in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                output = Path(tmp) / "outputs"
+                result = subprocess.run(["bash"], input=mock_api + script, text=True, capture_output=True,
+                    env={"PATH": os.environ["PATH"], "GITHUB_REPOSITORY": repo, "RELEASE_SHA": sha,
+                         "GITHUB_REF": ref, "GITHUB_EVENT_NAME": "workflow_run" if requested else "workflow_dispatch",
+                         "REQUESTED_RUN_ID": requested, "GITHUB_OUTPUT": str(output),
+                         "TEST_RUNS": json.dumps({"workflow_runs": [build | change]})}, timeout=5)
+                self.assertEqual(result.returncode == 0, accepted, result.stderr)
+                if accepted:
+                    self.assertEqual(output.read_text().splitlines(), ["run_id=17", "binaries=true"])
+                else:
+                    self.assertFalse(output.exists())
 
 
 class InstallerTests(unittest.TestCase):

@@ -980,7 +980,6 @@ install_native_network() {
   install_native_corrosion
 
   native_source="${TAKO_NETWORK_HELPER_SOURCE:-}"
-  native_expected=""
   if [ -n "$native_source" ]; then
     [ -f "$native_source" ] && [ ! -L "$native_source" ] || {
       echo 'error: native helper source must be a regular local file' >&2; exit 1;
@@ -993,17 +992,15 @@ install_native_network() {
     cp "$native_source" "$tmp_extract/native-helper.py"
     native_source="$tmp_extract/native-helper.py"
   else
+    native_expected="a31b17d972037f245912cf13d664907651d51797545ebc000d6cde9cca77305e"
     native_source="$tmp_extract/scripts/tako-network-helper.py"
     if [ ! -f "$native_source" ] || [ -L "$native_source" ]; then
       native_source="$tmp_extract/native-helper.py"
-      native_expected="a31b17d972037f245912cf13d664907651d51797545ebc000d6cde9cca77305e"
       download_file "https://raw.githubusercontent.com/$TAKO_REPO_OWNER/$TAKO_REPO_NAME/$TAKO_RELEASE_TAG/scripts/tako-network-helper.py" "$native_source"
     fi
   fi
-  if [ -n "$native_expected" ]; then
-    native_actual="$(sha256sum "$native_source" | awk '{print $1}')"
-    [ "$native_actual" = "$native_expected" ] || { echo 'error: native helper checksum mismatch' >&2; exit 1; }
-  fi
+  native_actual="$(sha256sum "$native_source" | awk '{print $1}')"
+  [ "$native_actual" = "$native_expected" ] || { echo 'error: native helper checksum mismatch' >&2; exit 1; }
 
   # Validate the desired-state, root-state, and network SSH directories without following links.
   python3 -I - <<'PY'
