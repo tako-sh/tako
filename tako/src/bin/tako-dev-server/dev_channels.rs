@@ -495,6 +495,13 @@ mod tests {
         assert!(parse_channel_route("/_tako/channels/").is_err());
     }
 
+    /// Replay ids are opaque SQLite cursors scoped to the store epoch and
+    /// stream; only the trailing position is comparable across stores.
+    fn position(id: &str) -> i64 {
+        id.parse::<tako_channels::ReplayCursor>().unwrap();
+        id.rsplit('.').next().unwrap().parse().unwrap()
+    }
+
     #[test]
     fn publish_and_read_via_store() {
         let dev_store = DevChannelStore::new();
@@ -513,7 +520,7 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(msg.id, "1");
+        assert_eq!(position(&msg.id), 1);
         assert_eq!(msg.channel, "test");
 
         let messages = store.read_after("test", None, 100).unwrap();
@@ -532,9 +539,9 @@ mod tests {
             r#type: "message".to_string(),
             data: serde_json::json!(null),
         };
-        assert_eq!(store.append("ch", &p).unwrap().id, "1");
-        assert_eq!(store.append("ch", &p).unwrap().id, "2");
-        assert_eq!(store.append("ch", &p).unwrap().id, "3");
+        assert_eq!(position(&store.append("ch", &p).unwrap().id), 1);
+        assert_eq!(position(&store.append("ch", &p).unwrap().id), 2);
+        assert_eq!(position(&store.append("ch", &p).unwrap().id), 3);
     }
 
     #[test]
@@ -552,8 +559,8 @@ mod tests {
             .publish("app/two", "chat", &payload, None)
             .unwrap();
 
-        assert_eq!(first.id, "1");
-        assert_eq!(second.id, "1");
+        assert_eq!(position(&first.id), 1);
+        assert_eq!(position(&second.id), 1);
         assert_eq!(
             dev_store
                 .store_for_app("app/one")

@@ -85,10 +85,18 @@ async fn subscription_uses_registry_mode_before_first_publish() {
         .unwrap()
         .unwrap()
         .unwrap();
-    assert_eq!(
-        std::str::from_utf8(&chunk).unwrap(),
-        "data: {\"id\":\"\",\"channel\":\"progress\",\"type\":\"progress\",\"data\":42}\n\n"
-    );
+    let frame = std::str::from_utf8(&chunk).unwrap();
+    let payload = frame
+        .strip_prefix("data: ")
+        .and_then(|rest| rest.strip_suffix("\n\n"))
+        .unwrap();
+    let delivered: serde_json::Value = serde_json::from_str(payload).unwrap();
+    // Ephemeral frames carry no replay id, only the origin event identity.
+    assert_eq!(delivered["id"], "");
+    assert_eq!(delivered["channel"], "progress");
+    assert_eq!(delivered["type"], "progress");
+    assert_eq!(delivered["data"], 42);
+    assert_eq!(delivered["eventId"]["sequence"], 1);
     assert!(
         dev_store
             .store_for_app(&app_id)
