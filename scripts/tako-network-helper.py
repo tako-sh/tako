@@ -203,7 +203,7 @@ def write_file(fd, name, content, mode=0o600):
         try:
             os.unlink(temporary, dir_fd=fd)
         except FileNotFoundError:
-            pass
+            pass  # The rename above already consumed the temporary file.
 
 
 def serialize_state(state):
