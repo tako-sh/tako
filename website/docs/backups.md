@@ -41,7 +41,9 @@ The server snapshots `/opt/tako/apps/<app>/<env>/data/`:
 
 Deploy creates a backup after successful finalization when enabled. The server scheduler also creates due backups at roughly 24-hour intervals. A release rollback preserves the current backup target and encryption keys. Each server backs up its own local data.
 
-SQLite writers can pause while Tako copies a database and its write-ahead log. If Tako cannot acquire the required locks within 10 seconds, the backup fails and can be retried. If SQLite has a hot rollback journal after a crash, let the app reopen the database to recover it before retrying.
+If a data file has multiple hard links, the backup fails. Replace the app's link with a private copy before retrying.
+
+SQLite writers can pause while Tako copies a database and its write-ahead log. Tako then compacts the private copy to discard deleted records. If Tako cannot acquire the required locks within 10 seconds, the backup fails and can be retried. If SQLite has a hot rollback journal after a crash, let the app reopen the database to recover it before retrying.
 
 ## Create and inspect
 

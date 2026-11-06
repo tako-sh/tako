@@ -2,7 +2,7 @@ use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{self, Read};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, FileExt};
+use std::os::unix::fs::{DirBuilderExt, FileExt, MetadataExt};
 use std::path::Path;
 
 use rustix::fs::{self, AtFlags, FileType, Mode, OFlags};
@@ -95,8 +95,13 @@ fn copy_snapshot_dir(parent: &File, relative: &Path, destination: &Path) -> io::
 
 fn open_regular(parent: &File, name: &OsStr) -> io::Result<File> {
     let file = File::from(fs::openat(parent, name, READ_FLAGS, Mode::empty())?);
-    if !file.metadata()?.is_file() {
+    let meta = file.metadata()?;
+    if !meta.is_file() {
         return Err(io::Error::other(format!("expected regular file {name:?}")));
+    }
+    // A hard link can name a service file outside the app even with O_NOFOLLOW.
+    if meta.nlink() != 1 {
+        return Err(io::Error::other(format!("refusing hard link {name:?}")));
     }
     Ok(file)
 }
@@ -398,6 +403,54 @@ services:
             outside.join("value")
         );
         assert!(open_regular(&pinned, OsStr::new("link")).is_err());
+    }
+
+    #[test]
+    fn snapshot_rejects_hardlinked_data_and_sqlite_sidecars() {
+        let temp = TempDir::new().unwrap();
+        let app = temp.path().join("app");
+        std::fs::create_dir(&app).unwrap();
+        let outside = temp.path().join("service-private");
+        // A zero header also looks like an inactive SQLite journal.
+        std::fs::write(&outside, b"\0private marker").unwrap();
+        let db = app.join("database");
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .execute("CREATE TABLE items (id INTEGER)", [])
+            .unwrap();
+        for name in [
+            "ordinary",
+            "database-shm",
+            "database-wal",
+            "database-journal",
+        ] {
+            let planted = app.join(name);
+            std::fs::hard_link(&outside, &planted).unwrap();
+            let dest = temp.path().join(format!("snapshot-{name}"));
+            let error = snapshot_data_tree(&app, Path::new(""), &dest).unwrap_err();
+            assert!(error.contains("hard link"), "{name}: {error}");
+            assert!(!dest.join(name).exists());
+            std::fs::remove_file(planted).unwrap();
+        }
+    }
+
+    #[test]
+    fn sqlite_snapshot_rejects_unsafe_schema_before_publishing() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("app");
+        std::fs::create_dir(&source).unwrap();
+        let db = rusqlite::Connection::open(source.join("database")).unwrap();
+        db.execute_batch(
+            "CREATE TABLE payload(value);
+             PRAGMA writable_schema=ON;
+             UPDATE sqlite_schema SET sql='CREATE TABLE payload(value CHECK(load_extension(value)))'
+               WHERE name='payload';",
+        )
+        .unwrap();
+        drop(db);
+        let dest = temp.path().join("snapshot");
+        assert!(snapshot_data_tree(&source, Path::new(""), &dest).is_err());
+        assert!(!dest.join("database").exists());
     }
 
     #[test]

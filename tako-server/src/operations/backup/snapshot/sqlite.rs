@@ -10,16 +10,22 @@ pub(super) fn snapshot(parent: &File, name: &OsStr, file: File, dest: &Path) -> 
     let staged = work.path().join("database");
     stage(parent, name, file, &staged)?;
     let db =
-        rusqlite::Connection::open_with_flags(&staged, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+        rusqlite::Connection::open_with_flags(&staged, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(io::Error::other)?;
-    let busy: bool = db
-        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))
-        .map_err(io::Error::other)?;
-    if busy {
-        return Err(io::Error::other("could not checkpoint staged WAL"));
-    }
-    drop(db);
-    std::fs::rename(staged, dest)
+    db.set_db_config(
+        rusqlite::config::DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA,
+        false,
+    )
+    .map_err(io::Error::other)?;
+    let compact = work.path().join("compacted");
+    // VACUUM copies live records only. Both SQLite filenames are private so
+    // the VFS cannot resolve a symlink or sidecar supplied by the app.
+    db.execute(
+        "VACUUM main INTO CAST(?1 AS TEXT)",
+        [compact.as_os_str().as_bytes()],
+    )
+    .map_err(io::Error::other)?;
+    std::fs::rename(compact, dest)
 }
 
 fn stage(parent: &File, name: &OsStr, mut db: File, staged: &Path) -> io::Result<()> {

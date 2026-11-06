@@ -11,7 +11,13 @@ fn snapshot_waits_for_a_writer_and_includes_its_commit() {
         let db = rusqlite::Connection::open(source.join("app/database")).unwrap();
         db.pragma_update(None, "journal_mode", journal).unwrap();
         db.execute_batch(
-            "CREATE TABLE items (id INTEGER); BEGIN IMMEDIATE; INSERT INTO items VALUES (42);",
+            "PRAGMA secure_delete=OFF;
+             CREATE TABLE discarded (value);
+             INSERT INTO discarded VALUES ('erased-backup-marker');
+             DELETE FROM discarded;
+             CREATE TABLE items (id INTEGER);
+             BEGIN IMMEDIATE;
+             INSERT INTO items VALUES (42);",
         )
         .unwrap();
         let mut worker = Command::new(env!("CARGO_BIN_EXE_tako-server"))
@@ -36,7 +42,16 @@ fn snapshot_waits_for_a_writer_and_includes_its_commit() {
         assert!(worker.wait().unwrap().success());
         assert!(!dest.join("app/database-wal").exists());
         assert!(!dest.join("app/database-journal").exists());
-        let restored = rusqlite::Connection::open(dest.join("app/database")).unwrap();
+        let path = dest.join("app/database");
+        let marker = b"erased-backup-marker";
+        assert!(
+            !std::fs::read(&path)
+                .unwrap()
+                .windows(marker.len())
+                .any(|bytes| bytes == marker),
+            "{journal} snapshot retained deleted row bytes"
+        );
+        let restored = rusqlite::Connection::open(path).unwrap();
         let value: i64 = restored
             .query_row("SELECT id FROM items", [], |row| row.get(0))
             .unwrap();
