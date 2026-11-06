@@ -1,0 +1,6 @@
+# Debug builds give every await point's temporaries their own stack slot, so
+# the server's deepest async chains (command dispatch through release
+# preparation and Compose rollouts) need more than the default 2 MiB test
+# thread. Release builds keep those frames far smaller.
+[env]
+RUST_MIN_STACK = "16777216"
