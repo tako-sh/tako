@@ -16,7 +16,11 @@ use crate::native_services::{
 pub(crate) struct NativeProxy {
     directory: RwLock<ServiceDirectory>,
     path: PathBuf,
-    export_owner: String,
+    /// Only the primary publishes the local inventory. A standby shares the
+    /// data directory, but its application set stops at its own startup, so
+    /// owning the export would freeze what the network sees from this host.
+    export_owner: Option<String>,
+    export_replaced: AtomicBool,
     pub(crate) address: Ipv6Addr,
     pub(crate) gateway: Ipv4Addr,
 }
@@ -44,12 +48,15 @@ impl NativeProxy {
                 Some(gateway.clone()),
             )),
             path: config.network_dir(&state.runtime_config().data_dir),
-            export_owner: nanoid::nanoid!(32),
+            export_owner: (!state.runtime_config().standby).then(|| nanoid::nanoid!(32)),
+            export_replaced: AtomicBool::new(false),
             address: config.network.id.address(&member.request.wg_public_key),
             gateway: gateway.address(),
         });
         let directory = Directory::open(&service.path, true)?;
-        claim_export(&directory, &service.export_owner)?;
+        if let Some(owner) = &service.export_owner {
+            claim_export(&directory, owner)?;
+        }
         let background = service.clone();
         runtime.spawn(async move {
             let mut timer = tokio::time::interval(Duration::from_secs(2));
@@ -86,11 +93,16 @@ impl NativeProxy {
     fn refresh(&self, state: &ServerState, draining: bool) -> Result<(), String> {
         let now = now();
         let directory = Directory::open(&self.path, true).map_err(|error| error.to_string())?;
-        let export = local_services(state.app_manager().as_ref(), draining, now);
-        export.validate(now).map_err(str::to_string)?;
-        let bytes = serde_json::to_vec(&export).map_err(|error| error.to_string())?;
-        publish_export(&directory, &self.export_owner, &bytes)
-            .map_err(|error| error.to_string())?;
+        if let Some(owner) = &self.export_owner {
+            let export = local_services(state.app_manager().as_ref(), draining, now);
+            export.validate(now).map_err(str::to_string)?;
+            let bytes = serde_json::to_vec(&export).map_err(|error| error.to_string())?;
+            let published =
+                publish_export(&directory, owner, &bytes).map_err(|error| error.to_string())?;
+            if !published && !self.export_replaced.swap(true, Ordering::AcqRel) {
+                tracing::info!("Native service export now belongs to a replacement server");
+            }
+        }
         let projection = directory
             .read("services.json", 32 * 1024 * 1024 + 1024)
             .map_err(|error| error.to_string())?;
@@ -205,6 +217,64 @@ fn now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn proxy(path: &std::path::Path, export_owner: Option<&str>) -> NativeProxy {
+        let keys = tako_network::LocalDeviceKeys::generate().unwrap();
+        let network = tako_network::NetworkId::random().unwrap();
+        let server = keys
+            .device_id(&network, tako_network::DeviceKind::Server)
+            .unwrap();
+        NativeProxy {
+            directory: RwLock::new(ServiceDirectory::new(network, server, None)),
+            path: path.to_path_buf(),
+            export_owner: export_owner.map(str::to_string),
+            export_replaced: AtomicBool::new(false),
+            address: Ipv6Addr::LOCALHOST,
+            gateway: Ipv4Addr::LOCALHOST,
+        }
+    }
+
+    #[test]
+    fn standby_proxy_consumes_the_projection_without_taking_the_export() {
+        let temp = crate::isolation::fixture::private_tempdir();
+        let data = crate::isolation::fixture::TestDataDir::new().unwrap();
+        let state = crate::ServerState::new(
+            data.path().into(),
+            Arc::new(crate::tls::CertManager::new(
+                crate::tls::CertManagerConfig {
+                    cert_dir: data.path().join("certs"),
+                    ..Default::default()
+                },
+            )),
+            None,
+            Arc::new(RwLock::new(std::collections::HashMap::new())),
+        )
+        .unwrap();
+        let directory = Directory::open(temp.path(), true).unwrap();
+        claim_export(&directory, "primary").unwrap();
+        assert!(publish_export(&directory, "primary", b"primary apps").unwrap());
+        directory.write("services.json", b"null").unwrap();
+        // A standby that starts after the primary only reads the projection.
+        proxy(temp.path(), None).refresh(&state, false).unwrap();
+        assert_eq!(
+            directory
+                .read("local-services.json", 128)
+                .unwrap()
+                .as_slice(),
+            b"primary apps"
+        );
+        let owner: String =
+            serde_json::from_slice(&directory.read("local-services-owner.json", 128).unwrap())
+                .unwrap();
+        assert_eq!(owner, "primary");
+        // The primary keeps publishing its current inventory meanwhile.
+        proxy(temp.path(), Some("primary"))
+            .refresh(&state, false)
+            .unwrap();
+        let export: LocalServices =
+            serde_json::from_slice(&directory.read("local-services.json", 4096).unwrap()).unwrap();
+        assert!(export.apps.is_empty());
+    }
 
     #[test]
     fn old_proxy_cannot_overwrite_a_replacement_export() {
