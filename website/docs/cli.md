@@ -241,9 +241,9 @@ tako servers rm [name]
 tako servers uninstall [name] [-y|--yes]
 ```
 
-`servers add` bootstraps over administrator SSH and enrolls the server's own keys, HTTPS pins, and endpoint in a Tako network. No `[[servers]]` entry is written. Without `--network`, selection uses the project's production network or the sole configured network. Create or import a network first; ambiguous selection requires `--network`.
+`servers add` bootstraps over administrator SSH and enrolls the server's own keys, HTTPS pins, and endpoint in a Tako network. No `[[servers]]` entry is written. Without `--network`, selection uses the project's production network (honoring `--config`) or the sole configured network. An explicit `--network` takes precedence. Create or import a network first; ambiguous selection requires `--network`.
 
-Without a host, an interactive terminal prompts for `admin@host`. An omitted SSH user defaults to `root`. Public HTTP and HTTPS ports default to `80` and `443`. `--ssh-key` selects a private key for bootstrap; normal management uses the enrolled device identity. External VPN providers and the old `--vpn`, `--install`, `--no-test`, and server `--description` options are removed. See [Servers](/servers/#choose-the-vpn-provider) to replace an old setup.
+Without a host, an interactive terminal prompts for `admin@host`. An omitted SSH user defaults to `root`. Public HTTP and HTTPS ports default to `80` and `443`. `--ssh-key` selects a private key for bootstrap and saves its absolute path locally for SSH maintenance (reload, upgrade, uninstall). This selection stays on the workstation; normal HTTPS management uses the enrolled device identity. External VPN providers and the old `--vpn`, `--install`, `--no-test`, and server `--description` options are removed. See [Servers](/servers/#choose-the-vpn-provider) to replace an old setup.
 
 `status` prints a deployment snapshot grouped by server, with compact server summary, routes, and app rows.
 

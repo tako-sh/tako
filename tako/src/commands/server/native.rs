@@ -318,6 +318,7 @@ pub(super) async fn add(
     ssh.start_native_tako_server(ports, network_id.address(&enrollment.request.wg_public_key))
         .await?;
     network::save_profile(&alias.name, &active)?;
+    network::server_access::save_key(&alias, &device, key)?;
     if let Ok(mut history) = crate::config::CliHistoryToml::load() {
         history.record_server_prompt_values(
             &format!("{operator}@{host}"),

@@ -125,6 +125,65 @@ fn removed_vpn_configuration_is_not_silently_accepted() {
 }
 
 #[test]
+fn native_server_add_honors_selected_project_config_and_explicit_network() {
+    let temp = TempDir::new().unwrap();
+    let tako_home = temp.path().join("tako-home");
+    for alias in ["default", "selected"] {
+        let out = run_tako_with_env(
+            &["network", "create", alias],
+            temp.path(),
+            temp.path(),
+            &tako_home,
+        );
+        assert!(out.status.success(), "{}", stderr_str(&out));
+    }
+    let inventory_before = fs::read(tako_home.join("config.toml")).unwrap();
+    let config: toml::Value =
+        toml::from_str(std::str::from_utf8(&inventory_before).unwrap()).unwrap();
+    for (alias, file) in [("default", "tako.toml"), ("selected", "other.toml")] {
+        let network = config["networks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|network| network["name"].as_str() == Some(alias))
+            .unwrap();
+        fs::write(
+            temp.path().join(file),
+            format!(
+                "name = 'test-app'\n[envs.production]\nroute = 'test.example.com'\nnetwork = '{}'\n",
+                network["id"].as_str().unwrap(),
+            ),
+        )
+        .unwrap();
+    }
+    let add = |extra: &[&str]| {
+        let mut args = vec![
+            "--dry-run",
+            "--json",
+            "--config",
+            "other.toml",
+            "servers",
+            "add",
+            "admin@unreachable.invalid",
+            "--name",
+            "edge",
+        ];
+        args.extend_from_slice(extra);
+        let out = run_tako_with_env(&args, temp.path(), temp.path(), &tako_home);
+        assert!(out.status.success(), "{}", stderr_str(&out));
+        serde_json::from_str::<serde_json::Value>(&stdout_str(&out)).unwrap()
+    };
+    assert_eq!(add(&[])["network"], "selected");
+    assert_eq!(add(&["--network", "default"])["network"], "default");
+    fs::remove_file(temp.path().join("tako.toml")).unwrap();
+    assert_eq!(add(&[])["network"], "selected");
+    assert_eq!(
+        fs::read(tako_home.join("config.toml")).unwrap(),
+        inventory_before
+    );
+}
+
+#[test]
 fn servers_list_renders_aligned_name_host_and_description_columns() {
     let temp = TempDir::new().unwrap();
     let project_dir = temp.path().join("project");

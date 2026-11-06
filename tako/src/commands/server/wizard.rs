@@ -9,7 +9,10 @@ use connection::{parse_detected_arch, parse_detected_libc};
 pub use ports::ServerPublicPorts;
 pub(super) use ports::public_ports_from_cli;
 
-pub async fn prompt_to_add_server(reason: &str) -> Result<Option<()>, Box<dyn std::error::Error>> {
+pub async fn prompt_to_add_server(
+    reason: &str,
+    config_path: Option<&Path>,
+) -> Result<Option<()>, Box<dyn std::error::Error>> {
     if !output::is_interactive() {
         return Ok(None);
     }
@@ -18,7 +21,9 @@ pub async fn prompt_to_add_server(reason: &str) -> Result<Option<()>, Box<dyn st
         output::operation_cancelled();
         return Ok(None);
     }
-    add(None, None, None, 22, None, None, None).await.map(Some)
+    add(None, None, None, 22, None, None, None, config_path)
+        .await
+        .map(Some)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -30,8 +35,9 @@ pub(super) async fn add(
     key: Option<&Path>,
     ports: Option<ServerPublicPorts>,
     endpoint: Option<std::net::SocketAddr>,
+    config_path: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let alias = crate::network::resolve_network(network, None)?;
+    let alias = crate::network::resolve_network(network, config_path)?;
     let host = match host {
         Some(host) => host.to_string(),
         None if output::is_interactive() => {

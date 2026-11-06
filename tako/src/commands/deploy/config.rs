@@ -127,6 +127,7 @@ pub(super) async fn resolve_deploy_server_names_with_setup(
             if servers.is_empty() {
                 let added = server::prompt_to_add_server(
                     "No servers have been added. Deployment needs at least one production server.",
+                    Some(config_path),
                 )
                 .await
                 .map_err(|e| format!("Failed to run server setup: {}", e))?;

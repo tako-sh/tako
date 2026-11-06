@@ -94,6 +94,81 @@ mod tests {
     use super::*;
     use crate::config::{EnvConfig, ServerEntry};
 
+    #[test]
+    fn native_membership_restores_the_local_bootstrap_key_for_maintenance() {
+        let _home = crate::network::tests::TestHome::new();
+        let fixture = crate::network::tests::fixture();
+        crate::network::store_keys(&fixture.profile.request().request_id, &fixture.keys).unwrap();
+        let alias = crate::network::save_profile("fleet", &fixture.profile).unwrap();
+        assert!(
+            native_server_entries(&alias, &fixture.profile).unwrap()[0]
+                .1
+                .key_path
+                .is_none()
+        );
+
+        let relative = std::path::Path::new("keys/custom-bootstrap-key");
+        crate::network::server_access::save_key(&alias, &fixture.server, Some(relative)).unwrap();
+        // Refreshing public membership must not erase workstation-local SSH choices.
+        crate::network::save_profile("fleet", &fixture.profile).unwrap();
+        let refreshed = crate::network::load_profile(&alias).unwrap();
+        let entries = native_server_entries(&alias, &refreshed).unwrap();
+        let config = crate::ssh::SshConfig::from_entry(&entries[0].1);
+        let expected = std::env::current_dir().unwrap().join(relative);
+        assert_eq!(config.key_path.as_ref(), Some(&expected));
+        assert_eq!(config.user, "tako");
+        assert!(
+            !serde_json::to_string(&refreshed)
+                .unwrap()
+                .contains("custom-bootstrap-key")
+        );
+
+        // Re-enrollment without an explicit key returns to default keys / agent auth.
+        crate::network::server_access::save_key(&alias, &fixture.server, None).unwrap();
+        assert!(
+            native_server_entries(&alias, &refreshed).unwrap()[0]
+                .1
+                .key_path
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn native_maintenance_keys_are_scoped_to_server_and_local_device() {
+        let _home = crate::network::tests::TestHome::new();
+        let fixture = crate::network::tests::fixture();
+        crate::network::store_keys(&fixture.profile.request().request_id, &fixture.keys).unwrap();
+        let alias = crate::network::save_profile("fleet", &fixture.profile).unwrap();
+        let key = std::path::Path::new("/keys/custom-bootstrap-key");
+        crate::network::server_access::save_key(&alias, &fixture.server, Some(key)).unwrap();
+
+        let mut renamed = alias.clone();
+        renamed.name = "renamed".into();
+        assert_eq!(
+            crate::network::server_access::load_key(&renamed, &fixture.server)
+                .unwrap()
+                .as_deref(),
+            Some(key)
+        );
+        let another_server = fixture
+            .profile
+            .request()
+            .device_id_for(&fixture.profile.snapshot().network.id)
+            .unwrap();
+        assert!(
+            crate::network::server_access::load_key(&alias, &another_server)
+                .unwrap()
+                .is_none()
+        );
+        let mut another_device = alias;
+        another_device.device = fixture.server.to_string();
+        assert!(
+            crate::network::server_access::load_key(&another_device, &fixture.server)
+                .unwrap()
+                .is_none()
+        );
+    }
+
     fn one_server_config() -> ServersToml {
         let mut servers = ServersToml::default();
         servers.servers.insert(
@@ -353,6 +428,8 @@ fn native_server_entries(
             } else {
                 format!("{}/{}/{}", alias.name, member.request.name, server_id)
             };
+            let key_path = crate::network::server_access::load_key(alias, &server_id)
+                .map_err(|error| error.to_string())?;
             Ok((
                 name,
                 crate::config::ServerEntry {
@@ -363,6 +440,7 @@ fn native_server_entries(
                     host: info.wireguard_endpoint.ip().to_string(),
                     port: info.ssh_port,
                     https_port: info.https_port,
+                    key_path,
                     ..Default::default()
                 },
             ))

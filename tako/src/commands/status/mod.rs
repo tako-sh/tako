@@ -64,13 +64,17 @@ struct GlobalServerStatusResult {
 #[cfg(test)]
 static LOCAL_OFFSET: std::sync::OnceLock<::time::UtcOffset> = std::sync::OnceLock::new();
 
-pub async fn run(json: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(
+    json: bool,
+    config_path: Option<&std::path::Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut servers = super::helpers::load_management_servers(None, None).await?;
 
     if !json
         && servers.is_empty()
         && server::prompt_to_add_server(
             "No servers configured yet. Add one now to see deployment status.",
+            config_path,
         )
         .await?
         .is_some()

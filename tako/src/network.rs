@@ -14,6 +14,7 @@ use crate::config::{NetworkAlias, NetworksToml};
 
 pub(crate) mod client;
 pub(crate) mod revocation;
+pub(crate) mod server_access;
 pub(crate) mod wireguard;
 
 pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -580,4 +581,4 @@ pub(crate) fn resolve_network(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

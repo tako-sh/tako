@@ -86,12 +86,18 @@ pub enum ServerCommands {
     },
 }
 
-pub fn run(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(
+    cmd: ServerCommands,
+    config_path: Option<&std::path::Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run_async(cmd))
+    rt.block_on(run_async(cmd, config_path))
 }
 
-async fn run_async(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_async(
+    cmd: ServerCommands,
+    config_path: Option<&std::path::Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
         ServerCommands::Add {
             host,
@@ -112,6 +118,7 @@ async fn run_async(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>
                 ssh_key.as_deref(),
                 public_ports,
                 wireguard_endpoint,
+                config_path,
             )
             .await?;
             Ok(())

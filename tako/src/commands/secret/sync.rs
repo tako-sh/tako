@@ -127,6 +127,7 @@ pub(super) async fn sync_secrets(
     if servers.is_empty()
         && crate::commands::server::prompt_to_add_server(
             "No servers configured yet. Add one now to sync secrets.",
+            Some(&context.config_path),
         )
         .await?
         .is_some()
