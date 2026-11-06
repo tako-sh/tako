@@ -28,6 +28,28 @@ fn empty_challenge_tokens() -> ChallengeTokens {
     Arc::new(parking_lot::RwLock::new(HashMap::new()))
 }
 
+/// Run a test body on a thread with a large stack. Debug builds give the
+/// dispatch path's async poll frames (handle_command, run_release, the
+/// release command capture) about two megabytes together, which overflows the
+/// default test thread; release builds keep them far smaller.
+fn large_stack<F>(future: F)
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    std::thread::Builder::new()
+        .stack_size(32 << 20)
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime")
+                .block_on(future)
+        })
+        .expect("large stack test thread")
+        .join()
+        .expect("test body panicked");
+}
+
 fn write_release_manifest(
     release_dir: &Path,
     runtime: &str,
