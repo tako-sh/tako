@@ -35,6 +35,17 @@ enum Stage {
     },
 }
 
+/// The server-side rule: UDP 443 is an explicit WireGuard option independent
+/// of HTTPS, and 8787 is reserved for gossip.
+fn validate_wireguard_port(port: u16) -> Result<()> {
+    if (port < 1024 && port != 443) || port == 8787 {
+        return Err(
+            "WireGuard must use UDP 443 or a port from 1024 to 65535 other than 8787".into(),
+        );
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn add(
     host: &str,
@@ -77,9 +88,7 @@ pub(super) async fn add(
             .next()
             .ok_or("The server hostname has no IP address; pass --wireguard-endpoint")?,
     };
-    if endpoint.port() < 1024 || endpoint.port() == 8787 {
-        return Err("WireGuard must use a port from 1024 to 65535 other than 8787".into());
-    }
+    validate_wireguard_port(endpoint.port())?;
     let mut ssh = SshClient::new(SshConfig::for_user(host, ssh_port, operator).with_key_path(key));
     ssh.connect().await?;
     output::info("Installing native network components");
@@ -361,6 +370,21 @@ fn merge_known_records(snapshot: &mut RegistrySnapshot, known: &RegistrySnapshot
     for revocation in &known.revocations {
         if !snapshot.revocations.contains(revocation) {
             snapshot.revocations.push(revocation.clone());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_wireguard_port;
+
+    #[test]
+    fn wireguard_endpoint_accepts_udp_443_and_rejects_reserved_ports() {
+        for port in [443, 1024, 51820, 65535] {
+            assert!(validate_wireguard_port(port).is_ok(), "{port}");
+        }
+        for port in [0, 22, 80, 1023, 8787] {
+            assert!(validate_wireguard_port(port).is_err(), "{port}");
         }
     }
 }
