@@ -515,7 +515,7 @@ async fn connect_tunnel_socket_with_client(
         })?;
     if response.status() != StatusCode::SWITCHING_PROTOCOLS {
         let status = response.status();
-        let body = response.bytes().await.ok().map(|body| body.to_vec());
+        let body = read_tunnel_error_body(response).await;
         let response = tokio_tungstenite::tungstenite::http::Response::builder()
             .status(status)
             .body(body)
@@ -535,6 +535,24 @@ async fn connect_tunnel_socket_with_client(
         .max_message_size(Some(MAX_WIRE_MESSAGE))
         .max_frame_size(Some(MAX_WIRE_MESSAGE));
     Ok(WebSocketStream::from_raw_socket(stream, Role::Client, Some(config)).await)
+}
+
+// The body is only mined for a short JSON error message, and reading it to the
+// end would buffer however much a misbehaving relay or intermediary streams
+// within the connect timeout.
+const MAX_TUNNEL_ERROR_BODY: usize = 64 * 1024;
+
+async fn read_tunnel_error_body(mut response: reqwest::Response) -> Option<Vec<u8>> {
+    let mut body = Vec::new();
+    while body.len() < MAX_TUNNEL_ERROR_BODY {
+        match response.chunk().await {
+            Ok(Some(chunk)) => body
+                .extend_from_slice(&chunk[..chunk.len().min(MAX_TUNNEL_ERROR_BODY - body.len())]),
+            Ok(None) => break,
+            Err(_) => return None,
+        }
+    }
+    Some(body)
 }
 
 fn validate_tunnel_upgrade(

@@ -54,6 +54,10 @@ impl Watcher for ChangesOnlyWatcher {
         self.0.unwatch(path)
     }
 
+    fn configure(&mut self, option: notify::Config) -> notify::Result<bool> {
+        self.0.configure(option)
+    }
+
     fn kind() -> notify::WatcherKind {
         notify::RecommendedWatcher::kind()
     }
