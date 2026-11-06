@@ -5,6 +5,7 @@ import React from "react";
 import satori from "satori";
 import sharp from "sharp";
 import type { PageOgImage } from "../data/page-og";
+import { httpRow, labels, short } from "../data/performance";
 
 const ROOT = process.cwd();
 const FONT_CACHE = join(ROOT, "node_modules/.cache/fonts");
@@ -39,12 +40,11 @@ const TEXT = "#EFEBE6";
 const MUTED = "#B8B2C2";
 const HAIRLINE = "rgba(239, 235, 230, 0.14)";
 
-// Clean HTTPS 200 RPS from the public benchmark on /performance/.
-const BENCHMARK = [
-  { name: "Tako", value: 12.5, color: "#9BC4B6" },
-  { name: "Caddy", value: 5.2, color: "#B8B2C2" },
-  { name: "Envoy", value: 4.7, color: "#8E879C" },
-];
+const BENCHMARK = ["tako", "caddy", "envoy"].map((id) => ({
+  name: labels[id],
+  value: httpRow(id, 5000).metrics.rps200.mean,
+  color: id === "tako" ? "#9BC4B6" : MUTED,
+}));
 
 function titleFontSize(title: string): number {
   if (title.length < 28) return 52;
@@ -71,7 +71,7 @@ function benchmarkPanel() {
     React.createElement(
       "div",
       { style: { fontSize: 18, fontWeight: 400, color: MUTED } },
-      "clean HTTPS 200 RPS",
+      "HTTPS 200 RPS · 5,000 concurrent",
     ),
     ...BENCHMARK.map((row) =>
       React.createElement(
@@ -83,7 +83,7 @@ function benchmarkPanel() {
             style: { display: "flex", justifyContent: "space-between", fontSize: 20, color: TEXT },
           },
           React.createElement("div", { style: { fontWeight: 700 } }, row.name),
-          React.createElement("div", { style: { fontWeight: 400 } }, `${row.value}k`),
+          React.createElement("div", { style: { fontWeight: 400 } }, short(row.value)),
         ),
         React.createElement("div", {
           style: {
