@@ -76,7 +76,7 @@ fake_sshd() {
         self.assertIn('install verified corrosion', result.stdout)
         self.assertEqual((root / 'usr/local/libexec/tako/tako-network-helper.py').read_text(), '# local helper fixture\n')
         unit = (root / 'etc/systemd/system/tako-network@.service').read_text()
-        self.assertIn('%i apply', unit)
+        self.assertIn('%i isolate', unit)
         self.assertNotIn('ExecStop', unit)
         self.assertNotIn('PartOf=tako-server', unit)
         self.assertFalse((root / 'etc/systemd/system/tako-corrosion.service').exists())

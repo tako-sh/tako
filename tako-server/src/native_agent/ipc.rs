@@ -296,9 +296,8 @@ pub async fn run(data_dir: &Path) -> Result<()> {
             }
         }
     };
-    // Withdrawal is synchronous and precedes accepting any further work or
-    // asking either DB owner to drain. Failed broker/IPC exits request isolation.
-    control.shutdown(outcome.is_err());
+    // Withdraw before accepting further work or asking either DB owner to drain.
+    control.shutdown();
     tasks.abort_all();
     drop(tx);
     let joins = async {
@@ -308,19 +307,11 @@ pub async fn run(data_dir: &Path) -> Result<()> {
         } else {
             broker_outcome((&mut broker).await, true)
         };
-        // BrokerOwner has marked this before publishing completion; the
-        // controller retains its DB lock until that marker is visible.
-        if broker_result.is_err() {
-            control.shutdown(true);
-        }
         let service_result = if services_done {
             Ok(())
         } else {
             services_outcome((&mut service_task).await, true)
         };
-        if service_result.is_err() {
-            control.shutdown(true);
-        }
         let worker_result = if worker_done {
             Ok(())
         } else {

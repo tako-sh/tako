@@ -186,7 +186,7 @@ mod tests {
         let mut changed = f.config.bootstrap.clone();
         f.revoke(&mut changed, &signed.signer);
         assert!(check(&f.config, &signed, &changed, 3, true, &control).is_err());
-        control.shutdown(false);
+        control.shutdown();
         assert!(check(&f.config, &signed, &f.config.bootstrap, 3, true, &control).is_err());
     }
 

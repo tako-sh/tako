@@ -192,7 +192,7 @@ fn racing_shutdown_cannot_restore_service_file() {
         let thread = std::thread::spawn(move || {
             let _ = writer.publish_services(&value, 10);
         });
-        control.shutdown(false);
+        control.shutdown();
         thread.join().unwrap();
         assert_eq!(&*shared.files.read(SNAPSHOT_FILE, 16).unwrap(), b"null\n");
     }
@@ -212,7 +212,7 @@ async fn dns_waits_for_enforcement_and_shutdown_cancels_the_wait() {
     );
     control.publish_enforced(&f.config.bootstrap);
     assert!(wait_enforced(&mut membership, shutdown.clone()).await);
-    control.shutdown(false);
+    control.shutdown();
     assert!(!wait_enforced(&mut membership, shutdown).await);
 }
 
@@ -236,7 +236,7 @@ async fn missing_bridge_retries_while_native_lives_and_drains_on_shutdown() {
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
         assert!(!control.stop.load(Ordering::Acquire));
-        control.shutdown(false);
+        control.shutdown();
     };
     let (retry, native, ()) = tokio::join!(retry, native, exercise);
     retry.unwrap();
@@ -256,7 +256,7 @@ async fn dns_fatal_error_isolates_and_late_failure_holds_database_gate() {
     )
     .await;
     assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
-    assert!(control.isolate.load(Ordering::Acquire));
+    assert!(control.stop.load(Ordering::Acquire));
     assert!(members.borrow().is_none());
     assert!(!control.services_drained.load(Ordering::Acquire));
     owner.complete(true);
