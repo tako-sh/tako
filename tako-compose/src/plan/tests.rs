@@ -365,3 +365,33 @@ fn replica_overrides_win_without_changing_container_identity() {
         );
     }
 }
+
+#[test]
+fn native_gateway_changes_generations_and_preserves_stack_dns_aliases() {
+    let (_dir, runtime) = runtime();
+    let ordinary = Plan::new(model(), &runtime).unwrap();
+    let network = crate::NativeNetwork::new("00112233445566778899aabbccddeeff").unwrap();
+    let runtime = runtime.with_native_network(network.clone());
+    let native = Plan::new(model(), &runtime).unwrap();
+    for service in &native.services {
+        assert_ne!(fingerprint(&ordinary, &service.name), service.fingerprint);
+        let container = native.container_model(service, 0, &runtime);
+        let definition = &container["services"][service.generation(0)];
+        assert_eq!(definition["dns"], json!([network.gateway().to_string()]));
+        assert_eq!(
+            definition["networks"]["default"]["aliases"],
+            json!([service.name])
+        );
+        assert!(
+            definition["networks"]["tako_native_services"]
+                .get("aliases")
+                .is_none()
+        );
+        assert_eq!(
+            container["networks"]["tako_native_services"],
+            json!({"external":true,"name":network.name()})
+        );
+    }
+    let restarted = Plan::new(model(), &runtime).unwrap();
+    assert_eq!(fingerprint(&native, "web"), fingerprint(&restarted, "web"));
+}

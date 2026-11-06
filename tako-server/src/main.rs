@@ -11,6 +11,7 @@ mod channels;
 mod compose_runtime;
 mod container_runtime;
 mod defaults;
+mod drain_observer;
 mod identity;
 mod image_worker;
 mod instances;
@@ -19,6 +20,20 @@ mod lb;
 mod management_auth;
 mod management_http;
 mod metrics;
+mod native_agent;
+mod native_channel_client;
+mod native_channels;
+mod native_control;
+#[cfg(target_os = "linux")]
+mod native_management;
+#[cfg(target_os = "linux")]
+mod native_management_listener;
+#[cfg(target_os = "linux")]
+mod native_management_ownership;
+mod native_management_policy;
+mod native_proxy;
+mod native_services;
+mod network_bootstrap;
 mod object_storage;
 mod operations;
 mod paths;
@@ -27,6 +42,7 @@ mod protocol_compatibility;
 mod proxy;
 mod release;
 mod release_command;
+mod request_drain;
 mod routing;
 mod runtime_events;
 mod scaling;
@@ -232,6 +248,14 @@ pub struct Args {
     #[arg(long)]
     pub data_dir: Option<String>,
 
+    /// Run the separately supervised native network agent.
+    #[arg(long, conflicts_with = "network_bootstrap")]
+    pub network_agent: bool,
+
+    /// Prepare or enroll a native server through an authenticated operator session.
+    #[arg(long, hide = true)]
+    pub network_bootstrap: bool,
+
     /// Disable ACME (use self-signed or manual certificates only)
     #[arg(long)]
     pub no_acme: bool,
@@ -319,6 +343,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     install_rustls_crypto_provider();
 
     let args = Args::parse();
+    if args.network_bootstrap {
+        let data_dir = args.data_dir.as_deref().unwrap_or("/opt/tako");
+        return network_bootstrap::run(Path::new(data_dir));
+    }
     if args.image_worker {
         image_worker::run_stdio().map_err(std::io::Error::other)?;
         return Ok(());
@@ -365,6 +393,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.check_protocol_compatibility {
         run_protocol_compatibility_mode(&args)?;
         return Ok(());
+    }
+    if args.network_agent {
+        #[cfg(not(target_os = "linux"))]
+        return Err("The native network agent requires a Linux server".into());
+        #[cfg(target_os = "linux")]
+        {
+            let data_dir = args.data_dir.as_deref().unwrap_or("/opt/tako");
+            tokio::runtime::Runtime::new()?.block_on(native_agent::run(Path::new(data_dir)))?;
+            return Ok(());
+        }
     }
     startup::run(args)
 }

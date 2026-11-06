@@ -1,9 +1,11 @@
 ---
 title: Servers
-description: "Provision and enroll Tako servers over Tailscale or NetBird, map environments to hosts, and maintain the service with reloads and verified upgrades."
+description: "Enroll native or legacy VPN servers, select deployment targets, and maintain the service."
 ---
 
-A server is a Linux host running `tako-server`. Your workstation keeps a global server inventory; each app's `tako.toml` maps deployment environments to inventory names. Normal app operations use signed HTTP over the selected Tailscale or NetBird network. SSH handles bootstrap, recovery, and maintenance.
+A server is a Linux host running `tako-server`. [Native networks](/networks/) enroll servers and devices with their own keys, resolve trusted membership, and manage apps over pinned HTTPS. Start there for the create, server-add, and environment-selection workflow.
+
+Existing Tailscale and NetBird installations use a global server inventory and environment mappings. Their normal app operations use signed private HTTP; SSH handles bootstrap, recovery, and maintenance. The provider setup below describes that legacy path.
 
 ## Server Setup
 
@@ -27,7 +29,7 @@ On Linux, each app/environment runs as a separate Unix identity. Apps can write 
 
 Production isolation requires cgroup v2 with CPU, memory, and process controllers. Each app is limited to 2 GiB of memory, two CPUs, and 512 processes. Missing identity provisioning or resource enforcement stops app startup. The installer restarts an existing service so children launched under an older policy are replaced. If you use `TAKO_RESTART_SERVICE=0` when upgrading, restart the service before relying on the updated isolation policy.
 
-Normal installs require [Tailscale](https://tailscale.com/) or [NetBird](https://netbird.io/) for remote management. Install the VPN and its CLI on both your workstation and server, connect them to the same network, and allow SSH and TCP port `9844` between them in the VPN's access policies and host firewall. Use the server's VPN hostname or IP. Tako verifies the selected agent's connection and address ownership, verifies SSH recovery access, and enrolls the SSH key for signed management.
+Legacy installs require [Tailscale](https://tailscale.com/) or [NetBird](https://netbird.io/) for remote management. Install the VPN and its CLI on both your workstation and server, connect them to the same network, and allow SSH and TCP port `9844` between them in the VPN's access policies and host firewall. Use the server's VPN hostname or IP. Tako verifies the selected agent's connection and address ownership, verifies SSH recovery access, and enrolls the SSH key for signed management.
 
 Tako uses an already-connected VPN. Account creation, peer enrollment, DNS, and access policies are managed with your VPN provider, including self-hosted installations.
 

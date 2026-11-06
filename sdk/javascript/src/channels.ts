@@ -18,6 +18,8 @@ import {
 import { getChannelsConfig } from "./channels/configure";
 import { SseReader } from "./channels/sse-reader";
 
+export type { SseRecoveryReason, ChannelSubscribeOptions } from "./types";
+
 /**
  * Server-side publisher hook used by the Tako runtime to fan out channel
  * messages over the internal socket.
@@ -281,6 +283,9 @@ export class Channel {
       fetch: getChannelsConfig().fetch,
       onMessage: () => {},
       retryOnDisconnect: true,
+      ...(options.onRecovery !== undefined && { onRecovery: options.onRecovery }),
+      ...(options.onError !== undefined && { onError: options.onError }),
+      ...(options.signal !== undefined && { signal: options.signal }),
       ...(headers !== undefined && { headers }),
     };
     const reader = new SseReader(url.toString(), readerOptions);

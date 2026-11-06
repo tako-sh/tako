@@ -106,6 +106,16 @@ pub struct CronTickerHandle {
 }
 
 impl CronTickerHandle {
+    pub(crate) fn request_shutdown(&mut self) {
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(());
+        }
+    }
+
+    pub(crate) fn is_finished(&self) -> bool {
+        self.join.as_ref().is_none_or(|join| join.is_finished())
+    }
+
     pub async fn shutdown(mut self) {
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
@@ -457,6 +467,45 @@ mod tests {
             Some(r.id),
             "reclaimed run should be claimable"
         );
+    }
+
+    #[test]
+    fn tick_and_reclaim_releases_only_the_expired_claim() {
+        let db = db();
+        for _ in 0..2 {
+            db.enqueue("w", &serde_json::json!({}), &EnqueueOpts::default())
+                .unwrap();
+        }
+        let limiter = crate::in_flight::InFlightLimiter::new(2);
+        let expired = limiter
+            .claim(&db, "worker", &["w".into()], 60_000)
+            .unwrap()
+            .unwrap();
+        let active = limiter
+            .claim(&db, "worker", &["w".into()], 60_000)
+            .unwrap()
+            .unwrap();
+        db.raw_execute(
+            "UPDATE runs SET lease_until = 0 WHERE id = ?1",
+            [&expired.id],
+        );
+
+        tick_and_reclaim(
+            &db,
+            chrono::Utc::now().timestamp_millis(),
+            &|| {},
+            Some(&limiter),
+        );
+        assert_eq!(limiter.count("worker"), 1);
+        db.heartbeat(&active.id, &active.worker_id, 60_000).unwrap();
+        let reclaimed = limiter
+            .claim(&db, "worker", &["w".into()], 60_000)
+            .unwrap()
+            .unwrap();
+        assert_eq!(reclaimed.id, expired.id);
+        assert_ne!(reclaimed.worker_id, expired.worker_id);
+        limiter.release_claim(&expired.worker_id);
+        assert_eq!(limiter.count("worker"), 2);
     }
 
     #[test]

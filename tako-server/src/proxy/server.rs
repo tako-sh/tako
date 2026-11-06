@@ -23,6 +23,12 @@ pub(crate) struct PublicListenerEndpoint {
 }
 
 pub(crate) struct ServerBuildConfig {
+    pub(crate) draining: Arc<std::sync::atomic::AtomicBool>,
+    pub(crate) spawn_gate: Arc<tokio::sync::RwLock<()>>,
+    pub(crate) proxy_requests: Arc<crate::request_drain::RequestDrain>,
+    pub(crate) native_control: Option<Arc<crate::native_control::NativeControl>>,
+    pub(crate) native_channels: Option<crate::native_channels::Client>,
+    pub(crate) native_services: Option<Arc<crate::native_proxy::NativeProxy>>,
     pub(crate) lb: Arc<LoadBalancer>,
     pub(crate) routes: Arc<RwLock<RouteTable>>,
     pub(crate) config: ProxyConfig,
@@ -31,11 +37,18 @@ pub(crate) struct ServerBuildConfig {
     pub(crate) cold_start: Arc<ColdStartManager>,
     pub(crate) cloudflare_ips: CloudflareIpRanges,
     pub(crate) channel_postgres_url: Option<ChannelPostgresUrlResolver>,
+    pub(crate) channel_credentials_generation: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Build and start the Pingora server with ACME and SNI support
 pub(crate) fn build_server_with_acme(build: ServerBuildConfig) -> Result<Server> {
     let ServerBuildConfig {
+        draining,
+        spawn_gate,
+        proxy_requests,
+        native_control,
+        native_channels,
+        native_services,
         lb,
         routes,
         config,
@@ -44,12 +57,29 @@ pub(crate) fn build_server_with_acme(build: ServerBuildConfig) -> Result<Server>
         cold_start,
         cloudflare_ips,
         channel_postgres_url,
+        channel_credentials_generation,
     } = build;
+
+    if native_control.is_some() && config.trusted_proxy.proxy_protocol {
+        return Err(Error::explain(
+            ErrorType::InternalError,
+            "Native network management requires direct TLS; a server-wide mandatory PROXY protocol listener cannot serve native clients",
+        ));
+    }
+    let private_endpoints = native_services
+        .as_ref()
+        .filter(|_| config.http_port != 80)
+        .map(|services| {
+            [
+                format!("[{}]:80", services.address),
+                format!("{}:80", services.gateway),
+            ]
+        });
 
     let mut server = Server::new_with_opt_and_conf(None, proxy_server_conf()?);
     server.bootstrap();
 
-    let proxy = if let Some(tokens) = acme_tokens {
+    let mut proxy = if let Some(tokens) = acme_tokens {
         TakoProxy::with_acme(
             lb,
             routes.clone(),
@@ -67,9 +97,18 @@ pub(crate) fn build_server_with_acme(build: ServerBuildConfig) -> Result<Server>
             cloudflare_ips,
         )
     };
+    proxy.native_control = native_control;
+    proxy.native_services = native_services;
+    proxy.draining = draining;
+    proxy.spawn_gate = spawn_gate;
+    proxy.proxy_requests = proxy_requests;
+    if let Some(client) = native_channels {
+        proxy.set_native_channel_client(client);
+    }
     if let Some(resolver) = channel_postgres_url {
         proxy.set_channel_postgres_url_resolver(resolver);
     }
+    proxy.channel_credentials_generation = channel_credentials_generation;
 
     if config.trusted_proxy.proxy_protocol {
         let mut proxy_service = ProxyProtocolService::new(
@@ -118,6 +157,13 @@ pub(crate) fn build_server_with_acme(build: ServerBuildConfig) -> Result<Server>
         let http_endpoints = public_listener_endpoints(config.http_port);
         for endpoint in &http_endpoints {
             proxy_service.add_tcp_with_settings(&endpoint.addr, endpoint.options.clone());
+        }
+
+        #[cfg(target_os = "linux")]
+        if let Some(endpoints) = private_endpoints {
+            for addr in endpoints {
+                proxy_service.add_tcp_with_settings(&addr, private_listener_socket_options(&addr));
+            }
         }
 
         if config.enable_https {
@@ -200,6 +246,13 @@ pub(crate) fn public_listener_endpoints(port: u16) -> [PublicListenerEndpoint; 2
             options: listener_socket_options(Some(true)),
         },
     ]
+}
+
+#[cfg(target_os = "linux")]
+fn private_listener_socket_options(address: &str) -> TcpSocketOptions {
+    let mut options = listener_socket_options(address.starts_with('[').then_some(true));
+    options.freebind = true;
+    options
 }
 
 pub(crate) fn listener_socket_options(ipv6_only: Option<bool>) -> TcpSocketOptions {
@@ -377,6 +430,17 @@ pub(crate) fn create_tls_settings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn private_listeners_allow_overlapping_proxy_processes() {
+        for (address, ipv6) in [("[fd00::1]:80", Some(true)), ("10.1.2.1:80", None)] {
+            let options = private_listener_socket_options(address);
+            assert_eq!(options.so_reuseport, Some(true));
+            assert_eq!(options.ipv6_only, ipv6);
+            assert!(options.freebind);
+        }
+    }
 
     #[test]
     fn proxy_server_conf_uses_available_parallelism() {

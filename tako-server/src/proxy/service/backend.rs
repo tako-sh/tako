@@ -17,6 +17,9 @@ pub(crate) enum BackendResolution {
 
 impl TakoProxy {
     pub(crate) async fn resolve_backend(&self, app_name: &str) -> BackendResolution {
+        if self.draining.load(std::sync::atomic::Ordering::Acquire) {
+            return BackendResolution::Unavailable;
+        }
         if let Some(backend) = self.lb.get_backend(app_name) {
             return BackendResolution::Ready {
                 backend,
@@ -34,14 +37,26 @@ impl TakoProxy {
 
         let begin = self.cold_start.begin(app_name);
         if begin.leader {
-            app.set_state(crate::socket::AppState::Running);
-
             let app_name = app_name.to_string();
             let app = app.clone();
             let spawner = self.lb.app_manager().spawner();
             let cold_start = self.cold_start.clone();
+            let draining = self.draining.clone();
+            let spawn_gate = self.spawn_gate.clone();
 
             tokio::spawn(async move {
+                // A drain holds the gate for writing while it stops instances, so
+                // a spawn admitted here is still stopped by it. Never wait: a
+                // pending drain fails every cold start anyway.
+                let Ok(_spawning) = spawn_gate.try_read() else {
+                    cold_start.mark_failed(&app_name, "server_draining");
+                    return;
+                };
+                if draining.load(std::sync::atomic::Ordering::Acquire) {
+                    cold_start.mark_failed(&app_name, "server_draining");
+                    return;
+                }
+                app.set_state(crate::socket::AppState::Running);
                 let instance = app.allocate_instance();
                 if let Err(e) = spawner.spawn(&app, instance.clone()).await {
                     tracing::error!(app = %app_name, "cold start spawn failed: {}", e);

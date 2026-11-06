@@ -11,13 +11,14 @@ const LOG_TAIL_BACKLOG_BYTES: usize = 64 * 1024;
 const LOG_TAIL_BACKLOG_LINES: usize = 10;
 
 pub(super) async fn stream_remote_logs(
-    host: &str,
+    target: &crate::management_http::ManagementTarget,
     app: &str,
     sink: SharedLogSink,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut client = ManagementClient::new(host).await?;
+    let mut client = ManagementClient::for_target(target).await?;
+    let metadata_limit = usize::from(client.is_native());
     let metadata = client
-        .fetch_log_bytes(app, LogCursor::default(), None, 0)
+        .fetch_log_bytes(app, LogCursor::default(), None, metadata_limit)
         .await?;
     let mut cursor = LogCursor {
         previous: metadata.previous_len,
@@ -59,19 +60,20 @@ pub(super) async fn stream_remote_logs(
 }
 
 pub(super) async fn collect_remote_log_bytes(
-    host: &str,
+    target: &crate::management_http::ManagementTarget,
     app: &str,
     days: u32,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
     let since = cutoff_unix_secs_for_days(days);
-    let mut client = ManagementClient::new(host).await?;
+    let mut client = ManagementClient::for_target(target).await?;
+    let limit = client.log_fetch_limit(LOG_FETCH_MAX_BYTES);
     let fetch = client
-        .fetch_log_bytes(app, LogCursor::default(), Some(since), LOG_FETCH_MAX_BYTES)
+        .fetch_log_bytes(app, LogCursor::default(), Some(since), limit)
         .await?;
     if fetch.truncated {
         return Err(format!(
             "log response exceeded {} bytes; retry with a smaller --days value",
-            LOG_FETCH_MAX_BYTES
+            limit
         )
         .into());
     }

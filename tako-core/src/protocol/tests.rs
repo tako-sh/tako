@@ -1,6 +1,37 @@
 use super::*;
 
 #[test]
+fn server_drain_commands_roundtrip() {
+    for (command, wire) in [
+        (
+            Command::DrainServer { timeout_seconds: 0 },
+            serde_json::json!({"command":"drain_server","timeout_seconds":0}),
+        ),
+        (
+            Command::DrainServer {
+                timeout_seconds: u64::MAX,
+            },
+            serde_json::json!({"command":"drain_server","timeout_seconds":u64::MAX}),
+        ),
+        (
+            Command::ResumeServer,
+            serde_json::json!({"command":"resume_server"}),
+        ),
+    ] {
+        assert_eq!(serde_json::to_value(command).unwrap(), wire);
+        let parsed: Command = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), wire);
+    }
+    for wire in [
+        serde_json::json!({"command":"drain_server"}),
+        serde_json::json!({"command":"drain_server","timeout_seconds":-1}),
+        serde_json::json!({"command":"drain_server","timeout_seconds":0.5}),
+    ] {
+        assert!(serde_json::from_value::<Command>(wire).is_err());
+    }
+}
+
+#[test]
 fn test_command_serialization() {
     let cmd = Command::Status {
         app: "my-app".to_string(),
@@ -662,6 +693,8 @@ fn parses_run_release_command() {
 fn test_server_runtime_info_pid_roundtrip() {
     let info = ServerRuntimeInfo {
         pid: 42,
+        arch: "x86_64".into(),
+        libc: "glibc".into(),
         mode: UpgradeMode::Normal,
         process_started_at_unix_secs: Some(1_778_220_000),
         socket: "/var/run/tako/tako.sock".to_string(),
@@ -680,6 +713,8 @@ fn test_server_runtime_info_pid_roundtrip() {
     let json = serde_json::to_string(&info).unwrap();
     let parsed: ServerRuntimeInfo = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed.pid, 42);
+    assert_eq!(parsed.arch, "x86_64");
+    assert_eq!(parsed.libc, "glibc");
     assert_eq!(parsed.server_name.as_deref(), Some("la"));
     assert_eq!(
         parsed.server_identity.as_deref(),

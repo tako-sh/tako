@@ -30,6 +30,7 @@ pub(super) async fn run_server_preflight_checks(
         let task_tree_for_task = task_tree.clone();
         let check_name = name.clone();
         let host = server.host.clone();
+        let target = server.management_target();
         let check_deploy_app_name = deploy_app_name.clone();
         let check_routes = routes.clone();
         let span = output::scope(&name);
@@ -44,10 +45,15 @@ pub(super) async fn run_server_preflight_checks(
                         task_tree.mark_deploy_step_running(&name, "connecting");
                     }
 
-                    let mut client =
-                        map_preflight_management_result(&host, ManagementClient::new(&host).await)?;
+                    let mut client = map_preflight_management_result(
+                        &target,
+                        &host,
+                        ManagementClient::for_target(&target).await,
+                    )?;
+                    client.set_preflight_scope(&check_deploy_app_name)?;
                     if !force {
                         let hello = map_preflight_management_result(
+                            &target,
                             &host,
                             client
                                 .send(&Command::Hello {
@@ -62,6 +68,7 @@ pub(super) async fn run_server_preflight_checks(
                         }
                     }
                     let info = map_preflight_management_result(
+                        &target,
                         &host,
                         client.send(&Command::ServerInfo).await,
                     )?;
@@ -73,6 +80,7 @@ pub(super) async fn run_server_preflight_checks(
 
                     // Disk space check
                     let disk = map_preflight_management_result(
+                        &target,
                         &host,
                         client
                             .send(&Command::CheckDeploySpace {
@@ -86,17 +94,27 @@ pub(super) async fn run_server_preflight_checks(
                         ));
                     }
 
-                    // Route conflict check
-                    let routes_response = map_preflight_management_result(
-                        &host,
-                        client.send(&Command::Routes).await,
-                    )?;
-                    let existing = parse_existing_routes_response(routes_response)
-                        .map_err(management_http::ManagementError::Message)?;
-                    validate_no_route_conflicts(&existing, &check_deploy_app_name, &check_routes)
+                    if client.can_manage_server() {
+                        // Route conflict check
+                        let routes_response = map_preflight_management_result(
+                            &target,
+                            &host,
+                            client.send(&Command::Routes).await,
+                        )?;
+                        let existing = parse_existing_routes_response(routes_response)
+                            .map_err(management_http::ManagementError::Message)?;
+                        validate_no_route_conflicts(
+                            &existing,
+                            &check_deploy_app_name,
+                            &check_routes,
+                        )
                         .map_err(|e| {
-                        management_http::ManagementError::Message(format!("Route conflict: {}", e))
-                    })?;
+                            management_http::ManagementError::Message(format!(
+                                "Route conflict: {}",
+                                e
+                            ))
+                        })?;
+                    }
 
                     // Mark "Preflight" as succeeded.
                     if let Some(task_tree) = &task_tree_for_task {
@@ -142,11 +160,22 @@ pub(super) async fn run_server_preflight_checks(
 const DEPLOY_MIN_FREE_DISK_BYTES: u64 = 256 * 1024 * 1024;
 
 fn map_preflight_management_result<T>(
+    target: &management_http::ManagementTarget,
     host: &str,
     result: Result<T, management_http::ManagementError>,
 ) -> Result<T, management_http::ManagementError> {
-    result.map_err(|error| {
-        management_http::ManagementError::Message(format_preflight_management_error(host, &error))
+    result.map_err(|error| match target {
+        management_http::ManagementTarget::Native(native) => {
+            management_http::ManagementError::Message(format!(
+                "Native management failed for {}/{}: {error}",
+                native.network.name, native.server_id
+            ))
+        }
+        management_http::ManagementTarget::Legacy { .. } => {
+            management_http::ManagementError::Message(format_preflight_management_error(
+                host, &error,
+            ))
+        }
     })
 }
 

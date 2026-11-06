@@ -298,3 +298,52 @@ fn release_manifest_metadata_preserves_custom_description_and_source() {
         )
     );
 }
+
+#[tokio::test]
+#[cfg(unix)]
+async fn production_install_observes_drain_and_reaps_before_returning() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let directory = dir.path().to_path_buf();
+    let flag = Arc::new(AtomicBool::new(false));
+    let task_flag = flag.clone();
+    let task = tokio::spawn(async move {
+        crate::process_output::during_preparation(
+            task_flag,
+            run_production_install_command(
+                "echo $$ > pid; exec sleep 30",
+                &directory,
+                &HashMap::new(),
+                None,
+            ),
+        )
+        .await
+    });
+    let pid = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Ok(text) = std::fs::read_to_string(dir.path().join("pid"))
+                && let Ok(pid) = text.trim().parse::<i32>()
+            {
+                break pid;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    flag.store(true, Ordering::Release);
+    let error = tokio::time::timeout(Duration::from_secs(2), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert!(error.contains("drain cancelled"));
+    assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH)
+    );
+}

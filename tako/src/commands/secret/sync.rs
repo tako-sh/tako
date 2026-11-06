@@ -116,7 +116,8 @@ pub(super) async fn sync_secrets(
     let app_name = resolve_app_name(&context.config_path)?;
     let secrets = SecretsStore::load_from_dir(&context.project_dir)?;
     let tako_config = TakoToml::load_from_file(&context.config_path)?;
-    let mut servers = ServersToml::load()?;
+    let mut servers =
+        crate::commands::helpers::load_management_servers(Some(&tako_config), target_env).await?;
 
     if secrets.is_empty() {
         output::warning("No secrets to sync.");
@@ -297,6 +298,14 @@ pub(super) fn resolve_secret_sync_server_names(
     let mut resolved =
         match crate::commands::helpers::resolve_servers_for_env(tako_config, servers, env_name) {
             Ok(r) => r,
+            Err(error)
+                if tako_config
+                    .envs
+                    .get(env_name)
+                    .is_some_and(|env| env.network.is_some()) =>
+            {
+                return Err(error.into());
+            }
             Err(_) => return Ok(Vec::new()),
         };
     resolved.sort();
@@ -314,7 +323,7 @@ async fn sync_to_server(
     server: &crate::config::ServerEntry,
     secrets: &std::collections::HashMap<String, String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut client = ManagementClient::new(&server.host).await?;
+    let mut client = ManagementClient::for_server(server).await?;
     match client
         .send(&Command::UpdateSecrets {
             app: app_name.to_string(),

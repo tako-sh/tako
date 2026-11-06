@@ -46,21 +46,6 @@ pub(super) fn spawn_config_reload_loop(
                 let _ = ctx.should_exit_tx.send(true);
                 return;
             }
-            if change == watcher::WatchChange::GeneratedDeclarations {
-                if load_dev_tako_toml(&ctx.config_path).is_ok_and(|cfg| cfg.compose.is_none())
-                    && let Err(err) = crate::build::js::write_generated_files(&ctx.project_dir)
-                {
-                    let _ = ctx
-                        .log_tx
-                        .send(ScopedLog::warn(
-                            "tako",
-                            format!("Failed to regenerate tako.d.ts: {err}"),
-                        ))
-                        .await;
-                }
-                continue;
-            }
-
             let cfg = match load_dev_tako_toml(&ctx.config_path) {
                 Ok(c) => c,
                 Err(e) => {
@@ -71,6 +56,32 @@ pub(super) fn spawn_config_reload_loop(
                     continue;
                 }
             };
+            let adapter = cfg
+                .runtime
+                .as_deref()
+                .map(str::trim)
+                .and_then(crate::build::BuildAdapter::from_id)
+                .unwrap_or_else(|| crate::build::detect_build_adapter(&ctx.project_dir));
+            if change == watcher::WatchChange::GeneratedDeclarations {
+                if cfg.compose.is_none()
+                    && adapter.preset_group() == crate::build::PresetGroup::Js
+                    && let Err(err) =
+                        crate::build::js::write_generated_files_for_adapter_and_app_root(
+                            &ctx.project_dir,
+                            adapter,
+                            cfg.js_app_root(),
+                        )
+                {
+                    let _ = ctx
+                        .log_tx
+                        .send(ScopedLog::warn(
+                            "tako",
+                            format!("Failed to regenerate types: {err}"),
+                        ))
+                        .await;
+                }
+                continue;
+            }
 
             for warning in cfg.ignored_reserved_var_warnings() {
                 let _ = ctx
@@ -99,10 +110,7 @@ pub(super) fn spawn_config_reload_loop(
             };
 
             let mut new_env = compute_dev_env(&cfg);
-            if cfg.compose.is_none()
-                && crate::build::detect_build_adapter(&ctx.project_dir).preset_group()
-                    == crate::build::PresetGroup::Js
-            {
+            if cfg.compose.is_none() && adapter.preset_group() == crate::build::PresetGroup::Js {
                 new_env.insert("TAKO_APP_ROOT".to_string(), cfg.js_app_root().to_string());
             }
             inject_dev_allowed_hosts(&new_hosts, &mut new_env);
@@ -133,12 +141,22 @@ pub(super) fn spawn_config_reload_loop(
                 }
             };
 
-            if cfg.compose.is_none() {
-                let _ = crate::build::js::write_generated_files_for_adapter_and_app_root(
+            if cfg.compose.is_none()
+                && adapter.preset_group() == crate::build::PresetGroup::Js
+                && let Err(err) = crate::build::js::write_generated_files_for_adapter_and_app_root(
                     &ctx.project_dir,
-                    crate::build::detect_build_adapter(&ctx.project_dir),
+                    adapter,
                     cfg.js_app_root(),
-                );
+                )
+            {
+                let _ = ctx
+                    .log_tx
+                    .send(ScopedLog::warn(
+                        "tako",
+                        format!("Failed to regenerate types: {err}"),
+                    ))
+                    .await;
+                continue;
             }
 
             *ctx.env_state.lock().await = new_env.clone();
@@ -223,6 +241,7 @@ async fn log_restart_reason(ctx: &ConfigReloadLoop, change: watcher::WatchChange
         watcher::WatchChange::Config => "tako.toml changed, restarting…",
         watcher::WatchChange::Secrets => "Secrets changed, restarting…",
         watcher::WatchChange::Channels => "Channels, presence, or stores changed, restarting…",
+        watcher::WatchChange::Services => "services/ changed, restarting…",
         watcher::WatchChange::Workflows => "workflows/ changed, restarting…",
         watcher::WatchChange::GeneratedDeclarations => unreachable!(),
     };
@@ -253,13 +272,17 @@ mod tests {
     }
 
     #[test]
-    fn channel_and_workflow_changes_only_restart_current_registration() {
+    fn definition_changes_only_restart_current_registration() {
         assert!(!should_register_for_change(
             watcher::WatchChange::Channels,
             false
         ));
         assert!(!should_register_for_change(
             watcher::WatchChange::Workflows,
+            false
+        ));
+        assert!(!should_register_for_change(
+            watcher::WatchChange::Services,
             false
         ));
     }

@@ -226,7 +226,7 @@ Tako exists in a crowded space. Keep these tools in mind when writing — refere
 
 **Reverse proxies (Tako uses Pingora):**
 
-- **Caddy** — Auto HTTPS, Go. 70.9k stars. Used by Uncloud, Ptah.sh.
+- **Caddy** — Auto HTTPS, Go. 70.9k stars. Used by Ptah.sh.
 - **Traefik** — Cloud-native proxy, Docker/K8s auto-config. 62.2k stars. Used by Sidekick, Exoframe.
 - **Pingora** — Cloudflare's Rust proxy framework. 26.3k stars. What Tako is built on.
 

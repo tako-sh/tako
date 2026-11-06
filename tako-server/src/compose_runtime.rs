@@ -8,6 +8,23 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::Path;
 pub(crate) use tako_compose::ComposeRuntime;
+
+static NATIVE_NETWORK: std::sync::OnceLock<tako_compose::NativeNetwork> =
+    std::sync::OnceLock::new();
+
+pub(crate) fn configure_native_network(network: &tako_network::NetworkId) -> Result<(), String> {
+    let config = tako_compose::NativeNetwork::new(&network.to_string())?;
+    if let Some(previous) = NATIVE_NETWORK.get() {
+        return if previous == &config {
+            Ok(())
+        } else {
+            Err("native Compose network already configured".into())
+        };
+    }
+    NATIVE_NETWORK
+        .set(config)
+        .map_err(|_| "native Compose network initialization raced".into())
+}
 #[cfg(test)]
 use tako_compose::{render_override, validate_model};
 #[cfg(test)]
@@ -27,7 +44,13 @@ pub(crate) fn for_config(config: &crate::instances::AppConfig) -> Result<Compose
             .ok_or("App is not a Compose project")?,
         env,
     )
-    .map(|runtime| runtime.with_replicas(config.compose_replicas.clone()))
+    .map(|runtime| {
+        let runtime = runtime.with_replicas(config.compose_replicas.clone());
+        match NATIVE_NETWORK.get() {
+            Some(network) => runtime.with_native_network(network.clone()),
+            None => runtime,
+        }
+    })
 }
 
 pub(crate) async fn prepare(

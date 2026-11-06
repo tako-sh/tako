@@ -25,11 +25,21 @@ export const docsNavigation = [
   },
   {
     title: "Primitives",
-    pages: ["secrets", "storage", "images", "cache", "channels", "presence", "stores", "workflows"],
+    pages: [
+      "secrets",
+      "storage",
+      "images",
+      "cache",
+      "service-contracts",
+      "channels",
+      "presence",
+      "stores",
+      "workflows",
+    ],
   },
   {
     title: "Deploy and operate",
-    pages: ["servers", "deployment", "routing", "operations", "backups", "troubleshooting"],
+    pages: ["networks", "servers", "deployment", "routing", "operations", "backups", "troubleshooting"],
   },
   { title: "Reference", pages: ["cli", "tako-toml", "presets", "how-tako-works"] },
 ];

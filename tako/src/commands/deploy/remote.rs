@@ -400,6 +400,7 @@ async fn send_deploy_command(
     release_dir: &str,
     deploy_secrets: Option<std::collections::HashMap<String, String>>,
 ) -> Result<(), management_http::ManagementError> {
+    let server_admin = client.can_manage_server();
     let response = client
         .send(&Command::Deploy {
             app: config.app_name.clone(),
@@ -408,8 +409,8 @@ async fn send_deploy_command(
             routes: config.routes.clone(),
             source_ip: config.source_ip,
             secrets: deploy_secrets,
-            runtime_credentials: Some(config.runtime_credentials.clone()),
-            storages: Some(config.storages.clone()),
+            runtime_credentials: server_admin.then(|| config.runtime_credentials.clone()),
+            storages: server_admin.then(|| config.storages.clone()),
             ssl: ssl_binding_for_start_command(&config.ssl),
             backup: config.backup.clone().map(Box::new),
             force: config.force,
@@ -513,7 +514,7 @@ pub(super) async fn deploy_to_server(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let _server_deploy_timer =
         output::timed(&format!("Server deploy ({target_label}:{})", server.host));
-    let mut client = ManagementClient::new(&server.host)
+    let mut client = ManagementClient::for_server(server)
         .await
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
     let archive_size_bytes = std::fs::metadata(archive_path)?.len();

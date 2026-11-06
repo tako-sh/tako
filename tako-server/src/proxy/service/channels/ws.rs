@@ -1,4 +1,5 @@
-use crate::channels::{ChannelAuthResponse, ChannelError, ChannelOperation, ChannelStore};
+use crate::channels::{ChannelAuthResponse, ChannelError, ChannelOperation};
+use crate::native_channel_client::ProxyChannelStore;
 use crate::proxy::TakoProxy;
 use bytes::Bytes;
 use pingora_core::prelude::*;
@@ -44,9 +45,9 @@ impl TakoProxy {
     pub(super) async fn write_channel_websocket(
         &self,
         session: &mut Session,
-        store: &Arc<ChannelStore>,
+        store: &Arc<ProxyChannelStore>,
         channel: &str,
-        query_after: Option<i64>,
+        query_after: Option<tako_channels::ReplayCursor>,
         presence_params: serde_json::Value,
         auth_mode: ChannelWebSocketAuth,
     ) -> Result<bool> {
@@ -153,14 +154,15 @@ impl TakoProxy {
             }
         };
 
-        tako_channels::websocket::serve(
+        tako_channels::websocket::serve_with_writer(
             session,
-            store,
+            store.store(),
             channel,
             requested_after,
             auth,
             presence_params,
             reader,
+            store.clone(),
         )
         .await
     }

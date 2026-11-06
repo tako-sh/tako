@@ -47,45 +47,29 @@ After first-time local setup, agents should inspect `tako dev list --json` befor
 
 ## Remote setup
 
-Remote deploys require [Tailscale](https://tailscale.com/) or [NetBird](https://netbird.io/), including self-hosted networks. Install your preferred VPN and its CLI on your workstation and deployment host, connect both to the same network, and allow SSH and TCP port `9844` between them in its access policies.
-
-From your developer machine, add the server by its VPN hostname or IP:
+Create a native network and enroll a supported Linux server:
 
 ```bash
-tako servers add admin-user@my-server
+tako network create production
+tako servers add admin@203.0.113.10 --network production --name edge-a --wireguard-endpoint 203.0.113.10:51820
+tako network list --json
 ```
 
-Setup asks which VPN to use. Connected providers appear first with a `detected` hint, and the first option is preselected. For scripts, pass `--vpn tailscale` or `--vpn netbird`. The choice is saved per server and reused for repair and upgrades. Existing server entries default to Tailscale. See [Servers](/servers/#choose-the-vpn-provider) for NetBird examples, noninteractive selection, and direct installation.
+Replace the example IP with your server's reachable IP. Bootstrap uses administrator SSH; subsequent management uses pinned HTTPS with this device's keys. Allow HTTPS and the configured WireGuard UDP port on the server. No external network account or workstation TUN interface is required for deployment. See [Native networks](/networks/) for firewall requirements, device enrollment, and scoped sandbox access.
 
-The `admin-user@host` form tells Tako which admin SSH user to use if install or repair is needed. Tako stores the VPN host and uses its first label as the server name. Before saving the server in your global `config.toml`, Tako checks the selected private network, verifies `tako` SSH recovery access, records target metadata, and verifies signed private management.
-
-If `tako-server` is missing or access needs repair, that shorthand bootstraps the host with the provided admin user. Tako starts the service with default listener settings, enrolls the SSH key used for signed management, and installs the libvips runtime used by the image optimizer.
-
-Check remote access:
-
-```bash
-tako status
-```
-
-To install from the host itself, run the server installer as root and enter your workstation SSH public key when prompted:
-
-```bash
-sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"
-```
-
-The installer bootstraps the host and starts `tako-server`. Run `tako servers add` from your developer machine to verify access and save it locally.
+Existing [Tailscale or NetBird installations](/servers/) remain supported with `tako servers add admin@vpn-host --vpn tailscale` or `--vpn netbird`.
 
 ## First deployment
 
 Run the following commands from your app directory.
 
-The app already has a `tako.toml` from local setup. Check its production route and server mapping, and set the app's required [Secrets](/secrets/) and [Storage](/storage/) bindings before deploying.
+The app already has a `tako.toml` from local setup. Check its production route and network or server selection, and set the app's required [Secrets](/secrets/) and [Storage](/storage/) bindings before deploying.
 
 ```bash
-tako servers list --json
+tako network list --json
 ```
 
-Run `tako agents` anytime to set up or refresh agent support; see [Coding agents](/agents/). If multiple servers exist, map the desired names in `[envs.production].servers`; see [Deployment](/deployment/#configure-an-environment).
+Run `tako agents` anytime to set up or refresh agent support; see [Coding agents](/agents/). Set `[envs.production].network` to the stable ID from `network list`. For legacy inventory, map names with `[envs.production].servers`. See [Deployment](/deployment/#configure-an-environment).
 
 `tako dev` uses `{app}.test` by default. Add `[envs.development]` only when you want custom local routes.
 

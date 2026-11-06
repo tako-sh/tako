@@ -157,6 +157,25 @@ pub enum Commands {
     #[command(subcommand)]
     Servers(server::ServerCommands),
 
+    /// Private network membership and portable configuration
+    #[command(subcommand)]
+    Network(commands::network::NetworkCommands),
+
+    /// Connect this machine to a private network until explicitly disconnected
+    Connect { network: Option<String> },
+
+    /// Disconnect this machine from a private network
+    Disconnect { network: Option<String> },
+
+    /// SSH to an approved server using this machine's network identity
+    Ssh {
+        server: String,
+        #[arg(long)]
+        network: Option<String>,
+        #[arg(last = true)]
+        command: Vec<String>,
+    },
+
     /// Secret management commands
     #[command(subcommand)]
     Secrets(secret::SecretCommands),
@@ -300,6 +319,10 @@ fn telemetry_command(command: &Commands) -> &'static str {
         Commands::Doctor => "doctor",
         Commands::Status => "status",
         Commands::Servers(_) => "servers",
+        Commands::Network(_) => "network",
+        Commands::Connect { .. } => "connect",
+        Commands::Disconnect { .. } => "disconnect",
+        Commands::Ssh { .. } => "ssh",
         Commands::Secrets(_) => "secrets",
         Commands::Storages(_) => "storages",
         Commands::Backups(_) => "backups",
@@ -406,7 +429,15 @@ impl Cli {
                 rt.block_on(commands::doctor::run())
             }
             Commands::Servers(cmd) => {
-                let emit_generic = json && !matches!(cmd, server::ServerCommands::List);
+                let emit_generic = json
+                    && !matches!(
+                        &cmd,
+                        server::ServerCommands::List
+                            | server::ServerCommands::Add {
+                                network: Some(_),
+                                ..
+                            }
+                    );
                 server::run(cmd)?;
                 if emit_generic {
                     json_success(true, "servers")
@@ -414,6 +445,23 @@ impl Cli {
                     Ok(())
                 }
             }
+            Commands::Network(cmd) => commands::network::run(cmd, self.config.as_deref()),
+            Commands::Connect { network } => {
+                commands::network::connect(network.as_deref(), self.config.as_deref())
+            }
+            Commands::Disconnect { network } => {
+                commands::network::disconnect(network.as_deref(), self.config.as_deref())
+            }
+            Commands::Ssh {
+                server,
+                network,
+                command,
+            } => commands::network::ssh(
+                &server,
+                network.as_deref(),
+                self.config.as_deref(),
+                &command,
+            ),
             Commands::Secrets(cmd) => {
                 let emit_generic = json && !matches!(cmd, secret::SecretCommands::List);
                 secret::run(cmd, self.config.as_deref())?;

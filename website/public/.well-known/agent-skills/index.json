@@ -4,9 +4,9 @@
     {
       "name": "tako",
       "type": "framework",
-      "description": "Build, run, deploy, and debug Tako applications. Use for projects with tako.toml, tako.sh imports, the Tako Go or Rust SDK, or tasks involving Tako local HTTPS, deployments, logs, routing, secrets, storage, channels, presence, stores, and workflows.",
+      "description": "Build, run, deploy, and debug Tako applications. Use for projects with tako.toml, tako.sh imports, the Tako Go or Rust SDK, or tasks involving Tako local HTTPS, deployments, logs, routing, typed HTTP contracts, secrets, storage, channels, presence, stores, and workflows.",
       "url": "https://tako.sh/.well-known/agent-skills/tako/SKILL.md",
-      "sha256": "b1ee2f5db1f4ec2f5700dfde545450c58105554bff3c8039100060b0644fbc70"
+      "sha256": "07064c3181a1541e11fc3c5976f95b7ff475fba719c6e6d0bab022e3a404d5d9"
     },
     {
       "name": "tako-sdk-go",
@@ -18,9 +18,9 @@
     {
       "name": "tako-sdk-js",
       "type": "framework",
-      "description": "tako.sh SDK: fetch handler interface, tako runtime object, generated tako.d.ts type augmentation, defineChannel/definePresence/defineStore/defineWorkflow, live data and offline reads, Vite and Next.js adapters.",
+      "description": "tako.sh SDK: fetch handler interface, tako runtime object, generated tako.d.ts type augmentation, typed HTTP service contracts, defineChannel/definePresence/defineStore/defineWorkflow, replay recovery, live data and offline reads, Vite and Next.js adapters.",
       "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-js/SKILL.md",
-      "sha256": "042cc4c0c314335a4f7c8a0488cd09bed30189646acdd1c0ce8f8058808cb964"
+      "sha256": "db713854963209b6eda009664ea42a1dcac3bc12346a0082c688d6cc118d44b4"
     },
     {
       "name": "tako-sdk-rust",

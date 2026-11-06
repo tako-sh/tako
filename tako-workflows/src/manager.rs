@@ -94,9 +94,22 @@ pub struct WorkflowManager {
     /// can't each start their own supervisor + cron ticker and then have
     /// one silently overwrite the other (leaking the loser's children).
     ensure_gate: tokio::sync::Mutex<()>,
+    retired: parking_lot::Mutex<Vec<(Arc<WorkerSupervisor>, tokio::task::JoinHandle<()>)>>,
 }
 
 type PostgresUrlResolver = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct DrainStatus {
+    pub workers: usize,
+    pub background_tasks: usize,
+}
+
+impl DrainStatus {
+    pub fn is_complete(self) -> bool {
+        self.workers == 0 && self.background_tasks == 0
+    }
+}
 
 #[derive(thiserror::Error, Debug)]
 pub enum WorkflowManagerError {
@@ -109,6 +122,57 @@ pub enum WorkflowManagerError {
 }
 
 impl WorkflowManager {
+    pub fn begin_server_drain(&self) {
+        for entry in self.apps.write().values_mut() {
+            entry.accepting_new_work.store(false, Ordering::SeqCst);
+            if let Some(cron) = entry.cron.as_mut() {
+                cron.request_shutdown();
+            }
+            if let Some(dispatcher) = entry.dispatcher.as_mut() {
+                dispatcher.request_shutdown();
+            }
+            entry.supervisor.begin_drain();
+        }
+        for (supervisor, _) in self.retired.lock().iter() {
+            supervisor.begin_drain();
+        }
+    }
+
+    pub fn server_drain_status(&self) -> DrainStatus {
+        let mut status = DrainStatus::default();
+        for entry in self.apps.read().values() {
+            status.workers += entry.supervisor.remaining_children();
+            status.background_tasks +=
+                usize::from(entry.cron.as_ref().is_some_and(|c| !c.is_finished()));
+            status.background_tasks +=
+                usize::from(entry.dispatcher.as_ref().is_some_and(|d| !d.is_finished()));
+        }
+        self.retired.lock().retain(|(supervisor, task)| {
+            let workers = supervisor.remaining_children();
+            status.workers += workers;
+            status.background_tasks += usize::from(!task.is_finished());
+            workers > 0 || !task.is_finished()
+        });
+        status
+    }
+
+    /// Returns kill requests and failures. Process exits remain observable separately.
+    pub fn force_server_drain(&self) -> (usize, usize) {
+        let mut result = (0, 0);
+        let apps = self.apps.read();
+        let retired = self.retired.lock();
+        for supervisor in apps
+            .values()
+            .map(|entry| &entry.supervisor)
+            .chain(retired.iter().map(|(supervisor, _)| supervisor))
+        {
+            let (signalled, errors) = supervisor.force_stop();
+            result.0 += signalled;
+            result.1 += errors;
+        }
+        result
+    }
+
     pub fn new(data_dir: impl Into<PathBuf>) -> Self {
         Self {
             data_dir: data_dir.into(),
@@ -118,6 +182,7 @@ impl WorkflowManager {
             channel_publish: parking_lot::Mutex::new(None),
             peer_auth: parking_lot::Mutex::new(None),
             ensure_gate: tokio::sync::Mutex::new(()),
+            retired: parking_lot::Mutex::new(Vec::new()),
         }
     }
 
@@ -276,8 +341,21 @@ impl WorkflowManager {
         let old_entry = apps.insert(app.to_string(), entry);
         drop(apps);
 
-        if let Some(old_entry) = old_entry {
-            tokio::spawn(old_entry.drain_existing_work());
+        if let Some(mut old_entry) = old_entry {
+            old_entry.accepting_new_work.store(false, Ordering::SeqCst);
+            if let Some(cron) = old_entry.cron.as_mut() {
+                cron.request_shutdown();
+            }
+            if let Some(dispatcher) = old_entry.dispatcher.as_mut() {
+                dispatcher.request_shutdown();
+            }
+            let supervisor = old_entry.supervisor.clone();
+            let task = tokio::spawn(old_entry.drain_existing_work());
+            let mut retired = self.retired.lock();
+            retired.retain(|(supervisor, task)| {
+                !task.is_finished() || supervisor.remaining_children() > 0
+            });
+            retired.push((supervisor, task));
         }
         Ok(())
     }
@@ -489,6 +567,81 @@ mod tests {
             isolation: None,
             lanes: Vec::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn server_drain_stops_claims_and_backgrounds_and_can_resume_without_socket() {
+        let tmp = tempfile::tempdir().unwrap();
+        let m = WorkflowManager::new(tmp.path());
+        for name in ["a", "b"] {
+            m.ensure(name, None, |db| dummy_spec(tmp.path().into(), db))
+                .await
+                .unwrap();
+        }
+        let handlers = m.apps.read()["a"].handlers();
+        m.begin_server_drain();
+        assert!(!handlers.accepting_new_work.load(Ordering::SeqCst));
+        m.supervisor_for("a").unwrap().wake().unwrap();
+        assert!(!m.supervisor_for("a").unwrap().is_running());
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !m.server_drain_status().is_complete() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(m.force_server_drain(), (0, 0));
+        assert!(m.has("a"));
+        m.ensure("a", None, |db| dummy_spec(tmp.path().into(), db))
+            .await
+            .unwrap();
+        assert!(
+            m.apps.read()["a"]
+                .handlers()
+                .accepting_new_work
+                .load(Ordering::SeqCst)
+        );
+        m.begin_server_drain();
+    }
+
+    #[tokio::test]
+    async fn server_drain_includes_retired_release_workers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let m = WorkflowManager::new(tmp.path());
+        m.ensure("a", None, |db| {
+            let mut spec = dummy_spec(tmp.path().into(), db);
+            spec.command = vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "trap '' TERM; touch ready; exec sleep 60".into(),
+            ];
+            spec
+        })
+        .await
+        .unwrap();
+        let old = m.supervisor_for("a").unwrap();
+        old.wake().unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !tmp.path().join("ready").exists() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        m.ensure("a", None, |db| dummy_spec(tmp.path().into(), db))
+            .await
+            .unwrap();
+        m.begin_server_drain();
+        assert_eq!(m.server_drain_status().workers, 1);
+        assert_eq!(m.force_server_drain(), (1, 0));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !m.server_drain_status().is_complete() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!old.is_running());
     }
 
     #[tokio::test]

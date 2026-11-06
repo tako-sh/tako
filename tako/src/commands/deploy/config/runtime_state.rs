@@ -18,16 +18,19 @@ pub(in crate::commands::deploy) fn validate_runtime_state_storage_for_deploy(
         return result;
     }
 
-    if server_count > 1 && workflow_storage == WorkflowStorageIntent::AllLocal && !has_channels {
-        return result;
-    }
-
+    let native_network = tako_config
+        .envs
+        .get(env)
+        .is_some_and(|selected| selected.network.is_some());
+    let channels_require_postgres = has_channels && !native_network;
+    let requires_postgres = server_count > 1
+        && (workflow_storage == WorkflowStorageIntent::RequiresRemote || channels_require_postgres);
     let postgres_credential = secrets.get_credential(env, POSTGRES_CREDENTIAL_NAME);
-    if server_count > 1 && postgres_credential.is_none() {
+    if requires_postgres && postgres_credential.is_none() {
         result.error(format!(
             "{} in environment '{env}' target {server_count} servers. {}",
-            runtime_state_subject(workflow_storage, has_channels),
-            missing_postgres_storage_action(workflow_storage, has_channels, env)
+            runtime_state_subject(workflow_storage, channels_require_postgres),
+            missing_postgres_storage_action(workflow_storage, channels_require_postgres, env)
         ));
         return result;
     }

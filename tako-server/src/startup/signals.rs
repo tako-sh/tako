@@ -40,6 +40,7 @@ pub(super) fn spawn_reload_signal_handlers(rt: &Runtime, startup_exe: Option<Pat
             match std::process::Command::new(&exe)
                 .args(&args)
                 .env(SIGNAL_PARENT_ON_READY_ENV, "1")
+                .env_remove("TAKO_NATIVE_PROMOTION")
                 .spawn()
             {
                 Ok(child) => tracing::info!(pid = child.id(), "New server process spawned"),

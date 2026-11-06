@@ -1,12 +1,18 @@
+use crate::{ChannelEvent, ChannelEventId};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use parking_lot::Mutex;
 use std::path::Path;
 
-use crate::{ChannelAuthResponse, ChannelError, ChannelMessage, ChannelPublishPayload};
+use crate::{
+    ChannelAuthResponse, ChannelError, ChannelMessage, ChannelPublishPayload, ReplayCursor,
+};
 
-use super::{channel_message_from_row, now_unix_ms, resolve_replay_cursor};
+use super::{channel_message_from_row, now_unix_ms};
+use rusqlite::OptionalExtension;
 
 // Autoincrement message IDs start at one, so zero is the initial cursor.
-const READ_AFTER_SQL: &str = "SELECT id, channel, type, data_json
+const READ_AFTER_SQL: &str = "SELECT id, channel, type, data_json,
+    (SELECT event_json FROM channel_message_events WHERE message_id = channel_messages.id)
     FROM channel_messages WHERE channel = ?1 AND id > ?2 ORDER BY id ASC LIMIT ?3";
 
 const INCREMENTAL_VACUUM_PAGES: i64 = 128;
@@ -16,129 +22,269 @@ fn storage_err(e: impl std::fmt::Display) -> ChannelError {
     ChannelError::Storage(e.to_string())
 }
 
-/// Per app/environment SQLite-backed channel store.
-///
-/// The connection is opened once and reused; every operation locks a
-/// mutex and uses the cached connection. Callers should hold a single
-/// `ChannelStore` for each DB path and share it across requests (e.g.
-/// behind an `Arc`): constructing a new `ChannelStore` reruns pragmas
-/// and schema init on every call.
+/// Hard replay budgets. Byte limits count UTF-8 channel, type and serialized data bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SqliteReplayLimits {
+    pub max_messages_per_stream: u64,
+    pub max_bytes_per_stream: u64,
+    pub max_messages: u64,
+    pub max_bytes: u64,
+    /// Zero disables this age cap, not the count or byte budgets.
+    pub max_age_ms: u64,
+}
+
+impl Default for SqliteReplayLimits {
+    fn default() -> Self {
+        Self {
+            max_messages_per_stream: 10_000,
+            max_bytes_per_stream: 16 * 1024 * 1024,
+            max_messages: 100_000,
+            max_bytes: 64 * 1024 * 1024,
+            max_age_ms: 24 * 60 * 60 * 1000,
+        }
+    }
+}
+
+impl SqliteReplayLimits {
+    fn validate(self) -> Result<Self, ChannelError> {
+        let bounds = [
+            self.max_messages_per_stream,
+            self.max_bytes_per_stream,
+            self.max_messages,
+            self.max_bytes,
+        ];
+        if bounds
+            .iter()
+            .any(|value| *value == 0 || *value > i64::MAX as u64)
+            || self.max_age_ms > i64::MAX as u64
+        {
+            return Err(ChannelError::BadRequest(
+                "replay count/byte limits must be positive SQLite integers".into(),
+            ));
+        }
+        Ok(self)
+    }
+}
+
 pub(super) struct SqliteChannelStore {
     pub(crate) conn: Mutex<rusqlite::Connection>,
+    epoch: [u8; 16],
 }
 
 impl SqliteChannelStore {
-    pub(super) fn open(path: &Path) -> Result<Self, ChannelError> {
+    pub(super) fn open(
+        path: &Path,
+        limits: Option<SqliteReplayLimits>,
+    ) -> Result<Self, ChannelError> {
+        let limits = limits.map(SqliteReplayLimits::validate).transpose()?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| ChannelError::Storage(format!("create channel dir: {e}")))?;
         }
-        let conn = tako_sqlite::open_local(path).map_err(storage_err)?;
-        init_connection(&conn)?;
+        let mut conn = tako_sqlite::open_local(path).map_err(storage_err)?;
+        let epoch = init_connection(&mut conn, limits)?;
         Ok(Self {
+            epoch,
             conn: Mutex::new(conn),
         })
     }
 
     pub(super) fn open_in_memory() -> Result<Self, ChannelError> {
-        let conn = tako_sqlite::open_in_memory().map_err(storage_err)?;
-        init_connection(&conn)?;
+        let mut conn = tako_sqlite::open_in_memory().map_err(storage_err)?;
+        let epoch = init_connection(&mut conn, None)?;
         Ok(Self {
+            epoch,
             conn: Mutex::new(conn),
         })
     }
 
-    pub(super) fn append(
+    pub(super) fn open_reader(path: &Path) -> Result<Self, ChannelError> {
+        let conn = rusqlite::Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        conn.busy_timeout(std::time::Duration::from_secs(3))?;
+        let epoch: Vec<u8> = conn.query_row(
+            "SELECT epoch FROM channel_store_state WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        load_limits(&conn)?;
+        replay_epoch(&conn)?;
+        Ok(Self {
+            epoch: epoch
+                .try_into()
+                .map_err(|_| storage_err("invalid channel epoch"))?,
+            conn: Mutex::new(conn),
+        })
+    }
+
+    pub(super) fn publish(
         &self,
         channel: &str,
         payload: &ChannelPublishPayload,
-    ) -> Result<ChannelMessage, ChannelError> {
-        let data_json = serde_json::to_string(&payload.data)
-            .map_err(|e| ChannelError::BadRequest(format!("serialize payload: {e}")))?;
+        ephemeral: bool,
+    ) -> Result<(ChannelMessage, ChannelEvent), ChannelError> {
         let mut conn = self.conn.lock();
-        let tx = conn.transaction().map_err(storage_err)?;
-        tx.execute(
-            "INSERT INTO channel_metadata (channel, replay_window_ms, inactivity_ttl_ms, keepalive_interval_ms, max_connection_lifetime_ms, last_activity_unix_ms)
-             VALUES (?1, 600000, 0, 25000, 7200000, ?2) ON CONFLICT(channel) DO NOTHING",
-            rusqlite::params![channel, now_unix_ms()],
-        ).map_err(storage_err)?;
-        {
-            let mut stmt = tx
-                .prepare_cached(
-                    "UPDATE channel_metadata SET last_activity_unix_ms = ?2 WHERE channel = ?1",
-                )
-                .map_err(storage_err)?;
-            stmt.execute(rusqlite::params![channel, now_unix_ms()])
-                .map_err(storage_err)?;
-        }
-        {
-            let mut stmt = tx
-                .prepare_cached(
-                    "INSERT INTO channel_messages (channel, type, data_json) VALUES (?1, ?2, ?3)",
-                )
-                .map_err(storage_err)?;
-            stmt.execute(rusqlite::params![channel, payload.r#type, data_json])
-                .map_err(storage_err)?;
-        }
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let sequence: i64 = tx.query_row(
+            "UPDATE channel_event_sequence SET sequence = sequence + 1
+             WHERE singleton = 1 AND sequence < 9223372036854775807 RETURNING sequence",
+            [],
+            |row| row.get(0),
+        )?;
+        let event = ChannelEvent {
+            id: ChannelEventId {
+                origin: URL_SAFE_NO_PAD.encode(self.epoch),
+                sequence: sequence as u64,
+            },
+            channel: channel.into(),
+            payload: payload.clone(),
+            ephemeral,
+        };
+        let message = append_event(&tx, replay_epoch(&tx)?, &event)?;
+        tx.commit()?;
+        Ok((message, event))
+    }
 
-        let id = tx.last_insert_rowid();
+    pub(super) fn ingest_remote(
+        &self,
+        event: &ChannelEvent,
+        signal_gap: impl FnOnce(),
+    ) -> Result<Option<ChannelMessage>, ChannelError> {
+        if event.id.sequence == 0
+            || event.id.sequence > i64::MAX as u64
+            || event.id.origin.is_empty()
+            || event.id.origin.len() > 128
+            || !event
+                .id
+                .origin
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+        {
+            return Err(ChannelError::BadRequest(
+                "invalid channel event identity".into(),
+            ));
+        }
+        if event.id.origin == URL_SAFE_NO_PAD.encode(self.epoch) {
+            return Ok(None);
+        }
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let previous: i64 = tx
+            .query_row(
+                "SELECT sequence FROM channel_remote_origins WHERE origin = ?1",
+                [&event.id.origin],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        let sequence = event.id.sequence as i64;
+        if sequence <= previous {
+            return Ok(None);
+        }
+        let gap = sequence > previous + 1;
+        if gap {
+            rotate_replay_epoch(&tx)?;
+        }
+        let message = append_event(&tx, replay_epoch(&tx)?, event)?;
         tx.execute(
-            "UPDATE channel_metadata SET latest_message_id = ?2 WHERE channel = ?1",
-            rusqlite::params![channel, id],
-        )
-        .map_err(storage_err)?;
-        tx.commit().map_err(storage_err)?;
-
-        Ok(ChannelMessage {
-            id: id.to_string(),
-            channel: channel.to_string(),
-            r#type: payload.r#type.clone(),
-            data: payload.data.clone(),
-        })
+            "INSERT INTO channel_remote_origins(origin, sequence) VALUES (?1, ?2)
+            ON CONFLICT(origin) DO UPDATE SET sequence = excluded.sequence",
+            rusqlite::params![event.id.origin, sequence],
+        )?;
+        if gap {
+            // Other connections can read the row as soon as this transaction commits.
+            signal_gap();
+        }
+        tx.commit()?;
+        Ok(Some(message))
     }
 
     pub(super) fn read_after(
         &self,
         channel: &str,
-        after: Option<i64>,
+        after: Option<ReplayCursor>,
         limit: u32,
     ) -> Result<Vec<ChannelMessage>, ChannelError> {
+        let mut conn = self.conn.lock();
+        // Reads never prune. Background maintenance deletes expired rows; the
+        // computed floor hides rows that still wait for it, so replay stays
+        // read-only and never contends with publishers for the write lock.
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)?;
+        let expired_floor = expired_floor(&tx, load_limits(&tx)?, channel, now_unix_ms())?;
+        let epoch = replay_epoch(&tx)?;
+        if let Some(cursor) = after {
+            validate_cursor(&tx, epoch, channel, cursor)?;
+            if cursor.position < expired_floor {
+                return Err(ChannelError::StaleCursor);
+            }
+        }
         let rows = {
-            let conn = self.conn.lock();
-            let mut stmt = conn.prepare_cached(READ_AFTER_SQL).map_err(storage_err)?;
-
-            let rows = stmt
-                .query_map(
-                    rusqlite::params![channel, after.unwrap_or(0), i64::from(limit)],
-                    |row| {
-                        Ok((
-                            row.get::<_, i64>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                            row.get::<_, String>(3)?,
-                        ))
-                    },
-                )
-                .map_err(storage_err)?;
-
-            rows.collect::<Result<Vec<_>, _>>().map_err(storage_err)?
+            let mut stmt = tx.prepare_cached(READ_AFTER_SQL)?;
+            stmt.query_map(
+                rusqlite::params![
+                    channel,
+                    after.map_or(0, |cursor| cursor.position).max(expired_floor),
+                    i64::from(limit)
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()?
         };
-
-        rows.into_iter().map(channel_message_from_row).collect()
+        tx.commit()?;
+        rows.into_iter()
+            .map(|row| {
+                let cursor = ReplayCursor::sqlite(epoch, channel, row.0);
+                let mut message = channel_message_from_row((row.0, row.1, row.2, row.3))?;
+                message.event_id = row
+                    .4
+                    .map(|json| serde_json::from_str(&json))
+                    .transpose()
+                    .map_err(storage_err)?;
+                message.id = cursor.to_string();
+                Ok(message)
+            })
+            .collect()
     }
 
     pub(super) fn replay_cursor(
         &self,
         channel: &str,
-        requested: Option<i64>,
-    ) -> Result<Option<i64>, ChannelError> {
-        let conn = self.conn.lock();
-        let (oldest, latest) = conn.query_row(
-            "SELECT MIN(id), COALESCE(MAX(id), (SELECT NULLIF(latest_message_id, 0) FROM channel_metadata WHERE channel = ?1))
-             FROM channel_messages WHERE channel = ?1",
-            rusqlite::params![channel], |row| Ok((row.get(0)?, row.get(1)?)),
-        ).map_err(storage_err)?;
-        resolve_replay_cursor(requested, oldest, latest)
+        requested: Option<ReplayCursor>,
+    ) -> Result<Option<ReplayCursor>, ChannelError> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)?;
+        let expired_floor = expired_floor(&tx, load_limits(&tx)?, channel, now_unix_ms())?;
+        let epoch = replay_epoch(&tx)?;
+        let cursor = if let Some(cursor) = requested {
+            validate_cursor(&tx, epoch, channel, cursor)?;
+            if cursor.position < expired_floor {
+                return Err(ChannelError::StaleCursor);
+            }
+            cursor
+        } else {
+            ReplayCursor::sqlite(epoch, channel, stream_head(&tx, channel)?)
+        };
+        tx.commit()?;
+        Ok(Some(cursor))
+    }
+
+    pub(super) fn invalidate_replay(&self, signal_gap: impl FnOnce()) -> Result<(), ChannelError> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        rotate_replay_epoch(&tx)?;
+        signal_gap();
+        tx.commit()?;
+        Ok(())
     }
 
     pub(super) fn sync_channel(
@@ -183,61 +329,356 @@ impl SqliteChannelStore {
     ) -> Result<Vec<(String, i64)>, ChannelError> {
         let channels = serde_json::to_string(channels).map_err(storage_err)?;
         let conn = self.conn.lock();
-        let mut statement = conn
-            .prepare_cached(
-                "SELECT channel, latest_message_id FROM channel_metadata
+        let mut statement = conn.prepare_cached(
+            "SELECT channel, latest_message_id FROM channel_metadata
              WHERE channel IN (SELECT value FROM json_each(?1)) AND latest_message_id > 0",
-            )
-            .map_err(storage_err)?;
-        statement
-            .query_map([channels], |row| Ok((row.get(0)?, row.get(1)?)))
-            .map_err(storage_err)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(storage_err)
+        )?;
+        let heads = statement
+            .query_map([channels], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(heads)
     }
 
     pub(super) fn prune(&self, now: i64) -> Result<(), ChannelError> {
-        let conn = self.conn.lock();
-
-        conn.execute("DELETE FROM presence WHERE expires_at <= ?1", [now])
-            .map_err(storage_err)?;
-        let mut deleted_rows = 0usize;
-
-        deleted_rows += conn
-                .execute(
-                    "DELETE FROM channel_messages WHERE EXISTS (
-                        SELECT 1 FROM channel_metadata m WHERE m.channel = channel_messages.channel
-                        AND m.replay_window_ms > 0 AND channel_messages.created_at_unix_ms < (?1 - m.replay_window_ms)
-                    )",
-                    rusqlite::params![now],
-                )
-                .map_err(storage_err)?;
-
-        deleted_rows += conn
-            .execute(
-                "DELETE FROM channel_messages
-                 WHERE channel IN (
-                    SELECT channel
-                    FROM channel_metadata
-                    WHERE inactivity_ttl_ms > 0
-                      AND last_activity_unix_ms < (?1 - inactivity_ttl_ms)
-                 )",
-                rusqlite::params![now],
-            )
-            .map_err(storage_err)?;
-
-        if deleted_rows > 0 {
-            run_cleanup_maintenance(&conn, deleted_rows);
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute("DELETE FROM presence WHERE expires_at <= ?1", [now])?;
+        let deleted = prune_replay(&tx, load_limits(&tx)?, now)?;
+        tx.commit()?;
+        if deleted > 0 {
+            run_cleanup_maintenance(&conn, deleted);
         }
-
         Ok(())
     }
 }
 
-fn init_connection(conn: &rusqlite::Connection) -> Result<(), ChannelError> {
+/// Which rows of a stream the age rules retire at `now`.
+enum AgeCutoff {
+    /// The stream is inactive: every retained row has expired.
+    Everything,
+    /// Rows created before this timestamp have expired.
+    Before(i64),
+}
+
+fn age_cutoff(
+    limits: SqliteReplayLimits,
+    lifecycle: Option<(i64, i64, i64)>,
+    now: i64,
+) -> Option<AgeCutoff> {
+    let mut cutoff = (limits.max_age_ms > 0).then(|| now - limits.max_age_ms as i64);
+    if let Some((replay_window_ms, inactivity_ttl_ms, last_activity_unix_ms)) = lifecycle {
+        if inactivity_ttl_ms > 0 && last_activity_unix_ms < now - inactivity_ttl_ms {
+            return Some(AgeCutoff::Everything);
+        }
+        if replay_window_ms > 0 {
+            let window = now - replay_window_ms;
+            cutoff = Some(cutoff.map_or(window, |cutoff| cutoff.max(window)));
+        }
+    }
+    cutoff.map(AgeCutoff::Before)
+}
+
+fn stream_lifecycle(
+    conn: &rusqlite::Connection,
+    channel: &str,
+) -> Result<Option<(i64, i64, i64)>, ChannelError> {
+    Ok(conn
+        .query_row(
+            "SELECT replay_window_ms, inactivity_ttl_ms, last_activity_unix_ms
+             FROM channel_metadata WHERE channel = ?1",
+            [channel],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?)
+}
+
+/// Highest expired position of a stream, including rows maintenance has not
+/// deleted yet. Uses the (channel, created_at) index, so it only visits rows
+/// that are already past the cutoff.
+fn expired_floor(
+    conn: &rusqlite::Connection,
+    limits: SqliteReplayLimits,
+    channel: &str,
+    now: i64,
+) -> Result<i64, ChannelError> {
+    Ok(
+        match age_cutoff(limits, stream_lifecycle(conn, channel)?, now) {
+            None => 0,
+            Some(AgeCutoff::Everything) => conn.query_row(
+                "SELECT COALESCE(MAX(id), 0) FROM channel_messages WHERE channel = ?1",
+                [channel],
+                |row| row.get(0),
+            )?,
+            Some(AgeCutoff::Before(created)) => conn.query_row(
+                "SELECT COALESCE(MAX(id), 0) FROM channel_messages
+                 WHERE channel = ?1 AND created_at_unix_ms < ?2",
+                rusqlite::params![channel, created],
+                |row| row.get(0),
+            )?,
+        },
+    )
+}
+
+fn replay_epoch(conn: &rusqlite::Connection) -> Result<[u8; 16], ChannelError> {
+    let bytes: Vec<u8> = conn.query_row(
+        "SELECT epoch FROM channel_replay_state WHERE singleton = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    bytes
+        .try_into()
+        .map_err(|_| storage_err("invalid replay epoch"))
+}
+
+fn rotate_replay_epoch(conn: &rusqlite::Connection) -> Result<(), ChannelError> {
+    let mut epoch = [0u8; 16];
+    getrandom::fill(&mut epoch).map_err(storage_err)?;
+    conn.execute(
+        "UPDATE channel_replay_state SET epoch = ?1 WHERE singleton = 1",
+        [epoch.as_slice()],
+    )?;
+    Ok(())
+}
+
+fn append_event(
+    tx: &rusqlite::Connection,
+    epoch: [u8; 16],
+    event: &ChannelEvent,
+) -> Result<ChannelMessage, ChannelError> {
+    let mut message = ChannelMessage {
+        id: String::new(),
+        event_id: Some(event.id.clone()),
+        channel: event.channel.clone(),
+        r#type: event.payload.r#type.clone(),
+        data: event.payload.data.clone(),
+    };
+    if event.ephemeral {
+        return Ok(message);
+    }
+    let data_json = serde_json::to_string(&event.payload.data).map_err(storage_err)?;
+    let limits = load_limits(tx)?;
+    let bytes = event
+        .channel
+        .len()
+        .saturating_add(event.payload.r#type.len())
+        .saturating_add(data_json.len()) as u64;
+    if bytes > limits.max_bytes || bytes > limits.max_bytes_per_stream {
+        return Err(ChannelError::BadRequest(
+            "message exceeds SQLite replay byte budget".into(),
+        ));
+    }
+    let now = now_unix_ms();
+    tx.execute(
+        "INSERT INTO channel_metadata (channel, replay_window_ms, inactivity_ttl_ms, keepalive_interval_ms, max_connection_lifetime_ms, last_activity_unix_ms)
+         VALUES (?1, 600000, 0, 25000, 7200000, ?2)
+         ON CONFLICT(channel) DO UPDATE SET last_activity_unix_ms = excluded.last_activity_unix_ms", rusqlite::params![event.channel, now])?;
+    tx.execute("INSERT INTO channel_messages (channel, type, data_json, created_at_unix_ms) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![event.channel, event.payload.r#type, data_json, now])?;
+    let id = tx.last_insert_rowid();
+    tx.execute(
+        "INSERT INTO channel_message_events(message_id, event_json) VALUES (?1, ?2)",
+        rusqlite::params![id, serde_json::to_string(&event.id).map_err(storage_err)?],
+    )?;
+    tx.execute(
+        "UPDATE channel_metadata SET latest_message_id = ?2 WHERE channel = ?1",
+        rusqlite::params![event.channel, id],
+    )?;
+    // Age pruning belongs to background maintenance. Budgets are hard bounds,
+    // so this publish retires the oldest rows when the counters say it must.
+    enforce_stream_budget(tx, limits, &event.channel)?;
+    enforce_store_budget(tx, limits)?;
+    message.id = ReplayCursor::sqlite(epoch, &event.channel, id).to_string();
+    Ok(message)
+}
+
+fn load_limits(conn: &rusqlite::Connection) -> Result<SqliteReplayLimits, ChannelError> {
+    let json: String = conn.query_row(
+        "SELECT limits_json FROM channel_store_state WHERE singleton = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    serde_json::from_str::<SqliteReplayLimits>(&json)
+        .map_err(storage_err)?
+        .validate()
+}
+
+fn stream_head(conn: &rusqlite::Connection, channel: &str) -> Result<i64, ChannelError> {
+    Ok(conn
+        .query_row(
+            "SELECT latest_message_id FROM channel_metadata WHERE channel = ?1",
+            [channel],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or(0))
+}
+
+fn validate_cursor(
+    conn: &rusqlite::Connection,
+    epoch: [u8; 16],
+    channel: &str,
+    cursor: ReplayCursor,
+) -> Result<(), ChannelError> {
+    if cursor.scope != ReplayCursor::sqlite(epoch, channel, 0).scope {
+        return Err(ChannelError::StaleCursor);
+    }
+    let floor: i64 = conn
+        .query_row(
+            "SELECT floor FROM channel_replay_floor WHERE channel = ?1",
+            [channel],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or(0);
+    if cursor.position < floor || cursor.position > stream_head(conn, channel)? {
+        return Err(ChannelError::StaleCursor);
+    }
+    Ok(())
+}
+
+/// Delete expired rows stream by stream through the (channel, created_at)
+/// index. Every message has a metadata row: publishing upserts it first.
+fn prune_age(
+    conn: &rusqlite::Connection,
+    limits: SqliteReplayLimits,
+    now: i64,
+) -> Result<usize, ChannelError> {
+    let lifecycles = {
+        let mut statement = conn.prepare_cached(
+            "SELECT channel, replay_window_ms, inactivity_ttl_ms, last_activity_unix_ms
+             FROM channel_metadata WHERE message_count > 0",
+        )?;
+        statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let mut deleted = 0;
+    for (channel, replay_window_ms, inactivity_ttl_ms, last_activity_unix_ms) in lifecycles {
+        let lifecycle = Some((replay_window_ms, inactivity_ttl_ms, last_activity_unix_ms));
+        deleted += match age_cutoff(limits, lifecycle, now) {
+            None => 0,
+            Some(AgeCutoff::Everything) => conn.execute(
+                "DELETE FROM channel_messages WHERE channel = ?1",
+                [&channel],
+            )?,
+            Some(AgeCutoff::Before(created)) => conn.execute(
+                "DELETE FROM channel_messages WHERE channel = ?1 AND created_at_unix_ms < ?2",
+                rusqlite::params![channel, created],
+            )?,
+        };
+    }
+    Ok(deleted)
+}
+
+/// Retire the oldest rows of one stream until its counters fit the budget. The
+/// counters are maintained by triggers, so a stream within budget costs one
+/// indexed row read, and a stream at capacity retires about one row per publish.
+fn enforce_stream_budget(
+    conn: &rusqlite::Connection,
+    limits: SqliteReplayLimits,
+    channel: &str,
+) -> Result<usize, ChannelError> {
+    let mut deleted = 0;
+    loop {
+        let Some((count, bytes)) = conn
+            .query_row(
+                "SELECT message_count, message_bytes FROM channel_metadata WHERE channel = ?1",
+                [channel],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()?
+        else {
+            return Ok(deleted);
+        };
+        let excess = count - limits.max_messages_per_stream as i64;
+        if excess <= 0 && bytes <= limits.max_bytes_per_stream as i64 {
+            return Ok(deleted);
+        }
+        let removed = conn.execute(
+            "DELETE FROM channel_messages WHERE id IN (
+                SELECT id FROM channel_messages WHERE channel = ?1 ORDER BY id LIMIT ?2
+            )",
+            rusqlite::params![channel, excess.max(1)],
+        )?;
+        if removed == 0 {
+            return Ok(deleted);
+        }
+        deleted += removed;
+    }
+}
+
+/// Retire the globally oldest rows until the store counters fit the budget.
+fn enforce_store_budget(
+    conn: &rusqlite::Connection,
+    limits: SqliteReplayLimits,
+) -> Result<usize, ChannelError> {
+    let mut deleted = 0;
+    loop {
+        let (count, bytes) = conn.query_row(
+            "SELECT message_count, message_bytes FROM channel_store_state WHERE singleton = 1",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )?;
+        let excess = count - limits.max_messages as i64;
+        if excess <= 0 && bytes <= limits.max_bytes as i64 {
+            return Ok(deleted);
+        }
+        let removed = conn.execute(
+            "DELETE FROM channel_messages WHERE id IN (
+                SELECT id FROM channel_messages ORDER BY id LIMIT ?1
+            )",
+            [excess.max(1)],
+        )?;
+        if removed == 0 {
+            return Ok(deleted);
+        }
+        deleted += removed;
+    }
+}
+
+fn prune_replay(
+    conn: &rusqlite::Connection,
+    limits: SqliteReplayLimits,
+    now: i64,
+) -> Result<usize, ChannelError> {
+    let mut deleted = prune_age(conn, limits, now)?;
+    let over_budget = {
+        let mut statement = conn.prepare_cached(
+            "SELECT channel FROM channel_metadata WHERE message_count > ?1 OR message_bytes > ?2",
+        )?;
+        statement
+            .query_map(
+                rusqlite::params![
+                    limits.max_messages_per_stream as i64,
+                    limits.max_bytes_per_stream as i64
+                ],
+                |row| row.get::<_, String>(0),
+            )?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    for channel in over_budget {
+        deleted += enforce_stream_budget(conn, limits, &channel)?;
+    }
+    deleted += enforce_store_budget(conn, limits)?;
+    Ok(deleted)
+}
+
+fn init_connection(
+    conn: &mut rusqlite::Connection,
+    limits: Option<SqliteReplayLimits>,
+) -> Result<[u8; 16], ChannelError> {
+    conn.execute_batch("PRAGMA auto_vacuum = INCREMENTAL;")?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let conn = &tx;
     conn.execute_batch(
-        "PRAGMA auto_vacuum = INCREMENTAL;
-         CREATE TABLE IF NOT EXISTS presence (
+        "CREATE TABLE IF NOT EXISTS presence (
              channel TEXT NOT NULL, connection_id TEXT NOT NULL, member_json TEXT NOT NULL,
              expires_at INTEGER NOT NULL, PRIMARY KEY(channel, connection_id)
          );
@@ -258,7 +699,51 @@ fn init_connection(conn: &rusqlite::Connection) -> Result<(), ChannelError> {
          ON channel_messages(channel, id);",
     )
     .map_err(storage_err)?;
-    Ok(())
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS channel_store_state (
+            singleton INTEGER PRIMARY KEY CHECK(singleton = 1), epoch BLOB NOT NULL, limits_json TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS channel_event_sequence (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), sequence INTEGER NOT NULL);
+         INSERT INTO channel_event_sequence VALUES (1, 0) ON CONFLICT DO NOTHING;
+         CREATE TABLE IF NOT EXISTS channel_message_events (message_id INTEGER PRIMARY KEY, event_json TEXT NOT NULL);
+         CREATE TRIGGER IF NOT EXISTS channel_event_deleted AFTER DELETE ON channel_messages BEGIN
+            DELETE FROM channel_message_events WHERE message_id = OLD.id;
+         END;
+         CREATE TABLE IF NOT EXISTS channel_remote_origins (origin TEXT PRIMARY KEY, sequence INTEGER NOT NULL);
+         CREATE TABLE IF NOT EXISTS channel_replay_floor (channel TEXT PRIMARY KEY, floor INTEGER NOT NULL);
+         CREATE TRIGGER IF NOT EXISTS channel_replay_deleted AFTER DELETE ON channel_messages BEGIN
+            INSERT INTO channel_replay_floor(channel, floor) VALUES (OLD.channel, OLD.id)
+            ON CONFLICT(channel) DO UPDATE SET floor = MAX(floor, excluded.floor);
+         END;
+         UPDATE channel_metadata SET latest_message_id = MAX(latest_message_id, COALESCE(
+            (SELECT MAX(id) FROM channel_messages WHERE channel_messages.channel = channel_metadata.channel), 0));"
+    )?;
+    let mut epoch = [0u8; 16];
+    getrandom::fill(&mut epoch).map_err(storage_err)?;
+    conn.execute("INSERT INTO channel_store_state(singleton, epoch, limits_json) VALUES(1, ?1, ?2) ON CONFLICT DO NOTHING",
+        rusqlite::params![epoch.as_slice(), serde_json::to_string(&SqliteReplayLimits::default()).map_err(storage_err)?])?;
+    ensure_budget_counters(conn)?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS channel_replay_state (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), epoch BLOB NOT NULL);
+         INSERT INTO channel_replay_state SELECT singleton, epoch FROM channel_store_state WHERE singleton = 1 ON CONFLICT DO NOTHING;"
+    )?;
+    if let Some(limits) = limits {
+        conn.execute(
+            "UPDATE channel_store_state SET limits_json = ?1 WHERE singleton = 1",
+            [serde_json::to_string(&limits).map_err(storage_err)?],
+        )?;
+    }
+    prune_replay(conn, load_limits(conn)?, now_unix_ms())?;
+    let saved: Vec<u8> = conn.query_row(
+        "SELECT epoch FROM channel_store_state WHERE singleton = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let epoch = saved
+        .try_into()
+        .map_err(|_| storage_err("invalid channel epoch"))?;
+    tx.commit()?;
+    Ok(epoch)
 }
 
 fn ensure_channel_metadata_schema(conn: &rusqlite::Connection) -> Result<(), ChannelError> {
@@ -311,6 +796,66 @@ fn ensure_channel_metadata_schema(conn: &rusqlite::Connection) -> Result<(), Cha
         .map_err(storage_err)?;
     }
 
+    Ok(())
+}
+
+/// Per-stream and store-wide message counts and byte sizes let publishes check
+/// their budgets without scanning retained rows. Triggers keep them exact for
+/// every writer of this file; opening recomputes them from the table.
+fn ensure_budget_counters(conn: &rusqlite::Connection) -> Result<(), ChannelError> {
+    for table in ["channel_metadata", "channel_store_state"] {
+        for column in ["message_count", "message_bytes"] {
+            ensure_column(conn, table, column, "INTEGER NOT NULL DEFAULT 0")?;
+        }
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_channel_messages_channel_created
+            ON channel_messages(channel, created_at_unix_ms);
+         UPDATE channel_metadata SET
+            message_count = (SELECT COUNT(*) FROM channel_messages m WHERE m.channel = channel_metadata.channel),
+            message_bytes = (SELECT COALESCE(SUM(length(CAST(channel AS BLOB)) + length(CAST(type AS BLOB)) + length(CAST(data_json AS BLOB))), 0)
+                FROM channel_messages m WHERE m.channel = channel_metadata.channel);
+         UPDATE channel_store_state SET
+            message_count = (SELECT COUNT(*) FROM channel_messages),
+            message_bytes = (SELECT COALESCE(SUM(length(CAST(channel AS BLOB)) + length(CAST(type AS BLOB)) + length(CAST(data_json AS BLOB))), 0) FROM channel_messages)
+            WHERE singleton = 1;
+         CREATE TRIGGER IF NOT EXISTS channel_message_counted AFTER INSERT ON channel_messages BEGIN
+            UPDATE channel_store_state SET message_count = message_count + 1,
+                message_bytes = message_bytes + length(CAST(NEW.channel AS BLOB)) + length(CAST(NEW.type AS BLOB)) + length(CAST(NEW.data_json AS BLOB))
+                WHERE singleton = 1;
+            UPDATE channel_metadata SET message_count = message_count + 1,
+                message_bytes = message_bytes + length(CAST(NEW.channel AS BLOB)) + length(CAST(NEW.type AS BLOB)) + length(CAST(NEW.data_json AS BLOB))
+                WHERE channel = NEW.channel;
+         END;
+         CREATE TRIGGER IF NOT EXISTS channel_message_uncounted AFTER DELETE ON channel_messages BEGIN
+            UPDATE channel_store_state SET message_count = message_count - 1,
+                message_bytes = message_bytes - length(CAST(OLD.channel AS BLOB)) - length(CAST(OLD.type AS BLOB)) - length(CAST(OLD.data_json AS BLOB))
+                WHERE singleton = 1;
+            UPDATE channel_metadata SET message_count = message_count - 1,
+                message_bytes = message_bytes - length(CAST(OLD.channel AS BLOB)) - length(CAST(OLD.type AS BLOB)) - length(CAST(OLD.data_json AS BLOB))
+                WHERE channel = OLD.channel;
+         END;",
+    )?;
+    Ok(())
+}
+
+fn ensure_column(
+    conn: &rusqlite::Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<(), ChannelError> {
+    let mut columns = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let exists = columns
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?
+        .iter()
+        .any(|existing| existing == column);
+    if !exists {
+        conn.execute_batch(&format!(
+            "ALTER TABLE {table} ADD COLUMN {column} {definition};"
+        ))?;
+    }
     Ok(())
 }
 

@@ -2,34 +2,21 @@ mod postgres;
 mod presence;
 mod sqlite;
 
-use parking_lot::Mutex;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::{ChannelAuthResponse, ChannelError, ChannelMessage, ChannelPublishPayload};
+use crate::{
+    ChannelAuthResponse, ChannelError, ChannelMessage, ChannelPublishPayload, ReplayCursor,
+};
 use postgres::PostgresChannelStore;
 use sqlite::SqliteChannelStore;
+pub use sqlite::SqliteReplayLimits;
 
 const CHANNELS_DB_FILENAME: &str = "channels.sqlite";
 pub const POSTGRES_CHANNELS_SCHEMA: &str = "tako_channels";
-type StreamChanges = HashMap<String, tokio::sync::watch::Sender<Option<i64>>>;
-
-fn notify_committed(streams: &StreamChanges, channel: &str, latest: i64) {
-    if let Some(changes) = streams.get(channel) {
-        changes.send_if_modified(|seen| {
-            // A poll or publisher can finish notifying after a newer commit.
-            // Never move the observed head backwards or wake readers twice.
-            if seen.is_none_or(|previous| latest > previous) {
-                *seen = Some(latest);
-                true
-            } else {
-                false
-            }
-        });
-    }
-}
+use crate::mesh::{DeliveryState, notify_committed};
+use crate::{ChannelEvent, ChannelPublication, RemoteIngest};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChannelStoreConfig {
@@ -67,9 +54,9 @@ pub fn channels_db_path(data_dir: &std::path::Path) -> PathBuf {
 
 pub struct ChannelStore {
     backend: Arc<ChannelStoreBackend>,
-    ephemeral: Arc<crate::ephemeral::EphemeralHub>,
-    changes: Arc<Mutex<StreamChanges>>,
+    delivery: Arc<DeliveryState>,
     _lifetime: Arc<()>,
+    read_only: bool,
 }
 
 enum ChannelStoreBackend {
@@ -94,13 +81,33 @@ impl ChannelStoreBackend {
 }
 
 impl ChannelStore {
-    fn from_backend(backend: ChannelStoreBackend) -> Result<Self, ChannelError> {
+    fn from_backend(
+        backend: ChannelStoreBackend,
+        delivery: Arc<DeliveryState>,
+    ) -> Result<Self, ChannelError> {
+        Self::from_backend_mode(backend, delivery, false)
+    }
+
+    fn from_backend_mode(
+        backend: ChannelStoreBackend,
+        delivery: Arc<DeliveryState>,
+        read_only: bool,
+    ) -> Result<Self, ChannelError> {
         let backend = Arc::new(backend);
-        let changes = Arc::new(Mutex::new(StreamChanges::new()));
+        let changes = delivery.changes.clone();
         let lifetime = Arc::new(());
         let weak = Arc::downgrade(&lifetime);
         let worker_backend = backend.clone();
         let sender = changes.clone();
+        let poll_remote = matches!(backend.as_ref(), ChannelStoreBackend::Postgres(_));
+        if read_only && !poll_remote {
+            return Ok(Self {
+                backend,
+                delivery,
+                _lifetime: lifetime,
+                read_only,
+            });
+        }
         std::thread::Builder::new()
             .name("channel-store".into())
             .spawn(move || {
@@ -110,14 +117,16 @@ impl ChannelStore {
                         break;
                     }
                     let backend = &worker_backend;
-                    if std::time::Instant::now() >= next_prune {
+                    if !read_only && std::time::Instant::now() >= next_prune {
                         if let Err(error) = backend.prune(now_unix_ms()) {
                             tracing::warn!(%error, "channel replay cleanup failed");
                         }
                         next_prune = std::time::Instant::now() + std::time::Duration::from_secs(1);
                     }
-                    // Poll once per app, but wake only subscribers whose stream
-                    // changed. Metadata heads survive message pruning.
+                    // Commits in this process wake subscribers directly. Polling
+                    // covers commits by other writers of the same store: remote
+                    // Postgres servers, or the previous server process sharing
+                    // this SQLite file during a zero-downtime reload.
                     let subscribed_channels = {
                         let mut streams = sender.lock();
                         streams.retain(|_, changes| changes.receiver_count() > 0);
@@ -134,7 +143,11 @@ impl ChannelStore {
                             Err(error) => tracing::warn!(%error, "channel change poll failed"),
                         }
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    std::thread::sleep(std::time::Duration::from_millis(if poll_remote {
+                        100
+                    } else {
+                        1000
+                    }));
                 }
             })
             .map_err(|error| ChannelError::Storage(error.to_string()))?;
@@ -142,15 +155,26 @@ impl ChannelStore {
         // keeping synchronous Postgres client shutdown off async executor threads.
         Ok(Self {
             backend,
-            ephemeral: Arc::default(),
-            changes,
+            delivery,
             _lifetime: lifetime,
+            read_only,
         })
+    }
+
+    fn ensure_writable(&self) -> Result<(), ChannelError> {
+        if self.read_only {
+            Err(ChannelError::Storage(
+                "channel mutations require the owning broker".into(),
+            ))
+        } else {
+            Ok(())
+        }
     }
 
     /// Subscribe before reading replay so changes racing with the read remain visible.
     pub fn changes(&self, channel: &str) -> tokio::sync::watch::Receiver<Option<i64>> {
-        self.changes
+        self.delivery
+            .changes
             .lock()
             .entry(channel.to_owned())
             .or_insert_with(|| tokio::sync::watch::channel(None).0)
@@ -171,7 +195,7 @@ impl ChannelStore {
     pub async fn read_after_async(
         self: &Arc<Self>,
         channel: &str,
-        after: Option<i64>,
+        after: Option<ReplayCursor>,
         limit: u32,
     ) -> Result<Vec<ChannelMessage>, ChannelError> {
         let channel = channel.to_owned();
@@ -182,8 +206,8 @@ impl ChannelStore {
     pub async fn replay_cursor_async(
         self: &Arc<Self>,
         channel: &str,
-        after: Option<i64>,
-    ) -> Result<Option<i64>, ChannelError> {
+        after: Option<ReplayCursor>,
+    ) -> Result<Option<ReplayCursor>, ChannelError> {
         let channel = channel.to_owned();
         self.run(move |store| store.replay_cursor(&channel, after))
             .await
@@ -222,6 +246,33 @@ impl ChannelStore {
         }
     }
 
+    /// Open an existing broker-owned store without schema or replay mutations.
+    pub fn open_reader_config(config: ChannelStoreConfig) -> Result<Self, ChannelError> {
+        match config {
+            ChannelStoreConfig::Sqlite { path } => {
+                let sqlite = SqliteChannelStore::open_reader(&path)?;
+                let path = std::fs::canonicalize(path)
+                    .map_err(|e| ChannelError::Storage(e.to_string()))?;
+                Self::from_backend_mode(
+                    ChannelStoreBackend::Sqlite(sqlite),
+                    DeliveryState::for_path(path),
+                    true,
+                )
+            }
+            ChannelStoreConfig::Postgres {
+                url,
+                schema,
+                app_id,
+            } => Self::from_backend_mode(
+                ChannelStoreBackend::Postgres(Box::new(PostgresChannelStore::open_reader(
+                    &url, &schema, &app_id,
+                )?)),
+                Arc::default(),
+                true,
+            ),
+        }
+    }
+
     /// Open (or create) the channel DB at `path` and run the idempotent
     /// schema init. Safe to call repeatedly against the same path because
     /// SQLite supports multiple connections per file, but callers are
@@ -231,11 +282,26 @@ impl ChannelStore {
     }
 
     pub fn open_sqlite(path: &Path) -> Result<Self, ChannelError> {
-        let mut store =
-            Self::from_backend(ChannelStoreBackend::Sqlite(SqliteChannelStore::open(path)?))?;
+        Self::open_sqlite_config(path, None)
+    }
+
+    pub fn open_sqlite_with_limits(
+        path: &Path,
+        limits: SqliteReplayLimits,
+    ) -> Result<Self, ChannelError> {
+        Self::open_sqlite_config(path, Some(limits))
+    }
+
+    fn open_sqlite_config(
+        path: &Path,
+        limits: Option<SqliteReplayLimits>,
+    ) -> Result<Self, ChannelError> {
+        let sqlite = SqliteChannelStore::open(path, limits)?;
         let path = std::fs::canonicalize(path).map_err(|e| ChannelError::Storage(e.to_string()))?;
-        store.ephemeral = crate::ephemeral::EphemeralHub::for_path(path);
-        Ok(store)
+        Self::from_backend(
+            ChannelStoreBackend::Sqlite(sqlite),
+            DeliveryState::for_path(path),
+        )
     }
 
     pub fn open_postgres(url: &str, app_id: &str) -> Result<Self, ChannelError> {
@@ -247,17 +313,21 @@ impl ChannelStore {
         schema: &str,
         app_id: &str,
     ) -> Result<Self, ChannelError> {
-        Self::from_backend(ChannelStoreBackend::Postgres(Box::new(
-            PostgresChannelStore::open(url, schema, app_id)?,
-        )))
+        Self::from_backend(
+            ChannelStoreBackend::Postgres(Box::new(PostgresChannelStore::open(
+                url, schema, app_id,
+            )?)),
+            Arc::default(),
+        )
     }
 
     /// Open an in-memory channel DB. Used by local dev where replay only
     /// needs to survive reconnects within the current daemon process.
     pub fn open_in_memory() -> Result<Self, ChannelError> {
-        Self::from_backend(ChannelStoreBackend::Sqlite(
-            SqliteChannelStore::open_in_memory()?,
-        ))
+        Self::from_backend(
+            ChannelStoreBackend::Sqlite(SqliteChannelStore::open_in_memory()?),
+            Arc::default(),
+        )
     }
 
     /// Logical-clock histories drive maintenance themselves.
@@ -267,9 +337,9 @@ impl ChannelStore {
             backend: Arc::new(ChannelStoreBackend::Sqlite(
                 SqliteChannelStore::open_in_memory().unwrap(),
             )),
-            ephemeral: Arc::default(),
-            changes: Arc::default(),
+            delivery: Arc::default(),
             _lifetime: Arc::new(()),
+            read_only: false,
         }
     }
 
@@ -321,7 +391,10 @@ impl ChannelStore {
         channel: &str,
     ) -> Result<crate::ephemeral::EphemeralSubscription, ChannelError> {
         self.ensure_ephemeral_supported()?;
-        Ok(self.ephemeral.subscribe(channel))
+        Ok(self
+            .delivery
+            .ephemeral
+            .subscribe(channel, self.resets(channel)))
     }
 
     pub fn publish_ephemeral(
@@ -329,8 +402,7 @@ impl ChannelStore {
         channel: &str,
         payload: &ChannelPublishPayload,
     ) -> Result<ChannelMessage, ChannelError> {
-        self.ensure_ephemeral_supported()?;
-        Ok(self.ephemeral.publish(channel, payload))
+        self.publish(channel, payload, true)
     }
 
     pub fn append(
@@ -338,40 +410,149 @@ impl ChannelStore {
         channel: &str,
         payload: &ChannelPublishPayload,
     ) -> Result<ChannelMessage, ChannelError> {
-        let message = match self.backend.as_ref() {
-            ChannelStoreBackend::Sqlite(store) => store.append(channel, payload),
-            ChannelStoreBackend::Postgres(store) => store.append(channel, payload),
-        }?;
-        // Wake local readers only after commit. The poller remains responsible
-        // for commits from other processes/servers; replay remains authoritative.
-        notify_committed(
-            &self.changes.lock(),
-            channel,
-            message.id.parse().expect("channel ids are numeric"),
-        );
+        self.publish(channel, payload, false)
+    }
+
+    fn publish(
+        &self,
+        channel: &str,
+        payload: &ChannelPublishPayload,
+        ephemeral: bool,
+    ) -> Result<ChannelMessage, ChannelError> {
+        self.ensure_writable()?;
+        let _publication = self.delivery.publish.lock();
+        let (message, publication) = match self.backend.as_ref() {
+            ChannelStoreBackend::Sqlite(store) => {
+                let (message, event) = store.publish(channel, payload, ephemeral)?;
+                (message, ChannelPublication::Event(event))
+            }
+            ChannelStoreBackend::Postgres(store) => {
+                if ephemeral {
+                    return Err(crate::ephemeral::unsupported());
+                }
+                (
+                    store.append(channel, payload)?,
+                    ChannelPublication::Wake {
+                        channel: channel.into(),
+                    },
+                )
+            }
+        };
+        self.deliver(&message, ephemeral);
+        let _ = self.delivery.publications.send(publication);
         Ok(message)
+    }
+
+    fn deliver(&self, message: &ChannelMessage, ephemeral: bool) {
+        if ephemeral {
+            self.delivery.ephemeral.deliver(message);
+        }
+        self.delivery.wake(
+            &message.channel,
+            message
+                .id
+                .parse::<ReplayCursor>()
+                .ok()
+                .map(|cursor| cursor.position),
+        );
+    }
+
+    /// Deliver an authenticated local broker notification after its commit.
+    /// The broker owns persistence and FIFO ordering; this must not publish again.
+    pub fn notify_committed(&self, message: &ChannelMessage, ephemeral: bool) {
+        self.deliver(message, ephemeral);
+    }
+
+    /// Subscribe once per app before accepting local publications. Lag requires peer reset.
+    pub fn publications(&self) -> tokio::sync::broadcast::Receiver<ChannelPublication> {
+        self.delivery.publications.subscribe()
+    }
+
+    /// Ingest authenticated, app-scoped events in FIFO order per origin. Never republishes.
+    pub fn ingest_remote(&self, event: &ChannelEvent) -> Result<RemoteIngest, ChannelError> {
+        self.ensure_writable()?;
+        let _publication = self.delivery.publish.lock();
+        let ChannelStoreBackend::Sqlite(store) = self.backend.as_ref() else {
+            return Err(ChannelError::BadRequest(
+                "PostgreSQL delivery accepts wake hints, not remote events".into(),
+            ));
+        };
+        let Some(message) = store.ingest_remote(event, || self.signal_gap(None))? else {
+            return Ok(RemoteIngest::Duplicate);
+        };
+        self.deliver(&message, event.ephemeral);
+        Ok(RemoteIngest::Applied)
+    }
+
+    /// Wake a stream after a PostgreSQL peer commit without inserting another row.
+    pub fn wake(&self, channel: &str) {
+        self.delivery.wake(channel, None);
+    }
+
+    /// Subscribe before capturing a replay head. Reset generations are out of band.
+    pub fn resets(&self, channel: &str) -> tokio::sync::watch::Receiver<u64> {
+        let mut resets = self.delivery.resets.lock();
+        resets.retain(|_, sender| sender.receiver_count() > 0);
+        resets
+            .entry(channel.into())
+            .or_insert_with(|| tokio::sync::watch::channel(0).0)
+            .subscribe()
+    }
+
+    /// Signal transport loss or lag. None resets all currently connected streams.
+    pub fn signal_gap(&self, channel: Option<&str>) {
+        let mut resets = self.delivery.resets.lock();
+        resets.retain(|_, sender| sender.receiver_count() > 0);
+        for (stream, sender) in resets.iter() {
+            if channel.is_none_or(|channel| channel == stream) {
+                sender.send_modify(|generation| *generation = generation.wrapping_add(1));
+            }
+        }
+    }
+
+    /// Invalidate SQLite replay after transport loss, including clients that reconnect later.
+    /// The persisted event origin remains stable; PostgreSQL retains its shared history.
+    pub fn invalidate_replay(&self) -> Result<(), ChannelError> {
+        self.ensure_writable()?;
+        let _publication = self.delivery.publish.lock();
+        match self.backend.as_ref() {
+            ChannelStoreBackend::Sqlite(store) => store.invalidate_replay(|| self.signal_gap(None)),
+            ChannelStoreBackend::Postgres(_) => {
+                self.signal_gap(None);
+                Ok(())
+            }
+        }
     }
 
     pub fn read_after(
         &self,
         channel: &str,
-        after: Option<i64>,
+        after: Option<ReplayCursor>,
         limit: u32,
     ) -> Result<Vec<ChannelMessage>, ChannelError> {
         match self.backend.as_ref() {
             ChannelStoreBackend::Sqlite(store) => store.read_after(channel, after, limit),
-            ChannelStoreBackend::Postgres(store) => store.read_after(channel, after, limit),
+            ChannelStoreBackend::Postgres(store) => store.read_after(
+                channel,
+                after.map(ReplayCursor::pg_position).transpose()?,
+                limit,
+            ),
         }
     }
 
     pub fn replay_cursor(
         &self,
         channel: &str,
-        requested: Option<i64>,
-    ) -> Result<Option<i64>, ChannelError> {
+        requested: Option<ReplayCursor>,
+    ) -> Result<Option<ReplayCursor>, ChannelError> {
         match self.backend.as_ref() {
             ChannelStoreBackend::Sqlite(store) => store.replay_cursor(channel, requested),
-            ChannelStoreBackend::Postgres(store) => store.replay_cursor(channel, requested),
+            ChannelStoreBackend::Postgres(store) => store
+                .replay_cursor(
+                    channel,
+                    requested.map(ReplayCursor::pg_position).transpose()?,
+                )
+                .map(|cursor| cursor.map(ReplayCursor::postgres)),
         }
     }
 
@@ -380,6 +561,7 @@ impl ChannelStore {
         channel: &str,
         auth: &ChannelAuthResponse,
     ) -> Result<(), ChannelError> {
+        self.ensure_writable()?;
         if auth.ephemeral {
             return Ok(());
         }
@@ -399,14 +581,13 @@ pub(super) fn now_unix_ms() -> i64 {
 
 pub(super) fn resolve_replay_cursor(
     requested: Option<i64>,
-    oldest: Option<i64>,
+    highest_deleted: i64,
     latest: Option<i64>,
 ) -> Result<Option<i64>, ChannelError> {
     let Some(requested) = requested else {
         return Ok(latest);
     };
-    let floor = oldest.map(|id| id.saturating_sub(1)).or(latest);
-    if floor.is_none_or(|floor| requested < floor) {
+    if requested < highest_deleted || latest.is_none_or(|head| requested > head) {
         return Err(ChannelError::StaleCursor);
     }
     Ok(Some(requested))
@@ -420,10 +601,79 @@ pub(super) fn channel_message_from_row(
         serde_json::from_str(&data_json).map_err(|e| ChannelError::Storage(e.to_string()))?;
     Ok(ChannelMessage {
         id: id.to_string(),
+        event_id: None,
         channel,
         r#type,
         data,
     })
+}
+
+#[cfg(test)]
+mod ordering_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn gap_reset_precedes_remote_row_visibility_to_an_independent_reader() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("channels.sqlite");
+        let store = Arc::new(ChannelStore::open(&path).unwrap());
+        let reader = ChannelStore::open_reader_config(ChannelStoreConfig::sqlite(&path)).unwrap();
+        let observer = rusqlite::Connection::open(&path).unwrap();
+        let reset = reader.resets("a");
+        let after = reader.replay_cursor("a", None).unwrap();
+        let mut publications = reader.publications();
+        let held = reset.borrow();
+        let worker_store = store.clone();
+        let worker = std::thread::spawn(move || {
+            worker_store.ingest_remote(&ChannelEvent {
+                id: crate::ChannelEventId {
+                    origin: "remote".into(),
+                    sequence: 2,
+                },
+                channel: "a".into(),
+                payload: ChannelPublishPayload {
+                    r#type: "event".into(),
+                    data: 2.into(),
+                },
+                ephemeral: false,
+            })
+        });
+        // The held watch borrow pauses signal_gap while it owns the reset map.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while store.delivery.resets.try_lock().is_some() {
+            assert!(
+                Instant::now() < deadline,
+                "ingest did not reach reset publication"
+            );
+            std::thread::yield_now();
+        }
+        let visible: (i64, i64) = observer
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM channel_messages),
+                    (SELECT COUNT(*) FROM channel_remote_origins)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(*held, 0);
+        drop(held);
+        assert_eq!(worker.join().unwrap().unwrap(), RemoteIngest::Applied);
+        assert_eq!(
+            visible,
+            (0, 0),
+            "row and dedup must stay hidden until reset"
+        );
+        assert!(matches!(
+            reader.read_after("a", after, 10),
+            Err(ChannelError::StaleCursor)
+        ));
+        let messages = reader.read_after("a", None, 10).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert!(reset.has_changed().unwrap());
+        assert_eq!(messages[0].event_id.as_ref().unwrap().sequence, 2);
+        assert!(publications.try_recv().is_err());
+    }
 }
 
 #[cfg(test)]
@@ -432,15 +682,20 @@ mod notification_tests {
 
     #[test]
     fn delayed_poll_or_publisher_cannot_regress_the_committed_head() {
-        let (sender, mut receiver) = tokio::sync::watch::channel(None);
-        let streams = HashMap::from([("events".to_string(), sender)]);
-        notify_committed(&streams, "events", 20);
+        let store = ChannelStore::open_in_memory_without_maintenance();
+        let mut receiver = store.changes("events");
+        store.delivery.wake("events", Some(20));
         assert_eq!(*receiver.borrow_and_update(), Some(20));
-        notify_committed(&streams, "events", 10);
-        notify_committed(&streams, "events", 20);
+        store.delivery.wake("events", Some(10));
+        store.delivery.wake("events", Some(20));
         assert!(!receiver.has_changed().unwrap());
         assert_eq!(*receiver.borrow(), Some(20));
-        notify_committed(&streams, "events", 21);
+        store.delivery.wake("events", Some(21));
         assert!(receiver.has_changed().unwrap());
+        for _ in 0..2 {
+            assert_eq!(*receiver.borrow_and_update(), Some(21));
+            store.wake("events");
+            assert!(receiver.has_changed().unwrap());
+        }
     }
 }

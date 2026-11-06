@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { indexedDB } from "fake-indexeddb";
 import { defaultStoreCache } from "../src/stores/cache";
 import {
@@ -13,21 +13,25 @@ interface PendingRead {
   url: URL;
   init: RequestInit | undefined;
   resolve(value: unknown, offline?: { maxAgeMs: number; version: string }): void;
-  response(status: number): void;
+  response(status: number, body?: unknown): void;
   reject(error: Error): void;
+  respond(response: Response): void;
 }
 
 class Backend {
   readonly reads: PendingRead[] = [];
   readonly streams: Array<{
-    send(type: string): void;
+    send(type: string, id?: string): void;
+    raw(data: string): void;
     close(): void;
     headers: Headers;
   }> = [];
   streamStatus = 200;
+  readonly streamRequests: Headers[] = [];
   readonly fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input));
     if (url.pathname.startsWith("/_tako/channels/")) {
+      this.streamRequests.push(new Headers(init?.headers));
       if (this.streamStatus !== 200) return new Response(null, { status: this.streamStatus });
       let closed = false;
       let controller!: ReadableStreamDefaultController<Uint8Array>;
@@ -47,10 +51,15 @@ class Backend {
       };
       init?.signal?.addEventListener("abort", close, { once: true });
       this.streams.push({
-        send(type) {
+        raw(data) {
+          if (!closed) controller.enqueue(new TextEncoder().encode(`data: ${data}\n\n`));
+        },
+        send(type, id) {
           if (!closed)
             controller.enqueue(
-              new TextEncoder().encode(`data: ${JSON.stringify({ type, data: {} })}\n\n`),
+              new TextEncoder().encode(
+                `${id ? `id: ${id}\n` : ""}data: ${JSON.stringify({ type, data: {} })}\n\n`,
+              ),
             );
         },
         close,
@@ -63,8 +72,12 @@ class Backend {
         url,
         init,
         resolve: (data, offline) => resolve(Response.json({ data, ...(offline && { offline }) })),
-        response: (status) => resolve(new Response(null, { status })),
+        response: (status, body) =>
+          resolve(
+            body === undefined ? new Response(null, { status }) : Response.json(body, { status }),
+          ),
         reject,
+        respond: resolve,
       });
     });
   }) as typeof fetch;
@@ -239,6 +252,183 @@ describe("Store realtime reads", () => {
   });
 });
 
+describe("Store quiet recovery", () => {
+  test("marks cached data stale immediately and forces a reload after 410 recovery", async () => {
+    const backend = new Backend();
+    const recoveries: string[] = [];
+    const store = new Store("messages", {
+      baseUrl: "https://app.test",
+      fetch: backend.fetch,
+      onRecovery: (reason) => recoveries.push(reason),
+    });
+    watch(store);
+    backend.reads[0]!.resolve("initial", { maxAgeMs: 10_000, version: "1" });
+    await until(() => store.getSnapshot().data === "initial");
+    backend.streams[0]!.send("tako.store.ready", "expired");
+    await until(() => backend.reads.length === 2);
+    backend.reads[1]!.resolve("cached", { maxAgeMs: 10_000, version: "1" });
+    await until(() => !store.getSnapshot().isStale);
+    backend.streamStatus = 410;
+    backend.streams[0]!.close();
+    await until(() => store.getSnapshot().isStale);
+    expect(store.getSnapshot()).toMatchObject({ data: "cached", status: "offline", error: null });
+    expect(recoveries).toEqual(["reconnecting"]);
+    await new Promise((resolve) => setTimeout(resolve, 1400));
+    expect(recoveries).toEqual(["reconnecting", "history-expired"]);
+    expect(backend.streamRequests[1]!.get("last-event-id")).toBe("expired");
+    expect(store.getSnapshot()).toMatchObject({ data: "cached", error: null, isStale: true });
+    backend.streamStatus = 200;
+    await new Promise((resolve) => setTimeout(resolve, 2700));
+    expect(backend.streamRequests[2]!.get("last-event-id")).toBeNull();
+    expect(backend.reads).toHaveLength(2);
+    backend.streams[1]!.send("tako.store.ready");
+    await until(() => backend.reads.length === 3);
+    expect(store.getSnapshot().isStale).toBe(true);
+    backend.reads[2]!.resolve("canonical", { maxAgeMs: 10_000, version: "1" });
+    await until(() => !store.getSnapshot().isStale);
+    expect(store.getSnapshot()).toEqual({
+      data: "canonical",
+      status: "ready",
+      error: null,
+      isStale: false,
+    });
+  }, 10_000);
+
+  test("transient read failures are quiet while the offline lease is valid", async () => {
+    const backend = new Backend();
+    const store = new Store("messages", { baseUrl: "https://app.test", fetch: backend.fetch });
+    watch(store);
+    backend.reads[0]!.resolve("cached", { maxAgeMs: 10_000, version: "1" });
+    await until(() => store.getSnapshot().data === "cached");
+    const pending = store.refresh();
+    backend.reads[1]!.response(503);
+    await pending;
+    expect(store.getSnapshot()).toEqual({
+      data: "cached",
+      status: "offline",
+      error: null,
+      isStale: true,
+    });
+  });
+
+  test("invalid canonical responses stay visible through routine recovery", async () => {
+    const backend = new Backend();
+    const store = new Store("messages", { baseUrl: "https://app.test", fetch: backend.fetch });
+    watch(store);
+    backend.reads[0]!.resolve("cached", { maxAgeMs: 10_000, version: "1" });
+    await until(() => store.getSnapshot().data === "cached");
+    const pending = store.refresh();
+    backend.reads[1]!.response(200, { unexpected: true });
+    await pending;
+    expect(store.getSnapshot().error?.message).toContain("must contain data");
+    backend.streams[0]!.close();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(store.getSnapshot().data).toBe("cached");
+    expect(store.getSnapshot().error?.message).toContain("must contain data");
+  });
+
+  test("expired cached data is hidden and the recovery failure becomes visible", async () => {
+    const backend = new Backend();
+    const store = new Store("messages", { baseUrl: "https://app.test", fetch: backend.fetch });
+    watch(store);
+    backend.reads[0]!.resolve("cached", { maxAgeMs: 100, version: "1" });
+    await until(() => store.getSnapshot().data === "cached");
+    backend.streams[0]!.close();
+    await until(() => store.getSnapshot().status === "offline");
+    expect(store.getSnapshot().error).toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(store.getSnapshot().data).toBeUndefined();
+    expect(store.getSnapshot().error?.message).toContain("reconnecting");
+  });
+
+  test("a read during disconnection does not erase the diagnostic needed after expiry", async () => {
+    const backend = new Backend();
+    const store = new Store("messages", { baseUrl: "https://app.test", fetch: backend.fetch });
+    watch(store);
+    backend.streams[0]!.close();
+    await until(() => store.getSnapshot().error !== null);
+    backend.reads[0]!.resolve("last read", { maxAgeMs: 30, version: "1" });
+    await until(() => store.getSnapshot().data === "last read");
+    expect(store.getSnapshot().error).toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(store.getSnapshot().data).toBeUndefined();
+    expect(store.getSnapshot().error?.message).toContain("reconnecting");
+  });
+
+  test("data without an offline policy is unavailable during recovery", async () => {
+    const backend = new Backend();
+    const store = new Store("messages", { baseUrl: "https://app.test", fetch: backend.fetch });
+    watch(store);
+    backend.reads[0]!.resolve("online only");
+    await until(() => store.getSnapshot().data === "online only");
+    backend.streams[0]!.close();
+    await until(() => store.getSnapshot().error !== null);
+    expect(store.getSnapshot().data).toBeUndefined();
+    expect(store.getSnapshot().isStale).toBe(true);
+  });
+
+  test("a late cache read cannot restore data after a newer response revokes offline reads", async () => {
+    const backend = new Backend();
+    let resolveCache!: (value: StoreCacheEntry) => void;
+    let cacheReads = 0;
+    const cache = new MemoryCache();
+    cache.read = () =>
+      new Promise((resolve) => {
+        cacheReads++;
+        resolveCache = resolve;
+      });
+    const store = new Store("messages", {
+      baseUrl: "https://app.test",
+      fetch: backend.fetch,
+      cache,
+      cacheScope: "alice",
+    });
+    watch(store);
+    backend.reads[0]!.resolve("online only");
+    await until(() => store.getSnapshot().data === "online only");
+    backend.streams[0]!.close();
+    await until(() => store.getSnapshot().data === undefined);
+    resolveCache({
+      key: JSON.stringify(["https://app.test", "messages", {}, "alice", "1"]),
+      scope: "alice",
+      version: "1",
+      savedAt: Date.now(),
+      expiresAt: Date.now() + 10_000,
+      data: "old offline data",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(store.getSnapshot().data).toBeUndefined();
+    expect(store.getSnapshot().error).not.toBeNull();
+    const refreshing = store.refresh();
+    backend.reads[1]!.reject(new Error("offline"));
+    await refreshing;
+    expect(cacheReads).toBe(1);
+  });
+
+  test.each([401, 403, 404])(
+    "terminal subscription status %i stops reads and remains visible",
+    async (status) => {
+      const backend = new Backend();
+      backend.streamStatus = status;
+      const recoveries: string[] = [];
+      const store = new Store("messages", {
+        baseUrl: "https://app.test",
+        fetch: backend.fetch,
+        onRecovery: (reason) => recoveries.push(reason),
+      });
+      watch(store);
+      await until(() => store.getSnapshot().status === "error");
+      expect(backend.reads[0]!.init?.signal?.aborted).toBe(true);
+      backend.reads[0]!.resolve("late authorized response", { maxAgeMs: 10_000, version: "1" });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(store.getSnapshot().data).toBeUndefined();
+      expect(store.getSnapshot().error?.message).toContain(String(status));
+      expect(recoveries).toEqual([]);
+      expect(backend.streamRequests).toHaveLength(1);
+    },
+  );
+});
+
 describe("Store offline reads", () => {
   test("requires both explicit cache scope and backend policy", async () => {
     const backend = new Backend();
@@ -291,6 +481,7 @@ describe("Store offline reads", () => {
     offlineBackend.reads[0]!.reject(new Error("offline"));
     await until(() => cached.getSnapshot().status === "offline");
     expect(cached.getSnapshot().data).toEqual(["cached"]);
+    expect(cached.getSnapshot().error).toBeNull();
     const other = new Store("messages", {
       ...options,
       cacheScope: "bob",
@@ -437,16 +628,22 @@ describe("Store offline reads", () => {
   });
 
   test("resubscribing cannot briefly expose data whose offline lease expired while stopped", async () => {
-    const backend = new Backend();
-    const store = new Store("messages", { baseUrl: "https://app.test", fetch: backend.fetch });
-    const unsubscribe = store.subscribe(() => {});
-    backend.reads[0]!.resolve("temporary", { maxAgeMs: 20, version: "1" });
-    await until(() => store.getSnapshot().data === "temporary");
-    unsubscribe();
-    expect(store.getSnapshot().isStale).toBe(true);
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    watch(store);
-    expect(store.getSnapshot().data).toBeUndefined();
+    let now = Date.now();
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const backend = new Backend();
+      const store = new Store("messages", { baseUrl: "https://app.test", fetch: backend.fetch });
+      const unsubscribe = store.subscribe(() => {});
+      backend.reads[0]!.resolve("temporary", { maxAgeMs: 20, version: "1" });
+      await until(() => store.getSnapshot().data === "temporary");
+      unsubscribe();
+      expect(store.getSnapshot().isStale).toBe(true);
+      now += 30;
+      watch(store);
+      expect(store.getSnapshot().data).toBeUndefined();
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   test("disconnect immediately hides a snapshot whose TTL passed while the live stream was healthy", async () => {
@@ -691,4 +888,191 @@ describe("default IndexedDB Store cache", () => {
       expect((await defaultStoreCache.read("bob"))?.data).toBe("private");
     });
   });
+});
+
+describe("Store independent recovery failures", () => {
+  test.each([503, 200])(
+    "failed read (%i) then successful read retains the stream diagnostic through expiry",
+    async (status) => {
+      let now = Date.now();
+      const clock = spyOn(Date, "now").mockImplementation(() => now);
+      cleanups.push(() => clock.mockRestore());
+      const backend = new Backend();
+      const store = new Store("messages", { baseUrl: "https://app.test", fetch: backend.fetch });
+      watch(store);
+      backend.reads[0]!.resolve("initial", { maxAgeMs: 10000, version: "1" });
+      await until(() => store.getSnapshot().data === "initial");
+      backend.streams[0]!.close();
+      await until(() => store.getSnapshot().status === "offline");
+      const failed = store.refresh();
+      backend.reads[1]!.response(status, { invalid: true });
+      await failed;
+      const successful = store.refresh();
+      backend.reads[2]!.resolve("renewed", { maxAgeMs: 10000, version: "1" });
+      await successful;
+      expect(store.getSnapshot()).toMatchObject({ data: "renewed", error: null, isStale: true });
+      now += 10001;
+      expect(store.getSnapshot().data).toBeUndefined();
+      expect(store.getSnapshot().error?.message).toContain("reconnecting");
+    },
+  );
+
+  test("malformed updates stay visible until stream readiness and a successful canonical reload", async () => {
+    const backend = new Backend();
+    const store = new Store("messages", { baseUrl: "https://app.test", fetch: backend.fetch });
+    watch(store);
+    backend.reads[0]!.resolve("initial", { maxAgeMs: 10000, version: "1" });
+    await until(() => store.getSnapshot().data === "initial");
+    backend.streams[0]!.raw("invalid JSON");
+    await until(() => store.getSnapshot().error !== null);
+    const malformed = store.getSnapshot().error;
+    expect(malformed?.message).toContain("invalid update");
+    const failed = store.refresh();
+    backend.reads[1]!.response(503);
+    await failed;
+    expect(store.getSnapshot().error).toBe(malformed);
+    const successful = store.refresh();
+    backend.reads[2]!.resolve("renewed", { maxAgeMs: 10000, version: "1" });
+    await successful;
+    expect(store.getSnapshot()).toMatchObject({ data: "renewed", error: malformed, isStale: true });
+    backend.streams[0]!.close();
+    await new Promise((resolve) => setTimeout(resolve, 1400));
+    expect(store.getSnapshot().error).toBe(malformed);
+    expect(backend.streams).toHaveLength(2);
+    backend.streams[1]!.send("tako.store.ready");
+    await until(() => backend.reads.length === 4);
+    expect(store.getSnapshot().error).toBe(malformed);
+    backend.reads[3]!.response(503);
+    await until(() => store.getSnapshot().status === "offline");
+    expect(store.getSnapshot().error).toBe(malformed);
+    const restored = store.refresh();
+    await until(() => backend.reads.length === 5);
+    backend.reads[4]!.resolve("canonical", { maxAgeMs: 10000, version: "1" });
+    await restored;
+    expect(store.getSnapshot()).toEqual({
+      data: "canonical",
+      error: null,
+      status: "ready",
+      isStale: false,
+    });
+  });
+
+  test.each(["transport", "json", "envelope"] as const)(
+    "body %s failures are classified separately",
+    async (kind) => {
+      let now = Date.now();
+      const clock = spyOn(Date, "now").mockImplementation(() => now);
+      cleanups.push(() => clock.mockRestore());
+      const backend = new Backend();
+      const store = new Store("messages", { baseUrl: "https://app.test", fetch: backend.fetch });
+      watch(store);
+      backend.reads[0]!.resolve("cached", { maxAgeMs: 10000, version: "1" });
+      await until(() => store.getSnapshot().data === "cached");
+      const pending = store.refresh();
+      const transportError = new TypeError("connection terminated");
+      backend.reads[1]!.respond(
+        kind === "transport"
+          ? new Response(
+              new ReadableStream({
+                start(controller) {
+                  controller.enqueue(new TextEncoder().encode('{"data":'));
+                  controller.error(transportError);
+                },
+              }),
+            )
+          : new Response(kind === "json" ? '{"data":' : '{"unexpected":true}'),
+      );
+      await pending;
+      expect(store.getSnapshot().data).toBe("cached");
+      if (kind === "transport") expect(store.getSnapshot().error).toBeNull();
+      else if (kind === "json") expect(store.getSnapshot().error).toBeInstanceOf(SyntaxError);
+      else expect(store.getSnapshot().error?.message).toContain("must contain data");
+      now += 10001;
+      expect(store.getSnapshot().data).toBeUndefined();
+      expect(store.getSnapshot().error).not.toBeNull();
+      if (kind === "transport") expect(store.getSnapshot().error?.message).toContain(transportError.message);
+    },
+  );
+
+  test("body transport failure without an offline lease remains visible", async () => {
+    const backend = new Backend();
+    const store = new Store("messages", { baseUrl: "https://app.test", fetch: backend.fetch });
+    watch(store);
+    backend.reads[0]!.resolve("online only");
+    await until(() => store.getSnapshot().data === "online only");
+    const pending = store.refresh();
+    const error = new TypeError("connection terminated");
+    backend.reads[1]!.respond(
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.error(error);
+          },
+        }),
+      ),
+    );
+    await pending;
+    expect(store.getSnapshot().data).toBeUndefined();
+    expect(store.getSnapshot().error?.message).toContain(error.message);
+  });
+});
+
+test("ready during an in-flight read keeps malformed update errors until the queued reload completes", async () => {
+  const backend = new Backend();
+  const store = new Store("messages", { baseUrl: "https://app.test", fetch: backend.fetch });
+  watch(store);
+  backend.reads[0]!.resolve("initial", { maxAgeMs: 10000, version: "1" });
+  await until(() => store.getSnapshot().data === "initial");
+  backend.streams[0]!.raw("invalid JSON");
+  await until(() => store.getSnapshot().error !== null);
+  const malformed = store.getSnapshot().error;
+  const pending = store.refresh();
+  backend.streams[0]!.send("tako.store.ready");
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  backend.reads[1]!.resolve("before ready", { maxAgeMs: 10000, version: "1" });
+  await until(() => backend.reads.length === 3);
+  expect(store.getSnapshot()).toMatchObject({
+    data: "before ready",
+    error: malformed,
+    isStale: true,
+  });
+  backend.reads[2]!.resolve("canonical", { maxAgeMs: 10000, version: "1" });
+  await pending;
+  expect(store.getSnapshot()).toEqual({
+    data: "canonical",
+    error: null,
+    isStale: false,
+    status: "ready",
+  });
+});
+
+test("a Store recovery observer's late rejection is diagnosed after reconnect without exposing an error", async () => {
+  const diagnostic = spyOn(console, "error").mockImplementation(() => {});
+  cleanups.push(() => diagnostic.mockRestore());
+  const backend = new Backend();
+  let rejectObserver!: (error: Error) => void;
+  const store = new Store("messages", {
+    baseUrl: "https://app.test",
+    fetch: backend.fetch,
+    onRecovery: () =>
+      new Promise<void>((_, reject) => {
+        rejectObserver = reject;
+      }),
+  });
+  watch(store);
+  backend.reads[0]!.resolve("cached", { maxAgeMs: 10000, version: "1" });
+  await until(() => store.getSnapshot().data === "cached");
+  backend.streams[0]!.close();
+  await new Promise((resolve) => setTimeout(resolve, 1400));
+  expect(backend.streams).toHaveLength(2);
+  const observerError = new Error("observer rejected after reconnect");
+  rejectObserver(observerError);
+  await Promise.resolve();
+  expect(diagnostic).toHaveBeenCalledWith("SseReader onRecovery handler threw:", observerError);
+  expect(store.getSnapshot()).toMatchObject({ data: "cached", error: null, isStale: true });
+  backend.streams[1]!.send("tako.store.ready");
+  await until(() => backend.reads.length === 2);
+  backend.reads[1]!.resolve("canonical", { maxAgeMs: 10000, version: "1" });
+  await until(() => !store.getSnapshot().isStale);
+  expect(store.getSnapshot().error).toBeNull();
 });

@@ -5,6 +5,7 @@ use crate::channels::{
     authorize_channel_request, fetch_channel_registry, parse_channel_route,
     parse_message_id_cursor, parse_ws_last_message_id,
 };
+use crate::native_channel_client::{ProxyChannelStore, app_scope};
 use crate::proxy::TakoProxy;
 use crate::proxy::request::insert_body_headers;
 use bytes::Bytes;
@@ -14,51 +15,126 @@ use pingora_proxy::Session;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+use tako_channels::ReplayCursor;
 use tako_channels::live_store::{
-    STORE_CHANNEL_PREFIX, load_store, parse_store_route, serve_store_events, store_scope,
-    valid_store_name, validate_store_lifecycle, validate_store_query,
+    STORE_CHANNEL_PREFIX, load_store, parse_store_route, serve_store_events_with_writer,
+    store_scope, valid_store_name, validate_store_lifecycle, validate_store_query,
 };
 use tako_channels::params::{ParamsError, validate_query};
 use ws::ChannelWebSocketAuth;
 
+mod drain;
 mod ws;
 
 impl TakoProxy {
-    /// Cache one store and change poller per app; opening a database may block.
-    async fn channel_store_for_app(&self, app_name: &str) -> Result<Arc<ChannelStore>> {
-        let cell = self
-            .channel_stores
-            .write()
-            .entry(app_name.to_string())
-            .or_insert_with(|| Arc::new(tokio::sync::OnceCell::new()))
-            .clone();
-        cell.get_or_try_init(|| async {
-            let resolver = self.channel_postgres_url.read().clone();
-            let data_dir = self.lb.app_manager().data_dir().clone();
-            let app_id = app_name.to_string();
-            let store = Arc::new(
-                tokio::task::spawn_blocking(move || {
-                    let postgres_url = resolver.and_then(|resolver| resolver(&app_id));
-                    let config = crate::channels::app_channel_store_config_with_postgres(
-                        &data_dir,
-                        &app_id,
-                        postgres_url.as_deref(),
-                    );
-                    ChannelStore::open_config(config)
-                })
-                .await
-                .map_err(|error| Error::explain(ErrorType::InternalError, error.to_string()))?
-                .map_err(|error| {
-                    Error::explain(
-                        ErrorType::InternalError,
-                        format!("Failed to open channel store for {app_name}: {error}"),
-                    )
-                })?,
-            );
-            Ok(store)
+    /// The app's channel backend from runtime credentials, resolved once per
+    /// credential generation rather than on every channel request.
+    async fn channel_postgres_url_for(
+        &self,
+        app_name: &str,
+        native_configured: bool,
+    ) -> Result<Option<String>> {
+        let generation = self
+            .channel_credentials_generation
+            .load(std::sync::atomic::Ordering::Acquire);
+        if let Some((resolved_at, url)) = self.channel_credentials.read().get(app_name)
+            && *resolved_at == generation
+        {
+            return Ok(url.clone());
+        }
+        let resolver = self.channel_postgres_url.read().clone();
+        let app_id = app_name.to_owned();
+        let postgres_url = tokio::task::spawn_blocking(move || match resolver {
+            Some(resolve) => resolve(&app_id),
+            None if native_configured => {
+                Err("native channel credentials resolver missing".to_string())
+            }
+            None => Ok(None),
         })
         .await
-        .cloned()
+        .map_err(|_| {
+            Error::explain(
+                ErrorType::InternalError,
+                "channel credential resolver failed",
+            )
+        })?
+        .map_err(|_| Error::explain(ErrorType::InternalError, "channel credentials unavailable"))?;
+        // Tagged with the generation read before resolving, so a deployment that
+        // lands in between forces one more resolution instead of going stale.
+        self.channel_credentials
+            .write()
+            .insert(app_name.to_owned(), (generation, postgres_url.clone()));
+        Ok(postgres_url)
+    }
+
+    /// Keep the reader and its broker subscription in the existing per-app cache.
+    /// A reader opened against a backend that has since changed is dropped and
+    /// reopened once, so credential rotations recover without a restart.
+    async fn channel_store_for_app(&self, app_name: &str) -> Result<Arc<ProxyChannelStore>> {
+        let native = self.native_channels.read().clone();
+        let native_configured = native.is_some();
+        let postgres_url = self
+            .channel_postgres_url_for(app_name, native_configured)
+            .await?;
+        for reopened in [false, true] {
+            let cell = self
+                .channel_stores
+                .write()
+                .entry(app_name.to_owned())
+                .or_insert_with(|| Arc::new(tokio::sync::OnceCell::new()))
+                .clone();
+            let store = cell
+                .get_or_try_init(|| async {
+                    let app = app_scope(app_name).map_err(|_| {
+                        Error::explain(ErrorType::InternalError, "invalid channel app scope")
+                    })?;
+                    let config = crate::channels::app_channel_store_config_with_postgres(
+                        self.lb.app_manager().data_dir(),
+                        app_name,
+                        postgres_url.as_deref(),
+                    );
+                    ProxyChannelStore::open(config, app, native.clone())
+                        .await
+                        .map(Arc::new)
+                        .map_err(|_| {
+                            Error::explain(
+                                ErrorType::InternalError,
+                                "channel reader or native broker unavailable",
+                            )
+                        })
+                })
+                .await?;
+            let current = store.is_native() == native_configured
+                && store.check_backend(postgres_url.as_deref()).is_ok();
+            if !current {
+                let mut stores = self.channel_stores.write();
+                if stores
+                    .get(app_name)
+                    .is_some_and(|cached| Arc::ptr_eq(cached, &cell))
+                {
+                    stores.remove(app_name);
+                }
+                drop(stores);
+                // Requests still holding the stale reader fail closed instead of
+                // letting its reconnects re-register the old backend.
+                store.detach();
+                if reopened {
+                    return Err(Error::explain(
+                        ErrorType::InternalError,
+                        "channel backend configuration changed; reopen app channel reader",
+                    ));
+                }
+                continue;
+            }
+            store.ensure_ready().await.map_err(|_| {
+                Error::explain(
+                    ErrorType::InternalError,
+                    "native channel broker unavailable",
+                )
+            })?;
+            return Ok(store.clone());
+        }
+        unreachable!("channel reader is reopened at most once")
     }
 
     async fn channel_meta_for_app(
@@ -74,16 +150,11 @@ impl TakoProxy {
                     .channel_store_for_app(app_name)
                     .await
                     .map_err(|error| ChannelError::Storage(error.to_string()))?;
-                let lifecycle_defs = defs.clone();
-                store
-                    .run(move |store| {
-                        for definition in lifecycle_defs {
-                            store
-                                .sync_channel(&definition.channel, &definition.lifecycle_auth())?;
-                        }
-                        Ok(())
-                    })
-                    .await?;
+                for definition in &defs {
+                    store
+                        .sync_channel_async(&definition.channel, &definition.lifecycle_auth())
+                        .await?;
+                }
                 Ok(defs)
             })
             .await
@@ -150,8 +221,9 @@ impl TakoProxy {
         session: &mut Session,
         store: &Arc<ChannelStore>,
         channel: &str,
-        mut after: Option<i64>,
+        mut after: Option<ReplayCursor>,
         auth: &ChannelAuthResponse,
+        mut resets: tokio::sync::watch::Receiver<u64>,
     ) -> Result<bool> {
         let mut header = ResponseHeader::build(200, None)?;
         header.insert_header("Content-Type", "text/event-stream")?;
@@ -169,17 +241,35 @@ impl TakoProxy {
         let mut read_replay = true;
 
         loop {
+            if resets.has_changed().unwrap_or(true) {
+                session
+                    .write_response_body(
+                        Some(Bytes::from_static(b"id:\nevent: tako.reset\ndata: {}\n\n")),
+                        true,
+                    )
+                    .await?;
+                return Ok(true);
+            }
             let messages = if read_replay {
                 changes.borrow_and_update();
-                store
-                    .read_after_async(channel, after, 100)
-                    .await
-                    .map_err(|error| {
-                        Error::explain(
+                match store.read_after_async(channel, after, 100).await {
+                    Ok(messages) => messages,
+                    Err(ChannelError::StaleCursor) => {
+                        session
+                            .write_response_body(
+                                Some(Bytes::from_static(b"id:\nevent: tako.reset\ndata: {}\n\n")),
+                                true,
+                            )
+                            .await?;
+                        return Ok(true);
+                    }
+                    Err(error) => {
+                        return Err(Error::explain(
                             ErrorType::InternalError,
                             format!("Failed to read channel replay: {error}"),
-                        )
-                    })?
+                        ));
+                    }
+                }
             } else {
                 Vec::new()
             };
@@ -187,6 +277,15 @@ impl TakoProxy {
 
             if !messages.is_empty() {
                 for message in messages {
+                    if resets.has_changed().unwrap_or(true) {
+                        session
+                            .write_response_body(
+                                Some(Bytes::from_static(b"id:\nevent: tako.reset\ndata: {}\n\n")),
+                                true,
+                            )
+                            .await?;
+                        return Ok(true);
+                    }
                     let encoded = serde_json::to_string(&message).map_err(|error| {
                         Error::explain(
                             ErrorType::InternalError,
@@ -200,8 +299,8 @@ impl TakoProxy {
                     after = Some(
                         message
                             .id
-                            .parse::<i64>()
-                            .expect("channel ids are always numeric"),
+                            .parse::<ReplayCursor>()
+                            .expect("stored channel cursor is valid"),
                     );
                 }
                 next_keepalive = tokio::time::Instant::now() + keepalive_interval;
@@ -224,6 +323,10 @@ impl TakoProxy {
                 continue;
             }
             tokio::select! {
+                _ = resets.changed() => {
+                    session.write_response_body(Some(Bytes::from_static(b"id:\nevent: tako.reset\ndata: {}\n\n")), true).await?;
+                    return Ok(true);
+                },
                 _ = changes.changed() => read_replay = true,
                 _ = tokio::time::sleep_until(next_keepalive.min(started_at + max_connection_lifetime)) => {}
             }
@@ -231,6 +334,30 @@ impl TakoProxy {
     }
 
     pub(crate) async fn try_handle_channel_request(
+        &self,
+        session: &mut Session,
+        ctx: &mut RequestCtx,
+        app_name: &str,
+        path: &str,
+        _host: &str,
+    ) -> Result<bool> {
+        let result = drain::until_draining(
+            &self.draining,
+            self.try_handle_channel_request_inner(session, ctx, app_name, path, _host),
+        )
+        .await;
+        match result {
+            Some(result) => result,
+            None => {
+                // Dropping the handler cancels WS/SSE and releases its presence session.
+                // Close the transport itself; draining is not an application channel event.
+                drain::close(session).await;
+                Ok(true)
+            }
+        }
+    }
+
+    async fn try_handle_channel_request_inner(
         &self,
         session: &mut Session,
         ctx: &mut RequestCtx,
@@ -549,7 +676,14 @@ impl TakoProxy {
         if is_store {
             let stream = store_scope(&route.channel, &store_params);
             ctx.observation.set_handler_result("sse");
-            return serve_store_events(session, &store, &stream, &auth_result).await;
+            return serve_store_events_with_writer(
+                session,
+                store.store(),
+                &stream,
+                &auth_result,
+                store.as_ref(),
+            )
+            .await;
         }
         if let Err(error) = store.sync_channel_async(&route.channel, &auth_result).await {
             ctx.observation.set_handler_result("error");
@@ -595,13 +729,21 @@ impl TakoProxy {
                 return self.write_channel_error(session, error).await;
             }
         };
+        let resets = store.resets(&route.channel);
         let cursor = match store.replay_cursor_async(&route.channel, cursor).await {
             Ok(cursor) => cursor,
             Err(error) => return self.write_channel_error(session, error).await,
         };
         ctx.observation.set_handler_result("sse");
-        self.write_channel_events(session, &store, &route.channel, cursor, &auth_result)
-            .await
+        self.write_channel_events(
+            session,
+            store.store(),
+            &route.channel,
+            cursor,
+            &auth_result,
+            resets,
+        )
+        .await
     }
 }
 

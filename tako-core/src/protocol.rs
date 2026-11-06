@@ -251,6 +251,12 @@ pub enum Command {
     /// Get server runtime information (ports, data dir, upgrade mode).
     ServerInfo,
 
+    /// Persist drain intent, reject new app traffic, and stop local work within a deadline.
+    DrainServer { timeout_seconds: u64 },
+
+    /// Restore persisted apps and workflows before accepting application traffic again.
+    ResumeServer,
+
     /// Enter upgrading mode with a durable lock owner.
     EnterUpgrading { owner: String },
 
@@ -567,6 +573,8 @@ pub struct BackupDownloadUrlResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerRuntimeInfo {
     pub pid: u32,
+    pub arch: String,
+    pub libc: String,
     pub mode: UpgradeMode,
     #[serde(default)]
     pub process_started_at_unix_secs: Option<i64>,

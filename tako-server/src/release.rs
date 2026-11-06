@@ -290,6 +290,7 @@ pub(crate) async fn prepare_release_runtime(
     data_dir: &Path,
     #[cfg(unix)] isolation: Option<ProcessIsolation>,
 ) -> Result<Option<String>, String> {
+    crate::process_output::check_cancellation().map_err(|e| e.to_string())?;
     let manifest = load_release_manifest(release_dir)?;
     if manifest.release_kind == ReleaseKind::Compose {
         crate::compose_runtime::prepare(release_dir, &manifest, env).await?;
@@ -391,7 +392,10 @@ async fn run_production_install_command(
     install_env: &HashMap<String, String>,
     #[cfg(unix)] isolation: Option<ProcessIsolation>,
 ) -> Result<std::process::Output, String> {
+    crate::process_output::check_cancellation().map_err(|e| e.to_string())?;
     let mut cmd = TokioCommand::new("sh");
+    #[cfg(unix)]
+    cmd.process_group(0);
     cmd.args(["-c", install_cmd])
         .current_dir(install_dir)
         .env_clear();
@@ -409,11 +413,14 @@ async fn run_production_install_command(
     let child = cmd
         .spawn()
         .map_err(|e| format!("Failed to run production install: {e}"))?;
-    let output = crate::process_output::capture(child, None)
-        .await
-        .map_err(|e| format!("Failed to run production install: {e}"))?;
+    let output =
+        crate::process_output::capture(child, Some(crate::process_output::PREPARATION_TIMEOUT))
+            .await
+            .map_err(|e| format!("Failed to run production install: {e}"))?;
     Ok(std::process::Output {
-        status: output.status.expect("no timeout configured"),
+        status: output
+            .status
+            .ok_or("Production install timed out after 600 seconds")?,
         stdout: output.stdout,
         stderr: output.stderr,
     })
@@ -423,6 +430,7 @@ pub(crate) async fn resolve_release_runtime_bin(
     release_dir: &Path,
     data_dir: &Path,
 ) -> Result<Option<String>, String> {
+    crate::process_output::check_cancellation().map_err(|e| e.to_string())?;
     let manifest = load_release_manifest(release_dir)?;
     if manifest.release_kind != ReleaseKind::Native {
         return Ok(None);

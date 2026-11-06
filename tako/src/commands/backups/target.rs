@@ -26,8 +26,20 @@ pub(super) fn resolve_backup_target(
             if !servers.contains(server_name) {
                 return Err(format!("Server '{}' not found in config.toml", server_name).into());
             }
-            let mapped = tako_config.get_servers_for_env(&env);
-            if !mapped.is_empty() && !mapped.contains(&server_name) {
+            let mapped = if tako_config
+                .envs
+                .get(&env)
+                .is_some_and(|env| env.network.is_some())
+            {
+                helpers::resolve_servers_for_env(tako_config, servers, &env)?
+            } else {
+                tako_config
+                    .get_servers_for_env(&env)
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect()
+            };
+            if !mapped.is_empty() && !mapped.iter().any(|name| name == server_name) {
                 return Err(format!(
                     "Server '{}' is not configured for environment '{}'.",
                     server_name, env

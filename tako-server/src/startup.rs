@@ -16,6 +16,8 @@ use tokio::runtime::Runtime;
 mod acme;
 mod cloudflare;
 mod data_dir;
+#[cfg(target_os = "linux")]
+mod native_promotion;
 mod signals;
 mod standby;
 mod tasks;
@@ -67,6 +69,8 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let data_dir = PathBuf::from(&data_dir_str);
     prepare_data_dir(&data_dir)?;
+    #[cfg(target_os = "linux")]
+    native_promotion::guard_promotion_startup(&data_dir)?;
     let server_identity = if standby {
         None
     } else {
@@ -92,6 +96,16 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     }));
     if let Err(e) = cert_manager.init() {
         tracing::warn!("Failed to initialize certificate manager: {}", e);
+    }
+    let native_control =
+        crate::native_control::NativeControl::load(&data_dir, &cert_manager)?.map(Arc::new);
+    let native_channels = crate::server_state::native_channel_client(&data_dir)?;
+    let native_config = native_control
+        .as_ref()
+        .map(|_| tako_network::NodeConfig::load(&data_dir))
+        .transpose()?;
+    if let Some(config) = &native_config {
+        crate::compose_runtime::configure_native_network(&config.network.id)?;
     }
 
     let (_socket_server, socket_listener) = if standby {
@@ -158,8 +172,30 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         server_identity,
     };
 
+    #[cfg(target_os = "linux")]
+    let native_handoff = if native_config.is_some() && !standby {
+        Some(
+            rt.block_on(crate::native_management_ownership::PrimaryHandoff::claim(
+                &data_dir,
+                Duration::from_secs(120),
+            ))?,
+        )
+    } else {
+        None
+    };
+
+    #[cfg(target_os = "linux")]
+    native_promotion::guard_promotion_startup(&data_dir)?;
     let challenge_tokens_for_promote = challenge_tokens.clone();
-    let reload_owner = take_upgrade_reload_owner(&data_dir)?;
+    #[cfg(target_os = "linux")]
+    let promotion_child = native_promotion::is_promotion_child();
+    #[cfg(not(target_os = "linux"))]
+    let promotion_child = false;
+    let reload_owner = if promotion_child {
+        None
+    } else {
+        take_upgrade_reload_owner(&data_dir)?
+    };
     let reload_owner = if should_signal_parent_on_ready() {
         reload_owner.as_deref()
     } else {
@@ -183,12 +219,29 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             runtime,
         )?
     });
-    rt.block_on(async { state.ensure_internal_socket_started() })?;
-
-    if let Err(e) = rt.block_on(state.restore_from_state_store()) {
+    if let Err(e) = rt.block_on(async {
+        let _guard = state.management_lock.lock().await;
+        crate::drain_observer::spawn(&rt, state.clone());
+        state.ensure_internal_socket_started()?;
+        if native_config.is_some() && !standby {
+            if state.is_draining() {
+                Ok(())
+            } else {
+                state.restore_apps_from_state_store(true).await
+            }
+        } else {
+            state.restore_from_state_store().await
+        }
+    }) {
         tracing::error!("Failed to restore server state from SQLite: {}", e);
         return Err(e.into());
     }
+    let native_services = native_config
+        .as_ref()
+        .map(|config| {
+            crate::native_proxy::NativeProxy::start(&rt, state.clone(), config, state.drain_flag())
+        })
+        .transpose()?;
 
     let cloudflare_ips = proxy::CloudflareIpRanges::default();
     tracing::info!(
@@ -221,6 +274,19 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     if !standby {
         state.clone().start_backup_scheduler(rt.handle());
         spawn_management_http(&rt, state.clone(), args.management_host.clone());
+        #[cfg(target_os = "linux")]
+        if let Some(handoff) = native_handoff {
+            let management = rt.block_on(crate::native_management_listener::prepare(
+                data_dir.clone(),
+                state.clone(),
+                handoff,
+            ))?;
+            rt.spawn(async move {
+                if let Err(error) = management.run().await {
+                    tracing::error!(%error, "Native management listener stopped");
+                }
+            });
+        }
     }
 
     if standby {
@@ -282,6 +348,12 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let server = proxy::build_server_with_acme(proxy::ServerBuildConfig {
+        draining: state.drain_flag(),
+        spawn_gate: state.spawn_gate.clone(),
+        proxy_requests: state.proxy_requests.clone(),
+        native_control,
+        native_channels,
+        native_services,
         lb: state.load_balancer(),
         routes: state.routes(),
         config: proxy_config,
@@ -293,6 +365,7 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             let state = state.clone();
             Arc::new(move |app: &str| state.runtime_postgres_url(app))
         }),
+        channel_credentials_generation: state.channel_credentials_generation.clone(),
     })?;
 
     sd_notify_ready();

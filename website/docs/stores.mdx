@@ -196,6 +196,16 @@ The client catches changes made while a load is in flight and refreshes after th
 
 Invalidation is explicit. Tako does not inspect SQL dependencies or watch arbitrary writes to your database. Existing routes, workflows, scripts, and external writers must invalidate the affected stores. Publishing an invalidation and committing a database transaction are separate operations. Publication failures are returned to your app; they do not roll back or retry a committed database write. Use a transactional application outbox when the database commit and eventual notification must be durable together. `refresh()` and reconnect catch-up also reload current data.
 
+## Recover current data
+
+`Store` and `useStore` reconnect their SSE subscription automatically. The built-in reader handles HTTP `410` and internal reset events by clearing the expired cursor and reconnecting. Once the subscription is ready, the Store loads current data through its normal authorized read endpoint. It reloads authoritative state instead of reconstructing records from missed invalidations.
+
+An optional `onRecovery(reason)` in Store or hook options reports `"reconnecting"` or `"history-expired"` for diagnostics. No recovery callback is required to reload data, and Stores have no `onResync` option. Recovery signals never become Store records or application channel messages.
+
+During routine recovery with no other active failure, a result with a valid offline lease remains readable with `status: "offline"`, `isStale: true`, and `error: null`. Without a valid lease, the client hides the stale data and can expose an error. Permission failures, malformed updates, invalid read responses, and expired cached data still need UI handling. HTTP `410` from the data read endpoint is terminal; only subscription replay expiry triggers cursor recovery.
+
+Recovery does not replicate your database or fail over application state. The loader must be able to read the authoritative data on the server that handles the new request. See [channel replay storage](/channels/#deploy-replay-storage) for the SQLite and shared Postgres boundaries.
+
 ## Opt Into Cached Offline Reads
 
 Offline persistence requires both a backend `offline` policy and a client `cacheScope`. Omit either to disable persistence. Use a stable, non-secret scope identifying the reader and tenant, such as `tenantId + ":" + userId`; never use an access token. Change it when switching accounts or tenants, including apps that authenticate with cookies.
@@ -241,7 +251,7 @@ The same React and browser APIs work with JavaScript, Go, and Rust backends.
 
 `tako dev` discovers and watches JavaScript store definitions under `<app_root>/stores/`, restarts the app when they change, and refreshes generated metadata. Store reads and subscriptions enforce the same params validation and authorization as production. This is stricter than the existing permissive local channel and presence subscriptions.
 
-The dev daemon keeps notification state in memory. Single-server production uses Tako-managed SQLite by default. Multi-server deployments require the shared `postgres_url` credential so a write on one server can notify readers on another. JS store directories are detected by deployment preflight; configure `postgres_url` explicitly for multi-server Go and Rust apps using inline registrations. Your database remains the source of truth; this notification storage does not replace it.
+The dev daemon keeps notification state in memory. Single-server production uses Tako-managed SQLite by default. Native brokers replicate bounded notification history and fan out invalidations to trusted server peers. Legacy multi-server deployments require shared `postgres_url`. Native multi-server notifications can use SQLite without that credential; an explicitly configured Postgres backend remains in use. Configure it explicitly for legacy multi-server Go and Rust apps using inline registrations. After a replay gap, the SDK reloads the authorized snapshot. Your database remains the source of truth; this notification storage does not replace it.
 
 Use [Channels](/channels/) for application events, [Presence](/presence/) for current membership, and Stores for live data reads with optional offline caching.
 

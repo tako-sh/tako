@@ -96,6 +96,9 @@ impl ServerAddress {
 #[non_exhaustive]
 #[derive(Clone, Debug, Default)]
 pub struct TcpSocketOptions {
+    /// Bind an exact address before its managed interface exists (Linux only).
+    #[cfg(target_os = "linux")]
+    pub freebind: bool,
     /// IPV6_V6ONLY flag (if true, limit socket to IPv6 communication only).
     /// This is mostly useful when binding to `[::]`, which on most Unix distributions
     /// will bind to both IPv4 and IPv6 addresses by default.
@@ -186,6 +189,15 @@ fn apply_tcp_socket_options(sock: &TcpSocket, opt: Option<&TcpSocketOptions>) ->
     };
 
     let socket_ref = socket2::SockRef::from(sock);
+
+    #[cfg(target_os = "linux")]
+    if opt.freebind {
+        if sock.local_addr().or_err(BindError, "failed to inspect socket domain")?.is_ipv6() {
+            socket_ref.set_freebind_v6(true).or_err(BindError, "failed to set IPV6_FREEBIND")?;
+        } else {
+            socket_ref.set_freebind_v4(true).or_err(BindError, "failed to set IP_FREEBIND")?;
+        }
+    }
 
     if let Some(ipv6_only) = opt.ipv6_only {
         socket_ref

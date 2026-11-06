@@ -1,4 +1,4 @@
-use crate::{ChannelError, ChannelStore};
+use crate::{ChannelError, ChannelStore, ChannelWriter};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -26,7 +26,7 @@ pub struct PresenceMember {
 
 /// One authorized socket. Client frames can replace metadata but never identity.
 pub struct PresenceSession {
-    store: Arc<ChannelStore>,
+    writer: Arc<dyn ChannelWriter>,
     channel: String,
     member: PresenceMember,
     joined: bool,
@@ -39,10 +39,22 @@ impl PresenceSession {
         channel: &str,
         subject: Option<String>,
     ) -> Result<Self, ChannelError> {
+        Self::new_with_writer(
+            Arc::new(crate::LocalChannelWriter::new(store)),
+            channel,
+            subject,
+        )
+    }
+
+    pub fn new_with_writer(
+        writer: Arc<dyn ChannelWriter>,
+        channel: &str,
+        subject: Option<String>,
+    ) -> Result<Self, ChannelError> {
         let mut id = [0u8; 16];
         getrandom::fill(&mut id).map_err(|e| ChannelError::Storage(e.to_string()))?;
         Ok(Self {
-            store,
+            writer,
             channel: channel.into(),
             member: PresenceMember {
                 connection_id: id.iter().map(|byte| format!("{byte:02x}")).collect(),
@@ -69,11 +81,7 @@ impl PresenceSession {
         }
         let mut member = self.member.clone();
         member.data = update.data;
-        let saved = member.clone();
-        let channel = self.channel.clone();
-        self.store
-            .run(move |store| store.update_presence(&channel, &saved, crate::store::now_unix_ms()))
-            .await?;
+        self.writer.update_presence(&self.channel, &member).await?;
         self.member = member;
         self.joined = true;
         Ok(())
@@ -83,11 +91,7 @@ impl PresenceSession {
         if !self.joined {
             return Ok(None);
         }
-        let channel = self.channel.clone();
-        let members = self
-            .store
-            .run(move |store| store.presence(&channel, crate::store::now_unix_ms()))
-            .await?;
+        let members = self.writer.presence(&self.channel).await?;
         if self.last_snapshot.as_ref() == Some(&members) {
             return Ok(None);
         }
@@ -105,14 +109,14 @@ impl Drop for PresenceSession {
         if !self.joined {
             return;
         }
-        let store = self.store.clone();
+        let writer = self.writer.clone();
         let channel = self.channel.clone();
         let connection_id = self.member.connection_id.clone();
         // Also runs on I/O errors and task cancellation. A process crash is
         // covered by the lease, which only client heartbeats renew.
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            runtime.spawn_blocking(move || {
-                if let Err(error) = store.remove_presence(&channel, &connection_id) {
+            runtime.spawn(async move {
+                if let Err(error) = writer.remove_presence(&channel, &connection_id).await {
                     tracing::warn!(%error, "presence cleanup failed");
                 }
             });

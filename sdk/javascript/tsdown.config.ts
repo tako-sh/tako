@@ -26,6 +26,7 @@ export default defineConfig([
       nextjs: "src/nextjs/index.ts",
       "nextjs/image-loader": "src/nextjs/image-loader.ts",
       "gen-channel-types": "bin/gen-channel-types.ts",
+      "gen-service-types": "bin/gen-service-types.ts",
       "gen-store-types": "bin/gen-store-types.ts",
       "entrypoints/bun-server": "src/tako/entrypoints/bun-server.ts",
       "entrypoints/node-server": "src/tako/entrypoints/node-server.ts",
@@ -42,6 +43,7 @@ export default defineConfig([
     entry: {
       client: "src/client.ts",
       react: "src/react.ts",
+      services: "src/services/index.ts",
     },
   },
 ]);

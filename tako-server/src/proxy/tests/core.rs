@@ -159,6 +159,9 @@ fn proxy_does_not_install_default_downstream_compression_module() {
 #[test]
 fn request_context_skips_metric_timers_when_metrics_are_disabled() {
     let mut ctx = service::RequestCtx {
+        request_guard: None,
+        private_request: false,
+        native_remote: None,
         backend: None,
         backend_request_started: false,
         is_https: false,

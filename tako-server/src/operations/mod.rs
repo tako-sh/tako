@@ -2,6 +2,8 @@ mod backup;
 mod compose;
 mod deploy;
 mod dispatch;
+pub(crate) use dispatch::command_is_read_only;
+mod drain;
 mod lifecycle;
 pub(crate) mod logs;
 mod queries;

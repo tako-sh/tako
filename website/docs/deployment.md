@@ -3,7 +3,7 @@ title: Deployment
 description: "Build and deploy a Tako release: select an environment, package native or container artifacts, run release commands, and verify rolling updates."
 ---
 
-Tako deploys locally built apps to servers you control. The CLI validates project state, builds and packages the release, uploads artifacts over signed private HTTP management, and asks `tako-server` to prepare and roll the release into traffic.
+Tako deploys locally built apps to servers you control. The CLI validates project state, builds and packages the release, uploads artifacts over signed management (native pinned HTTPS or legacy private HTTP), and asks `tako-server` to prepare and roll the release into traffic.
 
 ## Server Setup
 
@@ -11,9 +11,21 @@ Provision a supported Linux host and enroll private management access using [Ser
 
 ## Add A Server
 
-Use [Servers](/servers/#add-a-server) to add or repair a host. Confirm the inventory name with `tako servers list --json`, then map it to the environment below.
+Use [Native networks](/networks/) to create a network and enroll a host. For an existing Tailscale or NetBird installation, use [Servers](/servers/#add-a-server).
 
 ## Configure An Environment
+
+For a native network, copy its stable ID from `tako network list --json`:
+
+```toml
+[envs.production]
+network = "0123456789abcdef0123456789abcdef"
+route = "app.example.com"
+```
+
+The CLI resolves current trusted server members and uses per-device signed HTTPS. No local WireGuard interface or SSH agent is needed. A scoped deployment requires administrator-provisioned routes and server-level bindings. App secrets remain separate per-environment credentials. See [sandbox enrollment](/networks/#enroll-another-laptop-or-sandbox).
+
+For legacy inventory, use server names instead:
 
 ```toml
 [envs.production]
@@ -21,7 +33,7 @@ route = "app.example.com"
 servers = ["la"]
 ```
 
-Deploy targets the servers listed in `[envs.<env>].servers`. If production has no server mapping and exactly one global server exists, deploy can select it and persist the mapping. Other non-development environments require explicit server mappings.
+Do not combine `network` and `servers`. For legacy inventory, deploy targets the servers listed in `[envs.<env>].servers`. If production has no server mapping and exactly one global server exists, deploy can select it and persist the mapping. Other non-development environments require explicit server mappings.
 
 ## Deploy
 
@@ -48,6 +60,8 @@ Build precedence:
 4. No-op
 
 Tako copies the source root into `.tako/build`, respects `.gitignore`, symlinks `node_modules` from the original tree for JS builds, omits source symlinks, runs build commands, merges assets into `public/`, verifies the resolved `main`, and archives the result without `node_modules`.
+
+JavaScript deployment preparation generates `<app_root>/tako.services.ts` from [service contracts](/service-contracts/) before copying sources into the build directory. Generation failures stop preparation. Without a JavaScript runtime on the deploying machine, the existing generated module is kept as is. Install the project SDK before deploying, and include the generated module in builds that import it.
 
 The final native artifact includes regular files only; build-created symlinks are omitted too. Do not depend on linked files being deployed. This differs from app data backups, which preserve symlinks.
 

@@ -1,5 +1,5 @@
 //! Process-local, bounded live fanout. Nothing is retained without a subscriber.
-use crate::{ChannelAuthResponse, ChannelError, ChannelMessage, ChannelPublishPayload};
+use crate::{ChannelAuthResponse, ChannelError, ChannelMessage};
 use parking_lot::Mutex;
 use std::{
     collections::HashMap,
@@ -28,7 +28,11 @@ impl EphemeralHub {
         hub
     }
 
-    pub(crate) fn subscribe(self: &Arc<Self>, channel: &str) -> EphemeralSubscription {
+    pub(crate) fn subscribe(
+        self: &Arc<Self>,
+        channel: &str,
+        resets: tokio::sync::watch::Receiver<u64>,
+    ) -> EphemeralSubscription {
         let receiver = self
             .channels
             .lock()
@@ -39,20 +43,14 @@ impl EphemeralHub {
             hub: self.clone(),
             channel: channel.to_owned(),
             receiver: Some(receiver),
+            resets,
         }
     }
 
-    pub(crate) fn publish(&self, channel: &str, payload: &ChannelPublishPayload) -> ChannelMessage {
-        let message = ChannelMessage {
-            id: String::new(),
-            channel: channel.to_owned(),
-            r#type: payload.r#type.clone(),
-            data: payload.data.clone(),
-        };
-        if let Some(sender) = self.channels.lock().get(channel) {
+    pub(crate) fn deliver(&self, message: &ChannelMessage) {
+        if let Some(sender) = self.channels.lock().get(&message.channel) {
             let _ = sender.send(Arc::new(message.clone()));
         }
-        message
     }
 }
 
@@ -60,13 +58,22 @@ pub struct EphemeralSubscription {
     hub: Arc<EphemeralHub>,
     channel: String,
     receiver: Option<broadcast::Receiver<Arc<ChannelMessage>>>,
+    resets: tokio::sync::watch::Receiver<u64>,
 }
 
 impl EphemeralSubscription {
     /// Slow subscribers skip evicted messages; reconnecting never replays events.
     pub async fn recv(&mut self) -> Option<Arc<ChannelMessage>> {
         loop {
-            match self.receiver.as_mut()?.recv().await {
+            let result = tokio::select! {
+                biased;
+                _ = self.resets.changed() => {
+                    self.receiver.take();
+                    return None;
+                }
+                message = self.receiver.as_mut()?.recv() => message,
+            };
+            match result {
                 Ok(message) => return Some(message),
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(broadcast::error::RecvError::Closed) => return None,
@@ -107,7 +114,10 @@ pub async fn serve_events(
                 return Ok(true);
             }
             message = events.recv() => {
-                let Some(message) = message else { return Ok(true); };
+                let Some(message) = message else {
+                    session.write_response_body(None, true).await?;
+                    return Ok(true);
+                };
                 let frame = format!("data: {}\n\n", serde_json::to_string(&*message).expect("JSON channel message"));
                 session.write_response_body(Some(Bytes::from(frame)), false).await?;
             }
@@ -119,15 +129,13 @@ pub async fn serve_events(
 }
 
 pub(crate) fn unsupported() -> ChannelError {
-    ChannelError::BadRequest(
-        "ephemeral channels require a single server without shared Postgres".into(),
-    )
+    ChannelError::BadRequest("ephemeral channels require SQLite channel storage".into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ChannelLifecycle, ChannelStore};
+    use crate::{ChannelLifecycle, ChannelPublishPayload, ChannelStore};
     use std::time::Duration;
     fn payload(n: i32) -> ChannelPublishPayload {
         ChannelPublishPayload {
@@ -137,7 +145,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn separate_stores_share_live_events_without_database_writes_or_replay() {
+    async fn separate_stores_share_live_events_without_replay_rows() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("channels.sqlite");
         let writer = ChannelStore::open(&path).unwrap();
@@ -236,7 +244,7 @@ mod tests {
 #[cfg(test)]
 mod transport_tests {
     use super::*;
-    use crate::ChannelStore;
+    use crate::{ChannelPublishPayload, ChannelStore};
     use pingora_core::protocols::l4::stream::Stream;
     use pingora_proxy::Session;
     use tokio::net::TcpListener;
@@ -264,7 +272,7 @@ mod transport_tests {
                 .write_response_header(Box::new(header), false)
                 .await
                 .unwrap();
-            store
+            let sent = store
                 .publish_ephemeral(
                     "live",
                     &ChannelPublishPayload {
@@ -278,6 +286,7 @@ mod transport_tests {
             )
             .unwrap();
             serve_events(&mut session, events, &auth).await.unwrap();
+            sent
         });
         let response = reqwest::Client::new()
             .get(format!("http://{addr}/"))
@@ -287,10 +296,104 @@ mod transport_tests {
             .unwrap();
         assert_eq!(response.status(), 200);
         let body = response.text().await.unwrap();
+        let sent = server.await.unwrap();
+        assert!(!body.lines().any(|line| line.starts_with("id:")));
+        let data = body
+            .strip_prefix("data: ")
+            .unwrap()
+            .strip_suffix("\n\n")
+            .unwrap();
         assert_eq!(
-            body,
-            "data: {\"id\":\"\",\"channel\":\"live\",\"type\":\"progress\",\"data\":2}\n\n"
+            serde_json::from_str::<serde_json::Value>(data).unwrap(),
+            serde_json::json!({"id":"", "eventId":sent.event_id, "channel":"live", "type":"progress", "data":2})
         );
-        server.await.unwrap();
+        assert_eq!(sent.event_id.as_ref().unwrap().sequence, 2);
+    }
+}
+
+#[cfg(test)]
+mod duplex_tests {
+    use super::*;
+    use crate::{ChannelPublishPayload, ChannelStore};
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+    #[tokio::test]
+    async fn sse_preserves_event_identity_without_replay_over_duplex_transport() {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let (mut client, io) = tokio::io::duplex(16384);
+            client
+                .write_all(b"GET / HTTP/1.1\r\nHost: local\r\nLast-Event-ID: 123\r\n\r\n")
+                .await
+                .unwrap();
+            let mut session = pingora_proxy::Session::new_h1(Box::new(io));
+            session.read_request().await.unwrap();
+            let store = ChannelStore::open_in_memory().unwrap();
+            let payload = ChannelPublishPayload {
+                r#type: "progress".into(),
+                data: 1.into(),
+            };
+            let old = store.publish_ephemeral("live", &payload).unwrap();
+            let events = store.subscribe_ephemeral("live").unwrap();
+            let sent = store
+                .publish_ephemeral(
+                    "live",
+                    &ChannelPublishPayload {
+                        data: 2.into(),
+                        ..payload
+                    },
+                )
+                .unwrap();
+            let mut header = pingora_http::ResponseHeader::build(200, None).unwrap();
+            header
+                .insert_header("Content-Type", "text/event-stream")
+                .unwrap();
+            session
+                .write_response_header(Box::new(header), false)
+                .await
+                .unwrap();
+            let auth =
+                serde_json::from_value(serde_json::json!({"ok":true,"ephemeral":true})).unwrap();
+            let server = tokio::spawn(async move {
+                serve_events(&mut session, events, &auth).await.unwrap();
+            });
+            let mut client = BufReader::new(client);
+            let mut response = String::new();
+            loop {
+                let mut line = String::new();
+                assert!(
+                    client.read_line(&mut line).await.unwrap() > 0,
+                    "SSE ended before the event"
+                );
+                response.push_str(&line);
+                if line.starts_with("data: ") {
+                    break;
+                }
+            }
+            store.signal_gap(Some("live"));
+            client.read_to_string(&mut response).await.unwrap();
+            server.await.unwrap();
+            assert!(response.starts_with("HTTP/1.1 200"));
+            assert!(!response.lines().any(|line| line.starts_with("id:")));
+            let events: Vec<serde_json::Value> = response
+                .lines()
+                .filter_map(|line| line.strip_prefix("data: "))
+                .map(|data| serde_json::from_str(data).unwrap())
+                .collect();
+            assert_eq!(
+                events,
+                vec![serde_json::json!({
+                    "id":"", "eventId":{"origin":old.event_id.unwrap().origin,"sequence":2},
+                    "channel":"live", "type":"progress", "data":2
+                })]
+            );
+            assert_eq!(events[0], serde_json::to_value(sent).unwrap());
+            assert!(store.read_after("live", None, 10).unwrap().is_empty());
+            assert_eq!(
+                store.raw_query_i64("SELECT COUNT(*) FROM channel_metadata", []),
+                0
+            );
+        })
+        .await
+        .unwrap();
     }
 }

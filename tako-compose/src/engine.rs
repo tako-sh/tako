@@ -4,7 +4,6 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use tokio::io::AsyncWriteExt;
 use tokio::process::Child;
 
 use crate::plan::{
@@ -87,6 +86,7 @@ impl ComposeRuntime {
     }
 
     pub(crate) async fn spawn_model(&self, model: &Value, args: &[&str]) -> Result<Child, String> {
+        crate::process_output::check_cancellation().map_err(|e| e.to_string())?;
         let mut model = model.clone();
         escape_interpolation(&mut model);
         let bytes = serde_json::to_vec(&model).map_err(|e| e.to_string())?;
@@ -109,14 +109,10 @@ impl ComposeRuntime {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut child = command.spawn().map_err(|e| e.to_string())?;
-        let mut input = child.stdin.take().ok_or("Missing Compose input pipe")?;
-        tokio::time::timeout(Duration::from_secs(30), input.write_all(&bytes))
+        let child = command.spawn().map_err(|e| e.to_string())?;
+        crate::process_output::write_stdin(child, &bytes, Duration::from_secs(30))
             .await
-            .map_err(|_| "Timed out sending the Compose model")?
-            .map_err(|e| e.to_string())?;
-        drop(input);
-        Ok(child)
+            .map_err(|e| e.to_string())
     }
 
     pub async fn logs(&self, containers: &[ServiceContainer]) -> Result<Child, String> {

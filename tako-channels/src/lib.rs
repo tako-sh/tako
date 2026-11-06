@@ -1,4 +1,8 @@
 mod client;
+mod cursor;
+mod mesh;
+pub use cursor::ReplayCursor;
+pub use mesh::{ChannelEvent, ChannelEventId, ChannelPublication, RemoteIngest};
 pub mod ephemeral;
 pub mod live_store;
 mod presence;
@@ -10,12 +14,17 @@ pub mod registry;
 mod routing;
 mod store;
 mod types;
+mod writer;
+pub use writer::{ChannelWriter, LocalChannelWriter};
 pub mod websocket;
 
 pub use client::authorize_channel_request;
 pub use close_codes::ChannelCloseCode;
 pub use routing::{parse_channel_route, parse_message_id_cursor, parse_ws_last_message_id};
-pub use store::{ChannelStore, ChannelStoreConfig, POSTGRES_CHANNELS_SCHEMA, channels_db_path};
+pub use store::{
+    ChannelStore, ChannelStoreConfig, POSTGRES_CHANNELS_SCHEMA, SqliteReplayLimits,
+    channels_db_path,
+};
 pub use types::{
     ChannelAuthResponse, ChannelAuthScheme, ChannelAuthVerifyRequest, ChannelDefinitionMeta,
     ChannelError, ChannelHeaderValue, ChannelLifecycle, ChannelMessage, ChannelOperation,
@@ -37,6 +46,12 @@ mod tests;
 
 #[cfg(test)]
 mod presence_tests;
+
+#[cfg(test)]
+mod replay_tests;
+
+#[cfg(test)]
+mod mesh_tests;
 
 #[cfg(test)]
 mod history_tests;

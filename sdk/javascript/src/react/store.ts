@@ -1,4 +1,4 @@
-import { useMemo, useSyncExternalStore } from "react";
+import { useMemo, useRef, useSyncExternalStore } from "react";
 import type { TakoStores } from "tako.sh";
 import { Store, storeIdentity, type StoreOptions, type StoreSnapshot } from "../stores/client";
 
@@ -43,8 +43,16 @@ export function useStore<T = unknown>(
   options: UseStoreOptions = {},
 ): StoreConnection<T> {
   const identity = storeIdentity(name, options);
+  const latest = useRef({ identity, options });
+  latest.current = { identity, options };
   const store = useMemo(
-    () => new Store<T>(name, options),
+    () =>
+      new Store<T>(name, {
+        ...options,
+        onRecovery: (reason) => {
+          if (latest.current.identity === identity) latest.current.options.onRecovery?.(reason);
+        },
+      }),
     // Values are captured by the full identity; dependencies with identity matter separately.
     [identity, options.fetch, options.cache],
   );

@@ -50,3 +50,7 @@ source_ip = "auto"
 ## Verify
 
 Deploy the route configuration, inspect `tako status --json`, and request each public hostname and path. Check the certificate chain, HTTP-to-HTTPS redirect, and a representative app response. For wildcard routes, test a concrete subdomain. Inspect finite app logs for certificate or routing failures; see [Troubleshooting](/troubleshooting/#tls-or-certificate-problems).
+
+## Native private service names
+
+Native networks use `{app}.{env}.{network-id}.tako.internal` for private app discovery. These addresses use authenticated current placements and are separate from public route ownership, DNS, and certificates. Automatic private DNS for native server processes requires active systemd-resolved; Compose has independent managed gateway DNS. The CLI does not configure workstation DNS, and a native network does not redirect external ingress. Mandatory listener-wide PROXY protocol is incompatible with direct native pinned HTTPS; ordinary Cloudflare HTTP forwarding headers do not have that limitation. See [Private service addresses](/networks/#use-private-service-addresses).

@@ -393,3 +393,7 @@ Use finite `tako logs --env production --days 1 --json` to inspect app and worke
 ## Verify
 
 Enqueue a known payload, inspect the run/step logs, and check its application-side result. Force a retry in a test environment and confirm completed steps reuse saved results and external effects deduplicate. Test duplicate enqueue IDs, a signal or durable wait when used, and the intended shared-versus-per-server execution model.
+
+## Native network boundaries
+
+Native channel replay and presence replication do not migrate durable workflow executions. Keep the workflow's local or remote storage choice explicit. Draining a server pauses new workflow work and bounds cleanup of running work; inspect forced work and remaining workers before treating maintenance as complete. Resume restores persisted configuration on that server. It does not transfer a local queue, database, or volume to another host. See [Native networks](/networks/#understand-replay-and-maintenance-limits).

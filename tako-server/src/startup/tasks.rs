@@ -130,7 +130,7 @@ pub(super) fn spawn_management_socket(
         rt.spawn(async move {
             if let Err(e) = SocketServer::serve(socket_listener, move |cmd| {
                 let state = state.clone();
-                async move { state.handle_command(cmd).await }
+                async move { crate::management_http::handle_rpc_command(state, cmd).await }
             })
             .await
             {

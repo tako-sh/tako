@@ -1,4 +1,5 @@
 mod crud;
+mod native;
 mod upgrade;
 mod wizard;
 
@@ -17,6 +18,14 @@ pub enum ServerCommands {
         /// VPN provider used for management
         #[arg(long, value_enum)]
         vpn: Option<crate::vpn::VpnProvider>,
+
+        /// Join a native Tako network by local alias or stable ID.
+        #[arg(long, conflicts_with_all = ["vpn", "no_test", "description"])]
+        network: Option<String>,
+
+        /// Public WireGuard endpoint (defaults to the server's IP on UDP 51820).
+        #[arg(long, requires = "network")]
+        wireguard_endpoint: Option<std::net::SocketAddr>,
 
         /// Server name. Defaults to the host's first DNS label.
         #[arg(long)]
@@ -103,6 +112,8 @@ async fn run_async(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>
         ServerCommands::Add {
             host,
             vpn,
+            network,
+            wireguard_endpoint,
             name,
             description,
             port,
@@ -113,6 +124,22 @@ async fn run_async(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>
             no_test,
         } => {
             let public_ports = wizard::public_ports_from_cli(http_port, https_port)?;
+            if let Some(network) = network {
+                let host =
+                    host.ok_or("Native enrollment requires an operator SSH target: admin@host")?;
+                let parsed = parse_add_host(&host);
+                return native::add(
+                    &parsed.host,
+                    parsed.admin_user.as_deref().unwrap_or("root"),
+                    &network,
+                    name.as_deref(),
+                    port,
+                    ssh_key.as_deref(),
+                    public_ports.unwrap_or_default().into(),
+                    wireguard_endpoint,
+                )
+                .await;
+            }
             if let Some(host) = host {
                 let parsed_host = parse_add_host(&host);
                 let parsed_admin_user = parsed_host.admin_user.as_deref();

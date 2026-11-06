@@ -65,7 +65,7 @@ struct GlobalServerStatusResult {
 static LOCAL_OFFSET: std::sync::OnceLock<::time::UtcOffset> = std::sync::OnceLock::new();
 
 pub async fn run(json: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let mut servers = ServersToml::load()?;
+    let mut servers = super::helpers::load_management_servers(None, None).await?;
 
     if !json
         && servers.is_empty()
@@ -171,12 +171,11 @@ async fn collect_global_status_results(
         };
 
         let name = server_name.clone();
-        let host = entry.host.clone();
-        let port = entry.port;
+        let target = entry.management_target();
         let span = output::scope(&name);
         join_set.spawn(
             async move {
-                let status = query_global_server_status(&name, &host, port).await;
+                let status = query_global_server_status(&target).await;
                 (name, status)
             }
             .instrument(span),

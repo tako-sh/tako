@@ -57,6 +57,12 @@ pub(super) fn spawn_standby_monitor(rt: &Runtime, config: StandbyPromotionConfig
                     );
 
                     if consecutive_failures >= FAILURE_THRESHOLD && !promoted {
+                        #[cfg(target_os = "linux")]
+                        if config.data_dir.join("native-network.json").exists() {
+                            super::native_promotion::run(config.state.clone()).await;
+                            break;
+                        }
+
                         tracing::info!("Promoting standby to full mode");
 
                         let server = SocketServer::new(&config.socket_path);
@@ -66,7 +72,10 @@ pub(super) fn spawn_standby_monitor(rt: &Runtime, config: StandbyPromotionConfig
                                 tokio::spawn(async move {
                                     if let Err(e) = SocketServer::serve(listener, move |cmd| {
                                         let state = socket_state.clone();
-                                        async move { state.handle_command(cmd).await }
+                                        async move {
+                                            crate::management_http::handle_rpc_command(state, cmd)
+                                                .await
+                                        }
                                     })
                                     .await
                                     {

@@ -1,18 +1,25 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { createElement, StrictMode, useLayoutEffect } from "react";
 import { renderToString } from "react-dom/server";
 import { useStore } from "../src/react/store";
 
-if (typeof document === "undefined") GlobalRegistrator.register();
+const registered = typeof document === "undefined";
+if (registered) GlobalRegistrator.register();
+
+// Later test files in the same run expect Bun's own globals, such as fetch.
+afterAll(async () => {
+  if (registered) await GlobalRegistrator.unregister();
+});
 
 interface PendingRead {
   signal: AbortSignal | null | undefined;
-  resolve(data: unknown): void;
+  resolve(data: unknown, offline?: { maxAgeMs: number; version: string }): void;
 }
 class Backend {
   readonly reads: PendingRead[] = [];
+  readonly streams: Array<{ send(type: string): void; close(): void }> = [];
   readonly fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input));
     if (url.pathname.startsWith("/_tako/channels/")) {
@@ -26,22 +33,26 @@ class Backend {
           closed = true;
         },
       });
-      init?.signal?.addEventListener(
-        "abort",
-        () => {
-          if (!closed) {
-            closed = true;
-            controller.close();
-          }
+      const close = () => {
+        if (!closed) {
+          closed = true;
+          controller.close();
+        }
+      };
+      init?.signal?.addEventListener("abort", close, { once: true });
+      this.streams.push({
+        close,
+        send: (type) => {
+          if (!closed)
+            controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type })}\n\n`));
         },
-        { once: true },
-      );
+      });
       return new Response(stream, { headers: { "Content-Type": "text/event-stream" } });
     }
     return new Promise<Response>((resolve) => {
       this.reads.push({
         signal: init?.signal,
-        resolve: (data) => resolve(Response.json({ data })),
+        resolve: (data, offline) => resolve(Response.json({ data, ...(offline && { offline }) })),
       });
     });
   }) as typeof fetch;
@@ -201,4 +212,72 @@ test("server rendering starts no requests and returns a deterministic loading sn
   }
   expect(renderToString(createElement(Page))).toBe("<span>loading</span>");
   expect(backend.reads).toHaveLength(0);
+});
+
+test("useStore retains valid cached data quietly and uses the latest recovery callback", async () => {
+  const backend = new Backend();
+  const callbacks: string[] = [];
+  const { result, rerender, unmount } = renderHook(
+    ({ room, label }) =>
+      useStore<string>("messages", {
+        baseUrl: "https://app.test",
+        params: { room },
+        fetch: backend.fetch,
+        onRecovery: (reason) => callbacks.push(`${label}:${reason}`),
+      }),
+    { initialProps: { room: "first", label: "original" } },
+  );
+  await act(async () => {
+    backend.reads[0]!.resolve("cached", { maxAgeMs: 10_000, version: "1" });
+    backend.streams[0]!.send("tako.store.ready");
+  });
+  await waitFor(() => expect(backend.reads).toHaveLength(2));
+  await act(async () => {
+    backend.reads[1]!.resolve("cached", { maxAgeMs: 10_000, version: "1" });
+  });
+  expect(result.current.isStale).toBe(false);
+  rerender({ room: "first", label: "latest" });
+  expect(backend.streams).toHaveLength(1);
+  await act(async () => {
+    backend.streams[0]!.close();
+  });
+  expect(result.current).toMatchObject({
+    data: "cached",
+    status: "offline",
+    isStale: true,
+    error: null,
+  });
+  expect(callbacks).toEqual(["latest:reconnecting"]);
+  rerender({ room: "second", label: "new identity" });
+  expect(result.current.data).toBeUndefined();
+  expect(backend.streams).toHaveLength(2);
+  await act(async () => {
+    backend.streams[0]!.send("tako.store.ready");
+    backend.reads[2]!.resolve("new data", { maxAgeMs: 10_000, version: "1" });
+  });
+  expect(result.current.data).toBe("new data");
+  expect(callbacks).toEqual(["latest:reconnecting"]);
+  unmount();
+});
+
+test("useStore exposes an unavailable snapshot after its offline lease expires", async () => {
+  const backend = new Backend();
+  const { result, unmount } = renderHook(() =>
+    useStore<string>("messages", {
+      baseUrl: "https://app.test",
+      fetch: backend.fetch,
+    }),
+  );
+  await act(async () => {
+    backend.reads[0]!.resolve("cached", { maxAgeMs: 100, version: "1" });
+    backend.streams[0]!.close();
+  });
+  expect(result.current.data).toBe("cached");
+  expect(result.current.error).toBeNull();
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 120));
+  });
+  expect(result.current.data).toBeUndefined();
+  expect(result.current.error).not.toBeNull();
+  unmount();
 });

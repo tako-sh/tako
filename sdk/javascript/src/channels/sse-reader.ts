@@ -1,4 +1,5 @@
 import { fetchEventSource, type EventSourceMessage } from "@microsoft/fetch-event-source";
+import type { SseRecoveryReason } from "../types";
 
 export interface SseReaderMessage {
   id?: string;
@@ -6,12 +7,15 @@ export interface SseReaderMessage {
   data: string;
 }
 
+export type { SseRecoveryReason } from "../types";
+
 export interface SseReaderOptions {
   fetch?: typeof fetch;
   headers?: Record<string, string>;
   onMessage: (message: SseReaderMessage) => void;
   onOpen?: () => void;
   onError?: (error: Error) => void;
+  onRecovery?: (reason: SseRecoveryReason) => void;
   signal?: AbortSignal;
   backoffBaseMs?: number;
   backoffMaxMs?: number;
@@ -43,6 +47,12 @@ interface FetchEventSourceGlobalSnapshot {
 
 let fetchEventSourceGlobalSnapshot: FetchEventSourceGlobalSnapshot | null = null;
 let fetchEventSourceGlobalRefs = 0;
+
+class SseResponseError extends Error {
+  constructor(readonly status: number) {
+    super(`SSE request failed with status ${status}.`);
+  }
+}
 
 export class SseReader {
   lastEventId: string | undefined;
@@ -133,17 +143,45 @@ export class SseReader {
     let attempt = 0;
     const fetchImpl = this.#opts.fetch ?? globalThis.fetch;
     const headers = headersRecord(this.#opts.headers, this.lastEventId);
+    let activeHeaders: HeadersInit | undefined;
+    const clearCursor = () => {
+      this.lastEventId = undefined;
+      for (const target of [headers, activeHeaders]) {
+        if (!target) continue;
+        if (target instanceof Headers) target.delete("last-event-id");
+        else if (Array.isArray(target)) {
+          for (let i = target.length - 1; i >= 0; i--) {
+            if (target[i]![0].toLowerCase() === "last-event-id") target.splice(i, 1);
+          }
+        } else {
+          for (const name of Object.keys(target)) {
+            if (name.toLowerCase() === "last-event-id") Reflect.deleteProperty(target, name);
+          }
+        }
+      }
+    };
     const cleanupGlobals = installFetchEventSourceGlobals();
 
     try {
+      if (this.#abort.signal.aborted) return;
       await fetchEventSource(this.#url, {
-        fetch: fetchImpl,
+        fetch: Object.assign(
+          async (input: RequestInfo | URL, init?: RequestInit) => {
+            activeHeaders = init?.headers;
+            const response = await fetchImpl(input, init);
+            if (response.status === 410) {
+              clearCursor();
+            }
+            return response;
+          },
+          { preconnect: fetchImpl.preconnect },
+        ),
         headers,
         signal: this.#abort.signal,
         openWhenHidden: true,
         onopen: async (response) => {
           if (!response.ok) {
-            throw new Error(`SSE request failed with status ${response.status}.`);
+            throw new SseResponseError(response.status);
           }
           if (!response.body) {
             throw new Error("SSE response body is not readable.");
@@ -155,9 +193,15 @@ export class SseReader {
           this.#opts.onOpen?.();
           this.dispatchEvent(new Event("open"));
         },
-        onmessage: (message) => this.#handleMessage(message),
+        onmessage: (message) => {
+          if (message.event === "tako.reset") {
+            clearCursor();
+            throw new SseResponseError(410);
+          }
+          this.#handleMessage(message);
+        },
         onclose: () => {
-          if (!this.#opts.retryOnDisconnect) {
+          if (this.#abort.signal.aborted || !this.#opts.retryOnDisconnect) {
             return;
           }
           throw new Error("SSE stream disconnected; reconnecting.");
@@ -167,11 +211,26 @@ export class SseReader {
             return;
           }
           const err = asError(error);
-          this.#opts.onError?.(err);
-          this.dispatchEvent(new ErrorEvent("error", { error: err, message: err.message }));
-          if (!this.#opts.retryOnDisconnect) {
+          const terminal = err instanceof SseResponseError && [401, 403, 404].includes(err.status);
+          if (terminal || !this.#opts.retryOnDisconnect) {
+            this.#opts.onError?.(err);
+            this.dispatchEvent(new ErrorEvent("error", { error: err, message: err.message }));
             throw err;
           }
+          try {
+            void Promise.resolve(
+              this.#opts.onRecovery?.(
+                err instanceof SseResponseError && err.status === 410
+                  ? "history-expired"
+                  : "reconnecting",
+              ),
+            ).catch((error) => {
+              console.error("SseReader onRecovery handler threw:", error);
+            });
+          } catch (error) {
+            console.error("SseReader onRecovery handler threw:", error);
+          }
+          if (this.#abort.signal.aborted) throw err;
           attempt++;
           return backoff(attempt, this.#opts);
         },
@@ -179,9 +238,9 @@ export class SseReader {
     } catch {
       // Errors are reported through onerror. A rejection means the stream is done.
     } finally {
+      this.close();
       cleanupGlobals();
       this.#resolveStart?.();
-      this.#resolveConnectionWaiters();
     }
   }
 
@@ -226,9 +285,9 @@ function headersRecord(
   headers: Record<string, string> | undefined,
   lastEventId: string | undefined,
 ): Record<string, string> {
-  const out = { ...headers };
+  const out = Object.fromEntries(new Headers(headers));
   if (lastEventId !== undefined) {
-    out["Last-Event-ID"] = lastEventId;
+    out["last-event-id"] = lastEventId;
   }
   return out;
 }

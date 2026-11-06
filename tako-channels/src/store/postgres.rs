@@ -12,10 +12,25 @@ pub(super) struct PostgresChannelStore {
 }
 
 impl PostgresChannelStore {
+    pub(super) fn open_reader(url: &str, schema: &str, app_id: &str) -> Result<Self, ChannelError> {
+        validate_pg_identifier(schema)?;
+        let mut client = connect(url)?;
+        client
+            .batch_execute("SET default_transaction_read_only = on")
+            .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        client
+            .simple_query(&format!("SELECT id FROM {schema}.channel_messages LIMIT 0"))
+            .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        Ok(Self {
+            client: Mutex::new(client),
+            schema: schema.into(),
+            app_id: app_id.into(),
+        })
+    }
+
     pub(super) fn open(url: &str, schema: &str, app_id: &str) -> Result<Self, ChannelError> {
         validate_pg_identifier(schema)?;
-        let mut client =
-            Client::connect(url, NoTls).map_err(|e| ChannelError::Storage(e.to_string()))?;
+        let mut client = connect(url)?;
         init_postgres(&mut client, schema)?;
         Ok(Self {
             client: Mutex::new(client),
@@ -76,6 +91,7 @@ impl PostgresChannelStore {
 
         Ok(ChannelMessage {
             id: id.to_string(),
+            event_id: None,
             channel: channel.to_string(),
             r#type: payload.r#type.clone(),
             data: payload.data.clone(),
@@ -89,7 +105,19 @@ impl PostgresChannelStore {
         limit: u32,
     ) -> Result<Vec<ChannelMessage>, ChannelError> {
         let mut client = self.client.lock();
-        let rows = client
+        let mut tx = client
+            .build_transaction()
+            .isolation_level(::postgres::IsolationLevel::RepeatableRead)
+            .start()
+            .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        if after.is_some() {
+            let bounds = tx.query_one(&format!(
+                "SELECT COALESCE((SELECT highest_deleted_message_id FROM {}.channel_metadata WHERE app_id = $1 AND channel = $2), 0),
+                        (SELECT NULLIF(latest_message_id, 0) FROM {}.channel_metadata WHERE app_id = $1 AND channel = $2)", self.schema, self.schema
+            ), &[&self.app_id, &channel]).map_err(|e| ChannelError::Storage(e.to_string()))?;
+            resolve_replay_cursor(after, bounds.get(0), bounds.get(1))?;
+        }
+        let rows = tx
             .query(
                 &format!(
                     "SELECT id, channel, type, data_json
@@ -103,6 +131,8 @@ impl PostgresChannelStore {
             )
             .map_err(|e| ChannelError::Storage(e.to_string()))?;
 
+        tx.commit()
+            .map_err(|e| ChannelError::Storage(e.to_string()))?;
         rows.into_iter()
             .map(|row| {
                 channel_message_from_row((
@@ -122,8 +152,8 @@ impl PostgresChannelStore {
     ) -> Result<Option<i64>, ChannelError> {
         let mut client = self.client.lock();
         let row = client.query_one(&format!(
-            "SELECT MIN(id), COALESCE(MAX(id), (SELECT NULLIF(latest_message_id, 0) FROM {}.channel_metadata WHERE app_id = $1 AND channel = $2))
-             FROM {}.channel_messages WHERE app_id = $1 AND channel = $2", self.schema, self.schema
+            "SELECT COALESCE((SELECT highest_deleted_message_id FROM {}.channel_metadata WHERE app_id = $1 AND channel = $2), 0),
+                        (SELECT NULLIF(latest_message_id, 0) FROM {}.channel_metadata WHERE app_id = $1 AND channel = $2)", self.schema, self.schema
         ), &[&self.app_id, &channel]).map_err(|e| ChannelError::Storage(e.to_string()))?;
         resolve_replay_cursor(requested, row.get(0), row.get(1))
     }
@@ -192,43 +222,44 @@ impl PostgresChannelStore {
 
     pub(super) fn prune(&self, now: i64) -> Result<(), ChannelError> {
         let mut client = self.client.lock();
-        client
-            .execute(
-                &format!(
-                    "DELETE FROM {}.presence WHERE app_id = $1 AND expires_at <= $2",
-                    self.schema
-                ),
-                &[&self.app_id, &now],
-            )
+        let mut tx = client
+            .transaction()
             .map_err(|e| ChannelError::Storage(e.to_string()))?;
-        client
-                .execute(
-                    &format!(
-                        "DELETE FROM {}.channel_messages AS messages USING {}.channel_metadata AS metadata
-                         WHERE messages.app_id = $1 AND metadata.app_id = messages.app_id AND metadata.channel = messages.channel
-                         AND metadata.replay_window_ms > 0 AND messages.created_at_unix_ms < ($2 - metadata.replay_window_ms)",
-                        self.schema, self.schema
-                    ),
-                    &[&self.app_id, &now],
-                )
-                .map_err(|e| ChannelError::Storage(e.to_string()))?;
-
-        client
-            .execute(
-                &format!(
-                    "DELETE FROM {}.channel_messages
-                     WHERE app_id = $1
-                       AND channel IN (
-                        SELECT channel
-                        FROM {}.channel_metadata
-                        WHERE app_id = $1
-                          AND inactivity_ttl_ms > 0
-                          AND last_activity_unix_ms < ($2 - inactivity_ttl_ms)
-                     )",
-                    self.schema, self.schema
-                ),
-                &[&self.app_id, &now],
-            )
+        tx.query_one(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+            &[&format!("{}:{}", self.schema, self.app_id)],
+        )
+        .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        tx.execute(
+            &format!(
+                "DELETE FROM {}.presence WHERE app_id = $1 AND expires_at <= $2",
+                self.schema
+            ),
+            &[&self.app_id, &now],
+        )
+        .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        tx.execute(
+            &format!(
+                "WITH deleted AS (
+                    DELETE FROM {schema}.channel_messages AS messages
+                    USING {schema}.channel_metadata AS metadata
+                    WHERE messages.app_id = $1
+                      AND metadata.app_id = messages.app_id AND metadata.channel = messages.channel
+                      AND ((metadata.replay_window_ms > 0 AND messages.created_at_unix_ms < ($2 - metadata.replay_window_ms))
+                        OR (metadata.inactivity_ttl_ms > 0 AND metadata.last_activity_unix_ms < ($2 - metadata.inactivity_ttl_ms)))
+                    RETURNING messages.app_id, messages.channel, messages.id
+                 ), floors AS (
+                    SELECT app_id, channel, MAX(id) AS id FROM deleted GROUP BY app_id, channel
+                 )
+                 UPDATE {schema}.channel_metadata AS metadata
+                 SET highest_deleted_message_id = GREATEST(metadata.highest_deleted_message_id, floors.id)
+                 FROM floors WHERE metadata.app_id = floors.app_id AND metadata.channel = floors.channel",
+                schema = self.schema,
+            ),
+            &[&self.app_id, &now],
+        )
+        .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        tx.commit()
             .map_err(|e| ChannelError::Storage(e.to_string()))?;
         Ok(())
     }
@@ -267,7 +298,33 @@ const POSTGRES_MIGRATIONS: &[&str] = &[
                ON {schema}.channel_messages(app_id, channel, id);
              CREATE INDEX IF NOT EXISTS idx_channel_messages_app_id
                ON {schema}.channel_messages(app_id, id);",
+    "ALTER TABLE {schema}.channel_metadata ADD COLUMN IF NOT EXISTS highest_deleted_message_id BIGINT;
+     UPDATE {schema}.channel_metadata AS metadata
+     SET latest_message_id = GREATEST(latest_message_id, COALESCE(
+         (SELECT MAX(id) FROM {schema}.channel_messages AS messages
+          WHERE messages.app_id = metadata.app_id AND messages.channel = metadata.channel), 0));
+     UPDATE {schema}.channel_metadata AS metadata
+     SET highest_deleted_message_id = COALESCE(
+         (SELECT MIN(id) - 1 FROM {schema}.channel_messages AS messages
+          WHERE messages.app_id = metadata.app_id AND messages.channel = metadata.channel), latest_message_id)
+     WHERE highest_deleted_message_id IS NULL;
+     ALTER TABLE {schema}.channel_metadata ALTER COLUMN highest_deleted_message_id SET DEFAULT 0;
+     ALTER TABLE {schema}.channel_metadata ALTER COLUMN highest_deleted_message_id SET NOT NULL;",
 ];
+
+/// Connections without an explicit `connect_timeout` get a bounded one, so an
+/// unreachable server fails the open instead of holding a worker thread.
+fn connect(url: &str) -> Result<Client, ChannelError> {
+    let mut config: postgres::Config = url
+        .parse()
+        .map_err(|e: postgres::Error| ChannelError::Storage(e.to_string()))?;
+    if config.get_connect_timeout().is_none() {
+        config.connect_timeout(std::time::Duration::from_secs(10));
+    }
+    config
+        .connect(NoTls)
+        .map_err(|e| ChannelError::Storage(e.to_string()))
+}
 
 fn init_postgres(client: &mut Client, schema: &str) -> Result<(), ChannelError> {
     migrate_postgres(client, schema, POSTGRES_MIGRATIONS)
@@ -349,6 +406,252 @@ fn validate_pg_identifier(identifier: &str) -> Result<(), ChannelError> {
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+
+    struct Database {
+        client: Client,
+        url: String,
+        schema: String,
+    }
+
+    impl Database {
+        fn new() -> Self {
+            let url = std::env::var("TAKO_TEST_POSTGRES_URL")
+                .expect("real PostgreSQL regression requires TAKO_TEST_POSTGRES_URL");
+            let client = Client::connect(&url, NoTls).unwrap();
+            let schema = format!(
+                "replay_floor_{}_{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            );
+            Self {
+                client,
+                url,
+                schema,
+            }
+        }
+
+        fn open(&self, app: &str) -> PostgresChannelStore {
+            PostgresChannelStore::open(&self.url, &self.schema, app).unwrap()
+        }
+
+        fn expire(&mut self, id: i64) {
+            self.client
+                .execute(
+                    &format!(
+                        "UPDATE {}.channel_messages SET created_at_unix_ms = 0 WHERE id = $1",
+                        self.schema
+                    ),
+                    &[&id],
+                )
+                .unwrap();
+        }
+    }
+
+    impl Drop for Database {
+        fn drop(&mut self) {
+            self.client
+                .batch_execute(&format!("DROP SCHEMA IF EXISTS {} CASCADE", self.schema))
+                .unwrap();
+        }
+    }
+
+    fn append(store: &PostgresChannelStore, channel: &str) -> ChannelMessage {
+        store
+            .append(
+                channel,
+                &ChannelPublishPayload {
+                    r#type: "event".into(),
+                    data: serde_json::json!(channel),
+                },
+            )
+            .unwrap()
+    }
+
+    fn id(message: &ChannelMessage) -> i64 {
+        message.id.parse().unwrap()
+    }
+
+    #[test]
+    fn postgres_replay_floor_tracks_deleted_stream_rows_across_apps_and_pages() {
+        let mut db = Database::new();
+        let store = db.open("one");
+        let other = db.open("two");
+        let consumed = append(&store, "a");
+        let b = append(&store, "b");
+        let other_app = append(&other, "a");
+        append(&store, "b");
+        let next = append(&store, "a");
+        assert_eq!(id(&next), id(&consumed) + 4);
+        for message in [&consumed, &b, &other_app] {
+            db.expire(id(message));
+        }
+        store.prune(now_unix_ms()).unwrap();
+        drop(store);
+        db.client
+            .batch_execute(&format!(
+                "DROP TABLE {}.channel_schema_migrations",
+                db.schema
+            ))
+            .unwrap();
+        let store = db.open("one");
+        assert_eq!(
+            store.replay_cursor("a", Some(id(&consumed))).unwrap(),
+            Some(id(&consumed))
+        );
+        assert_eq!(
+            store.read_after("a", Some(id(&consumed)), 1).unwrap(),
+            vec![next.clone()]
+        );
+        assert_eq!(
+            other.read_after("a", None, 10).unwrap(),
+            vec![other_app.clone()]
+        );
+        other.prune(now_unix_ms()).unwrap();
+        assert_eq!(
+            store.read_after("a", Some(id(&consumed)), 1).unwrap(),
+            vec![next.clone()]
+        );
+
+        let unseen = append(&store, "a");
+        append(&store, "b");
+        let head = append(&store, "a");
+        db.expire(id(&unseen));
+        store.prune(now_unix_ms()).unwrap();
+        for cursor in [id(&next), id(&head) + 1] {
+            assert!(matches!(
+                store.read_after("a", Some(cursor), 1),
+                Err(ChannelError::StaleCursor)
+            ));
+            assert!(matches!(
+                store.replay_cursor("a", Some(cursor)),
+                Err(ChannelError::StaleCursor)
+            ));
+        }
+        assert_eq!(
+            store.read_after("a", Some(id(&unseen)), 1).unwrap(),
+            vec![head.clone()]
+        );
+        store.client.lock().execute(
+            &format!("UPDATE {}.channel_metadata SET inactivity_ttl_ms = 1, last_activity_unix_ms = 0 WHERE app_id = 'one' AND channel = 'a'", db.schema),
+            &[],
+        ).unwrap();
+        store.prune(now_unix_ms()).unwrap();
+        assert!(
+            store
+                .read_after("a", Some(id(&head)), 1)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(store.replay_cursor("a", None).unwrap(), Some(id(&head)));
+        assert!(matches!(
+            store.read_after("a", Some(id(&unseen)), 1),
+            Err(ChannelError::StaleCursor)
+        ));
+        store.prune(now_unix_ms()).unwrap();
+        assert!(
+            store
+                .read_after("a", Some(id(&head)), 1)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn postgres_replay_floor_migrates_legacy_metadata_once_and_backfills_heads() {
+        for (legacy_has_head, versioned) in [(true, false), (false, false), (true, true)] {
+            let mut db = Database::new();
+            let store = db.open("one");
+            let first = append(&store, "a");
+            for _ in 0..3 {
+                append(&store, "b");
+            }
+            let retained = append(&store, "a");
+            let expired = append(&store, "expired");
+            drop(store);
+            db.client
+                .batch_execute(&format!(
+                    "DELETE FROM {schema}.channel_messages WHERE id IN ({first}, {expired});
+                 ALTER TABLE {schema}.channel_metadata DROP COLUMN highest_deleted_message_id;",
+                    schema = db.schema,
+                    first = id(&first),
+                    expired = id(&expired),
+                ))
+                .unwrap();
+            if versioned {
+                db.client
+                    .batch_execute(&format!(
+                        "DELETE FROM {}.channel_schema_migrations WHERE version > 1",
+                        db.schema
+                    ))
+                    .unwrap();
+            } else {
+                db.client
+                    .batch_execute(&format!(
+                        "DROP TABLE {}.channel_schema_migrations",
+                        db.schema
+                    ))
+                    .unwrap();
+            }
+            if !legacy_has_head {
+                db.client
+                    .batch_execute(&format!(
+                        "ALTER TABLE {}.channel_metadata DROP COLUMN latest_message_id",
+                        db.schema
+                    ))
+                    .unwrap();
+            }
+            let store = db.open("one");
+            assert_eq!(store.replay_cursor("a", None).unwrap(), Some(id(&retained)));
+            let floor = id(&retained) - 1;
+            assert_eq!(
+                store.read_after("a", Some(floor), 10).unwrap(),
+                vec![retained.clone()]
+            );
+            assert!(matches!(
+                store.read_after("a", Some(floor - 1), 10),
+                Err(ChannelError::StaleCursor)
+            ));
+            if legacy_has_head {
+                assert_eq!(
+                    store.replay_cursor("expired", None).unwrap(),
+                    Some(id(&expired))
+                );
+                assert!(
+                    store
+                        .read_after("expired", Some(id(&expired)), 10)
+                        .unwrap()
+                        .is_empty()
+                );
+                assert!(matches!(
+                    store.read_after("expired", Some(id(&expired) - 1), 10),
+                    Err(ChannelError::StaleCursor)
+                ));
+            }
+            let fresh = append(&store, "fresh");
+            assert_eq!(
+                store.read_after("fresh", Some(0), 10).unwrap(),
+                vec![fresh.clone()]
+            );
+            drop(store);
+            let reopened = db.open("one");
+            assert_eq!(
+                reopened.read_after("fresh", Some(0), 10).unwrap(),
+                vec![fresh]
+            );
+            assert_eq!(
+                reopened.read_after("a", Some(floor), 10).unwrap(),
+                vec![retained]
+            );
+        }
+    }
 }
 
 #[cfg(test)]

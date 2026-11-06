@@ -41,7 +41,7 @@ fn replay_expires_without_subscribers_or_further_publishes() {
         last.id.parse().ok()
     );
     assert!(matches!(
-        store.replay_cursor("unknown", Some(1)),
+        store.replay_cursor("unknown", Some(ReplayCursor::postgres(1))),
         Err(ChannelError::StaleCursor)
     ));
 }
@@ -78,7 +78,7 @@ fn parse_channel_route_decodes_percent_encoded_segment() {
 #[test]
 fn parse_ws_last_message_id_reads_cursor() {
     let after = parse_ws_last_message_id(Some("last_message_id=42&noop=1")).unwrap();
-    assert_eq!(after, Some(42));
+    assert_eq!(after, Some(ReplayCursor::postgres(42)));
 }
 
 #[test]
@@ -208,12 +208,14 @@ fn channel_store_appends_and_reads_messages() {
         )
         .unwrap();
 
-    assert_eq!(first.id, "1");
-    assert_eq!(second.id, "2");
+    assert_eq!(first.id.parse::<ReplayCursor>().unwrap().position, 1);
+    assert_eq!(second.id.parse::<ReplayCursor>().unwrap().position, 2);
 
-    let messages = store.read_after("chat:room-123", Some(1), 100).unwrap();
+    let messages = store
+        .read_after("chat:room-123", first.id.parse().ok(), 100)
+        .unwrap();
     assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].id, "2");
+    assert_eq!(messages[0].id, second.id);
     assert_eq!(messages[0].data, serde_json::json!({ "text": "there" }));
 }
 
@@ -280,7 +282,7 @@ fn postgres_channel_store_round_trips_when_url_is_set() {
         .unwrap();
 
     let messages = store
-        .read_after("chat", first.id.parse::<i64>().ok(), 100)
+        .read_after("chat", first.id.parse::<ReplayCursor>().ok(), 100)
         .unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].id, second.id);
@@ -327,8 +329,8 @@ fn postgres_concurrent_publishers_share_changes_order_and_retention() {
             "concurrent publisher replay lost messages"
         );
         for message in reader.read_after("events", after, 25).unwrap() {
-            let id = message.id.parse::<i64>().unwrap();
-            assert!(after.is_none_or(|previous| id > previous));
+            let id = message.id.parse::<ReplayCursor>().unwrap();
+            assert!(after.is_none_or(|previous| id.position > previous.position));
             after = Some(id);
             received.push(message.data);
         }
@@ -420,7 +422,7 @@ fn channel_store_append_updates_channel_activity() {
     );
     let persisted = store.raw_query_string(
         "SELECT data_json FROM channel_messages WHERE id = ?1",
-        (message.id.parse::<i64>().unwrap(),),
+        (message.id.parse::<ReplayCursor>().unwrap().position,),
     );
 
     assert!(after >= before);
@@ -451,7 +453,13 @@ fn channel_store_defaults_missing_cursor_to_latest_message() {
         )
         .unwrap();
 
-    assert_eq!(store.replay_cursor("chat:room-123", None).unwrap(), Some(2));
+    assert_eq!(
+        store
+            .replay_cursor("chat:room-123", None)
+            .unwrap()
+            .map(|cursor| cursor.position),
+        Some(2)
+    );
 }
 
 #[test]
@@ -481,7 +489,7 @@ fn channel_store_rejects_stale_cursors() {
     store.raw_execute("DELETE FROM channel_messages WHERE id = 1", ());
 
     assert!(matches!(
-        store.replay_cursor("chat:room-123", Some(0)),
+        store.replay_cursor("chat:room-123", Some(ReplayCursor::postgres(0))),
         Err(ChannelError::StaleCursor)
     ));
 }
@@ -608,7 +616,10 @@ fn committed_local_publications_notify_before_returning() {
             )
             .unwrap();
         assert!(active.has_changed().unwrap());
-        assert_eq!(*active.borrow_and_update(), message.id.parse().ok());
+        assert_eq!(
+            *active.borrow_and_update(),
+            Some(message.id.parse::<ReplayCursor>().unwrap().position)
+        );
         assert!(!quiet.has_changed().unwrap());
     }
 }
@@ -832,9 +843,9 @@ fn postgres_rejects_ephemeral_delivery_when_configured() {
     };
     let store = ChannelStore::open_postgres(&url, "ephemeral-rejection/test").unwrap();
     assert!(
-        matches!(store.subscribe_ephemeral("live"), Err(ChannelError::BadRequest(message)) if message.contains("single server"))
+        matches!(store.subscribe_ephemeral("live"), Err(ChannelError::BadRequest(message)) if message.contains("SQLite channel storage"))
     );
     assert!(
-        matches!(store.publish_ephemeral("live", &ChannelPublishPayload { r#type: "progress".into(), data: 1.into() }), Err(ChannelError::BadRequest(message)) if message.contains("single server"))
+        matches!(store.publish_ephemeral("live", &ChannelPublishPayload { r#type: "progress".into(), data: 1.into() }), Err(ChannelError::BadRequest(message)) if message.contains("SQLite channel storage"))
     );
 }

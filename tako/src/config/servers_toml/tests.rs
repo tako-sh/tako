@@ -532,6 +532,7 @@ fn test_update_server() {
         .add(
             "la".to_string(),
             ServerEntry {
+                native: None,
                 host: "1.2.3.4".to_string(),
                 port: 22,
                 http_port: 80,
@@ -547,6 +548,7 @@ fn test_update_server() {
         .update(
             "la",
             ServerEntry {
+                native: None,
                 host: "5.6.7.8".to_string(),
                 port: 2222,
                 http_port: 8080,
@@ -595,6 +597,7 @@ fn test_save_and_load() {
         .add(
             "la".to_string(),
             ServerEntry {
+                native: None,
                 host: "1.2.3.4".to_string(),
                 port: 2222,
                 http_port: 8080,

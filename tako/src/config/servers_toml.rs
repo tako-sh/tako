@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use super::error::{ConfigError, Result};
 
-/// Server inventory from config.toml `[[servers]]`.
+/// Legacy configuration and resolved native server inventory.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ServersToml {
     /// Map of server name to server entry
@@ -63,9 +63,12 @@ impl ServerTarget {
     }
 }
 
-/// Single server entry with SSH connection details
+/// Server endpoint metadata and optional native network identity.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ServerEntry {
+    #[serde(skip)]
+    pub(crate) native: Option<crate::management_http::NativeTarget>,
+
     /// VPN provider used for management. Existing entries use Tailscale.
     #[serde(default)]
     pub vpn: crate::vpn::VpnProvider,
@@ -109,6 +112,7 @@ fn default_https_port() -> u16 {
 impl Default for ServerEntry {
     fn default() -> Self {
         Self {
+            native: None,
             vpn: Default::default(),
             host: String::new(),
             port: default_ssh_port(),
@@ -116,6 +120,17 @@ impl Default for ServerEntry {
             https_port: default_https_port(),
             description: None,
             key_path: None,
+        }
+    }
+}
+
+impl ServerEntry {
+    pub(crate) fn management_target(&self) -> crate::management_http::ManagementTarget {
+        match &self.native {
+            Some(target) => crate::management_http::ManagementTarget::Native(target.clone()),
+            None => crate::management_http::ManagementTarget::Legacy {
+                host: self.host.clone(),
+            },
         }
     }
 }
@@ -200,6 +215,7 @@ impl ServersToml {
                 let libc = parse_string_field(server_value, name, "libc")?;
 
                 let entry = ServerEntry {
+                    native: None,
                     vpn: match server_value.get("vpn") {
                         Some(value) => value.clone().try_into()?,
                         None => Default::default(),
@@ -312,28 +328,6 @@ impl ServersToml {
     pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         let path = path.as_ref();
 
-        // Ensure parent directory exists
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| ConfigError::FileWrite(parent.to_path_buf(), e))?;
-        }
-
-        let mut doc = if path.exists() {
-            let existing = fs::read_to_string(path)
-                .map_err(|e| ConfigError::FileRead(path.to_path_buf(), e))?;
-            if existing.trim().is_empty() {
-                toml::Value::Table(toml::map::Map::new())
-            } else {
-                toml::from_str::<toml::Value>(&existing)?
-            }
-        } else {
-            toml::Value::Table(toml::map::Map::new())
-        };
-
-        let root = doc.as_table_mut().ok_or_else(|| {
-            ConfigError::Validation("Global config must be a TOML table".to_string())
-        })?;
-
         let mut names: Vec<&str> = self.servers.keys().map(|k| k.as_str()).collect();
         names.sort_unstable();
 
@@ -343,6 +337,9 @@ impl ServersToml {
                 ConfigError::Validation(format!("Missing server entry '{}'", name))
             })?;
 
+            if entry.native.is_some() {
+                continue;
+            }
             let mut table = toml::map::Map::new();
             table.insert("name".to_string(), toml::Value::String(name.to_string()));
             table.insert("host".to_string(), toml::Value::String(entry.host.clone()));
@@ -386,17 +383,15 @@ impl ServersToml {
             servers_array.push(toml::Value::Table(table));
         }
 
-        if servers_array.is_empty() {
-            root.remove("servers");
-        } else {
-            root.insert("servers".to_string(), toml::Value::Array(servers_array));
-        }
-        root.remove("server_targets");
-
-        let content = toml::to_string_pretty(&doc)?;
-        fs::write(path, content).map_err(|e| ConfigError::FileWrite(path.to_path_buf(), e))?;
-
-        Ok(())
+        super::global::edit(path, |root| {
+            if servers_array.is_empty() {
+                root.remove("servers");
+            } else {
+                root.insert("servers".to_string(), toml::Value::Array(servers_array));
+            }
+            root.remove("server_targets");
+            Ok(())
+        })
     }
 
     /// Get a server by name
@@ -538,7 +533,7 @@ fn parse_port_field(
 }
 
 /// Validate server name format
-fn validate_server_name(name: &str) -> Result<()> {
+pub(super) fn validate_server_name(name: &str) -> Result<()> {
     if name.is_empty() {
         return Err(ConfigError::Validation(
             "Server name cannot be empty".to_string(),

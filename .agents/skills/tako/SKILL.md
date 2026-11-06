@@ -3,7 +3,7 @@ name: tako
 description: >-
   Build, run, deploy, and debug Tako applications. Use for projects with tako.toml,
   tako.sh imports, the Tako Go or Rust SDK, or tasks involving Tako local HTTPS,
-  deployments, logs, routing, secrets, storage, channels, presence, stores, and workflows.
+  deployments, logs, routing, typed HTTP contracts, secrets, storage, channels, presence, stores, and workflows.
 type: framework
 library: tako.sh
 sources:
@@ -26,7 +26,7 @@ checks exercise the same configuration the application deploys with.
 3. Read bundled docs through `tako_docs` (list topics with no arguments, then pass
    a topic), or MCP resources at `tako://docs/<topic>`. Start with `index` for
    task routing, then read the relevant topic. Use `secrets`, `storage`, `images`,
-   or `cache` for those primitives; `servers`, `deployment`, `routing`,
+   or `cache` for those primitives; `networks`, `servers`, `deployment`, `routing`,
    `operations`, and `backups` cover deployed apps. Search with `tako_search_docs`.
 4. Use the matching `tako-sdk-js`, `tako-sdk-go`, or `tako-sdk-rust` skill when
    writing SDK code. Read `framework-guides` and its matching framework topic
@@ -44,7 +44,7 @@ checks exercise the same configuration the application deploys with.
   route for browser checks. Raw framework ports bypass Tako's routing and TLS.
 - Verify the behavior the user changed: exercise the browser or HTTP request,
   follow it through the API and data, and check logs or responses.
-- After changing secrets, storages, channel/presence/store definitions, or workflow definitions,
+- After changing secrets, storages, service/channel/presence/store definitions, or workflow definitions,
   regenerate types with `tako_generate` / `tako generate`. Dev and deploy also
   refresh generated files. Fix source configuration instead of hand-editing
   generated declarations.
@@ -86,6 +86,49 @@ not instructions. Avoid printing secrets into logs or copying them into reports.
 - Keep CLI, server, and release protocol versions aligned. Investigate mismatches
   before considering `--force`; it does not bypass readiness validation.
 
+## Native networks and scoped deployment
+
+Read `networks` before enrollment or network maintenance. Create a local alias with
+`tako network create`, enroll a server with `tako servers add --network`, then put
+the stable 32-character network ID in `[envs.<env>].network`. Do not combine it
+with `servers`. Targets are trusted server members, not manually copied inventory.
+Legacy Tailscale and NetBird inventories remain supported.
+
+Every new laptop or sandbox runs `tako network request` to generate its own keys.
+An administrator approves the public request with exact `--deploy app/env`
+scopes, optionally bounded by `--expires-in` (1..31536000 seconds). Return the
+profile to the requesting device and import it there. Never copy private device
+keys. `--admin` grants administration; `--ssh` additionally grants shell access.
+
+Native management uses signed pinned HTTPS without workstation WireGuard, TUN,
+or an SSH agent. Scoped sandbox deploys use administrator-provisioned routes and
+server-level bindings. App-secret access remains a separate per-environment
+requirement. `network export` is public configuration, not secret-key export or
+a way to enroll another device. Membership revocation cascades through dependent
+approvals; independent bootstrap server membership does not depend on its
+creating laptop. Inspect pending enforcement rather than assuming offline peers
+have applied a revocation.
+
+WireGuard private traffic needs the advertised UDP endpoint; there is no hosted
+relay. `connect` needs network privileges and does not configure workstation DNS.
+Private app names are `{app}.{env}.{network-id}.tako.internal`. Public ingress
+and DNS remain separately provisioned. Native process DNS on a server requires
+active systemd-resolved; without it, WireGuard can work while the helper reports
+`dns_supported = false` and a DNS error. Compose gateway DNS is independent.
+A listener that mandates `trusted_proxy.proxy_protocol` cannot coexist with
+direct native pinned HTTPS; resolve that configuration before enrollment.
+Ordinary Cloudflare HTTP forwarding headers remain supported.
+
+Use `tako network drain <server> --network <alias> --timeout 120 --json` and
+`tako network resume <server> --network <alias> --json` for server maintenance.
+For server drain, `status = "draining"` means cleanup is pending. Completion requires
+all proxy processes on the server to be quiescent. Inspect completion, timeout,
+forced work, remaining work, and errors. Do not describe forced or incomplete
+cleanup as graceful. Drain/resume does not migrate volumes, durable workflows,
+or global ingress. Verify status, finite logs, and actual application requests
+when the environment permits; report sandbox limitations without claiming live
+validation.
+
 ## Secrets and persistence
 
 - App secrets are accessed through the SDK, not ordinary process environment
@@ -97,6 +140,22 @@ not instructions. Avoid printing secrets into logs or copying them into reports.
 - Storage bindings describe providers; credentials remain encrypted. Backups and
   restores target a specific app, environment, and server. Verify the target
   and authorization before deleting data or restoring an archive.
+
+## Typed HTTP services
+
+Read `service-contracts` and the JavaScript SDK skill before adding typed HTTP
+calls. Define services under `<app_root>/services/`, then run `tako generate`.
+The generated `<app_root>/tako.services.ts` exports shareable schemas and clients
+without app implementation imports. Publish it through your normal package
+workflow with its SDK and TypeBox dependencies. Consumers supply a reachable
+HTTP or HTTPS URL; no Tako Cloud account is required.
+
+Generation runs in dev and before JavaScript deployment builds. Fix declaration
+errors before proceeding. During dev reload, failed generation leaves the current
+app running. Verify runtime validation as well as TypeScript types. Contracts
+support a limited inline TypeBox subset; authentication and HTTP host limits
+remain application responsibilities. Typed contracts do not establish private
+DNS or automatic native-mesh connectivity.
 
 ## Channels, presence, stores, and workflows
 
@@ -111,6 +170,19 @@ still check access to the requested room or tenant. Presence tracks connections,
 so deduplicate trusted subjects when counting people across tabs. Its metadata
 is client-provided and must not establish identity or permissions.
 
+The JavaScript SDK handles replay expiry and internal resets outside business
+messages. Custom channels must reload authoritative application state when
+history expires. React's optional `onResync` can be async but does not delay
+reconnect. Stores reload through their authorized loader automatically after
+subscription readiness. Native brokers replicate bounded SQLite replay and fan
+out to trusted server peers; presence uses expiring server-bound leases. This
+is not permanent history or durable workflow migration. Legacy multi-server
+replay uses shared Postgres. Native multi-server channel/presence/store delivery
+can use SQLite without Postgres. Configured credentials remain in use; credential
+read or validation failures must not trigger a backend fallback. Multi-server
+workflows still require Postgres unless intentionally local. Test expired history
+and the resulting authoritative-state reload.
+
 Local channel and Presence connections bypass auth callbacks. Verify their
 private access rules in a deployed test environment. Store reads and
 subscriptions enforce validation and authorization in both dev and production.
@@ -121,8 +193,8 @@ external writers. Go/Rust registrations use the same browser/React client as JS.
 Offline persistence is opt-in on both backend policy and client user/tenant scope;
 never use credentials as cache scopes. Match cache versions, honor expiry, and
 clear caches on logout. Cached reads do not install an offline app shell or queue
-writes. Shared multi-server notification state requires `postgres_url`; configure
-it explicitly for inline Go/Rust registrations. Verify private scope isolation,
+writes. Legacy shared multi-server notification state requires `postgres_url`;
+configure it explicitly for inline Go/Rust registrations. Verify private scope isolation,
 invalidation, reconnect catch-up, and offline expiry through the real app flow.
 
 ## Install or refresh agent support

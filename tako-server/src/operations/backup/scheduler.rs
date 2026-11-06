@@ -38,6 +38,12 @@ impl crate::ServerState {
         };
 
         for persisted in apps {
+            let Ok(_management) = self.management_lock.try_lock() else {
+                return;
+            };
+            if self.is_draining() {
+                return;
+            }
             let app = persisted.config.deployment_id();
             let backup = match self.state_store.get_backup(&app) {
                 Ok(Some(backup)) => backup,

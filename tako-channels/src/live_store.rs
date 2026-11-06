@@ -366,9 +366,27 @@ pub async fn serve_store_events(
     stream: &str,
     auth: &ChannelAuthResponse,
 ) -> Result<bool> {
+    serve_store_events_with_writer(
+        session,
+        store,
+        stream,
+        auth,
+        &crate::LocalChannelWriter::new(store.clone()),
+    )
+    .await
+}
+
+pub async fn serve_store_events_with_writer(
+    session: &mut Session,
+    store: &Arc<ChannelStore>,
+    stream: &str,
+    auth: &ChannelAuthResponse,
+    writer: &dyn crate::ChannelWriter,
+) -> Result<bool> {
     validate_store_lifecycle(auth).map_err(store_error)?;
-    store
-        .sync_channel_async(stream, auth)
+    let mut resets = store.resets(stream);
+    writer
+        .sync_channel(stream, auth)
         .await
         .map_err(store_error)?;
     let mut changes = store.changes(stream);
@@ -400,10 +418,18 @@ pub async fn serve_store_events(
 
     loop {
         changes.borrow_and_update();
-        let messages = store
-            .read_after_async(stream, after, 100)
-            .await
-            .map_err(store_error)?;
+        let messages = match store.read_after_async(stream, after, 100).await {
+            Ok(messages) => messages,
+            Err(ChannelError::StaleCursor) => {
+                session.write_response_body(None, true).await?;
+                return Ok(true);
+            }
+            Err(error) => return Err(store_error(error)),
+        };
+        if resets.has_changed().unwrap_or(true) {
+            session.write_response_body(None, true).await?;
+            return Ok(true);
+        }
         let full = messages.len() == 100;
         for message in messages {
             after = message.id.parse().ok();
@@ -438,6 +464,10 @@ pub async fn serve_store_events(
         }
         tokio::select! {
             _ = changes.changed() => {},
+            _ = resets.changed() => {
+                session.write_response_body(None, true).await?;
+                return Ok(true);
+            },
             _ = tokio::time::sleep_until(next_keepalive.min(deadline)) => {},
         }
     }

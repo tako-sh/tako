@@ -2,7 +2,8 @@
 name: tako-sdk-js
 description: >-
   tako.sh SDK: fetch handler interface, tako runtime object, generated tako.d.ts type augmentation,
-  defineChannel/definePresence/defineStore/defineWorkflow, live data and offline reads, Vite and Next.js adapters.
+  typed HTTP service contracts, defineChannel/definePresence/defineStore/defineWorkflow, replay recovery,
+  live data and offline reads, Vite and Next.js adapters.
 type: framework
 library: tako.sh
 sources:
@@ -56,6 +57,7 @@ export default {
 | ------------------ | ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | `tako.sh`          | Isomorphic runtime + authoring helpers          | `tako`, `imageUrl`, `imageSrcSet`, `defineChannel`, `definePresence`, `defineStore`, `defineWorkflow`, runtime types |
 | `tako.sh/server`   | Server-only runtime re-export                   | `tako`, `TakoRuntime`                                                                                                |
+| `tako.sh/services` | Typed HTTP contracts and runtime validation     | `defineService`, `createServiceHandler`, `createServiceClient`, `ServiceError`, `serviceManifest`, `serviceOpenApi`  |
 | `tako.sh/client`   | Browser-safe realtime clients                   | `Channel`, `configureChannels`, `Store`, `clearStoreCache`                                                           |
 | `tako.sh/react`    | React hooks for realtime data                   | `useChannel`, `usePresence`, `useStore`                                                                              |
 | `tako.sh/vite`     | Vite plugin for SSR builds                      | `tako()` plugin function                                                                                             |
@@ -284,6 +286,81 @@ interface TakoStatus {
 }
 ```
 
+## Typed HTTP service contracts
+
+Use `tako.sh/services` for a shared HTTP contract with typed handlers, clients,
+and runtime validation. Clients use explicit HTTP or HTTPS `baseURL` values.
+This package works without Tako Cloud or the Tako runtime. It does not configure
+networking. Native environments separately provide private app discovery at
+`{app}.{env}.{network-id}.tako.internal` to supported runtimes; workstation DNS
+is not installed automatically. Supply an explicit reachable `baseURL`.
+
+```ts
+import { Type as t } from "@sinclair/typebox";
+import { defineService, createServiceHandler, createServiceClient } from "tako.sh/services";
+
+const health = defineService("health", {
+  check: {
+    method: "GET",
+    path: "/health",
+    responses: { 200: t.Object({ ok: t.Boolean() }) },
+  },
+});
+
+export const handler = createServiceHandler(health, {
+  check: () => ({ status: 200, body: { ok: true } }),
+});
+
+const client = createServiceClient(health, { baseURL: "https://api.example.com" });
+const result = await client.check();
+console.log(result.body.ok);
+```
+
+Mount the returned handler in your app or export it as the fetch handler.
+The app owns authentication, authorization, CORS, and request limits. Handler
+functions receive typed input and the original `Request`. A handler `basePath`
+option must match the path prefix in the client's `baseURL`.
+
+For generation, default-export one contract per flat `<app_root>/services/`
+file with a `.ts`, `.mts`, `.js`, or `.mjs` extension. Keep declarations free of
+server implementation imports and side effects. `tako generate` imports them
+and writes `<app_root>/tako.services.ts`, separately from ambient `tako.d.ts`.
+Dev regenerates before restarting. JavaScript deploy generates before the build
+copies sources. Invalid contracts stop startup or deployment preparation;
+failed regeneration during dev leaves the current app running.
+
+The generated module exports `services`, `ServiceContracts`, and
+`createClient(name, { baseURL })`. It has no producer-app imports. Export it from
+a shared package, compile JavaScript and declarations with your package build,
+and declare `tako.sh` and `@sinclair/typebox` dependencies. A consumer can install
+that package without the producer's source tree or a Tako Cloud account.
+Removing all declarations regenerates an existing module with an empty set.
+The SDK binary `tako-sh-gen-service-types <services-dir>` also accepts
+`--format manifest` or `--format openapi` and writes to stdout.
+
+Use required string path params matching `/items/{id}`. Query fields accept
+scalars or arrays of scalars encoded as repeated keys. Bodies are JSON; GET and
+HEAD cannot have request bodies. A response entry of `null` means no body, with
+`body: undefined` in the handler result. `t.Null()` means JSON null. Declared
+statuses, including 4xx and 5xx responses, return typed results that narrow by
+`status`. Undeclared statuses and invalid payloads throw `ServiceError`. Inspect
+`code`, `operation`, `phase`, `status`, and `issues`. Invalid handler inputs return 400. Invalid handler outputs throw and need host error handling.
+
+Validation supports inline TypeBox strings, finite numbers, integers, booleans,
+nulls, literals, arrays, objects, unions, and intersections. Supported constraints
+include string length/pattern, number bounds/multipleOf, array length/uniqueItems,
+and object size/additionalProperties. References, transforms, formats, and other
+unsupported keywords are rejected. Defaults do not fill missing input. Set
+`additionalProperties: false` to close body objects. Validated objects have null
+prototypes; use `Object.hasOwn`. Body snapshots reject cycles and non-JSON values
+and do not invoke `toJSON`. Getter execution, payload size/depth, and regex cost
+remain host concerns. Bound arrays with `maxItems` when using `uniqueItems`,
+which has quadratic worst-case comparison cost.
+
+See https://tako.sh/docs/service-contracts/ for constraint details and generation
+commands. Verify valid requests, invalid input, each declared status, and a
+separate consumer package with your TypeScript check.
+
 ## Channels
 
 Use `defineChannel("live-progress", { ephemeral: true })` for memory-only events. Omitted or false preserves durable delivery. Ephemeral channels support local dev and single-server production without shared Postgres; Postgres rejects ephemeral publication/subscription. They deliver only to connected subscribers, use a bounded 64-message buffer, skip evicted events for slow clients, and never replay on reconnect. Messages have `id: ""` and SSE omits replay IDs. Combining `ephemeral: true` with `replayWindowMs` throws. Verify two connected clients receive an event and a disconnected client does not replay it after reconnect.
@@ -380,6 +457,52 @@ socket.send({ type: "typing", data: { userId: "me" } });
 
 For React apps, prefer `useChannel` from `tako.sh/react` — it wraps `Channel` with buffered state, reconnects, and an `onMessage` callback.
 
+### Channel replay recovery
+
+The built-in SSE reader retries routine disconnects with its latest cursor.
+HTTP `410` and internal `tako.reset` events clear the cursor and start a fresh
+subscription. Neither signal becomes a business message. `onRecovery(reason)`
+receives `"reconnecting"` or `"history-expired"`; `onError` is for terminal
+failures, including HTTP 401, 403, and 404. `close()` or an abort `signal` stops
+retries.
+
+`useChannel` handles SSE recovery and WebSocket close code 4410. It reports
+`status: "connecting"` with no routine recovery error, then returns to `"open"`.
+`usePresence` rejoins after the same 4410 reset; other 44xx closes are terminal.
+Use optional `onRecovery` for diagnostics and `onResync` to reload authoritative
+application state after expired history:
+
+```tsx
+import { useChannel } from "tako.sh/react";
+
+export function useLiveUpdates(reloadState: () => Promise<void>) {
+  return useChannel("updates", {
+    onResync: async () => {
+      await reloadState();
+    },
+  });
+}
+```
+
+`reloadState` belongs to the app and must reconcile live events with its snapshot.
+Callbacks may be async but do not delay reconnect. The built-in reader and channel
+hook log callback failures and continue. The existing message buffer remains
+until `clear()`, unmount, or a change of connection identity. A custom channel needs this application recovery when
+missing events affect state; reconnect alone cannot restore those events.
+Non-React SSE clients can reload on `onRecovery("history-expired")`. A raw
+`connect()` returns one WebSocket and requires application reconnection logic.
+A custom `eventSourceFactory` owns cursor reset and recovery callbacks itself.
+
+Native network brokers replicate bounded SQLite replay and fan out to trusted
+server peers. Replay gaps trigger quiet SDK resync, not business reset messages;
+reload authoritative state when history expires. This does not migrate durable
+workflows or databases. Legacy multi-server replay uses shared `postgres_url`.
+Native multi-server channel/presence/store delivery can use SQLite without that
+credential. Configured Postgres remains in use; credential failures stop deployment
+rather than switching backends.
+Verify replay expiry, a current-state reload, async callback failure, and clean
+shutdown as well as ordinary delivery. See https://tako.sh/docs/channels/.
+
 ### Presence
 
 Define presence spaces in `<app_root>/presence/*.ts` with `definePresence` from `tako.sh`. Auth has the same `headerName`, `cookieName`, `paramsSchema`, and `verify` pattern as channels. Return `false` to deny, `true` for anonymous access, or `{ subject: user.id }` for a verified identity. Omit `auth` for public access.
@@ -412,7 +535,7 @@ update({ typing: true });
 
 `members` contains `{ connectionId, subject?, data }`, including the current connection. Every hook call creates one connection; multiple tabs belonging to the same subject remain separate. Only the server controls identity; member data is untrusted client-provided JSON (up to 16 KiB). `data` supplies initial metadata; `update()` replaces it. The hook waits for authorization, sends heartbeats every 15 seconds, reconnects with current metadata, clears stale state on disconnect, and leaves on unmount. Authorization failures stop retries until connection options change. Membership converges within approximately one second. Connections without updates expire after 45 seconds, so a reconnect can briefly overlap its old connection. Presence has no durable replay. Validated params scope membership: different `chatId` values have separate member lists. Auth must verify access to the requested chat. Channel and presence names have separate namespaces.
 
-Single-server production uses SQLite; multi-server deployments require the shared `postgres_url` credential. Local dev uses an in-memory store and permits connections without running auth callbacks, as with channels. Use channels for durable events and presence for current membership.
+Single-server production uses SQLite. Native networks exchange expiring server-bound presence leases; legacy multi-server presence uses shared `postgres_url`. Native multi-server presence can use SQLite without that credential. Local dev uses an in-memory store and permits connections without running auth callbacks, as with channels. Use channels for durable events and presence for current membership.
 
 ### Stores
 
@@ -471,8 +594,14 @@ and `refresh`.
 After a committed write, import the definition server-side and call
 `await messages.invalidate({ chatId })`. This affects only the exact validated
 params scope; an empty scope is not a wildcard. Snapshots load separately per
-reader and never broadcast. Reconnects reload current data; invalidations during
-loads trigger another read. External writers must also invalidate; Tako does
+reader and never broadcast. Reconnects reload current data after subscription
+readiness; invalidations during loads trigger another read. Subscription 410 and
+internal reset signals clear replay state without becoming Store data. Optional
+`onRecovery` reports diagnostics; no resync callback is required. A valid offline
+lease keeps data readable and stale with `status: "offline"` and `error: null`
+during routine recovery when no other failure is active. Without a valid lease, stale data is hidden and an error
+can surface. Authorization failures, malformed data, and expired cache entries
+remain visible failures. HTTP 410 on the data read endpoint is terminal. External writers must also invalidate; Tako does
 not perform SQL dependency tracking or CDC. Publication failures reject without
 rolling back committed writes. Use a transactional app outbox for durable
 commit-and-notify.
@@ -491,8 +620,10 @@ data. The app shell must already be available: no PWA/service worker, offline
 write queue, or conflict-resolution engine is installed.
 
 Store names follow `^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$`; params are capped at
-16 KiB and complete read responses at 1 MiB. Multi-server subscriptions require
-shared `postgres_url`. See https://tako.sh/docs/stores/ for native backends and
+16 KiB and complete read responses at 1 MiB. Native brokers fan out invalidations
+with bounded replay; legacy multi-server subscriptions require shared
+`postgres_url`. Native multi-server invalidation delivery can use SQLite without
+that credential; configured Postgres remains in use. See https://tako.sh/docs/stores/ for native backends and
 the complete lifecycle. Verify scoped invalidation, reconnection, user switching,
 and offline expiry, not just the initial render.
 
@@ -602,7 +733,7 @@ export default defineWorkflow<{ userId: string; to: string }>("send-email", {
 });
 ```
 
-Use `local: true` only when per-server local queues and cron are intentional. Multi-server workflows require the encrypted `postgres_url` credential unless every JavaScript workflow is local. Multi-server channels always require `postgres_url` so all servers share publish and replay state.
+Use `local: true` only when per-server local queues and cron are intentional. Multi-server workflows require the encrypted `postgres_url` credential unless every JavaScript workflow is local. Native channel brokers support bounded replication separately from workflow storage. Native multi-server channels can use SQLite without `postgres_url`; legacy multi-server channels need it for shared replay.
 
 ### Enqueuing
 

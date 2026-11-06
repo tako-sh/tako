@@ -36,6 +36,8 @@ pub struct ChannelPublishPayload {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ChannelMessage {
     pub id: String,
+    #[serde(default, rename = "eventId", skip_serializing_if = "Option::is_none")]
+    pub event_id: Option<crate::ChannelEventId>,
     pub channel: String,
     pub r#type: String,
     pub data: serde_json::Value,

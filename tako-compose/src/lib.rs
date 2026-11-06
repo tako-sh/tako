@@ -9,10 +9,13 @@ use tokio::process::{Child, Command};
 
 const TAKO_APP_DATA_DIR_ENV: &str = "TAKO_DATA_DIR";
 mod engine;
+mod native_network;
+pub use native_network::NativeNetwork;
 mod plan;
 mod prepared;
 pub use prepared::remove_release_preparations;
 mod process_output;
+pub use process_output::with_cancellation as with_command_cancellation;
 mod rollout;
 mod validation;
 pub use engine::ServiceContainer;
@@ -115,6 +118,7 @@ pub struct ComposeRuntime {
     // Bound to one immutable, service-private preparation during a rollout.
     source: Option<PathBuf>,
     replicas: BTreeMap<String, u32>,
+    native_network: Option<NativeNetwork>,
 }
 
 impl std::fmt::Debug for ComposeRuntime {
@@ -174,7 +178,13 @@ impl ComposeRuntime {
             override_file: PathBuf::from(OVERRIDE_FILE),
             source: None,
             replicas: BTreeMap::new(),
+            native_network: None,
         })
+    }
+
+    pub fn with_native_network(mut self, network: NativeNetwork) -> Self {
+        self.native_network = Some(network);
+        self
     }
 
     /// Desired replica overrides, scoped to service names in this project.
@@ -254,6 +264,7 @@ impl ComposeRuntime {
         limit: Duration,
         stdout_mode: process_output::StdoutMode,
     ) -> Result<Vec<u8>, String> {
+        process_output::check_cancellation().map_err(|e| e.to_string())?;
         let mut command = self.command(with_override);
         command
             .args(args)
@@ -338,6 +349,7 @@ impl ComposeRuntime {
     }
 
     pub async fn prepare(&self, _version: &str) -> Result<(), String> {
+        process_output::check_cancellation().map_err(|e| e.to_string())?;
         if self.development {
             return Err("Production preparation requested for a development project".into());
         }
@@ -354,6 +366,7 @@ impl ComposeRuntime {
         let (runtime, snapshot) = tokio::task::spawn_blocking(move || capture.snapshot())
             .await
             .map_err(|e| format!("Compose source capture failed: {e}"))??;
+        process_output::check_cancellation().map_err(|e| e.to_string())?;
         runtime.check_version().await?;
         let mut model = runtime.model().await?;
         // Compose otherwise builds into a mutable project/service tag (or the
@@ -428,23 +441,16 @@ impl ComposeRuntime {
             // index whose digest changes on a cached rebuild. Identity follows
             // the runnable configuration, filesystem, and platform instead.
             let image = format!("tako-compose/{}:{}-{hash}", self.project, digest(service));
-            let result = docker_command(self.development)
-                .args([
-                    "--host",
-                    "unix:///var/run/docker.sock",
-                    "image",
-                    "tag",
-                    id,
-                    &image,
-                ])
-                .output()
-                .await
-                .map_err(|e| e.to_string())?;
-            if !result.status.success() {
-                return Err(format!(
-                    "Could not preserve the image for Compose service '{service}'"
-                ));
-            }
+            let mut tag = docker_command(self.development);
+            tag.args([
+                "--host",
+                "unix:///var/run/docker.sock",
+                "image",
+                "tag",
+                id,
+                &image,
+            ]);
+            engine_output(tag, Duration::from_secs(30)).await?;
             images.insert(service.clone(), image);
         }
         for image in temporary_images {
@@ -454,6 +460,7 @@ impl ComposeRuntime {
             remove.args(["image", "rm", &image]);
             let _ = engine_output(remove, Duration::from_secs(30)).await;
         }
+        process_output::check_cancellation().map_err(|e| e.to_string())?;
         self.commit_preparation(snapshot, images)
     }
 
@@ -599,6 +606,7 @@ fn image_fingerprint(metadata: &Value) -> Result<String, String> {
 }
 
 async fn engine_output(mut command: Command, deadline: Duration) -> Result<Vec<u8>, String> {
+    process_output::check_cancellation().map_err(|e| e.to_string())?;
     let child = command
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

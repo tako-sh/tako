@@ -1,0 +1,212 @@
+import { OptionalKind, Type, type TObject, type TSchema } from "@sinclair/typebox";
+import { Value } from "@sinclair/typebox/value";
+import { serviceValidationSchema } from "./validation";
+
+export type ServiceErrorCode =
+  | "validation"
+  | "unexpected-status"
+  | "content-type"
+  | "invalid-json"
+  | "transport";
+export type ServiceErrorPhase = "request" | "response";
+export interface ServiceValidationIssue {
+  path: string;
+  message: string;
+}
+
+export class ServiceError extends Error {
+  override readonly name = "ServiceError";
+  constructor(
+    readonly code: ServiceErrorCode,
+    readonly operation: string,
+    readonly phase: ServiceErrorPhase,
+    message: string,
+    readonly status?: number,
+    readonly issues: readonly ServiceValidationIssue[] = [],
+    options?: ErrorOptions,
+  ) {
+    super(`${operation}: ${message}`, options);
+  }
+}
+
+const jsonSchema = Type.Recursive((self) =>
+  Type.Union([
+    Type.Null(),
+    Type.Boolean(),
+    Type.Number(),
+    Type.String(),
+    Type.Array(self),
+    Type.Record(Type.String(), self),
+  ]),
+);
+
+function ownJsonProperties(
+  value: unknown,
+  seen = new WeakMap<object, unknown>(),
+  active = new WeakSet<object>(),
+): unknown {
+  if (value === null || typeof value !== "object") return value;
+  if (active.has(value)) throw new Error("JSON cannot contain cycles");
+  if (seen.has(value)) return seen.get(value);
+  active.add(value);
+  if (Array.isArray(value)) {
+    const array: unknown[] = [];
+    // Keep normal array behavior while preventing inherited serialization hooks.
+    Object.defineProperty(array, "toJSON", { value: undefined });
+    seen.set(value, array);
+    const length = value.length;
+    for (let i = 0; i < length; i++)
+      array.push(ownJsonProperties(Object.hasOwn(value, i) ? value[i] : undefined, seen, active));
+    active.delete(value);
+    return array;
+  }
+  const record: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  seen.set(value, record);
+  for (const [key, item] of Object.entries(value))
+    record[key] = ownJsonProperties(item, seen, active);
+  active.delete(value);
+  return record;
+}
+
+/** Return the checked snapshot; callers must use it for encoding and dispatch. */
+export function validate<T>(
+  schema: TSchema | undefined,
+  value: T,
+  operation: string,
+  phase: ServiceErrorPhase,
+  field: string,
+  status?: number,
+): T {
+  let data: unknown;
+  try {
+    data = ownJsonProperties(value);
+  } catch (cause) {
+    throw new ServiceError("validation", operation, phase, `Cannot snapshot ${field}`, status, [], {
+      cause,
+    });
+  }
+  if (field === "body" && data !== undefined && !Value.Check(jsonSchema, data))
+    throw new ServiceError(
+      "validation",
+      operation,
+      phase,
+      "Body must contain only JSON values",
+      status,
+    );
+  const checkSchema = schema && serviceValidationSchema(schema);
+  if (
+    schema
+      ? (value === undefined && schema[OptionalKind]) || Value.Check(checkSchema!, data)
+      : value === undefined
+  )
+    return data as T;
+  const issues = schema
+    ? [...Value.Errors(checkSchema!, data)].map(({ path, message }) => ({
+        path: `/${field}${path}`,
+        message,
+      }))
+    : [{ path: `/${field}`, message: "Not declared in the contract" }];
+  throw new ServiceError("validation", operation, phase, `Invalid ${field}`, status, issues);
+}
+
+export function jsonBody(
+  value: unknown,
+  operation: string,
+  phase: ServiceErrorPhase,
+  status?: number,
+): string {
+  try {
+    if (Value.Check(jsonSchema, value)) return JSON.stringify(value);
+  } catch (cause) {
+    throw new ServiceError(
+      "validation",
+      operation,
+      phase,
+      "Body must be serializable JSON",
+      status,
+      [],
+      { cause },
+    );
+  }
+  throw new ServiceError(
+    "validation",
+    operation,
+    phase,
+    "Body must contain only JSON values",
+    status,
+  );
+}
+
+export async function readText(
+  message: Request | Response,
+  operation: string,
+  phase: ServiceErrorPhase,
+  status?: number,
+): Promise<string> {
+  try {
+    return await message.text();
+  } catch (cause) {
+    throw new ServiceError("transport", operation, phase, "Failed to read HTTP body", status, [], {
+      cause,
+    });
+  }
+}
+
+export async function readJson(
+  message: Request | Response,
+  operation: string,
+  phase: ServiceErrorPhase,
+  status?: number,
+): Promise<unknown> {
+  const text = await readText(message, operation, phase, status);
+  if (!text.length) return undefined;
+  const contentType = message.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+  if (
+    contentType !== "application/json" &&
+    !/^application\/[a-z0-9!#$&^_.+-]+\+json$/.test(contentType ?? "")
+  ) {
+    throw new ServiceError("content-type", operation, phase, "Expected application/json", status);
+  }
+  try {
+    return JSON.parse(text, (_key, value: unknown) =>
+      value !== null && typeof value === "object" && !Array.isArray(value)
+        ? Object.setPrototypeOf(value, null)
+        : value,
+    ) as unknown;
+  } catch (cause) {
+    throw new ServiceError("invalid-json", operation, phase, "Malformed JSON body", status, [], {
+      cause,
+    });
+  }
+}
+
+export function decodeQuery(
+  schema: TObject | undefined,
+  search: URLSearchParams,
+): Record<string, unknown> | undefined {
+  if (!schema) return search.size ? Object.fromEntries(search) : undefined;
+  const query: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  const scalar = (field: TSchema, text: string): unknown => {
+    if (
+      (field["type"] === "number" || field["type"] === "integer") &&
+      /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(text)
+    )
+      return Number(text);
+    if (field["type"] === "boolean" && (text === "true" || text === "false"))
+      return text === "true";
+    return text;
+  };
+  for (const key of new Set(search.keys())) {
+    const field = schema["properties"][key];
+    const values = search.getAll(key);
+    query[key] =
+      field?.["type"] === "array"
+        ? values.map((value) => scalar(field["items"] as TSchema, value))
+        : values.length > 1
+          ? values
+          : field
+            ? scalar(field, values[0]!)
+            : values[0];
+  }
+  return query;
+}

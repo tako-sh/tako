@@ -168,6 +168,9 @@ impl TakoToml {
 
         // Validate each environment
         for (env_name, env_config) in &self.envs {
+            if let Some(network) = &env_config.network {
+                crate::config::validate_network_id(network)?;
+            }
             let is_development = env_name == "development";
 
             // Cannot have both route and routes

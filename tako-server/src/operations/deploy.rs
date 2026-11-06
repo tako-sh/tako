@@ -537,6 +537,8 @@ impl crate::ServerState {
         self.state_store
             .set_runtime_credentials(app_name, runtime_credentials)
             .map_err(|e| format!("Failed to store runtime credentials: {e}"))?;
+        self.channel_credentials_generation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         self.state_store
             .set_storages(app_name, storages)
             .map_err(|e| format!("Failed to store storages: {e}"))?;
@@ -593,6 +595,8 @@ impl crate::ServerState {
                 e
             );
         }
+        self.channel_credentials_generation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         if let Err(e) = self.state_store.set_storages(app_name, &previous_storages) {
             tracing::warn!(app = app_name, "Failed to restore previous storages: {}", e);
         }

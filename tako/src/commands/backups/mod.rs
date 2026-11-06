@@ -97,7 +97,14 @@ async fn run_async(
     let app_name = require_app_name_from_config_path(&context.config_path)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?;
     let tako_config = TakoToml::load_from_file(&context.config_path)?;
-    let servers = ServersToml::load()?;
+    let env = match &cmd {
+        BackupCommands::Now { env, .. }
+        | BackupCommands::List { env, .. }
+        | BackupCommands::Status { env }
+        | BackupCommands::Download { env, .. }
+        | BackupCommands::Restore { env, .. } => env.as_deref().unwrap_or("production"),
+    };
+    let servers = super::helpers::load_management_servers(Some(&tako_config), Some(env)).await?;
 
     match cmd {
         BackupCommands::Now { env, server } => {

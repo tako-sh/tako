@@ -1,4 +1,4 @@
-use crate::{ChannelMessage, ChannelPublishPayload, ChannelStore};
+use crate::{ChannelMessage, ChannelPublishPayload, ChannelStore, ReplayCursor};
 use std::sync::{
     Barrier, Mutex,
     atomic::{AtomicUsize, Ordering},
@@ -19,7 +19,10 @@ enum Event {
 }
 
 fn record(message: ChannelMessage) -> (i64, u64) {
-    (message.id.parse().unwrap(), message.data.as_u64().unwrap())
+    (
+        message.id.parse::<ReplayCursor>().unwrap().position,
+        message.data.as_u64().unwrap(),
+    )
 }
 
 fn check(model: &mut Vec<(i64, u64)>, event: &Event) -> bool {
@@ -59,8 +62,8 @@ fn concurrent_history(seed: u64, stores: Vec<ChannelStore>) {
         for (writer, (store, (read_first, limit))) in stores.into_iter().zip(plans).enumerate() {
             let (barrier, clock, events) = (&barrier, &clock, &events);
             scope.spawn(move || {
+                let mut after = store.replay_cursor("events", None).unwrap();
                 barrier.wait();
-                let mut after = 0;
                 for step in 0..3 {
                     let start = clock.fetch_add(1, Ordering::SeqCst);
                     let event = if (step == 0 && !read_first) || (step == 1 && read_first) {
@@ -78,19 +81,15 @@ fn concurrent_history(seed: u64, stores: Vec<ChannelStore>) {
                         );
                         Event::Append(id, value)
                     } else {
-                        let messages: Vec<_> = store
-                            .read_after("events", Some(after), limit)
-                            .unwrap()
-                            .into_iter()
-                            .map(record)
-                            .collect();
+                        let messages = store.read_after("events", after, limit).unwrap();
+                        let next = messages.last().map(|message| message.id.parse().unwrap());
                         let event = Event::Read {
-                            after,
+                            after: after.map_or(0, |cursor| cursor.position),
                             limit,
-                            messages: messages.clone(),
+                            messages: messages.into_iter().map(record).collect(),
                         };
-                        if let Some((id, _)) = messages.last() {
-                            after = *id;
+                        if next.is_some() {
+                            after = next;
                         }
                         event
                     };
@@ -268,12 +267,13 @@ fn replay_and_presence_expiry_histories_are_reproducible() {
         let mut now = base;
         let mut random = Seed(seed);
         let mut retained = Vec::new();
-        let mut latest = None;
+        let mut highest_deleted = 0;
         let mut lease_until = None;
         let mut trace = Vec::new();
         let auth =
             serde_json::from_value(serde_json::json!({"ok": true, "replayWindowMs": 100})).unwrap();
         store.sync_channel("events", &auth).unwrap();
+        let mut latest = store.replay_cursor("events", None).unwrap().unwrap();
         let member = crate::PresenceMember {
             connection_id: "connection".into(),
             subject: None,
@@ -291,17 +291,23 @@ fn replay_and_presence_expiry_histories_are_reproducible() {
                             },
                         )
                         .unwrap();
-                    let id: i64 = message.id.parse().unwrap();
+                    let cursor: ReplayCursor = message.id.parse().unwrap();
+                    let id = cursor.position;
                     store.raw_execute(
                         "UPDATE channel_messages SET created_at_unix_ms=?1 WHERE id=?2",
                         (now, id),
                     );
                     retained.push((id, now));
-                    latest = Some(id);
+                    latest = cursor;
                 }
                 1 => {
                     now += random.choose(60_000) as i64;
                     store.prune_at(now);
+                    for &(id, created) in &retained {
+                        if created < now - 100 {
+                            highest_deleted = highest_deleted.max(id);
+                        }
+                    }
                     retained.retain(|(_, created)| *created >= now - 100);
                 }
                 2 => {
@@ -317,22 +323,35 @@ fn replay_and_presence_expiry_histories_are_reproducible() {
                 .read_after("events", None, 200)
                 .unwrap()
                 .into_iter()
-                .map(|m| m.id.parse().unwrap())
+                .map(|m| m.id.parse::<ReplayCursor>().unwrap().position)
                 .collect();
             assert_eq!(
                 records,
                 retained.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
                 "seed={seed}, turn={turn}"
             );
-            assert_eq!(store.replay_cursor("events", None).unwrap(), latest);
-            if let Some(last) = latest {
-                assert_eq!(
-                    store.replay_cursor("events", Some(last)).unwrap(),
-                    Some(last)
-                );
-                let floor = retained.first().map(|(id, _)| id - 1).unwrap_or(last);
+            assert_eq!(store.replay_cursor("events", None).unwrap(), Some(latest));
+            assert_eq!(
+                store.replay_cursor("events", Some(latest)).unwrap(),
+                Some(latest)
+            );
+            let floor = ReplayCursor {
+                position: highest_deleted,
+                ..latest
+            };
+            assert_eq!(
+                store.replay_cursor("events", Some(floor)).unwrap(),
+                Some(floor)
+            );
+            if highest_deleted > 0 {
                 assert!(matches!(
-                    store.replay_cursor("events", Some(floor - 1)),
+                    store.replay_cursor(
+                        "events",
+                        Some(ReplayCursor {
+                            position: highest_deleted - 1,
+                            ..latest
+                        })
+                    ),
                     Err(crate::ChannelError::StaleCursor)
                 ));
             }

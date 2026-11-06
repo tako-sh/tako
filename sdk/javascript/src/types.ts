@@ -115,8 +115,10 @@ export interface ChannelPublishInput<T = unknown> {
 
 /** Published channel message with its channel name and optional replay cursor. */
 export interface ChannelMessage<T = unknown> extends ChannelPublishInput<T> {
-  /** Server-assigned monotonic replay id, or an empty string for ephemeral events. */
+  /** Opaque server replay cursor, or an empty string for ephemeral events. */
   id: string;
+  /** Stable publication identity across servers; independent of the replay cursor. */
+  eventId?: { origin: string; sequence: number };
   /** The exact channel the message was published on. */
   channel: string;
 }
@@ -151,7 +153,13 @@ export interface ChannelSubscribeOptions {
   lastEventId?: string;
   /** Inject a custom SSE implementation (e.g. for tests). */
   eventSourceFactory?: (url: string, init?: EventSourceFactoryInit) => unknown;
+  /** Recovery runs outside the channel's application messages. */
+  onRecovery?: (reason: SseRecoveryReason) => void;
+  onError?: (error: Error) => void;
+  signal?: AbortSignal;
 }
+
+export type SseRecoveryReason = "reconnecting" | "history-expired";
 
 /** Options for {@link import("./channels").Channel.connect}. */
 export interface ChannelConnectOptions {

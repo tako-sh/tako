@@ -15,6 +15,21 @@ tako logs --env production --days 1 --json
 
 `status` shows servers and deployed apps. Release history identifies the current release. Finite log history returns a JSON object with a `logs` array. Check command failures and truncation before treating output as complete. Use the observed app, environment, server, and release to decide the next action.
 
+## Native server maintenance
+
+```bash
+tako network drain edge-a --network production --timeout 120 --json
+tako network resume edge-a --network production --json
+```
+
+Use a unique server member name or device ID. The timeout defaults to 120 seconds.
+
+Native server drain and resume require server-administrator permission; an app/environment deployment grant is insufficient. Drain keeps management and network control available while refusing new application traffic and stopping app work under a bounded deadline.
+
+A drain report's `status = "draining"` means cleanup is still pending. `completed = true` requires all proxy processes on that server to be quiescent. Check `completed`, `timed_out`, `http_drained`, `forced_instances`, `forced_http_requests`, `forced_workflow_workers`, `remaining_instances`, `remaining_workflow_workers`, `remaining_workflow_background_tasks`, and `errors` before proceeding. Proxy request counts include forwarded traffic and overlap instance request counts; all counts describe the process handling the command. Forced or incomplete cleanup must not be reported as graceful completion. The drain timeout accepts `0..3600` seconds; zero requests immediate force.
+
+Resume restores persisted applications before clearing the drained state. Failed restoration leaves the server drained. Neither operation moves volumes or workflow state, changes public DNS, or redirects global ingress. Arrange traffic and data migration separately. See [Native network limits](/networks/#understand-replay-and-maintenance-limits).
+
 ## Scaling
 
 ```bash

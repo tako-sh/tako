@@ -157,7 +157,6 @@ pub fn run(
     description: Option<&str>,
     config_path: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Use tokio runtime for async SSH operations
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(run_async(env, assume_yes, force, description, config_path))
 }
@@ -218,6 +217,13 @@ async fn run_async(
         env,
         warnings,
     } = validation;
+    if tako_config
+        .envs
+        .get(&env)
+        .is_some_and(|env| env.network.is_some())
+    {
+        servers = super::helpers::load_management_servers(Some(&tako_config), Some(&env)).await?;
+    }
 
     let eff_app_dir = project_dir.clone();
 
@@ -238,11 +244,11 @@ async fn run_async(
     let source_root = source_bundle_root(&project_dir, preflight_runtime_adapter.id());
 
     if preflight_runtime_adapter.preset_group() == PresetGroup::Js {
-        let _ = js::write_tako_declarations_for_adapter_and_app_root(
+        js::write_tako_declarations_for_adapter_and_app_root(
             &project_dir,
             preflight_runtime_adapter,
             tako_config.js_app_root(),
-        );
+        )?;
     }
 
     let _bun_lockfile_checked = if should_run_bun_lockfile_preflight(preflight_runtime_adapter) {
@@ -307,6 +313,7 @@ async fn run_async(
         }
     }
 
+    config::refresh_native_build_targets(&mut servers, &server_names).await?;
     let server_targets = resolve_deploy_server_targets(&servers, &server_names)
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
     tracing::debug!("{}", format_servers_summary(&server_names));

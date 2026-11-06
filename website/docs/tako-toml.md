@@ -73,7 +73,15 @@ Each environment can use either `route` or `routes`, not both. Non-development d
 
 Routes support exact hosts, wildcard hosts, host-plus-path routes, and wildcard-plus-path routes. Path-only routes are invalid.
 
-Environment tables accept route declarations, `servers`, `storages`, `backup`, `source_ip`, `ssl`, `idle_timeout`, and `release`. Put environment variables in `[vars]` or `[vars.<env>]`, not in `[envs.<env>]`.
+Environment tables accept route declarations, `network`, `servers`, `storages`, `backup`, `source_ip`, `ssl`, `idle_timeout`, and `release`. Put environment variables in `[vars]` or `[vars.<env>]`, not in `[envs.<env>]`.
+
+`network` selects a native network by its stable 32-character hexadecimal ID, not a local alias. It is mutually exclusive with `servers`; trusted server membership determines targets. Native management uses pinned HTTPS and does not need a workstation tunnel. See [Native networks](/networks/).
+
+```toml
+[envs.production]
+network = "0123456789abcdef0123456789abcdef"
+route = "app.example.com"
+```
 
 `idle_timeout` must be greater than zero and defaults to 300 seconds. `ssl` defaults to `letsencrypt` and can be `cloudflare`. `source_ip` can be omitted or set to `auto`, `direct`, `cloudflare-proxy`, or `trusted-proxy`.
 
@@ -212,7 +220,7 @@ Production supervises one scale-to-zero lane per JavaScript worker group, select
 
 The parser accepts `run` in named worker groups. It accepts `workers` and `concurrency` in `[workflows]`, `[workflows.<group>]`, `[servers.<server>.workflows]`, and `[servers.<server>.workflows.<group>]`. Parsed count/concurrency precedence is defaults (`workers = 0`, `concurrency = 10`), app base, app group, server base, then server group. These parsed counts and overrides do not yet control production supervision; do not rely on them to tune running workers. `run` must be a non-empty array of non-empty strings. Group and server names follow the app-name rules.
 
-In multi-server environments, JS workflows require `postgres_url` unless every workflow opts into local per-server execution. Go workflow deployments require `postgres_url` for multi-server environments. Channels, Presence, and Stores also require `postgres_url` so every server shares replay, membership, and invalidation state. Configure the credential explicitly for inline Go and Rust registrations; the deployment preflight detects JavaScript definition directories.
+In multi-server environments, JS workflows require `postgres_url` unless every workflow opts into local per-server execution. Go workflow deployments require `postgres_url` for multi-server environments. Native networks support bounded channel replication, presence leases, and invalidation fanout separately from workflow storage. When the selected environment has `network`, channels, presence, and store notifications can use SQLite across servers without `postgres_url`. Configured Postgres credentials remain in use and must be valid. Legacy multi-server deployments need that shared credential; configure it explicitly for inline Go and Rust registrations, which preflight does not discover.
 
 ## Complete Example
 

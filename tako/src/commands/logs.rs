@@ -52,9 +52,9 @@ async fn run_async(
     if let Some(runtime) = &tako_config.runtime {
         super::log_style::set_app_runtime(runtime.clone());
     }
-    let mut servers = ServersToml::load()?;
-
     let env = super::helpers::resolve_env_silent(requested_env);
+    let mut servers =
+        super::helpers::load_management_servers(Some(&tako_config), Some(&env)).await?;
 
     let app_name = crate::app::require_app_name_from_config_path(&context.config_path)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?;
@@ -147,6 +147,7 @@ async fn stream_logs(
             .ok_or_else(|| server_not_found_error(server_name))?;
 
         let host = server.host.clone();
+        let target = server.management_target();
         let remote_app_name = remote_app_name.to_string();
         let display_app_name = display_app_name.to_string();
         let writer = writer.clone();
@@ -168,7 +169,7 @@ async fn stream_logs(
                             }
                         })
                     };
-                    stream_remote_logs(&host, &remote_app_name, sink).await?;
+                    stream_remote_logs(&target, &remote_app_name, sink).await?;
 
                     if let Ok(mut w) = lw.lock() {
                         w.flush();
@@ -188,7 +189,7 @@ async fn stream_logs(
                             }
                         })
                     };
-                    stream_remote_logs(&host, &remote_app_name, sink).await?;
+                    stream_remote_logs(&target, &remote_app_name, sink).await?;
 
                     if let Ok(mut w) = lw.lock() {
                         w.flush();
@@ -235,6 +236,7 @@ async fn fetch_logs(
             .ok_or_else(|| server_not_found_error(server_name))?;
 
         let host = server.host.clone();
+        let target = server.management_target();
         let app_name = app_name.to_string();
         let server_name = server_name.to_string();
         let collected = collected.clone();
@@ -247,7 +249,7 @@ async fn fetch_logs(
                 let _t = output::timed(&format!("Fetch logs ({host}, last {days} days)"));
 
                 let collector = Arc::new(Mutex::new(ByteCollector::new(server_name, collected)));
-                let bytes = collect_remote_log_bytes(&host, &app_name, days).await?;
+                let bytes = collect_remote_log_bytes(&target, &app_name, days).await?;
 
                 if let Ok(mut c) = collector.lock() {
                     c.push(&bytes);
@@ -503,7 +505,14 @@ async fn resolve_log_server_names(
                 .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
             Ok(resolved)
         }
-        Err(_) if env == "production" && servers.is_empty() => {
+        Err(_)
+            if env == "production"
+                && servers.is_empty()
+                && !tako_config
+                    .envs
+                    .get(env)
+                    .is_some_and(|env| env.network.is_some()) =>
+        {
             if server::prompt_to_add_server(
                 "No servers have been added. Logs need at least one server.",
             )

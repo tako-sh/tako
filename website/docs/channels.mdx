@@ -1,6 +1,6 @@
 ---
 title: Channels
-description: "Define typed SSE and WebSocket channels with authorization, replay, browser clients, server-side publishing, and multi-server Postgres storage."
+description: "Define SSE and WebSocket channels with typed messages, authorization, replay recovery, and SQLite or shared Postgres storage."
 ---
 
 Tako Channels are broadcast streams for live app events over SSE or WebSocket. Channels are durable by default: Tako stores each message before fanout and retains a bounded replay window. Set `ephemeral: true` for memory-only delivery on a single server.
@@ -257,35 +257,94 @@ function LiveStatus({ token }: { token: string }) {
 
 ## Recover After Disconnects
 
-For durable channels, each publish is inserted before delivery. `replayWindowMs` defaults to 10 minutes, so a reconnect can bridge a browser reload, laptop sleep, network change, server restart, or rolling deploy.
+For durable channels, each publish is inserted before delivery. `replayWindowMs` defaults to 10 minutes. A reconnect can replay retained events after a network interruption or a restart when the reconnect reaches storage that still has that history. Replay is a bounded delivery window, not automatic state failover.
 
-Replay cleanup runs every second, including when no clients are connected. Channel definitions carry their lifecycle settings with server-side publishes, so retention applies before the first subscription. A committed publish immediately notifies subscribers using the same store. An app-wide poller checks for commits from other processes or servers every 100 ms; database reads run outside the async request workers. Shared Postgres stores detect publishes from every server.
+Replay cleanup runs every second, including when no clients are connected. Channel definitions carry their lifecycle settings with server-side publishes, so retention applies before the first subscription. A committed publish immediately notifies subscribers using the same store. Native SQLite brokers deliver notifications over the private transport. Shared Postgres stores also poll for commits from other processes or servers every 100 ms. Database reads run outside the async request workers.
 
 Local replay uses SQLite WAL with `synchronous=NORMAL`: committed messages survive an application process crash, but recent commits can be lost after a host crash or power failure. Replay is a short delivery buffer; keep canonical history in the app database as described below.
 
-- SSE resumes with `Last-Event-ID`; `subscribe({ lastEventId })` sets an initial cursor. The built-in fetch-based SSE reader reconnects until `close()` is called and carries its latest message id forward.
-- WebSocket resumes with `last_message_id`; `connect({ lastMessageId })` sets it. `useChannel` tracks the latest id and reconnects WebSockets with bounded backoff and jitter. A lower-level `connect()` call returns one socket, so non-React code owns WebSocket reconnection.
-- With no cursor, Tako starts at the latest retained message and then follows live traffic.
+- SSE resumes with `Last-Event-ID`; `subscribe({ lastEventId })` sets an initial cursor. The built-in fetch-based reader reconnects after routine disconnects and carries its latest message ID forward. `close()` or an abort `signal` stops it. HTTP `401`, `403`, and `404` are terminal and reach `onError`.
+- WebSocket resumes with `last_message_id`; `connect({ lastMessageId })` sets it. `useChannel` tracks the latest ID and reconnects with bounded backoff and jitter. A lower-level `connect()` call returns one socket, so non-React code owns WebSocket reconnection.
+- With no cursor, Tako starts at the latest retained message and then follows live traffic. A fresh subscription does not recover all missed events.
 
-If an SSE cursor is older than retained replay, Tako responds with `410 Gone`; WebSocket closes with code `4410` and reason `replay-too-old`. Reload current state from the app's normal data API, then create a fresh subscription rather than assuming the missing events still exist.
+An expired SSE cursor produces HTTP `410 Gone`. A running SSE stream can also send the internal `tako.reset` control event. The built-in reader consumes either signal, clears its cursor, and reconnects without exposing a reset as an application message. The React hook handles WebSocket close code `4410` with reason `replay-too-old` the same way.
+
+Routine reconnects and expired history do not populate `useChannel.error` or invoke the built-in SSE subscription's `onError`. The hook reports `status: "connecting"` until the connection opens again. Optional `onRecovery(reason)` receives `"reconnecting"` or `"history-expired"` outside the message stream. Authorization failures and malformed application messages still need error handling.
+
+### Reload custom channel state
+
+The SDK restores the transport. Your application must restore any state that depends on missing events. With React, use the optional `onResync` callback to reload authoritative state when history expires:
+
+```tsx
+import { useChannel } from "tako.sh/react";
+
+export function LiveUpdates({
+  token,
+  reloadState,
+}: {
+  token: string;
+  reloadState: () => Promise<void>;
+}) {
+  const { status, error } = useChannel("site-events", {
+    transport: "ws",
+    authorization: token,
+    onResync: async () => {
+      await reloadState();
+    },
+  });
+
+  if (error) return <p>Updates are unavailable.</p>;
+  return <p>{status === "open" ? "Live" : "Reconnecting"}</p>;
+}
+```
+
+`reloadState` is app-owned code that fetches a current snapshot from the app's authenticated API and replaces the view's state. It must handle events that arrive during the fetch, for example through application revisions or another read after invalidation. `onResync` does not run for every ordinary reconnect.
+
+For a non-React SSE client, use `onRecovery` to start the same reload:
+
+```ts
+import { Channel } from "tako.sh/client";
+
+export function subscribeUpdates(reloadState: () => Promise<void>) {
+  const updates = new Channel("announcements", undefined, { clientVersion: "2.4.0" });
+  return updates.subscribe({
+    onRecovery: async (reason) => {
+      if (reason === "history-expired") await reloadState();
+    },
+  });
+}
+```
+
+Both callbacks are optional and can be async. Reconnection does not await them. The built-in SSE reader and `useChannel` catch and log callback failures without stopping recovery. Handle reload failures in your application's data UI. `useChannel` keeps its existing message buffer until `clear()`, unmount, or a change of connection identity; treat the reloaded snapshot as authoritative rather than assuming the buffer contains complete history.
+
+If you supply a custom `eventSourceFactory`, that factory owns transport errors, cursor reset, and recovery callbacks. If you use a raw WebSocket through `connect()`, handle close code `4410`, drop the expired cursor, reload state, and open another connection yourself. Custom transports do not acquire the built-in reader's recovery behavior.
+
+[Stores](/stores/#recover-current-data) implement snapshot reloads for backend data, so they do not need a custom channel resync callback.
 
 ## Deploy Replay Storage
 
 Storage is a deployment choice; application publish and subscribe code stays the same.
 
-| Deployment                  | Replay storage                                                   |
-| --------------------------- | ---------------------------------------------------------------- |
-| Local development           | In-memory for the current dev daemon process                     |
-| One production server       | Tako-managed SQLite (`channels.sqlite`) by default               |
-| Multiple production servers | Shared Postgres schema `tako_channels`, keyed by deployed app id |
+| Deployment | Replay storage and delivery |
+| ---------- | --------------------------- |
+| Local development | In-memory for the current dev daemon process |
+| One production server | Tako-managed SQLite (`channels.sqlite`) by default |
+| Native network servers | Bounded SQLite replay replication and fanout over native private transport; Postgres can remain the shared replay backend |
+| Legacy multi-server deployment | Shared Postgres schema `tako_channels`, keyed by deployed app id |
 
-A multi-server environment with durable channels requires the shared `postgres_url` environment credential so publishes and replay are visible on every server:
+Native brokers exchange events only with trusted active server peers. Replay has byte and event-count limits; membership changes, transport gaps, or expired history can require a reset. The JavaScript SDK keeps reset messages out of business handlers and resumes subscriptions. Custom channels must reload authoritative application state through their recovery callback; stores reload their authorized snapshot. Reconnect does not recover missing business records by itself.
+
+Native environments selected with `[envs.<env>].network` can use SQLite for channels, presence, and store notifications across servers. No Postgres credential is required for those capabilities. If `postgres_url` is configured, Tako keeps using it; invalid or unreadable credentials fail deployment rather than silently switching backends.
+
+Legacy multi-server environments require shared Postgres:
 
 ```bash
 tako credentials set postgres_url --env production
 ```
 
-Tako validates this for discovered JavaScript channel definitions before build and deploy work starts. Inline Go registrations are not detected by that preflight, so explicitly configure `postgres_url` before deploying them to multiple servers. It is an encrypted provider credential, not a `tako.toml` field or an app secret. A single-server environment can also use Postgres by setting the credential.
+This is an encrypted provider credential, not a `tako.toml` field or an app secret. Inline Go and Rust registrations are not detected by that preflight. On legacy multi-server deployments, configure Postgres explicitly so those runtimes also share publish and replay state. A single-server environment can use Postgres too.
+
+Native replication is a bounded delivery mechanism. It does not replicate an application's database or move durable workflow execution state. Keep workflow storage configured independently, and test recovery by reloading current state after a gap.
 
 ## Keep Canonical History In Your App Database
 
@@ -304,4 +363,4 @@ For canonical writes, use a normal authenticated app endpoint to commit the reco
 
 ## Verify
 
-Connect two authorized clients and confirm both receive the same published event. Test a denied client in a deployed environment, reconnect with a replay cursor, and handle expired replay by reloading canonical app state. On multiple servers, publish through one and subscribe through another. Do not treat a successful local connection as proof of production authorization.
+Connect two authorized clients and confirm both receive the same published event. Test a denied client in a deployed environment and reconnect with a retained replay cursor. Then reconnect after expiry and confirm the SDK resumes, the application reloads authoritative state, and no reset message reaches business handlers. Test an async reload failure and stop a reconnecting subscription with `close()`. On multiple servers, publish through one and subscribe through another using the configured native or shared Postgres transport. A successful local connection does not verify production authorization or cross-server fanout.

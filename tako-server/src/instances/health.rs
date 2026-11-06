@@ -166,7 +166,9 @@ impl HealthChecker {
         // of waiting for the HTTP probe to time out.
         if !instance.is_alive().await {
             self.failure_counts.remove(&instance_key);
-            app.set_instance_state(instance, InstanceState::Stopped);
+            if !app.set_instance_health_state(instance, InstanceState::Stopped) {
+                return;
+            }
             tracing::error!(
                 app = %app.name(),
                 instance = %instance.id,
@@ -207,7 +209,9 @@ impl HealthChecker {
 
             // Mark healthy on first successful probe.
             if current_state != InstanceState::Healthy {
-                app.set_instance_state(instance, InstanceState::Healthy);
+                if !app.set_instance_health_state(instance, InstanceState::Healthy) {
+                    return;
+                }
 
                 let event = if current_state == InstanceState::Unhealthy {
                     HealthEvent::Recovered {
@@ -250,7 +254,9 @@ impl HealthChecker {
             };
 
             if new_state != current_state {
-                app.set_instance_state(instance, new_state);
+                if !app.set_instance_health_state(instance, new_state) {
+                    return;
+                }
 
                 let event = match new_state {
                     InstanceState::Unhealthy => {

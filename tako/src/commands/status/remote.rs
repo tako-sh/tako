@@ -9,22 +9,26 @@ use time::OffsetDateTime;
 use crate::config::TakoToml;
 
 pub(super) async fn query_global_server_status(
-    _server_name: &str,
-    host: &str,
-    _port: u16,
+    target: &crate::management_http::ManagementTarget,
 ) -> GlobalServerStatusResult {
     let _t = output::timed("Query status");
-    let probe = match management_http::probe(host).await {
-        Ok(probe) => probe,
-        Err(error) => {
-            return status_error(format!("Remote management failed: {error}"));
-        }
-    };
-    let mut client = match ManagementClient::new(host).await {
+    let mut client = match ManagementClient::for_target(target).await {
         Ok(client) => client,
-        Err(error) => {
-            return status_error(format!("Remote management auth failed: {error}"));
+        Err(error) => return status_error(format!("Remote management auth failed: {error}")),
+    };
+    let hello = match client
+        .send(&Command::Hello {
+            protocol_version: tako_core::PROTOCOL_VERSION,
+        })
+        .await
+    {
+        Ok(response) => {
+            match management_http::parse_ok_data::<tako_core::HelloResponse>(response, "hello") {
+                Ok(hello) => hello,
+                Err(error) => return status_error(format!("Remote management failed: {error}")),
+            }
         }
+        Err(error) => return status_error(format!("Remote management failed: {error}")),
     };
     let info = match client.send(&Command::ServerInfo).await {
         Ok(response) => {
@@ -47,71 +51,75 @@ pub(super) async fn query_global_server_status(
         UpgradeMode::Normal => "active".to_string(),
         UpgradeMode::Upgrading => "upgrading".to_string(),
     };
-    let server_version = Some(normalize_server_version(probe.hello.server_version));
+    let server_version = Some(normalize_server_version(hello.server_version));
     let process_uptime = info
         .process_started_at_unix_secs
         .and_then(process_uptime_since);
-    let routes = fetch_routes(&mut client).await;
+    let scoped_apps = client.scoped_apps();
+    let routes = if scoped_apps.is_some() {
+        Vec::new()
+    } else {
+        fetch_routes(&mut client).await
+    };
 
     let mut effective_service_status = service_status.clone();
     let mut apps = Vec::new();
     let mut error = None;
 
     if service_status == "active" || service_status == "unknown" {
-        match client.send(&Command::List).await {
-            Ok(response) => match parse_list_apps_response(response) {
-                Ok(app_names) => {
-                    tracing::debug!("Found {} app(s)", app_names.len());
-                    if service_status == "unknown" {
-                        effective_service_status = "active".to_string();
-                    }
+        let listed = match scoped_apps {
+            Some(apps) => Ok(apps),
+            None => client
+                .send(&Command::List)
+                .await
+                .map_err(|error| format!("Remote management query failed: {error}"))
+                .and_then(parse_list_apps_response),
+        };
+        match listed {
+            Ok(app_names) => {
+                tracing::debug!("Found {} app(s)", app_names.len());
+                if service_status == "unknown" {
+                    effective_service_status = "active".to_string();
+                }
 
-                    for remote_app_name in app_names {
-                        let (display_app_name, env_from_name) =
-                            parse_remote_app_name(&remote_app_name);
-                        let status = query_connected_app_status(
-                            &mut client,
-                            &effective_service_status,
-                            server_version.clone(),
-                            &remote_app_name,
-                        )
-                        .await;
-                        for mut build_status in expand_status_by_running_builds(status) {
-                            let app_version = build_status
-                                .app_status
-                                .as_ref()
-                                .map(|app| app.version.clone());
+                for remote_app_name in app_names {
+                    let (display_app_name, env_from_name) = parse_remote_app_name(&remote_app_name);
+                    let status = query_connected_app_status(
+                        &mut client,
+                        &effective_service_status,
+                        server_version.clone(),
+                        &remote_app_name,
+                    )
+                    .await;
+                    for mut build_status in expand_status_by_running_builds(status) {
+                        let app_version = build_status
+                            .app_status
+                            .as_ref()
+                            .map(|app| app.version.clone());
 
-                            let env_name = if let Some(app_version) = app_version {
-                                build_status.deployed_at_unix_secs = fetch_app_deployed_at(
-                                    &mut client,
-                                    &remote_app_name,
-                                    &app_version,
-                                )
-                                .await;
-                                env_from_name
-                                    .clone()
-                                    .unwrap_or_else(|| "unknown".to_string())
-                            } else {
-                                env_from_name
-                                    .clone()
-                                    .unwrap_or_else(|| "unknown".to_string())
-                            };
+                        let env_name = if let Some(app_version) = app_version {
+                            build_status.deployed_at_unix_secs =
+                                fetch_app_deployed_at(&mut client, &remote_app_name, &app_version)
+                                    .await;
+                            env_from_name
+                                .clone()
+                                .unwrap_or_else(|| "unknown".to_string())
+                        } else {
+                            env_from_name
+                                .clone()
+                                .unwrap_or_else(|| "unknown".to_string())
+                        };
 
-                            apps.push(GlobalAppStatusResult {
-                                app_name: display_app_name.clone(),
-                                env_name,
-                                status: build_status,
-                            });
-                        }
+                        apps.push(GlobalAppStatusResult {
+                            app_name: display_app_name.clone(),
+                            env_name,
+                            status: build_status,
+                        });
                     }
                 }
-                Err(e) => {
-                    error = Some(e);
-                }
-            },
+            }
             Err(e) => {
-                error = Some(format!("Remote management query failed: {}", e));
+                error = Some(e);
             }
         }
     }

@@ -27,16 +27,42 @@ pub async fn serve(
     session: &mut Session,
     store: &Arc<ChannelStore>,
     channel: &str,
-    requested_after: Option<i64>,
+    requested_after: Option<crate::ReplayCursor>,
+    auth: ChannelAuthResponse,
+    params: serde_json::Value,
+    reader: WebSocketFrameReader,
+) -> Result<bool> {
+    serve_with_writer(
+        session,
+        store,
+        channel,
+        requested_after,
+        auth,
+        params,
+        reader,
+        Arc::new(crate::LocalChannelWriter::new(store.clone())),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn serve_with_writer(
+    session: &mut Session,
+    store: &Arc<ChannelStore>,
+    channel: &str,
+    requested_after: Option<crate::ReplayCursor>,
     auth: ChannelAuthResponse,
     params: serde_json::Value,
     mut reader: WebSocketFrameReader,
+    writer: Arc<dyn crate::ChannelWriter>,
 ) -> Result<bool> {
     if channel.starts_with(crate::live_store::STORE_CHANNEL_PREFIX) {
         return write_close(session, crate::ChannelCloseCode::VerifyRejected, true).await;
     }
+    let mut resets = store.resets(channel);
+    let mut changes = store.changes(channel);
     if !auth.ephemeral
-        && let Err(error) = store.sync_channel_async(channel, &auth).await
+        && let Err(error) = writer.sync_channel(channel, &auth).await
     {
         tracing::error!("failed to sync websocket channel metadata: {error}");
         return write_close(session, crate::ChannelCloseCode::VerifyRejected, true).await;
@@ -55,8 +81,9 @@ pub async fn serve(
     };
     let mut presence = if channel.starts_with(PRESENCE_CHANNEL_PREFIX) {
         let scope = crate::presence_scope(channel, &params);
-        let presence = PresenceSession::new(store.clone(), &scope, auth.subject.clone())
-            .map_err(|e| Error::explain(ErrorType::InternalError, e.to_string()))?;
+        let presence =
+            PresenceSession::new_with_writer(writer.clone(), &scope, auth.subject.clone())
+                .map_err(|e| Error::explain(ErrorType::InternalError, e.to_string()))?;
         session
             .write_response_body(
                 Some(Bytes::from(websocket_text_frame(
@@ -88,15 +115,13 @@ pub async fn serve(
     let max_connection_lifetime = Duration::from_millis(auth.max_connection_lifetime_ms.max(1));
     let started_at = tokio::time::Instant::now();
     let mut next_ping = started_at + keepalive_interval;
-    let mut changes = if auth.ephemeral {
-        tokio::sync::watch::channel(None).1
-    } else {
-        store.changes(channel)
-    };
     let mut read_replay = presence.is_none() && !auth.ephemeral;
     let mut buffered = true;
 
     loop {
+        if resets.has_changed().unwrap_or(true) {
+            return write_close(session, crate::ChannelCloseCode::ReplayTooOld, true).await;
+        }
         let next_presence = tokio::time::Instant::now() + Duration::from_secs(1);
         if let Some(presence) = &mut presence {
             changes.borrow_and_update();
@@ -112,18 +137,24 @@ pub async fn serve(
         }
         let messages = if read_replay {
             changes.borrow_and_update();
-            store
-                .read_after_async(channel, after, 100)
-                .await
-                .map_err(|error| {
-                    Error::explain(
+            match store.read_after_async(channel, after, 100).await {
+                Ok(messages) => messages,
+                Err(ChannelError::StaleCursor) => {
+                    return write_close(session, crate::ChannelCloseCode::ReplayTooOld, true).await;
+                }
+                Err(error) => {
+                    return Err(Error::explain(
                         ErrorType::InternalError,
                         format!("Failed to read channel replay: {error}"),
-                    )
-                })?
+                    ));
+                }
+            }
         } else {
             Vec::new()
         };
+        if resets.has_changed().unwrap_or(true) {
+            return write_close(session, crate::ChannelCloseCode::ReplayTooOld, true).await;
+        }
         read_replay = messages.len() == 100;
 
         if !messages.is_empty() {
@@ -140,8 +171,8 @@ pub async fn serve(
                 after = Some(
                     message
                         .id
-                        .parse::<i64>()
-                        .expect("channel ids are always numeric"),
+                        .parse::<crate::ReplayCursor>()
+                        .expect("channel IDs are replay cursors"),
                 );
             }
             next_ping = tokio::time::Instant::now() + keepalive_interval;
@@ -171,6 +202,7 @@ pub async fn serve(
             Read(Option<Bytes>),
             Tick,
             Changed,
+            Reset,
             Ephemeral(Option<Arc<crate::ChannelMessage>>),
         }
 
@@ -184,6 +216,7 @@ pub async fn serve(
                 body = &mut read => WebSocketAction::Read(body?),
                 _ = &mut sleep => WebSocketAction::Tick,
                 _ = changes.changed(), if !auth.ephemeral => WebSocketAction::Changed,
+                _ = resets.changed() => WebSocketAction::Reset,
                 message = async {
                     match ephemeral.as_mut() {
                         Some(events) => events.recv().await,
@@ -229,11 +262,7 @@ pub async fn serve(
                                         format!("Invalid websocket publish payload: {error}"),
                                     )
                                 })?;
-                            let result = if auth.ephemeral {
-                                store.publish_ephemeral(channel, &payload)
-                            } else {
-                                store.append_async(channel, &payload).await
-                            };
+                            let result = writer.publish(channel, &payload, auth.ephemeral).await;
                             result.map_err(|error| {
                                 Error::explain(
                                     ErrorType::InternalError,
@@ -282,7 +311,13 @@ pub async fn serve(
                     .await?;
                 next_ping = tokio::time::Instant::now() + keepalive_interval;
             }
-            WebSocketAction::Ephemeral(None) | WebSocketAction::Read(None) => return Ok(true),
+            WebSocketAction::Ephemeral(None) => {
+                return write_close(session, crate::ChannelCloseCode::ReplayTooOld, true).await;
+            }
+            WebSocketAction::Read(None) => return Ok(true),
+            WebSocketAction::Reset => {
+                return write_close(session, crate::ChannelCloseCode::ReplayTooOld, true).await;
+            }
             WebSocketAction::Changed => read_replay = presence.is_none(),
             WebSocketAction::Tick => {
                 if tokio::time::Instant::now() >= next_ping {
