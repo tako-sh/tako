@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -7,16 +7,34 @@ use tako_network::{DeviceId, LocalDeviceKeys, MemberKind, NetworkId};
 
 use super::{Profile, Result};
 use crate::config::NetworkAlias;
+use crate::output;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod backend;
+use backend::Operation;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) use backend::{HELPER_COMMAND, helper_main};
+
+pub(crate) fn lifecycle_lock(alias: &NetworkAlias) -> Result<fs::File> {
+    let lock = super::ssh_session::lock(alias, "lifecycle.lock")?;
+    lock.lock()?;
+    Ok(lock)
+}
 
 pub(crate) fn connect(alias: &NetworkAlias, profile: &Profile) -> Result<()> {
-    connect_with(alias, profile, capture, run)
+    connect_with(
+        alias,
+        profile,
+        || authorize("set up the local network interface, private DNS, and server names"),
+        backend::invoke,
+    )
 }
 
 fn connect_with(
     alias: &NetworkAlias,
     profile: &Profile,
-    mut capture: impl FnMut(&str, &[&str]) -> Result<String>,
-    mut run: impl FnMut(&str, &[&str]) -> Result<()>,
+    authorize: impl FnOnce() -> Result<()>,
+    mut execute: impl FnMut(Operation) -> Result<Option<String>>,
 ) -> Result<()> {
     if !matches!(profile, Profile::Active { .. }) {
         return Err("This network needs an active server approval before connecting".into());
@@ -28,11 +46,27 @@ fn connect_with(
     super::private_directory(parent)?;
     let lock = super::private_file(&parent.join("connection.lock"), true)?;
     lock.lock()?;
+    let _ssh = super::ssh_session::prepare_connect(alias)?;
     let saved = saved_configuration(&path)?;
     let interface = interface_name(&profile.snapshot().network.id);
-    if let Some(active) = active_interface(&interface, &mut capture)? {
-        let public_key = capture("wg", &["show", &active, "public-key"])?;
-        if public_key.trim() != keys.wg_public_key()?.to_string() {
+    let public_key = keys.wg_public_key()?.to_string();
+    let network = profile.snapshot().network.id.to_string();
+    let names = super::server_members(profile)?
+        .values()
+        .map(|member| backend::ServerName {
+            name: member.request.name.to_string().to_ascii_lowercase(),
+            address: profile
+                .snapshot()
+                .network
+                .id
+                .address(&member.request.wg_public_key),
+        })
+        .collect::<Vec<_>>();
+    authorize()?;
+    if let Some(active_key) = execute(Operation::Inspect {
+        interface: interface.clone(),
+    })? {
+        if active_key != public_key {
             return Err("A different WireGuard connection already uses this interface".into());
         }
         let saved = saved
@@ -40,52 +74,69 @@ fn connect_with(
             .ok_or("Active WireGuard interface has no owned configuration")?;
         validate_saved_configuration(saved, &keys)?;
         if saved == configuration {
-            let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-            for line in configuration
-                .lines()
-                .filter(|line| !line.starts_with("Address = "))
-            {
-                writeln!(temporary, "{line}")?;
-            }
-            temporary.as_file().sync_all()?;
-            super::private_file(temporary.path(), false)?;
-            return run("wg", &["syncconf", &active, path_string(temporary.path())?]);
+            execute(Operation::Sync {
+                interface,
+                configuration,
+                network,
+                names,
+            })?;
+            return Ok(());
         }
-        run("wg-quick", &["down", path_string(&path)?])?;
+        execute(Operation::Stop {
+            interface: interface.clone(),
+            public_key,
+        })?;
     }
     super::write_bytes(&path, configuration.as_bytes(), true)?;
-    run("wg-quick", &["up", path_string(&path)?])
+    execute(Operation::Start {
+        interface,
+        configuration,
+        network,
+        names,
+    })?;
+    Ok(())
 }
 
 pub(crate) fn disconnect(alias: &NetworkAlias, profile: &Profile) -> Result<()> {
-    disconnect_with(alias, profile, capture, run)
+    disconnect_with(
+        alias,
+        profile,
+        || authorize("remove the local network interface, private DNS, and server names"),
+        backend::invoke,
+    )
 }
 
 fn disconnect_with(
     alias: &NetworkAlias,
     profile: &Profile,
-    mut capture: impl FnMut(&str, &[&str]) -> Result<String>,
-    mut run: impl FnMut(&str, &[&str]) -> Result<()>,
+    authorize: impl FnOnce() -> Result<()>,
+    mut execute: impl FnMut(Operation) -> Result<Option<String>>,
 ) -> Result<()> {
     let path = configuration_path(alias, profile)?;
-    let Some(_) = saved_configuration(&path)? else {
+    if saved_configuration(&path)?.is_none() {
         return Ok(());
-    };
+    }
     let lock = super::private_file(&path.parent().unwrap().join("connection.lock"), true)?;
     lock.lock()?;
     let Some(saved) = saved_configuration(&path)? else {
         return Ok(());
     };
     let interface = interface_name(&profile.snapshot().network.id);
-    if let Some(active) = active_interface(&interface, &mut capture)? {
+    authorize()?;
+    if let Some(active_key) = execute(Operation::Inspect {
+        interface: interface.clone(),
+    })? {
         let keys = LocalDeviceKeys::load(&super::keys_path(&profile.request().request_id)?)?;
-        if capture("wg", &["show", &active, "public-key"])?.trim()
-            != keys.wg_public_key()?.to_string()
-        {
+        let public_key = keys.wg_public_key()?.to_string();
+        if active_key != public_key {
             return Err("Refusing to disconnect a different WireGuard connection".into());
         }
         validate_saved_configuration(&saved, &keys)?;
-        run("wg-quick", &["down", path_string(&path)?])?;
+        super::ssh_session::stop_masters(alias)?;
+        execute(Operation::Stop {
+            interface,
+            public_key,
+        })?;
     }
     fs::remove_file(path)?;
     Ok(())
@@ -207,58 +258,34 @@ fn interface_name(network: &NetworkId) -> String {
     format!("tako{}", &network.to_string()[..10])
 }
 
-fn active_interface(
-    interface: &str,
-    capture: &mut impl FnMut(&str, &[&str]) -> Result<String>,
-) -> Result<Option<String>> {
-    let interfaces = capture("wg", &["show", "interfaces"])?;
-    #[cfg(target_os = "macos")]
-    let actual = match fs::read_to_string(format!("/var/run/wireguard/{interface}.name")) {
-        Ok(value) => value.trim().to_string(),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
-    #[cfg(not(target_os = "macos"))]
-    let actual = interface.to_string();
-    Ok(interfaces
-        .split_whitespace()
-        .any(|name| name == actual)
-        .then_some(actual))
-}
-
-fn path_string(path: &Path) -> Result<&str> {
-    path.to_str()
-        .ok_or_else(|| "WireGuard configuration path must be UTF-8".into())
-}
-
-fn privileged(program: &str) -> Command {
-    #[cfg(unix)]
-    if unsafe { libc::geteuid() } == 0 {
-        return Command::new(program);
+fn authorize(action: &str) -> Result<()> {
+    if output::is_root() {
+        return Ok(());
     }
-    let mut command = Command::new("sudo");
-    command.arg("--").arg(program);
-    command
-}
-
-fn capture(program: &str, args: &[&str]) -> Result<String> {
-    let result = privileged(program)
-        .args(args)
-        .stderr(Stdio::inherit())
-        .output()?;
-    if !result.status.success() {
-        return Err(format!("{program} failed. Install the official WireGuard tools and allow local administrator privileges.").into());
-    }
-    Ok(String::from_utf8(result.stdout)?)
-}
-
-fn run(program: &str, args: &[&str]) -> Result<()> {
-    let status = privileged(program)
-        .args(args)
+    let status = Command::new("sudo")
+        .args(["-n", "-v"])
+        .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .status()?;
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|error| format!("Could not run sudo: {error}"))?;
+    if status.success() {
+        return Ok(());
+    }
+    if !output::is_interactive() {
+        return Err(format!(
+            "Administrator access is required to {action}. Run this command in a terminal to authorize with sudo."
+        )
+        .into());
+    }
+    output::hint(&format!("Tako needs administrator access to {action}."));
+    // Keep authentication on the terminal before capturing tool diagnostics.
+    let status = Command::new("sudo")
+        .args(["-v", "-p", "Local password for %p: "])
+        .status()
+        .map_err(|error| format!("Could not run sudo: {error}"))?;
     if !status.success() {
-        return Err(format!("{program} failed; the network is not connected").into());
+        return Err("Administrator authorization failed".into());
     }
     Ok(())
 }
@@ -270,7 +297,6 @@ mod tests {
         self,
         tests::{TestHome, fixture},
     };
-    use std::cell::RefCell;
     use std::os::unix::fs::{PermissionsExt, symlink};
 
     #[test]
@@ -346,123 +372,100 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
-    fn unchanged_reconnect_reconciles_peers_without_replacing_interface_or_routes() {
+    fn connect_reconciles_unchanged_peers_and_disconnect_checks_ownership() {
         let home = TestHome::new();
         let fixture = fixture();
         network::store_keys(&fixture.profile.request().request_id, &fixture.keys).unwrap();
         let alias = network::save_profile("test", &fixture.profile).unwrap();
-        let interface = interface_name(&fixture.profile.snapshot().network.id);
-        let key = fixture.keys.wg_public_key().unwrap().to_string();
-        let events = RefCell::new(Vec::new());
-        let sync_path = RefCell::new(None);
-        let desired = configuration(&fixture.profile, &fixture.keys).unwrap();
-        let mut run = |program: &str, args: &[&str]| -> Result<()> {
-            let path = if program == "wg" {
-                assert_eq!(&args[..2], &["syncconf", interface.as_str()]);
-                let path = Path::new(args[2]);
-                let contents = fs::read_to_string(path)?;
-                assert!(!contents.contains("Address = "));
-                assert!(!contents.contains("DNS = "));
-                assert!(!contents.contains("PostUp = "));
-                let expected = desired
-                    .lines()
-                    .filter(|line| !line.starts_with("Address = "))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-                    + "\n";
-                assert_eq!(contents, expected);
-                assert_eq!(contents.matches("[Peer]").count(), 1);
-                *sync_path.borrow_mut() = Some(path.to_owned());
-                path
-            } else {
-                assert_eq!(program, "wg-quick");
-                let path = Path::new(args[1]);
-                validate_saved_configuration(&fs::read_to_string(path)?, &fixture.keys)?;
-                path
-            };
-            assert!(path.starts_with(home.directory.path()));
-            assert_eq!(fs::metadata(path)?.permissions().mode() & 0o777, 0o600);
-            events.borrow_mut().push(args[0].to_string());
-            Ok(())
-        };
-        connect_with(&alias, &fixture.profile, |_, _| Ok(String::new()), &mut run).unwrap();
-        assert_eq!(*events.borrow(), ["up"]);
-        let capture = |_: &str, args: &[&str]| -> Result<String> {
-            Ok(if args == ["show", "interfaces"] {
-                interface.clone()
-            } else {
-                key.clone()
-            })
-        };
-        connect_with(&alias, &fixture.profile, capture, &mut run).unwrap();
-        assert_eq!(*events.borrow(), ["up", "syncconf"]);
-        assert!(!sync_path.borrow().as_ref().unwrap().exists());
+        let mut events = Vec::new();
+        connect_with(
+            &alias,
+            &fixture.profile,
+            || Ok(()),
+            |op| {
+                match op {
+                    Operation::Inspect { .. } => events.push("inspect"),
+                    Operation::Start {
+                        ref configuration, ..
+                    } => {
+                        validate_saved_configuration(configuration, &fixture.keys)?;
+                        events.push("start");
+                    }
+                    _ => panic!("unexpected operation"),
+                }
+                Ok(None)
+            },
+        )
+        .unwrap();
+        assert_eq!(events, ["inspect", "start"]);
         let path = configuration_path(&alias, &fixture.profile).unwrap();
+        assert!(path.starts_with(home.directory.path()));
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         let saved = fs::read(&path).unwrap();
-        let mut failed_sync_path = None;
-        assert!(
-            connect_with(&alias, &fixture.profile, capture, |program, args| {
-                assert_eq!(program, "wg");
-                assert_eq!(&args[..2], &["syncconf", interface.as_str()]);
-                failed_sync_path = Some(PathBuf::from(args[2]));
-                assert!(failed_sync_path.as_ref().unwrap().exists());
-                Err("syncconf failed".into())
-            })
-            .is_err()
-        );
-        assert!(!failed_sync_path.unwrap().exists());
-        assert_eq!(fs::read(&path).unwrap(), saved);
-        assert!(
-            connect_with(
-                &alias,
-                &fixture.profile,
-                |_, args| {
-                    Ok(if args == ["show", "interfaces"] {
-                        interface.clone()
-                    } else {
-                        "someone-else".into()
-                    })
-                },
-                &mut run
-            )
-            .is_err()
-        );
-        assert_eq!(*events.borrow(), ["up", "syncconf"]);
-        assert!(!sync_path.borrow().as_ref().unwrap().exists());
-        assert_eq!(fs::read(&path).unwrap(), saved);
-        let mut revoked = fixture.profile.clone();
-        let Profile::Active { profile } = &mut revoked else {
-            panic!()
-        };
-        let own = profile.snapshot.network.initial_admin.clone();
-        profile.snapshot.revocations.push(
-            profile
-                .snapshot
-                .plan_revocation(
-                    tako_network::RevocationId::random().unwrap(),
-                    &own,
-                    &own,
-                    network::now().unwrap(),
-                )
-                .unwrap(),
-        );
-        assert!(configuration(&revoked, &fixture.keys).is_err());
-        disconnect_with(&alias, &revoked, capture, &mut run).unwrap();
-        assert_eq!(*events.borrow(), ["up", "syncconf", "down"]);
+        let key = fixture.keys.wg_public_key().unwrap().to_string();
+        events.clear();
+        connect_with(
+            &alias,
+            &fixture.profile,
+            || Ok(()),
+            |op| {
+                match op {
+                    Operation::Inspect { .. } => return Ok(Some(key.clone())),
+                    Operation::Sync {
+                        ref configuration, ..
+                    } => {
+                        assert_eq!(configuration.as_bytes(), saved);
+                        events.push("sync");
+                    }
+                    _ => panic!("reconnect must retain the interface and routes"),
+                }
+                Ok(None)
+            },
+        )
+        .unwrap();
+        assert_eq!(events, ["sync"]);
+        for disconnect in [false, true] {
+            let execute = |op| match op {
+                Operation::Inspect { .. } => Ok(Some("another-device".into())),
+                _ => panic!("must not change another device's interface"),
+            };
+            let result = if disconnect {
+                disconnect_with(&alias, &fixture.profile, || Ok(()), execute)
+            } else {
+                connect_with(&alias, &fixture.profile, || Ok(()), execute)
+            };
+            assert!(result.is_err());
+            assert_eq!(fs::read(&path).unwrap(), saved);
+        }
+        disconnect_with(
+            &alias,
+            &fixture.profile,
+            || Ok(()),
+            |op| match op {
+                Operation::Inspect { .. } => Ok(Some(key.clone())),
+                Operation::Stop { ref public_key, .. } => {
+                    assert_eq!(public_key, &key);
+                    Ok(None)
+                }
+                _ => panic!("unexpected operation"),
+            },
+        )
+        .unwrap();
         assert!(!path.exists());
         disconnect_with(
             &alias,
-            &revoked,
-            |_, _| panic!("no configuration means no WG calls"),
-            |_, _| panic!("no configuration means no WG calls"),
+            &fixture.profile,
+            || panic!("nothing to disconnect"),
+            |_| panic!("no interface operations without a configuration"),
         )
         .unwrap();
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
-    fn failed_reconnect_preserves_configuration_and_propagates_failure() {
+    fn denied_authorization_and_failed_stop_preserve_saved_state() {
         let _home = TestHome::new();
         let fixture = fixture();
         network::store_keys(&fixture.profile.request().request_id, &fixture.keys).unwrap();
@@ -472,54 +475,55 @@ mod tests {
             connect_with(
                 &alias,
                 &fixture.profile,
-                |_, _| Ok(String::new()),
-                |_, _| Err("up failed".into())
+                || Err("authorization denied".into()),
+                |_| panic!("must authorize before inspecting interfaces"),
             )
             .is_err()
         );
+        assert!(!path.exists());
+        connect_with(&alias, &fixture.profile, || Ok(()), |_| Ok(None)).unwrap();
         let saved = fs::read(&path).unwrap();
+        assert!(
+            disconnect_with(
+                &alias,
+                &fixture.profile,
+                || Err("authorization denied".into()),
+                |_| panic!("must authorize before inspecting interfaces"),
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read(&path).unwrap(), saved);
+        let key = fixture.keys.wg_public_key().unwrap().to_string();
         let mut changed = fixture.profile.clone();
-        let Profile::Active { profile: active } = &mut changed else {
+        let Profile::Active { profile } = &mut changed else {
             panic!()
         };
-        let member = active
+        let server = profile
             .snapshot
             .members
             .iter_mut()
             .find(|member| member.device_id == fixture.server)
             .unwrap();
-        let MemberKind::Server(info) = &mut member.kind else {
+        let MemberKind::Server(info) = &mut server.kind else {
             panic!()
         };
         info.wireguard_endpoint = "192.0.2.11:51820".parse().unwrap();
-        active
+        profile
             .trusted_servers
             .insert(fixture.server.clone(), info.clone());
-        let interface = interface_name(&fixture.profile.snapshot().network.id);
-        let key = fixture.keys.wg_public_key().unwrap().to_string();
-        let mut commands = vec![];
         assert!(
             connect_with(
                 &alias,
                 &changed,
-                |_, args| {
-                    Ok(if args == ["show", "interfaces"] {
-                        interface.clone()
-                    } else {
-                        key.clone()
-                    })
-                },
-                |_, args| {
-                    commands.push(args[0].to_string());
-                    Err("down failed".into())
+                || Ok(()),
+                |op| match op {
+                    Operation::Inspect { .. } => Ok(Some(key.clone())),
+                    Operation::Stop { .. } => Err("stop failed".into()),
+                    _ => panic!("failed stop must not replace the interface"),
                 }
             )
             .is_err()
         );
-        assert_eq!(commands, ["down"]);
-        assert_eq!(fs::read(&path).unwrap(), saved);
-        let mut wrong_alias = alias;
-        wrong_alias.id = NetworkId::random().unwrap().to_string();
-        assert!(configuration_path(&wrong_alias, &fixture.profile).is_err());
+        assert_eq!(fs::read(path).unwrap(), saved);
     }
 }

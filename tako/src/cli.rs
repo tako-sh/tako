@@ -161,10 +161,10 @@ pub enum Commands {
     #[command(subcommand)]
     Network(commands::network::NetworkCommands),
 
-    /// Connect this machine to a private network until explicitly disconnected
+    /// Connect local applications to a private network until explicitly disconnected
     Connect { network: Option<String> },
 
-    /// Disconnect this machine from a private network
+    /// Disconnect local applications and remove the network's resolver configuration
     Disconnect { network: Option<String> },
 
     /// SSH to an approved server using this machine's network identity
