@@ -879,7 +879,7 @@ start_tako_server() {
   echo "Previous tako-server did not stop" >&2
   exit 1'
   ssh_exec "$host" "rm -f /var/run/tako/tako.sock"
-  ssh_exec "$host" ". /run/tako-e2e-env; RUST_LOG=info nohup /usr/local/bin/tako-server --no-acme --http-port 8080 --https-port 8443 --data-dir /opt/tako --management-host 0.0.0.0 >/tmp/tako-server.log 2>&1 &"
+  ssh_exec "$host" "nohup sudo -n /usr/local/bin/tako-e2e-start-server >/tmp/tako-server.log 2>&1 &"
   wait_tako_socket "$host"
   wait_tako_management_http "$host"
 }

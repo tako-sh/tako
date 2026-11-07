@@ -66,17 +66,20 @@ libc_kind=glibc
 if [ -x "/opt/e2e/bin/$libc_kind/tako-server" ]; then
   archive_dir="$(mktemp -d)"
   archive="$archive_dir/tako-server.tar.zst"
-  tar -cf - -C "/opt/e2e/bin/$libc_kind" tako-server | zstd -f -o "$archive"
+  tar -cf - -C "/opt/e2e/bin/$libc_kind" tako-server -C /opt/e2e scripts/tako-network-helper.py | zstd -f -o "$archive"
   sha256sum "$archive" | awk '{print $1}' > "$archive.sha256"
   TAKO_SERVER_URL="file://$archive" TAKO_RESTART_SERVICE=0 TAKO_SERVER_NAME=e2e sh /opt/e2e/install-server.sh
   rm -f "$archive" "$archive.sha256"
   rmdir "$archive_dir"
 fi
 
-# Only this fixed fixture assertion needs to switch to the native app account.
-# Keep arbitrary root shells forbidden by the installed production sudo policy.
+# Fixed fixture commands supply the proxy unit's capabilities without systemd
+# and inspect app-owned Compose inputs. Neither accepts runner-supplied arguments.
+install -o root -g root -m 0755 /opt/e2e/start-server.sh /usr/local/bin/tako-e2e-start-server
 install -o root -g root -m 0755 /opt/e2e/verify-compose-inputs.sh /usr/local/bin/tako-e2e-verify-compose-inputs
-printf '%s\n' 'tako ALL=(root) NOPASSWD: /usr/local/bin/tako-e2e-verify-compose-inputs ""' > /etc/sudoers.d/tako-e2e-compose
+printf '%s\n' \
+  'tako ALL=(root) NOPASSWD: /usr/local/bin/tako-e2e-start-server ""' \
+  'tako ALL=(root) NOPASSWD: /usr/local/bin/tako-e2e-verify-compose-inputs ""' > /etc/sudoers.d/tako-e2e-compose
 chmod 0440 /etc/sudoers.d/tako-e2e-compose
 visudo -cf /etc/sudoers.d/tako-e2e-compose
 

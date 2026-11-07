@@ -9,6 +9,8 @@ services:
       - e2e_ssh_keys:/opt/e2e/keys:ro
       - ${E2E_BIN_DIR:-.e2e-bin}:/opt/e2e/bin:ro
       - ../../scripts/install-tako-server.sh:/opt/e2e/install-server.sh:ro
+      - ../../scripts/tako-network-helper.py:/opt/e2e/scripts/tako-network-helper.py:ro
+      - ./server/start-server.sh:/opt/e2e/start-server.sh:ro
       - ./server/entrypoint.sh:/usr/local/bin/tako-e2e-entrypoint.sh:ro
       - ./server/verify-compose-inputs.sh:/opt/e2e/verify-compose-inputs.sh:ro
   server-alma:
@@ -21,6 +23,8 @@ services:
       - e2e_ssh_keys:/opt/e2e/keys:ro
       - ${E2E_BIN_DIR:-.e2e-bin}:/opt/e2e/bin:ro
       - ../../scripts/install-tako-server.sh:/opt/e2e/install-server.sh:ro
+      - ../../scripts/tako-network-helper.py:/opt/e2e/scripts/tako-network-helper.py:ro
+      - ./server/start-server.sh:/opt/e2e/start-server.sh:ro
       - ./server/entrypoint.sh:/usr/local/bin/tako-e2e-entrypoint.sh:ro
       - ./server/verify-compose-inputs.sh:/opt/e2e/verify-compose-inputs.sh:ro
   runner:
