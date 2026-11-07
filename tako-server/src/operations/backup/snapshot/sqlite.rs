@@ -1,6 +1,5 @@
-//! SQLite must never resolve a pathname in the app's writable tree. Capture
-//! the main database and WAL under SQLite-compatible POSIX locks and let
-//! SQLite read/recover the private copy (including committed WAL frames).
+//! Capture through pinned files, then compact in a private directory. Only a
+//! reader confined to the verified inodes may open a live app database by name.
 use super::*;
 use std::ffi::OsString;
 use std::os::fd::AsRawFd;
@@ -15,6 +14,10 @@ mod copy;
 const DB_PENDING_BYTE: libc::off_t = 0x4000_0000;
 const WAL_WRITE_LOCK: libc::off_t = 120;
 const WAL_CHECKPOINT_LOCK: libc::off_t = 121;
+#[cfg(target_os = "linux")]
+// About one default SQLite auto-checkpoint at a 4 KiB page size. Larger
+// logs should use a live reader before taking a writer-blocking copy lock.
+const MAX_LOCKED_WAL_BYTES: u64 = 4 * 1024 * 1024;
 
 pub(super) fn snapshot(parent: &File, name: &OsStr, file: File, dest: &Path) -> io::Result<()> {
     let work = tempfile::tempdir_in(dest.parent().unwrap())?;
@@ -47,9 +50,12 @@ fn stage(
     copy_main: impl FnOnce(&mut File, &Path) -> io::Result<()>,
 ) -> io::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(10);
-    // The main-file lock excludes rollback-mode writers and the EXCLUSIVE
-    // lock SQLite needs to switch journal mode or remove the last WAL/SHM.
-    read_lock(&db, DB_PENDING_BYTE, 512, deadline)?;
+    // Follow the Unix VFS SHARED-lock protocol. Briefly lock PENDING to
+    // respect queued commits, then keep only the shared range. RESERVED
+    // writers may prepare changes, but cannot modify the database pages.
+    read_lock(&db, DB_PENDING_BYTE, 1, deadline)?;
+    read_lock(&db, DB_PENDING_BYTE + 2, 510, deadline)?;
+    set_lock(&db, DB_PENDING_BYTE, 1, libc::F_UNLCK as _)?;
     let sidecar = |suffix: &str| {
         let mut path = OsString::from(name);
         path.push(suffix);
@@ -59,35 +65,36 @@ fn stage(
     let wal_name = sidecar("-wal");
     let journal_name = sidecar("-journal");
     let shm = open_optional(parent, &shm_name)?;
+    let mut wal = open_optional(parent, &wal_name)?;
     if let Some(shm) = &shm {
         // Acquire both bytes atomically. Recovery also requires exclusive
         // access to the checkpoint byte.
-        read_lock(
-            shm,
-            WAL_WRITE_LOCK,
-            WAL_CHECKPOINT_LOCK - WAL_WRITE_LOCK + 1,
-            deadline,
-        )?;
-    }
-    let journal = open_optional(parent, &journal_name)?;
-    if let Some(journal) = &journal {
-        let mut first = [0];
-        journal.read_at(&mut first, 0)?;
-        if first != [0] {
-            return Err(io::Error::other("database has a hot rollback journal"));
+        let len = WAL_CHECKPOINT_LOCK - WAL_WRITE_LOCK + 1;
+        #[cfg(target_os = "linux")]
+        if let Some(wal) = &wal
+            && is_wal_mode(&db)?
+            && open_optional(parent, &journal_name)?.is_none()
+            && (wal.metadata()?.len() > MAX_LOCKED_WAL_BYTES
+                || !try_read_lock(shm, WAL_WRITE_LOCK, len)?)
+            && crate::snapshot_live_wal::try_capture(parent, name, [&db, wal, shm], staged)?
+        {
+            verify_entry(parent, name, Some(&db))?;
+            verify_entry(parent, &shm_name, Some(shm))?;
+            verify_entry(parent, &wal_name, Some(wal))?;
+            verify_entry(parent, &journal_name, None)?;
+            return Ok(());
         }
+        read_lock(shm, WAL_WRITE_LOCK, len, deadline)?;
     }
-    let mut wal = open_optional(parent, &wal_name)?;
+    let _initial_journal = open_cold_journal(parent, &journal_name, &db)?;
     if let Some(wal) = &mut wal {
         copy::copy(wal, &staged.with_file_name("database-wal"))?;
-        if let Some(shm) = &shm {
-            let mut journal_versions = [0; 2];
-            db.read_exact_at(&mut journal_versions, 18)?;
-            if journal_versions == [2, 2] {
-                // The staged WAL contains the snapshot's commits. Writers may
-                // append again while the checkpoint lock freezes the main file.
-                set_lock(shm, WAL_WRITE_LOCK, 1, libc::F_UNLCK as _)?;
-            }
+        if let Some(shm) = &shm
+            && is_wal_mode(&db)?
+        {
+            // The staged WAL contains the snapshot's commits. Writers may
+            // append again while the checkpoint lock freezes the main file.
+            set_lock(shm, WAL_WRITE_LOCK, 1, libc::F_UNLCK as _)?;
         }
     }
     copy_main(&mut db, staged)?;
@@ -98,24 +105,58 @@ fn stage(
         (name, Some(&db)),
         (&shm_name, shm.as_ref()),
         (&wal_name, wal.as_ref()),
-        (&journal_name, journal.as_ref()),
     ] {
-        let current = match fs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW) {
-            Ok(stat) => Some((stat.st_dev, stat.st_ino)),
-            Err(rustix::io::Errno::NOENT) => None,
-            Err(error) => return Err(error.into()),
-        };
-        let pinned = file
-            .map(fs::fstat)
-            .transpose()?
-            .map(|stat| (stat.st_dev, stat.st_ino));
-        if current != pinned {
-            return Err(io::Error::other(format!(
-                "database entry {name:?} changed during snapshot"
-            )));
-        }
+        verify_entry(parent, name, file)?;
+    }
+    // A RESERVED writer can create or discard its journal while our SHARED
+    // lock keeps every main database page unchanged. We never replay this
+    // journal. Check the current entry again in case its name was replaced.
+    open_cold_journal(parent, &journal_name, &db)?;
+    Ok(())
+}
+
+fn is_wal_mode(db: &File) -> io::Result<bool> {
+    let mut versions = [0; 2];
+    db.read_exact_at(&mut versions, 18)?;
+    Ok(versions == [2, 2])
+}
+
+fn verify_entry(parent: &File, name: &OsStr, file: Option<&File>) -> io::Result<()> {
+    let current = match fs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(stat) => Some((stat.st_dev, stat.st_ino)),
+        Err(rustix::io::Errno::NOENT) => None,
+        Err(error) => return Err(error.into()),
+    };
+    let pinned = file.map(fs::fstat).transpose()?;
+    if pinned.as_ref().is_some_and(|stat| stat.st_nlink != 1)
+        || current != pinned.map(|stat| (stat.st_dev, stat.st_ino))
+    {
+        return Err(io::Error::other(format!(
+            "database entry {name:?} changed during snapshot"
+        )));
     }
     Ok(())
+}
+
+fn open_cold_journal(parent: &File, name: &OsStr, db: &File) -> io::Result<Option<File>> {
+    let journal = open_optional(parent, name)?;
+    if let Some(file) = &journal {
+        let mut first = [0];
+        file.read_at(&mut first, 0)?;
+        if first != [0] {
+            // SQLite writes a journal header under RESERVED before it needs
+            // EXCLUSIVE to modify any main pages (e.g. synchronous=OFF).
+            // A nonzero header without a live writer needs recovery.
+            let mut reserved = lock_range(DB_PENDING_BYTE + 1, 1, libc::F_WRLCK as _);
+            if unsafe { libc::fcntl(db.as_raw_fd(), libc::F_GETLK, &mut reserved) } == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            if reserved.l_type != libc::F_WRLCK as libc::c_short {
+                return Err(io::Error::other("database has a hot rollback journal"));
+            }
+        }
+    }
+    Ok(journal)
 }
 
 fn open_optional(parent: &File, name: &OsStr) -> io::Result<Option<File>> {
@@ -126,22 +167,37 @@ fn open_optional(parent: &File, name: &OsStr) -> io::Result<Option<File>> {
     }
 }
 
-fn set_lock(
-    file: &File,
-    start: libc::off_t,
-    len: libc::off_t,
-    kind: libc::c_short,
-) -> io::Result<()> {
+fn lock_range(start: libc::off_t, len: libc::off_t, kind: libc::c_short) -> libc::flock {
     // All fields of flock are integers. Zero any platform-specific fields.
     let mut lock: libc::flock = unsafe { std::mem::zeroed() };
     lock.l_type = kind;
     lock.l_whence = libc::SEEK_SET as _;
     lock.l_start = start;
     lock.l_len = len;
+    lock
+}
+
+fn set_lock(
+    file: &File,
+    start: libc::off_t,
+    len: libc::off_t,
+    kind: libc::c_short,
+) -> io::Result<()> {
+    let lock = lock_range(start, len, kind);
     if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &lock) } == -1 {
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+fn try_read_lock(file: &File, start: libc::off_t, len: libc::off_t) -> io::Result<bool> {
+    match set_lock(file, start, len, libc::F_RDLCK as _) {
+        Ok(()) => Ok(true),
+        Err(error) if matches!(error.raw_os_error(), Some(libc::EACCES | libc::EAGAIN)) => {
+            Ok(false)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn read_lock(
@@ -150,18 +206,16 @@ fn read_lock(
     len: libc::off_t,
     deadline: Instant,
 ) -> io::Result<()> {
-    loop {
-        match set_lock(file, start, len, libc::F_RDLCK as _) {
-            Ok(()) => return Ok(()),
-            Err(error)
-                if matches!(error.raw_os_error(), Some(libc::EACCES | libc::EAGAIN))
-                    && Instant::now() < deadline =>
-            {
-                std::thread::sleep(Duration::from_millis(25));
-            }
-            Err(error) => return Err(error),
+    while !try_read_lock(file, start, len)? {
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "timed out waiting for SQLite lock",
+            ));
         }
+        std::thread::sleep(Duration::from_millis(25));
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -169,6 +223,53 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::process::{Command, Stdio};
+
+    #[test]
+    fn rollback_journal_changes_during_main_copy_are_checked() {
+        for change in [
+            "created", "removed", "replaced", "hot", "symlink", "hardlink",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("source");
+            rusqlite::Connection::open(&path)
+                .unwrap()
+                .execute_batch("CREATE TABLE items(id INTEGER)")
+                .unwrap();
+            let journal = dir.path().join("source-journal");
+            if change != "created" {
+                std::fs::write(&journal, [0]).unwrap();
+            }
+            let outside = dir.path().join("other");
+            std::fs::write(&outside, [0]).unwrap();
+            let parent = File::open(dir.path()).unwrap();
+            let name = OsStr::new("source");
+            let result = stage(
+                &parent,
+                name,
+                open_regular(&parent, name).unwrap(),
+                &dir.path().join("database"),
+                |source, dest| {
+                    if change != "created" {
+                        std::fs::remove_file(&journal)?;
+                    }
+                    match change {
+                        "created" | "replaced" => std::fs::write(&journal, [0])?,
+                        "removed" => (),
+                        "hot" => std::fs::write(&journal, [1])?,
+                        "symlink" => std::os::unix::fs::symlink(&outside, &journal)?,
+                        "hardlink" => std::fs::hard_link(&outside, &journal)?,
+                        _ => unreachable!(),
+                    }
+                    copy::copy(source, dest)
+                },
+            );
+            assert_eq!(
+                result.is_ok(),
+                matches!(change, "created" | "removed" | "replaced"),
+                "{change}: {result:?}"
+            );
+        }
+    }
 
     #[test]
     fn wal_writer_commits_during_main_file_copy() {

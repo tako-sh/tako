@@ -43,7 +43,9 @@ Deploy creates a backup after successful finalization when enabled. The server s
 
 If a data file has multiple hard links, the backup fails. Replace the app's link with a private copy before retrying.
 
-With an active SQLite write-ahead log (WAL), Tako captures the log first. Writers can then commit while Tako copies the main database. A large WAL can still delay writes during log capture, and checkpoints wait until the database copy finishes. In rollback-journal mode, writes wait while Tako captures the database. Tako compacts the private snapshot to discard deleted records.
+With an active SQLite write-ahead log (WAL), Tako normally captures a small log first, then lets writers commit while it copies the main database. On Linux hosts that support Landlock ABI 3 or newer, Tako uses a read-only SQLite connection restricted to the verified database files when the log exceeds 4 MiB or its lock is busy. The restricted reader can finish while a writer has uncommitted changes. On hosts without these kernel permissions, Tako uses the locked capture for WALs of any size. A checkpoint may wait until the read finishes.
+
+In rollback-journal mode, writers can prepare changes during a snapshot. A commit or a write that needs exclusive access can wait for the copy to finish. Tako compacts the private snapshot to discard deleted records.
 
 If Tako cannot acquire the required locks within 10 seconds, retry the backup. If a crash left a hot rollback journal, let the app reopen the database to recover it before retrying.
 
