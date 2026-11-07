@@ -7,10 +7,11 @@ use tako_network::DeviceId;
 use super::Result;
 use crate::config::NetworkAlias;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Access {
-    key_path: Option<PathBuf>,
+pub(crate) struct Access {
+    pub(crate) host: Option<String>,
+    pub(crate) key_path: Option<PathBuf>,
 }
 
 fn path(alias: &NetworkAlias, server: &DeviceId) -> Result<PathBuf> {
@@ -19,14 +20,26 @@ fn path(alias: &NetworkAlias, server: &DeviceId) -> Result<PathBuf> {
         .with_file_name(format!("ssh-{server}.json")))
 }
 
-pub(crate) fn save_key(alias: &NetworkAlias, server: &DeviceId, key: Option<&Path>) -> Result<()> {
+pub(crate) fn save(
+    alias: &NetworkAlias,
+    server: &DeviceId,
+    host: &str,
+    key: Option<&Path>,
+) -> Result<()> {
     let key_path = key
         .map(|key| std::path::absolute(crate::ssh::expand_tilde(key)))
         .transpose()?;
-    super::write_json(&path(alias, server)?, &Access { key_path }, true)
+    super::write_json(
+        &path(alias, server)?,
+        &Access {
+            host: Some(host.to_owned()),
+            key_path,
+        },
+        true,
+    )
 }
 
-pub(crate) fn load_key(alias: &NetworkAlias, server: &DeviceId) -> Result<Option<PathBuf>> {
+pub(crate) fn load(alias: &NetworkAlias, server: &DeviceId) -> Result<Access> {
     let access: Access = match super::read_json(&path(alias, server)?) {
         Ok(access) => access,
         Err(error)
@@ -34,7 +47,7 @@ pub(crate) fn load_key(alias: &NetworkAlias, server: &DeviceId) -> Result<Option
                 .downcast_ref::<std::io::Error>()
                 .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
         {
-            return Ok(None);
+            return Ok(Access::default());
         }
         Err(error) => return Err(error),
     };
@@ -45,5 +58,5 @@ pub(crate) fn load_key(alias: &NetworkAlias, server: &DeviceId) -> Result<Option
     {
         return Err("Saved server SSH key path must be absolute".into());
     }
-    Ok(access.key_path)
+    Ok(access)
 }
