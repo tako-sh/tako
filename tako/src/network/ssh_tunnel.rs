@@ -65,7 +65,7 @@ pub(crate) fn proxy_main() -> ! {
         let result = runtime.block_on(async {
             // An assigned local address means connect already owns this device's
             // WireGuard transport. Reuse it instead of stealing the peer endpoint.
-            if std::net::UdpSocket::bind((config.source, 0)).is_ok() {
+            if local_address_assigned(config.source)? {
                 let mut stream = tokio::time::timeout(
                     Duration::from_secs(15),
                     tokio::net::TcpStream::connect((config.destination, config.port)),
@@ -89,6 +89,7 @@ pub(crate) fn proxy_main() -> ! {
     std::process::exit(0);
 }
 
+#[cfg_attr(test, derive(Clone))]
 struct TunnelConfig {
     private_key: Zeroizing<[u8; 32]>,
     peer_key: [u8; 32],
@@ -96,6 +97,36 @@ struct TunnelConfig {
     source: Ipv6Addr,
     destination: Ipv6Addr,
     port: u16,
+}
+
+fn local_address_assigned(address: Ipv6Addr) -> Result<bool> {
+    // Binding is not a reliable test: Linux can allow nonlocal binds globally.
+    let mut interfaces = std::ptr::null_mut();
+    if unsafe { libc::getifaddrs(&mut interfaces) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    struct Interfaces(*mut libc::ifaddrs);
+    impl Drop for Interfaces {
+        fn drop(&mut self) {
+            unsafe { libc::freeifaddrs(self.0) };
+        }
+    }
+    let _interfaces = Interfaces(interfaces);
+    let mut current = interfaces;
+    while let Some(interface) = unsafe { current.as_ref() } {
+        if let Some(sockaddr) = unsafe { interface.ifa_addr.as_ref() }
+            && sockaddr.sa_family as i32 == libc::AF_INET6
+            && interface.ifa_flags & libc::IFF_UP as u32 != 0
+        {
+            // getifaddrs supplies a sockaddr_in6 whenever the family is AF_INET6.
+            let ipv6 = unsafe { &*interface.ifa_addr.cast::<libc::sockaddr_in6>() };
+            if Ipv6Addr::from(ipv6.sin6_addr.s6_addr) == address {
+                return Ok(true);
+            }
+        }
+        current = interface.ifa_next;
+    }
+    Ok(false)
 }
 
 fn decode_key(value: &str) -> Result<[u8; 32]> {
@@ -243,6 +274,7 @@ async fn forward(
     let mut established = false;
     let mut input_closed = false;
     let mut pending = VecDeque::new();
+    let mut closing_output = None;
     let mut datagram = vec![0; 65536];
     let mut packet = vec![0; 65536];
     let mut tick = tokio::time::interval(Duration::from_millis(20));
@@ -251,7 +283,10 @@ async fn forward(
         let now = StackInstant::from_millis(started.elapsed().as_millis() as i64);
         interface.poll(now, &mut device, &mut sockets);
         let socket = sockets.get_mut::<tcp::Socket>(handle);
-        established |= socket.state() == tcp::State::Established;
+        established |= matches!(
+            socket.state(),
+            tcp::State::Established | tcp::State::CloseWait
+        );
         if !established && started.elapsed() > Duration::from_secs(15) {
             return Err("Timed out reaching SSH over WireGuard. Check the server's UDP endpoint and private SSH listener.".into());
         }
@@ -264,20 +299,36 @@ async fn forward(
         if input_closed && pending.is_empty() && socket.may_send() {
             socket.close();
         }
-        if socket.can_recv()
-            && let Ok(permit) = outgoing.try_reserve()
-        {
-            let mut bytes = vec![0; 8192];
+        // smoltcp discards its receive buffer when TIME-WAIT expires, even if
+        // stdout is still blocked. Retain that final data (at most the 64 KiB
+        // receive window) while continuing to drive ACKs and WireGuard timers.
+        if socket.state() == tcp::State::TimeWait && closing_output.is_none() && socket.can_recv() {
+            let mut bytes = vec![0; socket.recv_queue()];
             let size = socket
                 .recv_slice(&mut bytes)
                 .map_err(|_| "Could not read private SSH data")?;
             bytes.truncate(size);
+            closing_output = Some(bytes);
+        }
+        if (closing_output.is_some() || socket.can_recv())
+            && let Ok(permit) = outgoing.try_reserve()
+        {
+            let bytes = if let Some(bytes) = closing_output.take() {
+                bytes
+            } else {
+                let mut bytes = vec![0; 8192];
+                let size = socket
+                    .recv_slice(&mut bytes)
+                    .map_err(|_| "Could not read private SSH data")?;
+                bytes.truncate(size);
+                bytes
+            };
             permit.send(bytes);
         }
         if !socket.may_recv() && !socket.can_recv() && established {
             socket.close();
         }
-        if socket.state() == tcp::State::Closed {
+        if socket.state() == tcp::State::Closed && !socket.can_recv() && closing_output.is_none() {
             if !established {
                 return Err("The private SSH server refused the connection".into());
             }
@@ -454,24 +505,40 @@ mod tests {
             destination: "fd42::1".parse().unwrap(),
             port: 2222,
         };
-        let (mut client, input) = tokio::io::duplex(16384);
-        let (output, mut received) = tokio::io::duplex(16384);
-        let expected: Vec<_> = (0..1024 * 1024).map(|i| (i % 251) as u8).collect();
-        let sent = expected.clone();
-        let sender = tokio::spawn(async move {
-            client.write_all(&sent).await.unwrap();
-            client.shutdown().await.unwrap();
-        });
-        let receiver = tokio::spawn(async move {
-            let mut result = vec![];
-            received.read_to_end(&mut result).await.unwrap();
-            result
-        });
-        tokio::time::timeout(Duration::from_secs(30), forward(config, input, output))
+        assert!(!local_address_assigned(config.source).unwrap());
+        // The fixture enables ip_nonlocal_bind. A successful bind must not make
+        // the proxy mistake an unassigned address for an active system tunnel.
+        assert!(std::net::UdpSocket::bind((config.source, 0)).is_ok());
+        for (size, capacity, delay) in [
+            (1024 * 1024, 16384, Duration::ZERO),
+            // Keep received bytes buffered past smoltcp's ten-second TIME-WAIT.
+            (64 * 1024, 128, Duration::from_secs(12)),
+        ] {
+            let (mut client, input) = tokio::io::duplex(16384);
+            let (output, mut received) = tokio::io::duplex(capacity);
+            let expected: Vec<_> = (0..size).map(|i| (i % 251) as u8).collect();
+            let sent = expected.clone();
+            let sender = tokio::spawn(async move {
+                client.write_all(&sent).await.unwrap();
+                client.shutdown().await.unwrap();
+            });
+            let receiver = tokio::spawn(async move {
+                tokio::time::sleep(delay).await;
+                let mut result = vec![];
+                received.read_to_end(&mut result).await.unwrap();
+                result
+            });
+            tokio::time::timeout(
+                Duration::from_secs(40),
+                forward(config.clone(), input, output),
+            )
             .await
             .unwrap()
             .unwrap();
-        sender.await.unwrap();
-        assert_eq!(receiver.await.unwrap(), expected);
+            sender.await.unwrap();
+            let received = receiver.await.unwrap();
+            assert_eq!(received.len(), expected.len(), "TCP output was truncated");
+            assert_eq!(received, expected);
+        }
     }
 }

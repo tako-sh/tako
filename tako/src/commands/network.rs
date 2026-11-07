@@ -531,10 +531,13 @@ pub fn ssh(
         .arg("-o")
         .arg(format!(
             "UserKnownHostsFile={}",
-            known_hosts.path().display()
+            network::local_access::quote_path(known_hosts.path())?
         ))
-        .arg("-i")
-        .arg(identity.path())
+        .arg("-o")
+        .arg(format!(
+            "IdentityFile={}",
+            network::local_access::quote_path(identity.path())?
+        ))
         .arg("-p")
         .arg(info.ssh_port.to_string());
     let status = network::ssh_session::run(

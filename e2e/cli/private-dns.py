@@ -109,6 +109,27 @@ try:
     for name in ["foobar", f"foobar.{NETWORK}.tako.internal", f"shop.production.{NETWORK}.tako.internal"]:
         assert socket.getaddrinfo(name, 22, socket.AF_INET6)[0][4][0] == "fd42::1", name
     helper("sync", **request)
+    helper("stop", public_key=key(PUBLIC_B))
+    assert Path("/etc/hosts").read_bytes() == hosts
+    assert INTERFACE not in command("resolvectl", "dns")
+
+    # A malformed hosts block must not keep the interface up; retain state so
+    # cleanup can be retried even after its saved interface name is removed.
+    helper("start", **request)
+    managed_hosts = Path("/etc/hosts").read_text()
+    Path("/etc/hosts").write_text(managed_hosts.replace(f"# END TAKO NETWORK {NETWORK}", "# damaged end marker"))
+    helper("stop", ok=False, public_key=key(PUBLIC_B))
+    assert subprocess.run(["ip", "link", "show", INTERFACE], capture_output=True).returncode != 0
+    Path("/etc/hosts").write_text(managed_hosts)
+    assert helper("inspect")["public_key"] is None
+    assert Path("/etc/hosts").read_bytes() == hosts
+
+    # Removing a link clears its per-link DNS settings without needing a live
+    # resolver service. Disconnect must still succeed if that service is down.
+    helper("start", **request)
+    resolved.terminate()
+    resolved.wait(timeout=5)
+    helper("stop", public_key=key(PUBLIC_B))
 finally:
     helper("stop", public_key=key(PUBLIC_B))
     dns.terminate()
@@ -116,9 +137,9 @@ finally:
     Path("/etc/resolv.conf").write_bytes(resolver)
     command("ip", "netns", "exec", "peer", "ip", "link", "delete", "wg-peer")
     command("ip", "netns", "delete", "peer")
+    if resolved.poll() is None:
+        resolved.terminate()
+        resolved.wait(timeout=5)
 assert Path("/etc/hosts").read_bytes() == hosts
-assert INTERFACE not in command("resolvectl", "dns")
 assert helper("inspect")["public_key"] is None
-resolved.terminate()
-resolved.wait(timeout=5)
-print("Private names, real split DNS, encrypted transport, conflict rollback, and cleanup passed")
+print("Private names, real split DNS, encrypted transport, conflict rollback, and recoverable cleanup passed")

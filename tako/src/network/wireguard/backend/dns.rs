@@ -51,8 +51,7 @@ pub(super) fn preflight() -> Result<()> {
         let uses_nss = fs::read_to_string("/etc/nsswitch.conf")
             .unwrap_or_default()
             .lines()
-            .filter_map(|line| line.strip_prefix("hosts:"))
-            .any(|line| line.split_whitespace().any(|word| word == "resolve"));
+            .any(nss_uses_resolved);
         if !uses_stub && !uses_nss {
             return Err("The system resolver does not use systemd-resolved. Enable its DNS stub or nss-resolve before connecting, or use `tako ssh`.".into());
         }
@@ -122,7 +121,7 @@ pub(super) fn install(
     Ok(())
 }
 
-pub(super) fn cleanup(logical: &str, actual: Option<&str>) -> Result<()> {
+pub(super) fn cleanup(logical: &str) -> Result<()> {
     let state = super::runtime_directory()?.join(format!("{logical}.dns"));
     let file = match network::private_file(&state, false) {
         Ok(file) => file,
@@ -135,13 +134,8 @@ pub(super) fn cleanup(logical: &str, actual: Option<&str>) -> Result<()> {
     if super::super::interface_name(&id) != logical {
         return Err("Saved resolver network does not match the tunnel".into());
     }
-    #[cfg(target_os = "linux")]
-    if let Some(actual) = actual {
-        super::run_tool("resolvectl", &["revert", actual])?;
-    }
     #[cfg(target_os = "macos")]
     {
-        let _ = actual;
         let path = fs::canonicalize("/etc")?
             .join("resolver")
             .join(format!("{network}.tako.internal"));
@@ -156,15 +150,24 @@ pub(super) fn cleanup(logical: &str, actual: Option<&str>) -> Result<()> {
         }
     }
     update_hosts(Path::new("/etc/hosts"), network, &[])?;
-    fs::remove_file(state)?;
-    Ok(())
+    super::remove_name(&state)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn nss_uses_resolved(line: &str) -> bool {
+    line.split('#')
+        .next()
+        .unwrap_or("")
+        .trim_start()
+        .strip_prefix("hosts:")
+        .is_some_and(|hosts| hosts.split_whitespace().any(|word| word == "resolve"))
 }
 
 #[cfg(target_os = "macos")]
 fn read_resolver(path: &Path) -> Result<Option<String>> {
     let file = match OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)
     {
         Ok(file) => file,
@@ -193,7 +196,7 @@ fn update_hosts(path: &Path, network: &str, names: &[ServerName]) -> Result<()> 
     let mut file = OpenOptions::new()
         .read(true)
         .write(true)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)?;
     file.lock()?;
     let metadata = file.metadata()?;
@@ -275,6 +278,14 @@ fn hosts_contents(previous: &str, network: &str, names: &[ServerName]) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn disabled_nss_resolver_does_not_pass_preflight() {
+        assert!(nss_uses_resolved(
+            "  hosts: files resolve [!UNAVAIL=return] dns"
+        ));
+        assert!(!nss_uses_resolved("hosts: files dns # resolve disabled"));
+        assert!(!nss_uses_resolved("# hosts: files resolve"));
+    }
     #[test]
     fn hosts_are_scoped_idempotent_and_removed_without_losing_other_entries() {
         let original = "127.0.0.1 localhost\n# user's entries\n192.0.2.1 existing\n";

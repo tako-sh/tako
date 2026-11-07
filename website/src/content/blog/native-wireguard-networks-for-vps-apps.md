@@ -27,7 +27,7 @@ east <-> west: "private WireGuard traffic"
 
 Consider what happens when you read yesterday's production logs. The CLI connects directly to the server's HTTPS port and checks its pin. The server checks whether this device may read logs for the requested app and environment. The runner can do this without creating a network interface, installing a VPN daemon, or gaining the privileges needed to change a routing table. This matters on a hosted runner where the build process has no access to a TUN device. [CLI reference](/docs/cli/)
 
-A shell takes a different path. An administrator can approve a laptop for SSH, and `tako ssh` can connect to a server's private address using that device's SSH identity. The workstation needs WireGuard tools and permission to bring up the interface. You can test the public management connection and the private shell independently. A successful log request is evidence about HTTPS. A fresh WireGuard handshake followed by a successful SSH command is evidence about the private path.
+A shell takes a different path. An administrator can approve a laptop for SSH, and `tako ssh` can connect to a server's private address using that device's SSH identity. Tako embeds the WireGuard transport, so the workstation needs OpenSSH but no WireGuard tools or administrator access for this command. For other applications, `tako connect` creates a system connection with private DNS and server names; that setup requires administrator access. You can test the public management connection and the private shell independently. A successful log request is evidence about HTTPS. A fresh WireGuard handshake followed by a successful SSH command is evidence about the private path.
 
 | Operation | Connection | What to verify |
 | --- | --- | --- |

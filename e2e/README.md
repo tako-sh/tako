@@ -20,7 +20,7 @@ python3 /checkout/e2e/cli/private-dns.py /checkout/target/debug/tako
 python3 /checkout/e2e/cli/rootless-ssh.py /checkout/target/debug/deps/tako-TEST_HASH
 ```
 
-Use the test executable reported by `cargo test -p tako-cli --bin tako --no-run` for `tako-TEST_HASH`. The first script exercises two embedded tunnels in isolated namespaces; it substitutes the resolver adapter because D-Bus cannot see those namespaces. The second uses real systemd-resolved and a peer DNS server to check private names, split DNS, conflict rollback, and disconnect cleanup. The third drops privileges before exercising a 1 MiB TCP round trip, then checks concurrent OpenSSH channels and exclusion between active SSH sessions and system connection changes. The reference WireGuard executable is a test peer, not a Tako runtime dependency.
+Use the test executable reported by `cargo test -p tako-cli --bin tako --no-run` for `tako-TEST_HASH`. The first script exercises two embedded tunnels in isolated namespaces; it substitutes the resolver adapter because D-Bus cannot see those namespaces. The second uses real systemd-resolved and a peer DNS server to check private names, split DNS, conflict rollback, and disconnect cleanup even with a stopped resolver or damaged hosts block. The third drops privileges before exercising a 1 MiB TCP round trip and a slow reader across TCP closure, then checks concurrent OpenSSH channels, paths with spaces and percent signs, and exclusion between active SSH sessions and system connection changes. It also enables nonlocal binding to check that unassigned addresses are not mistaken for active system tunnels. The reference WireGuard executable is a test peer, not a Tako runtime dependency.
 
 ## Native Image Dependency
 

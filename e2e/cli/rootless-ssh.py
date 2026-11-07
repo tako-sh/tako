@@ -23,6 +23,7 @@ def command(*args):
 
 
 assert sys.platform == "linux" and os.geteuid() == 0 and Path("/.dockerenv").exists()
+Path("/proc/sys/net/ipv6/ip_nonlocal_bind").write_text("1\n")
 if not Path("/dev/net/tun").exists():
     Path("/dev/net").mkdir(exist_ok=True)
     os.mknod("/dev/net/tun", stat.S_IFCHR | 0o600, os.makedev(10, 200))
@@ -44,9 +45,10 @@ with tempfile.NamedTemporaryFile() as key:
             listener.listen()
 
             def echo():
-                with listener.accept()[0] as stream:
-                    while data := stream.recv(8192):
-                        stream.sendall(data)
+                for _ in range(2):
+                    with listener.accept()[0] as stream:
+                        while data := stream.recv(8192):
+                            stream.sendall(data)
 
             worker = threading.Thread(target=echo, daemon=True)
             worker.start()
@@ -66,7 +68,7 @@ with tempfile.NamedTemporaryFile() as key:
                 os.setuid(uid)
 
             subprocess.run([sys.argv[1], "--exact", "network::ssh_tunnel::tests::rootless_tcp_roundtrip", "--ignored", "--nocapture"],
-                env={**os.environ, "TAKO_TEST_WG_ENDPOINT": f"127.0.0.1:{port}"}, preexec_fn=unprivileged, check=True, timeout=40)
+                env={**os.environ, "TAKO_TEST_WG_ENDPOINT": f"127.0.0.1:{port}"}, preexec_fn=unprivileged, check=True, timeout=90)
             worker.join(timeout=2)
             assert not worker.is_alive()
             assert interfaces == command("ip", "-j", "link")
@@ -75,7 +77,7 @@ with tempfile.NamedTemporaryFile() as key:
             assert resolver == Path("/etc/resolv.conf").read_bytes()
 
             # Verify actual OpenSSH multiplexing and the connect/session lock.
-            with tempfile.TemporaryDirectory(prefix="tako-ssh-test-") as ssh_root:
+            with tempfile.TemporaryDirectory(prefix="tako ssh % test-") as ssh_root:
                 uid = os.stat(sys.argv[1]).st_uid or 65534
                 os.chown(ssh_root, uid, uid)
                 try:
@@ -95,7 +97,7 @@ with tempfile.NamedTemporaryFile() as key:
                 sshd = subprocess.Popen(["/usr/sbin/sshd", "-D", "-e", "-f", "/dev/null", "-h", str(host_key),
                     "-p", "2223", "-o", "ListenAddress=127.0.0.1", "-o", "PasswordAuthentication=no",
                     "-o", "PermitRootLogin=prohibit-password", "-o", "StrictModes=no", "-o", "UsePAM=no",
-                    "-o", f"AuthorizedKeysFile={client_key}.pub"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    "-o", f'AuthorizedKeysFile="{str(client_key).replace("%", "%%")}.pub"'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 try:
                     deadline = time.monotonic() + 5
                     while True:

@@ -83,7 +83,7 @@ pub(crate) fn remove(alias: &NetworkAlias) -> Result<()> {
     Ok(())
 }
 
-fn quote_path(path: &Path) -> Result<String> {
+pub(crate) fn quote_path(path: &Path) -> Result<String> {
     let value = path.to_str().ok_or("SSH paths must be UTF-8")?;
     if value.chars().any(char::is_control) {
         return Err("SSH paths cannot contain control characters".into());
@@ -111,7 +111,7 @@ fn edit_ssh_config(network: &str, settings: Option<&str>, write: bool) -> Result
     let mut previous = String::new();
     let mode = match OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(&path)
     {
         Ok(mut file) => {

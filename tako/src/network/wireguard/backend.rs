@@ -213,7 +213,6 @@ fn helper() -> Result<Option<String>> {
         } => {
             if let Some(actual) = active_interface(&name_path, interface)? {
                 require_owner(&actual, public_key)?;
-                dns::cleanup(interface, Some(&actual))?;
                 // BoringTun watches its control socket and exits when it is removed.
                 // Closing the TUN device removes its addresses and interface-bound routes.
                 fs::remove_file(socket_path(&actual))?;
@@ -228,6 +227,11 @@ fn helper() -> Result<Option<String>> {
                 }
                 remove_name(&name_path)?;
             }
+            // Removing the link also removes systemd-resolved's per-link settings.
+            // A stopped resolver or damaged hosts block must not keep the VPN up.
+            dns::cleanup(interface).map_err(|error| {
+                format!("The network interface is stopped, but name cleanup failed: {error}")
+            })?;
             Ok(None)
         }
     }
@@ -261,7 +265,10 @@ fn interface_exists(interface: &str) -> Result<bool> {
 fn active_interface(path: &Path, logical: &str) -> Result<Option<String>> {
     let file = match network::private_file(path, false) {
         Ok(file) => file,
-        Err(error) if is_not_found(error.as_ref()) => return Ok(None),
+        Err(error) if is_not_found(error.as_ref()) => {
+            dns::cleanup(logical)?;
+            return Ok(None);
+        }
         Err(error) => return Err(error),
     };
     let value = read_bounded(file)?;
@@ -278,7 +285,7 @@ fn active_interface(path: &Path, logical: &str) -> Result<Option<String>> {
         return Err("Invalid saved network interface name".into());
     }
     if !interface_exists(actual)? {
-        dns::cleanup(logical, None)?;
+        dns::cleanup(logical)?;
         remove_name(path)?;
         return Ok(None);
     }
@@ -357,12 +364,12 @@ fn start(
                     if notified {
                         device.wait();
                     }
-                    let _ = dns::cleanup(logical, None);
+                    let _ = dns::cleanup(logical);
                     drop(device);
                     std::process::exit(0);
                 }
                 Err(error) => {
-                    let _ = dns::cleanup(logical, None);
+                    let _ = dns::cleanup(logical);
                     let _ = remove_name(&name_path);
                     let _ = serde_json::to_writer(&mut child, &Reply::from_result(Err(error)));
                     std::process::exit(1);

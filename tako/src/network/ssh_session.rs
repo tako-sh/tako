@@ -30,7 +30,15 @@ fn prefix(alias: &NetworkAlias) -> String {
 
 fn control(path: &std::path::Path, operation: &str) -> Result<std::process::Output> {
     Ok(Command::new("ssh")
-        .args(["-F", "/dev/null", "-S"])
+        // These operations only use the local socket. OpenSSH still expands
+        // default known-hosts paths, which can fail for a home containing '%'.
+        .args([
+            "-F",
+            "/dev/null",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-S",
+        ])
         .arg(path)
         .args(["-O", operation, "tako"])
         .stdin(Stdio::null())
@@ -151,6 +159,7 @@ pub(crate) fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     #[ignore = "requires the isolated OpenSSH server in e2e/cli/rootless-ssh.py"]
@@ -169,8 +178,14 @@ mod tests {
             command.args([
                 "-F",
                 "/dev/null",
-                "-i",
-                &std::env::var("TAKO_TEST_SSH_KEY").unwrap(),
+                "-o",
+                &format!(
+                    "IdentityFile={}",
+                    super::super::local_access::quote_path(Path::new(
+                        &std::env::var("TAKO_TEST_SSH_KEY").unwrap()
+                    ))
+                    .unwrap()
+                ),
                 "-p",
                 "2223",
                 "-o",
@@ -182,7 +197,10 @@ mod tests {
                 "-o",
                 &format!(
                     "UserKnownHostsFile={}",
-                    std::env::var("TAKO_TEST_SSH_HOSTS").unwrap()
+                    super::super::local_access::quote_path(Path::new(
+                        &std::env::var("TAKO_TEST_SSH_HOSTS").unwrap()
+                    ))
+                    .unwrap()
                 ),
             ]);
             command
