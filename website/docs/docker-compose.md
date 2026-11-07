@@ -127,6 +127,6 @@ Stopping the app or shutting down the dev daemon stops its containers and preser
 
 ## Native private networking
 
-On a native network, supported Compose services use Tako's private gateway and DNS resolver for `{app}.{env}.{network-id}.tako.internal` addresses. The gateway admits current trusted placements and provides DNS independently of host systemd-resolved. It does not publish these names in workstation DNS. See [Native networks](/networks/#use-private-service-addresses).
+On a native network, supported Compose services use Tako's private gateway and DNS resolver for `{app}.{env}.{network-id}.tako.internal` addresses. The gateway admits current trusted placements and provides DNS independently of host systemd-resolved. Use `tako connect` to resolve private names from workstation applications. See [Native networks](/networks/#use-private-service-addresses).
 
 Compose deployments still target one server. Network membership and server drain do not replicate named volumes, move databases, or switch global ingress. Preserve separate backup and migration procedures for stateful services.

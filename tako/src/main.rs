@@ -28,6 +28,18 @@ use tracing_subscriber::prelude::*;
 use cli::Cli;
 
 fn main() {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if std::env::args_os().nth(1).as_deref()
+        == Some(std::ffi::OsStr::new(network::wireguard::HELPER_COMMAND))
+    {
+        network::wireguard::helper_main();
+    }
+    // OpenSSH's private stdio transport must not emit CLI UI or telemetry on stdout.
+    if std::env::args_os().nth(1).as_deref()
+        == Some(std::ffi::OsStr::new(network::ssh_tunnel::PROXY_COMMAND))
+    {
+        network::ssh_tunnel::proxy_main();
+    }
     // Parse CLI arguments early so we can configure logging/output.
     let cli = Cli::parse();
 

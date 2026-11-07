@@ -93,8 +93,9 @@ with tempfile.TemporaryDirectory(prefix="tako-native-client-") as temporary:
     keys_path.chmod(0o600)
     bad_project = root / "tako.toml"
     bad_project.write_text("not valid toml [")
-    run("--dry-run", "connect", ok=False)
-    run("--dry-run", "--config", str(root / "missing.toml"), "connect", ok=False)
+    for args in [("connect",), ("ssh", "edge")]:
+        run("--dry-run", *args, ok=False)
+        run("--dry-run", "--config", str(root / "missing.toml"), *args, ok=False)
     bad_project.unlink()
     config = home / "config.toml"
     config.write_text("not valid toml [")
