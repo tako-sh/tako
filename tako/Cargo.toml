@@ -100,6 +100,9 @@ aes-gcm = "0.11"
 getrandom = "0.4"
 pbkdf2 = { version = "0.13", features = ["sha2"] }
 libc = "0.2"
+boringtun = { version = "0.7.1", default-features = false }
+smoltcp = { version = "0.12", default-features = false, features = ["std", "medium-ip", "proto-ipv6", "socket-tcp"] }
+zeroize = "1"
 
 # SQLite state store for dev-server
 tako-sqlite = { path = "../tako-sqlite" }
@@ -112,6 +115,10 @@ qrcode = { version = "0.14", default-features = false }
 # so local HTTPS checks match browser trust behavior without shelling out.
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = { version = "3.7", features = ["OSX_10_15"] }
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+boringtun = { version = "0.7.1", features = ["device"] }
+daemonize = "0.5"
 
 
 [dev-dependencies]

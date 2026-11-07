@@ -81,7 +81,7 @@ if (result.status === 200) {
 
 A declared `404` is a typed result, not an exception. Each result contains `status`, `body`, and `headers`. Call options accept `headers` and an abort `signal`. Client options accept `headers`, `credentials`, and a custom `fetch` function.
 
-`baseURL` must be an absolute HTTP or HTTPS URL without a query, fragment, username, or password. Its path prefixes the operation path. Supply a reachable address and any required credentials. The contract package does not configure networking. A [native network](/networks/#use-private-service-addresses) separately provides private app names and service discovery to supported runtimes; workstation DNS is not configured automatically.
+`baseURL` must be an absolute HTTP or HTTPS URL without a query, fragment, username, or password. Its path prefixes the operation path. Supply a reachable address and any required credentials. The contract package does not configure networking. A [native network](/networks/#use-private-service-addresses) separately provides private app names and service discovery to supported runtimes; workstation applications can use those names while `tako connect` is active.
 
 For code that already imports a contract, `createServiceClient(catalog, { baseURL })` from `tako.sh/services` creates the same typed client without generation.
 

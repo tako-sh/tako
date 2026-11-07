@@ -328,7 +328,9 @@ fn import(path: &Path, name: Option<&str>) -> Result<()> {
         &format!("Imported network {name}"),
         serde_json::to_value(alias)?,
     )?;
-    output::hint(&format!("Connect with `tako connect {name}`."));
+    output::hint(&format!(
+        "Use `tako ssh <server> --network {name}` for private SSH access."
+    ));
     Ok(())
 }
 
@@ -404,7 +406,12 @@ pub fn connect(value: Option<&str>, config_path: Option<&Path>) -> Result<()> {
         );
     }
     let profile = network::client::refresh(&alias)?;
+    let _lifecycle = network::wireguard::lifecycle_lock(&alias)?;
+    network::local_access::preflight(&alias, &profile)?;
     network::wireguard::connect(&alias, &profile)?;
+    network::local_access::install(&alias, &profile).map_err(|error| {
+        format!("The network is connected, but SSH aliases could not be installed: {error}")
+    })?;
     finish(
         &format!("Connected to {}", alias.name),
         serde_json::json!({"network": alias.name, "connected": true}),
@@ -432,7 +439,9 @@ pub fn disconnect(value: Option<&str>, config_path: Option<&Path>) -> Result<()>
             serde_json::json!({"dry_run": true, "network": alias.name}),
         );
     }
+    let _lifecycle = network::wireguard::lifecycle_lock(&alias)?;
     network::wireguard::disconnect(&alias, &profile)?;
+    network::local_access::remove(&alias)?;
     finish(
         &format!("Disconnected from {}", alias.name),
         serde_json::json!({"network": alias.name, "connected": false}),
@@ -479,7 +488,6 @@ pub fn ssh(
             serde_json::json!({"dry_run": true, "network": alias.name, "server": id.to_string(), "user": user.as_str()}),
         );
     }
-    network::wireguard::connect(&alias, &profile)?;
     let keys = LocalDeviceKeys::load(&network::keys_path(&profile.request().request_id)?)?;
     let mut identity = tempfile::NamedTempFile::new()?;
     identity.write_all(keys.ssh_private_key()?.as_bytes())?;
@@ -491,7 +499,13 @@ pub fn ssh(
         .network
         .id
         .address(&member.request.wg_public_key);
-    let status = std::process::Command::new("ssh")
+    let proxy = network::ssh_tunnel::proxy_command(
+        &std::env::current_exe()?,
+        &alias.name,
+        &id.to_string(),
+    )?;
+    let mut command = std::process::Command::new("ssh");
+    command
         .args([
             "-F",
             "/dev/null",
@@ -511,6 +525,10 @@ pub fn ssh(
         .arg("-o")
         .arg(format!("HostKeyAlias={host_alias}"))
         .arg("-o")
+        .arg(format!("ProxyCommand={proxy}"))
+        .arg("-o")
+        .arg("ConnectTimeout=15")
+        .arg("-o")
         .arg(format!(
             "UserKnownHostsFile={}",
             known_hosts.path().display()
@@ -518,10 +536,15 @@ pub fn ssh(
         .arg("-i")
         .arg(identity.path())
         .arg("-p")
-        .arg(info.ssh_port.to_string())
-        .arg(format!("{}@{address}", user.as_str()))
-        .args(remote_command)
-        .status()?;
+        .arg(info.ssh_port.to_string());
+    let status = network::ssh_session::run(
+        &alias,
+        &id.to_string(),
+        &command,
+        &format!("{}@{address}", user.as_str()),
+        &format!("{user}:{}:{}:{address}", info.ssh_port, info.ssh_host_key),
+        remote_command,
+    )?;
     if !status.success() {
         return Err(format!("SSH exited with {status}").into());
     }
@@ -585,7 +608,7 @@ fn approve(
         serde_json::json!({"network": alias.name, "device": device, "output": destination}),
     )?;
     output::hint(
-        "Transfer the profile through a trusted channel. On the new machine, run `tako network import <file>` and `tako connect`.",
+        "Transfer the profile through a trusted channel. On the new machine, run `tako network import <file>`, then use `tako ssh <server>` for private SSH access.",
     );
     Ok(())
 }
