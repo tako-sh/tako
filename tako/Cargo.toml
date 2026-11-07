@@ -100,6 +100,7 @@ aes-gcm = "0.11"
 getrandom = "0.4"
 pbkdf2 = { version = "0.13", features = ["sha2"] }
 libc = "0.2"
+nix = { version = "0.31", default-features = false, features = ["net"] }
 boringtun = { version = "0.7.1", default-features = false }
 smoltcp = { version = "0.12", default-features = false, features = ["std", "medium-ip", "proto-ipv6", "socket-tcp"] }
 zeroize = "1"

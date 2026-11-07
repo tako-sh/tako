@@ -6030,6 +6030,7 @@ dependencies = [
  "indicatif",
  "jsonc-parser",
  "libc",
+ "nix",
  "notify",
  "notify-debouncer-mini",
  "openssl",

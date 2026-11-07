@@ -101,32 +101,16 @@ struct TunnelConfig {
 
 fn local_address_assigned(address: Ipv6Addr) -> Result<bool> {
     // Binding is not a reliable test: Linux can allow nonlocal binds globally.
-    let mut interfaces = std::ptr::null_mut();
-    if unsafe { libc::getifaddrs(&mut interfaces) } != 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    struct Interfaces(*mut libc::ifaddrs);
-    impl Drop for Interfaces {
-        fn drop(&mut self) {
-            unsafe { libc::freeifaddrs(self.0) };
-        }
-    }
-    let _interfaces = Interfaces(interfaces);
-    let mut current = interfaces;
-    while let Some(interface) = unsafe { current.as_ref() } {
-        if let Some(sockaddr) = unsafe { interface.ifa_addr.as_ref() }
-            && sockaddr.sa_family as i32 == libc::AF_INET6
-            && interface.ifa_flags & libc::IFF_UP as u32 != 0
-        {
-            // getifaddrs supplies a sockaddr_in6 whenever the family is AF_INET6.
-            let ipv6 = unsafe { &*interface.ifa_addr.cast::<libc::sockaddr_in6>() };
-            if Ipv6Addr::from(ipv6.sin6_addr.s6_addr) == address {
-                return Ok(true);
-            }
-        }
-        current = interface.ifa_next;
-    }
-    Ok(false)
+    Ok(nix::ifaddrs::getifaddrs()?.any(|interface| {
+        interface
+            .flags
+            .contains(nix::net::if_::InterfaceFlags::IFF_UP)
+            && interface.address.is_some_and(|sockaddr| {
+                sockaddr
+                    .as_sockaddr_in6()
+                    .is_some_and(|ipv6| ipv6.ip() == address)
+            })
+    }))
 }
 
 fn decode_key(value: &str) -> Result<[u8; 32]> {
@@ -505,6 +489,7 @@ mod tests {
             destination: "fd42::1".parse().unwrap(),
             port: 2222,
         };
+        assert!(local_address_assigned(config.destination).unwrap());
         assert!(!local_address_assigned(config.source).unwrap());
         // The fixture enables ip_nonlocal_bind. A successful bind must not make
         // the proxy mistake an unassigned address for an active system tunnel.
