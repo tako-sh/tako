@@ -22,6 +22,8 @@ Replace the example IP with the server's reachable IP. Native servers require Li
 
 Allow the configured HTTPS TCP port (default `443`) for management and the configured WireGuard UDP port (default `51820`) for private network traffic. The advertised endpoint must be reachable by peers. There is no hosted relay or automatic NAT traversal service; HTTPS management reachability alone does not establish WireGuard connectivity.
 
+Stopping the native network agent withdraws its WireGuard peers and SSH grants. On startup the agent reapplies current membership before restoring access. If a previous failed enrollment reports `foreign interface`, inspect the existing WireGuard interface before retrying. Rebooting clears a transient interface left by an earlier installation.
+
 A public listener configured with mandatory `trusted_proxy.proxy_protocol` cannot also accept direct native pinned HTTPS. Remove that mandatory listener setting before native enrollment; the server refuses to start with both enabled. Ordinary Cloudflare HTTP forwarding headers remain supported without PROXY protocol. Review the listener configuration before bootstrap so enrollment does not leave a server awaiting an incompatible restart.
 
 Copy the stable ID from `network list` into your project:

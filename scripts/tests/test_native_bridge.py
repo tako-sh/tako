@@ -33,6 +33,10 @@ class BridgeRunner(fixtures.FakeRunner):
         self.bridge_addresses = [{'ifname': config['interface'], 'addr_info': [
             {'local': config['gateway'], 'prefixlen': 24, 'scope': 'global'}]}]
         self.ipv4_routes.append({'dst': config['subnet'], 'dev': config['interface'], 'protocol': '2'})
+        self.ipv4_routes.extend([
+            {'dst': config['gateway'], 'dev': config['interface'], 'protocol': '2', 'table': '255', 'type': '2'},
+            {'dst': '10.75.171.255', 'dev': config['interface'], 'protocol': '2', 'table': '255', 'type': '3'},
+        ])
 
     def run(self, *args, input=None):
         if args == ('ip', '-j', 'address', 'show'):

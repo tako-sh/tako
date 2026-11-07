@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+include!("support/tempdir.rs");
+
 mod support;
 
 use std::{cell::RefCell, rc::Rc};
@@ -52,7 +54,7 @@ struct Fixture {
 impl Fixture {
     fn new(expiry: Option<u64>) -> Self {
         let (mut snapshot, admin, admin_id) = support::bootstrap();
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let server_keys = LocalDeviceKeys::generate().unwrap();
         server_keys.save_new(&dir.path().join("keys")).unwrap();
         let server_id = server_keys

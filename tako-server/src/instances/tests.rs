@@ -319,6 +319,28 @@ fn routing_suppression_keeps_healthy_instance_out_of_request_pool() {
 }
 
 #[test]
+fn rollout_cutover_leaves_all_candidates_suppressed_if_any_have_died() {
+    let (tx, _rx) = mpsc::channel(16);
+    let app = App::new(AppConfig::default(), tx, noop_log_handle());
+    let candidates = [app.allocate_instance(), app.allocate_instance()];
+    for candidate in &candidates {
+        app.suppress_instance_routing(&candidate.id);
+        app.set_instance_state(candidate, InstanceState::Healthy);
+    }
+    app.set_instance_health_state(&candidates[1], InstanceState::Stopped);
+    assert_eq!(
+        app.enable_rollout_routing(&candidates),
+        Err((candidates[1].id.clone(), InstanceState::Stopped))
+    );
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| app.is_instance_routing_suppressed(&candidate.id))
+    );
+    assert_eq!(app.healthy_instance_count(), 0);
+}
+
+#[test]
 fn enabling_routing_adds_suppressed_healthy_instance_to_request_pool() {
     let (tx, _rx) = mpsc::channel(16);
     let app = App::new(AppConfig::default(), tx, noop_log_handle());

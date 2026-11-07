@@ -196,7 +196,7 @@ export function useChannel<T = unknown>(
           if (seen.has(identity)) return;
           seen.add(identity);
           if (seen.size > MAX_MESSAGES) seen.delete(seen.values().next().value!);
-          lastMessageId = parsed.id;
+          if (parsed.id) lastMessageId = parsed.id;
         }
         setState((previous) => ({
           ...previous,

@@ -47,6 +47,8 @@ mod routing;
 mod runtime_events;
 mod scaling;
 mod server_state;
+#[cfg(target_os = "linux")]
+mod snapshot_live_wal;
 mod socket;
 mod startup;
 mod state_store;
@@ -287,6 +289,15 @@ pub struct Args {
     #[arg(long, hide = true)]
     pub extract_dest: Option<String>,
 
+    /// Snapshot an app data directory into a private work directory.
+    #[arg(long, hide = true, num_args = 3, value_names = ["DATA_DIR", "RELATIVE_SOURCE", "DESTINATION"])]
+    pub snapshot_data: Option<Vec<std::path::PathBuf>>,
+
+    /// Read a busy WAL database within the filesystem ruleset supplied on stdin.
+    #[cfg(target_os = "linux")]
+    #[arg(long, hide = true, num_args = 2, value_names = ["SOURCE", "DESTINATION"])]
+    pub snapshot_live_wal: Option<Vec<std::path::PathBuf>>,
+
     /// Run the isolated image transform worker protocol on stdin/stdout.
     #[arg(long, hide = true)]
     pub image_worker: bool,
@@ -343,6 +354,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     install_rustls_crypto_provider();
 
     let args = Args::parse();
+    #[cfg(target_os = "linux")]
+    if let Some(paths) = &args.snapshot_live_wal {
+        snapshot_live_wal::run(&paths[0], &paths[1])?;
+        return Ok(());
+    }
+    if let Some(paths) = &args.snapshot_data {
+        operations::snapshot_data_tree(&paths[0], &paths[1], &paths[2])?;
+        return Ok(());
+    }
     if args.network_bootstrap {
         let data_dir = args.data_dir.as_deref().unwrap_or("/opt/tako");
         return network_bootstrap::run(Path::new(data_dir));

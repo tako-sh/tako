@@ -8,11 +8,12 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: release
+  # Untrusted and failed runs must not cancel an active master release.
+  group: release-${{ github.ref }}-${{ github.event.workflow_run.event || 'push' }}-${{ github.event.workflow_run.head_repository.id || github.repository_id }}-${{ github.event.workflow_run.conclusion || 'success' }}
   cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: read
   actions: read
 
 env:
@@ -20,9 +21,54 @@ env:
   RELEASE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
 
 jobs:
+  release-source:
+    name: Verify release source
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master') ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'master' &&
+       github.event.workflow_run.head_repository.id == github.event.repository.id)
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      run_id: ${{ steps.ci.outputs.run_id }}
+      binaries: ${{ steps.ci.outputs.binaries }}
+    steps:
+      - name: Verify CI build
+        id: ci
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          # GitHub expression string comparisons ignore case.
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GITHUB_REF" != refs/heads/master ]]; then
+            echo "::error::Release dispatch requires refs/heads/master"
+            exit 1
+          fi
+          runs=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f branch=master -f event=push -f head_sha="$RELEASE_SHA" -f status=success -f per_page=100)
+          run_id=$(jq -er --arg repo "$GITHUB_REPOSITORY" --arg sha "$RELEASE_SHA" --arg id "$REQUESTED_RUN_ID" '
+            first(.workflow_runs[] | select(
+              .head_repository.full_name == $repo and .head_branch == "master" and .head_sha == $sha and
+              .event == "push" and .status == "completed" and .conclusion == "success" and
+              ($id == "" or (.id | tostring) == $id)
+            ) | .id) // error("No matching successful master push CI run")' <<< "$runs")
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+
+          conclusion=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs" \
+            --jq '.jobs[] | select(.name == "Build x86_64 (glibc)") | .conclusion')
+          case "$conclusion" in
+            success) echo "binaries=true" >> "$GITHUB_OUTPUT" ;;
+            skipped) echo "binaries=false" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::Missing or unsuccessful binary build"; exit 1 ;;
+          esac
+
   sign-darwin:
     name: Sign macOS app
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    needs: release-source
+    if: needs.release-source.outputs.binaries == 'true'
     runs-on: macos-26
     environment: release
     steps:
@@ -32,45 +78,15 @@ jobs:
           ref: ${{ env.RELEASE_SHA }}
           fetch-depth: 1
 
-      - name: Find CI run
-        id: ci-run
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if [ -n "${{ github.event.workflow_run.id }}" ]; then
-            echo "run_id=${{ github.event.workflow_run.id }}" >> "$GITHUB_OUTPUT"
-          else
-            run_id=$(gh run list --workflow=ci.yml --commit="$RELEASE_SHA" --status=success --json databaseId -q '.[0].databaseId')
-            if [ -z "$run_id" ]; then
-              echo "::error::No successful CI run found for commit $RELEASE_SHA"
-              exit 1
-            fi
-            echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Check if builds ran
-        id: builds
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          conclusion=$(gh api "repos/${{ github.repository }}/actions/runs/${{ steps.ci-run.outputs.run_id }}/jobs" \
-            --jq '.jobs[] | select(.name == "Build x86_64 (glibc)") | .conclusion')
-          if [ "$conclusion" = "skipped" ] || [ -z "$conclusion" ]; then
-            echo "Build jobs were skipped — skipping macOS signing"
-            echo "skipped=true" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Download macOS artifacts from CI
-        if: steps.builds.outputs.skipped != 'true'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          run-id: ${{ steps.ci-run.outputs.run_id }}
+          run-id: ${{ needs.release-source.outputs.run_id }}
           github-token: ${{ github.token }}
           name: bin-tako-darwin-aarch64
           path: raw/bin-tako-darwin-aarch64
 
       - name: Sign and package macOS artifacts
-        if: steps.builds.outputs.skipped != 'true'
         env:
           TAKO_CODESIGN_CERTIFICATE_BASE64: ${{ secrets.TAKO_CODESIGN_CERTIFICATE_BASE64 }}
           TAKO_CODESIGN_CERTIFICATE_PASSWORD: ${{ secrets.TAKO_CODESIGN_CERTIFICATE_PASSWORD }}
@@ -81,7 +97,6 @@ jobs:
         run: bash scripts/sign-macos-release.sh aarch64
 
       - name: Upload signed aarch64
-        if: steps.builds.outputs.skipped != 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: signed-bin-tako-darwin-aarch64
@@ -98,8 +113,7 @@ jobs:
     concurrency:
       group: release-assets
       queue: max
-    needs: [sign-darwin]
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    needs: [release-source, sign-darwin]
     runs-on: ubuntu-latest
     environment: release
     steps:
@@ -109,52 +123,21 @@ jobs:
           ref: ${{ env.RELEASE_SHA }}
           fetch-depth: 1
 
-      - name: Find CI run
-        id: ci-run
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if [ -n "${{ github.event.workflow_run.id }}" ]; then
-            echo "run_id=${{ github.event.workflow_run.id }}" >> "$GITHUB_OUTPUT"
-          else
-            run_id=$(gh run list --workflow=ci.yml --commit="$RELEASE_SHA" --status=success --json databaseId -q '.[0].databaseId')
-            if [ -z "$run_id" ]; then
-              echo "::error::No successful CI run found for commit $RELEASE_SHA"
-              exit 1
-            fi
-            echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Check if builds ran
-        id: builds
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          conclusion=$(gh api "repos/${{ github.repository }}/actions/runs/${{ steps.ci-run.outputs.run_id }}/jobs" \
-            --jq '.jobs[] | select(.name == "Build x86_64 (glibc)") | .conclusion')
-          if [ "$conclusion" = "skipped" ] || [ -z "$conclusion" ]; then
-            echo "Build jobs were skipped — skipping release"
-            echo "skipped=true" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Download all artifacts from CI
-        if: steps.builds.outputs.skipped != 'true'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          run-id: ${{ steps.ci-run.outputs.run_id }}
+          run-id: ${{ needs.release-source.outputs.run_id }}
           github-token: ${{ github.token }}
           pattern: bin-*
           path: raw
 
       - name: Download signed macOS artifacts
-        if: steps.builds.outputs.skipped != 'true'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: signed-bin-tako-darwin-aarch64
           path: signed-raw/signed-bin-tako-darwin-aarch64
 
       - name: Package, sign, and publish
-        if: steps.builds.outputs.skipped != 'true'
         env:
           TAKO_SERVER_RELEASE_SIGNING_KEY_PEM: ${{ secrets.TAKO_SERVER_RELEASE_SIGNING_KEY_PEM }}
           GH_TOKEN: ${{ github.token }}
@@ -171,7 +154,7 @@ jobs:
             local out="dist/${name}"
             tmpdir="$(mktemp -d)"
             cp "$src" "$tmpdir/tako-server"
-            tar -cf - -C "$tmpdir" tako-server | zstd -19 -o "$out"
+            tar -cf - -C "$tmpdir" tako-server -C "$GITHUB_WORKSPACE" scripts/tako-network-helper.py | zstd -19 -o "$out"
             (cd dist && sha256sum "$name") > "${out}.sha256"
             rm -rf "$tmpdir"
           }
@@ -249,7 +232,6 @@ jobs:
             -F draft=false -f published_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null
 
       - name: Start Intel macOS release
-        if: steps.builds.outputs.skipped != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -258,7 +240,7 @@ jobs:
 
   publish-sdk:
     name: Publish SDK
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    needs: release-source
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -268,7 +250,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ env.RELEASE_SHA }}
           fetch-depth: 100
 
       - name: Check for SDK changes
@@ -297,8 +279,7 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          sha="${{ github.event.workflow_run.head_sha || github.sha }}"
-          short_sha="$(printf '%s' "$sha" | cut -c1-7)"
+          short_sha="$(printf '%s' "$RELEASE_SHA" | cut -c1-7)"
           version="0.0.0-${short_sha}"
           echo "Publishing sdk: $version"
           cd sdk/javascript
@@ -318,7 +299,7 @@ jobs:
 
   publish-rust-sdk:
     name: Publish Rust SDK
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    needs: release-source
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -327,7 +308,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ env.RELEASE_SHA }}
           fetch-depth: 100
 
       - name: Check Rust SDK version
@@ -366,8 +347,7 @@ jobs:
             exit 1
           fi
 
-          sha="${{ github.event.workflow_run.head_sha || github.sha }}"
-          short_sha="$(printf '%s' "$sha" | cut -c1-7)"
+          short_sha="$(printf '%s' "$RELEASE_SHA" | cut -c1-7)"
           version="$(sed -n 's/^version = "\(.*\)"/\1/p' sdk/rust/Cargo.toml | head -n1)"
           echo "Publishing Rust SDK: $version (${short_sha})"
 

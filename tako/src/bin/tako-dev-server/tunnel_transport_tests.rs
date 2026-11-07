@@ -1,3 +1,4 @@
+use super::handshake::{connect_tunnel_socket_with_client, validate_tunnel_upgrade};
 use super::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;

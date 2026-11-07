@@ -9,7 +9,7 @@ on:
         type: string
 
 concurrency:
-  group: release-intel
+  group: release-intel-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -22,6 +22,7 @@ env:
 jobs:
   build:
     name: Build and sign Intel macOS
+    if: github.ref == 'refs/heads/master'
     runs-on: macos-26-intel
     environment: release
     outputs:
@@ -32,6 +33,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          [ "$GITHUB_REF" = refs/heads/master ] || exit 1
           latest=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/latest" --jq .object.sha)
           if [ "$latest" = "$RELEASE_SHA" ]; then
             echo "current=true" >> "$GITHUB_OUTPUT"

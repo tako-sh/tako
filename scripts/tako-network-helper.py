@@ -231,6 +231,12 @@ def interface(ident):
     return 'tako' + ident[:10]
 
 
+def route_type(route):
+    # ip -N reports RTN_* values numerically and omits the default unicast type.
+    value = str(route.get('type', 'unicast'))
+    return {'1': 'unicast', '2': 'local', '3': 'broadcast', '5': 'multicast'}.get(value, value)
+
+
 def bridge_config(ident):
     network_id(ident)
     raw = bytes.fromhex(ident)
@@ -310,12 +316,14 @@ class Host:
         self.runner, self.state, self.save, self.write_ssh = runner, state, save, write_ssh
 
     def owned_link(self, ident):
-        links = json.loads(self.runner.run('ip', '-j', '-d', 'link', 'show'))
+        links = json.loads(self.runner.run('ip', '-j', '-N', '-d', 'link', 'show'))
         link = next((link for link in links if link['ifname'] == interface(ident)), None)
         if link:
             previous = self.state['networks'].get(ident)
-            require(previous is not None and link.get('ifalias') == previous['alias'] and
-                    link.get('linkinfo', {}).get('info_kind') == 'wireguard', 'foreign interface')
+            require(previous and link.get('linkinfo', {}).get('info_kind') == 'wireguard' and (
+                link.get('ifalias') == previous['alias'] or
+                (not link.get('ifalias') and 'creation_group' in previous and
+                 str(link.get('group')) == str(previous['creation_group']))), 'foreign interface')
         return link
 
     def firewall_exists(self):
@@ -368,14 +376,15 @@ class Host:
                     require(not (family == '-6' and main_table and destination in wanted), 'foreign route')
                     continue
                 simple = route.get('dev') == dev and not any(k in route for k in ('gateway', 'via', 'encap', 'nexthops', 'nhid', 'iif'))
+                kind = route_type(route)
                 managed = (simple and family == '-6' and main_table and destination in owned_routes and
                            str(route.get('protocol')) == '242' and route.get('metric') == 42760 and
-                           route.get('type', 'unicast') == 'unicast')
+                           kind == 'unicast')
                 kernel = simple and family == '-6' and str(route.get('protocol')) == '2'
-                kernel_link_local = kernel and main_table and destination == 'fe80::/64' and route.get('type', 'unicast') == 'unicast'
+                kernel_link_local = kernel and main_table and destination == 'fe80::/64' and kind == 'unicast'
                 kernel_local = kernel and table in ('255', 'local') and (
-                    (route.get('type') == 'local' and destination in local_addresses) or
-                    (route.get('type') == 'multicast' and destination == 'ff00::/8'))
+                    (kind == 'local' and destination in local_addresses) or
+                    (kind == 'multicast' and destination == 'ff00::/8'))
                 require(managed or kernel_link_local or kernel_local, 'foreign route')
                 if managed:
                     managed_routes.append(route)
@@ -479,7 +488,7 @@ class Host:
             owned = network is not None and route.get('dev') == dev and prefix.subnet_of(subnet)
             owned = (owned and str(route.get('protocol')) == '2' and
                      str(route.get('table', '254')) in ('254', 'main', '255', 'local') and
-                     route.get('type', 'unicast') in ('unicast', 'local', 'broadcast') and
+                     route_type(route) in ('unicast', 'local', 'broadcast') and
                      not any(field in route for field in ('gateway', 'via', 'encap', 'nexthops', 'nhid', 'iif')))
             require(owned, 'host route overlaps native bridge')
 
@@ -614,10 +623,14 @@ class Host:
         public_key = self.runner.run('wg', 'pubkey', input=desired['private_key'] + '\n').strip()
         require(public_key not in {p['public_key'] for p in desired['peers']}, 'peer uses local WireGuard key')
         config = {k: v for k, v in desired.items() if k != 'private_key'}
-        for retained in ('dns_settings', 'compose_bridge'):
+        for retained in ('dns_settings', 'compose_bridge', 'creation_group'):
             if previous and retained in previous:
                 config[retained] = previous[retained]
         config['alias'] = previous['alias'] if previous else 'tako-network:' + ident + ':' + secrets.token_hex(16)
+        if not link:
+            # Linux ignores alias on link creation. Journal a random group that
+            # is set atomically with creation, so a crash before tagging is recoverable.
+            config['creation_group'] = 1 + secrets.randbelow(2**31 - 1)
         config['managed_addresses'] = sorted(set((previous or {}).get('managed_addresses', []) + [desired['address']]))
         old_routes = {p['address'] for p in (previous or {}).get('peers', [])} | set((previous or {}).get('retiring_routes', []))
         config['retiring_routes'] = sorted(old_routes - {p['address'] for p in desired['peers']})
@@ -630,8 +643,11 @@ class Host:
             self.install_firewall()
             self.write_ssh(ssh_authorizations(self.state))
             if not link:
-                self.runner.run('ip', 'link', 'add', 'dev', dev, 'alias', config['alias'], 'type', 'wireguard')
+                self.runner.run('ip', 'link', 'add', 'dev', dev, 'group', str(config['creation_group']), 'type', 'wireguard')
                 owned = True
+            if 'creation_group' in config:
+                self.runner.run('ip', 'link', 'set', 'dev', dev, 'alias', config['alias'], 'group', '0')
+                del config['creation_group']
             lines = ['[Interface]', 'PrivateKey = ' + desired['private_key'],
                      'ListenPort = ' + str(desired['listen_port'])]
             for peer in desired['peers']:
@@ -708,8 +724,11 @@ def operation(args):
             host = Host(Runner(), state,
                         lambda value: write_file(fd, 'state.json', serialize_state(value)),
                         lambda value: write_file(sshfd, 'authorized_keys', value, 0o644))
-            if action == 'apply':
-                result = host.apply(ident, read_desired(ident))
+            if action in ('apply', 'isolate'):
+                desired = read_desired(ident)
+                if action == 'isolate':
+                    desired['peers'] = []
+                result = host.apply(ident, desired)
             elif action == 'bridge':
                 with directory(STATE / 'docker'):
                     result = host.bridge(ident)
@@ -723,7 +742,7 @@ def operation(args):
 
 
 def request_args(args):
-    require(len(args) == 2 and args[1] in ('apply', 'remove', 'bridge'), 'expected NETWORK_ID apply|remove|bridge')
+    require(len(args) == 2 and args[1] in ('apply', 'isolate', 'remove', 'bridge'), 'expected NETWORK_ID apply|isolate|remove|bridge')
     return network_id(args[0]), args[1]
 
 
@@ -750,8 +769,8 @@ def handle_connection(connection, tako_uid):
     try:
         connection.settimeout(5)
         require(peer_uid(connection) in (0, tako_uid), 'unauthorized local caller')
-        request = receive(connection, 40)
-        require(re.fullmatch(rb'[0-9a-f]{32} (apply|remove|bridge)\n', request), 'invalid request frame')
+        request = receive(connection, 41)
+        require(re.fullmatch(rb'[0-9a-f]{32} (apply|isolate|remove|bridge)\n', request), 'invalid request frame')
         result = operation(request.decode('ascii').strip().split(' '))
     except Exception as error:
         result = failure(error)

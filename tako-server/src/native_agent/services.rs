@@ -275,7 +275,7 @@ async fn supervise_dns(
     let result = future.await;
     let unexpected = !control.stop.load(std::sync::atomic::Ordering::Acquire);
     if result.is_err() || unexpected {
-        control.shutdown(true);
+        control.shutdown();
     }
     if unexpected && result.is_ok() {
         return Err(std::io::Error::other("DNS listener exited unexpectedly"));

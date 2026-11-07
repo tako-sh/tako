@@ -181,6 +181,11 @@ impl crate::ServerState {
     }
 
     pub(crate) async fn delete_app(&self, app_name: &str) -> Response {
+        // A bare name denotes production. Its filesystem path alone is the
+        // shared parent of every environment, so qualify it before any cleanup.
+        let (name, environment) = requested_deployment_identity(app_name);
+        let deployment = tako_core::deployment_app_id(&name, &environment);
+        let app_name = deployment.as_str();
         tracing::info!(app = app_name, "Deleting app");
 
         let lock = self.get_deploy_lock(app_name).await;
@@ -222,7 +227,6 @@ impl crate::ServerState {
             route_table.remove_app_routes(app_name);
         }
 
-        let (name, environment) = requested_deployment_identity(app_name);
         if let Err(e) = self.state_store.delete_app(&name, &environment) {
             tracing::warn!(
                 app = app_name,

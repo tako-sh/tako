@@ -44,14 +44,21 @@ pub(crate) async fn handle_health_event(state: &ServerState, event: HealthEvent)
             crate::metrics::set_instance_health(&app, &instance_id, false);
         }
         HealthEvent::Dead { app, instance_id } => {
-            tracing::error!(app = %app, instance = %instance_id, "Instance is dead (no heartbeat)");
-            crate::metrics::set_instance_health(&app, &instance_id, false);
             crate::metrics::remove_instance_metrics(&app, &instance_id);
-            state.cold_start.mark_failed(&app, "instance_dead");
-            if let Some(app_ref) = state.app_manager.get_app(&app) {
-                app_ref.set_last_error("Instance marked dead");
-                update_instance_count_metric(&app, &app_ref);
+            let Some(app_ref) = state.app_manager.get_app(&app) else {
+                return;
+            };
+            // The updater owns candidates until cutover. It removes a failed
+            // candidate from the registry before clearing routing suppression.
+            if app_ref.is_instance_routing_suppressed(&instance_id)
+                || app_ref.get_instance(&instance_id).is_none()
+            {
+                return;
             }
+            tracing::error!(app = %app, instance = %instance_id, "Instance is dead (no heartbeat)");
+            state.cold_start.mark_failed(&app, "instance_dead");
+            app_ref.set_last_error("Instance marked dead");
+            update_instance_count_metric(&app, &app_ref);
             replace_instance_if_needed(state, &app, &instance_id, "dead").await;
         }
         HealthEvent::Recovered { app, instance_id } => {
@@ -286,7 +293,7 @@ mod tests {
 
     #[tokio::test]
     async fn dead_instances_are_handled_without_the_management_lock_and_not_during_drain() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::isolation::fixture::TestDataDir::new().unwrap();
         let state = ServerState::new(
             dir.path().into(),
             Arc::new(crate::tls::CertManager::new(
@@ -302,6 +309,9 @@ mod tests {
         let app = state.app_manager.register_app(crate::instances::AppConfig {
             name: "health".into(),
             environment: "production".into(),
+            path: dir.path().into(),
+            // Exercise a failed replacement without leaving a child process running.
+            command: vec!["./missing-app".into()],
             min_instances: 1,
             ..Default::default()
         });
@@ -325,6 +335,58 @@ mod tests {
             .await
             .expect("health events must not queue behind the management lock");
         assert!(app.get_instance(&instance.id).is_none());
+    }
+
+    #[tokio::test]
+    async fn dead_rollout_candidate_stays_with_the_updater_until_rollback() {
+        let dir = crate::isolation::fixture::TestDataDir::new().unwrap();
+        let state = ServerState::new(
+            dir.path().into(),
+            Arc::new(crate::tls::CertManager::new(
+                crate::tls::CertManagerConfig {
+                    cert_dir: dir.path().join("certs"),
+                    ..Default::default()
+                },
+            )),
+            None,
+            Arc::new(parking_lot::RwLock::new(HashMap::new())),
+        )
+        .unwrap();
+        let app = state.app_manager.register_app(crate::instances::AppConfig {
+            name: "rollback".into(),
+            environment: "production".into(),
+            version: "v1".into(),
+            min_instances: 1,
+            path: dir.path().into(),
+            command: vec!["./missing-app".into()],
+            ..Default::default()
+        });
+        let serving = app.allocate_instance();
+        app.set_instance_state(&serving, InstanceState::Healthy);
+        app.config.write().version = "v2".into();
+        app.set_state(AppState::Deploying);
+        let candidate = app.allocate_instance();
+        app.suppress_instance_routing(&candidate.id);
+        app.set_instance_state(&candidate, InstanceState::Stopped);
+        let dead = || HealthEvent::Dead {
+            app: app.name(),
+            instance_id: candidate.id.clone(),
+        };
+
+        // The checker can observe the child's exit before rollback removes it.
+        handle_health_event(&state, dead()).await;
+        assert!(
+            app.get_instance(&candidate.id).is_some(),
+            "health recovery took the rollout candidate"
+        );
+
+        app.remove_instance(&candidate.id);
+        app.config.write().version = "v1".into();
+        app.set_last_error("v2 rollout failed");
+        handle_health_event(&state, dead()).await;
+        assert_eq!(app.get_instances().len(), 1);
+        assert_eq!(app.get_instances()[0].id, serving.id);
+        assert_eq!(app.last_error().as_deref(), Some("v2 rollout failed"));
     }
 
     #[tokio::test]

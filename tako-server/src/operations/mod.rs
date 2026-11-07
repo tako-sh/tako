@@ -1,4 +1,5 @@
 mod backup;
+pub(crate) use backup::snapshot_data_tree;
 mod compose;
 mod deploy;
 mod dispatch;

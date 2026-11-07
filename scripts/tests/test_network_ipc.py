@@ -49,7 +49,7 @@ class NetworkIpcTests(unittest.TestCase):
 
     def test_tako_and_operator_can_request_only_fixed_operations(self):
         for uid in (0, 1001):
-            for action in ('apply', 'remove', 'bridge'):
+            for action in ('apply', 'isolate', 'remove', 'bridge'):
                 with self.subTest(uid=uid, action=action):
                     result, operation, _ = self.dispatch(f'{ID} {action}\n'.encode(), uid)
                     self.assertTrue(result['ok'])

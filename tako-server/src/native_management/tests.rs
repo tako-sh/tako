@@ -363,6 +363,49 @@ async fn upload_verifies_digest_and_confines_extraction() {
     );
 }
 
+#[test]
+fn default_ssl_is_allowed_only_after_provisioning_and_a_successful_state_read() {
+    let (dir, state) = state();
+    let scope: AppEnv = "demo/production".parse().unwrap();
+    let release = dir.path().join("apps/demo/production/releases/v1");
+    std::fs::create_dir_all(&release).unwrap();
+    let routes = vec!["demo.example".into()];
+    let command = Command::Deploy {
+        app: scope.as_str().to_owned(),
+        version: "v1".into(),
+        path: release.to_str().unwrap().into(),
+        routes: routes.clone(),
+        ssl: Default::default(),
+        source_ip: Default::default(),
+        runtime_credentials: None,
+        storages: None,
+        backup: None,
+        secrets: None,
+        force: false,
+    };
+    let check = || authorize_command(&state, &scoped(), Some(&scope), &command);
+    assert!(check().is_err());
+    state
+        .state_store
+        .upsert_app(
+            &crate::instances::AppConfig {
+                name: "demo".into(),
+                environment: "production".into(),
+                version: "v1".into(),
+                ..Default::default()
+            },
+            &routes,
+        )
+        .unwrap();
+    assert_eq!(check(), Ok(()));
+    let conn = rusqlite::Connection::open(state.state_store.path()).unwrap();
+    conn.execute_batch("DROP TABLE app_ssl").unwrap();
+    assert_eq!(
+        check().unwrap_err(),
+        "Cannot read provisioned management state"
+    );
+}
+
 #[tokio::test]
 async fn policy_reads_bindings_after_acquiring_the_dispatch_guard() {
     let (dir, state) = state();

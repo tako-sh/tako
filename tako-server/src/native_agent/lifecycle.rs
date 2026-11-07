@@ -13,7 +13,6 @@ pub(super) const DRAIN_DEADLINE: Duration = Duration::from_secs(120);
 #[derive(Clone)]
 pub(super) struct Control {
     pub stop: Arc<AtomicBool>,
-    pub isolate: Arc<AtomicBool>,
     pub broker_drained: Arc<AtomicBool>,
     pub services_drained: Arc<AtomicBool>,
     services: Option<Arc<super::services::Shared>>,
@@ -31,7 +30,6 @@ impl Control {
         (
             Self {
                 stop: Arc::new(AtomicBool::new(false)),
-                isolate: Arc::new(AtomicBool::new(false)),
                 broker_drained: Arc::new(AtomicBool::new(false)),
                 services_drained: Arc::new(AtomicBool::new(true)),
                 services: None,
@@ -78,10 +76,7 @@ impl Control {
             .send_if_modified(|current| current.take().is_some());
         self.clear_services();
     }
-    pub fn shutdown(&self, failed: bool) {
-        if failed {
-            self.isolate.store(true, Ordering::Release);
-        }
+    pub fn shutdown(&self) {
         // Publication checks this flag under watch's write lock. Either a racing
         // publication precedes our None, or it sees stop and cannot republish.
         self.stop.store(true, Ordering::Release);
@@ -90,7 +85,7 @@ impl Control {
     }
     pub fn broker_finished(&self, failed: bool) {
         if failed {
-            self.shutdown(true);
+            self.shutdown();
         }
         self.broker_drained.store(true, Ordering::Release);
     }
@@ -154,7 +149,7 @@ impl BrokerOwner {
     fn finished(&self, failed: bool) {
         if self.services {
             if failed {
-                self.control.shutdown(true);
+                self.control.shutdown();
             }
             self.control.services_drained.store(true, Ordering::Release);
         } else {
@@ -232,14 +227,13 @@ mod tests {
         assert!(!members.has_changed().unwrap());
     }
     #[test]
-    fn failure_shutdown_withdraws_and_prevents_late_publication() {
+    fn shutdown_withdraws_and_prevents_late_publication() {
         let fixture = super::super::tests::Fixture::new();
         let (control, members, shutdown) = Control::new();
         control.publish_enforced(&fixture.config.bootstrap);
-        control.shutdown(true);
+        control.shutdown();
         assert!(members.borrow().is_none());
         assert!(*shutdown.borrow());
-        assert!(control.isolate.load(Ordering::Acquire));
         assert!(!control.publish_enforced(&fixture.config.bootstrap));
         assert!(members.borrow().is_none());
     }
@@ -266,13 +260,13 @@ mod tests {
                 publisher.publish_enforced(&snapshot);
             });
             barrier.wait();
-            control.shutdown(false);
+            control.shutdown();
             thread.join().unwrap();
             assert!(members.borrow().is_none());
         }
     }
     #[tokio::test]
-    async fn late_broker_failure_requests_isolation_before_releasing_controller() {
+    async fn shutdown_waits_for_the_broker_before_releasing_controller() {
         let fixture = super::super::tests::Fixture::new();
         let (control, members, mut shutdown) = Control::new();
         control.publish_enforced(&fixture.config.bootstrap);
@@ -284,13 +278,11 @@ mod tests {
             wait.await.unwrap(); // outstanding database fence, still owned
             owner.complete(true);
         });
-        control.shutdown(false);
+        control.shutdown();
         assert!(members.borrow().is_none());
         assert!(!control.broker_drained.load(Ordering::Acquire));
-        assert!(!control.isolate.load(Ordering::Acquire));
         release.send(()).unwrap();
         broker.await.unwrap();
-        assert!(control.isolate.load(Ordering::Acquire));
         assert!(control.broker_drained.load(Ordering::Acquire));
     }
     #[test]
@@ -303,7 +295,6 @@ mod tests {
             } // unexpected successful exit
             drop(owner); // models task unwind for the other case
             assert!(control.stop.load(Ordering::Acquire));
-            assert!(control.isolate.load(Ordering::Acquire));
             assert!(control.broker_drained.load(Ordering::Acquire));
             assert!(members.borrow().is_none());
         }

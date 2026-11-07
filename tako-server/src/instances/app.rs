@@ -163,6 +163,25 @@ impl App {
         false
     }
 
+    pub(super) fn enable_rollout_routing(
+        &self,
+        instances: &[Arc<Instance>],
+    ) -> Result<(), (String, InstanceState)> {
+        // A health transition must either fail this rollout or occur after
+        // the instances have been handed to ordinary health recovery.
+        let _transition = self.instance_transitions.lock();
+        for instance in instances {
+            let state = instance.state();
+            if state != InstanceState::Healthy {
+                return Err((instance.id.clone(), state));
+            }
+        }
+        for instance in instances {
+            self.enable_instance_routing(instance);
+        }
+        Ok(())
+    }
+
     pub(crate) fn is_instance_routing_suppressed(&self, instance_id: &str) -> bool {
         self.routing_suppressed_instances
             .read()

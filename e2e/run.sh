@@ -58,10 +58,9 @@ fi
 current_e2e_build_stamp() {
   local arch inputs_hash
   local -a binary_inputs=(
-    Cargo.lock Cargo.toml e2e/run.sh e2e/docker/builder
-    tako tako-channels tako-compose tako-core tako-images tako-runtime
-    tako-server tako-socket tako-spawn tako-sqlite tako-workflows vendor
-    scripts/install-tako-server.sh website/docs sdk/javascript/skills
+    Cargo.lock Cargo.toml .cargo/config.toml e2e/run.sh e2e/docker/builder
+    tako ':(glob)tako-*/**' vendor
+    scripts/install-tako-server.sh presets website/docs sdk/javascript/skills
   )
   arch=$(uname -m)
   inputs_hash=$(

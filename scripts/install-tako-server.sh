@@ -980,7 +980,6 @@ install_native_network() {
   install_native_corrosion
 
   native_source="${TAKO_NETWORK_HELPER_SOURCE:-}"
-  native_expected=""
   if [ -n "$native_source" ]; then
     [ -f "$native_source" ] && [ ! -L "$native_source" ] || {
       echo 'error: native helper source must be a regular local file' >&2; exit 1;
@@ -993,17 +992,15 @@ install_native_network() {
     cp "$native_source" "$tmp_extract/native-helper.py"
     native_source="$tmp_extract/native-helper.py"
   else
+    native_expected="a31b17d972037f245912cf13d664907651d51797545ebc000d6cde9cca77305e"
     native_source="$tmp_extract/scripts/tako-network-helper.py"
     if [ ! -f "$native_source" ] || [ -L "$native_source" ]; then
       native_source="$tmp_extract/native-helper.py"
-      native_expected="97ccb6db11373d26a083bd46d0c3ee549a9ea2efce221d53e1973e617da4f7f9"
       download_file "https://raw.githubusercontent.com/$TAKO_REPO_OWNER/$TAKO_REPO_NAME/$TAKO_RELEASE_TAG/scripts/tako-network-helper.py" "$native_source"
     fi
   fi
-  if [ -n "$native_expected" ]; then
-    native_actual="$(sha256sum "$native_source" | awk '{print $1}')"
-    [ "$native_actual" = "$native_expected" ] || { echo 'error: native helper checksum mismatch' >&2; exit 1; }
-  fi
+  native_actual="$(sha256sum "$native_source" | awk '{print $1}')"
+  [ "$native_actual" = "$native_expected" ] || { echo 'error: native helper checksum mismatch' >&2; exit 1; }
 
   # Validate the desired-state, root-state, and network SSH directories without following links.
   python3 -I - <<'PY'
@@ -1252,7 +1249,7 @@ Before=tako-network.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/libexec/tako/tako-network-helper %i apply
+ExecStart=/usr/local/libexec/tako/tako-network-helper %i isolate
 [Install]
 RequiredBy=tako-network.target
 EOF
@@ -1307,12 +1304,15 @@ After=tako-network.target'
     fi
     systemctl enable tako-network-agent.service
   fi
-  for desired_file in /opt/tako/networks/*/desired.json; do
-    [ -e "$desired_file" ] || continue
-    native_id="${desired_file%/desired.json}"
-    native_id="${native_id##*/}"
-    /usr/local/libexec/tako/tako-network-helper "$native_id" apply
-  done
+  # The running agent owns peer grants. With the agent stopped, restore only the link.
+  if [ "$SERVICE_MANAGER" = systemd ] && ! systemctl is-active --quiet tako-network-agent.service; then
+    for desired_file in /opt/tako/networks/*/desired.json; do
+      [ -e "$desired_file" ] || continue
+      native_id="${desired_file%/desired.json}"
+      native_id="${native_id##*/}"
+      /usr/local/libexec/tako/tako-network-helper "$native_id" isolate
+    done
+  fi
   if [ "$SERVICE_MANAGER" = systemd ] && is_enabled "$TAKO_RESTART_SERVICE" &&
      [ -f /opt/tako/native-network.json ]; then
     systemctl restart tako-network-agent.service

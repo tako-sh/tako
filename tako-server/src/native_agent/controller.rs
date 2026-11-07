@@ -49,9 +49,6 @@ pub(super) fn worker(
             Err(error) => {
                 if stop.load(Ordering::Acquire) {
                     wait_for_broker(&control);
-                    if !control.isolate.load(Ordering::Acquire) {
-                        return Err(error);
-                    }
                 }
                 // Even errors before child spawn must revoke previously installed peers.
                 let isolation = (|| -> Result<()> {
@@ -90,16 +87,12 @@ pub(super) fn worker(
         }
     }
     control.withdraw();
-    // A late broker shutdown error must still isolate while this thread owns
-    // the identity, host state and nonce DB lock. Never release early.
     wait_for_broker(&control);
-    let isolation = if control.isolate.load(Ordering::Acquire) {
-        controller.isolate()
-    } else {
-        Ok(())
-    };
+    // The stopped agent can no longer expire grants. Withdraw WireGuard and SSH
+    // access while this controller still owns the host state and nonce DB lock.
+    let isolation = controller.isolate();
     if let Err(error) = &isolation {
-        tracing::error!(error = %error, "agent failure isolation not acknowledged");
+        tracing::error!(error = %error, "agent shutdown isolation not acknowledged");
     }
     let child = controller.child.stop();
     if let Err(error) = &child {

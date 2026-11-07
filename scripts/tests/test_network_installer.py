@@ -15,7 +15,7 @@ IS_ENABLED = SOURCE[SOURCE.index('is_enabled() {'):SOURCE.index('vpn_functions()
 
 
 class NativeInstallerTests(unittest.TestCase):
-    def install(self, *, provider='native', source=True, digest=True, packaged=False, download=False,
+    def install(self, *, provider='native', source=True, digest=True, packaged=None, download=False,
                 manager='none', restart='0', prepared=False, legacy=False, agent_fails=False):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -27,8 +27,8 @@ class NativeInstallerTests(unittest.TestCase):
         payload = b'# local helper fixture\n'
         local = root / 'source.py'
         local.write_bytes(payload)
-        if packaged:
-            (root / 'extract/scripts/tako-network-helper.py').write_bytes(payload)
+        if packaged is not None:
+            (root / 'extract/scripts/tako-network-helper.py').write_bytes(packaged)
         if prepared:
             (root / 'opt/tako/native-network.json').write_text('{}\n')
         if legacy:
@@ -76,7 +76,7 @@ fake_sshd() {
         self.assertIn('install verified corrosion', result.stdout)
         self.assertEqual((root / 'usr/local/libexec/tako/tako-network-helper.py').read_text(), '# local helper fixture\n')
         unit = (root / 'etc/systemd/system/tako-network@.service').read_text()
-        self.assertIn('%i apply', unit)
+        self.assertIn('%i isolate', unit)
         self.assertNotIn('ExecStop', unit)
         self.assertNotIn('PartOf=tako-server', unit)
         self.assertFalse((root / 'etc/systemd/system/tako-corrosion.service').exists())
@@ -157,8 +157,14 @@ fake_sshd() {
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_bootstrap_accepts_helper_in_verified_archive(self):
-        _, result = self.install(source=False, packaged=True)
+        _, result = self.install(source=False, packaged=(ROOT / 'scripts/tako-network-helper.py').read_bytes())
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_packaged_helper_must_match_installers_pin(self):
+        root, result = self.install(source=False, packaged=b'# altered release helper\n')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('native helper checksum mismatch', result.stderr)
+        self.assertFalse((root / 'usr/local/libexec/tako/tako-network-helper.py').exists())
 
     def test_default_download_is_pinned_to_this_helper(self):
         root, result = self.install(source=False, download=True)

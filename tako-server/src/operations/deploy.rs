@@ -13,6 +13,11 @@ use crate::socket::{AppState, Response};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+pub(super) enum BackupUpdate {
+    Preserve,
+    Replace(Option<Box<tako_core::BackupBinding>>),
+}
+
 pub(crate) struct DeployRequest<'a> {
     pub(crate) app_name: &'a str,
     pub(crate) version: &'a str,
@@ -23,7 +28,7 @@ pub(crate) struct DeployRequest<'a> {
     pub(crate) runtime_credentials: Option<HashMap<String, String>>,
     pub(crate) storages: Option<HashMap<String, tako_core::StorageBinding>>,
     pub(crate) ssl: tako_core::SslBinding,
-    pub(crate) backup: Option<tako_core::BackupBinding>,
+    pub(super) backup: BackupUpdate,
     pub(crate) force: bool,
 }
 
@@ -177,6 +182,10 @@ impl crate::ServerState {
             }
         } else {
             None
+        };
+        let backup = match backup {
+            BackupUpdate::Preserve => previous_backup.clone(),
+            BackupUpdate::Replace(binding) => binding.map(|binding| *binding),
         };
         let rollback_snapshot = if let Some(existing) = existing_app.as_ref() {
             let previous_config = existing.config.read().clone();

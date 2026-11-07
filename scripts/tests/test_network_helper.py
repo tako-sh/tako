@@ -176,7 +176,7 @@ class FakeRunner:
         self.calls.append((args, input))
         if self.fail and args[:len(self.fail)] == self.fail:
             raise helper.Rejected('simulated command failure')
-        if args == ('ip', '-j', '-d', 'link', 'show'):
+        if args in (('ip', '-j', '-d', 'link', 'show'), ('ip', '-j', '-N', '-d', 'link', 'show')):
             return json.dumps(self.links)
         if args == ('ip', '-j', '-N', 'nexthop', 'show'):
             return json.dumps(self.nexthops)
@@ -206,11 +206,12 @@ class FakeRunner:
             assert path.stat().st_mode & 0o777 == 0o600
             self.secret = path.read_text()
         if args[:3] == ('ip', 'link', 'add'):
-            self.links = [{'ifname': args[4], 'ifalias': args[args.index('alias') + 1],
+            self.links = [{'ifname': args[4], 'group': args[args.index('group') + 1],
                            'linkinfo': {'info_kind': 'wireguard'}}]
         if args[:3] == ('ip', 'link', 'set'):
             if args[5] == 'alias':
                 self.links[0]['ifalias'] = args[6]
+                self.links[0]['group'] = args[8]
             else:
                 self.links[0]['operstate'] = args[5]
         if args[:3] == ('ip', 'link', 'delete'):
@@ -379,8 +380,8 @@ class ReconcileTests(unittest.TestCase):
     def test_kernel_local_and_multicast_routes_are_owned_but_unrelated_routes_survive(self):
         self.apply()
         self.runner.routes.extend([
-            {'dst': desired()['address'], 'dev': DEV, 'type': 'local', 'table': '255', 'protocol': '2'},
-            {'dst': 'ff00::/8', 'dev': DEV, 'type': 'multicast', 'table': '255', 'protocol': '2'}])
+            {'dst': desired()['address'], 'dev': DEV, 'type': '2', 'table': '255', 'protocol': '2'},
+            {'dst': 'ff00::/8', 'dev': DEV, 'type': '5', 'table': '255', 'protocol': '2'}])
         foreign = {'dst': 'fd99::/64', 'dev': 'eth0', 'protocol': '4', 'table': '100'}
         self.runner.routes.append(foreign)
         self.host.remove(ID)
@@ -494,11 +495,15 @@ class ReconcileTests(unittest.TestCase):
                 with patch.object(self.runner, 'run', side_effect=die_after_create):
                     with self.assertRaises(SystemExit):
                         self.apply()
-                self.assertEqual(self.runner.links[0]['ifalias'], self.saved['networks'][ID]['alias'])
+                self.assertNotIn('ifalias', self.runner.links[0])
+                self.assertEqual(self.runner.links[0]['group'], str(self.saved['networks'][ID]['creation_group']))
                 self.host = helper.Host(self.runner, copy.deepcopy(self.saved), self.save, self.write_ssh)
                 if action == 'apply':
                     self.apply()
                     self.assertEqual(self.runner.links[0]['operstate'], 'up')
+                    self.assertEqual(self.runner.links[0]['ifalias'], self.saved['networks'][ID]['alias'])
+                    self.assertEqual(self.runner.links[0]['group'], '0')
+                    self.assertNotIn('creation_group', self.saved['networks'][ID])
                 else:
                     self.host.remove(ID)
                     self.assertEqual(self.runner.links, [])
@@ -511,8 +516,7 @@ class ReconcileTests(unittest.TestCase):
         self.runner.fail = None
         self.apply()
         self.assertEqual(self.runner.links[0]['operstate'], 'up')
-        self.assertFalse(any(args[:6] == ('ip', 'link', 'set', 'dev', DEV, 'alias')
-                             for args, _ in self.runner.calls))
+        self.assertEqual(self.runner.links[0]['ifalias'], self.saved['networks'][ID]['alias'])
 
     def test_reboot_recreates_only_owned_persistent_network(self):
         self.apply()

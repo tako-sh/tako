@@ -39,7 +39,15 @@ The server snapshots `/opt/tako/apps/<app>/<env>/data/`:
 | External databases, shared Postgres, or S3 object contents | Not copied by the app-data snapshot; protect them separately.  |
 | Release code and dependencies                              | Not part of the data snapshot; releases have separate history. |
 
-Deploy creates a backup after successful finalization when enabled. The server scheduler also creates due backups at roughly 24-hour intervals. Backups are per server; one server's local data does not automatically represent another's.
+Deploy creates a backup after successful finalization when enabled. The server scheduler also creates due backups at roughly 24-hour intervals. A release rollback preserves the current backup target and encryption keys. Each server backs up its own local data.
+
+If a data file has multiple hard links, the backup fails. Replace the app's link with a private copy before retrying.
+
+With an active SQLite write-ahead log (WAL), Tako normally captures a small log first, then lets writers commit while it copies the main database. On Linux hosts that support Landlock ABI 3 or newer, Tako uses a read-only SQLite connection restricted to the verified database files when the log exceeds 4 MiB or its lock is busy. The restricted reader can finish while a writer has uncommitted changes. On hosts without these kernel permissions, Tako uses the locked capture for WALs of any size. A checkpoint may wait until the read finishes.
+
+In rollback-journal mode, writers can prepare changes during a snapshot. A commit or a write that needs exclusive access can wait for the copy to finish. Tako compacts the private snapshot to discard deleted records.
+
+If Tako cannot acquire the required locks within 10 seconds, retry the backup. If a crash left a hot rollback journal, let the app reopen the database to recover it before retrying.
 
 ## Create and inspect
 

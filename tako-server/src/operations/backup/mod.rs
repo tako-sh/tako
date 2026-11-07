@@ -26,7 +26,8 @@ use s3::{
     DOWNLOAD_URL_EXPIRES_SECONDS, S3_URL_EXPIRES_SECONDS, download_object, prune_retention,
     put_json_object, upload_file,
 };
-use snapshot::{create_backup_archive, restore_data_tree, sha256_file_hex, snapshot_data_tree};
+pub(crate) use snapshot::snapshot_data_tree;
+use snapshot::{create_backup_archive, restore_data_tree, sha256_file_hex};
 
 impl crate::ServerState {
     pub(crate) async fn backup_now(&self, app: &str) -> Response {
@@ -77,7 +78,6 @@ impl crate::ServerState {
             .ok_or_else(|| format!("Backups are not configured for {app}."))?;
         validate_backup_binding(&backup)?;
 
-        let data_paths = ensure_app_runtime_data_dirs(&self.runtime.data_dir, app)?;
         let tmp_root = self.runtime.data_dir.join("tmp").join("backups");
         tokio::fs::create_dir_all(&tmp_root)
             .await
@@ -90,15 +90,34 @@ impl crate::ServerState {
         let encrypted_archive_path = work_dir.join("data.tar.zst.enc");
         let backup_key = active_backup_key(&backup)?.clone();
 
+        create_private_work_dir(&work_dir).await?;
+
         let result: Result<BackupInfo, String> = async {
             let archive_result = tokio::task::spawn_blocking({
-                let data_root = data_paths.root.clone();
+                let data_dir = self.runtime.data_dir.clone();
+                let data_root = app_runtime_data_paths(std::path::Path::new(""), app).root;
                 let snapshot_dir = snapshot_dir.clone();
                 let archive_path = archive_path.clone();
                 let encrypted_archive_path = encrypted_archive_path.clone();
                 let backup_key = backup_key.clone();
                 move || {
-                    snapshot_data_tree(&data_root, &snapshot_dir)?;
+                    // SQLite POSIX locks belong to the process. Closing a descriptor
+                    // to a live workflow DB here could release the server's own locks.
+                    let worker = std::env::current_exe().map_err(|e| e.to_string())?;
+                    let output = std::process::Command::new(worker)
+                        .arg("--snapshot-data")
+                        .arg(data_dir)
+                        .arg(data_root)
+                        .arg(&snapshot_dir)
+                        .output()
+                        .map_err(|e| format!("start snapshot worker: {e}"))?;
+                    if !output.status.success() {
+                        return Err(format!(
+                            "snapshot worker failed ({}): {}",
+                            output.status,
+                            String::from_utf8_lossy(&output.stderr).trim()
+                        ));
+                    }
                     create_backup_archive(&snapshot_dir, &archive_path)?;
                     let encryption =
                         encrypt_backup_file(&archive_path, &encrypted_archive_path, &backup_key)?;
@@ -269,9 +288,7 @@ impl crate::ServerState {
         let archive_path = work_dir.join("data.tar.zst");
         let encrypted_archive_path = work_dir.join("data.tar.zst.enc");
         let extract_dir = work_dir.join("extracted");
-        tokio::fs::create_dir_all(&work_dir)
-            .await
-            .map_err(|e| format!("create restore work dir {}: {e}", work_dir.display()))?;
+        create_private_work_dir(&work_dir).await?;
 
         let result: Result<BackupInfo, String> = async {
             let client = reqwest::Client::new();
@@ -361,6 +378,14 @@ impl crate::ServerState {
             .find(|backup| backup.id == backup_id)
             .ok_or_else(|| format!("Backup not found: {backup_id}"))
     }
+}
+
+async fn create_private_work_dir(path: &std::path::Path) -> Result<(), String> {
+    tokio::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(path)
+        .await
+        .map_err(|e| format!("create backup work dir {}: {e}", path.display()))
 }
 
 fn validate_backup_binding(backup: &tako_core::BackupBinding) -> Result<(), String> {
