@@ -43,7 +43,9 @@ Deploy creates a backup after successful finalization when enabled. The server s
 
 If a data file has multiple hard links, the backup fails. Replace the app's link with a private copy before retrying.
 
-SQLite writers can pause while Tako copies a database and its write-ahead log. Tako then compacts the private copy to discard deleted records. If Tako cannot acquire the required locks within 10 seconds, the backup fails and can be retried. If SQLite has a hot rollback journal after a crash, let the app reopen the database to recover it before retrying.
+With an active SQLite write-ahead log (WAL), Tako captures the log first. Writers can then commit while Tako copies the main database. A large WAL can still delay writes during log capture, and checkpoints wait until the database copy finishes. In rollback-journal mode, writes wait while Tako captures the database. Tako compacts the private snapshot to discard deleted records.
+
+If Tako cannot acquire the required locks within 10 seconds, retry the backup. If a crash left a hot rollback journal, let the app reopen the database to recover it before retrying.
 
 ## Create and inspect
 
