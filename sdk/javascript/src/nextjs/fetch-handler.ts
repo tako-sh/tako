@@ -33,16 +33,16 @@ export function createNextjsFetchHandler(
   const fetchImplementation = options.unstable_testing?.fetchImplementation ?? fetch;
 
   const handler: ReadyableFetchHandler = async (request) => {
-    const port = options.unstable_testing?.ensureServer
-      ? await options.unstable_testing.ensureServer()
+    const server = options.unstable_testing?.ensureServer
+      ? { hostname, port: await options.unstable_testing.ensureServer() }
       : await ensureManagedNextjsServer(serverPath, options);
     const upstreamUrl = new URL(request.url);
     const originalHost = request.headers.get("host") ?? upstreamUrl.host;
     const originalPort = originalRequestPort(request, originalHost);
 
     upstreamUrl.protocol = "http:";
-    upstreamUrl.hostname = hostname;
-    upstreamUrl.port = String(port);
+    upstreamUrl.hostname = server.hostname;
+    upstreamUrl.port = String(server.port);
 
     const headers = new Headers(request.headers);
     headers.set("host", originalHost);
@@ -130,22 +130,24 @@ function getManagedNextjsServer(
 async function ensureManagedNextjsServer(
   serverPath: string,
   options: NextjsFetchHandlerOptions,
-): Promise<number> {
+): Promise<{ hostname: string; port: number }> {
   while (shutdownPromise) await shutdownPromise;
   const managed = getManagedNextjsServer(serverPath, options);
-  if (managed.startup) {
-    return await managed.startup.ready;
+  if (!managed.startup) {
+    const { promise, resolve, reject } = Promise.withResolvers<number>();
+    const startup: ManagedNextjsStartup = {
+      child: null,
+      ready: promise,
+      abort: new AbortController(),
+    };
+    managed.startup = startup;
+    void startManagedNextjsServer(serverPath, managed, startup).then(resolve, reject);
   }
 
-  const { promise, resolve, reject } = Promise.withResolvers<number>();
-  const startup: ManagedNextjsStartup = {
-    child: null,
-    ready: promise,
-    abort: new AbortController(),
+  return {
+    hostname: managed.hostname,
+    port: await managed.startup.ready,
   };
-  managed.startup = startup;
-  void startManagedNextjsServer(serverPath, managed, startup).then(resolve, reject);
-  return await promise;
 }
 
 async function startManagedNextjsServer(

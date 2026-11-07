@@ -72,6 +72,27 @@ describe("managed Next.js lifecycle", () => {
     await rm(directory, { recursive: true, force: true });
   });
 
+  test("handlers sharing a child proxy to its managed hostname", async () => {
+    const first = handler();
+    const second = createNextjsFetchHandler(entry, {
+      argv: [pidFile, "ready"],
+      hostname: "127.0.0.2",
+      startupTimeoutMs: 1_000,
+    }) as ReadyableFetchHandler;
+
+    await first.ready!();
+    await second.ready!();
+    const children = await pids();
+    expect(children).toHaveLength(1);
+
+    for (const fetch of [first, second]) {
+      const response = await fetch(new Request("https://example.com/shared"), {});
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe(String(children[0]));
+    }
+    expect(await pids()).toEqual(children);
+  });
+
   test("a timed-out child cannot invalidate its replacement or escape shutdown", async () => {
     const fetch = handler("retry", 500);
     await expect(fetch.ready!()).rejects.toThrow("Timed out waiting");
