@@ -19,4 +19,3 @@ routes = ["demo.test", "*.demo.test"]
 routes = ["demo.tako.sh", "*.demo.tako.sh"]
 source_ip = "direct"
 network = "91a7313ec552de6956b4044cd8671e11"
-servers = ["oracle-us-east"]
