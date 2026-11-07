@@ -154,8 +154,8 @@ pub struct EnvConfig {
     /// Multiple routes (mutually exclusive with route)
     pub routes: Option<Vec<String>>,
 
-    /// Servers assigned to this environment.
-    #[serde(default)]
+    /// Deployment targets. In a native network these are enrolled names or device IDs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub servers: Vec<String>,
 
     /// Storage bindings assigned to this environment.

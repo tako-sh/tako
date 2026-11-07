@@ -214,7 +214,17 @@ impl TakoToml {
                 )));
             }
             for server_name in &env_config.servers {
-                validate_server_name(server_name)?;
+                if env_config.network.is_some() {
+                    if server_name.parse::<tako_network::DeviceName>().is_err()
+                        && server_name.parse::<tako_network::DeviceId>().is_err()
+                    {
+                        return Err(ConfigError::Validation(format!(
+                            "Invalid server selector '{server_name}' in [envs.{env_name}].servers. Use an enrolled server name or device ID."
+                        )));
+                    }
+                } else {
+                    validate_server_name(server_name)?;
+                }
             }
             for (binding_name, resource_name) in &env_config.storages {
                 super::super::validate_storage_name(binding_name)?;

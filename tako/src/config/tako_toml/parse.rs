@@ -119,6 +119,14 @@ impl TakoToml {
         {
             for (env_name, env_value) in table {
                 let env_config: EnvConfig = toml::from_str(&toml::to_string(env_value)?)?;
+                if env_config.network.is_some()
+                    && env_value.get("servers").is_some()
+                    && env_config.servers.is_empty()
+                {
+                    return Err(ConfigError::Validation(format!(
+                        "[envs.{env_name}].servers is empty. List at least one server or omit the field to target the whole network."
+                    )));
+                }
                 config.envs.insert(env_name.clone(), env_config);
             }
         }

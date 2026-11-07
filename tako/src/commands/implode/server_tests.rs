@@ -12,6 +12,7 @@ fn native_server() -> ServerEntry {
                 device: fixture.profile.snapshot().network.initial_admin.to_string(),
             },
             server_id: fixture.server,
+            server_name: "node".parse().unwrap(),
         }),
         ..Default::default()
     }

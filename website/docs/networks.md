@@ -34,7 +34,16 @@ network = "0123456789abcdef0123456789abcdef"
 route = "app.example.com"
 ```
 
-Use your actual ID, not this example. `network` and `servers` are alternative selectors; do not set both. The environment resolves current trusted server members from the local profile and refreshed membership. It does not fall back to legacy inventory if the network is unavailable or empty. Native display names use `alias/server-name`; duplicate names include the device ID.
+Omitting `servers` deploys to every trusted server in the network. To place an app on specific hosts, list their enrolled names or device IDs in that app’s project:
+
+```toml
+[envs.production]
+network = "0123456789abcdef0123456789abcdef"
+servers = ["edge-a", "edge-b"]
+route = "shop.example.com"
+```
+
+A billing app on the same network can set `servers = ["billing-c"]` in its own project. Both apps can still reach each other through their private service names. The CLI resolves the entire list against trusted membership before deploying. An empty list, an unknown server, or an ambiguous name stops the deploy. Use the server’s device ID from `tako network status` to distinguish duplicate names. Removing a host from the list changes future deploys. Use `tako delete` on that host to remove an existing release.
 
 ```bash
 tako deploy --env production

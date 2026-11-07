@@ -34,6 +34,7 @@ fn identity() -> Identity {
                     .to_string(),
             },
             server_id,
+            server_name: "node".parse().unwrap(),
         },
         network_id,
         kind: DeviceKind::Laptop,

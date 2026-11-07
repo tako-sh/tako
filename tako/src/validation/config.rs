@@ -145,6 +145,10 @@ pub fn validate_server_references(
         {
             continue;
         }
+        // Native placement is validated against trusted membership during target resolution.
+        if env_config.network.is_some() {
+            continue;
+        }
         for server_name in &env_config.servers {
             if !servers_config.contains(server_name) {
                 result.error(format!(

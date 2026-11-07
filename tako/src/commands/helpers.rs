@@ -9,29 +9,10 @@ pub fn resolve_servers_for_env(
     servers: &ServersToml,
     env: &str,
 ) -> Result<Vec<String>, String> {
-    if let Some(network) = tako_config
-        .envs
-        .get(env)
-        .and_then(|env| env.network.as_deref())
+    if let Some(config) = tako_config.envs.get(env)
+        && let Some(network) = &config.network
     {
-        let mut names: Vec<_> = servers
-            .servers
-            .iter()
-            .filter(|(_, entry)| {
-                entry
-                    .native
-                    .as_ref()
-                    .is_some_and(|target| target.network.id == network)
-            })
-            .map(|(name, _)| name.clone())
-            .collect();
-        names.sort();
-        if names.is_empty() {
-            return Err(format!(
-                "Network '{network}' has no trusted servers for environment '{env}'"
-            ));
-        }
-        return Ok(names);
+        return resolve_network_servers(servers, network, &config.servers, env);
     }
     let mapped: Vec<String> = tako_config
         .get_servers_for_env(env)
@@ -55,6 +36,50 @@ pub fn resolve_servers_for_env(
          Add `servers = [\"<name>\"]` under [envs.{}] in tako.toml.",
         env, env
     ))
+}
+
+fn resolve_network_servers(
+    servers: &ServersToml,
+    network: &str,
+    selectors: &[String],
+    env: &str,
+) -> Result<Vec<String>, String> {
+    let members: std::collections::BTreeMap<_, _> = servers
+        .servers
+        .iter()
+        .filter_map(|(name, entry)| {
+            let target = entry.native.as_ref()?;
+            (target.network.id == network).then_some((name, target))
+        })
+        .collect();
+    if members.is_empty() {
+        return Err(format!(
+            "Network '{network}' has no trusted servers for environment '{env}'"
+        ));
+    }
+    if selectors.is_empty() {
+        return Ok(members.into_keys().cloned().collect());
+    }
+
+    let mut selected = std::collections::BTreeSet::new();
+    for selector in selectors {
+        let device_id = selector.parse::<tako_network::DeviceId>().ok();
+        let mut matches = members.iter().filter(|(_, target)| {
+            target.server_name.as_str() == selector || Some(&target.server_id) == device_id.as_ref()
+        });
+        let Some((name, _)) = matches.next() else {
+            return Err(format!(
+                "Server '{selector}' is not a trusted server in network '{network}' for environment '{env}'"
+            ));
+        };
+        if matches.next().is_some() {
+            return Err(format!(
+                "Server name '{selector}' is ambiguous in network '{network}'. Use a server device ID in [envs.{env}].servers."
+            ));
+        }
+        selected.insert((*name).clone());
+    }
+    Ok(selected.into_iter().collect())
 }
 
 /// Resolve the target environment name, defaulting to "production".
@@ -238,7 +263,7 @@ mod tests {
         servers
     }
 
-    fn native_entry(network_id: &str) -> ServerEntry {
+    fn native_entry(network_id: &str, name: &str, id: &str) -> ServerEntry {
         ServerEntry {
             native: Some(crate::management_http::NativeTarget {
                 network: crate::config::NetworkAlias {
@@ -246,7 +271,8 @@ mod tests {
                     id: network_id.into(),
                     device: "1".repeat(64),
                 },
-                server_id: "2".repeat(64).parse().unwrap(),
+                server_id: id.parse().unwrap(),
+                server_name: name.parse().unwrap(),
             }),
             host: "192.0.2.10".into(),
             ..Default::default()
@@ -265,12 +291,14 @@ mod tests {
             },
         );
         let mut servers = one_server_config();
-        servers
-            .servers
-            .insert("fleet/node".into(), native_entry(&id));
-        servers
-            .servers
-            .insert("other/node".into(), native_entry(&"b".repeat(32)));
+        servers.servers.insert(
+            "fleet/node".into(),
+            native_entry(&id, "node", &"2".repeat(64)),
+        );
+        servers.servers.insert(
+            "other/node".into(),
+            native_entry(&"b".repeat(32), "node", &"3".repeat(64)),
+        );
         assert_eq!(
             resolve_servers_for_env(&project, &servers, "production").unwrap(),
             vec!["fleet/node"]
@@ -284,11 +312,75 @@ mod tests {
     }
 
     #[test]
+    fn native_placement_resolves_each_apps_servers_within_the_same_network() {
+        let id = "a".repeat(32);
+        let mut servers = one_server_config();
+        for (name, key) in [("web-a", "1"), ("web-b", "2"), ("billing", "3")] {
+            servers.servers.insert(
+                format!("local-alias/{name}"),
+                native_entry(&id, name, &key.repeat(64)),
+            );
+        }
+        servers.servers.insert(
+            "foreign/other".into(),
+            native_entry(&"b".repeat(32), "other", &"4".repeat(64)),
+        );
+
+        let resolve = |list: &str| {
+            let config = TakoToml::parse(&format!(
+                "[envs.production]\nroute = 'example.com'\nnetwork = '{id}'\n{list}"
+            ))
+            .unwrap();
+            resolve_servers_for_env(&config, &servers, "production")
+        };
+        assert_eq!(resolve("").unwrap().len(), 3);
+        assert_eq!(
+            resolve("servers = ['web-b', 'web-a']").unwrap(),
+            ["local-alias/web-a", "local-alias/web-b"]
+        );
+        assert_eq!(
+            resolve("servers = ['billing']").unwrap(),
+            ["local-alias/billing"]
+        );
+        for invalid in ["other", "solo", "missing"] {
+            assert!(
+                resolve(&format!("servers = ['web-a', '{invalid}']"))
+                    .unwrap_err()
+                    .contains(invalid)
+            );
+        }
+    }
+
+    #[test]
+    fn ambiguous_native_names_require_a_device_id() {
+        let network = "a".repeat(32);
+        let mut servers = ServersToml::default();
+        for key in ["1".repeat(64), "2".repeat(64)] {
+            servers.servers.insert(
+                format!("fleet/edge/{key}"),
+                native_entry(&network, "edge", &key),
+            );
+        }
+        assert!(
+            resolve_network_servers(&servers, &network, &["edge".into()], "production")
+                .unwrap_err()
+                .contains("ambiguous")
+        );
+        let key = "2".repeat(64);
+        assert_eq!(
+            resolve_network_servers(&servers, &network, std::slice::from_ref(&key), "production")
+                .unwrap(),
+            [format!("fleet/edge/{key}")]
+        );
+    }
+
+    #[test]
     fn saving_inventory_never_persists_native_members_as_legacy_servers() {
         let mut servers = one_server_config();
-        servers
-            .servers
-            .insert("fleet/node".into(), native_entry(&"a".repeat(32)));
+        servers.servers.insert(
+            "fleet/node".into(),
+            native_entry(&"a".repeat(32), "node", &"2".repeat(64)),
+        );
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("config.toml");
         std::fs::write(
@@ -491,6 +583,7 @@ fn native_server_entries(
                     native: Some(crate::management_http::NativeTarget {
                         network: alias.clone(),
                         server_id,
+                        server_name: member.request.name.clone(),
                     }),
                     host: access
                         .host

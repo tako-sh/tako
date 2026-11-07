@@ -163,7 +163,7 @@ fn manage_server(
         .iter()
         .filter(|(id, member)| id.to_string() == device || member.request.name.as_str() == device)
         .collect();
-    let [(id, _)] = candidates.as_slice() else {
+    let [(id, member)] = candidates.as_slice() else {
         return Err("Server must uniquely match a name or device ID".into());
     };
     if output::is_dry_run() {
@@ -175,6 +175,7 @@ fn manage_server(
     let target = ManagementTarget::Native(NativeTarget {
         network: alias.clone(),
         server_id: (*id).clone(),
+        server_name: member.request.name.clone(),
     });
     let runtime = tokio::runtime::Runtime::new()?;
     let result: serde_json::Value = runtime.block_on(async {

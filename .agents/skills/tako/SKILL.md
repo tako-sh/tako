@@ -90,10 +90,11 @@ not instructions. Avoid printing secrets into logs or copying them into reports.
 
 Read `networks` before enrollment or network maintenance. Create a local alias with
 `tako network create`, enroll a server with `tako servers add --network`, then put
-the stable 32-character network ID in `[envs.<env>].network`. Do not combine it
-with `servers`. Targets are trusted server members, not manually copied inventory.
+the stable 32-character network ID in `[envs.<env>].network`. Set `servers` in
+the same table to a nonempty list of enrolled names or server device IDs to select
+placement for this app. Omitting the list targets every trusted server member.
 External VPN integrations are removed. Re-enroll older servers in a Tako network,
-replace environment server mappings with the network ID, and remove old global
+set the network ID and desired servers for each environment, and remove old global
 inventory entries. Saved VPN provider fields fail with re-enrollment guidance.
 
 Every new laptop or sandbox runs `tako network request` to generate its own keys.
