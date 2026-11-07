@@ -7,7 +7,7 @@ test "$(id -u)" = 0
 test -f /.dockerenv
 
 exec setpriv \
-  --bounding-set=-all,+net_bind_service,+setuid,+setgid,+kill,+chown,+fowner,+dac_override \
+  --bounding-set=-all,+net_bind_service,+setuid,+setgid,+kill,+chown,+fowner,+dac_override,+dac_read_search \
   --inh-caps=-all,+net_bind_service,+setuid,+setgid,+kill \
   --ambient-caps=-all,+net_bind_service,+setuid,+setgid,+kill \
   --reuid=tako --regid=tako --init-groups \

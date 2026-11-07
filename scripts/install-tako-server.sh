@@ -1983,10 +1983,11 @@ NotifyAccess=all
 User=$TAKO_USER
 Group=$TAKO_USER
 # sudo is restricted to the root-owned provisioning and maintenance helpers.
+# DAC_READ_SEARCH stays bounding-only for PAM shadow reads by those helpers.
 NoNewPrivileges=false
 SupplementaryGroups=tako-app
 AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/usr/local/bin/tako-server --socket $TAKO_SOCKET --data-dir $TAKO_HOME $TAKO_PUBLIC_PORT_ARGS $TAKO_MANAGEMENT_ARGS
 ExecReload=/bin/kill -HUP \$MAINPID
@@ -2018,7 +2019,7 @@ Group=$TAKO_USER
 NoNewPrivileges=false
 SupplementaryGroups=tako-app
 AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/usr/local/bin/tako-server --standby --socket $TAKO_SOCKET --data-dir $TAKO_HOME $TAKO_PUBLIC_PORT_ARGS --instance-port-offset 1000
 Restart=always
