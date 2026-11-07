@@ -5,6 +5,8 @@ description: "A concrete walkthrough: scaffold a TanStack Start app, run tako in
 image: da501b0d6381
 ---
 
+> **Networking update.** The server setup described here uses Tako’s legacy VPN integration. For new installations, see [native WireGuard networks](/blog/native-wireguard-networks-for-vps-apps/). For an existing Tailscale or NetBird host, follow the [migration guide](/blog/migrate-tailscale-to-tako-wireguard/).
+
 [TanStack Start](https://tanstack.com/start/latest) is a full-stack React framework with file-based routing, server functions, and a real SSR build. Most tutorials for it end with "now deploy to Netlify / Vercel / Cloudflare Workers." Those work, but they're not your only option. The SSR output is a Node-compatible fetch handler — which means a single Linux box with [Tako](/docs/) on it is enough.
 
 Before starting, complete the [CLI and remote server setup](/docs/quickstart/). You need a supported Linux VPS, admin SSH access, and your workstation and server connected to the same Tailscale tailnet. Point your app's domain at the VPS and allow ports 80 and 443 for this direct HTTPS setup. Setup and build time depend on your environment.

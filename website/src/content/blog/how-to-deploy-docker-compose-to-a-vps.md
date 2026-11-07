@@ -6,6 +6,8 @@ image: 0d360d0553c5
 imageAlt: "A coral octopus opens a secure web-service dock for visitors while Redis stays connected behind the gate."
 ---
 
+> **Networking update.** The server setup described here uses Tako’s legacy VPN integration. For new installations, see [native WireGuard networks](/blog/native-wireguard-networks-for-vps-apps/). For an existing Tailscale or NetBird host, follow the [migration guide](/blog/migrate-tailscale-to-tako-wireguard/).
+
 Your app already has a Compose file: one web service, a Redis dependency, and a named volume. You want to deploy that stack to a VPS, give it a real HTTPS hostname, and keep its data when you ship the next version.
 
 Tako now supports that shape directly. We'll deploy the shipped Bun-and-Redis example, test its counter through local HTTPS, then verify the same behavior on a public domain. The app uses its existing command and needs no Tako SDK.

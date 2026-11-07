@@ -6,6 +6,8 @@ image: 4986a7db690f
 imageAlt: "A coral octopus connects a laptop to a server rack through a glowing NetBird cable."
 ---
 
+> **Networking update.** The server setup described here uses Tako’s legacy VPN integration. For new installations, see [native WireGuard networks](/blog/native-wireguard-networks-for-vps-apps/). For an existing Tailscale or NetBird host, follow the [migration guide](/blog/migrate-tailscale-to-tako-wireguard/).
+
 Your laptop and VPS already share a NetBird network. You can reach the server privately, and you want app deploys to follow that same path. Tako now supports NetBird for remote management: enroll the host once, map it to your app, and deploy over the private connection.
 
 We'll use an existing Tako app and a Linux VPS. By the end, your CLI will manage the server through NetBird while visitors reach the app through its public HTTPS hostname. Two addresses, two jobs. The DNS records get to keep their day jobs.

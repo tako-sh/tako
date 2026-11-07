@@ -5,6 +5,8 @@ description: "Deploy a full-stack Next.js app to one cheap VPS with Tako: HTTPS,
 image: cbd3c4bcfbec
 ---
 
+> **Networking update.** The server setup described here uses Tako’s legacy VPN integration. For new installations, see [native WireGuard networks](/blog/native-wireguard-networks-for-vps-apps/). For an existing Tailscale or NetBird host, follow the [migration guide](/blog/migrate-tailscale-to-tako-wireguard/).
+
 One cheap VPS can run more than a homepage.
 
 The interesting question is what happens after the first deploy. A real Next.js app wants HTTPS, static assets, API routes, background jobs, WebSocket or SSE updates, image optimization, secrets, logs, and a deploy path that does not turn every change into a tiny incident. You can bolt those together from separate tools. Or you can make the VPS run like a small app platform.

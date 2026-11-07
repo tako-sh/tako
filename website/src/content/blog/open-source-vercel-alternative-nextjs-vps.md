@@ -5,6 +5,8 @@ description: "Compare Vercel's hosted Next.js path with Tako's open-source VPS p
 image: 0feaccc1b663
 ---
 
+> **Networking update.** The server setup described here uses Tako’s legacy VPN integration. For new installations, see [native WireGuard networks](/blog/native-wireguard-networks-for-vps-apps/). For an existing Tailscale or NetBird host, follow the [migration guide](/blog/migrate-tailscale-to-tako-wireguard/).
+
 Vercel is the obvious answer for Next.js because it is a very good answer. The framework and the platform grew up together. You push to Git, get preview URLs, merge to production, and the deployment model understands Next.js deeply.
 
 That is hard to beat if your goal is "think about servers as little as possible."

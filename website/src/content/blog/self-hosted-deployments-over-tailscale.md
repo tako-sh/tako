@@ -6,6 +6,8 @@ description: "Tako keeps server management on private Tailscale HTTP and signs m
 image: eaa03cb44e6f
 ---
 
+> **Networking update.** The server setup described here uses Tako’s legacy VPN integration. For new installations, see [native WireGuard networks](/blog/native-wireguard-networks-for-vps-apps/). For an existing Tailscale or NetBird host, follow the [migration guide](/blog/migrate-tailscale-to-tako-wireguard/).
+
 SSH is a wonderful recovery tool. It is not a wonderful status API.
 
 For the first versions of Tako, the mental model was straightforward: the local [`tako` CLI](/docs/cli/) talked to your server over SSH, and the server talked to its own Unix management socket. That works. It is also a little too honest about its ancestry. Every status check, secrets sync, deploy step, and future control-plane operation has to fit through an interactive login protocol that was designed for humans and shell commands.

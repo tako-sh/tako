@@ -6,6 +6,8 @@ image: 58ad61cea9a8
 imageAlt: "A coral octopus secures an Axum application module inside a VPS server as an HTTPS lock lights up."
 ---
 
+> **Networking update.** The server setup described here uses Tako’s legacy VPN integration. For new installations, see [native WireGuard networks](/blog/native-wireguard-networks-for-vps-apps/). For an existing Tailscale or NetBird host, follow the [migration guide](/blog/migrate-tailscale-to-tako-wireguard/).
+
 Your Axum router works locally. Getting it onto a VPS adds a second project: build a Linux binary, keep it running, issue a certificate, and work out whether the next version is healthy before sending users to it.
 
 We'll take a small Rust app through that path with Tako. The app uses the Rust SDK, a Dockerfile supplies the production build, and Tako handles public HTTPS and rolling releases. You keep your router. The certificate has somewhere else to live.
