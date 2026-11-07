@@ -50,6 +50,7 @@ COPY --from=docker /usr/local/libexec/docker/cli-plugins/ /usr/local/libexec/doc
 
 # Pre-install tako-server (with dummy binary, installer creates user/service)
 COPY scripts/install-tako-server.sh /tmp/install-tako-server.sh
+COPY scripts/tako-network-helper.py /tmp/scripts/tako-network-helper.py
 RUN --mount=type=secret,id=proxy_ca,mode=0444 \
   if [ -s /run/secrets/proxy_ca ]; then \
     export SSL_CERT_FILE=/run/secrets/proxy_ca CURL_CA_BUNDLE=/run/secrets/proxy_ca NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; \
@@ -58,22 +59,14 @@ RUN --mount=type=secret,id=proxy_ca,mode=0444 \
     trap 'cp /tmp/e2e-dnf.conf /etc/dnf/dnf.conf; rm -f /tmp/e2e-dnf.conf' EXIT; \
   fi; \
   chmod +x /tmp/install-tako-server.sh \
+    && ssh-keygen -A \
+    && mkdir -p /run/sshd \
     && printf '#!/bin/sh\nexit 0\n' > /tmp/tako-server \
     && chmod +x /tmp/tako-server \
-    && tar -cf - -C /tmp tako-server | zstd -o /tmp/tako-server.tar.zst \
+    && tar -cf - -C /tmp tako-server scripts/tako-network-helper.py | zstd -o /tmp/tako-server.tar.zst \
     && sha256sum /tmp/tako-server.tar.zst | awk '{print $1}' > /tmp/tako-server.tar.zst.sha256 \
     && TAKO_SERVER_URL="file:///tmp/tako-server.tar.zst" TAKO_RESTART_SERVICE=0 TAKO_SERVER_NAME=e2e sh /tmp/install-tako-server.sh \
-    && rm -f /tmp/install-tako-server.sh /tmp/tako-server /tmp/tako-server.tar.zst /tmp/tako-server.tar.zst.sha256
-
-# Generate SSH host keys
-RUN --mount=type=secret,id=proxy_ca,mode=0444 \
-  if [ -s /run/secrets/proxy_ca ]; then \
-    export SSL_CERT_FILE=/run/secrets/proxy_ca CURL_CA_BUNDLE=/run/secrets/proxy_ca NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; \
-    cp /etc/dnf/dnf.conf /tmp/e2e-dnf.conf; \
-    printf '\nsslcacert=/run/secrets/proxy_ca\n' >> /etc/dnf/dnf.conf; \
-    trap 'cp /tmp/e2e-dnf.conf /etc/dnf/dnf.conf; rm -f /tmp/e2e-dnf.conf' EXIT; \
-  fi; \
-  ssh-keygen -A
+    && rm -f /tmp/install-tako-server.sh /tmp/tako-server /tmp/tako-server.tar.zst /tmp/tako-server.tar.zst.sha256 /tmp/scripts/tako-network-helper.py
 
 COPY e2e/docker/server/entrypoint.sh /usr/local/bin/tako-e2e-entrypoint.sh
 RUN --mount=type=secret,id=proxy_ca,mode=0444 \

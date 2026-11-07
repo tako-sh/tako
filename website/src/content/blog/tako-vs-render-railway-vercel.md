@@ -6,7 +6,7 @@ description: "Compare managed hosting with Tako on your own VPS: deployment work
 image: 7c38d2bc7ef3
 ---
 
-> **Networking update.** The server setup described here uses Tako’s legacy VPN integration. For new installations, see [native WireGuard networks](/blog/native-wireguard-networks-for-vps-apps/). For an existing Tailscale or NetBird host, follow the [migration guide](/blog/migrate-tailscale-to-tako-wireguard/).
+> **Networking update.** The Tailscale and NetBird integrations and older setup commands described here have been retired. For new installations, see [native WireGuard networks](/blog/native-wireguard-networks-for-vps-apps/). For an existing Tailscale or NetBird host, follow the [migration guide](/blog/migrate-tailscale-to-tako-wireguard/).
 
 Render, Railway, and Vercel operate the hosting platform for you. [Tako](/docs/) puts the application platform on servers you operate. The decision starts with who should own the machine, its maintenance, and its recovery when something fails.
 

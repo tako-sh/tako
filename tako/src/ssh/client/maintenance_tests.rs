@@ -20,10 +20,10 @@ fn maintenance_helpers_reject_extra_arguments_before_touching_host() {
         ("service", vec!["configure", "80", "443", "unexpected"]),
         (
             "service",
-            vec!["configure", "80;touch /tmp/unwanted", "443", "tailscale"],
+            vec!["configure", "80;touch /tmp/unwanted", "443", "native"],
         ),
-        ("service", vec!["configure", "0", "443", "netbird"]),
-        ("service", vec!["configure", "80", "80", "netbird"]),
+        ("service", vec!["configure", "0", "443", "native"]),
+        ("service", vec!["configure", "80", "80", "native"]),
     ] {
         let output = std::process::Command::new("sh")
             .args(["-c", helper_body(name), name])
@@ -45,24 +45,19 @@ fn executable(path: &std::path::Path, contents: &str) {
 #[cfg(unix)]
 #[test]
 fn configure_helper_updates_ports_enables_and_restarts_existing_service() {
-    check_configure_helper(
-        " --management-host 100.64.0.2",
-        "100.64.0.2",
-        "tailscale",
-        true,
-    );
+    check_configure_helper(" --management-host fd00::2", "fd00::2", "native", true);
 }
 
 #[cfg(unix)]
 #[test]
-fn configure_helper_recovers_management_binding_after_tailscale_connects() {
-    check_configure_helper("", "100.64.0.2", "tailscale", true);
+fn configure_helper_recovers_management_binding_after_native_connects() {
+    check_configure_helper("", "fd00::2", "native", true);
 }
 
 #[cfg(unix)]
 #[test]
-fn configure_helper_rejects_non_tailscale_management_address() {
-    check_configure_helper("", "8.8.8.8", "tailscale", false);
+fn configure_helper_rejects_non_native_management_address() {
+    check_configure_helper("", "8.8.8.8", "native", false);
 }
 
 #[test]
@@ -109,15 +104,10 @@ fn service_maintenance_fails_without_restarting_when_boot_startup_cannot_be_enab
 
 #[cfg(unix)]
 #[test]
-fn configure_helper_recovers_netbird_and_refreshes_stale_address() {
-    check_configure_helper("", "100.80.0.2", "netbird", true);
-    check_configure_helper(
-        " --management-host 100.80.0.1",
-        "100.80.0.2",
-        "netbird",
-        true,
-    );
-    check_configure_helper("", "fd00::2", "netbird", true);
+fn configure_helper_recovers_native_and_refreshes_stale_address() {
+    check_configure_helper("", "fd00::2", "native", true);
+    check_configure_helper(" --management-host fd00::1", "fd00::2", "native", true);
+    check_configure_helper("", "fd00::2", "native", true);
 }
 
 #[cfg(unix)]
@@ -136,11 +126,10 @@ fn check_configure_helper(
     )
     .unwrap();
     let log = root.join("calls");
+    let native_address = root.join("native-address");
     executable(
-        &root.join(vpn),
-        &format!(
-            "#!/bin/sh\nif [ \"$1\" = status ] && [ \"$2\" = --json ]; then echo '{{\"BackendState\":\"Running\"}}'; elif [ \"$#\" = 1 ]; then echo 'Management: Connected'; else echo {detected_address}; fi\n"
-        ),
+        &native_address,
+        &format!("#!/bin/sh\necho {detected_address}\n"),
     );
     executable(
         &root.join("systemctl"),
@@ -151,12 +140,6 @@ fn check_configure_helper(
         &root.join("sed"),
         "#!/bin/sh\nshift\nexec /usr/bin/sed -i '' \"$@\"\n",
     );
-    let other_vpn = if vpn == "netbird" {
-        "tailscale"
-    } else {
-        "netbird"
-    };
-    executable(&root.join(other_vpn), "#!/bin/sh\necho 100.99.0.1\n");
     let vpn_address = root.join("vpn-address");
     let functions = INSTALL_SERVER_SCRIPT
         .split_once("cat <<'VPN_EOF'\n")
@@ -164,7 +147,11 @@ fn check_configure_helper(
         .1
         .split_once("\nVPN_EOF")
         .unwrap()
-        .0;
+        .0
+        .replace(
+            "/usr/local/libexec/tako/native-address",
+            native_address.to_str().unwrap(),
+        );
     executable(
         &vpn_address,
         &format!("#!/bin/sh\nset -eu\n{functions}\ndetect_management_ip \"$@\"\n"),
@@ -231,7 +218,7 @@ fn refresh_helper_binds_download_to_verified_hash_before_installing() {
     )
     .unwrap();
     let vpn_provider = root.join("vpn-provider");
-    std::fs::write(&vpn_provider, "netbird\n").unwrap();
+    std::fs::write(&vpn_provider, "native\n").unwrap();
     let binary = root.join("tako-server");
     std::fs::write(&binary, "old binary").unwrap();
     let archive = root.join("payload");
@@ -293,6 +280,6 @@ fn refresh_helper_binds_download_to_verified_hash_before_installing() {
     );
     assert_eq!(
         std::fs::read_to_string(installed).unwrap(),
-        "custom-user\n/srv/custom-tako\n/run/custom-tako/server.sock\n0\nnetbird\n"
+        "custom-user\n/srv/custom-tako\n/run/custom-tako/server.sock\n0\nnative\n"
     );
 }

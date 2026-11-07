@@ -127,6 +127,7 @@ pub(super) async fn resolve_deploy_server_names_with_setup(
             if servers.is_empty() {
                 let added = server::prompt_to_add_server(
                     "No servers have been added. Deployment needs at least one production server.",
+                    Some(config_path),
                 )
                 .await
                 .map_err(|e| format!("Failed to run server setup: {}", e))?;
@@ -135,7 +136,7 @@ pub(super) async fn resolve_deploy_server_names_with_setup(
                     return Err(original_error);
                 }
 
-                *servers = ServersToml::load().map_err(|e| e.to_string())?;
+                *servers = crate::commands::helpers::load_management_servers(None, None).await?;
             }
 
             if servers.is_empty() {
@@ -147,6 +148,16 @@ pub(super) async fn resolve_deploy_server_names_with_setup(
             } else {
                 select_production_server_for_mapping(servers)?
             };
+
+            if let Some(target) = servers
+                .get(&selected_server)
+                .and_then(|entry| entry.native.as_ref())
+            {
+                return Err(format!(
+                    "Set `network = \"{}\"` under [envs.{env}] in tako.toml, remove its old `servers` mapping, then deploy again.",
+                    target.network.id
+                ));
+            }
 
             persist_server_env_mapping(config_path, &selected_server, env)?;
             output::info(&format!(

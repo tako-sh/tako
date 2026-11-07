@@ -1,17 +1,36 @@
 use super::*;
 
 #[test]
-fn servers_add_accepts_supported_vpns_only() {
+fn servers_add_rejects_removed_provider_flags() {
     for value in ["tailscale", "netbird"] {
-        let cli = Cli::try_parse_from(["tako", "servers", "add", "edge.internal", "--vpn", value])
-            .unwrap();
-        let Commands::Servers(server::ServerCommands::Add { vpn, .. }) = cli.command.unwrap()
-        else {
-            panic!("expected add");
-        };
-        assert_eq!(vpn.unwrap().id(), value);
+        assert!(
+            Cli::try_parse_from(["tako", "servers", "add", "edge.internal", "--vpn", value])
+                .is_err()
+        );
     }
-    assert!(Cli::try_parse_from(["tako", "servers", "add", "--vpn", "unknown"]).is_err());
+}
+
+#[test]
+fn servers_add_accepts_native_endpoint_with_automatic_network_selection() {
+    let cli = Cli::try_parse_from([
+        "tako",
+        "servers",
+        "add",
+        "admin@edge.internal",
+        "--wireguard-endpoint",
+        "192.0.2.1:51820",
+    ])
+    .unwrap();
+    let Commands::Servers(server::ServerCommands::Add {
+        network,
+        wireguard_endpoint,
+        ..
+    }) = cli.command.unwrap()
+    else {
+        panic!("expected add")
+    };
+    assert!(network.is_none());
+    assert_eq!(wireguard_endpoint.unwrap().port(), 51820);
 }
 
 #[test]
@@ -32,25 +51,6 @@ fn servers_add_without_host_parses_for_wizard() {
         panic!("expected Servers::Add");
     };
     assert!(host.is_none());
-}
-
-#[test]
-fn servers_add_parses_optional_description() {
-    let cli = Cli::try_parse_from([
-        "tako",
-        "servers",
-        "add",
-        "example.com",
-        "--description",
-        "Edge node",
-    ])
-    .unwrap();
-    let Commands::Servers(server::ServerCommands::Add { description, .. }) =
-        cli.command.expect("command")
-    else {
-        panic!("expected Servers::Add");
-    };
-    assert_eq!(description.as_deref(), Some("Edge node"));
 }
 
 #[test]

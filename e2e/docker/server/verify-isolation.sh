@@ -20,7 +20,7 @@ for app in first second; do
   chmod 0600 "/opt/tako/apps/$app/production/data/app/legacy/database"
   chown -R tako:tako "/opt/tako/apps/$app"
   # Reproduce the service bounding set without granting its extra caps ambiently.
-  setpriv --bounding-set=-all,+net_bind_service,+setuid,+setgid,+kill,+chown,+fowner,+dac_override --reuid=tako --regid=tako --init-groups \
+  setpriv --bounding-set=-all,+net_bind_service,+setuid,+setgid,+kill,+chown,+fowner,+dac_override,+dac_read_search --reuid=tako --regid=tako --init-groups \
     sudo -n /usr/local/bin/tako-provision-app "$app/production" v1
 done
 

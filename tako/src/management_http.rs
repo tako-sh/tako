@@ -3,7 +3,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
-use tako_core::{Command, HelloResponse, Response, ServerRuntimeInfo};
+#[cfg(test)]
+use tako_core::HelloResponse;
+use tako_core::{Command, Response};
 use tokio::io::AsyncReadExt;
 
 mod auth;
@@ -15,7 +17,6 @@ use tako_network::api::ManagementAction;
 pub(crate) const MANAGEMENT_PORT: u16 = 9844;
 const MANAGEMENT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const MANAGEMENT_RPC_TIMEOUT: Duration = Duration::from_secs(5);
-const MANAGEMENT_PRESENCE_TIMEOUT: Duration = Duration::from_secs(2);
 const MANAGEMENT_DEPLOY_RPC_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const MANAGEMENT_UPLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const HEADER_UPLOAD_APP: &str = "x-tako-app";
@@ -35,12 +36,6 @@ const HEADER_LOG_TRUNCATED: &str = "x-tako-log-truncated";
 pub(crate) enum ManagementError {
     #[error("{0}")]
     Message(String),
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ManagementProbe {
-    pub(crate) hello: HelloResponse,
-    pub(crate) info: ServerRuntimeInfo,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,13 +82,6 @@ pub(crate) struct LogFetch {
 }
 
 impl ManagementClient {
-    pub(crate) async fn new(host: &str) -> Result<Self, ManagementError> {
-        Self::for_target(&ManagementTarget::Legacy {
-            host: host.to_owned(),
-        })
-        .await
-    }
-
     pub(crate) async fn for_server(
         server: &crate::config::ServerEntry,
     ) -> Result<Self, ManagementError> {
@@ -362,7 +350,8 @@ impl ManagementClient {
     }
 }
 
-pub(crate) fn rpc_url(host: &str) -> String {
+#[cfg(test)]
+fn rpc_url(host: &str) -> String {
     management_url(host, "rpc")
 }
 
@@ -386,58 +375,6 @@ fn management_url(host: &str, path: &str) -> String {
     } else {
         format!("http://{trimmed}:{MANAGEMENT_PORT}/{path}")
     }
-}
-
-pub(crate) async fn send_command(
-    host: &str,
-    command: &Command,
-) -> Result<Response, ManagementError> {
-    send_command_with_timeout(host, command, MANAGEMENT_RPC_TIMEOUT).await
-}
-
-async fn send_command_with_timeout(
-    host: &str,
-    command: &Command,
-    timeout: Duration,
-) -> Result<Response, ManagementError> {
-    let client = http_client(timeout)?;
-
-    let response = client
-        .post(rpc_url(host))
-        .json(command)
-        .send()
-        .await
-        .map_err(|error| ManagementError::Message(error.to_string()))?;
-
-    parse_response(response).await
-}
-
-pub(crate) async fn probe_presence(host: &str) -> Result<(), ManagementError> {
-    send_command_with_timeout(
-        host,
-        &Command::Hello {
-            protocol_version: tako_core::PROTOCOL_VERSION,
-        },
-        MANAGEMENT_PRESENCE_TIMEOUT,
-    )
-    .await
-    .map(|_| ())
-}
-
-pub(crate) async fn probe(host: &str) -> Result<ManagementProbe, ManagementError> {
-    let hello = send_command(
-        host,
-        &Command::Hello {
-            protocol_version: tako_core::PROTOCOL_VERSION,
-        },
-    )
-    .await?;
-    let hello = parse_ok_data::<HelloResponse>(hello, "hello")?;
-
-    let info = send_command(host, &Command::ServerInfo).await?;
-    let info = parse_ok_data::<ServerRuntimeInfo>(info, "server_info")?;
-
-    Ok(ManagementProbe { hello, info })
 }
 
 fn management_rpc_timeout_for_command(command: &Command) -> Duration {
@@ -644,10 +581,7 @@ mod tests {
 
     #[test]
     fn rpc_url_brackets_ipv6_literals() {
-        assert_eq!(
-            rpc_url("prod.tailnet.ts.net"),
-            "http://prod.tailnet.ts.net:9844/rpc"
-        );
+        assert_eq!(rpc_url("prod.internal"), "http://prod.internal:9844/rpc");
         assert_eq!(rpc_url("100.64.0.10"), "http://100.64.0.10:9844/rpc");
         assert_eq!(
             rpc_url("fd7a:115c:a1e0::1"),
@@ -658,8 +592,8 @@ mod tests {
     #[test]
     fn release_artifact_url_uses_management_port() {
         assert_eq!(
-            release_artifact_url("prod.tailnet.ts.net"),
-            "http://prod.tailnet.ts.net:9844/release-artifact"
+            release_artifact_url("prod.internal"),
+            "http://prod.internal:9844/release-artifact"
         );
     }
 

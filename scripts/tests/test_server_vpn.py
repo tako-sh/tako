@@ -11,8 +11,8 @@ FUNCTIONS = SOURCE[SOURCE.index("vpn_functions() {"):SOURCE.index("process_has_m
 
 
 class ServerVpnTests(unittest.TestCase):
-    def configure(self, *, provider="netbird", saved="netbird", host="",
-                  tailscale="100.64.0.1", netbird="100.80.0.1", restart="1",
+    def configure(self, *, provider="native", saved="native", host="",
+                  restart="1",
                   previous="100.80.0.9", native="fd00:1234:5678::1"):
         with tempfile.TemporaryDirectory() as temporary:
             settings = Path(temporary) / "vpn-provider"
@@ -23,8 +23,6 @@ class ServerVpnTests(unittest.TestCase):
 native_address() { [ "$TEST_NATIVE" != disconnected ] || return 1; printf '%s\\n' "$TEST_NATIVE"; }
 is_enabled() { [ "$1" = 1 ]; }
 existing_service_arg_value() { printf '%s\\n' "$TEST_PREVIOUS"; }
-tailscale() { [ "$TEST_TAILSCALE" != disconnected ] || return 1; if [ "$1" = status ]; then printf '%s\\n' '{"BackendState":"Running"}'; return; fi; printf '%s\\n' "$TEST_TAILSCALE"; }
-netbird() { [ "$TEST_NETBIRD" != disconnected ] || return 1; if [ "$#" = 1 ]; then printf '%s\\n' 'Management: Connected'; return; fi; printf '%s\\n' "$TEST_NETBIRD"; }
 TAKO_VPN=$TEST_PROVIDER
 TAKO_MANAGEMENT_HOST=$TEST_HOST
 TAKO_RESTART_SERVICE=$TEST_RESTART
@@ -36,60 +34,34 @@ printf 'PROVIDER=%s\\nHOST=%s\\nARGS=%s\\n' "$TAKO_VPN" "$TAKO_MANAGEMENT_HOST" 
             return subprocess.run(["sh", "-eu"], input=script, text=True,
                                   capture_output=True, timeout=5, env={
                                       **os.environ, "TEST_PROVIDER": provider,
-                                      "TEST_HOST": host, "TEST_TAILSCALE": tailscale,
-                                      "TEST_NETBIRD": netbird, "TEST_RESTART": restart,
+                                      "TEST_HOST": host,
+                                      "TEST_RESTART": restart,
                                       "TEST_PREVIOUS": previous, "TEST_NATIVE": native,
                                   })
 
-    def test_selected_provider_wins_when_both_agents_report_addresses(self):
-        result = self.configure()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("HOST=100.80.0.1", result.stdout)
-        self.assertNotIn("HOST=100.64.0.1", result.stdout)
+    def test_removed_providers_fail_before_configuring_a_listener(self):
+        for provider in ("tailscale", "netbird", "unknown"):
+            with self.subTest(provider=provider):
+                result = self.configure(provider=provider)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("only native Tako networking", result.stderr)
+                self.assertNotIn("--management-host", result.stdout)
 
-    def test_existing_binding_is_kept_when_agent_still_owns_it(self):
-        result = self.configure(netbird="100.80.0.1\n100.80.0.9")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("HOST=100.80.0.9", result.stdout)
+    def test_saved_removed_provider_fails_without_explicit_reenrollment(self):
+        for provider in ("tailscale", "netbird"):
+            result = self.configure(provider="", saved=provider)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("re-enroll", result.stderr)
 
-    def test_unknown_provider_fails_before_configuring_a_listener(self):
-        result = self.configure(provider="unknown")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertNotIn("--management-host", result.stdout)
-
-    def test_rejects_an_address_owned_by_the_other_provider(self):
-        result = self.configure(host="100.64.0.1")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("assigned to this server by netbird", result.stderr)
-
-    def test_rejects_public_and_loopback_addresses_even_if_reported_by_agent(self):
-        for address in ["8.8.8.8", "127.0.0.1", "0.0.0.0", "::1", "::", "fc::1", "fd00::::1", "fd00:1:2:3:4:5:6:7:8"]:
-            with self.subTest(address=address):
-                self.assertNotEqual(self.configure(netbird=address).returncode, 0)
-
-    def test_supports_custom_private_netbird_ranges_and_ipv6(self):
-        for address in ["10.10.0.1", "192.168.7.1", "fd00::1"]:
-            with self.subTest(address=address):
-                result = self.configure(netbird=address)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn(f"--management-host {address}", result.stdout)
-
-    def test_saved_provider_survives_offline_binary_refresh(self):
-        result = self.configure(provider="", netbird="disconnected", restart="0")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("PROVIDER=netbird", result.stdout)
-        self.assertIn("--management-host 100.80.0.9", result.stdout)
-
-    def test_start_refuses_disconnected_selected_provider(self):
-        result = self.configure(netbird="disconnected")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Connect this server to netbird", result.stderr)
-
-    def test_bootstrap_does_not_reuse_old_binding_when_switching_providers(self):
-        result = self.configure(saved="tailscale", netbird="disconnected", restart="0")
+    def test_explicit_native_bootstrap_discards_old_binding(self):
+        result = self.configure(saved="tailscale", restart="0", native="disconnected")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("ARGS=\n", result.stdout)
-        self.assertNotIn("--management-host", result.stdout)
+
+    def test_rejects_public_and_loopback_addresses(self):
+        for address in ["8.8.8.8", "127.0.0.1", "::1", "::", "fc::1", "fd00::::1"]:
+            with self.subTest(address=address):
+                self.assertNotEqual(self.configure(native=address).returncode, 0)
 
     def test_native_management_uses_assigned_ipv6(self):
         result = self.configure(provider="native", saved="native")

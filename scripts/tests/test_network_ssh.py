@@ -74,6 +74,62 @@ Match all
         self.assertEqual(self.install().returncode, 0)
         self.assertEqual((self.config.read_bytes(), self.policy.read_bytes()), before)
 
+    def test_distribution_crypto_policy_symlink_is_inspected_and_preserved(self):
+        target = self.root / 'crypto-policy'
+        target.write_text('Ciphers aes256-ctr\n')
+        # AlmaLinux shares this policy with its SSH client through a hard link.
+        (self.root / 'crypto-policy-client').hardlink_to(target)
+        included = self.parts / 'crypto-policy.conf'
+        included.symlink_to(target)
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(included.is_symlink())
+        self.assertEqual(target.read_text(), 'Ciphers aes256-ctr\n')
+        self.assertEqual(self.effective()['ciphers'], 'aes256-ctr')
+
+    def test_symlinked_include_cannot_hide_an_existing_key_command(self):
+        target = self.root / 'custom-policy'
+        target.write_text('AuthorizedKeysCommand /etc/custom-key-provider %u\n')
+        (self.parts / 'custom.conf').symlink_to(target)
+        before = self.config.read_bytes()
+        result = self.install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('existing AuthorizedKeysCommand', result.stderr)
+        self.assertEqual(self.config.read_bytes(), before)
+        self.assertFalse(self.policy.exists())
+
+    def test_writable_symlink_target_is_rejected_before_changes(self):
+        target = self.root / 'crypto-policy'
+        target.write_text('Ciphers aes256-ctr\n')
+        target.chmod(0o666)
+        (self.parts / 'crypto-policy.conf').symlink_to(target)
+        before = self.config.read_bytes()
+        result = self.install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('unsafe SSH configuration file', result.stderr)
+        self.assertEqual(self.config.read_bytes(), before)
+        self.assertFalse(self.policy.exists())
+
+    def test_main_config_symlink_is_not_rewritten(self):
+        target = self.root / 'original-config'
+        self.config.rename(target)
+        self.config.symlink_to(target)
+        before = target.read_bytes()
+        result = self.install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(target.read_bytes(), before)
+        self.assertTrue(self.config.is_symlink())
+        self.assertFalse(self.policy.exists())
+
+    def test_main_config_hardlink_is_not_rewritten(self):
+        (self.root / 'linked-config').hardlink_to(self.config)
+        before = self.config.read_bytes()
+        result = self.install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('unsafe SSH configuration file', result.stderr)
+        self.assertEqual(self.config.read_bytes(), before)
+        self.assertFalse(self.policy.exists())
+
     def test_old_generated_key_file_override_is_replaced_by_command(self):
         self.policy.write_text('Match User tako\n    AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/tako-network/authorized_keys\nMatch all\n')
         result = self.install()

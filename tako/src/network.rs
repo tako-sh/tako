@@ -15,6 +15,7 @@ use crate::config::{NetworkAlias, NetworksToml};
 pub(crate) mod client;
 pub(crate) mod local_access;
 pub(crate) mod revocation;
+pub(crate) mod server_access;
 pub(crate) mod ssh_session;
 pub(crate) mod ssh_tunnel;
 pub(crate) mod wireguard;
@@ -583,4 +584,4 @@ pub(crate) fn resolve_network(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

@@ -182,9 +182,7 @@ pub(super) async fn upgrade_servers(
     name: Option<&str>,
     force: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use crate::config::ServersToml;
-
-    let servers = ServersToml::load()?;
+    let servers = crate::commands::helpers::load_management_servers(None, None).await?;
     if servers.is_empty() {
         output::error("No servers configured.");
         output::hint(&format!(

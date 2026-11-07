@@ -3,13 +3,13 @@ use tako_network::{
     Approval, DeviceId, MemberKind, NetworkDescriptor, Permissions, ServerInfo, WgChallenge,
 };
 
-pub(super) struct Fixture {
+pub(crate) struct Fixture {
     pub keys: LocalDeviceKeys,
     pub profile: Profile,
     pub server: DeviceId,
 }
 
-pub(super) fn fixture() -> Fixture {
+pub(crate) fn fixture() -> Fixture {
     let keys = LocalDeviceKeys::generate().unwrap();
     let network = NetworkId::random().unwrap();
     let request = keys
@@ -195,7 +195,7 @@ fn json_persistence_rejects_linked_files() {
     }
 }
 
-pub(super) struct TestHome {
+pub(crate) struct TestHome {
     previous: Option<std::ffi::OsString>,
     pub directory: tempfile::TempDir,
     _lock: std::sync::MutexGuard<'static, ()>,

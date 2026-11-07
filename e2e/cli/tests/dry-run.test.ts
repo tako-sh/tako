@@ -188,8 +188,9 @@ describe("deploy --dry-run", () => {
 
 describe("servers add --dry-run", () => {
   test("shows skip message without writing config", async () => {
+    expect((await run(["network", "create", "fleet"], { cwd: tempDir, env: { HOME: tempDir, TAKO_HOME: takoHome } })).exitCode).toBe(0);
     const { screen, exitCode } = await run(
-      ["--dry-run", "servers", "add", "fake.server.com", "--name", "test-srv", "--no-test"],
+      ["--dry-run", "servers", "add", "fake.server.com", "--name", "test-srv"],
       {
         cwd: tempDir,
         env: { HOME: tempDir, TAKO_HOME: takoHome },
@@ -206,8 +207,9 @@ describe("servers add --dry-run", () => {
 
 describe("--dry-run --ci", () => {
   test("produces plain dry-run output without colors", async () => {
+    expect((await run(["network", "create", "fleet"], { cwd: tempDir, env: { HOME: tempDir, TAKO_HOME: takoHome } })).exitCode).toBe(0);
     const { term, exitCode } = await run(
-      ["--dry-run", "--ci", "servers", "add", "fake.server.com", "--name", "test-srv", "--no-test"],
+      ["--dry-run", "--ci", "servers", "add", "fake.server.com", "--name", "test-srv"],
       {
         cwd: tempDir,
         env: { HOME: tempDir, TAKO_HOME: takoHome },

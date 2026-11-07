@@ -3,7 +3,7 @@ title: Deployment
 description: "Build and deploy a Tako release: select an environment, package native or container artifacts, run release commands, and verify rolling updates."
 ---
 
-Tako deploys locally built apps to servers you control. The CLI validates project state, builds and packages the release, uploads artifacts over signed management (native pinned HTTPS or legacy private HTTP), and asks `tako-server` to prepare and roll the release into traffic.
+Tako deploys locally built apps to servers you control. The CLI validates project state, builds and packages the release, uploads artifacts over signed, pinned HTTPS management, and asks `tako-server` to prepare and roll the release into traffic.
 
 ## Server Setup
 
@@ -11,11 +11,11 @@ Provision a supported Linux host and enroll private management access using [Ser
 
 ## Add A Server
 
-Use [Native networks](/networks/) to create a network and enroll a host. For an existing Tailscale or NetBird installation, use [Servers](/servers/#add-a-server).
+Use [Native networks](/networks/) to create a network and enroll a host.
 
 ## Configure An Environment
 
-For a native network, copy its stable ID from `tako network list --json`:
+Copy its stable ID from `tako network list --json`:
 
 ```toml
 [envs.production]
@@ -25,15 +25,7 @@ route = "app.example.com"
 
 The CLI resolves current trusted server members and uses per-device signed HTTPS. No local WireGuard interface or SSH agent is needed. A scoped deployment requires administrator-provisioned routes and server-level bindings. App secrets remain separate per-environment credentials. See [sandbox enrollment](/networks/#enroll-another-laptop-or-sandbox).
 
-For legacy inventory, use server names instead:
-
-```toml
-[envs.production]
-route = "app.example.com"
-servers = ["la"]
-```
-
-Do not combine `network` and `servers`. For legacy inventory, deploy targets the servers listed in `[envs.<env>].servers`. If production has no server mapping and exactly one global server exists, deploy can select it and persist the mapping. Other non-development environments require explicit server mappings.
+Set `network` instead of an old `servers` mapping. See [re-enrollment](/servers/#choose-the-vpn-provider) when replacing an external VPN installation.
 
 ## Deploy
 

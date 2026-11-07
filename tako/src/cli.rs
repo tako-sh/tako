@@ -373,7 +373,7 @@ impl Cli {
             Commands::Version => print_version(json),
             Commands::Status => {
                 let rt = tokio::runtime::Runtime::new()?;
-                rt.block_on(commands::status::run(json))
+                rt.block_on(commands::status::run(json, self.config.as_deref()))
             }
             Commands::Init => {
                 commands::init::run(self.config.as_deref())?;
@@ -432,13 +432,9 @@ impl Cli {
                 let emit_generic = json
                     && !matches!(
                         &cmd,
-                        server::ServerCommands::List
-                            | server::ServerCommands::Add {
-                                network: Some(_),
-                                ..
-                            }
+                        server::ServerCommands::List | server::ServerCommands::Add { .. }
                     );
-                server::run(cmd)?;
+                server::run(cmd, self.config.as_deref())?;
                 if emit_generic {
                     json_success(true, "servers")
                 } else {

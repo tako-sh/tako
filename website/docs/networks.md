@@ -5,7 +5,7 @@ description: "Create a Tako network, enroll servers and devices, deploy over pin
 
 A native network identifies trusted devices and servers without an external account. Each device generates its own keys. A project selects the network by its stable 32-character hexadecimal ID; local aliases can differ between laptops.
 
-Management uses signed requests over pinned HTTPS. Deploy, status, logs, releases, and scaling do not require a workstation WireGuard interface, TUN device, or SSH agent. Server installation still needs administrator SSH access. [Legacy Tailscale and NetBird management](/servers/#choose-the-vpn-provider) remains supported.
+Management uses signed requests over pinned HTTPS. Deploy, status, logs, releases, and scaling do not require a workstation WireGuard interface, TUN device, or SSH agent. Server installation still needs administrator SSH access. Tako networking is the supported enrollment path; see [re-enrollment](/servers/#choose-the-vpn-provider) for older installations.
 
 ## Create a network and enroll a server
 

@@ -67,7 +67,9 @@ network = "0123456789abcdef0123456789abcdef"
 route = "shop.example.com"
 ```
 
-Run `tako status --json` from the project and inspect the **native** server entry, normally named `shop/shop-vps`. During the overlap, output can also contain the old inventory entry. Compare the running release with your earlier capture and read a finite log window using `tako logs --env production --days 1 --json`. An unchanged release lets you test the management change without deploying new app code. Request the same public URL again and compare its response. [CLI reference](/docs/cli/)
+After enrollment, remove the old `[[servers]]` entry for `shop-vps` from `~/.tako/config.toml`. Keep the native network profile and alias. Current CLI versions reject saved `vpn` fields, so the old entry must be removed before listing servers or reading status. Editing this local inventory does not stop the old VPN daemon or close your recovery session. [Removed provider settings](/docs/servers/#choose-the-vpn-provider)
+
+Run `tako status --json` from the project and inspect the **native** server entry, normally named `shop/shop-vps`. Compare the running release with your earlier capture and read a finite log window using `tako logs --env production --days 1 --json`. An unchanged release lets you test the management change without deploying new app code. Request the same public URL again and compare its response. [CLI reference](/docs/cli/)
 
 ## Prove recovery access, then retire Tailscale
 
@@ -88,4 +90,4 @@ sudo systemctl disable --now tailscaled
 sudo apt-get remove tailscale
 ```
 
-Finally, on the workstation, `tako servers remove shop-vps` forgets the old inventory entry. Keep the native profile. Run `tako network status shop --json` once more and verify the public app response. If other people or machines deploy this project, enroll their devices and verify their access before their next release. The migration is complete when the people who operate this app can deploy it, reach it, and recover it through the new setup.
+Finally, keep the native profile and run `tako network status shop --json` once more, then verify the public app response. `tako servers remove shop/shop-vps` revokes native network membership and delegated approvals; it is not a cleanup step for this migration. If other people or machines deploy this project, enroll their devices and verify their access before their next release. The migration is complete when the people who operate this app can deploy it, reach it, and recover it through the new setup.

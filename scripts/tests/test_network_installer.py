@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = (ROOT / 'scripts/install-tako-server.sh').read_text()
-NATIVE = SOURCE[SOURCE.index('install_native_network() {'):SOURCE.index('install_setcap_tool() {')]
+NATIVE = SOURCE[SOURCE.index('install_native_network() {'):SOURCE.index('install_sqlite_runtime() {')]
 IS_ENABLED = SOURCE[SOURCE.index('is_enabled() {'):SOURCE.index('vpn_functions() {')]
 
 
@@ -179,10 +179,11 @@ fake_sshd() {
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse((root / 'usr/local/libexec/tako/tako-network-helper').exists())
 
-    def test_other_providers_do_not_install_native_dependencies(self):
+    def test_removed_providers_fail_before_installing_dependencies(self):
         for provider in ('netbird', 'tailscale'):
             root, result = self.install(provider=provider, manager='systemd', restart='1', prepared=True)
-            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('only native Tako networking', result.stderr)
             self.assertNotIn('packages', result.stdout)
             self.assertNotIn('install verified corrosion', result.stdout)
             self.assertFalse((root / 'usr/local/libexec/tako/tako-network-helper.py').exists())

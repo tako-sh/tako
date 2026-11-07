@@ -20,12 +20,11 @@ set -eu
 #   TAKO_SOCKET             default: /var/run/tako/tako.sock
 #   TAKO_HTTP_PORT          public HTTP port for tako-server (default: 80)
 #   TAKO_HTTPS_PORT         public HTTPS port for tako-server (default: 443)
-#   TAKO_VPN_PROVIDER       native, tailscale or netbird (alias: TAKO_VPN)
-#                           default: saved choice, then tailscale
+#   TAKO_VPN_PROVIDER       native only (alias: TAKO_VPN; default: native)
 #   TAKO_NETWORK_HELPER_SOURCE / TAKO_NETWORK_HELPER_SHA256
 #                           optional local native helper and required digest
-#   TAKO_MANAGEMENT_HOST    assigned VPN IP to bind remote management on (optional)
-#                           if unset, installer asks the selected VPN agent
+#   TAKO_MANAGEMENT_HOST    assigned native network IP to bind remote management on (optional)
+#                           if unset, installer reads applied native network state
 #   TAKO_SSH_PUBKEY         public key line to authorize for TAKO_USER (optional)
 #                           if unset, installer prompts in interactive terminals
 #
@@ -66,7 +65,7 @@ TAKO_REPO_OWNER="${TAKO_REPO_OWNER:-tako-sh}"
 TAKO_REPO_NAME="${TAKO_REPO_NAME:-tako}"
 TAKO_RELEASE_TAG="${TAKO_RELEASE_TAG:-latest}"
 TAKO_RESTART_SERVICE="${TAKO_RESTART_SERVICE:-1}"
-TAKO_MANAGEMENT_REQUIRED_MESSAGE="Remote management requires a configured native WireGuard, Tailscale or NetBird private network."
+TAKO_MANAGEMENT_REQUIRED_MESSAGE="Remote management requires an enrolled Tako network."
 TAKO_MANAGEMENT_ARGS=""
 TAKO_NETWORK_UNIT_ARGS=""
 TAKO_PUBLIC_PORT_ARGS=""
@@ -245,17 +244,7 @@ detect_management_ip() {
     native)
       addresses="$(/usr/local/libexec/tako/native-address "$preferred" 2>/dev/null)" || return 1
       ;;
-    tailscale)
-      tailscale status --json 2>/dev/null | grep -Eq '"BackendState"[[:space:]]*:[[:space:]]*"Running"' || return 1
-      addresses="$(tailscale ip -4 2>/dev/null || true)
-$(tailscale ip -6 2>/dev/null || true)"
-      ;;
-    netbird)
-      netbird status 2>/dev/null | awk '/^Management: / { connected = ($2 == "Connected") } END { exit !connected }' || return 1
-      addresses="$(netbird status --ipv4 2>/dev/null || true)
-$(netbird status --ipv6 2>/dev/null || true)"
-      ;;
-    *) echo "error: VPN must be native, tailscale or netbird" >&2; return 1 ;;
+    *) echo "error: only native Tako networking is supported; enroll with tako servers add admin@host --network <network>" >&2; return 1 ;;
   esac
   for address in $addresses; do
     if valid_management_ip "$address" && { [ -z "$preferred" ] || [ "$address" = "$preferred" ]; }; then
@@ -270,14 +259,14 @@ VPN_EOF
 eval "$(vpn_functions)"
 
 configure_management_http() {
-  saved_vpn=tailscale
+  saved_vpn=native
   if [ -r /usr/local/libexec/tako/vpn-provider ]; then
     IFS= read -r saved_vpn < /usr/local/libexec/tako/vpn-provider
   fi
   TAKO_VPN="${TAKO_VPN:-$saved_vpn}"
   case "$TAKO_VPN" in
-    native|tailscale|netbird) ;;
-    *) echo "error: TAKO_VPN must be native, tailscale or netbird" >&2; exit 1 ;;
+    native) ;;
+    *) echo "error: only native Tako networking is supported; re-enroll with tako servers add admin@host --network <network>" >&2; exit 1 ;;
   esac
 
   requested_management_host="$TAKO_MANAGEMENT_HOST"
@@ -289,16 +278,6 @@ configure_management_http() {
   if [ -z "$TAKO_MANAGEMENT_HOST" ] && [ -z "$requested_management_host" ]; then
     TAKO_MANAGEMENT_HOST="$(detect_management_ip "$TAKO_VPN" || true)"
   fi
-  # An offline binary refresh must retain the existing private binding. Starting
-  # or repairing a service still requires an address from the selected agent.
-  if [ -z "$TAKO_MANAGEMENT_HOST" ] && [ -z "$requested_management_host" ] &&
-     ! is_enabled "$TAKO_RESTART_SERVICE" && [ "$TAKO_VPN" = "$saved_vpn" ] &&
-     [ "$TAKO_VPN" != native ]; then
-    previous_host="$(existing_service_arg_value --management-host || true)"
-    if [ -n "$previous_host" ] && valid_management_ip "$previous_host"; then
-      TAKO_MANAGEMENT_HOST="$previous_host"
-    fi
-  fi
   if [ -n "$requested_management_host" ] && [ -z "$TAKO_MANAGEMENT_HOST" ]; then
     echo "error: TAKO_MANAGEMENT_HOST must be an address assigned to this server by $TAKO_VPN." >&2
     exit 1
@@ -309,10 +288,10 @@ configure_management_http() {
     return
   fi
   if is_enabled "$TAKO_RESTART_SERVICE"; then
-    echo "error: $TAKO_MANAGEMENT_REQUIRED_MESSAGE Connect this server to $TAKO_VPN, then rerun the installer." >&2
+    echo "error: $TAKO_MANAGEMENT_REQUIRED_MESSAGE Enroll this server with tako servers add admin@host --network <network>." >&2
     exit 1
   fi
-  echo "warning: remote management was not configured; connect $TAKO_VPN before starting tako-server." >&2
+  echo "warning: remote management was not configured; enroll this server in a Tako network before starting tako-server." >&2
 }
 
 process_has_management_host() {
@@ -578,7 +557,7 @@ esac
   IFS= read -r TAKO_HOME
   IFS= read -r TAKO_SOCKET
 } < /usr/local/libexec/tako/install-settings
-TAKO_VPN=tailscale
+TAKO_VPN=native
 if [ -r /usr/local/libexec/tako/vpn-provider ]; then
   IFS= read -r TAKO_VPN < /usr/local/libexec/tako/vpn-provider
 fi
@@ -636,8 +615,8 @@ case "$action" in
   configure)
     [ "$#" -eq 4 ] || [ "$#" -eq 5 ] || { echo "error: configure requires HTTP and HTTPS ports, a VPN provider, and an optional VPN IP" >&2; exit 1; }
     case "$4" in
-      native|tailscale|netbird) ;;
-      *) echo "error: VPN must be native, tailscale or netbird" >&2; exit 1 ;;
+      native) ;;
+      *) echo "error: only native Tako networking is supported" >&2; exit 1 ;;
     esac
     for port in "$2" "$3"; do
       case "$port" in
@@ -655,7 +634,7 @@ case "$action" in
     ;;
 esac
 
-saved_vpn=tailscale
+saved_vpn=native
 if [ -r /usr/local/libexec/tako/vpn-provider ]; then
   IFS= read -r saved_vpn < /usr/local/libexec/tako/vpn-provider
 fi
@@ -664,9 +643,6 @@ case "$action" in
   rollback)
     [ -f /usr/local/bin/tako-server.prev ] || { echo "error: previous tako-server binary not found" >&2; exit 1; }
     install -m 0755 /usr/local/bin/tako-server.prev /usr/local/bin/tako-server
-    if [ "$saved_vpn" != native ] && command -v setcap >/dev/null 2>&1; then
-      setcap cap_net_bind_service,cap_setuid,cap_setgid,cap_kill=+ep /usr/local/bin/tako-server
-    fi
     exit 0
     ;;
   cleanup-upgrade)
@@ -759,34 +735,7 @@ EOF
 }
 
 ensure_privileged_bind_capability() {
-  # The same binary runs the capability-free native agent. Proxy units grant their own capabilities.
-  [ "$TAKO_VPN" != native ] || return 0
-  if ! need_cmd setcap && [ "$SERVICE_MANAGER" != "systemd" ]; then
-    install_setcap_tool
-  fi
-
-  if ! need_cmd setcap; then
-    echo "warning: setcap not found; systemd service still sets required capabilities via AmbientCapabilities." >&2
-    return
-  fi
-
-  if [ "$SERVICE_MANAGER" = "systemd" ]; then
-    if setcap "$TAKO_SERVER_CAPABILITIES=+ep" /usr/local/bin/tako-server; then
-      echo "OK granted required capabilities to /usr/local/bin/tako-server"
-      return
-    fi
-    echo "warning: failed to grant capabilities via setcap; systemd service still uses AmbientCapabilities." >&2
-    return
-  fi
-
-  if setcap "$TAKO_SERVER_CAPABILITIES=+ep" /usr/local/bin/tako-server; then
-    echo "OK granted required capabilities to /usr/local/bin/tako-server"
-    return
-  fi
-
-  echo "error: failed to grant required capabilities to /usr/local/bin/tako-server" >&2
-  echo "Install setcap/libcap support, then rerun the installer." >&2
-  exit 1
+  : # Native units grant capabilities to the proxy; the agent binary has none.
 }
 
 if is_enabled "$TAKO_RESTART_SERVICE" && [ "$SERVICE_MANAGER" = "none" ]; then
@@ -797,8 +746,11 @@ fi
 if [ -z "$TAKO_VPN" ] && [ -r /usr/local/libexec/tako/vpn-provider ]; then
   IFS= read -r TAKO_VPN < /usr/local/libexec/tako/vpn-provider
 fi
-TAKO_VPN="${TAKO_VPN:-tailscale}"
-if [ "$TAKO_VPN" != native ]; then configure_management_http; fi
+TAKO_VPN="${TAKO_VPN:-native}"
+if [ "$TAKO_VPN" != native ]; then
+  echo "error: only native Tako networking is supported; re-enroll with tako servers add admin@host --network <network>" >&2
+  exit 1
+fi
 
 maybe_prompt_ssh_pubkey() {
   is_valid_ssh_public_key() {
@@ -961,7 +913,7 @@ install_native_corrosion() {
 }
 
 install_native_network() {
-  [ "$TAKO_VPN" = native ] || return 0
+  [ "$TAKO_VPN" = native ] || { echo "error: only native Tako networking is supported" >&2; return 1; }
   [ "$TAKO_USER:$TAKO_HOME" = tako:/opt/tako ] || {
     echo 'error: native networking requires TAKO_USER=tako and TAKO_HOME=/opt/tako' >&2
     exit 1
@@ -1111,12 +1063,23 @@ Match all
 '''
 
 
-def read_config(path):
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+def read_config(path, *, included=False):
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    if included:
+        # Distributions such as AlmaLinux symlink their SSH crypto policy.
+        # Only follow administrator-owned links while inspecting includes;
+        # files we rewrite must remain regular files, checked without following.
+        link = path.lstat()
+        if stat.S_ISLNK(link.st_mode):
+            if link.st_uid != os.geteuid():
+                raise SystemExit('error: unsafe SSH configuration symlink')
+            flags &= ~os.O_NOFOLLOW
+    fd = os.open(path, flags)
     with os.fdopen(fd, 'rb') as stream:
         info = os.fstat(stream.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.geteuid() or info.st_mode & 0o022:
-            raise SystemExit('error: unsafe SSH configuration file')
+        if (not stat.S_ISREG(info.st_mode) or (not included and info.st_nlink != 1)
+                or info.st_uid != os.geteuid() or info.st_mode & 0o022):
+            raise SystemExit(f'error: unsafe SSH configuration file: {path}')
         content = stream.read(1024 * 1024 + 1)
         if len(content) > 1024 * 1024:
             raise SystemExit('error: SSH configuration too large')
@@ -1139,7 +1102,7 @@ def inspect(path):
     if len(seen) >= 256:
         raise SystemExit('error: too many SSH configuration includes')
     seen.add(path)
-    text, _ = read_config(path)
+    text, _ = read_config(path, included=path != config_path)
     for line in text.splitlines():
         if not line.strip() or line.lstrip().startswith('#'):
             continue
@@ -1321,27 +1284,6 @@ After=tako-network.target'
   echo 'OK native network agent installed; activation requires native-network.json and service-start mode.'
 }
 
-install_setcap_tool() {
-  if need_cmd apt-get; then
-    install_pkgs libcap2-bin
-  elif need_cmd dnf; then
-    install_pkgs libcap
-  elif need_cmd yum; then
-    install_pkgs libcap
-  elif need_cmd pacman; then
-    install_pkgs libcap
-  elif need_cmd zypper; then
-    zypper --non-interactive install libcap-progs || zypper --non-interactive install libcap2
-  else
-    echo "error: unsupported package manager; install the setcap/libcap tools manually" >&2
-    exit 1
-  fi
-
-  if ! need_cmd setcap; then
-    echo "error: setcap not found after installing capability tools" >&2
-    exit 1
-  fi
-}
 
 install_sqlite_runtime() {
   if need_cmd apt-get; then
@@ -1786,7 +1728,7 @@ chmod 0700 "$socket_dir"
 echo "OK prepared data and socket directories"
 
 install_native_network
-if [ "$TAKO_VPN" = native ]; then configure_management_http; fi
+configure_management_http
 
 maybe_prompt_ssh_pubkey
 
@@ -2041,10 +1983,11 @@ NotifyAccess=all
 User=$TAKO_USER
 Group=$TAKO_USER
 # sudo is restricted to the root-owned provisioning and maintenance helpers.
+# DAC_READ_SEARCH stays bounding-only for PAM shadow reads by those helpers.
 NoNewPrivileges=false
 SupplementaryGroups=tako-app
 AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/usr/local/bin/tako-server --socket $TAKO_SOCKET --data-dir $TAKO_HOME $TAKO_PUBLIC_PORT_ARGS $TAKO_MANAGEMENT_ARGS
 ExecReload=/bin/kill -HUP \$MAINPID
@@ -2076,7 +2019,7 @@ Group=$TAKO_USER
 NoNewPrivileges=false
 SupplementaryGroups=tako-app
 AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/usr/local/bin/tako-server --standby --socket $TAKO_SOCKET --data-dir $TAKO_HOME $TAKO_PUBLIC_PORT_ARGS --instance-port-offset 1000
 Restart=always

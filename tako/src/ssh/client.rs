@@ -9,7 +9,7 @@ mod tako;
 #[cfg(test)]
 mod maintenance_tests;
 
-pub use tako::{InstallServerMode, ServerInstallPorts};
+pub use tako::ServerInstallPorts;
 
 use super::error::{SshError, SshResult};
 use russh::Disconnect;

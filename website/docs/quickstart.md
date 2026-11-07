@@ -57,7 +57,7 @@ tako network list --json
 
 Replace the example IP with your server's reachable IP. Bootstrap uses administrator SSH; subsequent management uses pinned HTTPS with this device's keys. Allow HTTPS and the configured WireGuard UDP port on the server. No external network account or workstation TUN interface is required for deployment. See [Native networks](/networks/) for firewall requirements, device enrollment, and scoped sandbox access.
 
-Existing [Tailscale or NetBird installations](/servers/) remain supported with `tako servers add admin@vpn-host --vpn tailscale` or `--vpn netbird`.
+For an existing external VPN setup, follow the [native re-enrollment steps](/servers/#choose-the-vpn-provider).
 
 ## First deployment
 
@@ -69,7 +69,7 @@ The app already has a `tako.toml` from local setup. Check its production route a
 tako network list --json
 ```
 
-Run `tako agents` anytime to set up or refresh agent support; see [Coding agents](/agents/). Set `[envs.production].network` to the stable ID from `network list`. For legacy inventory, map names with `[envs.production].servers`. See [Deployment](/deployment/#configure-an-environment).
+Run `tako agents` anytime to set up or refresh agent support; see [Coding agents](/agents/). Set `[envs.production].network` to the stable ID from `network list`. See [Deployment](/deployment/#configure-an-environment).
 
 `tako dev` uses `{app}.test` by default. Add `[envs.development]` only when you want custom local routes.
 
