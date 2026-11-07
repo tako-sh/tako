@@ -146,6 +146,7 @@ impl App {
     }
 
     pub(crate) fn suppress_instance_routing(&self, instance_id: &str) {
+        let _transition = self.instance_transitions.lock();
         self.routing_suppressed_instances
             .write()
             .insert(instance_id.to_string());
@@ -153,6 +154,11 @@ impl App {
     }
 
     pub(crate) fn enable_instance_routing(&self, instance: &Arc<Instance>) -> bool {
+        let _transition = self.instance_transitions.lock();
+        self.enable_instance_routing_locked(instance)
+    }
+
+    fn enable_instance_routing_locked(&self, instance: &Arc<Instance>) -> bool {
         self.routing_suppressed_instances
             .write()
             .remove(&instance.id);
@@ -177,7 +183,7 @@ impl App {
             }
         }
         for instance in instances {
-            self.enable_instance_routing(instance);
+            self.enable_instance_routing_locked(instance);
         }
         Ok(())
     }

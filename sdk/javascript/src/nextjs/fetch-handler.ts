@@ -5,13 +5,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { FetchHandler, ReadyableFetchHandler } from "../types";
-import type { ManagedNextjsServer, NextjsFetchHandlerOptions } from "./types";
+import type { ManagedNextjsServer, ManagedNextjsStartup, NextjsFetchHandlerOptions } from "./types";
 
 const DEFAULT_HOSTNAME = "127.0.0.1";
 const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
 
 const managedServers = new Map<string, ManagedNextjsServer>();
 let cleanupHandlersRegistered = false;
+let shutdownPromise: Promise<void> | null = null;
 
 /**
  * Create a fetch handler that starts and proxies to a Next.js standalone server.
@@ -28,19 +29,19 @@ export function createNextjsFetchHandler(
   options: NextjsFetchHandlerOptions = {},
 ): FetchHandler {
   const serverPath = normalizeFileReference(serverEntrypoint);
-  const server = getManagedNextjsServer(serverPath, options);
+  const hostname = options.hostname ?? DEFAULT_HOSTNAME;
   const fetchImplementation = options.unstable_testing?.fetchImplementation ?? fetch;
 
   const handler: ReadyableFetchHandler = async (request) => {
     const port = options.unstable_testing?.ensureServer
       ? await options.unstable_testing.ensureServer()
-      : await ensureManagedNextjsServer(serverPath, server);
+      : await ensureManagedNextjsServer(serverPath, options);
     const upstreamUrl = new URL(request.url);
     const originalHost = request.headers.get("host") ?? upstreamUrl.host;
     const originalPort = originalRequestPort(request, originalHost);
 
     upstreamUrl.protocol = "http:";
-    upstreamUrl.hostname = server.hostname;
+    upstreamUrl.hostname = hostname;
     upstreamUrl.port = String(port);
 
     const headers = new Headers(request.headers);
@@ -69,7 +70,7 @@ export function createNextjsFetchHandler(
       await options.unstable_testing.ensureServer();
       return;
     }
-    await ensureManagedNextjsServer(serverPath, server);
+    await ensureManagedNextjsServer(serverPath, options);
   };
 
   return handler;
@@ -81,17 +82,30 @@ export function createNextjsFetchHandler(
  * @internal Used by tests and process shutdown hooks.
  */
 export async function shutdownManagedNextjsServers(): Promise<void> {
-  const shutdowns = [...managedServers.entries()].map(async ([serverPath, managed]) => {
-    managed.ready = null;
-    const child = managed.child;
-    managed.child = null;
-    if (!child || child.exitCode !== null) {
-      return;
-    }
-    await stopChildProcess(serverPath, child);
+  if (shutdownPromise) return await shutdownPromise;
+  shutdownPromise = (async () => {
+    const results = await Promise.allSettled(
+      [...managedServers.entries()].map(async ([key, managed]) => {
+        const startup = managed.startup;
+        if (startup) {
+          startup.abort.abort(new Error("Managed Next.js server is shutting down."));
+          await Promise.all([
+            startup.child ? stopChildProcess(key, startup.child) : Promise.resolve(),
+            startup.ready.catch(() => {}),
+          ]);
+        }
+        managedServers.delete(key);
+      }),
+    );
+    const errors = results.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : [],
+    );
+    if (errors.length > 0)
+      throw new AggregateError(errors, "Failed to stop managed Next.js servers.");
+  })().finally(() => {
+    shutdownPromise = null;
   });
-  await Promise.all(shutdowns);
-  managedServers.clear();
+  return await shutdownPromise;
 }
 
 function getManagedNextjsServer(
@@ -102,8 +116,7 @@ function getManagedNextjsServer(
   let managed = managedServers.get(serverKey);
   if (!managed) {
     managed = {
-      child: null,
-      ready: null,
+      startup: null,
       argv: options.argv ?? [],
       cwd: normalizeExecutionCwd(serverPath, options.cwd),
       hostname: options.hostname ?? DEFAULT_HOSTNAME,
@@ -116,18 +129,42 @@ function getManagedNextjsServer(
 
 async function ensureManagedNextjsServer(
   serverPath: string,
-  managed: ManagedNextjsServer,
+  options: NextjsFetchHandlerOptions,
 ): Promise<number> {
-  if (managed.ready) {
-    return await managed.ready;
+  while (shutdownPromise) await shutdownPromise;
+  const managed = getManagedNextjsServer(serverPath, options);
+  if (managed.startup) {
+    return await managed.startup.ready;
   }
 
-  managed.ready = (async () => {
+  const { promise, resolve, reject } = Promise.withResolvers<number>();
+  const startup: ManagedNextjsStartup = {
+    child: null,
+    ready: promise,
+    abort: new AbortController(),
+  };
+  managed.startup = startup;
+  void startManagedNextjsServer(serverPath, managed, startup).then(resolve, reject);
+  return await promise;
+}
+
+async function startManagedNextjsServer(
+  serverPath: string,
+  managed: ManagedNextjsServer,
+  startup: ManagedNextjsStartup,
+): Promise<number> {
+  const signal = startup.abort.signal;
+  const clear = () => {
+    if (managed.startup === startup) managed.startup = null;
+  };
+  try {
     await ensureFileExists(
       serverPath,
       `Next.js server entry '${serverPath}' was not found. Run next build before deploy.`,
     );
+    signal.throwIfAborted();
     const port = await reservePort(managed.hostname);
+    signal.throwIfAborted();
     const child = spawn(process.execPath, [serverPath, ...managed.argv], {
       cwd: managed.cwd,
       env: {
@@ -137,25 +174,32 @@ async function ensureManagedNextjsServer(
       },
       stdio: "inherit",
     });
-    managed.child = child;
+    startup.child = child;
     registerCleanupHandlers();
-    child.once("exit", () => {
-      managed.child = null;
-      managed.ready = null;
+    const exited = new Promise<never>((_, reject) => {
+      child.once("exit", () => {
+        clear();
+        reject(new Error(`Next.js server '${serverPath}' exited before it became ready.`));
+      });
+      child.once("error", reject);
     });
-    child.once("error", () => {
-      managed.child = null;
-      managed.ready = null;
-    });
-    await waitForServerReady(serverPath, child, managed.hostname, port, managed.startupTimeoutMs);
+    await Promise.race([
+      waitForServerReady(
+        serverPath,
+        child,
+        managed.hostname,
+        port,
+        managed.startupTimeoutMs,
+        signal,
+      ),
+      exited,
+    ]);
+    signal.throwIfAborted();
     return port;
-  })();
-
-  try {
-    return await managed.ready;
   } catch (error) {
-    managed.ready = null;
-    managed.child = null;
+    startup.abort.abort(error);
+    if (startup.child) await stopChildProcess(serverPath, startup.child);
+    clear();
     throw error;
   }
 }
@@ -171,25 +215,25 @@ function registerCleanupHandlers(): void {
   };
   process.once("exit", shutdown);
   process.once("SIGINT", () => {
-    shutdown();
-    process.exit(130);
+    void shutdownManagedNextjsServers().finally(() => process.exit(130));
   });
   process.once("SIGTERM", () => {
-    shutdown();
-    process.exit(143);
+    void shutdownManagedNextjsServers().finally(() => process.exit(143));
   });
 }
 
 async function waitForServerReady(
   serverPath: string,
-  child: NonNullable<ManagedNextjsServer["child"]>,
+  child: NonNullable<ManagedNextjsStartup["child"]>,
   hostname: string,
   port: number,
   timeoutMs: number,
+  signal: AbortSignal,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (child.exitCode !== null) {
+    signal.throwIfAborted();
+    if (childExited(child)) {
       throw new Error(`Next.js server '${serverPath}' exited before it became ready.`);
     }
     if (await canConnect(hostname, port)) {
@@ -198,37 +242,41 @@ async function waitForServerReady(
     await sleep(50);
   }
 
-  try {
-    child.kill("SIGTERM");
-  } catch {
-    // Ignore cleanup failures on timeout.
-  }
+  signal.throwIfAborted();
   throw new Error(`Timed out waiting for Next.js server '${serverPath}' to start.`);
 }
 
 async function stopChildProcess(
   serverPath: string,
-  child: NonNullable<ManagedNextjsServer["child"]>,
+  child: NonNullable<ManagedNextjsStartup["child"]>,
 ): Promise<void> {
-  try {
-    child.kill("SIGTERM");
-  } catch {
-    return;
-  }
-  const deadline = Date.now() + 5_000;
-  while (child.exitCode === null && Date.now() < deadline) {
-    await sleep(25);
-  }
-  if (child.exitCode === null) {
-    try {
-      child.kill("SIGKILL");
-    } catch {
-      // Ignore cleanup failures after timeout.
-    }
-  }
-  if (child.exitCode === null) {
-    throw new Error(`Timed out shutting down managed Next.js server '${serverPath}'.`);
-  }
+  if (childExited(child) || child.pid === undefined) return;
+  child.kill("SIGTERM");
+  if (await waitForChildExit(child, 5_000)) return;
+  child.kill("SIGKILL");
+  if (await waitForChildExit(child, 5_000)) return;
+  throw new Error(`Timed out shutting down managed Next.js server '${serverPath}'.`);
+}
+
+function childExited(child: NonNullable<ManagedNextjsStartup["child"]>): boolean {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
+async function waitForChildExit(
+  child: NonNullable<ManagedNextjsStartup["child"]>,
+  timeoutMs: number,
+): Promise<boolean> {
+  if (childExited(child)) return true;
+  return await new Promise<boolean>((resolve) => {
+    const finish = (exited: boolean) => {
+      clearTimeout(timer);
+      child.removeListener("exit", onExit);
+      resolve(exited);
+    };
+    const onExit = () => finish(true);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    child.once("exit", onExit);
+  });
 }
 
 async function reservePort(hostname: string): Promise<number> {

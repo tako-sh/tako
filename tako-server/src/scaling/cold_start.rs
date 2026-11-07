@@ -2,8 +2,9 @@
 
 use parking_lot::Mutex;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::broadcast;
+use tokio::sync::{Semaphore, broadcast};
 
 /// Configuration for cold start handling
 #[derive(Debug, Clone)]
@@ -44,8 +45,8 @@ struct AppColdStart {
     started_at: Option<Instant>,
     /// Channel to notify waiters when ready
     ready_tx: Option<broadcast::Sender<bool>>,
-    /// Number of requests currently waiting for startup completion
-    queued_waiters: usize,
+    /// Queue permits belong to this attempt, including after reset or retry.
+    queue_slots: Arc<Semaphore>,
 }
 
 impl AppColdStart {
@@ -54,7 +55,7 @@ impl AppColdStart {
             state: ColdStartState::Idle,
             started_at: None,
             ready_tx: None,
-            queued_waiters: 0,
+            queue_slots: Arc::new(Semaphore::new(0)),
         }
     }
 }
@@ -110,7 +111,7 @@ impl ColdStartManager {
                 cold_start.state = ColdStartState::Starting;
                 cold_start.started_at = Some(Instant::now());
                 cold_start.ready_tx = Some(tx);
-                cold_start.queued_waiters = 0;
+                cold_start.queue_slots = Arc::new(Semaphore::new(self.config.max_queued_requests));
                 ColdStartBegin { leader: true }
             }
             ColdStartState::Starting | ColdStartState::Ready => ColdStartBegin { leader: false },
@@ -127,22 +128,21 @@ impl ColdStartManager {
     }
 
     pub async fn wait_for_ready_outcome(&self, app_name: &str) -> WaitForReadyOutcome {
-        let rx = {
-            let mut apps = self.apps.lock();
-            match apps.get_mut(app_name) {
+        let (rx, _permit) = {
+            let apps = self.apps.lock();
+            match apps.get(app_name) {
                 Some(cs) if cs.state == ColdStartState::Ready => return WaitForReadyOutcome::Ready,
                 Some(cs) if cs.state == ColdStartState::Starting => {
-                    if cs.queued_waiters >= self.config.max_queued_requests {
+                    let Ok(permit) = cs.queue_slots.clone().try_acquire_owned() else {
                         return WaitForReadyOutcome::QueueFull;
-                    }
-                    cs.queued_waiters += 1;
-                    cs.ready_tx.as_ref().map(|tx| tx.subscribe())
+                    };
+                    (cs.ready_tx.as_ref().map(|tx| tx.subscribe()), permit)
                 }
                 _ => return WaitForReadyOutcome::Failed,
             }
         };
 
-        let outcome = if let Some(mut rx) = rx {
+        if let Some(mut rx) = rx {
             match tokio::time::timeout(self.config.startup_timeout, rx.recv()).await {
                 Ok(Ok(true)) => WaitForReadyOutcome::Ready,
                 Ok(Ok(false)) | Ok(Err(_)) => WaitForReadyOutcome::Failed,
@@ -150,14 +150,7 @@ impl ColdStartManager {
             }
         } else {
             WaitForReadyOutcome::Failed
-        };
-
-        let mut apps = self.apps.lock();
-        if let Some(cs) = apps.get_mut(app_name) {
-            cs.queued_waiters = cs.queued_waiters.saturating_sub(1);
         }
-
-        outcome
     }
 
     /// Mark cold start as complete (instance is ready)
@@ -337,5 +330,74 @@ mod tests {
             first_waiter.await.expect("first waiter should complete"),
             WaitForReadyOutcome::Failed
         );
+    }
+
+    #[tokio::test]
+    async fn cancelled_waiter_releases_its_queue_slot() {
+        use std::future::{Future, poll_fn};
+        use std::task::Poll;
+
+        let manager = ColdStartManager::new(ColdStartConfig {
+            startup_timeout: Duration::from_secs(1),
+            max_queued_requests: 1,
+        });
+        manager.begin("app");
+        let mut cancelled = Box::pin(manager.wait_for_ready_outcome("app"));
+        assert!(
+            poll_fn(|cx| Poll::Ready(cancelled.as_mut().poll(cx)))
+                .await
+                .is_pending()
+        );
+        drop(cancelled);
+
+        let mut next = Box::pin(manager.wait_for_ready_outcome("app"));
+        assert!(
+            poll_fn(|cx| Poll::Ready(next.as_mut().poll(cx)))
+                .await
+                .is_pending()
+        );
+        manager.mark_ready("app");
+        assert_eq!(next.await, WaitForReadyOutcome::Ready);
+    }
+
+    #[tokio::test]
+    async fn old_waiter_cannot_release_a_new_attempts_queue_slot() {
+        use std::future::{Future, poll_fn};
+        use std::task::Poll;
+
+        let manager = ColdStartManager::new(ColdStartConfig {
+            startup_timeout: Duration::from_secs(1),
+            max_queued_requests: 1,
+        });
+        for reset in [false, true] {
+            manager.reset("app");
+            manager.begin("app");
+            let mut old = Box::pin(manager.wait_for_ready_outcome("app"));
+            assert!(
+                poll_fn(|cx| Poll::Ready(old.as_mut().poll(cx)))
+                    .await
+                    .is_pending()
+            );
+            if reset {
+                manager.reset("app");
+            } else {
+                manager.mark_failed("app", "spawn_failed");
+            }
+            assert!(manager.begin("app").leader);
+            let mut current = Box::pin(manager.wait_for_ready_outcome("app"));
+            assert!(
+                poll_fn(|cx| Poll::Ready(current.as_mut().poll(cx)))
+                    .await
+                    .is_pending()
+            );
+
+            assert_eq!(old.await, WaitForReadyOutcome::Failed);
+            assert_eq!(
+                manager.wait_for_ready_outcome("app").await,
+                WaitForReadyOutcome::QueueFull,
+            );
+            manager.mark_ready("app");
+            assert_eq!(current.await, WaitForReadyOutcome::Ready);
+        }
     }
 }

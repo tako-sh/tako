@@ -4,6 +4,159 @@ use crate::proxy::Routes;
 use crate::state::RuntimeApp;
 use tokio::sync::watch;
 
+fn idle_wake_app(directory: &std::path::Path) -> (Arc<Mutex<State>>, String) {
+    let (shutdown_tx, _shutdown_rx) = watch::channel(false);
+    let state = Arc::new(Mutex::new(State::new(
+        shutdown_tx,
+        Routes::default(),
+        EventsHub::default(),
+        true,
+        53535,
+        8443,
+        "127.0.0.1:8443".to_string(),
+        "127.0.0.1".to_string(),
+    )));
+    let config_path = directory.join("tako.toml").display().to_string();
+    {
+        let mut s = state.lock().unwrap();
+        s.apps.insert(
+            config_path.clone(),
+            RuntimeApp {
+                compose: None,
+                project_dir: directory.display().to_string(),
+                name: "wake".to_string(),
+                variant: None,
+                hosts: vec!["wake.test".to_string()],
+                upstream_port: 0,
+                is_idle: true,
+                command: vec![directory.join("missing-command").display().to_string()],
+                worker_command: None,
+                workflow_retention_ms: Some(tako_workflows::DEFAULT_RETENTION_MS),
+                env: std::collections::HashMap::new(),
+                log_buffer: state::LogBuffer::new(),
+                pid: None,
+                client_pid: None,
+                tunnel: None,
+                readiness_failure_hint: None,
+                bootstrap_token: "dev-token".to_string(),
+                secrets: std::collections::HashMap::new(),
+                storages: std::collections::HashMap::new(),
+            },
+        );
+        s.routes.set_routes(
+            format!("reg:{config_path}"),
+            vec!["wake.test".into()],
+            0,
+            false,
+        );
+    }
+    (state, config_path)
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn failed_wake_can_retry_and_concurrent_requests_spawn_once() {
+    let directory = tempfile::tempdir().unwrap();
+    let (state, config_path) = idle_wake_app(directory.path());
+    handle_wake_on_request(state.clone(), "wake.test".into(), "/".into()).await;
+    assert!(state.lock().unwrap().apps[&config_path].is_idle);
+    state
+        .lock()
+        .unwrap()
+        .apps
+        .get_mut(&config_path)
+        .unwrap()
+        .command = vec![
+        "sh".into(),
+        "-c".into(),
+        "cat <&3 > /dev/null; echo started >> starts; printf '54321\\n' >&4; exec sleep 60".into(),
+    ];
+    tokio::join!(
+        handle_wake_on_request(state.clone(), "wake.test".into(), "/".into()),
+        handle_wake_on_request(state.clone(), "wake.test".into(), "/".into()),
+    );
+    let (active, pid, idle) = {
+        let s = state.lock().unwrap();
+        (
+            s.routes.lookup("wake.test", "/").unwrap().active,
+            s.apps[&config_path].pid,
+            s.apps[&config_path].is_idle,
+        )
+    };
+    kill_all_app_processes(&state);
+    assert!(active);
+    assert!(pid.is_some());
+    assert!(!idle);
+    assert_eq!(
+        std::fs::read_to_string(directory.path().join("starts")).unwrap(),
+        "started\n"
+    );
+}
+
+#[tokio::test]
+async fn wake_rechecks_registration_after_waiting_for_lifecycle_lock() {
+    use std::future::{Future, poll_fn};
+    use std::task::Poll;
+
+    let directory = tempfile::tempdir().unwrap();
+    let (state, config_path) = idle_wake_app(directory.path());
+    let lock = crate::compose::app_lock(&state, &config_path);
+    let guard = lock.lock().await;
+    let mut waking = Box::pin(handle_wake_on_request(
+        state.clone(),
+        "wake.test".into(),
+        "/".into(),
+    ));
+    assert!(
+        poll_fn(|cx| Poll::Ready(waking.as_mut().poll(cx)))
+            .await
+            .is_pending()
+    );
+    {
+        let mut s = state.lock().unwrap();
+        s.apps.remove(&config_path);
+        s.routes.remove_app(&format!("reg:{config_path}"));
+    }
+    drop(guard);
+    waking.await;
+    assert!(!state.lock().unwrap().apps.contains_key(&config_path));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn wake_uses_the_same_path_route_as_the_proxy() {
+    let directory = tempfile::tempdir().unwrap();
+    let (state, config_path) = idle_wake_app(directory.path());
+    let api_config = directory.path().join("api.toml").display().to_string();
+    {
+        let mut s = state.lock().unwrap();
+        let mut api = s.apps[&config_path].clone();
+        api.name = "api".into();
+        api.hosts = vec!["wake.test/api/*".into()];
+        api.command = vec![
+            "sh".into(),
+            "-c".into(),
+            "cat <&3 > /dev/null; printf '54321\\n' >&4; exec sleep 60".into(),
+        ];
+        s.routes
+            .set_routes(format!("reg:{api_config}"), api.hosts.clone(), 0, false);
+        s.apps.insert(api_config.clone(), api);
+    }
+    handle_wake_on_request(state.clone(), "wake.test".into(), "/api/items".into()).await;
+    let (api_active, root_active, root_idle) = {
+        let s = state.lock().unwrap();
+        (
+            s.routes.lookup("wake.test", "/api/items").unwrap().active,
+            s.routes.lookup("wake.test", "/").unwrap().active,
+            s.apps[&config_path].is_idle,
+        )
+    };
+    kill_all_app_processes(&state);
+    assert!(api_active);
+    assert!(!root_active);
+    assert!(root_idle);
+}
+
 #[tokio::test]
 async fn child_output_drains_both_pipes_into_the_log_buffer() {
     let mut child = tokio::process::Command::new("sh")

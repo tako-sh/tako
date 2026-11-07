@@ -6,7 +6,6 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
 use crate::control::State;
 use crate::protocol::{DevEvent, Response};
-use crate::route_pattern::{route_host_matches_request, split_route_pattern};
 use crate::state;
 use tokio::io::AsyncBufReadExt;
 
@@ -141,6 +140,14 @@ pub(crate) async fn spawn_and_monitor_app(
 ) -> Result<u32, Box<dyn std::error::Error + Send + Sync>> {
     let lock = crate::compose::app_lock(&state, config_path);
     let _guard = lock.lock().await;
+    spawn_and_monitor_app_locked(state, config_path).await
+}
+
+// The caller holds this app's lifecycle lock through spawn and readiness.
+async fn spawn_and_monitor_app_locked(
+    state: Arc<Mutex<State>>,
+    config_path: &str,
+) -> Result<u32, Box<dyn std::error::Error + Send + Sync>> {
     if *state.lock().unwrap().shutdown_tx.borrow() {
         return Err("development server is shutting down".into());
     }
@@ -551,170 +558,57 @@ pub(crate) fn forward_child_log_line(
 }
 
 pub(crate) async fn handle_wake_on_request(state: Arc<Mutex<State>>, host: String, path: String) {
-    let app_info: Option<(String, state::RuntimeApp, Option<std::path::PathBuf>)> = {
+    let route_id = {
+        let s = state.lock().unwrap();
+        let Some(target) = s.routes.lookup(&host, &path) else {
+            return;
+        };
+        if target.active {
+            return;
+        }
+        target.app_id
+    };
+    let Some(config_path) = route_id.strip_prefix("reg:") else {
+        return;
+    };
+    let lock = crate::compose::app_lock(&state, config_path);
+    let _guard = lock.lock().await;
+    let (app_name, log_buffer) = {
         let mut s = state.lock().unwrap();
-        if s.routes
-            .lookup(&host, &path)
-            .is_some_and(|target| target.active)
+        // Registration, restart, or another wake may have completed while we waited.
+        if *s.shutdown_tx.borrow()
+            || !s
+                .routes
+                .lookup(&host, &path)
+                .is_some_and(|target| target.app_id == route_id && !target.active)
         {
             return;
         }
-        let internal_socket = s.internal_socket.clone();
-        let found = s
-            .apps
-            .iter()
-            .find(|(_, a)| {
-                if !a.is_idle {
-                    return false;
-                }
-                a.hosts.iter().any(|route_pattern| {
-                    let (pat_host, pat_path) = split_route_pattern(route_pattern);
-                    let host_ok = route_host_matches_request(pat_host, &host);
-                    if !host_ok {
-                        return false;
-                    }
-                    match pat_path {
-                        None => true,
-                        Some(_) => true,
-                    }
-                })
-            })
-            .map(|(config_path, a)| (config_path.clone(), a.clone(), internal_socket.clone()));
-        // Atomically claim the spawn: mark is_idle=false while still holding the
-        // lock so concurrent wake-on-request tasks see the updated state and bail out.
-        if let Some((ref config_path, _, _)) = found
-            && let Some(app) = s.apps.get_mut(config_path)
-        {
-            app.is_idle = false;
+        let Some(app) = s.apps.get_mut(config_path) else {
+            return;
+        };
+        if !app.is_idle {
+            return;
         }
-        found
+        app.is_idle = false;
+        (app.name.clone(), app.log_buffer.clone())
     };
 
-    let Some((config_path, app, internal_socket)) = app_info else {
-        return;
-    };
-
-    if app.compose.is_some() {
-        if let Err(error) = spawn_and_monitor_app(state.clone(), &config_path).await {
-            push_scoped_log(&app.log_buffer, "error", "tako", &error.to_string());
-            if let Some(app) = state.lock().unwrap().apps.get_mut(&config_path) {
-                app.is_idle = true;
-            }
+    tracing::info!(app_name = %app_name, host = %host, "waking idle app on request");
+    if let Err(error) = spawn_and_monitor_app_locked(state.clone(), config_path).await {
+        if let Some(app) = state.lock().unwrap().apps.get_mut(config_path) {
+            app.is_idle = true;
         }
-        return;
-    }
-
-    tracing::info!(
-        app_name = %app.name,
-        host = %host,
-        "waking idle app on request"
-    );
-
-    let route_id = format!("reg:{}", config_path);
-
-    match spawn_app(&app.project_dir, &app, internal_socket.as_deref()).await {
-        Ok((mut child, readiness_fd)) => {
-            let pid = child.id();
-
-            // Store PID immediately so kill/unregister commands work.
-            {
-                let mut s = state.lock().unwrap();
-                if let Some(rt) = s.apps.get_mut(&config_path) {
-                    rt.is_idle = false;
-                    rt.pid = pid;
-                }
-            }
-
-            if let Err(e) =
-                activate_after_readiness(&state, &config_path, &route_id, &app, readiness_fd).await
-            {
-                kill_and_reap_app_process(&mut child, pid).await;
-                if pid.is_some() {
-                    state::remove_pid_file(&app.project_dir, &config_path);
-                }
-                {
-                    let mut s = state.lock().unwrap();
-                    if let Some(rt) = s.apps.get_mut(&config_path) {
-                        rt.is_idle = true;
-                        rt.pid = None;
-                    }
-                    s.routes.set_active(&route_id, false);
-                }
-                push_scoped_log(&app.log_buffer, "Error", "tako", &e);
-                broadcast_dev_event(
-                    &state,
-                    DevEvent::AppError {
-                        config_path: config_path.clone(),
-                        app_name: app.name.clone(),
-                        message: e,
-                    },
-                );
-                return;
-            }
-
-            if let Some(pid) = pid {
-                state::write_pid_file(&app.project_dir, &config_path, pid);
-                let state = state.clone();
-                let config_path = config_path.clone();
-                let project_dir = app.project_dir.clone();
-                let log_buffer = app.log_buffer.clone();
-                tokio::spawn(async move {
-                    let exit_status = child.wait().await;
-                    let code_str = exit_status
-                        .as_ref()
-                        .ok()
-                        .and_then(|s| s.code())
-                        .map(|c| format!("exit code {c}"))
-                        .unwrap_or_else(|| "signal".to_string());
-
-                    let (still_current, exit_app_name) = {
-                        let mut s = state.lock().unwrap();
-                        let current = s
-                            .apps
-                            .get(&config_path)
-                            .and_then(|a| a.pid)
-                            .map(|p| p == pid)
-                            .unwrap_or(false);
-                        let app_name = s
-                            .apps
-                            .get(&config_path)
-                            .map(|a| a.name.clone())
-                            .unwrap_or_default();
-                        if current {
-                            if let Some(rt) = s.apps.get_mut(&config_path) {
-                                rt.is_idle = true;
-                                rt.pid = None;
-                            }
-                            let route_id = format!("reg:{}", config_path);
-                            s.routes.set_active(&route_id, false);
-                            state::remove_pid_file(&project_dir, &config_path);
-                        }
-                        (current, app_name)
-                    };
-
-                    if still_current {
-                        let msg = format!("App exited ({code_str})");
-                        push_scoped_log(&log_buffer, "Fatal", "tako", &msg);
-                        broadcast_dev_event(
-                            &state,
-                            DevEvent::AppProcessExited {
-                                config_path: config_path.clone(),
-                                app_name: exit_app_name,
-                                message: msg,
-                            },
-                        );
-                    }
-                    tracing::info!(config_path = %config_path, project_dir = %project_dir, pid = pid, still_current = still_current, "wake-spawned process exited");
-                });
-            }
-        }
-        Err(e) => {
-            tracing::warn!(
-                app_name = %app.name,
-                error = %e,
-                "failed to spawn app for wake-on-request"
-            );
-        }
+        let message = error.to_string();
+        push_scoped_log(&log_buffer, "Error", "tako", &message);
+        broadcast_dev_event(
+            &state,
+            DevEvent::AppError {
+                config_path: config_path.to_string(),
+                app_name,
+                message,
+            },
+        );
     }
 }
 
