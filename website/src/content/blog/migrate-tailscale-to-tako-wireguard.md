@@ -73,7 +73,7 @@ Run `tako status --json` from the project and inspect the **native** server entr
 
 ## Prove recovery access, then retire Tailscale
 
-On your workstation, install the WireGuard tools and run the following in an interactive terminal with the privileges needed to create the interface. Use the same user account that created the network so Tako can find the enrolled profile.
+On your workstation, run the following in an interactive terminal. Tako embeds WireGuard; `connect` explains why it needs administrator access before asking for the local sudo password. Linux needs a TUN device, iproute2, and an active systemd-resolved resolver; macOS uses its native tunnel and scoped resolver. Use the same user account that created the network so Tako can find the enrolled profile. For an enrolled shell alone, `tako ssh` can also run without `connect` or administrator access. [Private connections](/docs/networks/#connect-local-applications)
 
 ```bash
 tako connect shop

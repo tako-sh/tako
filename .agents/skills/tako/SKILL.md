@@ -112,7 +112,10 @@ creating laptop. Inspect pending enforcement rather than assuming offline peers
 have applied a revocation.
 
 WireGuard private traffic needs the advertised UDP endpoint; there is no hosted
-relay. `connect` needs network privileges and does not configure workstation DNS.
+relay. `tako ssh` uses embedded WireGuard without sudo or system network changes.
+`connect` needs network privileges and enables private DNS, short server names,
+and approved SSH aliases for local applications; `disconnect` removes these
+managed settings. Neither mode needs an external WireGuard executable.
 Private app names are `{app}.{env}.{network-id}.tako.internal`. Public ingress
 and DNS remain separately provisioned. Native process DNS on a server requires
 active systemd-resolved; without it, WireGuard can work while the helper reports

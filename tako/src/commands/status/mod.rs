@@ -98,6 +98,7 @@ async fn run_global_status(
             }))?;
         } else {
             output::warning("No servers configured.");
+            tracing::warn!("No servers configured.");
             output::hint(&format!(
                 "Run {} to add one.",
                 output::strong("tako servers add")

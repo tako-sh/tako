@@ -292,8 +292,9 @@ Use `tako.sh/services` for a shared HTTP contract with typed handlers, clients,
 and runtime validation. Clients use explicit HTTP or HTTPS `baseURL` values.
 This package works without Tako Cloud or the Tako runtime. It does not configure
 networking. Native environments separately provide private app discovery at
-`{app}.{env}.{network-id}.tako.internal` to supported runtimes; workstation DNS
-is not installed automatically. Supply an explicit reachable `baseURL`.
+`{app}.{env}.{network-id}.tako.internal` to supported runtimes; workstation
+applications resolve these names while `tako connect` is active. Supply an
+explicit reachable `baseURL`.
 
 ```ts
 import { Type as t } from "@sinclair/typebox";

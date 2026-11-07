@@ -225,7 +225,7 @@ Each device generates and retains its own keys. Repeat `--deploy` for exact app/
 
 `drain` and `resume` require server administration and a unique member name or device ID. Drain defaults to 120 seconds and accepts `0..3600`; zero requests immediate force. Inspect the structured completion report, not only the drained intent. See [Native server maintenance](/operations/#native-server-maintenance).
 
-`connect` sets up an optional workstation WireGuard connection and needs network privileges; it does not configure workstation DNS. Normal native management uses pinned HTTPS without a tunnel or SSH agent. See [Native networks](/networks/) for sandbox enrollment, revocation, endpoints, and private service names.
+`ssh` uses embedded WireGuard and userspace TCP without sudo or system network changes; OpenSSH is required. `connect` enables local applications, private DNS, short server names, and approved SSH aliases such as `ssh edge-a`. It explains the required administrator access before prompting. `disconnect` removes those managed settings. No external WireGuard executable is required. Normal native management uses pinned HTTPS without a tunnel or SSH agent. See [Native networks](/networks/) for platform requirements, enrollment, endpoints, and private service names.
 
 ## Servers
 

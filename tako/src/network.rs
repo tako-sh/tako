@@ -13,8 +13,11 @@ use tako_network::{
 use crate::config::{NetworkAlias, NetworksToml};
 
 pub(crate) mod client;
+pub(crate) mod local_access;
 pub(crate) mod revocation;
 pub(crate) mod server_access;
+pub(crate) mod ssh_session;
+pub(crate) mod ssh_tunnel;
 pub(crate) mod wireguard;
 
 pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
