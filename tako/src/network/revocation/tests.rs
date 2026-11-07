@@ -348,6 +348,46 @@ fn new_attempt_uses_a_surviving_issuer_and_excludes_the_target_and_its_descendan
 }
 
 #[test]
+fn last_server_records_its_own_revocation_before_it_can_be_uninstalled() {
+    let _home = TestHome::new();
+    let fixture = fixture();
+    let alias = saved(&fixture);
+    let result = run_with(
+        &alias,
+        &fixture.server.to_string(),
+        |_| Ok(fixture.profile.clone()),
+        |_, signed| {
+            assert_eq!(signed.server_id, fixture.server);
+            match &signed.request {
+                RpcRequest::Snapshot => {
+                    Ok(RpcResponse::Snapshot(fixture.profile.snapshot().clone()))
+                }
+                RpcRequest::Revoke { target, .. } => {
+                    assert_eq!(target, &fixture.server);
+                    Ok(RpcResponse::Revoked(response(&fixture, signed)))
+                }
+                _ => panic!("unexpected RPC"),
+            }
+        },
+        network::now,
+    )
+    .unwrap();
+    // With no live server pins this is stored history, not a usable active profile.
+    let profile: Profile = network::read_json(&alias.profile_path().unwrap()).unwrap();
+    assert!(network::server_members(&profile).unwrap().is_empty());
+    assert_eq!(journal(&alias).recorded, Some(result));
+    // Confirmed publication remains retryable after the last endpoint is stopped.
+    run_with(
+        &alias,
+        &fixture.server.to_string(),
+        |_| panic!("must not refresh from the uninstalled server"),
+        |_, _| panic!("must not contact the uninstalled server"),
+        network::now,
+    )
+    .unwrap();
+}
+
+#[test]
 fn mismatched_response_keeps_the_original_attempt_uncertain() {
     let _home = TestHome::new();
     let fixture = fixture();

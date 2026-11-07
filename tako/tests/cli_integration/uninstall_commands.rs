@@ -72,6 +72,27 @@ fn servers_uninstall_without_name_in_non_interactive_mode_shows_hint() {
 }
 
 #[test]
+fn servers_uninstall_dry_run_does_not_connect_or_modify_inventory() {
+    let temp = TempDir::new().unwrap();
+    let tako_home = temp.path().join("tako-home");
+    fs::create_dir_all(&tako_home).unwrap();
+    let config = "[[servers]]\nname = 'edge'\nhost = 'unreachable.invalid'\n";
+    fs::write(tako_home.join("config.toml"), config).unwrap();
+    let out = run_tako_with_env(
+        &["--dry-run", "servers", "uninstall", "edge", "--yes"],
+        temp.path(),
+        temp.path(),
+        &tako_home,
+    );
+    assert!(out.status.success(), "{}", stderr_str(&out));
+    assert!(stderr_str(&out).contains("Remove tako-server and all data on edge"));
+    assert_eq!(
+        fs::read_to_string(tako_home.join("config.toml")).unwrap(),
+        config
+    );
+}
+
+#[test]
 fn servers_uninstall_nonexistent_name_fails() {
     let temp = TempDir::new().unwrap();
     let project_dir = temp.path().join("project");
