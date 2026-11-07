@@ -75,11 +75,12 @@ Routes support exact hosts, wildcard hosts, host-plus-path routes, and wildcard-
 
 Environment tables accept route declarations, `network`, `servers`, `storages`, `backup`, `source_ip`, `ssl`, `idle_timeout`, and `release`. Put environment variables in `[vars]` or `[vars.<env>]`, not in `[envs.<env>]`.
 
-`network` selects a native network by its stable 32-character hexadecimal ID, not a local alias. It is mutually exclusive with `servers`; trusted server membership determines targets. Native management uses pinned HTTPS and does not need a workstation tunnel. See [Native networks](/networks/).
+`network` identifies a native network by its stable 32-character hexadecimal ID. Within that network, `servers` selects deployment hosts by enrolled name or server device ID. Omit `servers` to target every trusted server member. A supplied list must be nonempty, and every entry must identify exactly one trusted server. Native management uses pinned HTTPS. See [Native networks](/networks/).
 
 ```toml
 [envs.production]
 network = "0123456789abcdef0123456789abcdef"
+servers = ["edge-a", "edge-b"]
 route = "app.example.com"
 ```
 

@@ -84,3 +84,17 @@ servers = ["INVALID_NAME"]
 "#;
     assert!(TakoToml::parse(toml).is_err());
 }
+
+#[test]
+fn native_placement_rejects_an_explicit_empty_list_or_invalid_selector() {
+    let network = "a".repeat(32);
+    let base = format!("[envs.production]\nroute = 'shop.example.com'\nnetwork = '{network}'");
+    assert!(
+        TakoToml::parse(&format!("{base}\nservers = []"))
+            .unwrap_err()
+            .to_string()
+            .contains("is empty")
+    );
+    assert!(TakoToml::parse(&format!("{base}\nservers = ['other/edge']")).is_err());
+    assert!(TakoToml::parse(&format!("{base}\nservers = ['01.Web_a']")).is_ok());
+}

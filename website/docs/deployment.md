@@ -25,7 +25,7 @@ route = "app.example.com"
 
 The CLI resolves current trusted server members and uses per-device signed HTTPS. No local WireGuard interface or SSH agent is needed. A scoped deployment requires administrator-provisioned routes and server-level bindings. App secrets remain separate per-environment credentials. See [sandbox enrollment](/networks/#enroll-another-laptop-or-sandbox).
 
-Set `network` instead of an old `servers` mapping. See [re-enrollment](/servers/#choose-the-vpn-provider) when replacing an external VPN installation.
+Set `servers = ["edge-a", "edge-b"]` alongside `network` to deploy this app to those two members. Omit `servers` to deploy to the entire network. Other applications can choose other members and communicate over the same private network. See [re-enrollment](/servers/#choose-the-vpn-provider) when replacing an external VPN installation.
 
 ## Deploy
 

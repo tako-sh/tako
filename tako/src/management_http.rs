@@ -48,6 +48,7 @@ pub(crate) enum ManagementTarget {
 pub(crate) struct NativeTarget {
     pub(crate) network: crate::config::NetworkAlias,
     pub(crate) server_id: tako_network::DeviceId,
+    pub(crate) server_name: tako_network::DeviceName,
 }
 
 pub(crate) struct ManagementClient {

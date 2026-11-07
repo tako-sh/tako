@@ -67,7 +67,6 @@ mod unix {
     };
 
     const TOKEN_FILE: &str = "bootstrap-api-token";
-    const MAX_BINARY_BYTES: u64 = 512 * 1024 * 1024;
 
     pub(super) struct Host<'a> {
         pub host_key: &'a Path,
@@ -367,7 +366,7 @@ mod unix {
                 break;
             }
             total += count as u64;
-            if total > MAX_BINARY_BYTES {
+            if total > tako_network::node_config::MAX_CORROSION_BINARY_BYTES {
                 return Err("Corrosion binary exceeds size limit".into());
             }
             hasher.update(&buffer[..count])?;

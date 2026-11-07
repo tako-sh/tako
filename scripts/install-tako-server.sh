@@ -1230,7 +1230,7 @@ Requires=tako-network-helper.socket
 After=network-online.target tako-network.target tako-network-helper.socket
 Wants=network-online.target tako-network.target
 Before=tako-server.service tako-server-standby.service
-ConditionPathIsExecutable=/usr/local/libexec/tako/corrosion
+ConditionFileIsExecutable=/usr/local/libexec/tako/corrosion
 ConditionPathExists=/opt/tako/native-network.json
 [Service]
 Type=exec

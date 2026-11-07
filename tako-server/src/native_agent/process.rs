@@ -44,7 +44,7 @@ impl OwnedChild {
             || meta.nlink() != 1
             || meta.uid() != 0
             || meta.mode() & 0o022 != 0
-            || meta.len() > 256 * 1024 * 1024
+            || meta.len() > tako_network::node_config::MAX_CORROSION_BINARY_BYTES
         {
             return Err(AgentError::Invalid("unsafe Corrosion executable"));
         }

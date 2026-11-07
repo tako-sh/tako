@@ -34,13 +34,10 @@ pub(crate) fn proxy_command(executable: &Path, network: &str, server: &str) -> R
     let executable = executable
         .to_str()
         .ok_or("Tako's executable path must be UTF-8")?;
-    // OpenSSH expands percent tokens before invoking the shell, even inside quotes.
-    Ok(format!(
-        "exec {}",
-        [executable, PROXY_COMMAND, network, server]
-            .map(|arg| { crate::shell::shell_single_quote(&arg.replace('%', "%%")) })
-            .join(" ")
-    ))
+    // OpenSSH prepends exec and expands percent tokens even inside quotes.
+    Ok([executable, PROXY_COMMAND, network, server]
+        .map(|arg| crate::shell::shell_single_quote(&arg.replace('%', "%%")))
+        .join(" "))
 }
 
 pub(crate) fn proxy_main() -> ! {
@@ -414,7 +411,7 @@ mod tests {
         assert!(command.contains("%%h"));
         assert!(command.contains("%%p"));
         assert!(command.contains("'\\''"));
-        assert!(command.starts_with("exec "));
+        assert!(command.starts_with("'/tmp/my tako"));
     }
 
     #[test]

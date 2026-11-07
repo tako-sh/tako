@@ -20,7 +20,7 @@ tako status --json
 curl --fail --show-error --silent https://shop.example.com/health
 ```
 
-Look at each production project's `tako.toml`. A legacy `servers = ["shop-vps"]` selects that one host. A native `network` selects **all trusted server members of that network**. Two unrelated VPSs in one inventory may belong in two separate networks. Group the machines that should receive the same deployments. Keep a single-server Compose environment on a network with one target. [Deployment target selection](/docs/deployment/)
+Record the `servers` list in each production project. After enrollment, keep those server names alongside the new network ID to preserve placement. Omit the list only if this app should deploy to every trusted member. A Compose environment needs exactly one target, even if more servers belong to its network. [Deployment target selection](/docs/deployment/)
 
 Use a supported Linux host with systemd, glibc, and administrator SSH access. Take your usual recovery snapshot or backup before updating the server, and verify that you can open the provider's recovery console. An already-open SSH connection is handy during enrollment. It cannot fix an unreachable machine after a reboot. Schedule the work for a time when you can check the running apps immediately after the service restarts. [Server setup](/docs/servers/) and [backups](/docs/backups/)
 
@@ -59,11 +59,12 @@ sudo journalctl -u tako-network-agent -n 30 --no-pager
 sudo wg show all listen-port
 ```
 
-Once `tako network status shop --json` refreshes successfully, check that it names the intended server and laptop. Copy the stable 32-character ID from `tako network list --json`. In each project targeting this VPS, replace the old `servers` line with `network`. Preserve the existing routes, TLS settings, and other environment fields. This example ID is a placeholder.
+Once `tako network status shop --json` refreshes successfully, check that it names the intended server and laptop. Copy the stable 32-character ID from `tako network list --json`. In each project targeting this VPS, add `network` and set `servers` to the enrolled names that should receive this app. Preserve the existing routes, TLS settings, and other environment fields. This example ID is a placeholder.
 
 ```toml
 [envs.production]
 network = "0123456789abcdef0123456789abcdef"
+servers = ["shop-vps"]
 route = "shop.example.com"
 ```
 

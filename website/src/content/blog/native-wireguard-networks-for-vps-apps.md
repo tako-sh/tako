@@ -38,7 +38,7 @@ A shell takes a different path. An administrator can approve a laptop for SSH, a
 
 ## Choose which machines should receive a deploy
 
-Think about placement before creating a network. A production environment that selects a native network targets its trusted server members. If the shop should run in two regions, enroll both shop servers. If a third VPS belongs to a different project with its own database and release schedule, give it a separate network. This choice determines what will happen the next time someone types `tako deploy`. A single-server network is a perfectly good choice.
+Enroll the machines that need to communicate privately in the same network. Each app chooses its deployment hosts in its own production configuration. A shop can run on `east` and `west` while a billing app runs on a third server. They can still call each other over the private network. Omitting the server list deploys that app to every trusted server member.
 
 On the administrator's workstation, choose a short local alias such as `shop`. In this example the VPS has a reachable public IP, `203.0.113.10` stands in for that address, and `ubuntu` is its administrator SSH user. Allow direct HTTPS to the server from the machines that manage it and inbound UDP on the WireGuard endpoint from its peers. On a hosted VPS, check both the provider firewall and Linux's input rules.
 
@@ -49,11 +49,12 @@ tako servers add ubuntu@203.0.113.10 --name east --network shop \
 tako network status shop --json
 ```
 
-Use the returned **network ID** in the project. The ID identifies the same network on every enrolled device, even if another developer chooses a different local alias. In the example below, substitute your actual ID and app hostname. The public route and the network answer separate questions. One names the address a customer visits. The other selects the machines that will receive a release. [Deployment configuration](/docs/deployment/) and [server requirements](/docs/servers/)
+Use the returned **network ID** in the project. The ID identifies the same network on every enrolled device, even if another developer chooses a different local alias. In the example below, substitute your actual ID and app hostname. The public route and the network answer separate questions. One names the address a customer visits. The network identifies the peers that can communicate, and the optional server list selects the machines that receive a release. [Deployment configuration](/docs/deployment/) and [server requirements](/docs/servers/)
 
 ```toml
 [envs.production]
 network = "0123456789abcdef0123456789abcdef"
+servers = ["east"]
 route = "shop.example.com"
 ```
 

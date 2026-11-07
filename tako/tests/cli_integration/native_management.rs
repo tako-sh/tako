@@ -56,6 +56,10 @@ fn admit(
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_servers(&["node", "node"])
+    }
+
+    fn with_servers(names: &[&str]) -> Self {
         let directory = TempDir::new().unwrap();
         let home = directory.path().join("home");
         let tako_home = directory.path().join("tako-home");
@@ -94,18 +98,18 @@ impl Fixture {
             None,
         );
         let mut trusted_servers = BTreeMap::new();
-        for index in [10, 11] {
+        for (index, name) in names.iter().enumerate() {
             let server_keys = LocalDeviceKeys::generate().unwrap();
             let request = server_keys
                 .enrollment_request(
                     Some(network.clone()),
                     DeviceKind::Server,
-                    "node".parse().unwrap(),
+                    name.parse().unwrap(),
                 )
                 .unwrap();
             let id = request.device_id_for(&network).unwrap();
             let info = ServerInfo {
-                wireguard_endpoint: format!("192.0.2.{index}:51820").parse().unwrap(),
+                wireguard_endpoint: format!("192.0.2.{}:51820", 10 + index).parse().unwrap(),
                 ssh_host_key: server_keys.ssh_public_key().unwrap(),
                 ssh_port: 22,
                 https_port: 8443,
@@ -298,4 +302,66 @@ fn native_scale_resolves_the_enrolled_server_name_and_excludes_legacy_servers() 
         assert!(error.contains(expected), "{error}");
         assert!(!error.contains("No SSH keys"), "{error}");
     }
+}
+
+#[test]
+fn project_operations_use_each_apps_placement_on_a_shared_network() {
+    let fixture = Fixture::with_servers(&["edge-a", "edge-b", "billing-c"]);
+    let network = &fixture.profile.snapshot.network.id;
+    let before = fs::read(&fixture.profile_path).unwrap();
+    let configure = |name, servers| {
+        fs::write(fixture.directory.path().join("tako.toml"), format!(
+            "name = '{name}'\nimage = 'example/{name}:v1'\n[envs.production]\nnetwork = '{network}'\nroute = '{name}.example.com'\n{servers}\n"
+        )).unwrap();
+    };
+
+    for (app, placement, expected) in [
+        (
+            "shop",
+            "servers = ['edge-a', 'edge-b']",
+            vec!["edge-a", "edge-b"],
+        ),
+        ("billing", "servers = ['billing-c']", vec!["billing-c"]),
+        ("metrics", "", vec!["edge-a", "edge-b", "billing-c"]),
+    ] {
+        configure(app, placement);
+        for server in ["edge-a", "edge-b", "billing-c"] {
+            let output = run_tako_with_env(
+                &[
+                    "--ci",
+                    "--dry-run",
+                    "backups",
+                    "now",
+                    "--env",
+                    "production",
+                    "--server",
+                    &format!("fleet/{server}"),
+                ],
+                fixture.directory.path(),
+                &fixture.home,
+                &fixture.tako_home,
+            );
+            assert_eq!(
+                output.status.success(),
+                expected.contains(&server),
+                "{app} on {server}: {}",
+                stderr_str(&output)
+            );
+        }
+    }
+    configure("shop", "servers = ['edge-a', 'missing']");
+    let deploy = run_tako_with_env(
+        &["--ci", "--dry-run", "deploy", "--env", "production"],
+        fixture.directory.path(),
+        &fixture.home,
+        &fixture.tako_home,
+    );
+    assert!(!deploy.status.success());
+    assert!(
+        stderr_str(&deploy).contains("Server 'missing' is not a trusted server"),
+        "{}",
+        stderr_str(&deploy)
+    );
+    assert_eq!(fs::read(&fixture.profile_path).unwrap(), before);
+    assert_eq!(fixture.status()["servers"].as_array().unwrap().len(), 3);
 }

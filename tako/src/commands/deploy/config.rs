@@ -154,8 +154,8 @@ pub(super) async fn resolve_deploy_server_names_with_setup(
                 .and_then(|entry| entry.native.as_ref())
             {
                 return Err(format!(
-                    "Set `network = \"{}\"` under [envs.{env}] in tako.toml, remove its old `servers` mapping, then deploy again.",
-                    target.network.id
+                    "Set `network = \"{}\"` and `servers = [\"{}\"]` under [envs.{env}] in tako.toml to deploy to this server.",
+                    target.network.id, target.server_id
                 ));
             }
 
