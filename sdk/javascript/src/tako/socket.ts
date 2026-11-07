@@ -239,6 +239,8 @@ class RpcConnection {
     private readonly onClose: () => void,
   ) {
     this.socket = createConnection(socketPath);
+    // A JSONL frame can split a UTF-8 character across socket reads.
+    this.socket.setEncoding("utf8");
     this.connected = new Promise<void>((resolve, reject) => {
       this.socket.once("connect", resolve);
       this.socket.once("error", reject);

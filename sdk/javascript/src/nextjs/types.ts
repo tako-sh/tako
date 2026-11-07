@@ -74,10 +74,8 @@ export interface NextjsFetchHandlerOptions {
 
 /** State for one managed Next.js child process. */
 export interface ManagedNextjsServer {
-  /** Spawned child process, or null before start/after shutdown. */
-  child: ChildProcess | null;
-  /** In-flight readiness promise. */
-  ready: Promise<number> | null;
+  /** The current startup attempt, retained while its child is running. */
+  startup: ManagedNextjsStartup | null;
   /** Extra argv passed to `server.js`. */
   argv: string[];
   /** Working directory for the child process. */
@@ -86,6 +84,13 @@ export interface ManagedNextjsServer {
   hostname: string;
   /** Startup timeout in ms. */
   startupTimeoutMs: number;
+}
+
+/** Resources owned by a single startup attempt. */
+export interface ManagedNextjsStartup {
+  child: ChildProcess | null;
+  ready: Promise<number>;
+  abort: AbortController;
 }
 
 /** File layout produced by staging a Next.js build for Tako. */

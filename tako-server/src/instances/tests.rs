@@ -341,6 +341,35 @@ fn rollout_cutover_leaves_all_candidates_suppressed_if_any_have_died() {
 }
 
 #[test]
+fn rollout_cutover_publishes_all_healthy_candidates() {
+    let (tx, _rx) = mpsc::channel(16);
+    let app = std::sync::Arc::new(App::new(AppConfig::default(), tx, noop_log_handle()));
+    let candidates = [app.allocate_instance(), app.allocate_instance()];
+    for candidate in &candidates {
+        app.suppress_instance_routing(&candidate.id);
+        app.set_instance_state(candidate, InstanceState::Healthy);
+    }
+    let (done, result) = std::sync::mpsc::channel();
+    let worker_app = app.clone();
+    let worker = std::thread::spawn(move || {
+        let _ = done.send(worker_app.enable_rollout_routing(&candidates));
+    });
+    assert_eq!(
+        result
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("rollout cutover must complete"),
+        Ok(())
+    );
+    worker.join().unwrap();
+    assert_eq!(app.healthy_instance_count(), 2);
+    assert!(
+        app.get_instances()
+            .iter()
+            .all(|instance| !app.is_instance_routing_suppressed(&instance.id))
+    );
+}
+
+#[test]
 fn enabling_routing_adds_suppressed_healthy_instance_to_request_pool() {
     let (tx, _rx) = mpsc::channel(16);
     let app = App::new(AppConfig::default(), tx, noop_log_handle());
@@ -356,6 +385,78 @@ fn enabling_routing_adds_suppressed_healthy_instance_to_request_pool() {
         .healthy_instance_at(0)
         .expect("enabled healthy instance should be selectable");
     assert_eq!(selected.id, instance.id);
+}
+
+#[test]
+fn routing_enable_and_health_failure_leave_no_unhealthy_backend() {
+    let (tx, _rx) = mpsc::channel(16);
+    let app = App::new(AppConfig::default(), tx, noop_log_handle());
+    let instance = app.allocate_instance();
+    let barrier = std::sync::Barrier::new(3);
+    let mut invalid_backends = 0;
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            for _ in 0..5_000 {
+                barrier.wait();
+                app.enable_instance_routing(&instance);
+                barrier.wait();
+            }
+        });
+        scope.spawn(|| {
+            for _ in 0..5_000 {
+                barrier.wait();
+                app.set_instance_health_state(&instance, InstanceState::Unhealthy);
+                barrier.wait();
+            }
+        });
+        for _ in 0..5_000 {
+            app.suppress_instance_routing(&instance.id);
+            app.set_instance_state(&instance, InstanceState::Healthy);
+            barrier.wait();
+            barrier.wait();
+            invalid_backends += usize::from(app.healthy_backend_for_request(0).is_some());
+        }
+    });
+    assert_eq!(
+        invalid_backends, 0,
+        "unhealthy instances must never remain routable"
+    );
+}
+
+#[test]
+fn routing_suppression_and_health_success_leave_no_suppressed_backend() {
+    let (tx, _rx) = mpsc::channel(16);
+    let app = App::new(AppConfig::default(), tx, noop_log_handle());
+    let instance = app.allocate_instance();
+    let barrier = std::sync::Barrier::new(3);
+    let mut invalid_backends = 0;
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            for _ in 0..5_000 {
+                barrier.wait();
+                app.suppress_instance_routing(&instance.id);
+                barrier.wait();
+            }
+        });
+        scope.spawn(|| {
+            for _ in 0..5_000 {
+                barrier.wait();
+                app.set_instance_health_state(&instance, InstanceState::Healthy);
+                barrier.wait();
+            }
+        });
+        for _ in 0..5_000 {
+            app.set_instance_state(&instance, InstanceState::Unhealthy);
+            app.enable_instance_routing(&instance);
+            barrier.wait();
+            barrier.wait();
+            invalid_backends += usize::from(app.healthy_backend_for_request(0).is_some());
+        }
+    });
+    assert_eq!(
+        invalid_backends, 0,
+        "suppressed instances must never remain routable"
+    );
 }
 
 #[test]

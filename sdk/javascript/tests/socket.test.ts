@@ -217,6 +217,33 @@ describe("callInternal error wrapping", () => {
       server.close();
     }
   });
+
+  test("preserves UTF-8 characters split across response chunks and reused lanes", async () => {
+    const sock = join(dir, "unicode.sock");
+    const data = { text: "A🙂é東京Z" };
+    const response = Buffer.from(`${JSON.stringify({ status: "ok", data })}\n`);
+    const split = response.indexOf(Buffer.from("🙂")) + 2;
+    let connections = 0;
+    const server = createServer((socket) => {
+      connections++;
+      socket.on("data", () => {
+        socket.write(response.subarray(0, split));
+        setTimeout(() => socket.write(response.subarray(split)), 20);
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(sock, resolve);
+    });
+    try {
+      expect(await callInternal(sock, { command: "one" })).toEqual(data);
+      expect(await callInternal(sock, { command: "two" })).toEqual(data);
+      expect(connections).toBe(1);
+    } finally {
+      closeInternalSocketPoolsForTests();
+      server.close();
+    }
+  });
 });
 
 describe("installChannelSocketPublisherFromEnv", () => {
