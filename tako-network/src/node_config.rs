@@ -8,6 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub const MAX_CORROSION_BINARY_BYTES: u64 = 512 * 1024 * 1024;
 pub const NODE_CONFIG_FILE: &str = "native-network.json";
 pub const MAX_NODE_CONFIG_BYTES: usize = 16 * 1024 * 1024;
 

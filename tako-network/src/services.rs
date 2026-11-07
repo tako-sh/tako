@@ -14,7 +14,7 @@ pub const MAX_LEASE_SECONDS: u64 = 30;
 pub const RENEW_SECONDS: u64 = 10;
 pub const MAX_SERVICES: usize = 256;
 pub const MAX_LEASE_BYTES: usize = 64 * 1024;
-pub const SERVICE_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS tako_service_leases (server_id TEXT PRIMARY KEY NOT NULL, payload TEXT NOT NULL);";
+pub const SERVICE_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS tako_service_leases (server_id TEXT PRIMARY KEY NOT NULL, payload TEXT NOT NULL DEFAULT '');";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

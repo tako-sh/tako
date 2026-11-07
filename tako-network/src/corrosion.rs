@@ -33,7 +33,7 @@ const MAX_REVOCATION_BYTES: usize = MAX_REGISTRY_ROWS * 67 + 1024;
 #[cfg(test)]
 type TestTransport = fn(&str, &Value) -> RuntimeResult<Vec<u8>>;
 pub const CORROSION_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS tako_network_records (\n\
-    kind TEXT NOT NULL, record_id TEXT NOT NULL, digest TEXT NOT NULL, payload TEXT NOT NULL,\n\
+    kind TEXT NOT NULL, record_id TEXT NOT NULL, digest TEXT NOT NULL, payload TEXT NOT NULL DEFAULT '',\n\
     PRIMARY KEY (kind, record_id, digest)\n\
 );";
 
