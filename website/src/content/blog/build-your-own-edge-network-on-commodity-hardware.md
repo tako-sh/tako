@@ -101,7 +101,9 @@ Adding a region later is a three-step process: spin up a VPS, run `tako servers 
 
 This is the floor. The same config that deploys to three servers also handles [per-server scaling](/blog/one-config-many-servers/), [per-environment secrets](/docs/cli/), and a [staging environment](/blog/one-config-many-servers/) that costs nothing when nobody's using it.
 
-And Tako is growing past deploys. The [SDK](/docs/how-tako-works/) is the starting point for backend primitives — WebSocket channels, queues, workflows — running on the same servers, managed from the same config. Three boxes in three regions, each with the full platform layer, all from one `tako.toml`.
+The [SDK](/docs/how-tako-works/) also exposes durable channels, workflows, and [network handlers](/docs/network-primitives/) on those servers. Apps communicate with `app.primitive` addresses: `call("users.lookup", input)` returns a direct result, `workflow("mail.send-email").enqueue(payload)` starts durable work, and `channel("web.progress").publish(message)` publishes through the receiving app. The caller's environment determines the recipient environment.
+
+Generate `tako-schema.json` in each producer and list its path or HTTPS URL under root-level `schemas` in a consumer's `tako.toml`. `tako gen` compiles the shared contract into TypeScript, Go, or Rust types. JavaScript currently supplies recipient dispatch. Private communication does not replicate your application database or move local workflow state; plan persistence separately from the deployment map.
 
 Your edge network doesn't need to be someone else's infrastructure. A few cheap VPS boxes and the right tools get you surprisingly far.
 

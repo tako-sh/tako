@@ -229,10 +229,39 @@ impl PostgresRunsDb {
         Ok(())
     }
 
-    pub(super) fn complete(&self, id: &str, worker_id: &str) -> Result<(), RunsDbError> {
+    pub(super) fn result(
+        &self,
+        name: &str,
+        id: &str,
+    ) -> Result<Option<crate::enqueue::RunResult>, RunsDbError> {
+        let mut client = self.client.lock();
+        let row = client.query_opt(
+            &format!("SELECT status, result, last_error FROM {}.runs WHERE app_id=$1 AND id=$2 AND name=$3", self.schema),
+            &[&self.app_id, &id, &name],
+        )?;
+        row.map(|row| {
+            Ok(crate::enqueue::RunResult {
+                status: row.get(0),
+                result: row
+                    .get::<_, Option<String>>(1)
+                    .map(|value| serde_json::from_str(&value))
+                    .transpose()?
+                    .unwrap_or(serde_json::Value::Null),
+                error: row.get(2),
+            })
+        })
+        .transpose()
+    }
+
+    pub(super) fn complete(
+        &self,
+        id: &str,
+        worker_id: &str,
+        result: &serde_json::Value,
+    ) -> Result<(), RunsDbError> {
         self.update_running(
-            "status='succeeded', worker_id=NULL, lease_until=NULL, finished_at=$4",
-            &[&self.app_id, &id, &worker_id, &now_ms()],
+            "status='succeeded', result=$5, last_error=NULL, worker_id=NULL, lease_until=NULL, finished_at=$4",
+            &[&self.app_id, &id, &worker_id, &now_ms(), &serde_json::to_string(result)?],
         )
     }
 
@@ -624,6 +653,7 @@ fn init_schema(client: &mut Client, schema: &str) -> Result<(), RunsDbError> {
              PRIMARY KEY(app_id, id)
          );
          ALTER TABLE {schema}.runs ADD COLUMN IF NOT EXISTS finished_at BIGINT;
+         ALTER TABLE {schema}.runs ADD COLUMN IF NOT EXISTS result TEXT;
          DO $$ BEGIN
              IF EXISTS (
                  SELECT 1 FROM pg_constraint

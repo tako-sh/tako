@@ -71,7 +71,11 @@ One binary, one file, one socket. [`tako deploy`](/blog/what-happens-when-you-ru
 
 ### Same vocabulary, smaller surface
 
-Tako's [SDK primitives](/docs/tako-toml/) — `ctx.run` for memoized side effects, `ctx.sleep` for durable waits, `ctx.waitFor` paired with `signal`, and cron via `schedule` — cover retries, long waits, human approvals, fan-out, and scheduled jobs. That's the working set of what most apps need from a workflow engine. We deliberately skipped child workflows, queries, versioning APIs, and history replay knobs. If your system design genuinely needs those, Temporal is the correct tool.
+Tako's [SDK primitives](/docs/workflows/) include `ctx.run` for checkpointed side effects, `ctx.sleep` for durable waits, `ctx.waitFor` paired with `signal`, and cron via `schedule`. Workflows return retained JSON results. JavaScript `.run(payload)` also supports durable child calls: the parent checkpoints the child ID before enqueue, defers while waiting, and reuses the child and its terminal outcome on replay. External side effects still require idempotency.
+
+The child can belong to another app: `workflow("reports.build").run(payload)` addresses it in the caller's network and environment. Root-level `schemas` imports the producer's `tako-schema.json`, and `tako gen` compiles its payload and result types. Go and Rust can consume schemas and call primitives, while recipient dispatch and automatic durable child calls currently require JavaScript. For a direct result without enqueueing, [network handlers](/docs/network-primitives/) use `call("reports.lookup", input)` and have no automatic retries.
+
+Tako does not expose Temporal's workflow-query, versioning, or event-history replay APIs. Compare those requirements and each SDK's supported operations before choosing an engine.
 
 ### No per-Action meter
 

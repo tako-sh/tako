@@ -244,10 +244,11 @@ async fn run_async(
     let source_root = source_bundle_root(&project_dir, preflight_runtime_adapter.id());
 
     if preflight_runtime_adapter.preset_group() == PresetGroup::Js {
-        js::write_tako_declarations_for_adapter_and_app_root(
+        js::write_generated_files_with_schemas(
             &project_dir,
             preflight_runtime_adapter,
-            tako_config.js_app_root(),
+            &tako_config,
+            false,
         )?;
     }
 

@@ -14,7 +14,6 @@ pub enum WatchChange {
     Config,
     Secrets,
     Channels,
-    Services,
     Workflows,
     GeneratedDeclarations,
 }
@@ -101,13 +100,21 @@ impl ConfigWatcher {
             let _ = watch_path(&debouncer, &tako_dir, RecursiveMode::NonRecursive);
         }
         watch_path(&debouncer, &self.project_dir, RecursiveMode::NonRecursive)?;
+        for path in local_schema_paths(&self.project_dir, &self.config_path) {
+            if let Some(parent) = path.parent() {
+                let _ = watch_path(&debouncer, parent, RecursiveMode::NonRecursive);
+            }
+        }
         let watched_app_root = self.app_root.clone();
         let watched_runtime_dirs = [
             (watched_app_root.join("channels"), WatchChange::Channels),
             (watched_app_root.join("presence"), WatchChange::Channels),
             (watched_app_root.join("stores"), WatchChange::Channels),
-            (watched_app_root.join("services"), WatchChange::Services),
             (watched_app_root.join("workflows"), WatchChange::Workflows),
+            (
+                watched_app_root.join("network-handlers"),
+                WatchChange::Channels,
+            ),
         ];
         let mut known_runtime_dirs = std::collections::HashSet::new();
         if watched_app_root != self.project_dir && watched_app_root.is_dir() {
@@ -136,6 +143,17 @@ impl ConfigWatcher {
                 match result {
                     Ok(events) => {
                         for event in events {
+                            if event.path == config_path {
+                                for path in local_schema_paths(&project_dir, &config_path) {
+                                    if let Some(parent) = path.parent() {
+                                        let _ = watch_path(
+                                            &debouncer_for_thread,
+                                            parent,
+                                            RecursiveMode::NonRecursive,
+                                        );
+                                    }
+                                }
+                            }
                             if event.path == watched_app_root && watched_app_root.is_dir() {
                                 let _ = watch_path(
                                     &debouncer_for_thread,
@@ -217,11 +235,26 @@ fn classify_path(
     if path == config_path {
         return Some(WatchChange::Config);
     }
+    if local_schema_paths(project_dir, config_path)
+        .iter()
+        .any(|schema| schema == path)
+    {
+        return Some(WatchChange::Channels);
+    }
     if path == project_dir.join(".tako").join("secrets.json") {
         return Some(WatchChange::Secrets);
     }
+    let declaration_dirs = crate::build::js::generated_declaration_parent_dirs(project_dir);
+    if declaration_dirs
+        .iter()
+        .any(|dir| path == dir.join("tako.imports.ts"))
+    {
+        return Some(WatchChange::GeneratedDeclarations);
+    }
     if crate::build::js::is_generated_declaration_path(project_dir, path)
-        || path == app_root.join("tako.services.ts")
+        || declaration_dirs
+            .iter()
+            .any(|dir| path == dir.join("tako.exports.d.ts"))
     {
         return Some(WatchChange::GeneratedDeclarations);
     }
@@ -230,8 +263,8 @@ fn classify_path(
         ("channels", WatchChange::Channels),
         ("presence", WatchChange::Channels),
         ("stores", WatchChange::Channels),
-        ("services", WatchChange::Services),
         ("workflows", WatchChange::Workflows),
+        ("network-handlers", WatchChange::Channels),
     ] {
         let dir = app_root.join(dirname);
         if path == dir {
@@ -249,6 +282,24 @@ fn classify_path(
     }
 
     None
+}
+
+fn local_schema_paths(project: &Path, config: &Path) -> Vec<PathBuf> {
+    crate::config::TakoToml::load_from_file(config)
+        .map(|config| {
+            config
+                .schemas
+                .into_iter()
+                .filter(|path| !path.contains("://"))
+                .filter_map(|path| {
+                    let path = project.join(path);
+                    path.canonicalize().ok().or_else(|| {
+                        Some(path.parent()?.canonicalize().ok()?.join(path.file_name()?))
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn is_preexisting_runtime_definition_event(path: &Path, cutoff: Option<SystemTime>) -> bool {
@@ -302,14 +353,14 @@ mod tests {
     }
 
     #[test]
-    fn service_inputs_regenerate_but_generated_modules_do_not_restart() {
+    fn channel_inputs_regenerate_but_generated_declarations_do_not_restart() {
         let temp = tempfile::TempDir::new().unwrap();
         let project_dir = temp.path();
         let app_root = project_dir.join("client/app");
         let config_path = project_dir.join("tako.toml");
-        let services = app_root.join("services");
-        std::fs::create_dir_all(&services).unwrap();
-        let declaration = services.join("catalog.mts");
+        let channels = app_root.join("channels");
+        std::fs::create_dir_all(&channels).unwrap();
+        let declaration = channels.join("catalog.mts");
         std::fs::write(&declaration, "export default {};\n").unwrap();
         let cutoff = SystemTime::now();
         assert_eq!(
@@ -323,11 +374,16 @@ mod tests {
             None
         );
         assert_eq!(
-            classify_path(project_dir, &app_root, &config_path, &services, None),
+            classify_path(project_dir, &app_root, &config_path, &channels, None),
             None
         );
-        std::thread::sleep(Duration::from_millis(2));
         std::fs::write(&declaration, "export default { name: 'catalog' };\n").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&declaration)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(cutoff + Duration::from_secs(1)))
+            .unwrap();
         assert_eq!(
             classify_path(
                 project_dir,
@@ -336,7 +392,7 @@ mod tests {
                 &declaration,
                 Some(cutoff)
             ),
-            Some(WatchChange::Services)
+            Some(WatchChange::Channels)
         );
         std::fs::remove_file(&declaration).unwrap();
         assert_eq!(
@@ -347,25 +403,25 @@ mod tests {
                 &declaration,
                 Some(cutoff)
             ),
-            Some(WatchChange::Services)
+            Some(WatchChange::Channels)
         );
-        std::fs::remove_dir(&services).unwrap();
+        std::fs::remove_dir(&channels).unwrap();
         assert_eq!(
             classify_path(
                 project_dir,
                 &app_root,
                 &config_path,
-                &services,
+                &channels,
                 Some(cutoff)
             ),
-            Some(WatchChange::Services)
+            Some(WatchChange::Channels)
         );
         assert_eq!(
             classify_path(
                 project_dir,
                 &app_root,
                 &config_path,
-                &app_root.join("tako.services.ts"),
+                &project_dir.join("tako.d.ts"),
                 None
             ),
             Some(WatchChange::GeneratedDeclarations)
@@ -375,7 +431,7 @@ mod tests {
                 project_dir,
                 &app_root,
                 &config_path,
-                &project_dir.join("services/catalog.ts"),
+                &project_dir.join("channels/catalog.ts"),
                 None
             ),
             None
@@ -383,7 +439,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn watcher_tracks_services_moved_in_after_start_and_their_removal() {
+    async fn watcher_tracks_channels_moved_in_after_start_and_their_removal() {
         let temp = tempfile::TempDir::new().unwrap();
         let project_dir = temp.path().to_path_buf();
         let app_root = project_dir.join("src");
@@ -394,33 +450,33 @@ mod tests {
         std::fs::create_dir(&staged).unwrap();
         std::fs::write(staged.join("catalog.ts"), "export default {};\n").unwrap();
         let (tx, mut rx) = mpsc::channel(32);
-        let _watcher = ConfigWatcher::new(project_dir, app_root.clone(), config_path, tx)
+        let _watcher = ConfigWatcher::new(project_dir.clone(), app_root.clone(), config_path, tx)
             .unwrap()
             .start()
             .unwrap();
-        let services = app_root.join("services");
-        std::fs::rename(staged, &services).unwrap();
-        expect_change(&mut rx, WatchChange::Services).await;
+        let channels = app_root.join("channels");
+        std::fs::rename(staged, &channels).unwrap();
+        expect_change(&mut rx, WatchChange::Channels).await;
         drain_changes(&mut rx).await;
         std::fs::write(
-            services.join("catalog.ts"),
+            channels.join("catalog.ts"),
             "export default { name: 'catalog' };\n",
         )
         .unwrap();
-        expect_change(&mut rx, WatchChange::Services).await;
+        expect_change(&mut rx, WatchChange::Channels).await;
         drain_changes(&mut rx).await;
-        std::fs::read_to_string(services.join("catalog.ts")).unwrap();
+        std::fs::read_to_string(channels.join("catalog.ts")).unwrap();
         assert!(
             tokio::time::timeout(Duration::from_millis(400), rx.recv())
                 .await
                 .is_err()
         );
-        std::fs::remove_dir_all(&services).unwrap();
-        expect_change(&mut rx, WatchChange::Services).await;
+        std::fs::remove_dir_all(&channels).unwrap();
+        expect_change(&mut rx, WatchChange::Channels).await;
         drain_changes(&mut rx).await;
         std::fs::write(
-            app_root.join("tako.services.ts"),
-            "export const services = {};\n",
+            project_dir.join("tako.d.ts"),
+            "export interface TakoChannels {}\n",
         )
         .unwrap();
         expect_change(&mut rx, WatchChange::GeneratedDeclarations).await;
@@ -429,7 +485,7 @@ mod tests {
         {
             assert_eq!(change, WatchChange::GeneratedDeclarations);
         }
-        std::fs::read_to_string(app_root.join("tako.services.ts")).unwrap();
+        std::fs::read_to_string(project_dir.join("tako.d.ts")).unwrap();
         std::fs::read_to_string(app_root.parent().unwrap().join("tako.toml")).unwrap();
         assert!(
             tokio::time::timeout(Duration::from_millis(400), rx.recv())

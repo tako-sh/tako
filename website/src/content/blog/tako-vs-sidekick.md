@@ -113,7 +113,7 @@ Sidekick is a clever tool that solves a real problem — and we appreciate that 
 
 That said, Sidekick's development has slowed significantly — the last tagged release was October 2024, and commits are sparse. Major requested features like Docker Compose support and database management remain unimplemented. For side projects and single-container apps, it works well. For growing production workloads, the runway is uncertain.
 
-Tako is headed somewhere different. Today it handles deployment, routing, TLS, secrets, and local dev. The roadmap includes backend primitives — WebSocket channels, queues, workflows — things most apps bolt on as separate services. Combined with [multi-server environments](/docs/deployment/) and Cloudflare smart routing, Tako lets you build your own edge network on commodity hardware.
+Tako handles deployment, routing, TLS, secrets, and local dev alongside [channels](/docs/channels/), [workflows](/docs/workflows/), and [network handlers](/docs/network-primitives/). Apps call `app.primitive` addresses to obtain a direct result, start durable work, wait for a workflow result, or publish to the receiving app's channel. Generated schemas supply TypeScript, Go, and Rust types; JavaScript currently supplies recipient dispatch. These primitives work with [multi-server environments](/docs/deployment/) on the infrastructure you operate.
 
 The question is what you need: a quick way to ship a Dockerized app to a VPS, or a platform that grows with your app. Both are valid answers.
 

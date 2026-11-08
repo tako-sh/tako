@@ -388,6 +388,7 @@ wait_for_file_text() {
 run_channels_workflows_checks() {
   local server_host=$1
   local route_host=$2
+  local caller_host=${3:-$route_host}
   local events_file="$TMP_ROOT/channels-events-${server_host}.txt"
   local headers_file="$TMP_ROOT/channels-headers-${server_host}.txt"
   local stderr_file="$TMP_ROOT/channels-curl-${server_host}.err"
@@ -440,9 +441,9 @@ run_channels_workflows_checks() {
     exit 1
   fi
 
-  post_route_json "$server_host" "$route_host" "/publish" "{\"message\":\"$direct_message\"}" "Direct channel publish"
+  post_route_json "$server_host" "$caller_host" "/publish" "{\"message\":\"$direct_message\"}" "Direct channel publish"
   local workflow_payload="{\"message\":\"$workflow_message\",\"id\":\"$workflow_message\"}"
-  post_route_json "$server_host" "$route_host" "/enqueue" "$workflow_payload" "Workflow enqueue"
+  post_route_json "$server_host" "$caller_host" "/enqueue" "$workflow_payload" "Workflow enqueue"
   jq -e --arg id "$workflow_message" '.runId == $id' "$TMP_ROOT/post_body.tmp" >/dev/null
 
   if ! wait_for_file_text "$events_file" "$direct_message" "direct channel publish SSE event"; then
@@ -454,10 +455,35 @@ run_channels_workflows_checks() {
     exit 1
   fi
 
-  post_route_json "$server_host" "$route_host" "/enqueue" "$workflow_payload" "Duplicate workflow enqueue"
+  post_route_json "$server_host" "$caller_host" "/enqueue" "$workflow_payload" "Duplicate workflow enqueue"
   jq -e --arg id "$workflow_message" '.runId == $id' "$TMP_ROOT/post_body.tmp" >/dev/null
 
   cleanup_sse
+}
+
+run_network_primitive_checks() {
+  local server_host=$1
+  local caller_dir="$TMP_ROOT/network-caller-${server_host}"
+  cp -R "$PROJECT_DIR/caller" "$caller_dir"
+  cp "$PROJECT_DIR/tako-sdk.tgz" "$caller_dir/tako-sdk.tgz"
+  cp "$PROJECT_DIR/tako-schema.json" "$caller_dir/mail-schema.json"
+  bun - "$PROJECT_DIR/tako.toml" "$caller_dir/tako.toml" <<'JS'
+import { readFileSync, appendFileSync } from "node:fs";
+const vars = Bun.TOML.parse(readFileSync(process.argv[2], "utf8")).vars?.production ?? {};
+appendFileSync(process.argv[3], "\n[vars.production]\n" + Object.entries(vars).map(([k, v]) => `${k} = ${JSON.stringify(v)}`).join("\n") + "\n");
+JS
+  (cd "$caller_dir" && git init -q && bun_install)
+  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$caller_dir/tako.toml" deploy --env production --yes
+  test ! -e "$caller_dir/src/channels/demo.ts"
+  test ! -e "$caller_dir/src/workflows/demo.ts"
+  run_channels_workflows_checks "$server_host" "$ROUTE_HOST" "network-caller-e2e.example.com"
+  post_route_json "$server_host" "network-caller-e2e.example.com" "/call" '{"message":"hello"}' "Chained direct network handlers"
+  bun -e 'const body = await Bun.file(process.argv[1]).json(); if (body.result.echoed !== "HELLO") throw new Error(JSON.stringify(body));' "$TMP_ROOT/post_body.tmp"
+  post_route_json "$server_host" "network-caller-e2e.example.com" "/run" '{"message":"child-result"}' "Durable child workflow result"
+  bun -e 'const body = await Bun.file(process.argv[1]).json(); if (body.result.delivered !== "child-result") throw new Error(JSON.stringify(body));' "$TMP_ROOT/post_body.tmp"
+  local status
+  status=$(curl -sS -o /dev/null -w '%{http_code}' -H "Host: ${ROUTE_HOST}" -H 'X-Forwarded-Proto: https' -H 'Forwarded: proto=https' -H 'Content-Type: application/json' --data '{"name":"broadcast","request":{"operation":"enqueue","payload":{},"opts":{}}}' "http://${server_host}:8080/_tako/network")
+  test "$status" = 403
 }
 
 run_store_checks() {
@@ -921,7 +947,7 @@ if [[ -f "$PROJECT_DIR/go.mod" ]]; then
   # ── Go fixture setup ─────────────────────────────────────────────
   # Copy the Go SDK source (go.mod + *.go + internal/) so the fixture's replace directive resolves.
   mkdir -p "$JS_WORKSPACE_DIR/internal"
-  cp "$WORKSPACE/go.mod" "$WORKSPACE/tako.go" "$JS_WORKSPACE_DIR/"
+  cp "$WORKSPACE/go.mod" "$WORKSPACE/"*.go "$JS_WORKSPACE_DIR/"
   cp -R "$WORKSPACE/internal/." "$JS_WORKSPACE_DIR/internal/"
   (cd "$JS_WORKSPACE_DIR" && git init -q)
   # Rewrite the replace directive to point to the staged SDK location
@@ -1068,6 +1094,7 @@ CFG
   run_secret_checks "$server" "$ROUTE_HOST"
   if [[ "$FIXTURE_REL" == "e2e/fixtures/javascript/channels-workflows" ]]; then
     run_channels_workflows_checks "$server" "$ROUTE_HOST"
+    run_network_primitive_checks "$server"
     run_store_checks "$server" "$ROUTE_HOST"
   fi
   run_cli_post_deploy_checks "$server" "$APP_NAME" "$ROUTE_HOST" "$CURRENT_VERSION"

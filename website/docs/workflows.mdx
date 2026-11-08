@@ -5,7 +5,7 @@ description: "Build durable background workflows with typed payloads, checkpoint
 
 Tako workflows run background work next to your app without a separate queue service. A workflow can retry after failures, remember completed steps, sleep without holding a worker open, wait for an external signal, run on a cron schedule, and let its worker process scale to zero when idle.
 
-Code tabs cover JavaScript/TypeScript and Go where their workflow APIs correspond. JavaScript uses `tako.sh`; the Go worker SDK is the separate `github.com/tako-sh/tako/sdk/go` module, not the root Go HTTP SDK. The Rust SDK does not currently provide workflow authoring or worker APIs. Shared runtime semantics apply to both supported worker SDKs; option tables below describe the JavaScript API unless stated otherwise.
+Code tabs cover JavaScript/TypeScript and Go where their workflow APIs correspond. JavaScript uses `tako.sh`; the Go worker SDK is the separate `github.com/tako-sh/tako/sdk/go` module, not the root Go HTTP SDK. The Rust SDK does not currently provide workflow authoring or worker APIs. JavaScript, the root Go HTTP SDK, and Rust can [enqueue a JavaScript-owned network workflow](/network-primitives/) by qualified string address. Shared runtime semantics apply to both supported worker SDKs; option tables below describe the JavaScript API unless stated otherwise.
 
 ## Vocabulary
 
@@ -171,6 +171,14 @@ Go's `EnqueueOpts` uses `ID`, `RunAt`, and `MaxAttempts` pointers. `MaxAttempts`
 IDs are unique within the app and environment, across workflow names. Repeating an ID with a different workflow or payload produces a conflict. Concurrent enqueues with the same ID create one run. Existing runs keep their original schedule, retry budget, status, and completed steps; enqueue does not restart a succeeded, cancelled, or dead run.
 
 Deleting a finished run's history also frees its ID. A later enqueue with that ID creates a new run with no saved steps. Deduplication does not prevent a step's external side effect from repeating after a crash; pass a stable idempotency key to the external service as well.
+
+## Return Results and Call Child Workflows
+
+JavaScript workflow handlers can return JSON data. Tako saves the result when it marks the run succeeded; an absent return becomes `null`. Use `await task.result(runId, { timeout: "30s" })` to retrieve it, or `await task.run(payload)` to enqueue and wait. Both imported `defineWorkflow` handles and `workflow("app.name")` network handles expose these methods. A wait timeout leaves the child running and its result retrievable by ID.
+
+Within another JavaScript workflow, `.run()` checkpoints the child identity and terminal outcome. It defers the parent while the child is pending, releasing the worker slot without consuming a retry. Parent replay reuses the same child and cached result. Give calls stable `step` names, or preserve their call order within each named `ctx.run` scope. Use a stable enqueue ID for detached `.enqueue()` calls that can repeat. Retain child history long enough for parent retries: pruning a run also frees its ID.
+
+See [Network Primitives](/network-primitives/#workflow-results) for typed examples, timeout/failure behavior, and Go/Rust result readers. Automatic durable child calls and workflow handler return values currently belong to the JavaScript SDK; the Go worker completes successful handlers with a null result.
 
 ## Durable Steps With `ctx.run`
 

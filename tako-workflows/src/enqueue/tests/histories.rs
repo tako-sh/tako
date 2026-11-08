@@ -67,7 +67,7 @@ fn lifecycle_history(seed: u64) -> Vec<String> {
             Err(RunsDbError::StaleWorker)
         ));
         assert!(matches!(
-            db.complete(&id, "old"),
+            db.complete(&id, "old", &serde_json::Value::Null),
             Err(RunsDbError::StaleWorker)
         ));
         assert!(matches!(
@@ -102,7 +102,8 @@ fn lifecycle_history(seed: u64) -> Vec<String> {
             }
         );
         assert!(resumed.step_state.get("late").is_none());
-        db.complete(&id, "resumed").unwrap();
+        db.complete(&id, "resumed", &serde_json::Value::Null)
+            .unwrap();
         assert!(
             db.claim("finished", &["work".into()], 60_000)
                 .unwrap()
@@ -185,7 +186,7 @@ fn workflow_crash_recovery() {
     assert_eq!(run.id, "acknowledged");
     assert_eq!(run.step_state["checkpoint"], 42);
     assert!(matches!(
-        db.complete(&run.id, "exited"),
+        db.complete(&run.id, "exited", &serde_json::Value::Null),
         Err(RunsDbError::StaleWorker)
     ));
 }

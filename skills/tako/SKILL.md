@@ -147,22 +147,6 @@ validation.
   restores target a specific app, environment, and server. Verify the target
   and authorization before deleting data or restoring an archive.
 
-## Typed HTTP services
-
-Read `service-contracts` and the JavaScript SDK skill before adding typed HTTP
-calls. Define services under `<app_root>/services/`, then run `tako generate`.
-The generated `<app_root>/tako.services.ts` exports shareable schemas and clients
-without app implementation imports. Publish it through your normal package
-workflow with its SDK and TypeBox dependencies. Consumers supply a reachable
-HTTP or HTTPS URL; no Tako Cloud account is required.
-
-Generation runs in dev and before JavaScript deployment builds. Fix declaration
-errors before proceeding. During dev reload, failed generation leaves the current
-app running. Verify runtime validation as well as TypeScript types. Contracts
-support a limited inline TypeBox subset; authentication and HTTP host limits
-remain application responsibilities. Typed contracts do not establish private
-DNS or automatic native-mesh connectivity.
-
 ## Channels, presence, stores, and workflows
 
 Read the language SDK skill and the `channels`, `presence`, `stores`, or `workflows` guide before editing
@@ -208,3 +192,9 @@ invalidation, reconnect catch-up, and offline expiry through the real app flow.
 Run `tako agents` to install project-local skills and configure MCP for your coding
 agents. Restart the agent or reload MCP connections afterward. For skills only:
 `npx skills add tako-sh/tako`.
+
+## Communicate between apps
+
+Use [Network Primitives](https://tako.sh/docs/network-primitives) for direct handlers, workflow enqueue/results, and channel publication through `app.primitive` addresses. Calls inherit the caller environment and stay on the private network; run both apps under the same `tako dev` daemon locally. JavaScript supplies recipient dispatch; JavaScript, Go, and Rust supply callers. Direct `call` returns a handler result without enqueueing. Workflow `.enqueue` returns a run ID; JavaScript `.run` enqueues and waits, with durable child-call behavior inside a workflow. Channel publish acknowledges acceptance without waiting for subscribers. Result wait timeouts do not cancel workflows.
+
+Run `tako gen` in producers to export `tako-schema.json` beside `tako.toml`. Consumer root-level `schemas` accepts file paths relative to the config or HTTP(S) URLs. Generation compiles TypeScript `tako.imports.ts`, Go `tako_imports.go`, or Rust `tako_imports.rs`; native outputs use `build.cwd` or root. Commit `tako-schema.lock` for remote schemas: it embeds hashed content for offline builds, and `tako gen --update-schemas` explicitly refreshes it. Native exporters use `tako-schema/main.go` or `examples/tako_schema.rs` with the SDK schema helpers. They describe DTOs without adding native recipient dispatch. Keep optional fields distinct from null, and represent large integers as decimal strings. Generated TypeScript convenience exports and local `tako.d.ts` remain separate; package exports remain user-owned. Schema imports do not restrict runtime access. App socket authentication and signed cross-server calls exclude generic network peers. Test generation across the consumer language, then verify a real caller/recipient flow and inspect recipient logs.

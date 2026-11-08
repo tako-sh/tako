@@ -95,7 +95,8 @@ fn pruning_a_finished_run_releases_its_id_and_steps() {
         .unwrap();
     db.save_step(&first.id, "worker", "charge", &serde_json::json!("receipt"))
         .unwrap();
-    db.complete(&first.id, "worker").unwrap();
+    db.complete(&first.id, "worker", &serde_json::Value::Null)
+        .unwrap();
     assert_eq!(db.prune_finished_before(now_ms() + 1_000, 100).unwrap(), 1);
     let second = db
         .enqueue("pay", &serde_json::json!({"amount": 200}), &options)
@@ -116,7 +117,8 @@ fn default_retention_keeps_six_month_old_runs() {
     db.claim("worker", &["pay".into()], 30_000)
         .unwrap()
         .unwrap();
-    db.complete(&run.id, "worker").unwrap();
+    db.complete(&run.id, "worker", &serde_json::Value::Null)
+        .unwrap();
     let now = now_ms();
     db.raw_execute(
         "UPDATE runs SET finished_at = ?1 WHERE id = ?2",
@@ -235,7 +237,8 @@ fn postgres_ids_are_retained_scoped_and_reusable_after_pruning() {
         &serde_json::json!("receipt"),
     )
     .unwrap();
-    db.complete("invoice:123", "worker").unwrap();
+    db.complete("invoice:123", "worker", &serde_json::Value::Null)
+        .unwrap();
     assert_eq!(db.prune_finished_before(now_ms() + 1_000, 100).unwrap(), 1);
     assert!(
         !db.enqueue("pay", &serde_json::json!({"amount":200}), &options)

@@ -233,11 +233,15 @@ mod tests {
             String::from_utf8(result.stdout).unwrap()
         };
         let active = inspect("server");
-        assert!(active.contains("\nuser tako\n"));
+        assert!(active.lines().any(|line| line == "user tako"));
         assert!(active.contains("\nstricthostkeychecking true\n"));
         assert!(active.contains(&format!("\nhostkeyalias tako-{}\n", fixture.server)));
         assert!(!active.contains("unwanted-proxy"));
-        assert!(inspect("personal").contains("\nuser personal\n"));
+        assert!(
+            inspect("personal")
+                .lines()
+                .any(|line| line == "user personal")
+        );
         assert!(config_contents("Host=\"server\"\n", &alias.id, Some(&settings)).is_err());
     }
     #[test]

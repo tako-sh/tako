@@ -6,7 +6,8 @@ mod image;
 mod native;
 mod static_handler;
 
-pub(crate) use backend::BackendResolution;
+pub(crate) use backend::{BackendResolution, resolve_app_backend};
+pub(crate) use native::invoke_network_backend;
 
 use super::TakoProxy;
 use super::compression::ResponseCompression;
@@ -195,6 +196,11 @@ impl ProxyHttp for TakoProxy {
                 Some(app.to_string())
             }
             crate::native_services::PrivateRoute::Remote { app, address } => {
+                // App invocations are signed for one destination server. Ordinary
+                // private HTTP may route through another server; proofs may not.
+                if session.req_header().uri.path() == tako_core::network::NETWORK_HTTP_PATH {
+                    return native::reject(session, 403).await;
+                }
                 ctx.private_request = true;
                 ctx.native_remote = Some(address);
                 native::strip_credentials(session.req_header_mut());
@@ -212,6 +218,9 @@ impl ProxyHttp for TakoProxy {
             }
         };
         let path = session.req_header().uri.path();
+        if path == tako_core::network::NETWORK_HTTP_PATH && !ctx.private_request {
+            return native::reject(session, 403).await;
+        }
         let host = request_host(session.req_header());
         let hostname = host.split(':').next().unwrap_or(host);
 
@@ -387,6 +396,10 @@ impl ProxyHttp for TakoProxy {
         ctx.matched_route_path = route_match.path;
         ctx.observation
             .set_app_route(&app_name, ctx.matched_route_path.as_deref());
+
+        if path == tako_core::network::NETWORK_HTTP_PATH {
+            return self.handle_network_request(session, &app_name).await;
+        }
 
         if path_uses_tako_handler(path) {
             let path = path.to_string();

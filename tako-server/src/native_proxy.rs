@@ -21,6 +21,7 @@ pub(crate) struct NativeProxy {
     /// owning the export would freeze what the network sees from this host.
     export_owner: Option<String>,
     export_replaced: AtomicBool,
+    invocations: parking_lot::Mutex<crate::native_invocation::ReplayGuard>,
     pub(crate) address: Ipv6Addr,
     pub(crate) gateway: Ipv4Addr,
 }
@@ -50,10 +51,65 @@ impl NativeProxy {
             path: config.network_dir(&state.runtime_config().data_dir),
             export_owner: (!state.runtime_config().standby).then(|| nanoid::nanoid!(32)),
             export_replaced: AtomicBool::new(false),
+            invocations: Default::default(),
             address: config.network.id.address(&member.request.wg_public_key),
             gateway: gateway.address(),
         });
         let directory = Directory::open(&service.path, true)?;
+        {
+            let router = Arc::downgrade(&service);
+            state
+                .workflows
+                .set_network_router(Arc::new(move |caller, target, invocation| {
+                    let Some(router) = router.upgrade() else {
+                        return tako_core::Response::error("network router unavailable");
+                    };
+                    let scope = match crate::native_channel_client::app_scope(target) {
+                        Ok(scope) => scope,
+                        Err(_) => return tako_core::Response::error("invalid destination app"),
+                    };
+                    let caller = match crate::native_channel_client::app_scope(caller) {
+                        Ok(scope) => scope,
+                        Err(_) => return tako_core::Response::error("invalid caller app"),
+                    };
+                    let (placement, network) = {
+                        let directory = router.directory.read();
+                        (
+                            directory.placements(&scope, now()).into_iter().next(),
+                            directory.network().to_string(),
+                        )
+                    };
+                    let Some(placement) = placement else {
+                        return tako_core::Response::error(
+                            "destination app unavailable on this network",
+                        );
+                    };
+                    let (app, environment) =
+                        target.split_once('/').unwrap_or((target, "production"));
+                    tokio::runtime::Handle::current().block_on(async {
+                        let signer =
+                            crate::native_channels::Client::new(router.path.join("channels.sock"));
+                        let invocation = match signer
+                            .sign_invocation(placement.server_id, caller, scope, invocation)
+                            .await
+                        {
+                            Ok(call) => call,
+                            Err(_) => {
+                                return tako_core::Response::error(
+                                    "network invocation signer unavailable",
+                                );
+                            }
+                        };
+                        tako_workflows::network::invoke_http(
+                            &format!("http://[{}]/_tako/network", placement.address),
+                            &format!("{app}.{environment}.{network}.tako.internal"),
+                            None,
+                            &invocation,
+                        )
+                        .await
+                    })
+                }));
+        }
         if let Some(owner) = &service.export_owner {
             claim_export(&directory, owner)?;
         }
@@ -119,6 +175,25 @@ impl NativeProxy {
 
     pub(crate) fn clear(&self) {
         self.directory.write().clear();
+    }
+
+    pub(crate) fn authorize_invocation(
+        &self,
+        call: &crate::native_invocation::SignedInvocation,
+        target: &str,
+        peer: Option<IpAddr>,
+    ) -> bool {
+        let (Ok(target), Some(peer)) = (crate::native_channel_client::app_scope(target), peer)
+        else {
+            return false;
+        };
+        let now = now();
+        let key = self
+            .directory
+            .read()
+            .invocation_key(call, &target, peer, now);
+        key.is_some_and(|key| call.verify(&key, now).is_ok())
+            && self.invocations.lock().accept(call)
     }
 
     pub(crate) fn route(
@@ -229,6 +304,7 @@ mod tests {
             path: path.to_path_buf(),
             export_owner: export_owner.map(str::to_string),
             export_replaced: AtomicBool::new(false),
+            invocations: Default::default(),
             address: Ipv6Addr::LOCALHOST,
             gateway: Ipv4Addr::LOCALHOST,
         }

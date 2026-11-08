@@ -1,0 +1,6 @@
+name = "network-caller-e2e"
+schemas = ["mail-schema.json"]
+runtime = "bun"
+
+[envs.production]
+route = "network-caller-e2e.example.com"

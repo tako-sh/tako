@@ -39,6 +39,7 @@ impl TakoToml {
 
         // Parse top-level metadata
         let name = parse_optional_string(&raw, "name")?;
+        let schemas = parse_string_array(&raw, "schemas")?.unwrap_or_default();
         let main = parse_optional_string(&raw, "main")?;
         let (runtime, runtime_version_pin) = parse_runtime_spec(&raw)?;
         let container = parse_optional_string(&raw, "container")?;
@@ -66,6 +67,7 @@ impl TakoToml {
         let storages = parse_storage_resources(&raw)?;
         let mut config = TakoToml {
             name,
+            schemas,
             main,
             runtime,
             container,

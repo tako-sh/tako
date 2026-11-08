@@ -75,7 +75,7 @@ Coolify is a server-side platform. Local development is up to you.
 
 Here's the bigger difference. Coolify is a platform management dashboard — and a good one. It deploys your app, manages your databases, handles your domains and certificates, and gives you a UI to control it all. But it stops at orchestration: once your container is running and Traefik is routing to it, you're on your own for everything else your app needs.
 
-Tako is headed somewhere different. We're building the **platform layer between your code and the internet**. Today that's deployment, routing, TLS, [secrets](/docs/deployment/), and local dev. The roadmap includes backend primitives that most apps end up bolting on as separate services: WebSocket and SSE channels, background queues, workflows, and image optimization — all built into the same server binary that's already running your app.
+Tako combines deployment, routing, TLS, [secrets](/docs/secrets/), and local dev with [channels](/docs/channels/), [workflows](/docs/workflows/), and [image optimization](/docs/images/). [Network primitives](/docs/network-primitives/) use `app.primitive` addresses for direct handler results, durable workflow runs, and publication to another app's channel. Root-level `schemas` imports generated contracts; `tako gen` produces TypeScript, Go, or Rust types. Callers stay in the same network and environment, with recipient dispatch currently provided by JavaScript.
 
 Combined with [multi-server environments](/docs/deployment/) and Cloudflare smart routing, Tako lets you build your own edge network on commodity VPS boxes. Deploy to LA, NYC, Frankfurt, and Singapore with one command. Think Fly.io, but on your own hardware.
 

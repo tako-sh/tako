@@ -12,12 +12,14 @@ documentation = "https://docs.rs/tako"
 default = []
 tokio = ["dep:tokio"]
 axum = ["tokio", "dep:axum"]
+schema = ["dep:schemars"]
 
 [dependencies]
 axum = { version = "0.8", optional = true }
 libc = "0.2"
 serde = { workspace = true }
 serde_json = { workspace = true }
+schemars = { version = "1.2", optional = true }
 tokio = { workspace = true, optional = true }
 
 [dev-dependencies]

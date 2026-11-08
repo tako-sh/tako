@@ -42,3 +42,4 @@ pub use manager::{
 pub use supervisor::{
     WorkerLane, WorkerLogSink, WorkerSpec, WorkerSupervisor, workflow_lanes_from_dir,
 };
+pub mod network;

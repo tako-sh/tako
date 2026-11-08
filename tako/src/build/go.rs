@@ -82,7 +82,7 @@ fn screaming_snake_to_pascal(name: &str) -> String {
 
 /// Detect the Go package name from existing `.go` files in the directory.
 /// Falls back to `"main"` if no files found.
-fn detect_package_name(project_dir: &Path) -> String {
+pub(crate) fn detect_package_name(project_dir: &Path) -> String {
     let entries = match fs::read_dir(project_dir) {
         Ok(e) => e,
         Err(_) => return "main".to_string(),
@@ -96,7 +96,7 @@ fn detect_package_name(project_dir: &Path) -> String {
                 .is_some_and(|name| !name.to_string_lossy().ends_with("_test.go"))
             && path
                 .file_name()
-                .is_some_and(|name| name != "tako_secrets.go")
+                .is_some_and(|name| name != "tako_secrets.go" && name != "tako_imports.go")
             && let Ok(content) = fs::read_to_string(&path)
         {
             for line in content.lines() {

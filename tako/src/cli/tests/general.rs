@@ -19,7 +19,7 @@ fn global_ssh_passphrase_parses_for_one_liners() {
 fn generate_parses_with_short_aliases() {
     for subcommand in ["generate", "gen", "g"] {
         let cli = Cli::try_parse_from(["tako", subcommand]).unwrap();
-        let Commands::Generate = cli.command.expect("command") else {
+        let Commands::Generate { .. } = cli.command.expect("command") else {
             panic!("expected Commands::Generate for {subcommand}");
         };
     }

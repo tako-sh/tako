@@ -218,6 +218,52 @@ describe("callInternal error wrapping", () => {
     }
   });
 
+  test("saturated network lanes leave storage free and reject nested overload promptly", async () => {
+    const sock = join(dir, "network-pool.sock");
+    let entered = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const server = createServer((socket) => {
+      let buffer = "";
+      socket.on("data", (chunk) => {
+        buffer += chunk.toString();
+        for (;;) {
+          const nl = buffer.indexOf("\n");
+          if (nl < 0) return;
+          const request = JSON.parse(buffer.slice(0, nl));
+          buffer = buffer.slice(nl + 1);
+          void (async () => {
+            if (request.command === "network_call") {
+              if (++entered === 64) release();
+              await gate;
+              const data = await callInternal(sock, { command: "enqueue_run" });
+              socket.write(JSON.stringify({ status: "ok", data }) + "\n");
+            } else {
+              socket.write(JSON.stringify({ status: "ok", data: { id: "child" } }) + "\n");
+            }
+          })();
+        }
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(sock, resolve));
+    try {
+      const calls = Array.from({ length: 64 }, () =>
+        callInternal(sock, { command: "network_call" }),
+      );
+      await expect(callInternal(sock, { command: "network_call" })).rejects.toThrow(
+        "capacity exceeded",
+      );
+      const results = await Promise.all(calls);
+      expect(results).toHaveLength(64);
+      expect(results.every((result) => (result as { id: string }).id === "child")).toBe(true);
+    } finally {
+      closeInternalSocketPoolsForTests();
+      server.close();
+    }
+  }, 5_000);
+
   test("preserves UTF-8 characters split across response chunks and reused lanes", async () => {
     const sock = join(dir, "unicode.sock");
     const data = { text: "A🙂é東京Z" };

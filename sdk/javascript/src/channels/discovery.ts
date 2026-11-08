@@ -23,6 +23,7 @@ export async function discoverChannels(dir: string): Promise<DiscoveredChannel[]
       throw new Error(`nested channel directory '${entry.name}' is not supported`);
     }
     if (!entry.isFile()) continue;
+    if (/\.d\.(?:ts|mts|cts)$/.test(entry.name)) continue;
 
     const parsed = parse(entry.name);
     if (!VALID_EXTS.has(parsed.ext)) continue;

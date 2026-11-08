@@ -1,4 +1,5 @@
 use parking_lot::Mutex;
+use rusqlite::OptionalExtension;
 use rusqlite::types::Value;
 use rusqlite::{Connection, params, params_from_iter};
 use std::collections::HashMap;
@@ -250,12 +251,49 @@ impl SqliteRunsDb {
         Ok(())
     }
 
-    pub(super) fn complete(&self, id: &str, worker_id: &str) -> Result<(), RunsDbError> {
+    pub(super) fn result(
+        &self,
+        name: &str,
+        id: &str,
+    ) -> Result<Option<super::RunResult>, RunsDbError> {
+        let conn = self.conn.lock();
+        let row = conn
+            .query_row(
+                "SELECT status, result, last_error FROM runs WHERE id=?1 AND name=?2",
+                (id, name),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        row.map(|(status, result, error)| {
+            Ok(super::RunResult {
+                status,
+                result: result
+                    .map(|value| serde_json::from_str(&value))
+                    .transpose()?
+                    .unwrap_or(serde_json::Value::Null),
+                error,
+            })
+        })
+        .transpose()
+    }
+
+    pub(super) fn complete(
+        &self,
+        id: &str,
+        worker_id: &str,
+        result: &serde_json::Value,
+    ) -> Result<(), RunsDbError> {
         let conn = self.conn.lock();
         let rows = conn.execute(
-            "UPDATE runs SET status='succeeded', worker_id=NULL, lease_until=NULL, finished_at=?1
+            "UPDATE runs SET status='succeeded', result=?4, last_error=NULL, worker_id=NULL, lease_until=NULL, finished_at=?1
              WHERE id = ?2 AND worker_id = ?3 AND status='running'",
-            (now_ms(), id, worker_id),
+            (now_ms(), id, worker_id, serde_json::to_string(result)?),
         )?;
         if rows == 0 {
             return Err(RunsDbError::StaleWorker);

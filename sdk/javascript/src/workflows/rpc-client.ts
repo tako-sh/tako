@@ -14,6 +14,7 @@
 import { APP_NAME_ENV, INTERNAL_SOCKET_ENV, TakoError, callInternal } from "../tako/socket";
 import type { EnqueueOptions } from "./engine";
 import type { Run, RunId, RunStatus, StepState } from "./types";
+import type { WorkflowResultState } from "./result";
 
 /** Result returned after enqueueing a workflow run. */
 export interface EnqueueResult {
@@ -140,8 +141,23 @@ export class WorkflowsClient {
   }
 
   /** Mark a workflow run as succeeded. */
-  async complete(id: RunId, workerId: string): Promise<void> {
-    await this.call({ command: "complete_run", app: this.app, id, worker_id: workerId });
+  async complete(id: RunId, workerId: string, result: unknown = null): Promise<void> {
+    await this.call({
+      command: "complete_run",
+      app: this.app,
+      id,
+      worker_id: workerId,
+      result: result ?? null,
+    });
+  }
+
+  async result(name: string, id: RunId): Promise<WorkflowResultState | null> {
+    return (await this.call({
+      command: "get_run_result",
+      app: this.app,
+      name,
+      id,
+    })) as WorkflowResultState | null;
   }
 
   /** Mark a workflow run as cancelled. */

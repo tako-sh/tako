@@ -9,7 +9,7 @@ Most deploy tools are infrastructure-only. They move your code to a server, mayb
 
 We think that's leaving a lot on the table.
 
-Tako ships an SDK — [`tako.sh`](https://www.npmjs.com/package/tako.sh) for JavaScript/TypeScript, [`tako.sh`](https://pkg.go.dev/tako.sh) for Go — because the interesting problems in deployment happen at the boundary between infrastructure and application code. Readiness signaling, secret injection, health checks, graceful shutdown. These aren't app concerns or infra concerns. They're both.
+Tako ships SDKs for [JavaScript/TypeScript](https://www.npmjs.com/package/tako.sh), [Go](https://pkg.go.dev/tako.sh), and [Rust](https://crates.io/crates/tako) because deployment depends on cooperation between infrastructure and application code. Readiness signaling, secret injection, health checks, graceful shutdown, and calls between apps all cross that boundary.
 
 ## What the SDK Actually Does
 
@@ -86,28 +86,35 @@ One of the quieter benefits: [`tako dev`](/docs/development/) runs your app thro
 
 This means if your app starts correctly in dev, it starts correctly in production. No "works on my machine" surprises from a different server setup.
 
-## The Real Reason: What Comes Next
+<a id="the-real-reason-what-comes-next"></a>
 
-Everything above is useful today. But the deeper reason we ship an SDK is what it unlocks tomorrow.
+## The Real Reason: Built-In Primitives
+
+The same integration gives applications durable work, realtime delivery, and private calls to other apps.
 
 Without an SDK, a deploy tool can only manage processes from the outside — start, stop, route traffic. It has no way to coordinate with your application code. That's fine for basic deploys, but it's a dead end for anything more interesting.
 
-With an SDK, we can add runtime capabilities that are type-safe, integrated, and impossible to bolt on from the outside:
+The JavaScript SDK exposes these capabilities alongside the HTTP runtime:
 
 - **Background jobs** — define a job handler in your code, trigger it from any request, let Tako manage the queue and retries server-side. No external job queue to run.
 - **Durable workflows** — long-running, resumable workflows where Tako persists state across steps. Your code defines the steps, the SDK handles checkpointing and recovery.
 - **Scheduled tasks** — cron-like tasks declared in code, executed by the server. Type-safe, version-deployed, no separate cron service.
 - **Durable channels** — WebSocket/SSE routes for connected browsers, plus bounded replay for reconnects. JavaScript apps keep the file-based shape: `channels/` for durable realtime. The SDK handles connection lifecycle, auth, and message typing.
+- **Network handlers** — one default-exported function per file in `network-handlers/`, called with `call("users.lookup", input)`. It executes without enqueueing and returns JSON. Workflows and channels also use `app.primitive` addresses through `workflow(...)` and `channel(...)`.
 
 Each of these features needs both sides of the equation: server-side infrastructure _and_ application-level integration. A deploy tool without an SDK would need you to bring your own job queue, your own workflow engine, your own scheduler. The SDK is what lets Tako offer these as built-in primitives — type-safe, zero-config, and deployed alongside your app.
 
-This is where Tako is headed. The SDK is small today because we're building the foundation carefully. But it's the surface area that will grow the most.
+Calls stay in the caller's network and environment. Direct handlers have no automatic retries. Workflow `.run(payload)` enqueues and waits for a retained result; inside a workflow it checkpoints the child call so the parent can resume after a restart. Channel publication acknowledges publication without waiting for subscribers.
+
+Run `tako gen` to export the app's `tako-schema.json`. A consumer lists producer files or HTTP(S) URLs in root-level `schemas` in `tako.toml` and generates its own types. TypeScript gets `tako.imports.ts` and address registries in `tako.d.ts`; Go and Rust get native DTOs and constants. Commit `tako-schema.lock` for reproducible URL imports. Generation does not change package exports.
+
+Go and Rust callers use the same addresses and can import/export schemas, while recipient dispatch and automatic durable child calls currently require JavaScript. See [Network Primitives](/docs/network-primitives/) for the language matrix and complete examples.
 
 ## A Thin Layer, Not a Framework
 
-The SDK is not a framework. It doesn't have a router, an ORM, or opinions about how you structure your app. It's a ~200-line bridge between your fetch handler and Tako's infrastructure. You can use any framework you want — [Hono](https://hono.dev), [Elysia](https://elysiajs.com), Express, or just raw `Request`/`Response`.
+The SDK integrates with your HTTP framework and database choices. You can use [Hono](https://hono.dev), [Elysia](https://elysiajs.com), Express, or raw `Request`/`Response`. Its primitive folders define discoverable application entry points; they do not replace your application's router or data layer.
 
-The entire public API is one type (`FetchHandler`) and one class (`Tako`) with a handful of static methods. If you ever want to leave Tako, removing the SDK is a one-line change — export your fetch handler differently and bring your own server.
+The public API includes the runtime context, workflow and channel definitions, network calls, and typed configuration. A plain fetch handler remains ordinary HTTP code. Applications using durable primitives also depend on their persistence and delivery behavior, so moving those features requires replacing that behavior as well as the imports.
 
 We think the best infrastructure is the kind that knows just enough about your app to do its job well — and nothing more. That's why Tako ships an SDK.
 

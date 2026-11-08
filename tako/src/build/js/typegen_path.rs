@@ -1,7 +1,5 @@
 use std::path::{Path, PathBuf};
 
-const GENERATED_DECLARATION_DIRS: &[&str] = &["app", "src"];
-
 pub(super) fn resolve_declaration_path(project_dir: &Path) -> PathBuf {
     for dir in generated_declaration_parent_dirs(project_dir) {
         let candidate = dir.join("tako.d.ts");
@@ -10,12 +8,6 @@ pub(super) fn resolve_declaration_path(project_dir: &Path) -> PathBuf {
         }
     }
 
-    for dir in GENERATED_DECLARATION_DIRS {
-        let candidate_dir = project_dir.join(dir);
-        if candidate_dir.is_dir() {
-            return candidate_dir.join("tako.d.ts");
-        }
-    }
     project_dir.join("tako.d.ts")
 }
 

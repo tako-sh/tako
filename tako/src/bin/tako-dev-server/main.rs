@@ -6,6 +6,7 @@ mod identity;
 mod image;
 mod lan;
 mod local_dns;
+mod network;
 mod paths;
 mod process;
 mod protocol;
@@ -242,6 +243,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let state = Arc::new(Mutex::new(st));
+    network::install(&state, &workflows);
 
     // Events relay: broadcast to subscribers + trigger wake-on-request.
     {

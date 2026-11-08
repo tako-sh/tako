@@ -173,7 +173,8 @@ pub async fn run(
                     let commands = commands.clone();
                     let inbound = inbound.clone();
                     let replies = replies.clone();
-                    local_tasks.spawn(async move { let _ = ipc::serve(stream, commands, inbound, replies).await; });
+                    let signer = Some((keys.clone(), config.network.id.clone()));
+                    local_tasks.spawn(async move { let _ = ipc::serve_with_signer(stream, commands, inbound, replies, signer).await; });
                 }
             }
             accepted = async { listener.as_ref().unwrap().accept().await }, if listener.is_some() && peers.len() < MAX_CONNECTIONS => {

@@ -38,6 +38,16 @@ The Unix transports use newline-delimited JSON. `tako-socket` caps one frame at 
 
 Management-only commands are rejected on the internal socket. Runtime-only commands are rejected on the management socket. Both paths share `tako_core::Command` so message shapes cannot drift between duplicate enums.
 
+## Network primitives
+
+`network_call` is an internal-socket command with `{app, address, request}`. `app` remains the authenticated caller identity. `address` is a bare primitive name or `namespace.primitive`; a qualified namespace selects another app in the caller's environment. URLs, paths, extra dots, and caller-selected environments are rejected. `tako-core/src/network.rs` owns the invocation shapes and address grammar.
+
+Requests are `call` with JSON input for direct handlers, `enqueue` with payload and options, `result` with a run ID, or `publish` with message and params. Direct handlers run without enqueueing and return JSON. The recipient supplies workflow retry defaults or channel lifecycle settings. Enqueue acknowledges a run ID; publish acknowledges the stored or ephemeral message. Result reads return null for a missing workflow/run pair, otherwise `{status,result,error}`. Result reads are short requests; clients poll rather than holding routing capacity while a workflow runs. Network delivery is attempted once. A separate client socket pool reserves storage capacity, and both client and server reject network overload immediately so nested handlers cannot queue behind waiting ancestors.
+
+For native networks, the router selects an authenticated placement and sends `POST /_tako/network` over the private mesh. The body carries an agent-signed invocation under `tako-network-invocation-v1`, binding network, source server, destination server, caller app/environment, target app/environment, issuance time, nonce, and invocation. The caller comes from authenticated socket credentials. Protected local agent IPC signs the proof; proxies do not read identity keys. Receivers require a fresh admitted server identity matching the actual WireGuard peer, verify destination and signature, and reject expiry or replay. Generic enrolled laptops and Compose peers cannot invoke this path. Proofs cannot be relayed to another placement. Public ingress rejects it. Only after verification does the proxy wake the app and send `POST /network` with its internal host/bootstrap token; the response must echo the token. Local development and non-network same-server routing use that recipient endpoint directly. Requests and responses are bounded to 1 MiB; redirects and environment HTTP proxies are disabled. Management endpoints reject `network_call`.
+
+JavaScript implements recipient dispatch, including flat `<app_root>/network-handlers/` functions addressed by filename. JavaScript, Go, and Rust implement socket callers. `tako gen` exports `tako-schema.json` (JSON Schema 2020-12 with version 1 `x-tako` app/primitive metadata). Root `schemas` imports local paths or HTTP(S) URLs. A committed `tako-schema.lock` embeds hashed remote schemas; updates are explicit. Consumers compile standalone TypeScript contracts (`tako.imports.ts`), Go DTOs (`tako_imports.go`), or Rust Serde DTOs (`tako_imports.rs`). Go DTO and Rust schemars exporters describe native JSON contracts without adding recipient dispatch. `tako.exports.d.ts` remains a JavaScript convenience export. Generation changes no package exports. Type imports do not alter network authorization or runtime registration.
+
 ## Process bootstrap
 
 Native app and worker processes receive the bootstrap envelope as JSON on file descriptor 3. The envelope contains the app-scoped internal token, decrypted secrets, and storage bindings. `tako-core::bootstrap` is the only server-side serializer for this shape.
@@ -68,6 +78,12 @@ process, so a delayed earlier attempt cannot mutate the new attempt's state.
 SDK process identities also include randomness to avoid PID reuse across hosts
 or restarts. Ownership checks fence database writes, not external side effects;
 workflow execution remains at least once.
+
+## Workflow results and child calls
+
+`CompleteRun` carries a JSON `result` (null for no return value). The store atomically commits it with the succeeded status, guarded by the current claim owner. SQLite and Postgres persist it in `runs.result` and remove it with retained run history. `GetRunResult {app,name,id}` is an authenticated runtime-socket command; a mismatched workflow name is a missing run, and the app/environment scope is enforced by the same peer authentication as enqueue. It is not a management command.
+
+JavaScript `.run()` combines enqueue and result waiting. In a workflow, the SDK saves a child ID and call identity before enqueueing, repeats an uncertain enqueue with that ID, and checkpoints the terminal outcome. Pending children use ordinary `DeferRun`, releasing the parent's claim/concurrency slot without spending a retry. Result waits checkpoint their deadline across replay; a timeout does not cancel the child. Named `ctx.run` steps scope child-call order. IDs remain deduplicated only while child history is retained. Detached `.enqueue()` and direct handler `call()` do not gain automatic workflow checkpoints.
 
 ## Ephemeral channels
 

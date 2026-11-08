@@ -349,6 +349,33 @@ impl ServerState {
         workflows.set_peer_auth(std::sync::Arc::new(|app, uid| {
             crate::isolation::authorize_internal_socket_app(app, uid)
         }));
+        let cold_start = Arc::new(crate::scaling::ColdStartManager::new(
+            crate::scaling::ColdStartConfig::default(),
+        ));
+        let spawn_gate = Arc::new(tokio::sync::RwLock::new(()));
+        {
+            let lb = load_balancer.clone();
+            let cold_start = cold_start.clone();
+            let spawn_gate = spawn_gate.clone();
+            let draining = drain_requested.clone();
+            workflows.set_network_router(Arc::new(move |_caller, target, invocation| {
+                tokio::runtime::Handle::current().block_on(async {
+                    let crate::proxy::BackendResolution::Ready { backend, .. } =
+                        crate::proxy::resolve_app_backend(
+                            &lb,
+                            &cold_start,
+                            &draining,
+                            &spawn_gate,
+                            target,
+                        )
+                        .await
+                    else {
+                        return tako_core::Response::error("destination app unavailable");
+                    };
+                    crate::proxy::invoke_network_backend(backend, target, &invocation).await
+                })
+            }));
+        }
 
         if tokio::runtime::Handle::try_current().is_ok() {
             workflows
@@ -364,13 +391,11 @@ impl ServerState {
             challenge_tokens,
             routes: Arc::new(SyncRwLock::new(RouteTable::default())),
             management_lock: Arc::new(tokio::sync::Mutex::new(())),
-            spawn_gate: Arc::new(tokio::sync::RwLock::new(())),
+            spawn_gate,
             channel_credentials_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             deploy_locks: AsyncRwLock::new(HashMap::new()),
             prepared_deploy_ssl: AsyncRwLock::new(HashMap::new()),
-            cold_start: Arc::new(crate::scaling::ColdStartManager::new(
-                crate::scaling::ColdStartConfig::default(),
-            )),
+            cold_start,
             state_store,
             drain_requested,
             drain_activity,

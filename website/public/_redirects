@@ -5,3 +5,6 @@
 /docs/feature-requests/ https://github.com/tako-sh/tako/issues 301
 /docs/feature-requests.md https://github.com/tako-sh/tako/issues 301
 /docs/feature-requests.mdx https://github.com/tako-sh/tako/issues 301
+/docs/service-contracts /docs/network-primitives 301
+/docs/service-contracts/ /docs/network-primitives 301
+/docs/service-contracts.md /docs/network-primitives.md 301

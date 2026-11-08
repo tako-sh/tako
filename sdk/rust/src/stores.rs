@@ -510,7 +510,7 @@ fn time_remaining(deadline: Instant) -> Result<Duration, StoreError> {
 
 /// Unix socket connection with a total deadline, including a full listen backlog.
 #[cfg(unix)]
-fn connect_with_deadline(
+pub(crate) fn connect_with_deadline(
     path: &str,
     deadline: Instant,
 ) -> Result<std::os::unix::net::UnixStream, StoreError> {

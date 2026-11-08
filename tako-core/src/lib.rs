@@ -10,6 +10,7 @@ pub mod bootstrap;
 pub mod compose;
 pub mod container;
 pub mod instance_env;
+pub mod network;
 mod protocol;
 pub mod storage;
 

@@ -1,0 +1,408 @@
+---
+title: Network Primitives
+description: "Call private handlers, workflows, and channels by string address, with generated TypeScript, Go, and Rust types."
+---
+
+Use a string address to communicate with an app in the same private network:
+
+| Operation                                      | Behavior                           | Return value               |
+| ---------------------------------------------- | ---------------------------------- | -------------------------- |
+| `call("users.lookup", input)`                  | Execute a network handler directly | Handler result             |
+| `workflow("mail.send-email").enqueue(payload)` | Queue durable work                 | Run ID                     |
+| `workflow("mail.send-email").run(payload)`     | Queue durable work and wait        | Workflow result            |
+| `channel("web.progress").publish(message)`     | Publish to the recipient's channel | Publication acknowledgment |
+
+Network handlers execute without enqueueing. They use request/response transport and may still wait for network I/O, an idle app to start, or available execution capacity. Workflows run when a worker claims them. Channel publication does not wait for subscribers to process the message.
+
+## Addresses and access
+
+An address is `app.primitive`. Omit the namespace to select the current app: `workflow("send-email")`. The app portion is its `name` in `tako.toml`; there is no separate namespace setting. Primitive names contain 1–255 ASCII letters, digits, underscores, hyphens, or colons. Dots separate the app from the primitive.
+
+Calls inherit the caller's deployment environment. `mail.send-email` from `web/staging` targets `mail/staging`. Addresses cannot select another environment, an arbitrary URL, or a public host. The server resolves current network placements and wakes an idle recipient when needed. Without native network membership, calls reach apps on the same server only.
+
+Run both applications under the same `tako dev` daemon for local calls. App names must identify a single registered app; ambiguous development variants are rejected.
+
+Any app in the same network and environment can invoke a declared recipient primitive. Type exports select what a consumer knows about; they are not an access-control list. Channel subscription authorization still applies to subscribers. Network publication uses the recipient's channel definition and lifecycle, rather than browser authorization callbacks. Channel params are validated against that definition; they do not create separate rooms or streams.
+
+Private network membership alone does not grant invocation access to laptops or arbitrary containers. The app socket authenticates the caller. Cross-server requests carry an agent-signed proof bound to the caller, target app, environment, destination server, and request body; expired or replayed proofs are rejected. Ordinary private HTTP access remains separate.
+
+## Language support
+
+| Capability                                    | JavaScript / TypeScript | Go HTTP SDK (`tako.sh`) | Rust SDK (`tako`)       |
+| --------------------------------------------- | ----------------------- | ----------------------- | ----------------------- |
+| Call a handler, workflow, or channel          | Yes                     | Yes                     | Yes                     |
+| Receive network calls for declared primitives | Yes                     | No                      | No                      |
+| Generate native types from imported schemas   | Yes                     | Yes                     | Yes                     |
+| Export a language-neutral schema              | Automatic               | Go DTO exporter         | Serde/schemars exporter |
+
+The recipient currently needs the JavaScript SDK's managed HTTP runtime and internal dispatcher. Go channel registration and the separate Go workflow worker SDK retain their existing local APIs; they do not install this dispatcher. Rust supports blocking calls and async calls with its `tokio` feature. Plain HTTP containers without the Tako runtime cannot use these SDK calls.
+
+## Define the recipient
+
+In the app named `mail`, define ordinary workflows and channels:
+
+```ts
+// mail/src/workflows/send-email.ts
+import { defineWorkflow } from "tako.sh";
+
+export default defineWorkflow<{ to: string; subject: string }>("send-email", {
+  retries: 4,
+  handler: async (payload, ctx) => {
+    await ctx.run("deliver", () => sendEmail(payload));
+  },
+});
+```
+
+`sendEmail` is your application's delivery helper. Use a stable idempotency key with external providers when repeating an attempt could duplicate a side effect.
+
+```ts
+// mail/src/channels/delivery.ts
+import { defineChannel } from "tako.sh";
+
+export default defineChannel("delivery").$messageTypes<{
+  sent: { messageId: string };
+}>();
+```
+
+These definitions are available as `mail.send-email` and `mail.delivery`. The workflow name must match its filename. A channel uses the explicit name passed to `defineChannel`.
+
+Local channels may use names such as `orders.updated` or `chat/room-123`. Those names are excluded from network exports because they cannot form an unambiguous network address. Exporting a raw channel `.definition` preserves its params; erased message metadata becomes an unknown message map.
+
+## Direct network handlers
+
+Create one default-exported function per file under `<app_root>/network-handlers/`. Its filename supplies the address; no HTTP path or method is configured.
+
+```ts
+// users/src/network-handlers/lookup.ts
+import { defineNetworkHandler } from "tako.sh";
+
+export default defineNetworkHandler(async (input: { id: string }) => {
+  return { id: input.id, displayName: "Ada" };
+});
+```
+
+This handler is available as `users.lookup`. A plain default-exported function also works. Handlers may call other network handlers, publish channels, or start workflows. Return JSON data; no return value becomes `null`. Validate incoming data in your handler when it needs runtime validation: TypeScript contracts are compile-time checks.
+
+<CodeGroup>
+
+```ts JavaScript
+import { call } from "tako.sh";
+const user = await call("users.lookup", { id: "user-123" });
+```
+
+```go Go
+import (
+    "context"
+    "encoding/json"
+    "tako.sh"
+)
+
+func lookup(ctx context.Context, id string) (json.RawMessage, error) {
+    return tako.Call(ctx, "users.lookup", map[string]string{"id": id})
+}
+```
+
+```rust Rust
+use serde_json::{Value, json};
+use tako::network::Client;
+
+async fn lookup(id: &str) -> std::io::Result<Value> {
+    Client::from_env()?.call("users.lookup", json!({"id": id})).await
+}
+```
+
+</CodeGroup>
+
+Direct calls have no automatic retries. A timeout or disconnected caller does not prove the recipient stopped executing. Use an application idempotency key for effects that callers may retry. Calls that exceed network capacity fail promptly, including nested calls, so callers cannot occupy every slot while waiting for their descendants. Inside a workflow, wrap direct calls in `ctx.run` if their result should be checkpointed; the external effect still needs idempotency.
+
+## Export and import types
+
+Run `tako gen` in each producer to generate **`tako-schema.json` beside `tako.toml`**. It is ordinary JSON with a `$comment` saying not to edit it. JSON Schema 2020-12 describes the wire values; the versioned `x-tako` section identifies the app and its handlers, workflows, and channels. It includes only the app's own primitives.
+
+List the producer schemas at the root of the consumer's `tako.toml`:
+
+```toml
+name = "web"
+schemas = [
+  "../mail/tako-schema.json",
+  "https://schemas.example.com/users/v1/tako-schema.json",
+]
+```
+
+Then run `tako gen` in the consumer. Paths resolve from `tako.toml`, including sibling packages in a monorepo. HTTP and HTTPS URLs are supported; `github:` shorthand and external JSON Schema references are not. Publish schemas through your own repository or hosting. Tako does not change package exports.
+
+Remote schemas are fetched on first use. **Commit `tako-schema.lock`**: it embeds the remote schemas and their content hashes, so generation works offline in a clean checkout. Normal generation uses the lock. Run `tako gen --update-schemas` to fetch fresh copies and review the lock diff. Local files are reread on every generation and are not copied into the lock. Removing a source removes its imported types and lock entry.
+
+| File                | Owner                | Purpose                                                        |
+| ------------------- | -------------------- | -------------------------------------------------------------- |
+| `tako-schema.json`  | Generated            | Language-neutral API of this app; beside `tako.toml`           |
+| `tako-schema.lock`  | Generated; commit it | Pinned remote schemas and hashes; beside `tako.toml`           |
+| `tako.d.ts`         | Generated            | JavaScript app declarations and typed address registries       |
+| `tako.imports.ts`   | Generated            | Standalone TypeScript contracts compiled from `schemas`        |
+| `tako.exports.d.ts` | Generated            | TypeScript convenience exports for this app's primitives       |
+| `tako_imports.go`   | Generated            | Go DTOs, address constants, and channel message-name constants |
+| `tako_imports.rs`   | Generated            | Rust Serde DTOs and corresponding constants                    |
+
+The three TypeScript files stay beside the existing `tako.d.ts`, normally at root; existing `src/` or `app/` locations are preserved. `app_root` controls discovery, not output placement. Include `tako.d.ts` in the TypeScript project. Native source files go in `build.cwd` when configured, otherwise beside `tako.toml`. Rust consumers include the generated module explicitly. Native import generation uses the CLI and does not need Bun or the producer's compiler. Run `tako gen` explicitly for native applications before building them; JavaScript development and deployment also regenerate automatically.
+
+Generated native DTO names combine app, primitive, kind, and field, such as `MailSendEmailWorkflowPayload`. TypeScript imports use `MailSendEmailWorkflow`. Colliding generated names fail generation. The following examples use the `mail.send-email` definition above:
+
+<CodeGroup>
+
+```ts JavaScript
+import { workflow } from "tako.sh";
+
+// Input and result types come from schemas, through tako.d.ts.
+await workflow("mail.send-email").enqueue({
+  to: "reader@example.com",
+  subject: "Welcome",
+});
+```
+
+```go Go
+import (
+    "context"
+    "tako.sh"
+)
+
+func sendTyped(ctx context.Context) error {
+    payload := MailSendEmailWorkflowPayload{
+        To: "reader@example.com", Subject: "Welcome",
+    }
+    _, err := tako.Enqueue(ctx, MailSendEmailWorkflowAddress, payload,
+        tako.NetworkEnqueueOptions{})
+    return err
+}
+```
+
+```rust Rust
+// In src/main.rs or src/lib.rs. Add serde and serde_json dependencies.
+#[path = "../tako_imports.rs"]
+mod tako_imports;
+
+use tako::network::{Client, EnqueueOptions};
+use tako_imports::{MailSendEmailWorkflowPayload, MAIL_SEND_EMAIL_WORKFLOW_ADDRESS};
+
+fn send_typed() -> std::io::Result<()> {
+    let payload = MailSendEmailWorkflowPayload {
+        to: "reader@example.com".into(), subject: "Welcome".into(),
+    };
+    Client::from_env()?.enqueue_blocking(
+        MAIL_SEND_EMAIL_WORKFLOW_ADDRESS, payload, EnqueueOptions::default(),
+    )?;
+    Ok(())
+}
+```
+
+</CodeGroup>
+
+Go callers decode raw handler/workflow results with `json.Unmarshal` into the generated `...Result` type. Rust callers use `serde_json::from_value` on the handler result or a successful workflow's retained result. Generated types do not add runtime dispatch or automatic durable steps to either SDK.
+
+### Export native DTOs
+
+Native exporters describe the JSON wire contract explicitly. They do not register recipient handlers; recipient dispatch currently remains JavaScript-only. For Go, create `tako-schema/main.go`; `tako gen` runs `go run ./tako-schema`. For Rust, create `examples/tako_schema.rs`; generation runs `cargo run --quiet --example tako_schema --features tako/schema`. These commands run your local source, while imported schema files are only parsed as data.
+
+<CodeGroup>
+
+```go Go
+// tako-schema/main.go; DTOs can also be imported from your own package.
+package main
+
+import (
+    "os"
+    "tako.sh/schema"
+)
+
+type LookupInput struct { ID uint64 `json:"id,string"` }
+type LookupResult struct { Name string `json:"name"` }
+
+func main() {
+    app := schema.New("users") // match tako.toml
+    schema.Handler[LookupInput, LookupResult](app, "lookup")
+    if err := app.Write(os.Stdout); err != nil { panic(err) }
+}
+```
+
+```rust Rust
+// examples/tako_schema.rs; add schemars = "1.2" and serde with derive.
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+struct LookupInput { id: String }
+#[derive(Serialize, Deserialize, JsonSchema)]
+struct LookupResult { name: String }
+
+fn main() {
+    tako::schema::Application::new("users") // match tako.toml
+        .handler::<LookupInput, LookupResult>("lookup")
+        .print().unwrap();
+}
+```
+
+</CodeGroup>
+
+Go also provides `schema.Workflow[Payload, Result]` and `schema.Channel[Params, Messages]`; Rust provides `.workflow::<Payload, Result>()` and `.channel::<Params, Messages>()`. `Messages` is an object/struct mapping message names to payload DTOs. Rust uses separate serialization and deserialization schemas to respect Serde attributes. Go follows JSON tags and rejects unsupported embedded fields or custom marshalers rather than guessing their shape. With no exporter entry point, a native app exports an empty interface.
+
+### Wire types and migration
+
+Use JSON objects, arrays, strings, booleans, numbers, null, scalar enums, and explicit unions. Recursive objects and fixed tuples are supported in native bindings. TypeScript also preserves readonly arrays/tuples and template-literal strings; native strings retain their JSON representation. Native optional/rest tuples and unsupported structural schema features fail with an explanation. Generated DTOs are not complete JSON Schema validators: application code must validate constraints such as patterns and numeric bounds when required.
+
+Optional and nullable mean different things. Go uses `tako.Optional[T]` with `Set` and `Value`; Rust uses `tako::network::Optional<T>` with `Missing` or `Value`. Nullable values use Go pointers or Rust `Option<T>`, so an optional nullable field can represent missing, null, and a value. Unknown JSON remains `json.RawMessage`, `serde_json::Value`, or TypeScript `unknown`.
+
+Integers outside JavaScript's safe range must travel as decimal strings. Go's `json:",string"` field tag exports a string schema. Rust should use a string DTO or matching Serde serialization and schemars annotations. Declaring an unconstrained 64-bit integer fails generation; explicitly bounded JavaScript-safe integers are accepted. Dates and other custom values need an explicit JSON representation.
+
+To migrate a handwritten `tako.imports.ts`, generate schemas in its producers, list them under `schemas`, remove the handwritten file, and rerun `tako gen`. Generation refuses to overwrite a handwritten import file. Imported contracts never reappear in the consumer's exported schema or convenience exports.
+
+## Make calls
+
+These examples enqueue the same recipient workflow:
+
+<CodeGroup>
+
+```ts JavaScript
+import { workflow } from "tako.sh";
+
+const runId = await workflow("mail.send-email").enqueue(
+  { to: "reader@example.com", subject: "Welcome" },
+  { id: "welcome:user-123" },
+);
+```
+
+```go Go
+import (
+    "context"
+    "tako.sh"
+)
+
+func sendWelcome(ctx context.Context) (string, error) {
+    id := "welcome:user-123"
+    result, err := tako.Enqueue(ctx, "mail.send-email",
+        map[string]string{"to": "reader@example.com", "subject": "Welcome"},
+        tako.NetworkEnqueueOptions{ID: &id})
+    if err != nil { return "", err }
+    return result.ID, nil
+}
+```
+
+```rust Rust
+use serde_json::json;
+use tako::network::{Client, EnqueueOptions};
+
+// Enable the tako crate's "tokio" feature for async calls.
+async fn send_welcome() -> std::io::Result<String> {
+    let client = Client::from_env()?;
+    let result = client.enqueue("mail.send-email",
+        json!({"to": "reader@example.com", "subject": "Welcome"}),
+        EnqueueOptions { id: Some("welcome:user-123".into()), ..Default::default() },
+    ).await?;
+    Ok(result.id)
+}
+```
+
+</CodeGroup>
+
+Publish a channel message from server-side code:
+
+<CodeGroup>
+
+```ts JavaScript
+import { channel } from "tako.sh";
+
+await channel("mail.delivery").publish({
+  type: "sent",
+  data: { messageId: "msg-123" },
+});
+```
+
+```go Go
+func publishDelivery(ctx context.Context) error {
+    _, err := tako.Publish(ctx, "mail.delivery", nil, "sent",
+        map[string]string{"messageId": "msg-123"})
+    return err
+}
+```
+
+```rust Rust
+async fn publish_delivery() -> std::io::Result<()> {
+    Client::from_env()?.publish("mail.delivery", json!({}), "sent",
+        json!({"messageId": "msg-123"})).await?;
+    Ok(())
+}
+```
+
+</CodeGroup>
+
+The Go and Rust publication examples use the imports from their enqueue examples. Rust's `enqueue_blocking` and `publish_blocking` methods use the same arguments without `.await`.
+
+## Workflow results
+
+Return JSON data from a JavaScript workflow handler. Annotate the payload parameter to infer both input and output, or supply both generics to `defineWorkflow<Payload, Result>`. Supplying only the payload generic leaves the result type `unknown`.
+
+```ts
+// reports/src/workflows/generate.ts
+import { defineWorkflow } from "tako.sh";
+
+export default defineWorkflow("generate", {
+  handler: async (input: { orderId: string }, ctx) => {
+    return ctx.run("report", () => ({ url: `/reports/${input.orderId}.pdf` }));
+  },
+});
+```
+
+<CodeGroup>
+
+```ts JavaScript
+import { workflow } from "tako.sh";
+
+const reports = workflow("reports.generate");
+const id = await reports.enqueue({ orderId: "o1" });
+const report = await reports.result(id, { timeout: "30s" });
+// Or enqueue and wait in one operation:
+const another = await reports.run({ orderId: "o2" }, { timeout: "30s" });
+```
+
+```go Go
+// Imports: context, encoding/json, time, and tako.sh.
+func reportResult(ctx context.Context, id string) (json.RawMessage, error) {
+    ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+    defer cancel()
+    return tako.Result(ctx, "reports.generate", id)
+}
+```
+
+```rust Rust
+// Imports: tako::network::Client and serde_json::Value.
+async fn report_result(id: &str) -> std::io::Result<Option<Value>> {
+    let state = Client::from_env()?.result("reports.generate", id).await?;
+    match state {
+        Some(run) if run.status == "succeeded" => Ok(Some(run.result)),
+        Some(run) if run.status == "pending" || run.status == "running" => Ok(None),
+        Some(run) => Err(std::io::Error::other(run.error.unwrap_or(run.status))),
+        None => Err(std::io::Error::other("run missing or no longer retained")),
+    }
+}
+```
+
+</CodeGroup>
+
+JavaScript `.result()` and Go `Result` poll until the run finishes or the caller's timeout/cancellation occurs. Rust `result` reads the current state once; poll pending/running states with your chosen deadline. Rust also provides `call_blocking` and `result_blocking`. JavaScript defaults to waiting without a timeout. Its `WorkflowResultError` exposes `runId` and `status` (`dead`, `cancelled`, `missing`, or `timeout`). A wait timeout does not cancel the workflow; use the retained run ID to retrieve its result later. Results are retained with workflow history, for at least 184 days by default. See [Workflows](/workflows/#storage-and-multiple-servers).
+
+Inside another JavaScript workflow, `.run()` acts as a durable child call. Tako checkpoints a stable child ID before enqueueing, reuses that ID if the acknowledgment is lost, and checkpoints the terminal outcome. A pending child defers the parent and releases its worker slot without consuming a retry. Replay resumes waiting for the same child; a cached result needs no further network call. Local imported workflow handles provide the same `.run()` and `.result()` methods.
+
+```ts
+const report = await workflow("reports.generate").run(
+  { orderId: input.orderId },
+  { step: "generate-report" },
+);
+```
+
+The optional `step` identifies the call within its enclosing durable step; otherwise calls use their order. Keep names, order, target, and payload stable on replay. Calls inside named `ctx.run` steps have separate scopes, so skipping a cached step does not shift later calls. `.enqueue()` alone is detached: supply a stable `id` if it can repeat. Retention still bounds child ID deduplication; retain child history long enough for parent retries. Go's workflow worker API does not provide this automatic child-call behavior or typed handler return values.
+
+## Retries and verification
+
+The recipient workflow owns its execution policy. The default is two retries after the first attempt. Its `retries` setting applies unless the caller overrides it with JavaScript `retries` or Go/Rust `MaxAttempts`/`max_attempts`, which count total attempts. Retry timing comes from the recipient's workflow backoff settings. See [Workflows](/workflows/).
+
+Network delivery is attempted once. Use a stable enqueue `id` when retrying an uncertain response: the recipient reuses a retained run when its workflow and payload match. Channel publication has no run ID or subscriber acknowledgement; repeating publication can deliver another message. A calling workflow can place the send in a checkpointed step and use its own retry policy.
+
+To verify, generate types in both applications, typecheck the consumer, and start both with `tako dev`. Enqueue from a server-side handler and inspect the recipient's workflow logs. For a channel, subscribe to the recipient and publish from the caller. In deployment, use apps in the same environment and network; `/_tako/network` is rejected on public ingress.

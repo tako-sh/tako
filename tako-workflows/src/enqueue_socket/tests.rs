@@ -29,17 +29,141 @@ fn lookup_for(map: std::collections::HashMap<String, Arc<RunsDb>>) -> AppLookup 
     })
 }
 
+#[test]
+fn network_calls_authenticate_the_caller_before_resolving_the_destination() {
+    let lookup = lookup_for(Default::default());
+    let auth: PeerAuthFn = Arc::new(|app, uid| {
+        if app == "web/staging" && uid == 1001 {
+            Ok(())
+        } else {
+            Err("caller mismatch".into())
+        }
+    });
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed = calls.clone();
+    let route: NetworkCallFn = Arc::new(move |caller, target, invocation| {
+        assert_eq!(caller, "web/staging");
+        observed
+            .lock()
+            .unwrap()
+            .push((target.to_owned(), invocation.name));
+        Response::ok(serde_json::json!({"id":"run-1"}))
+    });
+    let command = |app: &str, address: &str| Command::NetworkCall {
+        app: app.into(),
+        address: address.into(),
+        request: tako_core::network::NetworkRequest::Enqueue {
+            payload: serde_json::json!({"to":"a@example.com"}),
+            opts: Default::default(),
+        },
+    };
+    assert!(
+        handle_command(
+            &lookup,
+            None,
+            Some(&auth),
+            Some(1001),
+            Some(&route),
+            command("web/staging", "mail.send-email")
+        )
+        .data()
+        .is_some()
+    );
+    for (app, address, uid) in [
+        ("mail/staging", "mail.send-email", Some(1001)),
+        ("web/staging", "mail.send-email", Some(1002)),
+        ("web/staging", "mail.send-email", None),
+        ("web/staging", "mail/production.send-email", Some(1001)),
+    ] {
+        assert!(
+            handle_command(
+                &lookup,
+                None,
+                Some(&auth),
+                uid,
+                Some(&route),
+                command(app, address)
+            )
+            .data()
+            .is_none()
+        );
+    }
+    assert_eq!(
+        *calls.lock().unwrap(),
+        vec![("mail/staging".into(), "send-email".into())]
+    );
+}
+
 #[tokio::test]
 async fn internal_socket_is_group_accessible_for_app_processes() {
     use std::os::unix::fs::PermissionsExt;
 
     let tmp = tempfile::tempdir().unwrap();
     let sock = tmp.path().join("internal.sock");
-    let handle = spawn(&sock, lookup_for(Default::default()), None, None).unwrap();
+    let handle = spawn(&sock, lookup_for(Default::default()), None, None, None).unwrap();
     let mode = std::fs::metadata(&sock).unwrap().permissions().mode() & 0o777;
 
     handle.shutdown().await;
     assert_eq!(mode, 0o660);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn network_calls_leave_storage_workers_available() {
+    let tmp = tempfile::tempdir().unwrap();
+    let sock = tmp.path().join("internal.sock");
+    let barrier = Arc::new(std::sync::Barrier::new(32));
+    let route: NetworkCallFn = Arc::new(move |_, _, _| {
+        barrier.wait();
+        // The recipient must be able to enqueue while every caller awaits it.
+        tokio::runtime::Handle::current().block_on(async {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                crate::blocking::run(|| Response::ok(serde_json::json!({"id":"run"}))),
+            )
+            .await
+            {
+                Ok(Ok(response)) => response,
+                _ => Response::error("storage workers exhausted by network calls"),
+            }
+        })
+    });
+    let handle = spawn(
+        &sock,
+        lookup_for(Default::default()),
+        None,
+        None,
+        Some(route),
+    )
+    .unwrap();
+    let mut calls = tokio::task::JoinSet::new();
+    for _ in 0..32 {
+        let sock = sock.clone();
+        calls.spawn(async move {
+            let mut socket = UnixStream::connect(sock).await.unwrap();
+            write_json_line(
+                &mut socket,
+                &Command::NetworkCall {
+                    app: "web/staging".into(),
+                    address: "mail.send".into(),
+                    request: tako_core::network::NetworkRequest::Enqueue {
+                        payload: serde_json::Value::Null,
+                        opts: Default::default(),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+            let response: Response = read_json_line(&mut BufReader::new(socket))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(response.data().is_some(), "{response:?}");
+        });
+    }
+    while let Some(result) = calls.join_next().await {
+        result.unwrap();
+    }
+    handle.shutdown().await;
 }
 
 #[test]
@@ -76,7 +200,7 @@ async fn enqueue_routes_by_app() {
     let mut map = std::collections::HashMap::new();
     map.insert("a".to_string(), db_a.clone());
     map.insert("b".to_string(), db_b.clone());
-    let handle = spawn(&sock, lookup_for(map), None, None).unwrap();
+    let handle = spawn(&sock, lookup_for(map), None, None, None).unwrap();
 
     let stream = UnixStream::connect(&sock).await.unwrap();
     let (r, mut w) = stream.into_split();
@@ -116,7 +240,7 @@ async fn enqueue_rejects_when_health_check_fails() {
             on_claimed: Arc::new(|| {}),
         })
     });
-    let handle = spawn(&sock, lookup, None, None).unwrap();
+    let handle = spawn(&sock, lookup, None, None, None).unwrap();
 
     let stream = UnixStream::connect(&sock).await.unwrap();
     let (r, mut w) = stream.into_split();
@@ -160,7 +284,7 @@ async fn draining_runtime_rejects_enqueue_and_claims_nothing() {
             on_claimed: Arc::new(|| {}),
         })
     });
-    let handle = spawn(&sock, lookup, None, None).unwrap();
+    let handle = spawn(&sock, lookup, None, None, None).unwrap();
 
     let stream = UnixStream::connect(&sock).await.unwrap();
     let (r, mut w) = stream.into_split();
@@ -214,7 +338,7 @@ async fn claim_run_fires_on_claimed() {
             on_claimed: on_claimed.clone(),
         })
     });
-    let handle = spawn(&sock, lookup, None, None).unwrap();
+    let handle = spawn(&sock, lookup, None, None, None).unwrap();
 
     let stream = UnixStream::connect(&sock).await.unwrap();
     let (r, mut w) = stream.into_split();
@@ -260,7 +384,7 @@ async fn claim_respects_in_flight_limiter() {
             on_claimed: Arc::new(|| {}),
         })
     });
-    let handle = spawn(&sock, lookup, None, None).unwrap();
+    let handle = spawn(&sock, lookup, None, None, None).unwrap();
 
     let stream = UnixStream::connect(&sock).await.unwrap();
     let (r, mut w) = stream.into_split();
@@ -297,7 +421,12 @@ async fn claim_respects_in_flight_limiter() {
     assert_eq!(db.pending_count().unwrap(), 1);
 
     // Complete one run → slot frees → next claim succeeds.
-    db.complete(&claimed[0].id, &claimed[0].worker_id).unwrap();
+    db.complete(
+        &claimed[0].id,
+        &claimed[0].worker_id,
+        &serde_json::Value::Null,
+    )
+    .unwrap();
     limiter.release_claim(&claimed[0].worker_id);
     let cmd = Command::ClaimRun {
         app: "a".into(),
@@ -333,7 +462,7 @@ async fn claim_without_work_does_not_hold_a_slot() {
             on_claimed: Arc::new(|| {}),
         })
     });
-    let handle = spawn(&sock, lookup, None, None).unwrap();
+    let handle = spawn(&sock, lookup, None, None, None).unwrap();
 
     let stream = UnixStream::connect(&sock).await.unwrap();
     let (r, mut w) = stream.into_split();
@@ -380,7 +509,7 @@ async fn complete_releases_a_slot() {
             on_claimed: Arc::new(|| {}),
         })
     });
-    let handle = spawn(&sock, lookup, None, None).unwrap();
+    let handle = spawn(&sock, lookup, None, None, None).unwrap();
 
     let stream = UnixStream::connect(&sock).await.unwrap();
     let (r, mut w) = stream.into_split();
@@ -401,6 +530,7 @@ async fn complete_releases_a_slot() {
 
     // Complete.
     let cmd = Command::CompleteRun {
+        result: serde_json::Value::Null,
         app: "a".into(),
         id,
         worker_id: run["worker_id"].as_str().unwrap().to_owned(),
@@ -417,7 +547,7 @@ async fn complete_releases_a_slot() {
 async fn unknown_app_returns_error() {
     let tmp = tempfile::tempdir().unwrap();
     let sock = tmp.path().join("internal.sock");
-    let handle = spawn(&sock, lookup_for(Default::default()), None, None).unwrap();
+    let handle = spawn(&sock, lookup_for(Default::default()), None, None, None).unwrap();
 
     let stream = UnixStream::connect(&sock).await.unwrap();
     let (r, mut w) = stream.into_split();
@@ -458,7 +588,7 @@ async fn on_enqueue_fires_for_signal_with_waiters_only() {
             on_claimed: Arc::new(|| {}),
         })
     });
-    let handle = spawn(&sock, lookup, None, None).unwrap();
+    let handle = spawn(&sock, lookup, None, None, None).unwrap();
 
     // Signal with no waiters → should NOT fire on_enqueue.
     let stream = UnixStream::connect(&sock).await.unwrap();
@@ -525,7 +655,7 @@ fn authorize_peer_rejects_mismatched_app() {
 async fn shutdown_removes_pid_socket_file() {
     let tmp = tempfile::tempdir().unwrap();
     let sock = tmp.path().join("internal.sock");
-    let handle = spawn(&sock, lookup_for(Default::default()), None, None).unwrap();
+    let handle = spawn(&sock, lookup_for(Default::default()), None, None, None).unwrap();
     assert!(sock.exists() || sock.is_symlink());
     handle.shutdown().await;
 }
@@ -546,7 +676,7 @@ fn assert_same_process_takeover(db: Arc<RunsDb>, expire: impl FnOnce(&str)) {
             })
         })
     };
-    let call = |cmd| handle_command(&lookup, None, None, None, cmd);
+    let call = |cmd| handle_command(&lookup, None, None, None, None, cmd);
     let claim = || {
         let response = call(Command::ClaimRun {
             app: "a".into(),
@@ -587,6 +717,7 @@ fn assert_same_process_takeover(db: Arc<RunsDb>, expire: impl FnOnce(&str)) {
             result: serde_json::json!(1),
         },
         Command::CompleteRun {
+            result: serde_json::Value::Null,
             app: app.clone(),
             id: id.clone(),
             worker_id: worker_id.clone(),
@@ -636,6 +767,7 @@ fn assert_same_process_takeover(db: Arc<RunsDb>, expire: impl FnOnce(&str)) {
     );
     assert!(
         call(Command::CompleteRun {
+            result: serde_json::Value::Null,
             app,
             id,
             worker_id: second.worker_id
@@ -687,6 +819,7 @@ fn assert_remote_reclaim_recovers_budget(
     let claim = || {
         let response = handle_command(
             &lookup,
+            None,
             None,
             None,
             None,

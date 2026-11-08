@@ -8,12 +8,14 @@ import { WorkflowsClient } from "../../src/workflows/rpc-client";
 import type { Run } from "../../src/workflows/types";
 import type { RegisteredWorkflow, WorkflowHandler } from "../../src/workflows/worker";
 import { Worker } from "../../src/workflows/worker";
+import { workflow, setNetworkCaller } from "../../src/network";
 
 class MockServer {
   server!: Server;
   path = "";
   private tasks: Run[] = [];
   private idCounter = 0;
+  readonly results = new Map<string, unknown>();
 
   async start(dir: string): Promise<void> {
     this.path = join(dir, "srv.sock");
@@ -26,7 +28,7 @@ class MockServer {
   }
 
   seed(task: Partial<Run> & { name: string }): string {
-    const id = `t${++this.idCounter}`;
+    const id = task.id ?? `t${++this.idCounter}`;
     this.tasks.push({
       id,
       name: task.name,
@@ -68,13 +70,35 @@ class MockServer {
   }
 
   private dispatch(cmd: Record<string, unknown>): unknown {
-    if (cmd["command"] !== "claim_run") {
+    if (!["claim_run", "enqueue_run", "get_run_result"].includes(String(cmd["command"]))) {
       const task = this.find(cmd["id"] as string);
       if (!task || task.status !== "running" || task.workerId !== cmd["worker_id"]) {
         return { status: "error", message: "stale worker" };
       }
     }
     switch (cmd["command"]) {
+      case "enqueue_run": {
+        const opts = cmd["opts"] as { id?: string };
+        const existing = opts.id && this.find(opts.id);
+        const id = existing
+          ? existing.id
+          : this.seed({ name: String(cmd["name"]), payload: cmd["payload"], id: opts.id });
+        return { status: "ok", data: { id, deduplicated: Boolean(existing) } };
+      }
+      case "get_run_result": {
+        const task = this.find(String(cmd["id"]));
+        return {
+          status: "ok",
+          data:
+            task && task.name === cmd["name"]
+              ? {
+                  status: task.status,
+                  result: this.results.get(task.id) ?? null,
+                  error: task.lastError,
+                }
+              : null,
+        };
+      }
       case "claim_run": {
         const names = cmd["names"] as string[];
         const task = this.tasks.find(
@@ -114,6 +138,7 @@ class MockServer {
         const task = this.find(cmd["id"] as string);
         if (task) {
           task.status = "succeeded";
+          this.results.set(task.id, cmd["result"]);
           task.workerId = null;
         }
         return { status: "ok", data: {} };
@@ -131,6 +156,7 @@ class MockServer {
         const task = this.find(cmd["id"] as string);
         if (task) {
           task.status = "pending";
+          task.attempts -= 1;
           task.runAt = (cmd["wake_at_ms"] as number) ?? Number.MAX_SAFE_INTEGER;
           task.workerId = null;
         }
@@ -179,10 +205,11 @@ describe("Worker", () => {
     dir = await mkdtemp(join("/tmp", "tako-worker-"));
     mock = new MockServer();
     await mock.start(dir);
-    client = new WorkflowsClient(mock.path);
+    client = new WorkflowsClient(mock.path, "test");
   });
 
   afterEach(async () => {
+    setNetworkCaller(null);
     closeInternalSocketPoolsForTests();
     await mock.close();
     await rm(dir, { recursive: true, force: true });
@@ -210,6 +237,51 @@ describe("Worker", () => {
   test("processOnce returns false when nothing is eligible", async () => {
     const worker = new Worker({ client, workerId: "w1", registry: registry({}) });
     expect(await worker.processOnce()).toBe(false);
+  });
+
+  test("a parent releases its only worker slot and reuses a child result on retry", async () => {
+    let childCalls = 0;
+    let parentCalls = 0;
+    let childId = "";
+    setNetworkCaller(async (address, request) => {
+      if (request.operation === "enqueue") {
+        const result = await client.enqueue(address, request.payload, { id: request.opts.id });
+        childId = result.id;
+        return result;
+      }
+      if (request.operation === "result") return client.result(address, request.id);
+      throw new Error("unexpected operation");
+    });
+    const worker = new Worker({
+      client,
+      workerId: "single",
+      concurrency: 1,
+      baseBackoffMs: 1,
+      registry: registry({
+        parent: async (_payload, ctx) => {
+          const result = await ctx.run("child", () => workflow("child").run({ amount: 7 }));
+          if (++parentCalls === 1) throw new Error("retry after receiving child result");
+          return result;
+        },
+        child: async (payload) => {
+          childCalls++;
+          return payload;
+        },
+      }),
+    });
+    const parent = mock.seed({ name: "parent" });
+    await worker.processOnce();
+    expect(mock.find(parent)?.status).toBe("pending");
+    expect(mock.find(parent)?.attempts).toBe(0);
+    await worker.processOnce();
+    expect(mock.find(childId)?.status).toBe("succeeded");
+    mock.find(parent)!.runAt = 0;
+    await worker.processOnce();
+    mock.find(parent)!.runAt = 0;
+    await worker.processOnce();
+    expect(mock.find(parent)?.status).toBe("succeeded");
+    expect(mock.results.get(parent)).toEqual({ amount: 7 });
+    expect(childCalls).toBe(1);
   });
 
   test("failing handler exhausts retries and dies", async () => {

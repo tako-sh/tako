@@ -147,7 +147,7 @@ The components are app name, environment, and stable network ID. Native service 
 
 Automatic private DNS for native processes on the server requires an active systemd-resolved service. If it is absent, the WireGuard helper can still configure the link but reports `dns_supported = false` with a DNS error; do not treat link setup as successful DNS setup. Compose uses its managed gateway DNS independently of host systemd-resolved.
 
-While `tako connect` is active, the workstation sends queries for this network's private domain to its servers over WireGuard. Public DNS and the default route stay unchanged. Applications using their own DNS resolver instead of the operating system may need separate configuration. A scoped HTTPS deployment does not need a local connection. Typed HTTP clients still need an explicit reachable `baseURL`; a contract package does not configure DNS.
+While `tako connect` is active, the workstation sends queries for this network's private domain to its servers over WireGuard. Public DNS and the default route stay unchanged. Applications using their own DNS resolver instead of the operating system may need separate configuration. A scoped HTTPS deployment does not need a local connection. Ordinary HTTP clients still need a reachable URL. [Network primitive calls](/network-primitives/) use `app.primitive` addresses and resolve placement through Tako, without a user-configured base URL.
 
 Public application DNS, certificates, and ingress routes remain separate. A native network does not move your public hostname between servers or configure an external load balancer.
 

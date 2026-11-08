@@ -351,13 +351,15 @@ impl crate::ServerState {
             | Command::ClaimRun { .. }
             | Command::HeartbeatRun { .. }
             | Command::SaveStep { .. }
-            | Command::CompleteRun { .. }
+            | Command::GetRunResult { .. }
+        | Command::CompleteRun { .. }
             | Command::CancelRun { .. }
             | Command::FailRun { .. }
             | Command::DeferRun { .. }
             | Command::WaitForEvent { .. }
             | Command::Signal { .. }
-            | Command::ChannelPublish { .. } => Response::error(
+            | Command::NetworkCall { .. }
+        | Command::ChannelPublish { .. } => Response::error(
                 "workflow/channel commands must be sent over the internal socket, not the management socket"
                     .to_string(),
             ),

@@ -133,6 +133,11 @@ export class WorkflowEngine {
     return result.id;
   }
 
+  /** Read the retained outcome of a local workflow run. */
+  async result(name: string, id: RunId) {
+    return this.resolveClient().result(name, id);
+  }
+
   /** Deliver an event payload to every parked waitFor matching `eventName`. */
   async signal(eventName: string, payload?: unknown): Promise<number> {
     return this.resolveClient().signal(eventName, payload ?? null);

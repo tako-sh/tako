@@ -58,9 +58,39 @@ servers = ["east"]
 route = "shop.example.com"
 ```
 
-Membership also supplies the network part of private service names. From a server with native service DNS configured, an app can address the shop as `shop.production.<network-id>.tako.internal`. The private router uses current authenticated app placements. The public domain can continue pointing at an existing CDN or load balancer. On an enrolled Mac or Linux workstation, run `tako connect shop` to install the peer routes and direct DNS queries for that network to its servers. A browser using the system resolver can then open the private hostname.
+Membership also supplies private app hostnames. From a server with native DNS configured, an ordinary HTTP client can address the shop as `shop.production.<network-id>.tako.internal`. The private router uses current authenticated app placements. The public domain can continue pointing at an existing CDN or load balancer. On an enrolled Mac or Linux workstation, run `tako connect shop` to install the peer routes and direct DNS queries for that network to its servers. A browser using the system resolver can then open the private hostname.
 
-For two shop servers, that distinction extends to application data. Native channels can exchange live events and bounded replay between servers. Presence uses expiring records so clients can see who is connected. Adding the second server to membership does not copy a database file from the first server. Decide where orders are durable, how both regions read them, and what happens when a region goes offline before you start sending customers there. A private service name gives an application a route to another service. Its storage still needs its own design. [Channels](/docs/channels/) and [workflow storage](/docs/workflows/)
+For two shop servers, that distinction extends to application data. Native channels can exchange live events and bounded replay between servers. Presence uses expiring records so clients can see who is connected. Adding the second server to membership does not copy a database file from the first server. Decide where orders are durable, how both regions read them, and what happens when a region goes offline before you start sending customers there. Private routing reaches the other app; storage still needs its own design. [Channels](/docs/channels/) and [workflow storage](/docs/workflows/)
+
+## Call an app's primitives
+
+Managed apps communicate through `app.primitive` addresses. In the `shop` app, a direct handler is one default-exported function in `<app_root>/network-handlers/`:
+
+```ts
+// shop/src/network-handlers/lookup-order.ts
+import { defineNetworkHandler } from "tako.sh";
+import { db } from "../db";
+
+export default defineNetworkHandler(async (input: { orderId: string }) => {
+  const order = await db.orders.find(input.orderId);
+  return { orderId: order.id, status: order.status };
+});
+```
+
+`db` is the shop's database helper. Another app calls it with `await call("shop.lookup-order", { orderId: "ord_123" })`, importing `call` from `tako.sh`. Tako resolves the recipient and returns its JSON result. No HTTP path or method is configured. Direct calls execute without enqueueing or automatic retries; a cold recipient may still need to start.
+
+Workflows and channels use the same address shape: `workflow("mail.send-email").enqueue(payload)` starts durable work, `.run(payload)` waits for its result, and `channel("shop.orders").publish(message)` publishes through the channel owned by `shop`. The recipient defines the workflow's retry policy and the channel's lifecycle. Any app in the same network and environment can invoke these primitives.
+
+Run `tako gen` in each producer, then list its generated schema in the consumer:
+
+```toml
+name = "billing"
+schemas = ["../shop/tako-schema.json", "../mail/tako-schema.json"]
+```
+
+Running `tako gen` in `billing` compiles those schemas into its language's types. TypeScript uses `tako.imports.ts` and `tako.d.ts`; Go and Rust get native DTOs and address constants. HTTPS schema URLs are also supported, with a committed `tako-schema.lock` for offline generation. Receiving these calls currently requires the managed JavaScript dispatcher. [Network primitives and language support](/docs/network-primitives/)
+
+The app socket authenticates callers. Cross-server requests carry a signed proof bound to the caller, recipient, environment, destination server, and request body. Enrolling a laptop or opening a private hostname does not authorize primitive invocation. A staging caller targets the staging recipient automatically.
 
 ## Give a build runner one job
 

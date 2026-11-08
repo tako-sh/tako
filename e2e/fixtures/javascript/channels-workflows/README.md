@@ -17,6 +17,13 @@ Flow:
 Used by both the CLI dev e2e suite (`e2e/cli/tests/dev.test.ts`) and the
 deploy/docker harness.
 
+The deployment harness also installs `caller/` as a second app. Its root
+The caller's `schemas` imports the producer's generated `tako-schema.json`; generation writes its `tako.imports.ts`.
+`POST /call` invokes `echo`, which directly calls `uppercase`; `POST /run` starts
+the caller's `relay` workflow, durably waits for `broadcast`, and returns its
+stored result. The harness checks both responses and rejects public access to
+the private network dispatch endpoint.
+
 `src/presence/lobby.ts` also defines authenticated presence. The CLI dev suite
 checks WebSocket joins and disconnect cleanup. Production verifies the `e2e`
 token and supplies the `e2e-user` subject; local dev permits anonymous joins.

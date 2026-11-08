@@ -60,7 +60,7 @@ It's a little more work up front, but you control the map. Want a region Fly doe
 
 ### A platform that keeps growing
 
-Fly is a rock-solid runtime for your code. Tako wants to be more than a runtime. Deployment, routing, TLS, [secrets](/blog/secrets-without-env-files/), [local dev with real HTTPS](/blog/local-dev-with-real-https/), and [zero-downtime rolling deploys](/blog/zero-downtime-deploys-without-a-container-in-sight/) ship today. WebSocket channels, queues, workflows, and image optimization are on the roadmap — backend primitives that otherwise live in a separate service, built into the same server binary that's already running your app.
+Tako combines deployment, routing, TLS, [secrets](/blog/secrets-without-env-files/), and [local HTTPS](/blog/local-dev-with-real-https/) with durable channels, workflows, and image optimization. [Network primitives](/docs/network-primitives/) let managed apps call direct handlers, enqueue workflows, await results, and publish channels through `app.primitive` addresses in the same network and environment. Shared schemas generate TypeScript, Go, and Rust types; JavaScript currently provides recipient dispatch. These capabilities run on the servers you operate.
 
 ## When each makes sense
 

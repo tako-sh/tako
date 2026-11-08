@@ -2,7 +2,7 @@
 name: tako-sdk-js
 description: >-
   tako.sh SDK: fetch handler interface, tako runtime object, generated tako.d.ts type augmentation,
-  typed HTTP service contracts, defineChannel/definePresence/defineStore/defineWorkflow, replay recovery,
+  defineChannel/definePresence/defineStore/defineWorkflow, replay recovery,
   live data and offline reads, Vite and Next.js adapters.
 type: framework
 library: tako.sh
@@ -57,7 +57,6 @@ export default {
 | ------------------ | ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | `tako.sh`          | Isomorphic runtime + authoring helpers          | `tako`, `imageUrl`, `imageSrcSet`, `defineChannel`, `definePresence`, `defineStore`, `defineWorkflow`, runtime types |
 | `tako.sh/server`   | Server-only runtime re-export                   | `tako`, `TakoRuntime`                                                                                                |
-| `tako.sh/services` | Typed HTTP contracts and runtime validation     | `defineService`, `createServiceHandler`, `createServiceClient`, `ServiceError`, `serviceManifest`, `serviceOpenApi`  |
 | `tako.sh/client`   | Browser-safe realtime clients                   | `Channel`, `configureChannels`, `Store`, `clearStoreCache`                                                           |
 | `tako.sh/react`    | React hooks for realtime data                   | `useChannel`, `usePresence`, `useStore`                                                                              |
 | `tako.sh/vite`     | Vite plugin for SSR builds                      | `tako()` plugin function                                                                                             |
@@ -285,82 +284,6 @@ interface TakoStatus {
   uptime_seconds: number;
 }
 ```
-
-## Typed HTTP service contracts
-
-Use `tako.sh/services` for a shared HTTP contract with typed handlers, clients,
-and runtime validation. Clients use explicit HTTP or HTTPS `baseURL` values.
-This package works without Tako Cloud or the Tako runtime. It does not configure
-networking. Native environments separately provide private app discovery at
-`{app}.{env}.{network-id}.tako.internal` to supported runtimes; workstation
-applications resolve these names while `tako connect` is active. Supply an
-explicit reachable `baseURL`.
-
-```ts
-import { Type as t } from "@sinclair/typebox";
-import { defineService, createServiceHandler, createServiceClient } from "tako.sh/services";
-
-const health = defineService("health", {
-  check: {
-    method: "GET",
-    path: "/health",
-    responses: { 200: t.Object({ ok: t.Boolean() }) },
-  },
-});
-
-export const handler = createServiceHandler(health, {
-  check: () => ({ status: 200, body: { ok: true } }),
-});
-
-const client = createServiceClient(health, { baseURL: "https://api.example.com" });
-const result = await client.check();
-console.log(result.body.ok);
-```
-
-Mount the returned handler in your app or export it as the fetch handler.
-The app owns authentication, authorization, CORS, and request limits. Handler
-functions receive typed input and the original `Request`. A handler `basePath`
-option must match the path prefix in the client's `baseURL`.
-
-For generation, default-export one contract per flat `<app_root>/services/`
-file with a `.ts`, `.mts`, `.js`, or `.mjs` extension. Keep declarations free of
-server implementation imports and side effects. `tako generate` imports them
-and writes `<app_root>/tako.services.ts`, separately from ambient `tako.d.ts`.
-Dev regenerates before restarting. JavaScript deploy generates before the build
-copies sources. Invalid contracts stop startup or deployment preparation;
-failed regeneration during dev leaves the current app running.
-
-The generated module exports `services`, `ServiceContracts`, and
-`createClient(name, { baseURL })`. It has no producer-app imports. Export it from
-a shared package, compile JavaScript and declarations with your package build,
-and declare `tako.sh` and `@sinclair/typebox` dependencies. A consumer can install
-that package without the producer's source tree or a Tako Cloud account.
-Removing all declarations regenerates an existing module with an empty set.
-The SDK binary `tako-sh-gen-service-types <services-dir>` also accepts
-`--format manifest` or `--format openapi` and writes to stdout.
-
-Use required string path params matching `/items/{id}`. Query fields accept
-scalars or arrays of scalars encoded as repeated keys. Bodies are JSON; GET and
-HEAD cannot have request bodies. A response entry of `null` means no body, with
-`body: undefined` in the handler result. `t.Null()` means JSON null. Declared
-statuses, including 4xx and 5xx responses, return typed results that narrow by
-`status`. Undeclared statuses and invalid payloads throw `ServiceError`. Inspect
-`code`, `operation`, `phase`, `status`, and `issues`. Invalid handler inputs return 400. Invalid handler outputs throw and need host error handling.
-
-Validation supports inline TypeBox strings, finite numbers, integers, booleans,
-nulls, literals, arrays, objects, unions, and intersections. Supported constraints
-include string length/pattern, number bounds/multipleOf, array length/uniqueItems,
-and object size/additionalProperties. References, transforms, formats, and other
-unsupported keywords are rejected. Defaults do not fill missing input. Set
-`additionalProperties: false` to close body objects. Validated objects have null
-prototypes; use `Object.hasOwn`. Body snapshots reject cycles and non-JSON values
-and do not invoke `toJSON`. Getter execution, payload size/depth, and regex cost
-remain host concerns. Bound arrays with `maxItems` when using `uniqueItems`,
-which has quadratic worst-case comparison cost.
-
-See https://tako.sh/docs/service-contracts/ for constraint details and generation
-commands. Verify valid requests, invalid input, each declared status, and a
-separate consumer package with your TypeScript check.
 
 ## Channels
 
@@ -701,6 +624,27 @@ One connection, one buffer, any number of consumers.
 | Connect       | GET    | `/_tako/channels/<name>` | WebSocket (`Upgrade: websocket`) |
 | Publish       | WS     | `/_tako/channels/<name>` | JSON text frame                  |
 | Auth callback | POST   | `/channels/authorize`    | Internal (`Host: <app>.tako`)    |
+
+## Network primitives
+
+Managed server and worker code can use `call("users.lookup", input)` for a direct private response, `workflow("mail.send-email").enqueue(payload, options?)` for a run ID, `.run(payload, options?)` to enqueue and wait, `.result(id, options?)` to wait for a retained result, and `channel("web.progress", params?).publish({ type, data })` for publication acceptance. Bare names select the current app; qualified names select another app in the same network and environment. Recipient dispatch currently requires the JavaScript managed HTTP runtime. Go and Rust can call it. Types are not authorization rules.
+
+Define one function per `<app_root>/network-handlers/<name>.ts`, using `export default defineNetworkHandler(async (input: Input) => result)` or a plain function. The filename supplies the address. Handlers may call other handlers; they execute without enqueueing and have no automatic retries. A transport timeout can leave execution ongoing. Inside a workflow, put direct calls in `ctx.run` when their results need checkpoints, and use application idempotency keys for side effects.
+
+Workflow handlers return JSON results (no return becomes null), persisted with succeeded status and retained with the run. Annotate the input parameter to infer the output, or supply `defineWorkflow<Payload, Result>`; specifying only the first generic leaves results unknown. `.result()` and `.run()` accept `{ timeout: "30s" }` or milliseconds; default is no timeout. Timeout does not cancel a run. `WorkflowResultError` carries `runId` and status `dead`, `cancelled`, `missing`, or `timeout`.
+
+Within a workflow, `.run()` durably saves the child ID before enqueue, reuses it after an uncertain acknowledgment, and caches the terminal outcome. Pending children defer the parent and free its worker slot without spending retries. Use a stable optional `{ step: "child-name" }`, or keep call order stable within each enclosing named `ctx.run`. Keep the target and input stable across replay. Retention bounds deduplication; detached `.enqueue()` still needs an explicit stable ID when repeated. Child workflows own their execution retries (default two retries after the first attempt, unless overridden).
+
+`tako gen` exports `tako-schema.json` beside `tako.toml`. List producer schema paths or HTTP(S) URLs under root-level `schemas`; generated `tako.imports.ts`, convenience `tako.exports.d.ts`, and local `tako.d.ts` stay together at the existing declaration location, normally project root. `app_root` controls discovery. Imported contract names combine app, primitive, and kind, such as `MailSendEmailWorkflow`. Consumers do not re-export imports. Tako does not edit package exports.
+
+```toml
+# tako.toml — paths resolve from this file, including sibling apps
+schemas = ["../mail/tako-schema.json", "https://schemas.example.com/users/v1/tako-schema.json"]
+```
+
+Commit `tako-schema.lock`: it embeds hashed remote schemas and supports offline generation. Use `tako gen --update-schemas` to refresh; ordinary generation rereads local files and uses the remote lock. Migrate handwritten imports by listing producer schemas, removing the handwritten file, and rerunning generation. No `github:` shorthand or external JSON Schema references are supported. JSON data only; optional and nullable remain distinct. Native consumers get Go/Rust DTOs from the same schema; 64-bit integers must use decimal strings or explicit JavaScript-safe bounds. Unsupported native structural types fail instead of becoming unknown.
+
+Only addressable channel names appear in network exports; local names containing dots/slashes remain local. Raw channel `.definition` exports retain params and use an unknown message map when message metadata is erased. Private app calls authenticate through the app socket and signed cross-server proofs; generic network peers cannot invoke the dispatcher. Include `tako.d.ts` in the TS project. Verify producer/consumer generation, a real handler chain, and child workflow replay with stored results and idempotent effects. See [Network Primitives](https://tako.sh/docs/network-primitives).
 
 ## Workflows
 

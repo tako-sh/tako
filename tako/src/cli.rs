@@ -253,7 +253,11 @@ pub enum Commands {
 
     /// Refresh generated Tako files
     #[command(visible_aliases = ["gen", "g"])]
-    Generate,
+    Generate {
+        /// Fetch remote schemas again and update tako-schema.lock
+        #[arg(long)]
+        update_schemas: bool,
+    },
 
     /// Run a local command with Tako environment and secrets
     Run {
@@ -331,7 +335,7 @@ fn telemetry_command(command: &Commands) -> &'static str {
         Commands::Upgrade => "upgrade",
         Commands::Completions { .. } => "completions",
         Commands::Uninstall { .. } => "uninstall",
-        Commands::Generate => "generate",
+        Commands::Generate { .. } => "generate",
         Commands::Run { .. } => "run",
         Commands::Deploy { .. } => "deploy",
         Commands::Delete { .. } => "delete",
@@ -517,8 +521,8 @@ impl Cli {
                 commands::implode::run(yes)?;
                 json_success(json, "uninstall")
             }
-            Commands::Generate => {
-                commands::codegen::run(self.config.as_deref())?;
+            Commands::Generate { update_schemas } => {
+                commands::codegen::run(self.config.as_deref(), update_schemas)?;
                 json_success(json, "generate")
             }
             Commands::Run { env, eval, command } => commands::run::run(

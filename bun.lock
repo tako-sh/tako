@@ -15,6 +15,7 @@
         "@tsconfig/strictest": "catalog:dev",
         "@types/bun": "catalog:dev",
         "@xterm/headless": "^6.0.0",
+        "typescript": "catalog:dev",
       },
     },
     "examples/javascript/demo": {
@@ -93,13 +94,14 @@
       "version": "0.0.0",
       "bin": {
         "tako-sh-gen-channel-types": "./dist/gen-channel-types.mjs",
-        "tako-sh-gen-service-types": "./dist/gen-service-types.mjs",
+        "tako-sh-gen-network-types": "./dist/gen-network-types.mjs",
         "tako-sh-gen-store-types": "./dist/gen-store-types.mjs",
         "tako-worker": "./dist/entrypoints/bun-worker.mjs",
       },
       "dependencies": {
         "@microsoft/fetch-event-source": "^2.0.1",
         "@sinclair/typebox": "^0.34.52",
+        "typescript": "^6.0.3",
       },
       "devDependencies": {
         "@happy-dom/global-registrator": "^20.11.6",
@@ -113,7 +115,6 @@
         "react": "catalog:",
         "react-dom": "catalog:",
         "tsdown": "^0.23.0",
-        "typescript": "catalog:dev",
         "vite": "catalog:dev",
       },
       "peerDependencies": {

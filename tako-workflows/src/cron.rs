@@ -281,7 +281,8 @@ mod tests {
             .enqueue("work", &serde_json::json!({}), &EnqueueOpts::default())
             .unwrap();
         db.claim("worker", &["work".into()], 30_000).unwrap();
-        db.complete(&run.id, "worker").unwrap();
+        db.complete(&run.id, "worker", &serde_json::Value::Null)
+            .unwrap();
         db.raw_execute(
             "UPDATE runs SET finished_at = 1 WHERE id = ?1",
             [run.id.as_str()],

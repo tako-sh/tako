@@ -6,9 +6,12 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
+pub mod network;
 pub mod presence;
 #[cfg(feature = "axum")]
 mod presence_http;
+#[cfg(feature = "schema")]
+pub mod schema;
 pub mod stores;
 #[cfg(feature = "axum")]
 mod stores_http;

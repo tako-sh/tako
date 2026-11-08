@@ -24,6 +24,7 @@ mod native_agent;
 mod native_channel_client;
 mod native_channels;
 mod native_control;
+mod native_invocation;
 #[cfg(target_os = "linux")]
 mod native_management;
 #[cfg(target_os = "linux")]

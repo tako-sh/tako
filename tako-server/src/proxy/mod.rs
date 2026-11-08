@@ -14,6 +14,7 @@ mod proxy_protocol_service;
 mod request;
 mod server;
 mod service;
+pub(crate) use service::{BackendResolution, invoke_network_backend, resolve_app_backend};
 mod static_files;
 
 pub(crate) use cloudflare_ips::CloudflareIpRanges;
@@ -45,8 +46,6 @@ use request::{
     should_assume_forwarded_private_request_https, should_redirect_http_request,
     static_lookup_paths,
 };
-#[cfg(test)]
-use service::BackendResolution;
 
 pub(crate) use limits::MAX_REQUEST_BODY_BYTES;
 

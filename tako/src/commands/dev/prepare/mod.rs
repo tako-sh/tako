@@ -102,12 +102,8 @@ pub(super) async fn prepare(
     };
 
     if runtime_adapter.preset_group() == PresetGroup::Js {
-        js::write_generated_files_for_adapter_and_app_root(
-            &project_dir,
-            runtime_adapter,
-            cfg.js_app_root(),
-        )
-        .map_err(|error| error.to_string())?;
+        js::write_generated_files_with_schemas(&project_dir, runtime_adapter, &cfg, false)
+            .map_err(|error| error.to_string())?;
     }
 
     let runtime_name = build_preset.name.clone();
@@ -209,10 +205,11 @@ pub(super) async fn prepare(
     let secrets = inject_dev_secrets(&project_dir, &mut env).map_err(|e| e.to_string())?;
 
     if runtime_adapter.preset_group() == PresetGroup::Js {
-        crate::build::js::write_generated_files_for_adapter_and_app_root(
+        crate::build::js::write_generated_files_with_schemas(
             &project_dir,
             runtime_adapter,
-            cfg.js_app_root(),
+            &cfg,
+            false,
         )
         .map_err(|error| error.to_string())?;
     }

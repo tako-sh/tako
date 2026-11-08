@@ -25,7 +25,6 @@ On the web, use [llms.txt](/llms.txt) to discover topics and the `.md` version o
 - [Storage](/storage/): bind local or S3-compatible files and issue upload/download URLs.
 - [Images](/images/): optimize public images and generate responsive image URLs.
 - [Cache](/cache/): cache server-side JSON results with a TTL.
-- [Service contracts](/service-contracts/): define typed HTTP handlers and share generated clients between projects.
 
 ## Add live data and background work
 
@@ -59,3 +58,5 @@ Native networks support bounded channel replication, presence leases, and store 
 [How Tako works](/how-tako-works/) explains the CLI, server, SDK bootstrap, request routing, and state ownership. Use it when a task depends on a runtime boundary; command, configuration, and primitive topics contain the actionable details.
 
 For product context, see [tako.sh](https://tako.sh). Report bugs or request features in [GitHub issues](https://github.com/tako-sh/tako/issues).
+
+Use [Network Primitives](/network-primitives/) to call private handlers, channels, and workflows by string address, with TypeScript, Go, and Rust types generated from shared schemas.

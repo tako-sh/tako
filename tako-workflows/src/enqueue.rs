@@ -21,6 +21,8 @@ pub const POSTGRES_WORKFLOWS_SCHEMA: &str = "tako_workflows";
 /// Finished history and run IDs remain reserved for at least six calendar months.
 pub const DEFAULT_RETENTION_MS: i64 = 184 * 24 * 60 * 60 * 1000;
 
+pub use tako_core::RunResult;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkflowStoreConfig {
     Sqlite {
@@ -239,10 +241,22 @@ impl RunsDb {
         }
     }
 
-    pub fn complete(&self, id: &str, worker_id: &str) -> Result<(), RunsDbError> {
+    pub fn result(&self, name: &str, id: &str) -> Result<Option<RunResult>, RunsDbError> {
         match &self.backend {
-            RunsDbBackend::Sqlite(db) => db.complete(id, worker_id),
-            RunsDbBackend::Postgres(db) => db.complete(id, worker_id),
+            RunsDbBackend::Sqlite(db) => db.result(name, id),
+            RunsDbBackend::Postgres(db) => db.result(name, id),
+        }
+    }
+
+    pub fn complete(
+        &self,
+        id: &str,
+        worker_id: &str,
+        result: &serde_json::Value,
+    ) -> Result<(), RunsDbError> {
+        match &self.backend {
+            RunsDbBackend::Sqlite(db) => db.complete(id, worker_id, result),
+            RunsDbBackend::Postgres(db) => db.complete(id, worker_id, result),
         }
     }
 

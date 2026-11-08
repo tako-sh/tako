@@ -213,7 +213,8 @@ fn run(url: &str, index: &str, held_xmin: bool) {
                             .unwrap()
                             .claim
                             .push(t.elapsed().as_micros() as u64);
-                        db.complete(&run.id, &worker).unwrap();
+                        db.complete(&run.id, &worker, &serde_json::Value::Null)
+                            .unwrap();
                         timings_ref.lock().unwrap().completed += 1;
                     } else {
                         thread::sleep(Duration::from_millis(5));

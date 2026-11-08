@@ -68,11 +68,13 @@ pub(super) fn blocked_while_draining(command: &Command) -> bool {
         | Command::InjectChallengeToken { .. }
         | Command::HeartbeatRun { .. }
         | Command::SaveStep { .. }
+        | Command::GetRunResult { .. }
         | Command::CompleteRun { .. }
         | Command::CancelRun { .. }
         | Command::FailRun { .. }
         | Command::DeferRun { .. }
         | Command::WaitForEvent { .. }
+        | Command::NetworkCall { .. }
         | Command::ChannelPublish { .. } => false,
     }
 }

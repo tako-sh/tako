@@ -47,6 +47,11 @@ fn workflow_lanes_from_dir_include_default_and_declared_groups() {
         "// worker: \"commented\"\nconst worker = \"not-a-key\";",
     )
     .unwrap();
+    std::fs::write(
+        dir.path().join("network.d.ts"),
+        "export type Remote = { worker: 'remote-only' };",
+    )
+    .unwrap();
 
     let lanes = workflow_lanes_from_dir(dir.path(), 0, 10);
     let names: Vec<&str> = lanes.iter().map(|lane| lane.name.as_str()).collect();

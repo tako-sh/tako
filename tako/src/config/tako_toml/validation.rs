@@ -10,6 +10,26 @@ impl TakoToml {
         if let Some(name) = &self.name {
             validate_app_name(name)?;
         }
+        for source in &self.schemas {
+            if source.trim().is_empty() || source != source.trim() {
+                return Err(ConfigError::Validation("schemas entries must be nonempty paths or HTTP(S) URLs without surrounding whitespace".into()));
+            }
+            if source.contains(":") {
+                let url = reqwest::Url::parse(source).map_err(|_| {
+                    ConfigError::Validation("schemas entries must be paths or HTTP(S) URLs".into())
+                })?;
+                if !matches!(url.scheme(), "http" | "https")
+                    || url.host_str().is_none()
+                    || !url.username().is_empty()
+                    || url.password().is_some()
+                    || url.fragment().is_some()
+                {
+                    return Err(ConfigError::Validation(
+                        "schemas URLs must use HTTP(S), without credentials or fragments".into(),
+                    ));
+                }
+            }
+        }
 
         if let Some(main) = &self.main
             && main.trim().is_empty()
@@ -349,6 +369,7 @@ pub(super) fn validate_top_level_keys(raw: &toml::Value) -> Result<()> {
         if !matches!(
             key.as_str(),
             "name"
+                | "schemas"
                 | "runtime"
                 | "container"
                 | "image"

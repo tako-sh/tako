@@ -9,7 +9,7 @@ Single-server state is easy to reason about. One app, one proxy, one SQLite file
 
 Multi-server state is where the footguns start. If a user opens a WebSocket connection to the Tokyo VPS and your checkout route publishes from the Los Angeles VPS, that publish still has to arrive. If a scheduled workflow runs on three servers, it should not accidentally send the same reminder three times unless that is exactly what you asked for.
 
-Tako now has the missing switch for that shape: set the environment credential `postgres_url`, and durable channels plus workflows move from per-server SQLite to shared Postgres runtime state.
+Set the environment credential `postgres_url` to use shared Postgres runtime state for durable channels and workflows. Native Tako networks also support channel fanout and bounded replay across servers with SQLite; shared durable workflow runs still require Postgres unless every workflow is explicitly local.
 
 This is not a new app database abstraction. Your product data still belongs in your app database. This is Tako-owned runtime state: channel replay, workflow runs, workflow steps, event waiters, schedules, and cron coordination. The full config surface lives in [`tako.toml`](/docs/tako-toml/), the deploy checks are covered in [Deployment](/docs/deployment/), and the command lives in the [CLI reference](/docs/cli/).
 
@@ -18,11 +18,13 @@ This is not a new app database abstraction. Your product data still belongs in y
 Start with a normal multi-server environment:
 
 ```toml
+name = "orders"
 runtime = "bun"
 preset = "nextjs"
 app_root = "."
 
 [envs.production]
+network = "0123456789abcdef0123456789abcdef"
 routes = ["app.example.com"]
 servers = ["lax", "nrt", "fra"]
 ```
@@ -78,7 +80,7 @@ On one server, SQLite is perfect for that. It is local, fast, and private to the
 
 Shared Postgres fixes the shape. A publish on any server writes to `tako_channels`; subscribers on every server poll the same replay store, fan out new retained rows, and can reconnect against the same cursor space.
 
-That is why channels do not have a "local multi-server" opt-out. Channel delivery is inherently cross-server once traffic can land on more than one machine. If your environment has `<app_root>/channels/` and more than one target server, deploy requires `postgres_url`.
+On a native Tako network, the channel broker can instead exchange live events and bounded replay between servers while retaining SQLite locally. Outside that native path, multi-server channel deployment requires `postgres_url`. A configured Postgres credential remains in use and is validated; joining a native network does not silently migrate it. See [channel replay storage](/docs/channels/#deploy-replay-storage) for the current limits.
 
 ## Why workflows get a choice
 
@@ -107,10 +109,12 @@ The safety rule is simple:
 | Project shape                                      | Deploy behavior                                                      |
 | -------------------------------------------------- | -------------------------------------------------------------------- |
 | One server, channels or workflows                  | SQLite is allowed                                                    |
-| Multiple servers, channels                         | `postgres_url` is required                                           |
+| Multiple native-network servers, channels           | Native fanout/replay can use SQLite; configured Postgres stays in use |
+| Multiple servers without native channel transport  | `postgres_url` is required for channels                              |
 | Multiple servers, workflows with no `local: true`  | `postgres_url` is required                                           |
 | Multiple servers, every workflow has `local: true` | Per-server SQLite is allowed                                         |
-| Multiple servers, channels plus local workflows    | `postgres_url` is still required because channels need shared replay |
+| Native channels plus only local workflows          | Per-server SQLite is allowed                                         |
+| Imported schemas with no local workflow definitions | Imports alone do not require workflow storage                       |
 
 Tako checks this before build/deploy work starts. That matters. The failure happens while you are still at the CLI, with an action like:
 
@@ -165,8 +169,26 @@ await orders().publish({
 await sendReceipt.enqueue({ orderId: "ord_123" });
 ```
 
-The storage backend is a deployment decision, not a call-site decision. SDKs do not open SQLite or Postgres directly; they talk to `tako-server` over the internal socket, and `tako-server` owns the selected backend.
+SDKs do not open SQLite or Postgres directly; they talk to `tako-server` over the internal socket, and `tako-server` owns the selected backend.
 
-That is the point of the feature. Multi-server self-hosting should feel like adding capacity, not rebuilding your app around a queue service and a WebSocket gateway. Add servers, set `postgres_url`, deploy, and the runtime state follows the environment.
+## Publish or enqueue from a different app
+
+An app in the same network and environment can reach these primitives by the owner's name:
+
+```ts
+import { channel, workflow } from "tako.sh";
+
+await channel("orders.orders").publish({
+  type: "updated",
+  data: { orderId: "ord_123", status: "paid" },
+});
+const runId = await workflow("orders.send-receipt").enqueue({ orderId: "ord_123" });
+```
+
+The first `orders` is the app's `name` in `tako.toml`; the second is its channel name. Run `tako gen` in that app, list `../orders/tako-schema.json` under root-level `schemas` in the caller's config, then generate the caller's types. A staging caller reaches `orders/staging`. The recipient owns publication storage and the workflow's retry policy.
+
+Use `.run(payload)` when the caller needs the workflow's retained result. Inside a JavaScript workflow this becomes a durable child call: the parent checkpoints the child ID and waits without holding its worker slot. For execution without enqueueing, define a function in `network-handlers/` and use `call("orders.lookup-order", input)`. Direct handlers have no automatic retries. See [Network Primitives](/docs/network-primitives/) for app authentication, generated Go/Rust DTOs, and the JavaScript recipient requirement.
+
+Choose shared Postgres where durable runs or shared replay need it, or use native channel replication with local workflow state where that fits the application. Adding servers and adding app-to-app calls are separate decisions from choosing where state persists.
 
 Read the [How Tako Works](/docs/how-tako-works/) runtime section, the [`tako credentials`](/docs/cli/#tako-credentials) command docs, or the [multi-server deployment guide](/docs/deployment/) to wire it up. The app can stay boring. The state is finally shared where it needs to be.

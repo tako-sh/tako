@@ -25,6 +25,7 @@ import {
   type WorkflowStepContext,
 } from "./step";
 import type { Run, StepState } from "./types";
+import { withWorkflowExecution, withinWorkflowStep } from "./execution";
 
 /**
  * Function that executes one workflow run.
@@ -32,10 +33,10 @@ import type { Run, StepState } from "./types";
  * The payload type `P` is inferred from `defineWorkflow<P>(...)` and flows into
  * `.enqueue(payload)`.
  */
-export type WorkflowHandler<P = unknown> = (
+export type WorkflowHandler<P = unknown, R = unknown> = (
   payload: P,
   ctx: WorkflowContext,
-) => Promise<void> | void;
+) => Promise<R> | R;
 
 /**
  * Runtime context passed to each workflow handler.
@@ -312,12 +313,22 @@ export class Worker {
       attempt: run.attempts,
       logger: contextLog.child(`${run.name}:${stepName}`, { step: stepName }),
     });
+    const steps = createStepAPI(
+      this.client,
+      run.id,
+      claimOwner,
+      stepState,
+      runLog,
+      createStepContext,
+    );
     const context: WorkflowContext = {
       runId: run.id,
       workflowName: run.name,
       attempt: run.attempts,
       logger: contextLog,
-      ...createStepAPI(this.client, run.id, claimOwner, stepState, runLog, createStepContext),
+      ...steps,
+      run: (name, fn, opts) =>
+        steps.run(name, (step) => withinWorkflowStep(name, () => fn(step)), opts),
       bail: (reason?: string): never => {
         throw new BailSignal(reason);
       },
@@ -336,8 +347,10 @@ export class Worker {
 
     runLog.info("Workflow started", { attempt: run.attempts, payload: run.payload });
     try {
-      await reg.handler(run.payload, context);
-      await this.client.complete(run.id, claimOwner);
+      const result = await withWorkflowExecution(this.client, run.id, claimOwner, stepState, () =>
+        reg.handler(run.payload, context),
+      );
+      await this.client.complete(run.id, claimOwner, result ?? null);
       runLog.info("Workflow completed");
     } catch (err) {
       if (err instanceof BailSignal) {

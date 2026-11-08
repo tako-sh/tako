@@ -6003,6 +6003,7 @@ version = "0.2.1"
 dependencies = [
  "axum",
  "libc",
+ "schemars",
  "serde",
  "serde_json",
  "tokio",
@@ -6292,7 +6293,9 @@ dependencies = [
  "parking_lot 0.13.0",
  "postgres",
  "prometheus",
+ "reqwest",
  "rusqlite",
+ "serde",
  "serde_json",
  "tako-core",
  "tako-socket",

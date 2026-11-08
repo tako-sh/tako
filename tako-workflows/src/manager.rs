@@ -21,8 +21,8 @@ use super::cron::{self, CronTickerHandle};
 use super::dispatcher::WorkDispatcher;
 use super::enqueue::{RunsDb, RunsDbError, WorkflowStoreConfig};
 use super::enqueue_socket::{
-    AppHandlers, AppLookup, ChannelPublishFn, EnqueueSocketHandle, OnEnqueue, PeerAuthFn,
-    spawn as spawn_internal_socket,
+    AppHandlers, AppLookup, ChannelPublishFn, EnqueueSocketHandle, NetworkCallFn, OnEnqueue,
+    PeerAuthFn, spawn as spawn_internal_socket,
 };
 use super::in_flight::InFlightLimiter;
 use super::supervisor::{WorkerSpec, WorkerSupervisor};
@@ -90,6 +90,7 @@ pub struct WorkflowManager {
     /// accept loop.
     channel_publish: parking_lot::Mutex<Option<ChannelPublishFn>>,
     peer_auth: parking_lot::Mutex<Option<PeerAuthFn>>,
+    network_call: Arc<RwLock<Option<NetworkCallFn>>>,
     /// Serializes `ensure` calls so two concurrent deploys of the same app
     /// can't each start their own supervisor + cron ticker and then have
     /// one silently overwrite the other (leaking the loser's children).
@@ -181,6 +182,7 @@ impl WorkflowManager {
             postgres_url: parking_lot::Mutex::new(None),
             channel_publish: parking_lot::Mutex::new(None),
             peer_auth: parking_lot::Mutex::new(None),
+            network_call: Arc::new(RwLock::new(None)),
             ensure_gate: tokio::sync::Mutex::new(()),
             retired: parking_lot::Mutex::new(Vec::new()),
         }
@@ -191,6 +193,10 @@ impl WorkflowManager {
     /// `start_socket` — the publisher is snapshotted at that point.
     pub fn set_channel_publisher(&self, publisher: ChannelPublishFn) {
         *self.channel_publish.lock() = Some(publisher);
+    }
+
+    pub fn set_network_router(&self, router: NetworkCallFn) {
+        *self.network_call.write() = Some(router);
     }
 
     pub fn set_peer_auth(&self, auth: PeerAuthFn) {
@@ -244,11 +250,20 @@ impl WorkflowManager {
         });
         let publisher = self.channel_publish.lock().clone();
         let peer_auth = self.peer_auth.lock().clone();
+        let network_call = self.network_call.clone();
+        let route: NetworkCallFn = Arc::new(move |caller, target, invocation| {
+            let route = network_call.read().clone();
+            match route {
+                Some(route) => route(caller, target, invocation),
+                None => tako_core::Response::error("network primitives are unavailable"),
+            }
+        });
         *guard = Some(spawn_internal_socket(
             self.socket_path(),
             lookup,
             publisher,
             peer_auth,
+            Some(route),
         )?);
         Ok(())
     }
