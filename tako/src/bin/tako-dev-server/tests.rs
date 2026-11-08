@@ -152,3 +152,73 @@ mod network;
 mod processes;
 mod registration;
 mod spawn_env;
+
+#[tokio::test]
+async fn network_calls_route_to_registered_apps_with_authenticated_internal_http() {
+    use tokio::io::AsyncReadExt;
+    let (state, tmp) = test_state();
+    insert_test_app(&state, "/tmp/network-mail", "mail");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    state
+        .lock()
+        .unwrap()
+        .routes
+        .activate_with_port("reg:/tmp/network-mail/tako.toml", port);
+    let backend = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut stream = tokio::io::BufReader::new(stream);
+        let mut headers = String::new();
+        let mut length = 0;
+        loop {
+            let mut line = String::new();
+            stream.read_line(&mut line).await.unwrap();
+            if line == "\r\n" {
+                break;
+            }
+            if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length: ") {
+                length = value.trim().parse::<usize>().unwrap();
+            }
+            headers.push_str(&line.to_ascii_lowercase());
+        }
+        assert!(headers.starts_with("post /network http/1.1\r\n"));
+        assert!(headers.contains("host: mail.tako\r\n"));
+        assert!(headers.contains("x-tako-internal-token: dev-token\r\n"));
+        let mut body = vec![0; length];
+        stream.read_exact(&mut body).await.unwrap();
+        let invocation: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(invocation["name"], "send-email");
+        assert_eq!(invocation["request"]["payload"]["to"], "a@example.com");
+        let body = r#"{"status":"ok","data":{"id":"remote-run","deduplicated":false}}"#;
+        stream.get_mut().write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nX-Tako-Internal-Token: dev-token\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+    });
+    let workflows = tako_workflows::WorkflowManager::new(tmp.path());
+    crate::network::install(&state, &workflows);
+    workflows.start_socket().unwrap();
+    let mut socket = tokio::net::UnixStream::connect(workflows.socket_path())
+        .await
+        .unwrap();
+    tako_socket::write_json_line(
+        &mut socket,
+        &tako_core::Command::NetworkCall {
+            app: "web".into(),
+            address: "mail.send-email".into(),
+            request: tako_core::network::NetworkRequest::Enqueue {
+                payload: serde_json::json!({"to":"a@example.com"}),
+                opts: Default::default(),
+            },
+        },
+    )
+    .await
+    .unwrap();
+    let response: tako_core::Response = tokio::time::timeout(
+        Duration::from_secs(5),
+        tako_socket::read_json_line(&mut BufReader::new(socket)),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .unwrap();
+    assert_eq!(response.data().unwrap()["id"], "remote-run");
+    backend.await.unwrap();
+}

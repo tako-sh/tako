@@ -357,7 +357,8 @@ impl crate::ServerState {
             | Command::DeferRun { .. }
             | Command::WaitForEvent { .. }
             | Command::Signal { .. }
-            | Command::ChannelPublish { .. } => Response::error(
+            | Command::NetworkCall { .. }
+        | Command::ChannelPublish { .. } => Response::error(
                 "workflow/channel commands must be sent over the internal socket, not the management socket"
                     .to_string(),
             ),

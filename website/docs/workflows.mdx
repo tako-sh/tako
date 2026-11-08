@@ -5,7 +5,7 @@ description: "Build durable background workflows with typed payloads, checkpoint
 
 Tako workflows run background work next to your app without a separate queue service. A workflow can retry after failures, remember completed steps, sleep without holding a worker open, wait for an external signal, run on a cron schedule, and let its worker process scale to zero when idle.
 
-Code tabs cover JavaScript/TypeScript and Go where their workflow APIs correspond. JavaScript uses `tako.sh`; the Go worker SDK is the separate `github.com/tako-sh/tako/sdk/go` module, not the root Go HTTP SDK. The Rust SDK does not currently provide workflow authoring or worker APIs. Shared runtime semantics apply to both supported worker SDKs; option tables below describe the JavaScript API unless stated otherwise.
+Code tabs cover JavaScript/TypeScript and Go where their workflow APIs correspond. JavaScript uses `tako.sh`; the Go worker SDK is the separate `github.com/tako-sh/tako/sdk/go` module, not the root Go HTTP SDK. The Rust SDK does not currently provide workflow authoring or worker APIs. JavaScript, the root Go HTTP SDK, and Rust can [enqueue a JavaScript-owned network workflow](/network-primitives/) by qualified string address. Shared runtime semantics apply to both supported worker SDKs; option tables below describe the JavaScript API unless stated otherwise.
 
 ## Vocabulary
 

@@ -395,6 +395,12 @@ pub enum Command {
         channel: String,
         payload: serde_json::Value,
     },
+    /// Authenticated app-to-app call. `app` is the caller, never the destination.
+    NetworkCall {
+        app: String,
+        address: String,
+        request: crate::network::NetworkRequest,
+    },
 }
 
 /// A single cron schedule for a workflow.

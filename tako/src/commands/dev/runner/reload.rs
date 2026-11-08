@@ -241,7 +241,6 @@ async fn log_restart_reason(ctx: &ConfigReloadLoop, change: watcher::WatchChange
         watcher::WatchChange::Config => "tako.toml changed, restarting…",
         watcher::WatchChange::Secrets => "Secrets changed, restarting…",
         watcher::WatchChange::Channels => "Channels, presence, or stores changed, restarting…",
-        watcher::WatchChange::Services => "services/ changed, restarting…",
         watcher::WatchChange::Workflows => "workflows/ changed, restarting…",
         watcher::WatchChange::GeneratedDeclarations => unreachable!(),
     };
@@ -279,10 +278,6 @@ mod tests {
         ));
         assert!(!should_register_for_change(
             watcher::WatchChange::Workflows,
-            false
-        ));
-        assert!(!should_register_for_change(
-            watcher::WatchChange::Services,
             false
         ));
     }

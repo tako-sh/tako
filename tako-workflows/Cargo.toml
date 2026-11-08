@@ -21,6 +21,7 @@ nanoid = "0.5"
 cron = "0.17"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 libc = "0.2"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
 
 [dev-dependencies]
 tempfile = "=3.27.0"

@@ -191,6 +191,7 @@ pub(super) fn rpc_action(
         | Command::FailRun { .. }
         | Command::DeferRun { .. }
         | Command::WaitForEvent { .. }
+        | Command::NetworkCall { .. }
         | Command::ChannelPublish { .. } => {
             return Err(error(
                 "Internal worker commands are unavailable over native management",

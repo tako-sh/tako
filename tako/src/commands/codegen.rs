@@ -34,8 +34,8 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
             if result.wrote_declarations {
                 generated.push("tako.d.ts");
             }
-            if result.wrote_services {
-                generated.push("tako.services.ts");
+            if result.wrote_contracts {
+                generated.push("tako.contracts.d.ts");
             }
             if result.wrote_scaffolds {
                 generated.push("channel/workflow stubs");

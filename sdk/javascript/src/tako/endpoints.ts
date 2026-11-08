@@ -12,6 +12,7 @@ import type { ChannelAuthorizeInput, TakoStatus } from "../types";
 import { getInternalToken, getStorageBindings } from "./secrets";
 import { StoreRegistry } from "../stores/registry";
 import { handleStoreLoad } from "../stores/endpoint";
+import { handleNetworkInvocation } from "../network-endpoint";
 
 /** Host suffix used for SDK-internal app requests. */
 export const TAKO_INTERNAL_HOST_SUFFIX = ".tako";
@@ -136,6 +137,11 @@ export async function handleTakoEndpoint(
   }
 
   switch (path) {
+    case "/network": {
+      const response = await handleNetworkInvocation(request, channels);
+      response.headers.set(TAKO_INTERNAL_TOKEN_HEADER, token);
+      return response;
+    }
     case TAKO_INTERNAL_STATUS_PATH:
       return handleStatus(status, token);
     case TAKO_INTERNAL_CHANNELS_AUTHORIZE_PATH:

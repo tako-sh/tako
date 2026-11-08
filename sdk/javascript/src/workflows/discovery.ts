@@ -45,6 +45,7 @@ export async function discoverWorkflows(
   const entries = await readdir(dir);
   const found: DiscoveredWorkflow[] = [];
   for (const entry of entries) {
+    if (/\.d\.(?:ts|mts|cts)$/.test(entry)) continue;
     const parsed = parse(entry);
     if (!VALID_EXTS.has(parsed.ext)) continue;
     if (parsed.name.startsWith(".") || parsed.name.startsWith("_")) continue;

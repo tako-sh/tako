@@ -53,8 +53,6 @@ Build precedence:
 
 Tako copies the source root into `.tako/build`, respects `.gitignore`, symlinks `node_modules` from the original tree for JS builds, omits source symlinks, runs build commands, merges assets into `public/`, verifies the resolved `main`, and archives the result without `node_modules`.
 
-JavaScript deployment preparation generates `<app_root>/tako.services.ts` from [service contracts](/service-contracts/) before copying sources into the build directory. Generation failures stop preparation. Without a JavaScript runtime on the deploying machine, the existing generated module is kept as is. Install the project SDK before deploying, and include the generated module in builds that import it.
-
 The final native artifact includes regular files only; build-created symlinks are omitted too. Do not depend on linked files being deployed. This differs from app data backups, which preserve symlinks.
 
 Always-excluded paths: `.git/`, `.tako/`, `.env*`, and `node_modules/`.
@@ -143,3 +141,7 @@ Use [Operations](/operations/#logs-and-releases) to inspect release history, col
 ## Metrics
 
 The Prometheus endpoint and metric names are documented in [Operations](/operations/#metrics).
+
+## Network primitives
+
+Deploy callers and recipients into the same environment and network for [network primitive calls](/network-primitives/). The caller uses `app.primitive` and inherits its environment. The recipient needs the JavaScript managed HTTP runtime. Generation includes separate exportable `tako.contracts.d.ts` contracts; publish them through your own package and select them with the consumer's `network.d.ts` files. Types do not configure routing or grant access.

@@ -38,6 +38,16 @@ The Unix transports use newline-delimited JSON. `tako-socket` caps one frame at 
 
 Management-only commands are rejected on the internal socket. Runtime-only commands are rejected on the management socket. Both paths share `tako_core::Command` so message shapes cannot drift between duplicate enums.
 
+## Network primitives
+
+`network_call` is an internal-socket command with `{app, address, request}`. `app` remains the authenticated caller identity. `address` is a bare primitive name or `namespace.primitive`; a qualified namespace selects another app in the caller's environment. URLs, paths, extra dots, and caller-selected environments are rejected. `tako-core/src/network.rs` owns the invocation shapes and address grammar.
+
+Requests are `enqueue` with JSON payload and enqueue options, or `publish` with message and params. The recipient validates that the primitive exists and supplies workflow retry defaults or channel lifecycle settings. Enqueue acknowledges a run ID; publish acknowledges the stored or ephemeral message. Neither waits for application processing. Delivery is attempted once; retrying enqueue can use the existing retained-run ID semantics. Network waits use a separate concurrency limit from storage operations, so recipient socket calls can make progress.
+
+For native networks, the router selects an authenticated placement and sends `POST /_tako/network` over the private mesh. Public ingress rejects that path. The receiving proxy wakes the app if needed, then sends `POST /network` with the recipient's internal host and bootstrap token; it requires the token on the response. Local development and same-server routing use that authenticated recipient endpoint directly. Requests and responses are bounded to 1 MiB; redirects and environment HTTP proxies are disabled for internal transport. Management endpoints reject `network_call`.
+
+JavaScript implements recipient dispatch. JavaScript, Go, and Rust implement socket callers. TypeScript's generated `tako.contracts.d.ts` is a portable type-only artifact; user-owned `workflows/network.d.ts` and `channels/network.d.ts` choose imported contracts for local `tako.d.ts` augmentation. These type selections do not alter network authorization or runtime registration.
+
 ## Process bootstrap
 
 Native app and worker processes receive the bootstrap envelope as JSON on file descriptor 3. The envelope contains the app-scoped internal token, decrypted secrets, and storage bindings. `tako-core::bootstrap` is the only server-side serializer for this shape.

@@ -1,0 +1,8 @@
+{
+  "name": "network-caller-e2e",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "tako.sh": "file:tako-sdk.tgz"
+  }
+}

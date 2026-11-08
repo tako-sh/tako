@@ -642,6 +642,15 @@ fn collect_worker_group_names(
 }
 
 fn is_workflow_source(path: &std::path::Path) -> bool {
+    if path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            name.ends_with(".d.ts") || name.ends_with(".d.mts") || name.ends_with(".d.cts")
+        })
+    {
+        return false;
+    }
     matches!(
         path.extension().and_then(|ext| ext.to_str()),
         Some("ts" | "tsx" | "js" | "mjs" | "mts")

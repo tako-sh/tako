@@ -7,7 +7,7 @@ use crate::config::{DEFAULT_JS_APP_ROOT, TakoToml};
 use typegen_path::resolve_declaration_path;
 pub(crate) use typegen_path::{generated_declaration_parent_dirs, is_generated_declaration_path};
 
-mod services;
+mod network;
 mod typegen_path;
 
 const TAKO_DTS_HEADER: &str = r#"/* prettier-ignore-start */
@@ -29,7 +29,7 @@ const JS_MODULE_EXTS: &[&str] = &[".ts", ".tsx", ".js", ".mjs", ".mts"];
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct JsGeneratedFilesResult {
     pub wrote_declarations: bool,
-    pub wrote_services: bool,
+    pub wrote_contracts: bool,
     pub wrote_scaffolds: bool,
 }
 
@@ -380,7 +380,7 @@ fn build_declarations(
     out
 }
 
-/// Refresh `tako.d.ts` and the standalone JavaScript service contract module.
+/// Refresh the generated `tako.d.ts` declarations.
 pub fn write_tako_declarations(project_dir: &Path) -> std::io::Result<bool> {
     write_tako_declarations_for_adapter(project_dir, detect_build_adapter(project_dir))
 }
@@ -402,7 +402,7 @@ pub fn write_tako_declarations_for_adapter_and_app_root(
     write_tako_declarations_with_codegen_command(project_dir, adapter, app_root, &|| {
         Command::new("bun")
     })
-    .map(|result| result.wrote_declarations || result.wrote_services)
+    .map(|result| result.wrote_declarations || result.wrote_contracts)
 }
 
 fn write_tako_declarations_with_codegen_command(
@@ -416,8 +416,12 @@ fn write_tako_declarations_with_codegen_command(
     let env_names = read_env_names(project_dir);
     let var_names = read_var_names(project_dir);
     let path = resolve_declaration_path(project_dir);
-    let mut channel_types =
-        generate_channel_types_with_command(project_dir, app_root, codegen_command)?;
+    let mut channel_types = generate_channel_types_with_command(
+        project_dir,
+        app_root,
+        path.parent().unwrap_or(project_dir),
+        codegen_command,
+    )?;
     let store_types = generate_store_types_with_command(
         project_dir,
         app_root,
@@ -425,6 +429,14 @@ fn write_tako_declarations_with_codegen_command(
         codegen_command,
     )?;
     channel_types.push_str(&store_types);
+    let network = if adapter.preset_group() == super::PresetGroup::Js {
+        network::generate(project_dir, app_root, &path, codegen_command)?
+    } else {
+        None
+    };
+    if let Some(network) = &network {
+        channel_types.push_str(&network.declarations);
+    }
     let content = build_declarations(
         &secret_names,
         &storage_names,
@@ -432,23 +444,17 @@ fn write_tako_declarations_with_codegen_command(
         &var_names,
         &channel_types,
     );
-    let service_content = if adapter.preset_group() == super::PresetGroup::Js {
-        services::generate(project_dir, app_root, codegen_command)?
-    } else {
-        None
-    };
     let wrote_declarations = write_if_changed(&path, &content)?;
-    let wrote_services = if let Some(content) = service_content {
-        write_if_changed(
-            &js_app_root_dir(project_dir, app_root).join("tako.services.ts"),
-            &content,
-        )?
-    } else {
-        false
+    let wrote_contracts = match network {
+        Some(network) => write_if_changed(
+            &js_app_root_dir(project_dir, app_root).join("tako.contracts.d.ts"),
+            &network.contracts,
+        )?,
+        None => false,
     };
     Ok(JsGeneratedFilesResult {
         wrote_declarations,
-        wrote_services,
+        wrote_contracts,
         wrote_scaffolds: false,
     })
 }
@@ -472,6 +478,7 @@ fn write_if_changed(path: &Path, content: &str) -> std::io::Result<bool> {
 fn generate_channel_types_with_command(
     project_dir: &Path,
     app_root: &str,
+    declaration_dir: &Path,
     codegen_command: &impl Fn() -> Command,
 ) -> std::io::Result<String> {
     let channels_dir = js_app_root_dir(project_dir, app_root).join("channels");
@@ -479,12 +486,14 @@ fn generate_channel_types_with_command(
         return Ok(String::new());
     }
 
-    let output = match channel_codegen_command(project_dir, &channels_dir, codegen_command).output()
-    {
-        Ok(output) => output,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
-        Err(err) => return Err(err),
-    };
+    let output =
+        match channel_codegen_command(project_dir, &channels_dir, declaration_dir, codegen_command)
+            .output()
+        {
+            Ok(output) => output,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+            Err(err) => return Err(err),
+        };
     if !output.status.success() {
         return Err(std::io::Error::other(format!(
             "channel generation failed: {}",
@@ -497,6 +506,7 @@ fn generate_channel_types_with_command(
 fn channel_codegen_command(
     project_dir: &Path,
     channels_dir: &Path,
+    declaration_dir: &Path,
     codegen_command: &impl Fn() -> Command,
 ) -> Command {
     let repo_script = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -505,7 +515,10 @@ fn channel_codegen_command(
         .join("sdk/javascript/bin/gen-channel-types.ts");
     if repo_script.is_file() {
         let mut command = codegen_command();
-        command.arg(repo_script).arg(channels_dir);
+        command
+            .arg(repo_script)
+            .arg(channels_dir)
+            .arg(declaration_dir);
         command.current_dir(project_dir);
         return command;
     }
@@ -514,7 +527,8 @@ fn channel_codegen_command(
     command
         .arg("run")
         .arg("tako-sh-gen-channel-types")
-        .arg(channels_dir);
+        .arg(channels_dir)
+        .arg(declaration_dir);
     command.current_dir(project_dir);
     command
 }
@@ -667,6 +681,9 @@ fn ensure_dir_scaffolds(dir: &Path, kind: StubKind) -> std::io::Result<bool> {
         if name.starts_with('.') || name.starts_with('_') {
             continue;
         }
+        if name.ends_with(".d.ts") || name.ends_with(".d.mts") || name.ends_with(".d.cts") {
+            continue;
+        }
         let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
             continue;
         };
@@ -679,6 +696,10 @@ fn ensure_dir_scaffolds(dir: &Path, kind: StubKind) -> std::io::Result<bool> {
 
     let mut wrote_any = false;
     if module_files.is_empty() {
+        // A consumer-only directory must never acquire a local demo primitive.
+        if dir.join("network.d.ts").is_file() {
+            return Ok(false);
+        }
         let stub_path = dir.join("demo.ts");
         let content = render_scaffold(kind, "demo", "");
         fs::write(stub_path, content)?;

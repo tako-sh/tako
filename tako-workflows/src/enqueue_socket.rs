@@ -71,6 +71,10 @@ pub type ChannelPublishFn =
 /// enqueue, claim, or publish as another.
 pub type PeerAuthFn = Arc<dyn Fn(&str, u32) -> Result<(), String> + Send + Sync>;
 
+/// Routes a validated destination after the socket has authenticated the caller.
+pub type NetworkCallFn =
+    Arc<dyn Fn(&str, tako_core::network::NetworkInvocation) -> Response + Send + Sync>;
+
 /// Handle to the running socket. Drop to stop accepting + remove files.
 pub struct EnqueueSocketHandle {
     #[allow(dead_code)]
@@ -114,6 +118,7 @@ pub fn spawn(
     lookup: AppLookup,
     channel_publish: Option<ChannelPublishFn>,
     peer_auth: Option<PeerAuthFn>,
+    network_call: Option<NetworkCallFn>,
 ) -> std::io::Result<EnqueueSocketHandle> {
     let symlink_path = symlink_path.as_ref().to_path_buf();
     let dir = symlink_path
@@ -160,6 +165,7 @@ pub fn spawn(
         lookup,
         channel_publish,
         peer_auth,
+        network_call,
         shutdown_rx,
     ));
 
@@ -269,6 +275,7 @@ async fn run(
     lookup: AppLookup,
     channel_publish: Option<ChannelPublishFn>,
     peer_auth: Option<PeerAuthFn>,
+    network_call: Option<NetworkCallFn>,
     shutdown_rx: oneshot::Receiver<()>,
 ) {
     tokio::pin!(shutdown_rx);
@@ -281,6 +288,7 @@ async fn run(
                         let lookup = lookup.clone();
                         let channel_publish = channel_publish.clone();
                         let peer_auth = peer_auth.clone();
+                        let network_call = network_call.clone();
                         let peer_uid = stream.peer_cred().ok().map(|cred| cred.uid());
                         tokio::spawn(async move {
                             let _ = serve_jsonl_connection(
@@ -289,16 +297,25 @@ async fn run(
                                     let lookup = lookup.clone();
                                     let channel_publish = channel_publish.clone();
                                     let peer_auth = peer_auth.clone();
+                                    let network_call = network_call.clone();
                                     async move {
-                                        match crate::blocking::run(move || {
+                                        let is_network = matches!(&cmd, Command::NetworkCall { .. });
+                                        let operation = move || {
                                             handle_command(
                                                 &lookup,
                                                 channel_publish.as_ref(),
                                                 peer_auth.as_ref(),
                                                 peer_uid,
+                                                network_call.as_ref(),
                                                 cmd,
                                             )
-                                        }).await {
+                                        };
+                                        let result = if is_network {
+                                            crate::blocking::run_network(operation).await
+                                        } else {
+                                            crate::blocking::run(operation).await
+                                        };
+                                        match result {
                                             Ok(response) => response,
                                             Err(error) => {
                                                 tracing::error!(%error, "Internal storage operation failed");
@@ -351,7 +368,8 @@ fn command_app(cmd: &Command) -> Option<&str> {
         | Command::DeferRun { app, .. }
         | Command::WaitForEvent { app, .. }
         | Command::Signal { app, .. }
-        | Command::ChannelPublish { app, .. } => Some(app),
+        | Command::ChannelPublish { app, .. }
+        | Command::NetworkCall { app, .. } => Some(app),
         _ => None,
     }
 }
@@ -361,6 +379,7 @@ fn handle_command(
     channel_publish: Option<&ChannelPublishFn>,
     peer_auth: Option<&PeerAuthFn>,
     peer_uid: Option<u32>,
+    network_call: Option<&NetworkCallFn>,
     cmd: Command,
 ) -> Response {
     let app = match command_app(&cmd) {
@@ -374,6 +393,22 @@ fn handle_command(
     };
     if let Err(error) = authorize_peer(peer_auth, peer_uid, &app) {
         return Response::error(error);
+    }
+
+    if let Command::NetworkCall {
+        address, request, ..
+    } = cmd
+    {
+        let Some(route) = network_call else {
+            return Response::error("network primitives are unavailable");
+        };
+        return match tako_core::network::resolve_address(&app, &address) {
+            Ok((target, name)) => route(
+                &target,
+                tako_core::network::NetworkInvocation { name, request },
+            ),
+            Err(error) => Response::error(error),
+        };
     }
 
     // Channel publish takes a different route — the channel store lives

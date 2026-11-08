@@ -1,0 +1,174 @@
+---
+title: Network Primitives
+description: "Call app-owned workflows and channels by string address, and share selected TypeScript contracts through network.d.ts."
+---
+
+Use `workflow("mail.send-email").enqueue(payload)` to start another app's workflow, or `channel("web.progress").publish(message)` to publish to its channel. These calls run inside Tako's private network. You do not define HTTP paths, methods, services, or separate handlers.
+
+Workflow enqueue returns a run ID after the recipient accepts the run. Channel publish returns the published message after acceptance. Neither waits for workflow completion or subscriber processing. For an immediate application result, use your app's HTTP API over a [private network address](/networks/#use-private-service-addresses).
+
+## Addresses and access
+
+An address is `app.primitive`. Omit the namespace to select the current app: `workflow("send-email")`. The app portion is its `name` in `tako.toml`; there is no separate namespace setting. Primitive names contain 1–255 ASCII letters, digits, underscores, hyphens, or colons. Dots separate the app from the primitive.
+
+Calls inherit the caller's deployment environment. `mail.send-email` from `web/staging` targets `mail/staging`. Addresses cannot select another environment, an arbitrary URL, or a public host. The server resolves current network placements and wakes an idle recipient when needed. Without native network membership, calls reach apps on the same server only.
+
+Run both applications under the same `tako dev` daemon for local calls. App names must identify a single registered app; ambiguous development variants are rejected.
+
+Any app in the same network and environment can invoke a declared recipient primitive. Type exports select what a consumer knows about; they are not an access-control list. Channel subscription authorization still applies to subscribers. Network publication uses the recipient's channel definition and lifecycle, rather than browser authorization callbacks. Channel params are validated against that definition; they do not create separate rooms or streams.
+
+## Language support
+
+| Capability                                    | JavaScript / TypeScript | Go HTTP SDK (`tako.sh`) | Rust SDK (`tako`) |
+| --------------------------------------------- | ----------------------- | ----------------------- | ----------------- |
+| Call a network workflow or channel            | Yes                     | Yes                     | Yes               |
+| Receive network calls for declared primitives | Yes                     | No                      | No                |
+| Generate portable TypeScript contracts        | Yes                     | No                      | No                |
+
+The recipient currently needs the JavaScript SDK's managed HTTP runtime and internal dispatcher. Go channel registration and the separate Go workflow worker SDK retain their existing local APIs; they do not install this dispatcher. Rust supports blocking calls and async calls with its `tokio` feature. Plain HTTP containers without the Tako runtime cannot use these SDK calls.
+
+## Define the recipient
+
+In the app named `mail`, define ordinary workflows and channels:
+
+```ts
+// mail/src/workflows/send-email.ts
+import { defineWorkflow } from "tako.sh";
+
+export default defineWorkflow<{ to: string; subject: string }>("send-email", {
+  retries: 4,
+  handler: async (payload, ctx) => {
+    await ctx.run("deliver", () => sendEmail(payload));
+  },
+});
+```
+
+`sendEmail` is your application's delivery helper. Use a stable idempotency key with external providers when repeating an attempt could duplicate a side effect.
+
+```ts
+// mail/src/channels/delivery.ts
+import { defineChannel } from "tako.sh";
+
+export default defineChannel("delivery").$messageTypes<{
+  sent: { messageId: string };
+}>();
+```
+
+These definitions are available as `mail.send-email` and `mail.delivery`. The workflow name must match its filename. A channel uses the explicit name passed to `defineChannel`.
+
+## Export contracts separately
+
+Run `tako gen` in the producer. Tako writes `<app_root>/tako.contracts.d.ts`, separate from the application's generated `tako.d.ts`. With the default `app_root = "src"`, the file is `src/tako.contracts.d.ts`. It contains named type exports such as `SendEmailWorkflow` and `DeliveryChannel`, with qualified addresses, workflow payloads, channel params, and channel message types.
+
+The contracts are standalone structural declarations with no runtime handlers or imports back into producer source. Copy or publish this file through a package you own, or reference it from another monorepo package. You choose the package location and exports. Tako does not change `package.json` or add an output-path setting.
+
+Contract names use the primitive name in PascalCase plus `Workflow` or `Channel`. Conflicting generated export names fail generation. Payloads must be JSON data: functions, symbols, and runtime class instances are unsuitable. Unknown or untyped payloads remain `unknown`.
+
+## Select external types in the consumer
+
+Create these files yourself in the calling app, assuming your package exposes the producer contracts as `@acme/mail-contracts`:
+
+```ts
+// web/src/workflows/network.d.ts
+export type { SendEmailWorkflow } from "@acme/mail-contracts";
+```
+
+```ts
+// web/src/channels/network.d.ts
+export type { DeliveryChannel } from "@acme/mail-contracts";
+```
+
+Named type exports, including renamed exports, select external primitives. You can also import a type and then export it. Run `tako gen` in the consumer to refresh address registries in its `tako.d.ts`. Unresolved imports, wrong primitive kinds, and duplicate addresses fail generation. Removed exports disappear on the next generation.
+
+`network.d.ts` stays user-owned. Declaration files are excluded from runtime discovery, and a directory containing only `network.d.ts` does not receive a generated demo handler. Consumer imports are not included in the consumer's own exported contracts.
+
+The public `NetworkWorkflow<Address, Payload>` and `NetworkChannel<Address, Params, Messages>` types can also describe contracts maintained in a shared package. They carry compile-time metadata, without runtime payload validation or cross-language code generation. Go and Rust callers use their own JSON structs and serialization. Include generated `tako.d.ts` in the consumer's TypeScript project for address and payload checking.
+
+## Make calls
+
+These examples enqueue the same recipient workflow:
+
+<CodeGroup>
+
+```ts JavaScript
+import { workflow } from "tako.sh";
+
+const runId = await workflow("mail.send-email").enqueue(
+  { to: "reader@example.com", subject: "Welcome" },
+  { id: "welcome:user-123" },
+);
+```
+
+```go Go
+import (
+    "context"
+    "tako.sh"
+)
+
+func sendWelcome(ctx context.Context) (string, error) {
+    id := "welcome:user-123"
+    result, err := tako.Enqueue(ctx, "mail.send-email",
+        map[string]string{"to": "reader@example.com", "subject": "Welcome"},
+        tako.NetworkEnqueueOptions{ID: &id})
+    if err != nil { return "", err }
+    return result.ID, nil
+}
+```
+
+```rust Rust
+use serde_json::json;
+use tako::network::{Client, EnqueueOptions};
+
+// Enable the tako crate's "tokio" feature for async calls.
+async fn send_welcome() -> std::io::Result<String> {
+    let client = Client::from_env()?;
+    let result = client.enqueue("mail.send-email",
+        json!({"to": "reader@example.com", "subject": "Welcome"}),
+        EnqueueOptions { id: Some("welcome:user-123".into()), ..Default::default() },
+    ).await?;
+    Ok(result.id)
+}
+```
+
+</CodeGroup>
+
+Publish a channel message from server-side code:
+
+<CodeGroup>
+
+```ts JavaScript
+import { channel } from "tako.sh";
+
+await channel("mail.delivery").publish({
+  type: "sent",
+  data: { messageId: "msg-123" },
+});
+```
+
+```go Go
+func publishDelivery(ctx context.Context) error {
+    _, err := tako.Publish(ctx, "mail.delivery", nil, "sent",
+        map[string]string{"messageId": "msg-123"})
+    return err
+}
+```
+
+```rust Rust
+async fn publish_delivery() -> std::io::Result<()> {
+    Client::from_env()?.publish("mail.delivery", json!({}), "sent",
+        json!({"messageId": "msg-123"})).await?;
+    Ok(())
+}
+```
+
+</CodeGroup>
+
+The Go and Rust publication examples use the imports from their enqueue examples. Rust's `enqueue_blocking` and `publish_blocking` methods use the same arguments without `.await`.
+
+## Retries and verification
+
+The recipient workflow owns its execution policy. The default is two retries after the first attempt. Its `retries` setting applies unless the caller overrides it with JavaScript `retries` or Go/Rust `MaxAttempts`/`max_attempts`, which count total attempts. Retry timing comes from the recipient's workflow backoff settings. See [Workflows](/workflows/).
+
+Network delivery is attempted once. Use a stable enqueue `id` when retrying an uncertain response: the recipient reuses a retained run when its workflow and payload match. Channel publication has no run ID or subscriber acknowledgement; repeating publication can deliver another message. A calling workflow can place the send in a checkpointed step and use its own retry policy.
+
+To verify, generate types in both applications, typecheck the consumer, and start both with `tako dev`. Enqueue from a server-side handler and inspect the recipient's workflow logs. For a channel, subscribe to the recipient and publish from the caller. In deployment, use apps in the same environment and network; `/_tako/network` is rejected on public ingress.

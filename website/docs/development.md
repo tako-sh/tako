@@ -27,9 +27,11 @@ For an agent, inspect existing apps with `tako dev list --json`, then use `tako 
 - Registers the app config with the daemon.
 - Generates project files such as `tako.d.ts` or Go secret accessors.
 - Starts the app runtime and waits for fd-4 readiness from the HTTP process.
-- Watches Tako config, secrets, services, channels, presence, stores, workflows, and generated-file locations.
-- Restarts the app runtime when effective env, secrets, services, channels, presence, stores, or workflows change.
+- Watches Tako config, secrets, channels, presence, stores, workflows, and generated-file locations.
+- Restarts the app runtime when effective env, secrets, channels, presence, stores, or workflows change.
 - Updates routes without restart when development routes change.
+
+For [network primitives](/network-primitives/), run both apps under this daemon and use `app.primitive` addresses. Changes to `channels/network.d.ts` or `workflows/network.d.ts` refresh imported contracts. Generated `tako.contracts.d.ts` changes do not trigger a restart. Rerun `tako gen` after changing types imported from elsewhere in the project.
 
 Tako does not watch arbitrary source files for restart. Framework dev servers and runtimes own hot reload.
 
@@ -226,8 +228,6 @@ Use `tako.cache` for server-side caching of JSON-serializable values. `get<T>(ke
 See [Secrets](/secrets/) for value rotation and SDK access, [Storage](/storage/) for upload/download URLs, [Cache](/cache/) for key isolation and TTLs, and [Images](/images/) for public optimization. These primitives have their own configuration and persistence boundaries.
 
 ## Channels, Presence, Stores, And Workflows
-
-JavaScript [service contracts](/service-contracts/) live in `<app_root>/services/`. Dev generates `<app_root>/tako.services.ts` before startup and refreshes it before restarting after contract changes. Invalid contracts block initial startup. During a running session, generation failures leave the current app running and report the declaration error.
 
 JS channels, presence spaces, stores, and workflows are discovered under `<app_root>/channels/`, `<app_root>/presence/`, `<app_root>/stores/`, and `<app_root>/workflows/`. `tako dev` watches those directories and refreshes generated metadata when files change.
 

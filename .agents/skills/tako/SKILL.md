@@ -147,22 +147,6 @@ validation.
   restores target a specific app, environment, and server. Verify the target
   and authorization before deleting data or restoring an archive.
 
-## Typed HTTP services
-
-Read `service-contracts` and the JavaScript SDK skill before adding typed HTTP
-calls. Define services under `<app_root>/services/`, then run `tako generate`.
-The generated `<app_root>/tako.services.ts` exports shareable schemas and clients
-without app implementation imports. Publish it through your normal package
-workflow with its SDK and TypeBox dependencies. Consumers supply a reachable
-HTTP or HTTPS URL; no Tako Cloud account is required.
-
-Generation runs in dev and before JavaScript deployment builds. Fix declaration
-errors before proceeding. During dev reload, failed generation leaves the current
-app running. Verify runtime validation as well as TypeScript types. Contracts
-support a limited inline TypeBox subset; authentication and HTTP host limits
-remain application responsibilities. Typed contracts do not establish private
-DNS or automatic native-mesh connectivity.
-
 ## Channels, presence, stores, and workflows
 
 Read the language SDK skill and the `channels`, `presence`, `stores`, or `workflows` guide before editing
@@ -208,3 +192,9 @@ invalidation, reconnect catch-up, and offline expiry through the real app flow.
 Run `tako agents` to install project-local skills and configure MCP for your coding
 agents. Restart the agent or reload MCP connections afterward. For skills only:
 `npx skills add tako-sh/tako`.
+
+## Communicate between apps
+
+Use [Network Primitives](https://tako.sh/docs/network-primitives) for workflow enqueue and channel publication through `app.primitive` addresses. Calls inherit the caller environment and stay on the private network; run both apps under the same `tako dev` daemon locally. JavaScript supplies recipient dispatch; JavaScript, Go, and Rust supply callers. These operations return acceptance, not workflow results or subscriber acknowledgements.
+
+For TypeScript, generate the producer's separate `<app_root>/tako.contracts.d.ts`, publish it through an app-owned package, and select types in the consumer's `workflows/network.d.ts` and `channels/network.d.ts`. Run `tako gen` in both apps. Generated internal `tako.d.ts` stays app-local, and package exports remain user-owned. Imports do not restrict runtime access. Test a real caller/recipient flow and inspect the recipient's logs.

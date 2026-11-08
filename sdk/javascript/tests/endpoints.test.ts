@@ -52,6 +52,27 @@ describe("handleTakoEndpoint", () => {
     expect(response).toBeNull();
   });
 
+  test("network invocation requires the internal host and bootstrap token", async () => {
+    const invoke = (host: string, token: string) =>
+      handleTakoEndpoint(
+        new Request(`http://${host}/network`, {
+          method: "POST",
+          headers: { [TAKO_INTERNAL_TOKEN_HEADER]: token },
+          body: JSON.stringify({
+            name: "missing",
+            request: { operation: "publish", params: {}, message: { type: "update", data: {} } },
+          }),
+        }),
+        mockStatus,
+        channels,
+      );
+    expect(await invoke("public.example.com", "test-token")).toBeNull();
+    expect((await invoke("test-app.tako", "wrong-token"))?.status).toBe(403);
+    const response = await invoke("test-app.tako", "test-token");
+    expect(response?.status).toBe(404);
+    expect(response?.headers.get(TAKO_INTERNAL_TOKEN_HEADER)).toBe("test-token");
+  });
+
   test("returns null for non-internal host paths", async () => {
     const request = new Request("http://example.com/api/users");
     const response = await handleTakoEndpoint(request, mockStatus, channels);

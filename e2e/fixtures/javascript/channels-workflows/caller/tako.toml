@@ -1,0 +1,5 @@
+name = "network-caller-e2e"
+runtime = "bun"
+
+[envs.production]
+route = "network-caller-e2e.example.com"

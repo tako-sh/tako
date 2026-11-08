@@ -40,7 +40,7 @@ function prepareFixture(name: string) {
   mkdirSync(bin, { recursive: true });
   for (const [name, script] of [
     ["tako-sh-gen-channel-types", "gen-channel-types.mjs"],
-    ["tako-sh-gen-service-types", "gen-service-types.mjs"],
+    ["tako-sh-gen-network-types", "gen-network-types.mjs"],
     ["tako-sh-gen-store-types", "gen-store-types.mjs"],
   ] as const) {
     symlinkSync(join("..", "tako.sh", "dist", script), join(bin, name));

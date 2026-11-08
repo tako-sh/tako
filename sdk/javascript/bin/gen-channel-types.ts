@@ -1,10 +1,15 @@
 #!/usr/bin/env bun
 
-import { resolve } from "node:path";
+import { dirname, relative, resolve, sep } from "node:path";
 import { discoverChannels } from "../src/channels/discovery";
 
-export async function generateChannelTypes(channelsDir: string): Promise<string> {
+export async function generateChannelTypes(
+  channelsDir: string,
+  declarationDir: string = dirname(channelsDir),
+): Promise<string> {
   const discovered = await discoverChannels(channelsDir);
+  const path = relative(declarationDir, channelsDir).split(sep).join("/");
+  const importDir = path.startsWith(".") ? path : `./${path}`;
   const lines = [
     "/**",
     " * Project-specific channel metadata discovered from `<app_root>/channels/`.",
@@ -15,7 +20,7 @@ export async function generateChannelTypes(channelsDir: string): Promise<string>
     ...discovered.flatMap((channel) => {
       return [
         `  /** Channel \`${escapeJsdocText(JSON.stringify(channel.name))}\` route params, message metadata, and transport. */`,
-        `  ${JSON.stringify(channel.name)}: import("tako.sh").InferChannel<typeof import(${JSON.stringify(`./channels/${channel.fileStem}`)}).default>;`,
+        `  ${JSON.stringify(channel.name)}: import("tako.sh").InferChannel<typeof import(${JSON.stringify(`${importDir}/${channel.fileStem}`)}).default>;`,
       ];
     }),
     "}",
@@ -34,5 +39,10 @@ if (import.meta.main) {
     console.error("usage: tako-sh-gen-channel-types <channels-dir>");
     process.exit(2);
   }
-  process.stdout.write(await generateChannelTypes(resolve(channelsDir)));
+  process.stdout.write(
+    await generateChannelTypes(
+      resolve(channelsDir),
+      Bun.argv[3] === undefined ? undefined : resolve(Bun.argv[3]),
+    ),
+  );
 }

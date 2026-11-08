@@ -14,6 +14,7 @@
 import { createConnection } from "node:net";
 import type { Socket } from "node:net";
 import { setChannelSocketPublisher } from "../channels";
+import { setNetworkCaller } from "../network";
 import { createLogger } from "../logger";
 import type { ChannelMessage, ChannelPublishInput } from "../types";
 
@@ -108,6 +109,14 @@ export function installChannelSocketPublisherFromEnv(): boolean {
   const env = internalSocketFromEnv();
   if (!env) return false;
   const { socketPath, app } = env;
+  setNetworkCaller((address, request) =>
+    callInternal(socketPath, {
+      command: "network_call",
+      app,
+      address,
+      request,
+    }),
+  );
   setChannelSocketPublisher(async <T>(channel: string, message: ChannelPublishInput<T>) => {
     const result = await callInternal(socketPath, {
       command: "channel_publish",

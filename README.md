@@ -70,6 +70,7 @@ tako deploy
 - [Presence](https://tako.sh/docs/presence) — authenticated live membership and React hooks
 - [Stores](https://tako.sh/docs/stores) — live backend data with optional cached offline reads
 - [Workflows](https://tako.sh/docs/workflows) — durable jobs, retries, schedules, and signals
+- [Network Primitives](https://tako.sh/docs/network-primitives) — call another app's workflows and channels with shared types
 - [tako.toml Reference](https://tako.sh/docs/tako-toml) — every config option
 - [CLI Reference](https://tako.sh/docs/cli) — all commands and flags
 - [Framework Guides](https://tako.sh/docs/framework-guides) — adapter examples

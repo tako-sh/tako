@@ -6,6 +6,7 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
+pub mod network;
 pub mod presence;
 #[cfg(feature = "axum")]
 mod presence_http;

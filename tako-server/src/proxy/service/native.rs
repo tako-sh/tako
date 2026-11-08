@@ -2,6 +2,44 @@ use super::*;
 use crate::native_services::PrivateRoute;
 
 impl TakoProxy {
+    pub(super) async fn handle_network_request(
+        &self,
+        session: &mut Session,
+        app: &str,
+    ) -> Result<bool> {
+        if session.req_header().method != "POST" {
+            return reject(session, 403).await;
+        }
+        let mut body = Vec::new();
+        while let Some(chunk) = session.read_request_body().await? {
+            if body.len() + chunk.len() > 1024 * 1024 {
+                return reject(session, 403).await;
+            }
+            body.extend_from_slice(&chunk);
+        }
+        let invocation: tako_core::network::NetworkInvocation = match serde_json::from_slice(&body)
+        {
+            Ok(call) => call,
+            Err(_) => return reject(session, 403).await,
+        };
+        if !tako_core::network::valid_primitive_name(&invocation.name) {
+            return reject(session, 403).await;
+        }
+        let BackendResolution::Ready { backend, .. } = self.resolve_backend(app).await else {
+            return reject(session, 503).await;
+        };
+        let response = invoke_network_backend(backend, app, &invocation).await;
+        let body = serde_json::to_string(&response).expect("protocol response");
+        let mut header = ResponseHeader::build(200, None)?;
+        insert_body_headers(&mut header, "application/json", &body)?;
+        header.insert_header("Cache-Control", "no-store")?;
+        session
+            .write_response_header(Box::new(header), false)
+            .await?;
+        session.write_response_body(Some(body.into()), true).await?;
+        Ok(true)
+    }
+
     pub(super) fn native_route(&self, session: &Session) -> PrivateRoute {
         let host = request_host(session.req_header());
         match &self.native_services {
@@ -180,4 +218,34 @@ mod tests {
         assert!(!request.headers.contains_key("x-tako-internal-token"));
         assert_eq!(request.headers["authorization"], "Bearer app-token");
     }
+}
+
+/// Keep the recipient active while its dispatcher performs the socket round trip.
+pub(crate) async fn invoke_network_backend(
+    backend: crate::lb::Backend,
+    app: &str,
+    invocation: &tako_core::network::NetworkInvocation,
+) -> tako_core::Response {
+    struct ActiveBackend(crate::lb::Backend);
+    impl Drop for ActiveBackend {
+        fn drop(&mut self) {
+            self.0.request_finished();
+        }
+    }
+    backend.request_started();
+    let backend = ActiveBackend(backend);
+    let instance = backend.0.instance();
+    let Some(endpoint) = instance.endpoint() else {
+        return tako_core::Response::error("destination app has no HTTP runtime");
+    };
+    tako_workflows::network::invoke_http(
+        &format!(
+            "http://{endpoint}{}",
+            tako_core::network::NETWORK_INTERNAL_PATH
+        ),
+        &crate::instances::internal_app_host_for_app_id(app),
+        Some(instance.internal_token()),
+        invocation,
+    )
+    .await
 }

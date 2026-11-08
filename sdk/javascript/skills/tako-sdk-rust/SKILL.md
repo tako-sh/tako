@@ -160,3 +160,9 @@ reconnection, and offline expiry.
 Run the application's tests and exercise its routes through the Tako-provided
 URL. For authenticated Stores, verify both read and subscription rejection;
 unlike Presence, Store auth is enforced during local development too.
+
+## Network primitive callers
+
+Use `tako::network::Client::from_env()?` inside a managed process. `enqueue_blocking(address, payload, EnqueueOptions)` returns `EnqueueResult { id, deduplicated }`; `publish_blocking(address, params, message_type, data)` returns the JSON publication acknowledgement. With the `tokio` feature on Unix, async `enqueue` and `publish` take the same arguments. Payloads and params implement `serde::Serialize`; calls return `std::io::Result` and use bounded Unix-socket frames and timeouts.
+
+Addresses such as `mail.send-email` target a JavaScript-owned primitive in the caller's environment and private network. Bare names select the current app. `EnqueueOptions` has optional `run_at_ms`, `max_attempts` (total attempts), and `id`. Omitted attempts inherit the recipient's policy. Delivery is attempted once; use a stable enqueue ID for retries. Rust does not implement workflow authoring, general channel registration, recipient network dispatch, or TypeScript contract generation. Verify calls against a managed JavaScript recipient and inspect its workflow logs or channel subscription. See [Network Primitives](https://tako.sh/docs/network-primitives).

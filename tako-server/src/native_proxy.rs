@@ -54,6 +54,42 @@ impl NativeProxy {
             gateway: gateway.address(),
         });
         let directory = Directory::open(&service.path, true)?;
+        {
+            let router = Arc::downgrade(&service);
+            state
+                .workflows
+                .set_network_router(Arc::new(move |target, invocation| {
+                    let Some(router) = router.upgrade() else {
+                        return tako_core::Response::error("network router unavailable");
+                    };
+                    let scope = match crate::native_channel_client::app_scope(target) {
+                        Ok(scope) => scope,
+                        Err(_) => return tako_core::Response::error("invalid destination app"),
+                    };
+                    let (placement, network) = {
+                        let directory = router.directory.read();
+                        (
+                            directory.placements(&scope, now()).into_iter().next(),
+                            directory.network().to_string(),
+                        )
+                    };
+                    let Some(placement) = placement else {
+                        return tako_core::Response::error(
+                            "destination app unavailable on this network",
+                        );
+                    };
+                    let (app, environment) =
+                        target.split_once('/').unwrap_or((target, "production"));
+                    tokio::runtime::Handle::current().block_on(
+                        tako_workflows::network::invoke_http(
+                            &format!("http://[{}]/_tako/network", placement.address),
+                            &format!("{app}.{environment}.{network}.tako.internal"),
+                            None,
+                            &invocation,
+                        ),
+                    )
+                }));
+        }
         if let Some(owner) = &service.export_owner {
             claim_export(&directory, owner)?;
         }
