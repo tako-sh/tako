@@ -420,7 +420,12 @@ async fn claim_respects_in_flight_limiter() {
     assert_eq!(db.pending_count().unwrap(), 1);
 
     // Complete one run → slot frees → next claim succeeds.
-    db.complete(&claimed[0].id, &claimed[0].worker_id).unwrap();
+    db.complete(
+        &claimed[0].id,
+        &claimed[0].worker_id,
+        &serde_json::Value::Null,
+    )
+    .unwrap();
     limiter.release_claim(&claimed[0].worker_id);
     let cmd = Command::ClaimRun {
         app: "a".into(),
@@ -524,6 +529,7 @@ async fn complete_releases_a_slot() {
 
     // Complete.
     let cmd = Command::CompleteRun {
+        result: serde_json::Value::Null,
         app: "a".into(),
         id,
         worker_id: run["worker_id"].as_str().unwrap().to_owned(),
@@ -710,6 +716,7 @@ fn assert_same_process_takeover(db: Arc<RunsDb>, expire: impl FnOnce(&str)) {
             result: serde_json::json!(1),
         },
         Command::CompleteRun {
+            result: serde_json::Value::Null,
             app: app.clone(),
             id: id.clone(),
             worker_id: worker_id.clone(),
@@ -759,6 +766,7 @@ fn assert_same_process_takeover(db: Arc<RunsDb>, expire: impl FnOnce(&str)) {
     );
     assert!(
         call(Command::CompleteRun {
+            result: serde_json::Value::Null,
             app,
             id,
             worker_id: second.worker_id

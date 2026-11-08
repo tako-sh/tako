@@ -571,16 +571,26 @@ pub(crate) async fn handle_wake_on_request(state: Arc<Mutex<State>>, host: Strin
     let Some(config_path) = route_id.strip_prefix("reg:") else {
         return;
     };
+    wake_registration(state, config_path, Some((host, path))).await;
+}
+
+/// Wake an already-selected app without resolving its private calls through public routes.
+pub(crate) async fn wake_registration(
+    state: Arc<Mutex<State>>,
+    config_path: &str,
+    request_route: Option<(String, String)>,
+) {
     let lock = crate::compose::app_lock(&state, config_path);
     let _guard = lock.lock().await;
     let (app_name, log_buffer) = {
         let mut s = state.lock().unwrap();
         // Registration, restart, or another wake may have completed while we waited.
         if *s.shutdown_tx.borrow()
-            || !s
-                .routes
-                .lookup(&host, &path)
-                .is_some_and(|target| target.app_id == route_id && !target.active)
+            || request_route.as_ref().is_some_and(|(host, path)| {
+                !s.routes.lookup(host, path).is_some_and(|target| {
+                    target.app_id == format!("reg:{config_path}") && !target.active
+                })
+            })
         {
             return;
         }
@@ -594,7 +604,7 @@ pub(crate) async fn handle_wake_on_request(state: Arc<Mutex<State>>, host: Strin
         (app.name.clone(), app.log_buffer.clone())
     };
 
-    tracing::info!(app_name = %app_name, host = %host, "waking idle app on request");
+    tracing::info!(app_name = %app_name, "waking idle app on request");
     if let Err(error) = spawn_and_monitor_app_locked(state.clone(), config_path).await {
         if let Some(app) = state.lock().unwrap().apps.get_mut(config_path) {
             app.is_idle = true;

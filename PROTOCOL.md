@@ -42,11 +42,11 @@ Management-only commands are rejected on the internal socket. Runtime-only comma
 
 `network_call` is an internal-socket command with `{app, address, request}`. `app` remains the authenticated caller identity. `address` is a bare primitive name or `namespace.primitive`; a qualified namespace selects another app in the caller's environment. URLs, paths, extra dots, and caller-selected environments are rejected. `tako-core/src/network.rs` owns the invocation shapes and address grammar.
 
-Requests are `enqueue` with JSON payload and enqueue options, or `publish` with message and params. The recipient validates that the primitive exists and supplies workflow retry defaults or channel lifecycle settings. Enqueue acknowledges a run ID; publish acknowledges the stored or ephemeral message. Neither waits for application processing. Delivery is attempted once; retrying enqueue can use the existing retained-run ID semantics. Network waits use a separate concurrency limit from storage operations, so recipient socket calls can make progress.
+Requests are `call` with JSON input for direct handlers, `enqueue` with payload and options, `result` with a run ID, or `publish` with message and params. Direct handlers run without enqueueing and return JSON. The recipient supplies workflow retry defaults or channel lifecycle settings. Enqueue acknowledges a run ID; publish acknowledges the stored or ephemeral message. Result reads return null for a missing workflow/run pair, otherwise `{status,result,error}`. Result reads are short requests; clients poll rather than holding routing capacity while a workflow runs. Network delivery is attempted once. A separate client socket pool reserves storage capacity, and both client and server reject network overload immediately so nested handlers cannot queue behind waiting ancestors.
 
 For native networks, the router selects an authenticated placement and sends `POST /_tako/network` over the private mesh. Public ingress rejects that path. The receiving proxy wakes the app if needed, then sends `POST /network` with the recipient's internal host and bootstrap token; it requires the token on the response. Local development and same-server routing use that authenticated recipient endpoint directly. Requests and responses are bounded to 1 MiB; redirects and environment HTTP proxies are disabled for internal transport. Management endpoints reject `network_call`.
 
-JavaScript implements recipient dispatch. JavaScript, Go, and Rust implement socket callers. TypeScript's generated `tako.contracts.d.ts` is a portable type-only artifact; user-owned `workflows/network.d.ts` and `channels/network.d.ts` choose imported contracts for local `tako.d.ts` augmentation. These type selections do not alter network authorization or runtime registration.
+JavaScript implements recipient dispatch, including flat `<app_root>/network-handlers/` functions addressed by filename. JavaScript, Go, and Rust implement socket callers. Generated `tako.exports.d.ts` contains portable input and result types beside local `tako.d.ts`; user-owned `tako.imports.ts` selects named external types for all primitive kinds. Generation changes no package exports. Type selection does not alter network authorization or runtime registration.
 
 ## Process bootstrap
 
@@ -78,6 +78,12 @@ process, so a delayed earlier attempt cannot mutate the new attempt's state.
 SDK process identities also include randomness to avoid PID reuse across hosts
 or restarts. Ownership checks fence database writes, not external side effects;
 workflow execution remains at least once.
+
+## Workflow results and child calls
+
+`CompleteRun` carries a JSON `result` (null for no return value). The store atomically commits it with the succeeded status, guarded by the current claim owner. SQLite and Postgres persist it in `runs.result` and remove it with retained run history. `GetRunResult {app,name,id}` is an authenticated runtime-socket command; a mismatched workflow name is a missing run, and the app/environment scope is enforced by the same peer authentication as enqueue. It is not a management command.
+
+JavaScript `.run()` combines enqueue and result waiting. In a workflow, the SDK saves a child ID and call identity before enqueueing, repeats an uncertain enqueue with that ID, and checkpoints the terminal outcome. Pending children use ordinary `DeferRun`, releasing the parent's claim/concurrency slot without spending a retry. Result waits checkpoint their deadline across replay; a timeout does not cancel the child. Named `ctx.run` steps scope child-call order. IDs remain deduplicated only while child history is retained. Detached `.enqueue()` and direct handler `call()` do not gain automatic workflow checkpoints.
 
 ## Ephemeral channels
 

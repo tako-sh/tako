@@ -11,7 +11,7 @@ function modulePath(from: string, to: string): string {
   const path = relative(from, to)
     .split(sep)
     .join("/")
-    .replace(/\.d\.ts$/, "");
+    .replace(/(?:\.d)?\.ts$/, "");
   return path.startsWith(".") ? path : `./${path}`;
 }
 
@@ -36,6 +36,23 @@ class DeclarationGraph {
     if (f & ts.TypeFlags.String) return "string";
     if (f & ts.TypeFlags.Number) return "number";
     if (f & ts.TypeFlags.Boolean) return "boolean";
+    if (f & ts.TypeFlags.Void) return "null";
+    if (f & ts.TypeFlags.TemplateLiteral) {
+      const template = type as ts.TemplateLiteralType;
+      const escape = (value: string) =>
+        value.replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\$\{/g, "\\${");
+      return (
+        "`" +
+        template.texts
+          .map(
+            (part, i) =>
+              escape(part) +
+              (i < template.types.length ? "${" + this.print(template.types[i]!) + "}" : ""),
+          )
+          .join("") +
+        "`"
+      );
+    }
     const prior = this.objects.get(type);
     if (prior) return prior;
     const name = `_NetworkType${this.objects.size + 1}`;
@@ -89,6 +106,12 @@ class DeclarationGraph {
     }
     return `{ ${properties.join(" ")} }`;
   }
+
+  printResult(type: ts.Type): string {
+    if (type.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) return "null";
+    if (type.isUnion()) return `(${type.types.map((item) => this.printResult(item)).join(" | ")})`;
+    return this.print(type);
+  }
 }
 
 function exportType(checker: ts.TypeChecker, file: ts.SourceFile, name: string): ts.Type {
@@ -141,10 +164,22 @@ export async function generateNetworkTypes(
     if (!file) throw new Error(`Channel source disappeared: ${channel.name}`);
     return { ...channel, path: join(root, "channels", file) };
   });
-  const externalFiles = ["channels", "workflows"]
-    .map((kind) => join(root, kind, "network.d.ts"))
-    .filter(existsSync);
-  const files = [...channelFiles, ...workflows].map((entry) => entry.path).concat(externalFiles);
+  const handlerDir = join(root, "network-handlers");
+  const handlers = existsSync(handlerDir)
+    ? readdirSync(handlerDir, { withFileTypes: true })
+        .filter(
+          (entry) => entry.isFile() && sourceFile.test(entry.name) && !/^[._]/.test(entry.name),
+        )
+        .map((entry) => ({
+          name: entry.name.replace(/\.[^.]+$/, ""),
+          path: join(handlerDir, entry.name),
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name))
+    : [];
+  const externalFiles = [join(declarationDir, "tako.imports.ts")].filter(existsSync);
+  const files = [...channelFiles, ...workflows, ...handlers]
+    .map((entry) => entry.path)
+    .concat(externalFiles);
   const configPath = ts.findConfigFile(root, ts.sys.fileExists);
   let options: ts.CompilerOptions = {
     target: ts.ScriptTarget.ESNext,
@@ -165,20 +200,90 @@ export async function generateNetworkTypes(
       noEmit: true,
     };
   }
-  const program = ts.createProgram(files, options);
-  const checker = program.getTypeChecker();
+  let program = ts.createProgram(files, options);
+  let checker = program.getTypeChecker();
+  // Resolve calls between primitives against their source types, without reading
+  // stale generated declarations. This also lets a handler forward an imported
+  // workflow/handler result with its actual type on the first generation.
+  const virtualPath = join(declarationDir, "__tako_network_generation.d.ts");
+  const sourceRef = (path: string) =>
+    `typeof import(${JSON.stringify(path.replace(/\.[^.]+$/, ""))}).default`;
+  const maps = {
+    workflow: new Map<string, string>(),
+    channel: new Map<string, string>(),
+    handler: new Map<string, string>(),
+  };
+  for (const [kind, entries] of [
+    ["workflow", workflows],
+    ["channel", channelFiles],
+    ["handler", handlers],
+  ] as const) {
+    for (const entry of entries) {
+      const address = `${app}.${entry.name}`;
+      const source = sourceRef(entry.path);
+      const value =
+        kind === "channel"
+          ? `{ kind: "channel"; address: ${JSON.stringify(address)}; params: NonNullable<_Handle<${source}>["__params"]>; messages: NonNullable<_Handle<${source}>["__messages"]> }`
+          : `{ kind: ${JSON.stringify(kind)}; address: ${JSON.stringify(address)}; ${kind === "workflow" ? "payload" : "input"}: Parameters<_Handler<${source}>>[0]; result: _Output<Awaited<ReturnType<_Handler<${source}>>>> }`;
+      maps[kind].set(address, value);
+      maps[kind].set(entry.name, value);
+    }
+  }
+  for (const path of externalFiles) {
+    const file = program.getSourceFile(path)!;
+    const module = checker.getSymbolAtLocation(file);
+    if (!module) continue;
+    for (const symbol of checker.getExportsOfModule(module)) {
+      const type = exportType(checker, file, symbol.getName());
+      const kind = propertyType(checker, type, "kind", file);
+      const address = propertyType(checker, type, "address", file);
+      if (
+        kind.isStringLiteral() &&
+        ["workflow", "channel", "handler"].includes(kind.value) &&
+        address.isStringLiteral()
+      ) {
+        maps[kind.value as keyof typeof maps].set(
+          address.value,
+          `import(${JSON.stringify(path.replace(/\.ts$/, ""))}).${symbol.getName()}`,
+        );
+      }
+    }
+  }
+  const virtual = `import "tako.sh";
+type _Handler<T> = T extends { definition: { handler: infer H extends (...args: any[]) => any } } ? H : T extends { handler: infer H extends (...args: any[]) => any } ? H : T extends (...args: any[]) => any ? T : never;
+type _Handle<T> = T extends (...args: any[]) => infer H ? H : T;
+type _Output<T> = T extends void ? null : T;
+declare module "tako.sh" { ${Object.entries(maps)
+    .map(
+      ([kind, entries]) =>
+        `interface TakoNetwork${kind === "workflow" ? "Workflows" : kind === "handler" ? "Handlers" : "Channels"} { ${[...entries].map(([name, value]) => `${JSON.stringify(name)}: ${value};`).join("\n")} }`,
+    )
+    .join("\n")} }`;
+  const host = ts.createCompilerHost(options);
+  const getSourceFile = host.getSourceFile.bind(host);
+  host.getSourceFile = (fileName, languageVersion, onError, shouldCreateNewSourceFile) =>
+    fileName === virtualPath
+      ? ts.createSourceFile(fileName, virtual, ts.ScriptTarget.Latest)
+      : getSourceFile(fileName, languageVersion, onError, shouldCreateNewSourceFile);
+  program = ts.createProgram([...files, virtualPath], options, host);
+  checker = program.getTypeChecker();
   const exported: string[] = [];
   const graph = new DeclarationGraph(
     checker,
     program.getSourceFile(files[0] ?? "") ??
       ts.createSourceFile("contracts.ts", "", ts.ScriptTarget.Latest),
   );
-  const localModule = modulePath(declarationDir, join(root, "tako.contracts.d.ts"));
-  const registries = { workflow: new Map<string, string>(), channel: new Map<string, string>() };
+  const localModule = "./tako.exports";
+  const registries = {
+    workflow: new Map<string, string>(),
+    channel: new Map<string, string>(),
+    handler: new Map<string, string>(),
+  };
   const exportedNames = new Set<string>();
   for (const [kind, entries] of [
     ["workflow", workflows],
     ["channel", channelFiles],
+    ["handler", handlers],
   ] as const) {
     for (const entry of entries) {
       if (!/^[A-Za-z0-9_:-]{1,255}$/.test(entry.name))
@@ -186,19 +291,26 @@ export async function generateNetworkTypes(
       const file = program.getSourceFile(entry.path);
       if (!file) throw new Error(`Missing TypeScript source: ${entry.path}`);
       const type = exportType(checker, file, "default");
-      const name = contractName(entry.name, kind === "workflow" ? "Workflow" : "Channel");
+      const name = contractName(
+        entry.name,
+        { workflow: "Workflow", channel: "Channel", handler: "Handler" }[kind],
+      );
       if (exportedNames.has(name)) throw new Error(`Conflicting generated contract name: ${name}`);
       exportedNames.add(name);
       const address = `${app}.${entry.name}`;
       let fields: string;
-      if (kind === "workflow") {
-        const enqueue = type.getProperty("enqueue");
-        const signature = enqueue
-          ? checker.getTypeOfSymbolAtLocation(enqueue, file).getCallSignatures()[0]
-          : type.getCallSignatures()[0];
-        if (!signature) throw new Error(`${entry.path}: expected a workflow export`);
+      if (kind === "workflow" || kind === "handler") {
+        const definition = type.getProperty("definition");
+        const handle = definition ? checker.getTypeOfSymbolAtLocation(definition, file) : type;
+        const handler = handle.getProperty("handler");
+        const signature = (
+          handler ? checker.getTypeOfSymbolAtLocation(handler, file) : handle
+        ).getCallSignatures()[0];
+        if (!signature) throw new Error(`${entry.path}: expected a ${kind} export`);
         const payload = signature.getParameters()[0];
-        fields = `payload: ${payload ? graph.print(checker.getTypeOfSymbolAtLocation(payload, file)) : "unknown"};`;
+        const result =
+          checker.getAwaitedType(signature.getReturnType()) ?? signature.getReturnType();
+        fields = `${kind === "workflow" ? "payload" : "input"}: ${payload ? graph.print(checker.getTypeOfSymbolAtLocation(payload, file)) : "unknown"}; result: ${graph.printResult(result)};`;
       } else {
         const handle = type.getCallSignatures()[0]?.getReturnType() ?? type;
         fields = ["params", "messages"]
@@ -232,7 +344,6 @@ export async function generateNetworkTypes(
       );
     const module = checker.getSymbolAtLocation(file);
     if (!module) continue;
-    const kind = dirname(path).endsWith(`${sep}workflows`) ? "workflow" : "channel";
     for (const symbol of checker.getExportsOfModule(module)) {
       const name = symbol.getName();
       if (name === "default")
@@ -242,15 +353,20 @@ export async function generateNetworkTypes(
       const address = propertyType(checker, type, "address", file);
       if (
         !declaredKind.isStringLiteral() ||
-        declaredKind.value !== kind ||
+        !["workflow", "channel", "handler"].includes(declaredKind.value) ||
         !address.isStringLiteral() ||
         !/^[a-z][a-z0-9-]*\.[A-Za-z0-9_:-]+$/.test(address.value)
       ) {
         throw new Error(
-          `${path}: ${name} must be a ${kind} contract with one qualified string address`,
+          `${path}: ${name} must be a workflow, channel, or handler contract with one qualified string address`,
         );
       }
-      for (const key of kind === "workflow" ? ["payload"] : ["params", "messages"])
+      const kind = declaredKind.value as keyof typeof registries;
+      for (const key of kind === "workflow"
+        ? ["payload", "result"]
+        : kind === "handler"
+          ? ["input", "result"]
+          : ["params", "messages"])
         propertyType(checker, type, key, file);
       if (registries[kind].has(address.value))
         throw new Error(`${path}: duplicate network address ${address.value}`);
@@ -263,7 +379,7 @@ export async function generateNetworkTypes(
   const declarations = Object.entries(registries)
     .map(
       ([kind, registry]) =>
-        `export interface TakoNetwork${kind === "workflow" ? "Workflows" : "Channels"} {\n${[
+        `export interface TakoNetwork${kind === "workflow" ? "Workflows" : kind === "handler" ? "Handlers" : "Channels"} {\n${[
           ...registry,
         ]
           .sort(([a], [b]) => a.localeCompare(b))

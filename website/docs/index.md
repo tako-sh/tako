@@ -59,4 +59,4 @@ Native networks support bounded channel replication, presence leases, and store 
 
 For product context, see [tako.sh](https://tako.sh). Report bugs or request features in [GitHub issues](https://github.com/tako-sh/tako/issues).
 
-Use [Network Primitives](/network-primitives/) to call another application's channels and workflows by string address, with selected external types in `network.d.ts`.
+Use [Network Primitives](/network-primitives/) to call private handlers, channels, and workflows by string address, with external types selected in `tako.imports.ts`.

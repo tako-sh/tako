@@ -186,6 +186,7 @@ pub(super) fn rpc_action(
         | Command::ClaimRun { .. }
         | Command::HeartbeatRun { .. }
         | Command::SaveStep { .. }
+        | Command::GetRunResult { .. }
         | Command::CompleteRun { .. }
         | Command::CancelRun { .. }
         | Command::FailRun { .. }

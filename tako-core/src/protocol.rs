@@ -283,6 +283,13 @@ pub enum Command {
         opts: EnqueueOpts,
     },
 
+    /// Read the retained outcome of a run owned by the named workflow.
+    GetRunResult {
+        app: String,
+        name: String,
+        id: String,
+    },
+
     /// Register (or replace) the full set of cron schedules for an app.
     ///
     /// The worker sends this on startup; the server writes rows into
@@ -330,6 +337,7 @@ pub enum Command {
         app: String,
         id: String,
         worker_id: String,
+        result: serde_json::Value,
     },
 
     /// Worker: cancel a run cleanly (status becomes `cancelled`). Triggered
@@ -438,6 +446,14 @@ pub struct EnqueueRunResponse {
     pub id: String,
     /// True when the supplied ID matched a retained run.
     pub deduplicated: bool,
+}
+
+/// Retained workflow outcome; null at the command level means no matching run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunResult {
+    pub status: String,
+    pub result: serde_json::Value,
+    pub error: Option<String>,
 }
 
 /// Response payload for `Command::ClaimRun`. `None` when nothing is due.

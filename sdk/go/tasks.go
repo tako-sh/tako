@@ -205,6 +205,7 @@ func (c *Client) SaveStep(ctx context.Context, id, workerID, stepName string, re
 func (c *Client) Complete(ctx context.Context, id, workerID string) error {
 	_, err := c.call(ctx, map[string]any{
 		"command":   "complete_run",
+		"result":    nil,
 		"app":       c.app,
 		"id":        id,
 		"worker_id": workerID,

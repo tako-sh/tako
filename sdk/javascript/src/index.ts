@@ -40,9 +40,14 @@ export interface TakoChannels {}
 export interface TakoNetworkWorkflows {}
 /** Local and explicitly imported server-side channel contracts. */
 export interface TakoNetworkChannels {}
+/** Local and explicitly imported direct network handlers. */
+export interface TakoNetworkHandlers {}
 
-export { channel, workflow } from "./network";
-export type { NetworkChannel, NetworkWorkflow } from "./network";
+export { call, channel, workflow } from "./network";
+export type { NetworkChannel, NetworkWorkflow, NetworkHandlerContract } from "./network";
+export { defineNetworkHandler, type NetworkHandler } from "./network-handlers";
+export { WorkflowResultError } from "./workflows/result";
+export type { WorkflowResultOptions, WorkflowRunOptions, WorkflowOutput } from "./workflows/result";
 
 /** Store params and data inferred by the generated `tako.d.ts` file. */
 export interface TakoStores {}

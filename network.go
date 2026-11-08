@@ -24,6 +24,57 @@ type NetworkEnqueueResult struct {
 	Deduplicated bool   `json:"deduplicated"`
 }
 
+// Call executes a private network handler directly, without enqueueing or automatic retries.
+func Call(ctx context.Context, address string, input any) (json.RawMessage, error) {
+	return callNetwork(ctx, address, map[string]any{"operation": "call", "input": input})
+}
+
+// WorkflowResultError describes a terminal workflow outcome that has no result.
+type WorkflowResultError struct {
+	RunID   string
+	Status  string
+	Message string
+}
+
+func (e *WorkflowResultError) Error() string { return "tako: workflow " + e.Status + ": " + e.Message }
+
+// Result waits for a retained workflow result. Cancelling ctx stops waiting, not the workflow.
+func Result(ctx context.Context, address, id string) (json.RawMessage, error) {
+	for {
+		data, err := callNetwork(ctx, address, map[string]any{"operation": "result", "id": id})
+		if err != nil {
+			return nil, err
+		}
+		var state *struct {
+			Status string          `json:"status"`
+			Result json.RawMessage `json:"result"`
+			Error  string          `json:"error"`
+		}
+		if err := json.Unmarshal(data, &state); err != nil {
+			return nil, err
+		}
+		if state == nil {
+			return nil, &WorkflowResultError{id, "missing", "run not found or no longer retained"}
+		}
+		switch state.Status {
+		case "succeeded":
+			return state.Result, nil
+		case "dead", "cancelled":
+			return nil, &WorkflowResultError{id, state.Status, state.Error}
+		case "pending", "running":
+		default:
+			return nil, errors.New("tako: invalid workflow result response")
+		}
+		timer := time.NewTimer(time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
 // Enqueue starts a declared workflow by local name or app.workflow address.
 func Enqueue(ctx context.Context, address string, payload any, options NetworkEnqueueOptions) (*NetworkEnqueueResult, error) {
 	data, err := callNetwork(ctx, address, map[string]any{"operation": "enqueue", "payload": payload, "opts": options})

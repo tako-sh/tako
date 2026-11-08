@@ -55,6 +55,39 @@ fn idle_wake_app(directory: &std::path::Path) -> (Arc<Mutex<State>>, String) {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn private_wake_uses_registration_without_a_matching_public_route() {
+    let directory = tempfile::tempdir().unwrap();
+    let (state, config_path) = idle_wake_app(directory.path());
+    {
+        let mut s = state.lock().unwrap();
+        let app = s.apps.get_mut(&config_path).unwrap();
+        app.hosts = vec!["wake.test/api/*".into()];
+        app.command = vec![
+            "sh".into(),
+            "-c".into(),
+            "cat <&3 > /dev/null; printf '54321\\n' >&4; exec sleep 60".into(),
+        ];
+        s.routes.set_routes(
+            format!("reg:{config_path}"),
+            vec!["wake.test/api/*".into()],
+            0,
+            false,
+        );
+    }
+    wake_registration(state.clone(), &config_path, None).await;
+    let active = state
+        .lock()
+        .unwrap()
+        .routes
+        .lookup("wake.test", "/api/items")
+        .unwrap()
+        .active;
+    kill_all_app_processes(&state);
+    assert!(active);
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn failed_wake_can_retry_and_concurrent_requests_spawn_once() {
     let directory = tempfile::tempdir().unwrap();
     let (state, config_path) = idle_wake_app(directory.path());

@@ -627,24 +627,23 @@ One connection, one buffer, any number of consumers.
 
 ## Network primitives
 
-Use `workflow("mail.send-email").enqueue(payload, options?)` or `channel("web.progress", params?).publish({ type, data })` from managed server or worker code. Bare names select the current app; qualified names select another app in the same network and environment. No URL, method, or handler configuration is needed. Enqueue returns a run ID, not a workflow result. Publish acknowledges publication, not subscriber processing. The recipient's declared workflow retry policy or channel lifecycle applies. Network delivery is attempted once; use a stable enqueue `id` when retrying an uncertain result.
+Managed server and worker code can use `call("users.lookup", input)` for a direct private response, `workflow("mail.send-email").enqueue(payload, options?)` for a run ID, `.run(payload, options?)` to enqueue and wait, `.result(id, options?)` to wait for a retained result, and `channel("web.progress", params?).publish({ type, data })` for publication acceptance. Bare names select the current app; qualified names select another app in the same network and environment. Recipient dispatch currently requires the JavaScript managed HTTP runtime. Go and Rust can call it. Types are not authorization rules.
 
-The recipient currently requires the JavaScript managed HTTP runtime. Go and Rust SDKs can call these primitives but do not implement recipient dispatch. Any app in the network and environment can invoke declared primitives; imported types are not an authorization list. Params do not isolate channel streams.
+Define one function per `<app_root>/network-handlers/<name>.ts`, using `export default defineNetworkHandler(async (input: Input) => result)` or a plain function. The filename supplies the address. Handlers may call other handlers; they execute without enqueueing and have no automatic retries. A transport timeout can leave execution ongoing. Inside a workflow, put direct calls in `ctx.run` when their results need checkpoints, and use application idempotency keys for side effects.
 
-`tako gen` writes standalone producer types to `<app_root>/tako.contracts.d.ts`, separately from internal `tako.d.ts`. Publish or copy that file using your own package layout and exports. Tako never rewrites `package.json`. Contract names are the primitive name in PascalCase plus `Workflow` or `Channel`.
+Workflow handlers return JSON results (no return becomes null), persisted with succeeded status and retained with the run. Annotate the input parameter to infer the output, or supply `defineWorkflow<Payload, Result>`; specifying only the first generic leaves results unknown. `.result()` and `.run()` accept `{ timeout: "30s" }` or milliseconds; default is no timeout. Timeout does not cancel a run. `WorkflowResultError` carries `runId` and status `dead`, `cancelled`, `missing`, or `timeout`.
 
-In the consumer, maintain named type exports in the appropriate folder:
+Within a workflow, `.run()` durably saves the child ID before enqueue, reuses it after an uncertain acknowledgment, and caches the terminal outcome. Pending children defer the parent and free its worker slot without spending retries. Use a stable optional `{ step: "child-name" }`, or keep call order stable within each enclosing named `ctx.run`. Keep the target and input stable across replay. Retention bounds deduplication; detached `.enqueue()` still needs an explicit stable ID when repeated. Child workflows own their execution retries (default two retries after the first attempt, unless overridden).
+
+`tako gen` keeps generated `tako.exports.d.ts`, handwritten `tako.imports.ts`, and local `tako.d.ts` together at the existing declaration location, normally project root. `app_root` controls discovery, not the output location. Publish/copy `tako.exports.d.ts` through your own package; Tako never edits package exports. Generated names end in `Workflow`, `Channel`, or `Handler` and include input/result metadata. Consumer imports do not reappear in consumer exports.
 
 ```ts
-// src/workflows/network.d.ts
-export type { SendEmailWorkflow } from "@acme/mail-contracts";
-// src/channels/network.d.ts
-export type { ProgressChannel } from "@acme/web-contracts";
+// tako.imports.ts — one file for every primitive kind
+export type { SendEmailWorkflow, ProgressChannel } from "@acme/mail-types";
+export type { LookupHandler } from "@acme/users-types";
 ```
 
-Run `tako gen` to register those addresses in `tako.d.ts`, then include it in the consumer TypeScript project. Missing imports, wrong kinds, and duplicate addresses fail generation. Declarations are excluded from runtime discovery; consumer-only folders get no demo handler. Remote contracts are not re-exported in the consumer's own contracts file. `NetworkWorkflow<Address, Payload>` and `NetworkChannel<Address, Params, Messages>` describe manually maintained contracts. JSON types are compile-time contracts, not runtime validators.
-
-Verify with two apps under `tako dev`: enqueue from the caller, inspect recipient worker logs, and subscribe to the recipient channel while publishing from the caller. Rerun generation after updating producer types outside the watched primitive directories. See [Network Primitives](https://tako.sh/docs/network-primitives).
+Run generation in producer and consumer and include `tako.d.ts` in the TS project. Test a real caller/recipient flow, a handler chain, and a child workflow replay; confirm stored results and side-effect idempotency. See [Network Primitives](https://tako.sh/docs/network-primitives).
 
 ## Workflows
 

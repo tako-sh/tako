@@ -466,7 +466,7 @@ run_network_primitive_checks() {
   local caller_dir="$TMP_ROOT/network-caller-${server_host}"
   cp -R "$PROJECT_DIR/caller" "$caller_dir"
   cp "$PROJECT_DIR/tako-sdk.tgz" "$caller_dir/tako-sdk.tgz"
-  cp "$PROJECT_DIR/src/tako.contracts.d.ts" "$caller_dir/contracts.d.ts"
+  cp "$PROJECT_DIR/tako.exports.d.ts" "$caller_dir/contracts.d.ts"
   bun - "$PROJECT_DIR/tako.toml" "$caller_dir/tako.toml" <<'JS'
 import { readFileSync, appendFileSync } from "node:fs";
 const vars = Bun.TOML.parse(readFileSync(process.argv[2], "utf8")).vars?.production ?? {};
@@ -477,6 +477,10 @@ JS
   test ! -e "$caller_dir/src/channels/demo.ts"
   test ! -e "$caller_dir/src/workflows/demo.ts"
   run_channels_workflows_checks "$server_host" "$ROUTE_HOST" "network-caller-e2e.example.com"
+  post_route_json "$server_host" "network-caller-e2e.example.com" "/call" '{"message":"hello"}' "Chained direct network handlers"
+  bun -e 'const body = await Bun.file(process.argv[1]).json(); if (body.result.echoed !== "HELLO") throw new Error(JSON.stringify(body));' "$TMP_ROOT/post_body.tmp"
+  post_route_json "$server_host" "network-caller-e2e.example.com" "/run" '{"message":"child-result"}' "Durable child workflow result"
+  bun -e 'const body = await Bun.file(process.argv[1]).json(); if (body.result.delivered !== "child-result") throw new Error(JSON.stringify(body));' "$TMP_ROOT/post_body.tmp"
   local status
   status=$(curl -sS -o /dev/null -w '%{http_code}' -H "Host: ${ROUTE_HOST}" -H 'X-Forwarded-Proto: https' -H 'Forwarded: proto=https' -H 'Content-Type: application/json' --data '{"name":"broadcast","request":{"operation":"enqueue","payload":{},"opts":{}}}' "http://${server_host}:8080/_tako/network")
   test "$status" = 403

@@ -419,6 +419,7 @@ fn management_rpc_timeout_for_command(command: &Command) -> Duration {
         | Command::ClaimRun { .. }
         | Command::HeartbeatRun { .. }
         | Command::SaveStep { .. }
+        | Command::GetRunResult { .. }
         | Command::CompleteRun { .. }
         | Command::CancelRun { .. }
         | Command::FailRun { .. }

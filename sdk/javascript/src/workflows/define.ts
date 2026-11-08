@@ -2,18 +2,26 @@ import { TakoError } from "../tako/error";
 import type { EnqueueOptions } from "./engine";
 import type { RunId, WorkflowOpts, WorkflowRuntimeOpts } from "./types";
 import type { WorkflowHandler } from "./worker";
+import {
+  runWorkflow,
+  waitForWorkflowResult,
+  type WorkflowResultState,
+  type WorkflowResultOptions,
+  type WorkflowRunOptions,
+  type WorkflowOutput,
+} from "./result";
 
 /** Internal marker attached to workflow definitions. */
 export const WORKFLOW_SYMBOL = Symbol("workflow");
 
 /** Runtime metadata attached to a workflow export. */
-export interface WorkflowDefinition<P = unknown> {
+export interface WorkflowDefinition<P = unknown, R = unknown> {
   /** Internal marker for workflow definitions. */
   readonly type: typeof WORKFLOW_SYMBOL;
   /** Declared workflow name. */
   readonly name: string;
   /** Function that executes one workflow run. */
-  readonly handler: WorkflowHandler<P>;
+  readonly handler: WorkflowHandler<P, R>;
   /** Runtime workflow options without the handler. */
   readonly opts: WorkflowRuntimeOpts;
 }
@@ -22,11 +30,15 @@ export interface WorkflowDefinition<P = unknown> {
  * The default export from a `<app_root>/workflows/<name>.ts` file. `.enqueue(payload)`
  * schedules a run; `.definition` holds the discovery metadata.
  */
-export interface WorkflowExport<P = unknown> {
+export interface WorkflowExport<P = unknown, R = unknown> {
   /** Discovery metadata consumed by the Tako runtime. */
-  readonly definition: WorkflowDefinition<P>;
+  readonly definition: WorkflowDefinition<P, R>;
   /** Schedule a run of this workflow with the declared payload type. */
   enqueue(payload: P, options?: EnqueueOptions): Promise<RunId>;
+  /** Enqueue and await a result. Inside a workflow, this is a durable child call. */
+  run(payload: P, options?: WorkflowRunOptions): Promise<WorkflowOutput<R>>;
+  /** Await a retained result. A timeout does not cancel the run. */
+  result(id: RunId, options?: WorkflowResultOptions): Promise<WorkflowOutput<R>>;
 }
 
 /**
@@ -38,6 +50,7 @@ export interface WorkflowExport<P = unknown> {
 export interface WorkflowRuntime {
   /** Enqueue a workflow run. */
   enqueue(name: string, payload: unknown, options?: EnqueueOptions): Promise<RunId>;
+  result(name: string, id: RunId): Promise<WorkflowResultState | null>;
   /** Wake workflow runs parked on an event. */
   signal(event: string, payload?: unknown): Promise<number>;
 }
@@ -95,27 +108,39 @@ function requireRuntime(): WorkflowRuntime {
  * await sendEmail.enqueue({ userId: "u1" });
  * ```
  */
-export function defineWorkflow<P = unknown>(
+export function defineWorkflow<P = unknown, R = unknown>(
   name: string,
-  opts: WorkflowOpts<P>,
-): WorkflowExport<P> {
+  opts: WorkflowOpts<P, R>,
+): WorkflowExport<P, R> {
   const { handler, ...runtimeOpts } = opts;
-  const definition: WorkflowDefinition<P> = {
+  const definition: WorkflowDefinition<P, R> = {
     type: WORKFLOW_SYMBOL,
     name,
     handler,
     opts: runtimeOpts,
   };
+  const enqueue = (payload: P, options?: EnqueueOptions): Promise<RunId> => {
+    const retries = options?.retries ?? runtimeOpts.retries;
+    return requireRuntime().enqueue(
+      name,
+      payload,
+      retries === undefined ? options : { ...options, retries },
+    );
+  };
+  const read = (id: string) => requireRuntime().result(name, id);
   return {
     definition,
-    enqueue(payload, options) {
-      const retries = options?.retries ?? runtimeOpts.retries;
-      return requireRuntime().enqueue(
+    enqueue,
+    run: (payload, options) =>
+      runWorkflow(
         name,
         payload,
-        retries === undefined ? options : { ...options, retries },
-      );
-    },
+        (value, opts) => enqueue(value as P, opts),
+        read,
+        options,
+      ) as Promise<WorkflowOutput<R>>,
+    result: (id, options) =>
+      waitForWorkflowResult(name, id, read, options) as Promise<WorkflowOutput<R>>,
   };
 }
 

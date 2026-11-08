@@ -23,14 +23,7 @@ pub fn install(state: &Arc<Mutex<State>>, workflows: &tako_workflows::WorkflowMa
         };
         tokio::runtime::Handle::current().block_on(async move {
             if app.is_idle {
-                if let Some(host) = app.hosts.first() {
-                    crate::process::handle_wake_on_request(
-                        state.clone(),
-                        host.clone(),
-                        "/_tako/network".into(),
-                    )
-                    .await;
-                }
+                crate::process::wake_registration(state.clone(), &key, None).await;
             }
             let Some(port) = routes
                 .wait_for_active_port(&format!("reg:{key}"), std::time::Duration::from_secs(20))

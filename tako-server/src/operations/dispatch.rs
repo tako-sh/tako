@@ -351,7 +351,8 @@ impl crate::ServerState {
             | Command::ClaimRun { .. }
             | Command::HeartbeatRun { .. }
             | Command::SaveStep { .. }
-            | Command::CompleteRun { .. }
+            | Command::GetRunResult { .. }
+        | Command::CompleteRun { .. }
             | Command::CancelRun { .. }
             | Command::FailRun { .. }
             | Command::DeferRun { .. }

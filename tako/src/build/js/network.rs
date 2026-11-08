@@ -13,9 +13,12 @@ pub(super) fn generate(
     command: &impl Fn() -> Command,
 ) -> std::io::Result<Option<GeneratedNetworkTypes>> {
     let root = js_app_root_dir(project, app_root);
+    let declaration_dir = declarations.parent().unwrap_or(project);
     if !root.join("workflows").is_dir()
         && !root.join("channels").is_dir()
-        && !root.join("tako.contracts.d.ts").exists()
+        && !root.join("network-handlers").is_dir()
+        && !declaration_dir.join("tako.imports.ts").exists()
+        && !declaration_dir.join("tako.exports.d.ts").exists()
     {
         return Ok(None);
     }
@@ -37,7 +40,7 @@ pub(super) fn generate(
     }
     let output = generator
         .arg(&root)
-        .arg(declarations.parent().unwrap_or(project))
+        .arg(declaration_dir)
         .arg(app)
         .current_dir(project)
         .output()?;

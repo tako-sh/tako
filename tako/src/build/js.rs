@@ -447,7 +447,10 @@ fn write_tako_declarations_with_codegen_command(
     let wrote_declarations = write_if_changed(&path, &content)?;
     let wrote_contracts = match network {
         Some(network) => write_if_changed(
-            &js_app_root_dir(project_dir, app_root).join("tako.contracts.d.ts"),
+            &path
+                .parent()
+                .unwrap_or(project_dir)
+                .join("tako.exports.d.ts"),
             &network.contracts,
         )?,
         None => false,
@@ -696,10 +699,6 @@ fn ensure_dir_scaffolds(dir: &Path, kind: StubKind) -> std::io::Result<bool> {
 
     let mut wrote_any = false;
     if module_files.is_empty() {
-        // A consumer-only directory must never acquire a local demo primitive.
-        if dir.join("network.d.ts").is_file() {
-            return Ok(false);
-        }
         let stub_path = dir.join("demo.ts");
         let content = render_scaffold(kind, "demo", "");
         fs::write(stub_path, content)?;

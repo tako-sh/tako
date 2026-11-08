@@ -27,6 +27,7 @@ export function initServerRuntime(): void {
   installChannelSocketPublisherFromEnv();
   setWorkflowRuntime({
     enqueue: (name, payload, opts) => workflowsEngine.enqueue(name, payload, opts),
+    result: (name, id) => workflowsEngine.result(name, id),
     signal: (event, payload) => workflowsEngine.signal(event, payload),
   });
 }

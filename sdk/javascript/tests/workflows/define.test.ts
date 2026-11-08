@@ -32,6 +32,7 @@ describe("defineWorkflow", () => {
         return "run-1";
       },
       signal: async () => 0,
+      result: async () => ({ status: "succeeded", result: null, error: null }),
     });
     try {
       const exp = defineWorkflow("job", { retries: 4, handler: async () => {} });

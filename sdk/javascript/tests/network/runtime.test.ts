@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { channel, workflow, setNetworkCaller } from "../../src/network";
+import { call, channel, workflow, setNetworkCaller } from "../../src/network";
 import { ChannelRegistry, setChannelSocketPublisher } from "../../src/channels";
 import { defineChannel } from "../../src/channels/define";
 import { handleNetworkInvocation } from "../../src/network-endpoint";
@@ -46,10 +46,54 @@ test("string handles preserve addresses and use the existing enqueue wire option
 });
 
 test("network handles cannot silently fall back to public HTTP", async () => {
+  await expect(call("users.lookup", {})).rejects.toThrow("server runtime");
   await expect(workflow("mail.send-email").enqueue({})).rejects.toThrow("server runtime");
   await expect(channel("web.progress").publish({ type: "update", data: {} })).rejects.toThrow(
     "server runtime",
   );
+});
+
+test("direct handlers can call another handler and return data without enqueueing", async () => {
+  const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join, relative, resolve } = await import("node:path");
+  const root = await mkdtemp(join(tmpdir(), "tako-handlers-"));
+  const previous = process.env.TAKO_APP_ROOT;
+  try {
+    await mkdir(join(root, "network-handlers"));
+    await writeFile(
+      join(root, "network-handlers/lookup.ts"),
+      `import { call } from ${JSON.stringify(resolve(import.meta.dirname, "../../src/network.ts"))}; export default async (input) => ({ user: await call("profiles.read", input) });`,
+    );
+    process.env.TAKO_APP_ROOT = relative(process.cwd(), root);
+    const calls: unknown[] = [];
+    setNetworkCaller(async (address, request) => {
+      calls.push({ address, request });
+      if (address === "profiles.read" && request.operation === "call") return { id: "u1" };
+      throw new Error("unexpected network operation");
+    });
+    const invoke = (name: string) =>
+      handleNetworkInvocation(
+        new Request("http://users.tako/network", {
+          method: "POST",
+          body: JSON.stringify({ name, request: { operation: "call", input: { id: "u1" } } }),
+        }),
+        new ChannelRegistry(),
+      );
+    expect(await (await invoke("lookup")).json()).toEqual({
+      status: "ok",
+      data: { user: { id: "u1" } },
+    });
+    expect(calls).toEqual([
+      { address: "profiles.read", request: { operation: "call", input: { id: "u1" } } },
+    ]);
+    expect((await invoke("missing")).status).toBe(404);
+    expect((await invoke("../lookup")).status).toBe(400);
+  } finally {
+    if (previous === undefined) delete process.env.TAKO_APP_ROOT;
+    else process.env.TAKO_APP_ROOT = previous;
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("recipient rejects missing definitions and invalid params and owns channel lifecycle", async () => {

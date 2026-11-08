@@ -313,7 +313,7 @@ async fn run(
                                         let result = if is_network {
                                             crate::blocking::run_network(operation).await
                                         } else {
-                                            crate::blocking::run(operation).await
+                                            crate::blocking::run(operation).await.map_err(|error| error.to_string())
                                         };
                                         match result {
                                             Ok(response) => response,
@@ -358,6 +358,7 @@ fn authorize_peer(
 fn command_app(cmd: &Command) -> Option<&str> {
     match cmd {
         Command::EnqueueRun { app, .. }
+        | Command::GetRunResult { app, .. }
         | Command::RegisterSchedules { app, .. }
         | Command::ClaimRun { app, .. }
         | Command::HeartbeatRun { app, .. }
@@ -510,7 +511,16 @@ fn handle_command(
             Ok(()) => Response::ok(serde_json::json!({})),
             Err(e) => Response::error(format!("save_step failed: {e}")),
         },
-        Command::CompleteRun { id, worker_id, .. } => match db.complete(&id, &worker_id) {
+        Command::GetRunResult { name, id, .. } => match db.result(&name, &id) {
+            Ok(result) => Response::ok(result),
+            Err(e) => Response::error(format!("result failed: {e}")),
+        },
+        Command::CompleteRun {
+            id,
+            worker_id,
+            result,
+            ..
+        } => match db.complete(&id, &worker_id, &result) {
             Ok(()) => {
                 limiter.release_claim(&worker_id);
                 Response::ok(serde_json::json!({}))

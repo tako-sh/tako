@@ -5,6 +5,7 @@ import { Channel, definitionLifecycleConfig, type ChannelRegistry } from "./chan
 import { discoverWorkflows } from "./workflows/discovery";
 import { WorkflowsClient } from "./workflows/rpc-client";
 import { resolveAppRootDir } from "./tako/app-root";
+import { discoverNetworkHandlers } from "./network/discovery";
 
 /** Dispatch only declared primitives; no handler, transport, or lifecycle supplied by the caller. */
 export async function handleNetworkInvocation(
@@ -24,6 +25,22 @@ export async function handleNetworkInvocation(
       return reply({ status: "error", message: "Invalid network invocation" }, 400);
     }
     const call = input.request;
+    if (call["operation"] === "call") {
+      const handlers = await discoverNetworkHandlers(
+        join(resolveAppRootDir(process.cwd()), "network-handlers"),
+      );
+      const handler = handlers.get(input.name);
+      if (!handler) return reply({ status: "error", message: "Unknown network handler" }, 404);
+      const data = await handler(call["input"]);
+      return reply({ status: "ok", data: data ?? null });
+    }
+    if (call["operation"] === "result") {
+      if (typeof call["id"] !== "string")
+        return reply({ status: "error", message: "Invalid run ID" }, 400);
+      const client = WorkflowsClient.fromEnv();
+      if (!client) return reply({ status: "error", message: "Workflow runtime unavailable" }, 503);
+      return reply({ status: "ok", data: await client.result(input.name, call["id"]) });
+    }
     if (call["operation"] === "publish") {
       const entry = channels.all.find(({ name }) => name === input.name);
       if (!entry || input.name.startsWith("tako.")) {

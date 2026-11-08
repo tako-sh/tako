@@ -10,6 +10,12 @@ pub const NETWORK_INTERNAL_PATH: &str = "/network";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NetworkRequest {
+    Call {
+        input: Value,
+    },
+    Result {
+        id: String,
+    },
     Enqueue {
         payload: Value,
         #[serde(default)]

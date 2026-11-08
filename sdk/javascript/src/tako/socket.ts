@@ -131,7 +131,9 @@ export function installChannelSocketPublisherFromEnv(): boolean {
 
 /** Send a single JSONL command and resolve to `data` (or throw on error). */
 export async function callInternal(socketPath: string, cmd: unknown): Promise<unknown> {
-  const resp = await internalSocketPool(socketPath).call(cmd);
+  const network =
+    typeof cmd === "object" && cmd !== null && "command" in cmd && cmd.command === "network_call";
+  const resp = await internalSocketPool(socketPath, network).call(cmd);
   if (resp.status === "error") {
     logger.error("rpc rejected", { code: "TAKO_RPC_ERROR", message: resp.message });
     throw new TakoError("TAKO_RPC_ERROR", "Internal Server Error", {
@@ -141,11 +143,15 @@ export async function callInternal(socketPath: string, cmd: unknown): Promise<un
   return resp.data ?? null;
 }
 
-function internalSocketPool(socketPath: string): InternalSocketPool {
-  const existing = internalSocketPools.get(socketPath);
+function internalSocketPool(socketPath: string, network: boolean): InternalSocketPool {
+  // Network handlers can call storage and other handlers in the same process.
+  // Separate storage capacity and reject network overload instead of queuing
+  // descendants behind the ancestors that are waiting for them.
+  const key = `${network ? "network" : "storage"}:${socketPath}`;
+  const existing = internalSocketPools.get(key);
   if (existing) return existing;
-  const created = new InternalSocketPool(socketPath, DEFAULT_INTERNAL_SOCKET_POOL_SIZE);
-  internalSocketPools.set(socketPath, created);
+  const created = new InternalSocketPool(socketPath, DEFAULT_INTERNAL_SOCKET_POOL_SIZE, network);
+  internalSocketPools.set(key, created);
   return created;
 }
 
@@ -167,9 +173,13 @@ class InternalSocketPool {
   constructor(
     private readonly socketPath: string,
     private readonly maxConnections: number,
+    private readonly rejectOverload: boolean,
   ) {}
 
   call(cmd: unknown): Promise<RpcResponse> {
+    if (this.rejectOverload && this.idle.length === 0 && this.active.size >= this.maxConnections) {
+      return Promise.reject(new TakoError("TAKO_UNAVAILABLE", "Network call capacity exceeded."));
+    }
     return new Promise<RpcResponse>((resolve, reject) => {
       this.pending.push({ cmd, resolve, reject });
       this.drain();

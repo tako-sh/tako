@@ -25,6 +25,13 @@ pub struct EnqueueResult {
     pub deduplicated: bool,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct WorkflowResult {
+    pub status: String,
+    pub result: Value,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Client {
     socket: PathBuf,
@@ -64,7 +71,7 @@ impl Client {
         options: EnqueueOptions,
     ) -> io::Result<EnqueueResult> {
         let bytes = self.encode(address, json!({"operation":"enqueue", "payload":serde_json::to_value(payload)?, "opts":options}))?;
-        serde_json::from_value(self.call_blocking(&bytes)?).map_err(io::Error::other)
+        serde_json::from_value(self.send_blocking(&bytes)?).map_err(io::Error::other)
     }
 
     pub fn publish_blocking(
@@ -75,11 +82,11 @@ impl Client {
         data: impl Serialize,
     ) -> io::Result<Value> {
         let bytes = self.encode(address, json!({"operation":"publish", "params":serde_json::to_value(params)?, "message":{"type":message_type,"data":serde_json::to_value(data)?}}))?;
-        self.call_blocking(&bytes)
+        self.send_blocking(&bytes)
     }
 
     #[cfg(unix)]
-    fn call_blocking(&self, bytes: &[u8]) -> io::Result<Value> {
+    fn send_blocking(&self, bytes: &[u8]) -> io::Result<Value> {
         use std::io::{BufRead, Read, Write};
         let deadline = std::time::Instant::now() + TIMEOUT;
         let path = self
@@ -97,7 +104,7 @@ impl Client {
     }
 
     #[cfg(not(unix))]
-    fn call_blocking(&self, _bytes: &[u8]) -> io::Result<Value> {
+    fn send_blocking(&self, _bytes: &[u8]) -> io::Result<Value> {
         Err(io::Error::other(
             "Tako network primitives require Unix sockets",
         ))
@@ -111,7 +118,7 @@ impl Client {
         options: EnqueueOptions,
     ) -> io::Result<EnqueueResult> {
         let bytes = self.encode(address, json!({"operation":"enqueue", "payload":serde_json::to_value(payload)?, "opts":options}))?;
-        serde_json::from_value(self.call(&bytes).await?).map_err(io::Error::other)
+        serde_json::from_value(self.send(&bytes).await?).map_err(io::Error::other)
     }
 
     #[cfg(all(unix, feature = "tokio"))]
@@ -123,11 +130,11 @@ impl Client {
         data: impl Serialize,
     ) -> io::Result<Value> {
         let bytes = self.encode(address, json!({"operation":"publish", "params":serde_json::to_value(params)?, "message":{"type":message_type,"data":serde_json::to_value(data)?}}))?;
-        self.call(&bytes).await
+        self.send(&bytes).await
     }
 
     #[cfg(all(unix, feature = "tokio"))]
-    async fn call(&self, bytes: &[u8]) -> io::Result<Value> {
+    async fn send(&self, bytes: &[u8]) -> io::Result<Value> {
         use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
         tokio::time::timeout(TIMEOUT, async {
             let mut socket = tokio::net::UnixStream::connect(&self.socket).await?;
@@ -140,6 +147,36 @@ impl Client {
         })
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "network primitive call timed out"))?
+    }
+
+    /// Direct private request/response. No queue or automatic retries.
+    pub fn call_blocking(&self, address: &str, input: impl Serialize) -> io::Result<Value> {
+        let bytes = self.encode(
+            address,
+            json!({"operation":"call", "input":serde_json::to_value(input)?}),
+        )?;
+        self.send_blocking(&bytes)
+    }
+
+    /// Read the retained outcome once. Pending/running means the caller should poll again.
+    pub fn result_blocking(&self, address: &str, id: &str) -> io::Result<Option<WorkflowResult>> {
+        let bytes = self.encode(address, json!({"operation":"result", "id":id}))?;
+        serde_json::from_value(self.send_blocking(&bytes)?).map_err(io::Error::other)
+    }
+
+    #[cfg(all(unix, feature = "tokio"))]
+    pub async fn call(&self, address: &str, input: impl Serialize) -> io::Result<Value> {
+        let bytes = self.encode(
+            address,
+            json!({"operation":"call", "input":serde_json::to_value(input)?}),
+        )?;
+        self.send(&bytes).await
+    }
+
+    #[cfg(all(unix, feature = "tokio"))]
+    pub async fn result(&self, address: &str, id: &str) -> io::Result<Option<WorkflowResult>> {
+        let bytes = self.encode(address, json!({"operation":"result", "id":id}))?;
+        serde_json::from_value(self.send(&bytes).await?).map_err(io::Error::other)
     }
 }
 
@@ -157,6 +194,50 @@ fn decode(bytes: &[u8]) -> io::Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn handlers_and_results_use_distinct_operations() {
+        use std::io::{BufRead, Write};
+        let socket =
+            std::env::temp_dir().join(format!("tako-network-result-{}.sock", std::process::id()));
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            for (operation, data) in [
+                ("call", json!({"id":"u1"})),
+                (
+                    "result",
+                    json!({"status":"succeeded","result":{"count":42},"error":null}),
+                ),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                io::BufReader::new(&stream).read_line(&mut line).unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(request["request"]["operation"], operation);
+                assert_eq!(request["app"], "rust-app/staging");
+                writeln!(stream, "{}", json!({"status":"ok","data":data})).unwrap();
+            }
+        });
+        let client = Client {
+            socket: socket.clone(),
+            app: "rust-app/staging".into(),
+        };
+        assert_eq!(
+            client
+                .call_blocking("users.lookup", json!({"id":"u1"}))
+                .unwrap(),
+            json!({"id":"u1"})
+        );
+        let result = client
+            .result_blocking("reports.generate", "run-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.status, "succeeded");
+        assert_eq!(result.result, json!({"count":42}));
+        server.join().unwrap();
+        std::fs::remove_file(socket).unwrap();
+    }
     #[test]
     fn wire_preserves_caller_and_destination_separately() {
         let client = Client {

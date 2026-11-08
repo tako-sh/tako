@@ -7,6 +7,7 @@ import (
 	"net"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestNetworkCallsKeepCallerIdentity(t *testing.T) {
@@ -44,6 +45,66 @@ func TestNetworkCallsKeepCallerIdentity(t *testing.T) {
 		command := <-received
 		if command["app"] != "go-app/staging" || command["address"] != address || command["command"] != "network_call" {
 			t.Fatalf("wrong envelope: %#v", command)
+		}
+	}
+}
+
+func TestDirectCallAndWorkflowResults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "results.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	t.Setenv("TAKO_INTERNAL_SOCKET", path)
+	t.Setenv("TAKO_APP_NAME", "web/staging")
+	replies := []string{`{"user":"Ada"}`, `{"status":"succeeded","result":{"url":"report.pdf"},"error":null}`, `{"status":"dead","result":null,"error":"failed"}`, `null`, `{"status":"pending","result":null,"error":null}`}
+	operations := make(chan string, len(replies))
+	go func() {
+		for _, reply := range replies {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			line, _ := bufio.NewReader(conn).ReadBytes('\n')
+			var request struct {
+				Request struct {
+					Operation string `json:"operation"`
+				} `json:"request"`
+			}
+			_ = json.Unmarshal(line, &request)
+			operations <- request.Request.Operation
+			_, _ = conn.Write([]byte(`{"status":"ok","data":` + reply + "}\n"))
+			_ = conn.Close()
+		}
+	}()
+	data, err := Call(context.Background(), "users.lookup", map[string]string{"id": "u1"})
+	if err != nil || string(data) != `{"user":"Ada"}` {
+		t.Fatalf("call: %s %v", data, err)
+	}
+	data, err = Result(context.Background(), "reports.generate", "id")
+	if err != nil || string(data) != `{"url":"report.pdf"}` {
+		t.Fatalf("result: %s %v", data, err)
+	}
+	for _, status := range []string{"dead", "missing"} {
+		_, err := Result(context.Background(), "reports.generate", "id")
+		outcome, ok := err.(*WorkflowResultError)
+		if !ok || outcome.Status != status {
+			t.Fatalf("expected %s: %v", status, err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := Result(ctx, "reports.generate", "id"); err != context.DeadlineExceeded {
+		t.Fatalf("timeout: %v", err)
+	}
+	for i := range replies {
+		expected := "result"
+		if i == 0 {
+			expected = "call"
+		}
+		if got := <-operations; got != expected {
+			t.Fatalf("operation: %s", got)
 		}
 	}
 }

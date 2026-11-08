@@ -106,6 +106,10 @@ impl ConfigWatcher {
             (watched_app_root.join("presence"), WatchChange::Channels),
             (watched_app_root.join("stores"), WatchChange::Channels),
             (watched_app_root.join("workflows"), WatchChange::Workflows),
+            (
+                watched_app_root.join("network-handlers"),
+                WatchChange::Channels,
+            ),
         ];
         let mut known_runtime_dirs = std::collections::HashSet::new();
         if watched_app_root != self.project_dir && watched_app_root.is_dir() {
@@ -218,8 +222,17 @@ fn classify_path(
     if path == project_dir.join(".tako").join("secrets.json") {
         return Some(WatchChange::Secrets);
     }
+    let declaration_dirs = crate::build::js::generated_declaration_parent_dirs(project_dir);
+    if declaration_dirs
+        .iter()
+        .any(|dir| path == dir.join("tako.imports.ts"))
+    {
+        return Some(WatchChange::Channels);
+    }
     if crate::build::js::is_generated_declaration_path(project_dir, path)
-        || path == app_root.join("tako.contracts.d.ts")
+        || declaration_dirs
+            .iter()
+            .any(|dir| path == dir.join("tako.exports.d.ts"))
     {
         return Some(WatchChange::GeneratedDeclarations);
     }
@@ -229,6 +242,7 @@ fn classify_path(
         ("presence", WatchChange::Channels),
         ("stores", WatchChange::Channels),
         ("workflows", WatchChange::Workflows),
+        ("network-handlers", WatchChange::Channels),
     ] {
         let dir = app_root.join(dirname);
         if path == dir {

@@ -107,6 +107,35 @@ fn acquire_project_deploy_lock_allows_reacquire_after_drop() {
 }
 
 #[test]
+fn runtime_declarations_do_not_require_storage_on_multiple_servers() {
+    let temp = TempDir::new().unwrap();
+    for suffix in ["ts", "mts", "cts"] {
+        write_workflow(
+            &temp,
+            &format!("network.d.{suffix}"),
+            "export type Remote = unknown;",
+        );
+        for kind in ["channels", "presence", "stores"] {
+            let dir = temp.path().join("src").join(kind);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                dir.join(format!("types.d.{suffix}")),
+                "export type Remote = unknown;",
+            )
+            .unwrap();
+        }
+    }
+    let result = config::validate_runtime_state_storage_for_deploy(
+        temp.path(),
+        &multi_server_js_config(),
+        &SecretsStore::default(),
+        "production",
+        2,
+    );
+    assert!(!result.has_errors(), "{:?}", result.errors);
+}
+
+#[test]
 fn workflow_storage_validation_rejects_multi_server_without_postgres_url() {
     let temp = TempDir::new().unwrap();
     write_workflow(

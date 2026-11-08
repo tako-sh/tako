@@ -36,6 +36,7 @@ pub(crate) fn classify(command: &Command) -> CommandClass<'_> {
         | Command::ClaimRun { .. }
         | Command::HeartbeatRun { .. }
         | Command::SaveStep { .. }
+        | Command::GetRunResult { .. }
         | Command::CompleteRun { .. }
         | Command::CancelRun { .. }
         | Command::FailRun { .. }
@@ -302,6 +303,7 @@ pub(crate) fn authorize_command(
         | Command::ClaimRun { .. }
         | Command::HeartbeatRun { .. }
         | Command::SaveStep { .. }
+        | Command::GetRunResult { .. }
         | Command::CompleteRun { .. }
         | Command::CancelRun { .. }
         | Command::FailRun { .. }

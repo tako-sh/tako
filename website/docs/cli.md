@@ -48,9 +48,9 @@ Refreshes generated project files:
 - JS/TS: `tako.d.ts` with environment names, secret names, storage bindings, channel metadata, typed Store params and data, workflow metadata, and env var names.
 - Go: `tako_secrets.go` with typed secret accessors.
 
-For JS/TS, generation keeps an existing `tako.d.ts` in `app/`, `src/`, or the project root. Empty existing `channels/` or `workflows/` directories get demo definitions, except directories containing `network.d.ts`. Declaration files are never scaffolded as handlers.
+For JS/TS, generation defaults to the project root and keeps an existing `tako.d.ts` in `app/`, `src/`, or the project root. Empty existing `channels/` or `workflows/` directories get demo definitions. Declaration files are never scaffolded as handlers.
 
-For JS/TS primitives, generation also writes `<app_root>/tako.contracts.d.ts` with standalone exportable contracts. User-owned `channels/network.d.ts` and `workflows/network.d.ts` select external contracts through named type exports; the generated `tako.d.ts` registers their qualified addresses. No package exports or configuration options are added automatically. See [Network Primitives](/network-primitives/).
+For JS/TS primitives, generation writes `tako.exports.d.ts` beside the existing `tako.d.ts`, with portable channel, workflow, and network-handler types including results. The user-owned `tako.imports.ts` in that same directory selects external types through named type exports; `tako.d.ts` registers their qualified addresses. No package exports or configuration options are added automatically. See [Network Primitives](/network-primitives/).
 
 ## `tako agents`
 

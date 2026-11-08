@@ -144,4 +144,4 @@ The Prometheus endpoint and metric names are documented in [Operations](/operati
 
 ## Network primitives
 
-Deploy callers and recipients into the same environment and network for [network primitive calls](/network-primitives/). The caller uses `app.primitive` and inherits its environment. The recipient needs the JavaScript managed HTTP runtime. Generation includes separate exportable `tako.contracts.d.ts` contracts; publish them through your own package and select them with the consumer's `network.d.ts` files. Types do not configure routing or grant access.
+Deploy callers and recipients into the same environment and network for [network primitive calls](/network-primitives/). The caller uses `app.primitive` and inherits its environment. The recipient needs the JavaScript managed HTTP runtime. Generation includes separate portable `tako.exports.d.ts` types beside `tako.d.ts`; publish them through your own package and select them in the consumer's `tako.imports.ts`. Types do not configure routing or grant access.

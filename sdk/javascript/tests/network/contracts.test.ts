@@ -14,7 +14,13 @@ afterEach(async () => {
 async function project() {
   const dir = await mkdtemp(join(tmpdir(), "tako-network-"));
   temps.push(dir);
-  for (const folder of ["src/channels", "src/workflows", "node_modules", "shared"])
+  for (const folder of [
+    "src/channels",
+    "src/workflows",
+    "src/network-handlers",
+    "node_modules",
+    "shared",
+  ])
     await mkdir(join(dir, folder), { recursive: true });
   await symlink(resolve(import.meta.dirname, "../.."), join(dir, "node_modules/tako.sh"));
   return dir;
@@ -34,6 +40,10 @@ test("exports standalone contracts and imports only the selected remote primitiv
     join(producer, "src/channels/progress.ts"),
     `import { defineChannel } from "tako.sh"; export default defineChannel("progress", { paramsSchema: t => t.Object({ jobId: t.String() }) }).$messageTypes<{ update: { percent: number } }>();`,
   );
+  await writeFile(
+    join(producer, "src/network-handlers/lookup.ts"),
+    "export default async function lookup(input: { id: `user_${string}` }) { return { id: input.id, active: true }; }",
+  );
   const generated = await generateNetworkTypes(
     join(producer, "src"),
     join(producer, "src"),
@@ -48,12 +58,8 @@ test("exports standalone contracts and imports only the selected remote primitiv
   await writeFile(join(consumer, "shared/contracts.d.ts"), generated.contracts);
   await rm(producer, { recursive: true, force: true });
   await writeFile(
-    join(consumer, "src/workflows/network.d.ts"),
-    'export type { SendEmailWorkflow } from "../../shared/contracts";',
-  );
-  await writeFile(
-    join(consumer, "src/channels/network.d.ts"),
-    'export type { ProgressChannel as JobProgress } from "../../shared/contracts";',
+    join(consumer, "src/tako.imports.ts"),
+    'export type { SendEmailWorkflow, ProgressChannel as JobProgress, LookupHandler } from "../shared/contracts";',
   );
   const local = await generateNetworkTypes(join(consumer, "src"), join(consumer, "src"), "web");
   expect(local.declarations).toContain('"notifications.send-email"');
@@ -66,7 +72,10 @@ test("exports standalone contracts and imports only the selected remote primitiv
   const main = join(consumer, "src/main.ts");
   await writeFile(
     main,
-    `import { channel, workflow } from "tako.sh";
+    `import { call, channel, workflow } from "tako.sh";
+const response: Promise<{ id: \`user_\${string}\`; active: boolean }> = call("notifications.lookup", { id: "user_123" });
+// @ts-expect-error preserves template literal input
+call("notifications.lookup", { id: "bad" });
 const payload = { to: "a@example.com", next: { to: "b@example.com" }, tags: ["welcome"], position: [1, 2] } as const;
 workflow("notifications.send-email").enqueue(payload);
 channel("notifications.progress", { jobId: "j1" }).publish({ type: "update", data: { percent: 50 } });
@@ -94,7 +103,7 @@ channel("notifications.progress", { jobId: "j1" }).publish({ type: "update", dat
       .getPreEmitDiagnostics(program)
       .map((d) => ts.flattenDiagnosticMessageText(d.messageText, "\n")),
   ).toEqual([]);
-});
+}, 30_000);
 
 test("runtime discovery skips declaration files, including consumer-only directories", async () => {
   const dir = await project();
@@ -105,24 +114,59 @@ test("runtime discovery skips declaration files, including consumer-only directo
     );
   expect(await discoverChannels(join(dir, "src/channels"))).toEqual([]);
   expect(await discoverWorkflows(join(dir, "src/workflows"))).toEqual([]);
-  await expect(generateNetworkTypes(join(dir, "src"), join(dir, "src"), "web")).rejects.toThrow();
+  expect(
+    (await generateNetworkTypes(join(dir, "src"), join(dir, "src"), "web")).contracts,
+  ).toContain("export {};");
 });
 
 test("rejects wrong primitive kinds and duplicate external addresses", async () => {
   const dir = await project();
-  const external = join(dir, "src/workflows/network.d.ts");
+  const external = join(dir, "src/tako.imports.ts");
   await writeFile(
     external,
-    'export type Wrong = { kind: "channel"; address: "mail.chat"; params: {}; messages: {} };',
+    'export type Wrong = { kind: "invalid"; address: "mail.chat"; params: {}; messages: {} };',
   );
   await expect(generateNetworkTypes(join(dir, "src"), join(dir, "src"), "web")).rejects.toThrow(
-    "workflow contract",
+    "workflow, channel, or handler contract",
   );
   await writeFile(
     external,
-    'export type One = { kind: "workflow"; address: "mail.send"; payload: { to: string } }; export type Two = One;',
+    'export type One = { kind: "workflow"; address: "mail.send"; payload: { to: string }; result: null }; export type Two = One;',
   );
   await expect(generateNetworkTypes(join(dir, "src"), join(dir, "src"), "web")).rejects.toThrow(
     "duplicate network address",
   );
+});
+
+test("raw workflow definitions export payloads and results alongside root declarations", async () => {
+  const dir = await project();
+  await writeFile(
+    join(dir, "src/workflows/lookup.ts"),
+    'import { defineWorkflow } from "tako.sh"; export default defineWorkflow("lookup", { handler: async (input: { id: `user_${string}` }) => ({ id: input.id, ok: true }) }).definition;',
+  );
+  const generated = await generateNetworkTypes(join(dir, "src"), dir, "users");
+  expect(generated.contracts).toContain('"users.lookup"');
+  expect(generated.contracts).toContain("`user_${string}`");
+  expect(generated.contracts).toContain('"ok": boolean');
+  expect(generated.declarations).toContain('import("./tako.exports").LookupWorkflow');
+});
+
+test("first generation follows result types through local and imported network calls", async () => {
+  const dir = await project();
+  await writeFile(
+    join(dir, "tako.imports.ts"),
+    'export type Remote = { kind: "workflow"; address: "mail.deliver"; payload: { to: string }; result: { messageId: string } };',
+  );
+  await writeFile(
+    join(dir, "src/network-handlers/lookup.ts"),
+    'import { workflow } from "tako.sh"; export default async (input: { to: string }) => workflow("mail.deliver").run(input);',
+  );
+  await writeFile(
+    join(dir, "src/network-handlers/forward.ts"),
+    'import { call } from "tako.sh"; export default async (input: { to: string }) => call("lookup", input);',
+  );
+  const generated = await generateNetworkTypes(join(dir, "src"), dir, "users");
+  expect(generated.contracts).toContain('"messageId": string');
+  expect(generated.contracts).not.toContain("result: unknown");
+  expect(generated.contracts).toContain("ForwardHandler");
 });

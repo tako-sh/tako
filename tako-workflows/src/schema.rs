@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS runs (
   worker_id     TEXT,
   last_error    TEXT,
   created_at    INTEGER NOT NULL,
-  finished_at   INTEGER
+  finished_at   INTEGER,
+  result        TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_runs_claim
@@ -70,14 +71,15 @@ CREATE INDEX IF NOT EXISTS idx_event_waiters_expiry
 
 pub(crate) fn init(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     conn.execute_batch(SCHEMA_SQL)?;
-    let has_finished_at = conn
+    let columns = conn
         .prepare("PRAGMA table_info(runs)")?
         .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<rusqlite::Result<Vec<_>>>()?
-        .iter()
-        .any(|column| column == "finished_at");
-    if !has_finished_at {
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if !columns.iter().any(|column| column == "finished_at") {
         conn.execute_batch("ALTER TABLE runs ADD COLUMN finished_at INTEGER")?;
+    }
+    if !columns.iter().any(|column| column == "result") {
+        conn.execute_batch("ALTER TABLE runs ADD COLUMN result TEXT")?;
     }
     // Existing terminal runs get a full grace period after upgrade. Their
     // actual completion time was not recorded by the previous schema.

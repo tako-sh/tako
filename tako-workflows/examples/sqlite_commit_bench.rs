@@ -25,7 +25,8 @@ fn main() {
         assert_eq!(claimed.id, queued.id);
         db.save_step(&claimed.id, "worker", "result", &serde_json::json!(index))
             .unwrap();
-        db.complete(&claimed.id, "worker").unwrap();
+        db.complete(&claimed.id, "worker", &serde_json::Value::Null)
+            .unwrap();
         samples.push(start.elapsed().as_micros());
     }
     samples.sort_unstable();

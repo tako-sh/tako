@@ -1,11 +1,18 @@
 ---
 title: Network Primitives
-description: "Call app-owned workflows and channels by string address, and share selected TypeScript contracts through network.d.ts."
+description: "Call private handlers, workflows, and channels by string address, with shared TypeScript inputs and results."
 ---
 
-Use `workflow("mail.send-email").enqueue(payload)` to start another app's workflow, or `channel("web.progress").publish(message)` to publish to its channel. These calls run inside Tako's private network. You do not define HTTP paths, methods, services, or separate handlers.
+Use a string address to communicate with an app in the same private network:
 
-Workflow enqueue returns a run ID after the recipient accepts the run. Channel publish returns the published message after acceptance. Neither waits for workflow completion or subscriber processing. For an immediate application result, use your app's HTTP API over a [private network address](/networks/#use-private-service-addresses).
+| Operation | Behavior | Return value |
+| --- | --- | --- |
+| `call("users.lookup", input)` | Execute a network handler directly | Handler result |
+| `workflow("mail.send-email").enqueue(payload)` | Queue durable work | Run ID |
+| `workflow("mail.send-email").run(payload)` | Queue durable work and wait | Workflow result |
+| `channel("web.progress").publish(message)` | Publish to the recipient's channel | Publication acknowledgment |
+
+Network handlers execute without enqueueing. They use request/response transport and may still wait for network I/O, an idle app to start, or available execution capacity. Workflows run when a worker claims them. Channel publication does not wait for subscribers to process the message.
 
 ## Addresses and access
 
@@ -21,7 +28,7 @@ Any app in the same network and environment can invoke a declared recipient prim
 
 | Capability                                    | JavaScript / TypeScript | Go HTTP SDK (`tako.sh`) | Rust SDK (`tako`) |
 | --------------------------------------------- | ----------------------- | ----------------------- | ----------------- |
-| Call a network workflow or channel            | Yes                     | Yes                     | Yes               |
+| Call a handler, workflow, or channel            | Yes                     | Yes                     | Yes               |
 | Receive network calls for declared primitives | Yes                     | No                      | No                |
 | Generate portable TypeScript contracts        | Yes                     | No                      | No                |
 
@@ -56,33 +63,78 @@ export default defineChannel("delivery").$messageTypes<{
 
 These definitions are available as `mail.send-email` and `mail.delivery`. The workflow name must match its filename. A channel uses the explicit name passed to `defineChannel`.
 
-## Export contracts separately
+## Direct network handlers
 
-Run `tako gen` in the producer. Tako writes `<app_root>/tako.contracts.d.ts`, separate from the application's generated `tako.d.ts`. With the default `app_root = "src"`, the file is `src/tako.contracts.d.ts`. It contains named type exports such as `SendEmailWorkflow` and `DeliveryChannel`, with qualified addresses, workflow payloads, channel params, and channel message types.
-
-The contracts are standalone structural declarations with no runtime handlers or imports back into producer source. Copy or publish this file through a package you own, or reference it from another monorepo package. You choose the package location and exports. Tako does not change `package.json` or add an output-path setting.
-
-Contract names use the primitive name in PascalCase plus `Workflow` or `Channel`. Conflicting generated export names fail generation. Payloads must be JSON data: functions, symbols, and runtime class instances are unsuitable. Unknown or untyped payloads remain `unknown`.
-
-## Select external types in the consumer
-
-Create these files yourself in the calling app, assuming your package exposes the producer contracts as `@acme/mail-contracts`:
+Create one default-exported function per file under `<app_root>/network-handlers/`. Its filename supplies the address; no HTTP path or method is configured.
 
 ```ts
-// web/src/workflows/network.d.ts
-export type { SendEmailWorkflow } from "@acme/mail-contracts";
+// users/src/network-handlers/lookup.ts
+import { defineNetworkHandler } from "tako.sh";
+
+export default defineNetworkHandler(async (input: { id: string }) => {
+  return { id: input.id, displayName: "Ada" };
+});
 ```
+
+This handler is available as `users.lookup`. A plain default-exported function also works. Handlers may call other network handlers, publish channels, or start workflows. Return JSON data; no return value becomes `null`. Validate incoming data in your handler when it needs runtime validation: TypeScript contracts are compile-time checks.
+
+<CodeGroup>
+
+```ts JavaScript
+import { call } from "tako.sh";
+const user = await call("users.lookup", { id: "user-123" });
+```
+
+```go Go
+import (
+    "context"
+    "encoding/json"
+    "tako.sh"
+)
+
+func lookup(ctx context.Context, id string) (json.RawMessage, error) {
+    return tako.Call(ctx, "users.lookup", map[string]string{"id": id})
+}
+```
+
+```rust Rust
+use serde_json::{Value, json};
+use tako::network::Client;
+
+async fn lookup(id: &str) -> std::io::Result<Value> {
+    Client::from_env()?.call("users.lookup", json!({"id": id})).await
+}
+```
+
+</CodeGroup>
+
+Direct calls have no automatic retries. A timeout or disconnected caller does not prove the recipient stopped executing. Use an application idempotency key for effects that callers may retry. Calls that exceed network capacity fail promptly, including nested calls, so callers cannot occupy every slot while waiting for their descendants. Inside a workflow, wrap direct calls in `ctx.run` if their result should be checkpointed; the external effect still needs idempotency.
+
+## Export and import types
+
+`tako gen` keeps these files together beside the app's existing `tako.d.ts`, normally at the project root. If that file already lives in `src/` or `app/`, the other two files belong there too.
+
+| File | Owner | Purpose |
+| --- | --- | --- |
+| `tako.d.ts` | Generated | Local declarations and typed address registries |
+| `tako.imports.ts` | You | Named type exports selected from other apps |
+| `tako.exports.d.ts` | Generated | Portable types for this app's own primitives |
+
+For a monorepo, the existing declaration location determines where these files live; `app_root` determines where Tako discovers primitive implementations. No package export or output-path configuration is added automatically.
+
+Run `tako gen` in the producer, then copy or publish `tako.exports.d.ts` through a package you own, or reference it from a sibling package. It contains standalone structural types with no imports back into producer implementations. Names use the primitive name in PascalCase plus `Workflow`, `Channel`, or `Handler`; conflicting names fail generation. Workflow contracts include payload and result, handler contracts include input and result, and channel contracts include params and messages. Values must be JSON data. Template-literal strings and readonly arrays/tuples are supported; unknown types remain `unknown`.
+
+Select external types in one handwritten file:
 
 ```ts
-// web/src/channels/network.d.ts
-export type { DeliveryChannel } from "@acme/mail-contracts";
+// web/tako.imports.ts
+export type { SendEmailWorkflow, DeliveryChannel } from "@acme/mail-types";
+export type { LookupHandler } from "@acme/users-types";
 ```
 
-Named type exports, including renamed exports, select external primitives. You can also import a type and then export it. Run `tako gen` in the consumer to refresh address registries in its `tako.d.ts`. Unresolved imports, wrong primitive kinds, and duplicate addresses fail generation. Removed exports disappear on the next generation.
+Then run `tako gen` in the consumer. The generator reads each contract's kind and qualified address. The selected types apply to HTTP code, workflows, and network handlers throughout the app. Include `tako.d.ts` in the TypeScript project. Imported contracts are not re-exported in the consumer's generated `tako.exports.d.ts`.
 
-`network.d.ts` stays user-owned. Declaration files are excluded from runtime discovery, and a directory containing only `network.d.ts` does not receive a generated demo handler. Consumer imports are not included in the consumer's own exported contracts.
-
-The public `NetworkWorkflow<Address, Payload>` and `NetworkChannel<Address, Params, Messages>` types can also describe contracts maintained in a shared package. They carry compile-time metadata, without runtime payload validation or cross-language code generation. Go and Rust callers use their own JSON structs and serialization. Include generated `tako.d.ts` in the consumer's TypeScript project for address and payload checking.
+For manually maintained shared types, use `NetworkWorkflow<Address, Payload, Result>`, `NetworkChannel<Address, Params, Messages>`, and `NetworkHandlerContract<Address, Input, Result>`. Type imports do not grant or restrict runtime access. Go and Rust use their own JSON structs; Tako does not generate cross-language types.
 
 ## Make calls
 
@@ -164,6 +216,70 @@ async fn publish_delivery() -> std::io::Result<()> {
 </CodeGroup>
 
 The Go and Rust publication examples use the imports from their enqueue examples. Rust's `enqueue_blocking` and `publish_blocking` methods use the same arguments without `.await`.
+
+## Workflow results
+
+Return JSON data from a JavaScript workflow handler. Annotate the payload parameter to infer both input and output, or supply both generics to `defineWorkflow<Payload, Result>`. Supplying only the payload generic leaves the result type `unknown`.
+
+```ts
+// reports/src/workflows/generate.ts
+import { defineWorkflow } from "tako.sh";
+
+export default defineWorkflow("generate", {
+  handler: async (input: { orderId: string }, ctx) => {
+    return ctx.run("report", () => ({ url: `/reports/${input.orderId}.pdf` }));
+  },
+});
+```
+
+<CodeGroup>
+
+```ts JavaScript
+import { workflow } from "tako.sh";
+
+const reports = workflow("reports.generate");
+const id = await reports.enqueue({ orderId: "o1" });
+const report = await reports.result(id, { timeout: "30s" });
+// Or enqueue and wait in one operation:
+const another = await reports.run({ orderId: "o2" }, { timeout: "30s" });
+```
+
+```go Go
+// Imports: context, encoding/json, time, and tako.sh.
+func reportResult(ctx context.Context, id string) (json.RawMessage, error) {
+    ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+    defer cancel()
+    return tako.Result(ctx, "reports.generate", id)
+}
+```
+
+```rust Rust
+// Imports: tako::network::Client and serde_json::Value.
+async fn report_result(id: &str) -> std::io::Result<Option<Value>> {
+    let state = Client::from_env()?.result("reports.generate", id).await?;
+    match state {
+        Some(run) if run.status == "succeeded" => Ok(Some(run.result)),
+        Some(run) if run.status == "pending" || run.status == "running" => Ok(None),
+        Some(run) => Err(std::io::Error::other(run.error.unwrap_or(run.status))),
+        None => Err(std::io::Error::other("run missing or no longer retained")),
+    }
+}
+```
+
+</CodeGroup>
+
+JavaScript `.result()` and Go `Result` poll until the run finishes or the caller's timeout/cancellation occurs. Rust `result` reads the current state once; poll pending/running states with your chosen deadline. Rust also provides `call_blocking` and `result_blocking`. JavaScript defaults to waiting without a timeout. Its `WorkflowResultError` exposes `runId` and `status` (`dead`, `cancelled`, `missing`, or `timeout`). A wait timeout does not cancel the workflow; use the retained run ID to retrieve its result later. Results are retained with workflow history, for at least 184 days by default. See [Workflows](/workflows/#storage-and-multiple-servers).
+
+Inside another JavaScript workflow, `.run()` acts as a durable child call. Tako checkpoints a stable child ID before enqueueing, reuses that ID if the acknowledgment is lost, and checkpoints the terminal outcome. A pending child defers the parent and releases its worker slot without consuming a retry. Replay resumes waiting for the same child; a cached result needs no further network call. Local imported workflow handles provide the same `.run()` and `.result()` methods.
+
+```ts
+const report = await workflow("reports.generate").run(
+  { orderId: input.orderId },
+  { step: "generate-report" },
+);
+```
+
+The optional `step` identifies the call within its enclosing durable step; otherwise calls use their order. Keep names, order, target, and payload stable on replay. Calls inside named `ctx.run` steps have separate scopes, so skipping a cached step does not shift later calls. `.enqueue()` alone is detached: supply a stable `id` if it can repeat. Retention still bounds child ID deduplication; retain child history long enough for parent retries. Go's workflow worker API does not provide this automatic child-call behavior or typed handler return values.
 
 ## Retries and verification
 

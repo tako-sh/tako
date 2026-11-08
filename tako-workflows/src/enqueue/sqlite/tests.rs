@@ -119,7 +119,9 @@ fn signal_waits_for_writer_before_reading_waiters() {
             run.step_state["approval"],
             serde_json::json!({"approved": true})
         );
-        writer.complete(id, "resumed").unwrap();
+        writer
+            .complete(id, "resumed", &serde_json::Value::Null)
+            .unwrap();
     }
     assert_eq!(
         writer.raw_query_values("SELECT COUNT(*) FROM event_waiters", ()),
@@ -200,9 +202,11 @@ fn independent_workflow_connections_complete_under_sustained_contention() {
                             run.step_state,
                             serde_json::json!({"saved": payload, "approval": payload})
                         );
-                        db.complete(&id, &retry_owner).unwrap();
+                        db.complete(&id, &retry_owner, &serde_json::Value::Null)
+                            .unwrap();
                     } else {
-                        db.complete(&id, &resumed_owner).unwrap();
+                        db.complete(&id, &resumed_owner, &serde_json::Value::Null)
+                            .unwrap();
                     }
                     std::thread::yield_now();
                 }

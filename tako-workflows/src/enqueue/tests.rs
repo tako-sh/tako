@@ -19,6 +19,47 @@ fn enqueue_inserts_a_pending_row() {
 }
 
 #[test]
+fn workflow_results_survive_restart_and_are_scoped_and_fenced() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("runs.sqlite");
+    let db = RunsDb::open(&path).unwrap();
+    let run = db
+        .enqueue("report", &serde_json::Value::Null, &opts())
+        .unwrap();
+    assert_eq!(
+        db.result("report", &run.id).unwrap().unwrap().status,
+        "pending"
+    );
+    assert!(db.result("other", &run.id).unwrap().is_none());
+    db.claim("owner", &["report".into()], 30_000)
+        .unwrap()
+        .unwrap();
+    let value = serde_json::json!({"url":"report.pdf","count":42});
+    assert!(matches!(
+        db.complete(&run.id, "stale", &value),
+        Err(RunsDbError::StaleWorker)
+    ));
+    assert_eq!(
+        db.result("report", &run.id).unwrap().unwrap().status,
+        "running"
+    );
+    db.complete(&run.id, "owner", &value).unwrap();
+    assert!(matches!(
+        db.complete(&run.id, "owner", &serde_json::Value::Null),
+        Err(RunsDbError::StaleWorker)
+    ));
+    drop(db);
+    let db = RunsDb::open(&path).unwrap();
+    let result = db.result("report", &run.id).unwrap().unwrap();
+    assert_eq!(result.status, "succeeded");
+    assert_eq!(result.result, value);
+    assert_eq!(result.error, None);
+    db.raw_execute("UPDATE runs SET finished_at=0 WHERE id=?1", [&run.id]);
+    db.prune_finished_before(1, 100).unwrap();
+    assert!(db.result("report", &run.id).unwrap().is_none());
+}
+
+#[test]
 fn pruning_removes_only_expired_finished_runs_and_their_steps() {
     let db = RunsDb::open_in_memory().unwrap();
     let old = db.enqueue("work", &serde_json::json!({}), &opts()).unwrap();
@@ -36,7 +77,8 @@ fn pruning_removes_only_expired_finished_runs_and_their_steps() {
         &serde_json::json!({"large": true}),
     )
     .unwrap();
-    db.complete(&old.id, "worker").unwrap();
+    db.complete(&old.id, "worker", &serde_json::Value::Null)
+        .unwrap();
     let recent = db.enqueue("work", &serde_json::json!({}), &opts()).unwrap();
     assert_eq!(
         db.claim("worker", &["work".into()], 30_000)
@@ -52,7 +94,8 @@ fn pruning_removes_only_expired_finished_runs_and_their_steps() {
         &serde_json::json!({"large": true}),
     )
     .unwrap();
-    db.complete(&recent.id, "worker").unwrap();
+    db.complete(&recent.id, "worker", &serde_json::Value::Null)
+        .unwrap();
     let pending = db.enqueue("work", &serde_json::json!({}), &opts()).unwrap();
     let now = now_ms();
     db.raw_execute(
@@ -196,17 +239,26 @@ fn postgres_workflow_store_round_trips_when_url_is_set() {
         &serde_json::json!({"ok": true}),
     )
     .unwrap();
-    db.complete(&run.id, "worker-1").unwrap();
+    db.complete(&run.id, "worker-1", &serde_json::json!({"sent":true}))
+        .unwrap();
+    assert_eq!(
+        db.result("send-email", &run.id).unwrap().unwrap().result,
+        serde_json::json!({"sent":true})
+    );
+    assert!(db.result("other", &run.id).unwrap().is_none());
     assert_eq!(db.pending_count().unwrap(), 0);
     let other_app_id = format!("{app_id}-other");
     let other = RunsDb::open_postgres(&url, &other_app_id).unwrap();
+    assert!(other.result("send-email", &run.id).unwrap().is_none());
     let other_run = other
         .enqueue("send-email", &serde_json::json!({}), &opts())
         .unwrap();
     other
         .claim("worker-2", &["send-email".into()], 30_000)
         .unwrap();
-    other.complete(&other_run.id, "worker-2").unwrap();
+    other
+        .complete(&other_run.id, "worker-2", &serde_json::Value::Null)
+        .unwrap();
 
     assert_eq!(db.prune_finished_before(now_ms() + 1_000, 100).unwrap(), 1);
     let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
@@ -483,7 +535,7 @@ fn complete_marks_succeeded_and_keeps_steps() {
     db.claim("w1", &["w".into()], 30_000).unwrap();
     db.save_step(&r.id, "w1", "s", &serde_json::json!("v"))
         .unwrap();
-    db.complete(&r.id, "w1").unwrap();
+    db.complete(&r.id, "w1", &serde_json::Value::Null).unwrap();
 
     let status = db.raw_query_values("SELECT status FROM runs WHERE id = ?1", (r.id.as_str(),));
     assert_eq!(status, vec![Value::Text("succeeded".into())]);
@@ -628,7 +680,7 @@ fn reclaim_expired_ignores_terminal_runs() {
     let db = RunsDb::open_in_memory().unwrap();
     let r = db.enqueue("w", &serde_json::json!({}), &opts()).unwrap();
     db.claim("w1", &["w".into()], 30_000).unwrap();
-    db.complete(&r.id, "w1").unwrap();
+    db.complete(&r.id, "w1", &serde_json::Value::Null).unwrap();
 
     assert_eq!(db.reclaim_expired().unwrap(), 0);
 }
@@ -724,7 +776,9 @@ fn postgres_lease_index_migration_preserves_renewal_and_recovery() {
         Err(RunsDbError::StaleWorker)
     ));
     migrated.heartbeat("shared-id", "second", 60_000).unwrap();
-    migrated.complete("shared-id", "second").unwrap();
+    migrated
+        .complete("shared-id", "second", &serde_json::Value::Null)
+        .unwrap();
     assert_eq!(migrated.reclaim_expired().unwrap(), 0);
     assert!(matches!(
         migrated.heartbeat("shared-id", "second", 60_000),

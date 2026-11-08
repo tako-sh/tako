@@ -74,9 +74,9 @@ export interface Run {
 }
 
 /** Workflow definition options passed to `defineWorkflow`. */
-export interface WorkflowOpts<P = unknown> {
+export interface WorkflowOpts<P = unknown, R = unknown> {
   /** Workflow body. The payload type flows into `.enqueue(payload)`. */
-  handler: WorkflowHandler<P>;
+  handler: WorkflowHandler<P, R>;
   /**
    * Worker group that should execute this workflow when a worker process is
    * launched with a matching `TAKO_WORKFLOW_WORKER` value.

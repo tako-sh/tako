@@ -123,7 +123,8 @@ mod tests {
         claim(&limiter, &db, "worker").unwrap();
         assert!(claim(&limiter, &db, "worker").is_none());
         assert_eq!(db.pending_count().unwrap(), 4);
-        db.complete(&first.id, &first.worker_id).unwrap();
+        db.complete(&first.id, &first.worker_id, &serde_json::Value::Null)
+            .unwrap();
         limiter.release_claim(&first.worker_id);
         claim(&limiter, &db, "worker").unwrap();
         limiter.release_claim(&first.worker_id);
@@ -161,8 +162,10 @@ mod tests {
         restarted.rehydrate(db.in_flight_by_worker().unwrap());
         assert_eq!(restarted.count("host:worker"), 2);
         assert!(claim(&restarted, &db, "host:worker").is_none());
-        db.complete(&first.id, &first.worker_id).unwrap();
-        db.complete(&second.id, &second.worker_id).unwrap();
+        db.complete(&first.id, &first.worker_id, &serde_json::Value::Null)
+            .unwrap();
+        db.complete(&second.id, &second.worker_id, &serde_json::Value::Null)
+            .unwrap();
         restarted.release_claim(&first.worker_id);
         restarted.release_claim(&second.worker_id);
         assert_eq!(restarted.count("host:worker"), 0);

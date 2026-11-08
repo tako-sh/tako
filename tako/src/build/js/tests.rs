@@ -139,7 +139,7 @@ fn write_tako_declarations_is_idempotent() {
 }
 
 #[test]
-fn write_tako_declarations_use_js_app_root() {
+fn write_tako_declarations_default_to_project_root_with_explicit_app_root() {
     let dir = TempDir::new().unwrap();
     fs::create_dir_all(dir.path().join("app")).unwrap();
 
@@ -148,19 +148,21 @@ fn write_tako_declarations_use_js_app_root() {
             .unwrap();
 
     assert!(written);
-    assert!(dir.path().join("app").join("tako.d.ts").exists());
-    assert!(!dir.path().join("tako.d.ts").exists());
+    assert!(dir.path().join("tako.d.ts").exists());
+    assert!(!dir.path().join("app").join("tako.d.ts").exists());
 }
 
 #[test]
-fn write_tako_declarations_use_app_directory_for_new_generated_file() {
+fn write_tako_declarations_default_to_project_root_when_app_and_src_exist() {
     let dir = TempDir::new().unwrap();
     fs::create_dir_all(dir.path().join("app")).unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
 
     write_tako_declarations(dir.path()).unwrap();
 
-    assert!(dir.path().join("app").join("tako.d.ts").exists());
-    assert!(!dir.path().join("tako.d.ts").exists());
+    assert!(dir.path().join("tako.d.ts").exists());
+    assert!(!dir.path().join("app").join("tako.d.ts").exists());
+    assert!(!dir.path().join("src").join("tako.d.ts").exists());
 }
 
 #[test]
@@ -249,7 +251,7 @@ fn write_tako_declarations_include_takochannels_augmentation_when_channels_prese
     fs::write(
             &fake_bun,
 r#"#!/bin/sh
-printf '%s\n' 'export interface TakoChannels {' '  "chat": import("tako.sh").InferChannel<typeof import("./channels/chat").default>;' '}'
+printf '%s\n' 'export interface TakoChannels {' '  "chat": import("tako.sh").InferChannel<typeof import("./src/channels/chat").default>;' '}'
 "#,
         )
         .unwrap();
@@ -263,10 +265,10 @@ printf '%s\n' 'export interface TakoChannels {' '  "chat": import("tako.sh").Inf
     .unwrap();
     drop(writer);
 
-    let content = fs::read_to_string(dir.path().join("src").join("tako.d.ts")).unwrap();
+    let content = fs::read_to_string(dir.path().join("tako.d.ts")).unwrap();
     assert!(content.contains("export interface TakoChannels"));
     assert!(content.contains(
-        r#""chat": import("tako.sh").InferChannel<typeof import("./channels/chat").default>;"#
+        r#""chat": import("tako.sh").InferChannel<typeof import("./src/channels/chat").default>;"#
     ));
 }
 
@@ -369,7 +371,7 @@ fn generated_files_support_files_use_explicit_js_app_root() {
             .unwrap();
 
     assert!(result.wrote_scaffolds);
-    assert!(dir.path().join("app").join("tako.d.ts").exists());
+    assert!(dir.path().join("tako.d.ts").exists());
     assert!(
         dir.path()
             .join("app")

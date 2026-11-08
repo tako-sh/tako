@@ -72,6 +72,7 @@ export async function bootstrapWorker(
   workflowsEngine.configure({ client, workerId });
   setWorkflowRuntime({
     enqueue: (name, payload, opts) => workflowsEngine.enqueue(name, payload, opts),
+    result: (name, id) => workflowsEngine.result(name, id),
     signal: (event, payload) => workflowsEngine.signal(event, payload),
   });
 

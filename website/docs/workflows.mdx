@@ -172,6 +172,14 @@ IDs are unique within the app and environment, across workflow names. Repeating 
 
 Deleting a finished run's history also frees its ID. A later enqueue with that ID creates a new run with no saved steps. Deduplication does not prevent a step's external side effect from repeating after a crash; pass a stable idempotency key to the external service as well.
 
+## Return Results and Call Child Workflows
+
+JavaScript workflow handlers can return JSON data. Tako saves the result when it marks the run succeeded; an absent return becomes `null`. Use `await task.result(runId, { timeout: "30s" })` to retrieve it, or `await task.run(payload)` to enqueue and wait. Both imported `defineWorkflow` handles and `workflow("app.name")` network handles expose these methods. A wait timeout leaves the child running and its result retrievable by ID.
+
+Within another JavaScript workflow, `.run()` checkpoints the child identity and terminal outcome. It defers the parent while the child is pending, releasing the worker slot without consuming a retry. Parent replay reuses the same child and cached result. Give calls stable `step` names, or preserve their call order within each named `ctx.run` scope. Use a stable enqueue ID for detached `.enqueue()` calls that can repeat. Retain child history long enough for parent retries: pruning a run also frees its ID.
+
+See [Network Primitives](/network-primitives/#workflow-results) for typed examples, timeout/failure behavior, and Go/Rust result readers. Automatic durable child calls and workflow handler return values currently belong to the JavaScript SDK; the Go worker completes successful handlers with a null result.
+
 ## Durable Steps With `ctx.run`
 
 `ctx.run(name, fn)` saves the function's result. When the workflow is claimed again, a completed step with the same name returns its saved result instead of calling `fn` again. Keep step names stable for the lifetime of a workflow run, and keep returned values JSON serializable.
