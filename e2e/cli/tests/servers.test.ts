@@ -1,13 +1,14 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { TakoTerminal, run } from "../helpers/terminal";
-import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, realpath, readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 let tempDir: string;
 let takoHome: string;
 beforeEach(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), "tako-cli-test-"));
+  // Network persistence rejects symlink ancestors, including macOS /var.
+  tempDir = await realpath(await mkdtemp(join(tmpdir(), "tako-cli-test-")));
   takoHome = join(tempDir, ".tako");
 });
 afterEach(async () => { await rm(tempDir, { recursive: true, force: true }); });
