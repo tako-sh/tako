@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"path/filepath"
 	"testing"
@@ -114,4 +115,35 @@ func TestNetworkCallsRequireManagedRuntime(t *testing.T) {
 	if _, err := Enqueue(context.Background(), "mail.send", nil, NetworkEnqueueOptions{}); err == nil {
 		t.Fatal("expected missing runtime error")
 	}
+}
+
+func TestNetworkCallCancellationDuringResponse(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cancel.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	t.Setenv("TAKO_INTERNAL_SOCKET", path)
+	t.Setenv("TAKO_APP_NAME", "web/staging")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = bufio.NewReader(conn).ReadBytes('\n')
+		cancel()
+		// Keep the server side open until the cancelled caller closes it.
+		var one [1]byte
+		_, _ = conn.Read(one[:])
+	}()
+	if _, err := Call(ctx, "users.lookup", nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+	<-done
 }

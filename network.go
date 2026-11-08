@@ -100,7 +100,7 @@ func Publish(ctx context.Context, address string, params any, messageType string
 	return callNetwork(ctx, address, map[string]any{"operation": "publish", "params": params, "message": map[string]any{"type": messageType, "data": data}})
 }
 
-func callNetwork(ctx context.Context, address string, request any) (json.RawMessage, error) {
+func callNetwork(ctx context.Context, address string, request any) (data json.RawMessage, err error) {
 	socket, app := os.Getenv("TAKO_INTERNAL_SOCKET"), os.Getenv("TAKO_APP_NAME")
 	if socket == "" || app == "" {
 		return nil, errors.New("tako: network primitives require the Tako runtime")
@@ -115,6 +115,13 @@ func callNetwork(ctx context.Context, address string, request any) (json.RawMess
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	defer func() {
+		// Cancellation closes the connection to interrupt in-flight I/O. Preserve
+		// the context error instead of exposing that implementation's socket error.
+		if err != nil && ctx.Err() != nil {
+			err = ctx.Err()
+		}
+	}()
 	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", socket)
 	if err != nil {
 		return nil, err

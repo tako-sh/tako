@@ -114,7 +114,21 @@ pub fn generate(manifests: &[Manifest]) -> io::Result<String> {
                 out.push_str("        };\n        let value: serde_json::Value = serde_json::from_str(text).map_err(serde::ser::Error::custom)?;\n        serde::Serialize::serialize(&value, serializer)\n    }\n}\n");
                 out.push_str(&format!("impl<'de> serde::Deserialize<'de> for {name} {{\n    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {{\n        let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;\n"));
                 for (variant, value) in variants.iter().zip(values) {
-                    out.push_str(&format!("        if value == serde_json::from_str::<serde_json::Value>({:?}).map_err(serde::de::Error::custom)? {{ return Ok(Self::{variant}); }}\n",value.to_string()));
+                    // JSON Schema compares numbers by value, so 1, 1.0, and 1e0
+                    // must select the same variant. Only use float comparison
+                    // in the portable range; larger integers must stay exact.
+                    let comparison = match value.as_f64() {
+                        Some(number) if number.abs() <= 9_007_199_254_740_991.0 => {
+                            format!("value.as_f64() == Some({number:?})")
+                        }
+                        _ => format!(
+                            "value == serde_json::from_str::<serde_json::Value>({:?}).map_err(serde::de::Error::custom)?",
+                            value.to_string()
+                        ),
+                    };
+                    out.push_str(&format!(
+                        "        if {comparison} {{ return Ok(Self::{variant}); }}\n"
+                    ));
                 }
                 out.push_str(
                     "        Err(serde::de::Error::custom(\"invalid enum value\"))\n    }\n}\n\n",

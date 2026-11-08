@@ -46,7 +46,7 @@ test.skipIf(!go || !cargo)(
       await symlink(join(repo, "sdk/javascript"), join(producer, "node_modules/tako.sh"));
       await writeFile(
         join(producer, "network-handlers/lookup.ts"),
-        `interface Input { id: string; note?: string | null; next?: Input; position: readonly [number, string]; maybe: string | null; state: { kind: "sent"; messageId: string } | { kind: "missing"; retry?: boolean } } export default (input: Input): Input => input;`,
+        `interface Input { id: string; code: 0 | 1; note?: string | null; next?: Input; position: readonly [number, string]; maybe: string | null; state: { kind: "sent"; messageId: string } | { kind: "missing"; retry?: boolean } } export default (input: Input): Input => input;`,
       );
       const generated = await generateNetworkTypes(producer, producer, "mail");
       await writeFile(join(producer, "tako-schema.json"), JSON.stringify(generated.schema));
@@ -67,7 +67,7 @@ test.skipIf(!go || !cargo)(
         'package main\nimport ("os"; "example.test/client"; "tako.sh/schema")\nfunc main() { app := schema.New("native-go"); schema.Handler[client.Query,client.Query](app,"query"); if err := app.Write(os.Stdout); err != nil { panic(err) } }\n',
       );
       const sample =
-        '{"id":"u1","note":null,"position":[1.5,"x"],"maybe":null,"state":{"kind":"sent","messageId":"m1"}}';
+        '{"id":"u1","code":1,"note":null,"position":[1.5,"x"],"maybe":null,"state":{"kind":"sent","messageId":"m1"}}';
       await writeFile(
         join(goApp, "roundtrip_test.go"),
         `package client
@@ -105,6 +105,13 @@ func TestRoundtrip(t *testing.T) {
   assert_eq!(serde_json::to_value(&value).unwrap(), serde_json::from_str::<serde_json::Value>(raw).unwrap());
  }
  assert!(serde_json::from_str::<imports::MailLookupHandlerInput>("{}").is_err());
+ for spelling in ["1.0", "1e0"] {
+  let raw = ${JSON.stringify(sample)}.replace("\\\"code\\\":1", &format!("\\\"code\\\":{spelling}"));
+  let value: imports::MailLookupHandlerInput = serde_json::from_str(&raw).unwrap();
+  assert_eq!(serde_json::to_value(value).unwrap()["code"], 1);
+ }
+ let invalid = ${JSON.stringify(sample)}.replace("\\\"code\\\":1", "\\\"code\\\":1.5");
+ assert!(serde_json::from_str::<imports::MailLookupHandlerInput>(&invalid).is_err());
  let go: imports::NativeGoQueryHandlerInput = serde_json::from_str(r#"{"id":"18446744073709551615","note":null}"#).unwrap();
  assert_eq!(serde_json::to_value(go).unwrap()["id"], "18446744073709551615");
 }

@@ -5,6 +5,7 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { TakoTerminal } from "../helpers/terminal";
+import { seedPresets } from "../helpers/presets";
 import { mkdtemp, writeFile, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +16,7 @@ let takoHome: string;
 beforeEach(async () => {
   tempDir = await mkdtemp(join(tmpdir(), "tako-cli-test-"));
   takoHome = join(tempDir, ".tako");
+  await seedPresets(takoHome);
 });
 
 afterEach(async () => {

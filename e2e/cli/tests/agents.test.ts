@@ -3,6 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run, TakoTerminal } from "../helpers/terminal";
+import { seedPresets } from "../helpers/presets";
 
 let project: string;
 beforeEach(async () => {
@@ -77,6 +78,7 @@ describe("tako agents", () => {
 });
 
 test("init offers agent setup by default and installs it after acceptance", async () => {
+  await seedPresets(join(project, ".tako"));
   const bin = join(project, "bin");
   await mkdir(bin);
   await mkdir(join(project, ".codex"));
