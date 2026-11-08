@@ -100,6 +100,11 @@ impl ConfigWatcher {
             let _ = watch_path(&debouncer, &tako_dir, RecursiveMode::NonRecursive);
         }
         watch_path(&debouncer, &self.project_dir, RecursiveMode::NonRecursive)?;
+        for path in local_schema_paths(&self.project_dir, &self.config_path) {
+            if let Some(parent) = path.parent() {
+                let _ = watch_path(&debouncer, parent, RecursiveMode::NonRecursive);
+            }
+        }
         let watched_app_root = self.app_root.clone();
         let watched_runtime_dirs = [
             (watched_app_root.join("channels"), WatchChange::Channels),
@@ -138,6 +143,17 @@ impl ConfigWatcher {
                 match result {
                     Ok(events) => {
                         for event in events {
+                            if event.path == config_path {
+                                for path in local_schema_paths(&project_dir, &config_path) {
+                                    if let Some(parent) = path.parent() {
+                                        let _ = watch_path(
+                                            &debouncer_for_thread,
+                                            parent,
+                                            RecursiveMode::NonRecursive,
+                                        );
+                                    }
+                                }
+                            }
                             if event.path == watched_app_root && watched_app_root.is_dir() {
                                 let _ = watch_path(
                                     &debouncer_for_thread,
@@ -219,6 +235,12 @@ fn classify_path(
     if path == config_path {
         return Some(WatchChange::Config);
     }
+    if local_schema_paths(project_dir, config_path)
+        .iter()
+        .any(|schema| schema == path)
+    {
+        return Some(WatchChange::Channels);
+    }
     if path == project_dir.join(".tako").join("secrets.json") {
         return Some(WatchChange::Secrets);
     }
@@ -227,7 +249,7 @@ fn classify_path(
         .iter()
         .any(|dir| path == dir.join("tako.imports.ts"))
     {
-        return Some(WatchChange::Channels);
+        return Some(WatchChange::GeneratedDeclarations);
     }
     if crate::build::js::is_generated_declaration_path(project_dir, path)
         || declaration_dirs
@@ -260,6 +282,24 @@ fn classify_path(
     }
 
     None
+}
+
+fn local_schema_paths(project: &Path, config: &Path) -> Vec<PathBuf> {
+    crate::config::TakoToml::load_from_file(config)
+        .map(|config| {
+            config
+                .schemas
+                .into_iter()
+                .filter(|path| !path.contains("://"))
+                .filter_map(|path| {
+                    let path = project.join(path);
+                    path.canonicalize().ok().or_else(|| {
+                        Some(path.parent()?.canonicalize().ok()?.join(path.file_name()?))
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn is_preexisting_runtime_definition_event(path: &Path, cutoff: Option<SystemTime>) -> bool {

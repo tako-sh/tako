@@ -65,12 +65,12 @@ pub(super) fn spawn_config_reload_loop(
             if change == watcher::WatchChange::GeneratedDeclarations {
                 if cfg.compose.is_none()
                     && adapter.preset_group() == crate::build::PresetGroup::Js
-                    && let Err(err) =
-                        crate::build::js::write_generated_files_for_adapter_and_app_root(
-                            &ctx.project_dir,
-                            adapter,
-                            cfg.js_app_root(),
-                        )
+                    && let Err(err) = crate::build::js::write_generated_files_with_schemas(
+                        &ctx.project_dir,
+                        adapter,
+                        &cfg,
+                        false,
+                    )
                 {
                     let _ = ctx
                         .log_tx
@@ -143,10 +143,11 @@ pub(super) fn spawn_config_reload_loop(
 
             if cfg.compose.is_none()
                 && adapter.preset_group() == crate::build::PresetGroup::Js
-                && let Err(err) = crate::build::js::write_generated_files_for_adapter_and_app_root(
+                && let Err(err) = crate::build::js::write_generated_files_with_schemas(
                     &ctx.project_dir,
                     adapter,
-                    cfg.js_app_root(),
+                    &cfg,
+                    false,
                 )
             {
                 let _ = ctx

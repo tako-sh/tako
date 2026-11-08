@@ -2,13 +2,13 @@
 
 use std::sync::OnceLock;
 use std::time::Duration;
-use tako_core::{Response, network::NetworkInvocation};
+use tako_core::Response;
 
 pub async fn invoke_http(
     url: &str,
     host: &str,
     token: Option<&str>,
-    invocation: &NetworkInvocation,
+    invocation: &(impl serde::Serialize + ?Sized),
 ) -> Response {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     let client = CLIENT.get_or_init(|| {

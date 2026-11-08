@@ -98,6 +98,7 @@ pub struct ServiceSnapshot {
 struct View {
     address: Ipv6Addr,
     peers: BTreeSet<IpAddr>,
+    servers: BTreeMap<DeviceId, (IpAddr, tako_network::SshPublicKey)>,
     placements: BTreeMap<AppEnv, Vec<Placement>>,
     observed_at: u64,
     valid_until: u64,
@@ -189,8 +190,21 @@ impl ServiceDirectory {
             .ok_or("local server is not admitted")?;
         let address = self.network.address(&local.request.wg_public_key);
         let mut peers = BTreeSet::new();
+        let mut servers = BTreeMap::new();
         let mut valid_until = now.saturating_add(MAX_LEASE_SECONDS);
         for member in effective.values() {
+            if matches!(member.kind, MemberKind::Server(_))
+                && member.permissions.server_admin
+                && member.wg_verified
+            {
+                servers.insert(
+                    member.device_id.clone(),
+                    (
+                        IpAddr::V6(self.network.address(&member.request.wg_public_key)),
+                        member.request.ssh_public_key.clone(),
+                    ),
+                );
+            }
             peers.insert(IpAddr::V6(
                 self.network.address(&member.request.wg_public_key),
             ));
@@ -251,6 +265,7 @@ impl ServiceDirectory {
         self.view = Some(View {
             address,
             peers,
+            servers,
             placements,
             observed_at: now,
             valid_until,
@@ -281,6 +296,29 @@ impl ServiceDirectory {
                 p
             })
             .collect()
+    }
+
+    pub(crate) fn invocation_key(
+        &self,
+        call: &crate::native_invocation::SignedInvocation,
+        target: &AppEnv,
+        peer: IpAddr,
+        now: u64,
+    ) -> Option<tako_network::SshPublicKey> {
+        if call.network != self.network
+            || call.destination != self.local_server
+            || &call.target != target
+        {
+            return None;
+        }
+        let view = self.current(now)?;
+        let (address, key) = view.servers.get(&call.server)?;
+        // The signing server attests to socket-authenticated app identity. A
+        // caller need not advertise an HTTP service (workers can call too).
+        if *address != peer {
+            return None;
+        }
+        Some(key.clone())
     }
 
     pub fn admits(&self, destination: IpAddr, peer: IpAddr, now: u64) -> bool {

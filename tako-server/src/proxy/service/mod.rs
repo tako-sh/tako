@@ -196,6 +196,11 @@ impl ProxyHttp for TakoProxy {
                 Some(app.to_string())
             }
             crate::native_services::PrivateRoute::Remote { app, address } => {
+                // App invocations are signed for one destination server. Ordinary
+                // private HTTP may route through another server; proofs may not.
+                if session.req_header().uri.path() == tako_core::network::NETWORK_HTTP_PATH {
+                    return native::reject(session, 403).await;
+                }
                 ctx.private_request = true;
                 ctx.native_remote = Some(address);
                 native::strip_credentials(session.req_header_mut());

@@ -466,7 +466,7 @@ run_network_primitive_checks() {
   local caller_dir="$TMP_ROOT/network-caller-${server_host}"
   cp -R "$PROJECT_DIR/caller" "$caller_dir"
   cp "$PROJECT_DIR/tako-sdk.tgz" "$caller_dir/tako-sdk.tgz"
-  cp "$PROJECT_DIR/tako.exports.d.ts" "$caller_dir/contracts.d.ts"
+  cp "$PROJECT_DIR/tako-schema.json" "$caller_dir/mail-schema.json"
   bun - "$PROJECT_DIR/tako.toml" "$caller_dir/tako.toml" <<'JS'
 import { readFileSync, appendFileSync } from "node:fs";
 const vars = Bun.TOML.parse(readFileSync(process.argv[2], "utf8")).vars?.production ?? {};

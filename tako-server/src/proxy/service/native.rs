@@ -17,18 +17,19 @@ impl TakoProxy {
             }
             body.extend_from_slice(&chunk);
         }
-        let invocation: tako_core::network::NetworkInvocation = match serde_json::from_slice(&body)
-        {
+        let call: crate::native_invocation::SignedInvocation = match serde_json::from_slice(&body) {
             Ok(call) => call,
             Err(_) => return reject(session, 403).await,
         };
-        if !tako_core::network::valid_primitive_name(&invocation.name) {
+        if !self.native_services.as_ref().is_some_and(|services| {
+            services.authorize_invocation(&call, app, socket_addresses(session).1)
+        }) {
             return reject(session, 403).await;
         }
         let BackendResolution::Ready { backend, .. } = self.resolve_backend(app).await else {
             return reject(session, 503).await;
         };
-        let response = invoke_network_backend(backend, app, &invocation).await;
+        let response = invoke_network_backend(backend, app, &call.invocation).await;
         let body = serde_json::to_string(&response).expect("protocol response");
         let mut header = ResponseHeader::build(200, None)?;
         insert_body_headers(&mut header, "application/json", &body)?;

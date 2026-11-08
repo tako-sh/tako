@@ -13,6 +13,7 @@ pub mod go;
 pub mod js;
 mod preset;
 pub(crate) mod preset_cache;
+pub mod schemas;
 mod workdir;
 
 pub use adapter::*;

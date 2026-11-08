@@ -1,7 +1,7 @@
 ---
 title: "Next.js instrumentation.ts meets initServerRuntime"
 date: "2026-04-24T13:48"
-description: "Drop a five-line instrumentation.ts into your Next.js app and Tako workflows, signals, and channel publishes light up inside routes and server actions — no ambient globals, no bootstrap glue."
+description: "Initialize Tako in Next.js server processes for workflows, channels, and typed calls to other apps on the same private network."
 image: 747a4cd2df17
 ---
 
@@ -69,6 +69,26 @@ export async function POST(req: Request) {
 ```
 
 Enqueue a multi-step durable workflow, publish to a live channel, send a `signal()` to a waiting run — all from a standard Next.js route or server action, with typed payloads from the same `defineWorkflow`/`defineChannel` calls you'd use in a plain Tako app.
+
+## Call primitives owned by another app
+
+Your Next.js server code can address a handler, workflow, or channel in another app on the same network and environment:
+
+```ts
+import { call, channel, workflow } from "tako.sh";
+
+const user = await call("users.lookup", { id: "user-123" });
+const runId = await workflow("mail.send-email").enqueue({
+  to: "reader@example.com", subject: "Welcome",
+});
+await channel("mail.delivery").publish({
+  type: "sent", data: { messageId: "msg-123" },
+});
+```
+
+These producer definitions are shown in [Network Primitives](/docs/network-primitives/). Run `tako gen` in each producer, list its `tako-schema.json` under root-level `schemas` in this app's `tako.toml`, and generate again. `tako.d.ts` includes the typed addresses through generated `tako.imports.ts`; keep the declaration file included in the Next.js TypeScript project.
+
+`call` returns the handler's JSON result without enqueueing or automatic retries. A workflow's `.run(payload)` enqueues and waits for a result. The recipient's workflow policy controls retries. Keep these APIs in Node server code; they require Tako's authenticated app socket and are unavailable in browser and Edge runtimes.
 
 ## The bigger picture
 

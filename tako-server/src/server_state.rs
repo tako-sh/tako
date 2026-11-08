@@ -358,7 +358,7 @@ impl ServerState {
             let cold_start = cold_start.clone();
             let spawn_gate = spawn_gate.clone();
             let draining = drain_requested.clone();
-            workflows.set_network_router(Arc::new(move |target, invocation| {
+            workflows.set_network_router(Arc::new(move |_caller, target, invocation| {
                 tokio::runtime::Handle::current().block_on(async {
                     let crate::proxy::BackendResolution::Ready { backend, .. } =
                         crate::proxy::resolve_app_backend(

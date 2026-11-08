@@ -1,6 +1,31 @@
 use super::super::*;
 
 #[test]
+fn schemas_are_a_root_array_of_paths_or_http_urls() {
+    let config=TakoToml::parse("schemas = [\"../mail/tako-schema.json\", \"https://example.com/users/v1/tako-schema.json\"]").unwrap();
+    assert_eq!(config.schemas.len(), 2);
+    for source in [
+        "",
+        " github:org/repo",
+        "github:org/repo",
+        "file:///etc/passwd",
+        "https://user:password@example.com/schema",
+        "https://example.com/schema#fragment",
+    ] {
+        assert!(
+            TakoToml::parse(&format!(
+                "schemas = [{}]",
+                serde_json::to_string(source).unwrap()
+            ))
+            .is_err(),
+            "{source}"
+        );
+    }
+    assert!(TakoToml::parse("schemas = [1]").is_err());
+    assert!(TakoToml::parse("schemas = \"a.json\"").is_err());
+}
+
+#[test]
 fn test_parse_top_level_metadata_fields() {
     let toml = r#"
 name = "my-app"

@@ -3,6 +3,104 @@ use tako_network::{
     Approval, DeviceKind, LocalDeviceKeys, NetworkDescriptor, Permissions, ServerInfo, WgChallenge,
 };
 
+#[test]
+fn invocations_require_server_attestation_and_bind_target_body_and_nonce() {
+    use crate::native_invocation::{ReplayGuard, SignedInvocation};
+    use tako_core::network::{NetworkInvocation, NetworkRequest};
+    let (mut registry, keys, mut directory) = fixture();
+    let laptop = LocalDeviceKeys::generate().unwrap();
+    let request = laptop
+        .enrollment_request(None, DeviceKind::Laptop, "laptop".parse().unwrap())
+        .unwrap();
+    let (challenge, pending) =
+        WgChallenge::begin(&request, registry.network.id.clone(), 1, 60).unwrap();
+    let verified = pending
+        .verify(
+            &laptop.answer_challenge(&challenge, &request, 1).unwrap(),
+            1,
+        )
+        .unwrap();
+    let member = registry
+        .approve(
+            verified,
+            Approval {
+                kind: MemberKind::Laptop,
+                permissions: Permissions::default(),
+                approved_by: Some(registry.network.initial_admin.clone()),
+                independent_admin: false,
+                created_at: 1,
+                expires_at: None,
+            },
+        )
+        .unwrap();
+    registry.members.push(member);
+    let services = lease(&registry, &keys, &["api/prod"], 10);
+    directory.replace(&registry, &[services], 10).unwrap();
+    let network = registry.network.id.clone();
+    let server = keys.device_id(&network, DeviceKind::Server).unwrap();
+    let target: AppEnv = "api/prod".parse().unwrap();
+    let invocation = NetworkInvocation {
+        name: "lookup".into(),
+        request: NetworkRequest::Call {
+            input: serde_json::json!({"id":"one"}),
+        },
+    };
+    let call = SignedInvocation::sign(
+        &keys,
+        network.clone(),
+        server.clone(),
+        "caller/prod".parse().unwrap(),
+        target.clone(),
+        invocation.clone(),
+        10,
+    )
+    .unwrap();
+    let peer = IpAddr::V6(network.address(&keys.wg_public_key().unwrap()));
+    let key = directory.invocation_key(&call, &target, peer, 10).unwrap();
+    assert!(call.verify(&key, 10).is_ok());
+    let mut replay = ReplayGuard::default();
+    assert!(replay.accept(&call));
+    assert!(!replay.accept(&call));
+    assert!(
+        directory
+            .invocation_key(&call, &"other/prod".parse().unwrap(), peer, 10)
+            .is_none()
+    );
+    let laptop_peer = IpAddr::V6(network.address(&laptop.wg_public_key().unwrap()));
+    // Laptop membership permits ordinary private HTTP, but never app invocation.
+    assert!(directory.admits(peer, laptop_peer, 10));
+    assert!(
+        directory
+            .invocation_key(&call, &target, laptop_peer, 10)
+            .is_none()
+    );
+    let forged = SignedInvocation::sign(
+        &laptop,
+        network.clone(),
+        server,
+        "caller/prod".parse().unwrap(),
+        target.clone(),
+        invocation,
+        10,
+    )
+    .unwrap();
+    assert!(
+        directory
+            .invocation_key(&forged, &target, laptop_peer, 10)
+            .is_none()
+    );
+    let mut changed = call.clone();
+    changed.invocation.name = "delete".into();
+    assert!(changed.verify(&key, 10).is_err());
+    let mut changed = call.clone();
+    changed.target = "api/staging".parse().unwrap();
+    assert!(changed.verify(&key, 10).is_err());
+    let mut changed = call.clone();
+    changed.caller = "unknown/prod".parse().unwrap();
+    assert!(changed.verify(&key, 10).is_err());
+    assert!(call.verify(&key, 41).is_err());
+}
+
 pub(super) fn fixture() -> (RegistrySnapshot, LocalDeviceKeys, ServiceDirectory) {
     let keys = LocalDeviceKeys::generate().unwrap();
     let network = NetworkId::random().unwrap();

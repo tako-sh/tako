@@ -1,6 +1,8 @@
 mod presence;
+#[cfg(test)]
+use super::IO_TIMEOUT;
 use super::{
-    IO_TIMEOUT, MAX_APPS, error,
+    MAX_APPS, error,
     ipc::{Notice, Notification, Reply, Request, Response},
     peer::Frame,
     wire,
@@ -233,6 +235,7 @@ impl Broker {
         deadline: tokio::time::Instant,
     ) -> io::Result<Reply> {
         let response = match request {
+            Request::SignInvocation { .. } => Response::Rejected,
             Request::UpdatePresence {
                 app,
                 channel,

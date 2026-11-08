@@ -411,6 +411,24 @@ fn write_tako_declarations_with_codegen_command(
     app_root: &str,
     codegen_command: &impl Fn() -> Command,
 ) -> std::io::Result<JsGeneratedFilesResult> {
+    write_tako_declarations_with_network_options(
+        project_dir,
+        adapter,
+        app_root,
+        codegen_command,
+        None,
+        false,
+    )
+}
+
+fn write_tako_declarations_with_network_options(
+    project_dir: &Path,
+    adapter: BuildAdapter,
+    app_root: &str,
+    codegen_command: &impl Fn() -> Command,
+    config: Option<&TakoToml>,
+    update: bool,
+) -> std::io::Result<JsGeneratedFilesResult> {
     let secret_names = read_secret_names(project_dir);
     let storage_names = read_storage_names(project_dir);
     let env_names = read_env_names(project_dir);
@@ -430,7 +448,14 @@ fn write_tako_declarations_with_codegen_command(
     )?;
     channel_types.push_str(&store_types);
     let network = if adapter.preset_group() == super::PresetGroup::Js {
-        network::generate(project_dir, app_root, &path, codegen_command)?
+        network::generate(
+            project_dir,
+            app_root,
+            &path,
+            codegen_command,
+            config,
+            update,
+        )?
     } else {
         None
     };
@@ -446,13 +471,24 @@ fn write_tako_declarations_with_codegen_command(
     );
     let wrote_declarations = write_if_changed(&path, &content)?;
     let wrote_contracts = match network {
-        Some(network) => write_if_changed(
-            &path
-                .parent()
-                .unwrap_or(project_dir)
-                .join("tako.exports.d.ts"),
-            &network.contracts,
-        )?,
+        Some(network) => {
+            let mut written = write_if_changed(
+                &path
+                    .parent()
+                    .unwrap_or(project_dir)
+                    .join("tako.exports.d.ts"),
+                &network.contracts,
+            )?;
+            let parent = path.parent().unwrap_or(project_dir);
+            written |=
+                super::schemas::write_generated(&parent.join("tako.imports.ts"), &network.imports)?;
+            written |= super::schemas::write_generated(
+                &project_dir.join("tako-schema.json"),
+                &network.schema,
+            )?;
+            written |= network.resolved.commit()?;
+            written
+        }
         None => false,
     };
     Ok(JsGeneratedFilesResult {
@@ -596,6 +632,25 @@ pub fn write_generated_files_for_adapter_and_app_root(
         write_tako_declarations_with_codegen_command(project_dir, adapter, app_root, &|| {
             Command::new("bun")
         })?;
+    result.wrote_scaffolds = wrote_scaffolds;
+    Ok(result)
+}
+
+pub fn write_generated_files_with_schemas(
+    project_dir: &Path,
+    adapter: BuildAdapter,
+    config: &TakoToml,
+    update: bool,
+) -> std::io::Result<JsGeneratedFilesResult> {
+    let wrote_scaffolds = ensure_js_definition_scaffolds(project_dir, config.js_app_root())?;
+    let mut result = write_tako_declarations_with_network_options(
+        project_dir,
+        adapter,
+        config.js_app_root(),
+        &|| Command::new("bun"),
+        Some(config),
+        update,
+    )?;
     result.wrote_scaffolds = wrote_scaffolds;
     Ok(result)
 }

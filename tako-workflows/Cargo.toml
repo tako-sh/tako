@@ -5,6 +5,7 @@ edition.workspace = true
 publish = false
 
 [dependencies]
+serde.workspace = true
 tako-core = { path = "../tako-core" }
 tako-socket = { path = "../tako-socket" }
 tako-spawn = { path = "../tako-spawn" }

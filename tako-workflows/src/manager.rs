@@ -251,10 +251,10 @@ impl WorkflowManager {
         let publisher = self.channel_publish.lock().clone();
         let peer_auth = self.peer_auth.lock().clone();
         let network_call = self.network_call.clone();
-        let route: NetworkCallFn = Arc::new(move |target, invocation| {
+        let route: NetworkCallFn = Arc::new(move |caller, target, invocation| {
             let route = network_call.read().clone();
             match route {
-                Some(route) => route(target, invocation),
+                Some(route) => route(caller, target, invocation),
                 None => tako_core::Response::error("network primitives are unavailable"),
             }
         });

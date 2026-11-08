@@ -15,6 +15,7 @@
         "@tsconfig/strictest": "catalog:dev",
         "@types/bun": "catalog:dev",
         "@xterm/headless": "^6.0.0",
+        "typescript": "catalog:dev",
       },
     },
     "examples/javascript/demo": {

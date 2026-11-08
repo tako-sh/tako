@@ -132,6 +132,26 @@ await ctx.sleep("cooldown-before-reminder", 24 * 60 * 60 * 1000);
 
 Short sleeps run inline. Longer sleeps defer the run until the wake time, so a one-day wait costs a row, not a process.
 
+## Call workflows across apps and retain their results
+
+For an `orders` app that owns `fulfill-order`, another managed app starts it with a string address:
+
+```ts
+import { workflow } from "tako.sh";
+
+const runId = await workflow("orders.fulfill-order").enqueue(
+  { orderId: "ord_123" },
+  { id: "fulfill:ord_123" },
+);
+await workflow("orders.fulfill-order").result(runId);
+```
+
+Run `tako gen` in `orders`, put `schemas = ["../orders/tako-schema.json"]` at the root of the caller's `tako.toml`, and generate there too. The caller gets the workflow's payload and result types without importing the producer's source. The workflow above returns no value, so a successful result is `null`; returning JSON from its handler gives callers that retained value instead.
+
+Use `.run(payload)` to enqueue and wait in one call. Inside another workflow, `.run()` checkpoints the child ID before enqueue, reuses it after uncertain acknowledgments, and defers the parent while waiting. Its terminal outcome is retained for replay. This supplies durable child-call behavior without wrapping the call in `ctx.run`. A timeout stops waiting without cancelling the child, and external effects still need idempotency.
+
+For direct request/response work, put a function in `network-handlers/` and use `call("orders.lookup-order", input)`. Direct handlers execute without enqueueing or automatic retries; wrap a call in `ctx.run` when its result should be checkpointed by a workflow. Calls inherit the caller's network and environment. [Network Primitives](/docs/network-primitives/) covers these execution choices, generated Go/Rust types, and recipient support.
+
 ## Run it locally, then deploy it
 
 The local loop is deliberately boring:

@@ -6003,6 +6003,7 @@ version = "0.2.1"
 dependencies = [
  "axum",
  "libc",
+ "schemars",
  "serde",
  "serde_json",
  "tokio",
@@ -6294,6 +6295,7 @@ dependencies = [
  "prometheus",
  "reqwest",
  "rusqlite",
+ "serde",
  "serde_json",
  "tako-core",
  "tako-socket",

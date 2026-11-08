@@ -73,7 +73,7 @@ pub type PeerAuthFn = Arc<dyn Fn(&str, u32) -> Result<(), String> + Send + Sync>
 
 /// Routes a validated destination after the socket has authenticated the caller.
 pub type NetworkCallFn =
-    Arc<dyn Fn(&str, tako_core::network::NetworkInvocation) -> Response + Send + Sync>;
+    Arc<dyn Fn(&str, &str, tako_core::network::NetworkInvocation) -> Response + Send + Sync>;
 
 /// Handle to the running socket. Drop to stop accepting + remove files.
 pub struct EnqueueSocketHandle {
@@ -405,6 +405,7 @@ fn handle_command(
         };
         return match tako_core::network::resolve_address(&app, &address) {
             Ok((target, name)) => route(
+                &app,
                 &target,
                 tako_core::network::NetworkInvocation { name, request },
             ),

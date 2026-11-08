@@ -1,4 +1,5 @@
 name = "network-caller-e2e"
+schemas = ["mail-schema.json"]
 runtime = "bun"
 
 [envs.production]

@@ -1,4 +1,34 @@
 use super::*;
+
+#[test]
+fn empty_http_app_exports_schema_without_a_javascript_compiler() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("tako.toml"),
+        "name = \"web\"\nruntime = \"bun\"\n",
+    )
+    .unwrap();
+    let result =
+        write_tako_declarations_with_codegen_command(dir.path(), BuildAdapter::Bun, "src", &|| {
+            panic!("empty app must not invoke Bun")
+        })
+        .unwrap();
+    assert!(result.wrote_contracts);
+    let schema: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join("tako-schema.json")).unwrap())
+            .unwrap();
+    assert_eq!(schema["x-tako"]["primitives"], serde_json::json!([]));
+    assert!(
+        !write_tako_declarations_with_codegen_command(
+            dir.path(),
+            BuildAdapter::Bun,
+            "src",
+            &|| panic!("empty app must not invoke Bun")
+        )
+        .unwrap()
+        .wrote_contracts
+    );
+}
 use tempfile::TempDir;
 
 #[test]

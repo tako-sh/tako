@@ -50,7 +50,9 @@ Refreshes generated project files:
 
 For JS/TS, generation defaults to the project root and keeps an existing `tako.d.ts` in `app/`, `src/`, or the project root. Empty existing `channels/` or `workflows/` directories get demo definitions. Declaration files are never scaffolded as handlers.
 
-For JS/TS primitives, generation writes `tako.exports.d.ts` beside the existing `tako.d.ts`, with portable channel, workflow, and network-handler types including results. The user-owned `tako.imports.ts` in that same directory selects external types through named type exports; `tako.d.ts` registers their qualified addresses. No package exports or configuration options are added automatically. See [Network Primitives](/network-primitives/).
+Generation exports the app's language-neutral `tako-schema.json` beside `tako.toml`. Root-level `schemas` lists local files or HTTP(S) URLs to import. JavaScript gets generated `tako.imports.ts` and convenience `tako.exports.d.ts` beside its existing `tako.d.ts`; Go gets `tako_imports.go`, and Rust gets `tako_imports.rs`. Native outputs use `build.cwd` or project root. Native exporters use `tako-schema/main.go` or `examples/tako_schema.rs`; see [Network Primitives](/network-primitives/) for DTO setup and runtime limits. No package exports are edited.
+
+Remote schemas are pinned, with their content, in `tako-schema.lock`. Commit it for reproducible offline generation. `tako gen --update-schemas` fetches remote sources again; ordinary generation reuses the lock and rereads local paths. Handwritten `tako.imports.ts` files must migrate to `schemas` before generation can replace them.
 
 ## `tako agents`
 

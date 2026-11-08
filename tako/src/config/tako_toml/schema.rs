@@ -10,6 +10,10 @@ pub struct TakoToml {
     /// Application name (required; stable identity for deploy paths and hostnames)
     pub name: Option<String>,
 
+    /// Local paths or HTTP(S) URLs of application schemas consumed by code generation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub schemas: Vec<String>,
+
     /// Build runtime override used for default preset selection when `preset` is omitted.
     pub runtime: Option<String>,
 

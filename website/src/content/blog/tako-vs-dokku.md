@@ -55,7 +55,7 @@ servers = ["la", "nyc", "fra", "sgp"]
 
 Here's the bigger picture: Dokku is a deployment tool. A great one — but its job ends once your container is running and nginx is routing to it. Need WebSockets? Set up your own solution. Need a job queue? Bolt on Redis and a worker. Need image optimization? Add another service.
 
-Tako is heading somewhere different. We're building **everything between your code and the internet** — a platform layer that sits behind your app and handles the infrastructure you'd otherwise assemble yourself. Tako server already serves your static files and assets directly, and manages [secrets](/docs/deployment/) encrypted at rest — no plugins needed. What's coming: managed WebSocket and SSE channels, background queues, workflows, image optimization, and more — all built into the same server that's already running your app.
+Tako combines deployment with [durable channels](/docs/channels/), [workflows](/docs/workflows/), [image optimization](/docs/images/), and [network primitives](/docs/network-primitives/). Apps use `app.primitive` addresses to call a handler, enqueue durable work, wait for its result, or publish to a channel owned by another app. `tako gen` compiles shared `tako-schema.json` contracts into TypeScript, Go, or Rust types; recipient dispatch currently requires JavaScript. The same platform also serves static assets and manages encrypted [secrets](/docs/secrets/).
 
 Your app handles your business logic. Tako handles everything underneath it.
 

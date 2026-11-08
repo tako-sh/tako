@@ -1,16 +1,16 @@
 ---
 title: Network Primitives
-description: "Call private handlers, workflows, and channels by string address, with shared TypeScript inputs and results."
+description: "Call private handlers, workflows, and channels by string address, with generated TypeScript, Go, and Rust types."
 ---
 
 Use a string address to communicate with an app in the same private network:
 
-| Operation | Behavior | Return value |
-| --- | --- | --- |
-| `call("users.lookup", input)` | Execute a network handler directly | Handler result |
-| `workflow("mail.send-email").enqueue(payload)` | Queue durable work | Run ID |
-| `workflow("mail.send-email").run(payload)` | Queue durable work and wait | Workflow result |
-| `channel("web.progress").publish(message)` | Publish to the recipient's channel | Publication acknowledgment |
+| Operation                                      | Behavior                           | Return value               |
+| ---------------------------------------------- | ---------------------------------- | -------------------------- |
+| `call("users.lookup", input)`                  | Execute a network handler directly | Handler result             |
+| `workflow("mail.send-email").enqueue(payload)` | Queue durable work                 | Run ID                     |
+| `workflow("mail.send-email").run(payload)`     | Queue durable work and wait        | Workflow result            |
+| `channel("web.progress").publish(message)`     | Publish to the recipient's channel | Publication acknowledgment |
 
 Network handlers execute without enqueueing. They use request/response transport and may still wait for network I/O, an idle app to start, or available execution capacity. Workflows run when a worker claims them. Channel publication does not wait for subscribers to process the message.
 
@@ -24,13 +24,16 @@ Run both applications under the same `tako dev` daemon for local calls. App name
 
 Any app in the same network and environment can invoke a declared recipient primitive. Type exports select what a consumer knows about; they are not an access-control list. Channel subscription authorization still applies to subscribers. Network publication uses the recipient's channel definition and lifecycle, rather than browser authorization callbacks. Channel params are validated against that definition; they do not create separate rooms or streams.
 
+Private network membership alone does not grant invocation access to laptops or arbitrary containers. The app socket authenticates the caller. Cross-server requests carry an agent-signed proof bound to the caller, target app, environment, destination server, and request body; expired or replayed proofs are rejected. Ordinary private HTTP access remains separate.
+
 ## Language support
 
-| Capability                                    | JavaScript / TypeScript | Go HTTP SDK (`tako.sh`) | Rust SDK (`tako`) |
-| --------------------------------------------- | ----------------------- | ----------------------- | ----------------- |
-| Call a handler, workflow, or channel            | Yes                     | Yes                     | Yes               |
-| Receive network calls for declared primitives | Yes                     | No                      | No                |
-| Generate portable TypeScript contracts        | Yes                     | No                      | No                |
+| Capability                                    | JavaScript / TypeScript | Go HTTP SDK (`tako.sh`) | Rust SDK (`tako`)       |
+| --------------------------------------------- | ----------------------- | ----------------------- | ----------------------- |
+| Call a handler, workflow, or channel          | Yes                     | Yes                     | Yes                     |
+| Receive network calls for declared primitives | Yes                     | No                      | No                      |
+| Generate native types from imported schemas   | Yes                     | Yes                     | Yes                     |
+| Export a language-neutral schema              | Automatic               | Go DTO exporter         | Serde/schemars exporter |
 
 The recipient currently needs the JavaScript SDK's managed HTTP runtime and internal dispatcher. Go channel registration and the separate Go workflow worker SDK retain their existing local APIs; they do not install this dispatcher. Rust supports blocking calls and async calls with its `tokio` feature. Plain HTTP containers without the Tako runtime cannot use these SDK calls.
 
@@ -62,6 +65,8 @@ export default defineChannel("delivery").$messageTypes<{
 ```
 
 These definitions are available as `mail.send-email` and `mail.delivery`. The workflow name must match its filename. A channel uses the explicit name passed to `defineChannel`.
+
+Local channels may use names such as `orders.updated` or `chat/room-123`. Those names are excluded from network exports because they cannot form an unambiguous network address. Exporting a raw channel `.definition` preserves its params; erased message metadata becomes an unknown message map.
 
 ## Direct network handlers
 
@@ -112,29 +117,142 @@ Direct calls have no automatic retries. A timeout or disconnected caller does no
 
 ## Export and import types
 
-`tako gen` keeps these files together beside the app's existing `tako.d.ts`, normally at the project root. If that file already lives in `src/` or `app/`, the other two files belong there too.
+Run `tako gen` in each producer to generate **`tako-schema.json` beside `tako.toml`**. It is ordinary JSON with a `$comment` saying not to edit it. JSON Schema 2020-12 describes the wire values; the versioned `x-tako` section identifies the app and its handlers, workflows, and channels. It includes only the app's own primitives.
 
-| File | Owner | Purpose |
-| --- | --- | --- |
-| `tako.d.ts` | Generated | Local declarations and typed address registries |
-| `tako.imports.ts` | You | Named type exports selected from other apps |
-| `tako.exports.d.ts` | Generated | Portable types for this app's own primitives |
+List the producer schemas at the root of the consumer's `tako.toml`:
 
-For a monorepo, the existing declaration location determines where these files live; `app_root` determines where Tako discovers primitive implementations. No package export or output-path configuration is added automatically.
-
-Run `tako gen` in the producer, then copy or publish `tako.exports.d.ts` through a package you own, or reference it from a sibling package. It contains standalone structural types with no imports back into producer implementations. Names use the primitive name in PascalCase plus `Workflow`, `Channel`, or `Handler`; conflicting names fail generation. Workflow contracts include payload and result, handler contracts include input and result, and channel contracts include params and messages. Values must be JSON data. Template-literal strings and readonly arrays/tuples are supported; unknown types remain `unknown`.
-
-Select external types in one handwritten file:
-
-```ts
-// web/tako.imports.ts
-export type { SendEmailWorkflow, DeliveryChannel } from "@acme/mail-types";
-export type { LookupHandler } from "@acme/users-types";
+```toml
+name = "web"
+schemas = [
+  "../mail/tako-schema.json",
+  "https://schemas.example.com/users/v1/tako-schema.json",
+]
 ```
 
-Then run `tako gen` in the consumer. The generator reads each contract's kind and qualified address. The selected types apply to HTTP code, workflows, and network handlers throughout the app. Include `tako.d.ts` in the TypeScript project. Imported contracts are not re-exported in the consumer's generated `tako.exports.d.ts`.
+Then run `tako gen` in the consumer. Paths resolve from `tako.toml`, including sibling packages in a monorepo. HTTP and HTTPS URLs are supported; `github:` shorthand and external JSON Schema references are not. Publish schemas through your own repository or hosting. Tako does not change package exports.
 
-For manually maintained shared types, use `NetworkWorkflow<Address, Payload, Result>`, `NetworkChannel<Address, Params, Messages>`, and `NetworkHandlerContract<Address, Input, Result>`. Type imports do not grant or restrict runtime access. Go and Rust use their own JSON structs; Tako does not generate cross-language types.
+Remote schemas are fetched on first use. **Commit `tako-schema.lock`**: it embeds the remote schemas and their content hashes, so generation works offline in a clean checkout. Normal generation uses the lock. Run `tako gen --update-schemas` to fetch fresh copies and review the lock diff. Local files are reread on every generation and are not copied into the lock. Removing a source removes its imported types and lock entry.
+
+| File                | Owner                | Purpose                                                        |
+| ------------------- | -------------------- | -------------------------------------------------------------- |
+| `tako-schema.json`  | Generated            | Language-neutral API of this app; beside `tako.toml`           |
+| `tako-schema.lock`  | Generated; commit it | Pinned remote schemas and hashes; beside `tako.toml`           |
+| `tako.d.ts`         | Generated            | JavaScript app declarations and typed address registries       |
+| `tako.imports.ts`   | Generated            | Standalone TypeScript contracts compiled from `schemas`        |
+| `tako.exports.d.ts` | Generated            | TypeScript convenience exports for this app's primitives       |
+| `tako_imports.go`   | Generated            | Go DTOs, address constants, and channel message-name constants |
+| `tako_imports.rs`   | Generated            | Rust Serde DTOs and corresponding constants                    |
+
+The three TypeScript files stay beside the existing `tako.d.ts`, normally at root; existing `src/` or `app/` locations are preserved. `app_root` controls discovery, not output placement. Include `tako.d.ts` in the TypeScript project. Native source files go in `build.cwd` when configured, otherwise beside `tako.toml`. Rust consumers include the generated module explicitly. Native import generation uses the CLI and does not need Bun or the producer's compiler. Run `tako gen` explicitly for native applications before building them; JavaScript development and deployment also regenerate automatically.
+
+Generated native DTO names combine app, primitive, kind, and field, such as `MailSendEmailWorkflowPayload`. TypeScript imports use `MailSendEmailWorkflow`. Colliding generated names fail generation. The following examples use the `mail.send-email` definition above:
+
+<CodeGroup>
+
+```ts JavaScript
+import { workflow } from "tako.sh";
+
+// Input and result types come from schemas, through tako.d.ts.
+await workflow("mail.send-email").enqueue({
+  to: "reader@example.com",
+  subject: "Welcome",
+});
+```
+
+```go Go
+import (
+    "context"
+    "tako.sh"
+)
+
+func sendTyped(ctx context.Context) error {
+    payload := MailSendEmailWorkflowPayload{
+        To: "reader@example.com", Subject: "Welcome",
+    }
+    _, err := tako.Enqueue(ctx, MailSendEmailWorkflowAddress, payload,
+        tako.NetworkEnqueueOptions{})
+    return err
+}
+```
+
+```rust Rust
+// In src/main.rs or src/lib.rs. Add serde and serde_json dependencies.
+#[path = "../tako_imports.rs"]
+mod tako_imports;
+
+use tako::network::{Client, EnqueueOptions};
+use tako_imports::{MailSendEmailWorkflowPayload, MAIL_SEND_EMAIL_WORKFLOW_ADDRESS};
+
+fn send_typed() -> std::io::Result<()> {
+    let payload = MailSendEmailWorkflowPayload {
+        to: "reader@example.com".into(), subject: "Welcome".into(),
+    };
+    Client::from_env()?.enqueue_blocking(
+        MAIL_SEND_EMAIL_WORKFLOW_ADDRESS, payload, EnqueueOptions::default(),
+    )?;
+    Ok(())
+}
+```
+
+</CodeGroup>
+
+Go callers decode raw handler/workflow results with `json.Unmarshal` into the generated `...Result` type. Rust callers use `serde_json::from_value` on the handler result or a successful workflow's retained result. Generated types do not add runtime dispatch or automatic durable steps to either SDK.
+
+### Export native DTOs
+
+Native exporters describe the JSON wire contract explicitly. They do not register recipient handlers; recipient dispatch currently remains JavaScript-only. For Go, create `tako-schema/main.go`; `tako gen` runs `go run ./tako-schema`. For Rust, create `examples/tako_schema.rs`; generation runs `cargo run --quiet --example tako_schema --features tako/schema`. These commands run your local source, while imported schema files are only parsed as data.
+
+<CodeGroup>
+
+```go Go
+// tako-schema/main.go; DTOs can also be imported from your own package.
+package main
+
+import (
+    "os"
+    "tako.sh/schema"
+)
+
+type LookupInput struct { ID uint64 `json:"id,string"` }
+type LookupResult struct { Name string `json:"name"` }
+
+func main() {
+    app := schema.New("users") // match tako.toml
+    schema.Handler[LookupInput, LookupResult](app, "lookup")
+    if err := app.Write(os.Stdout); err != nil { panic(err) }
+}
+```
+
+```rust Rust
+// examples/tako_schema.rs; add schemars = "1.2" and serde with derive.
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+struct LookupInput { id: String }
+#[derive(Serialize, Deserialize, JsonSchema)]
+struct LookupResult { name: String }
+
+fn main() {
+    tako::schema::Application::new("users") // match tako.toml
+        .handler::<LookupInput, LookupResult>("lookup")
+        .print().unwrap();
+}
+```
+
+</CodeGroup>
+
+Go also provides `schema.Workflow[Payload, Result]` and `schema.Channel[Params, Messages]`; Rust provides `.workflow::<Payload, Result>()` and `.channel::<Params, Messages>()`. `Messages` is an object/struct mapping message names to payload DTOs. Rust uses separate serialization and deserialization schemas to respect Serde attributes. Go follows JSON tags and rejects unsupported embedded fields or custom marshalers rather than guessing their shape. With no exporter entry point, a native app exports an empty interface.
+
+### Wire types and migration
+
+Use JSON objects, arrays, strings, booleans, numbers, null, scalar enums, and explicit unions. Recursive objects and fixed tuples are supported in native bindings. TypeScript also preserves readonly arrays/tuples and template-literal strings; native strings retain their JSON representation. Native optional/rest tuples and unsupported structural schema features fail with an explanation. Generated DTOs are not complete JSON Schema validators: application code must validate constraints such as patterns and numeric bounds when required.
+
+Optional and nullable mean different things. Go uses `tako.Optional[T]` with `Set` and `Value`; Rust uses `tako::network::Optional<T>` with `Missing` or `Value`. Nullable values use Go pointers or Rust `Option<T>`, so an optional nullable field can represent missing, null, and a value. Unknown JSON remains `json.RawMessage`, `serde_json::Value`, or TypeScript `unknown`.
+
+Integers outside JavaScript's safe range must travel as decimal strings. Go's `json:",string"` field tag exports a string schema. Rust should use a string DTO or matching Serde serialization and schemars annotations. Declaring an unconstrained 64-bit integer fails generation; explicitly bounded JavaScript-safe integers are accepted. Dates and other custom values need an explicit JSON representation.
+
+To migrate a handwritten `tako.imports.ts`, generate schemas in its producers, list them under `schemas`, remove the handwritten file, and rerun `tako gen`. Generation refuses to overwrite a handwritten import file. Imported contracts never reappear in the consumer's exported schema or convenience exports.
 
 ## Make calls
 

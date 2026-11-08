@@ -31,7 +31,7 @@ For an agent, inspect existing apps with `tako dev list --json`, then use `tako 
 - Restarts the app runtime when effective env, secrets, channels, presence, stores, or workflows change.
 - Updates routes without restart when development routes change.
 
-For [network primitives](/network-primitives/), run both apps under this daemon and use `app.primitive` addresses. Changes to `tako.imports.ts` or definitions in `network-handlers/`, `channels/`, and `workflows/` refresh network types. Generated `tako.exports.d.ts` changes do not trigger a restart. Rerun `tako gen` after changing types imported from elsewhere in the project.
+For [network primitives](/network-primitives/), run both apps under this daemon and use `app.primitive` addresses. List producer schemas under root-level `schemas`. Changes to local schema files or definitions in `network-handlers/`, `channels/`, and `workflows/` refresh JavaScript network types. Generated declaration changes do not restart the app. Remote sources stay pinned until `tako gen --update-schemas`; rerun `tako gen` after changing types imported from elsewhere in the project. Generate native Go/Rust files explicitly before building those apps.
 
 Tako does not watch arbitrary source files for restart. Framework dev servers and runtimes own hot reload.
 

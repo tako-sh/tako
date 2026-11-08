@@ -22,6 +22,12 @@ use zeroize::Zeroizing;
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum Request {
+    SignInvocation {
+        destination: tako_network::DeviceId,
+        caller: AppEnv,
+        target: AppEnv,
+        invocation: tako_core::network::NetworkInvocation,
+    },
     Register {
         app: AppEnv,
         postgres_url: Option<Zeroizing<String>>,
@@ -97,9 +103,16 @@ pub enum Notification {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum Response {
+    SignedInvocation {
+        call: crate::native_invocation::SignedInvocation,
+    },
     Ok,
-    Published { message: ChannelMessage },
-    Presence { members: Vec<PresenceMember> },
+    Published {
+        message: ChannelMessage,
+    },
+    Presence {
+        members: Vec<PresenceMember>,
+    },
     Rejected,
 }
 #[derive(Serialize, Deserialize)]
@@ -118,6 +131,27 @@ pub struct Client {
     socket: PathBuf,
 }
 impl Client {
+    pub(crate) async fn sign_invocation(
+        &self,
+        destination: tako_network::DeviceId,
+        caller: AppEnv,
+        target: AppEnv,
+        invocation: tako_core::network::NetworkInvocation,
+    ) -> io::Result<crate::native_invocation::SignedInvocation> {
+        match self
+            .request(Request::SignInvocation {
+                destination,
+                caller,
+                target,
+                invocation,
+            })
+            .await?
+            .1
+        {
+            Response::SignedInvocation { call } => Ok(call),
+            _ => Err(error("unexpected invocation signer response")),
+        }
+    }
     pub fn new(socket: PathBuf) -> Self {
         Self { socket }
     }
@@ -254,8 +288,9 @@ pub(super) fn authorized(stream: &UnixStream) -> io::Result<bool> {
     // SAFETY: geteuid has no preconditions.
     Ok(uid == 0 || uid == unsafe { libc::geteuid() })
 }
+#[cfg(test)]
 pub(super) async fn serve<S>(
-    mut stream: S,
+    stream: S,
     commands: mpsc::Sender<Command>,
     budget: wire::Budget,
     replies: wire::Budget,
@@ -263,8 +298,52 @@ pub(super) async fn serve<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    serve_with_signer(stream, commands, budget, replies, None).await
+}
+
+pub(super) async fn serve_with_signer<S>(
+    mut stream: S,
+    commands: mpsc::Sender<Command>,
+    budget: wire::Budget,
+    replies: wire::Budget,
+    signer: Option<(
+        std::sync::Arc<tako_network::LocalDeviceKeys>,
+        tako_network::NetworkId,
+    )>,
+) -> io::Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let deadline = tokio::time::Instant::now() + IO_TIMEOUT;
     let request = wire::read(&mut stream, &budget).await?;
+    if let Request::SignInvocation {
+        destination,
+        caller,
+        target,
+        invocation,
+    } = &request.value
+    {
+        let response = match signer {
+            Some((keys, network)) => match crate::native_invocation::SignedInvocation::sign(
+                &keys,
+                network,
+                destination.clone(),
+                caller.clone(),
+                target.clone(),
+                invocation.clone(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+            ) {
+                Ok(call) => Response::SignedInvocation { call },
+                Err(_) => Response::Rejected,
+            },
+            None => Response::Rejected,
+        };
+        let _admission = tokio::time::timeout_at(deadline, replies.wait(wire::MAX_FRAME)).await??;
+        return tokio::time::timeout_at(deadline, wire::write(&mut stream, &response)).await?;
+    }
     let (mut reader, mut writer) = tokio::io::split(stream);
     let response = async {
         // Reserve response space before submitting a mutation. Waiting here leaves the

@@ -55,7 +55,7 @@ Blume's discoverability configuration enables canonical metadata, branded Open G
 
 Hosted MCP, HTTP search, and `Accept: text/markdown` negotiation require a server and are disabled in this static deployment. Explicit `.md` URLs work. DNS-AID would require publishing DNS records separately; no DNS changes are part of the build. The existing Web Bot Auth public-key directory remains available.
 
-For the Context7 library, include `website/docs`, `sdk/javascript`, `sdk/go`, and `sdk/rust`, plus the root Go HTTP SDK sources: `tako.go`, `channels.go`, `network.go`, `presence.go`, `store.go`, and `internal/`. The `sdk/go` directory is the separate workflow SDK. Exclude `examples` and `sdk/javascript/skills`, plus maintainer instructions, plans, and internal contracts, in the library settings.
+For the Context7 library, include `website/docs`, `sdk/javascript`, `sdk/go`, and `sdk/rust`, plus the root Go HTTP SDK sources: `tako.go`, `channels.go`, `network.go`, `network_types.go`, `schema/`, `presence.go`, `store.go`, and `internal/`. The `sdk/go` directory is the separate workflow SDK. Exclude `examples` and `sdk/javascript/skills`, plus maintainer instructions, plans, and internal contracts, in the library settings.
 
 ## Local Development
 

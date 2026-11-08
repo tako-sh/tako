@@ -41,7 +41,8 @@ fn network_calls_authenticate_the_caller_before_resolving_the_destination() {
     });
     let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
     let observed = calls.clone();
-    let route: NetworkCallFn = Arc::new(move |target, invocation| {
+    let route: NetworkCallFn = Arc::new(move |caller, target, invocation| {
+        assert_eq!(caller, "web/staging");
         observed
             .lock()
             .unwrap()
@@ -111,7 +112,7 @@ async fn network_calls_leave_storage_workers_available() {
     let tmp = tempfile::tempdir().unwrap();
     let sock = tmp.path().join("internal.sock");
     let barrier = Arc::new(std::sync::Barrier::new(32));
-    let route: NetworkCallFn = Arc::new(move |_, _| {
+    let route: NetworkCallFn = Arc::new(move |_, _, _| {
         barrier.wait();
         // The recipient must be able to enqueue while every caller awaits it.
         tokio::runtime::Handle::current().block_on(async {

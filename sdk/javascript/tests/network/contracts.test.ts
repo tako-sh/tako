@@ -8,6 +8,33 @@ import { discoverChannels } from "../../src/channels/discovery";
 import { discoverWorkflows } from "../../src/workflows/discovery";
 
 const temps: string[] = [];
+
+test("local-only channel names do not block exports and raw channel definitions retain params", async () => {
+  const dir = await project();
+  await writeFile(
+    join(dir, "src/channels/chat.ts"),
+    'import { defineChannel } from "tako.sh"; export default defineChannel("chat/room-123");',
+  );
+  await writeFile(
+    join(dir, "src/channels/orders.ts"),
+    'import { defineChannel } from "tako.sh"; export default defineChannel("orders.updated");',
+  );
+  await writeFile(
+    join(dir, "src/channels/status.ts"),
+    'import { defineChannel } from "tako.sh"; export default defineChannel("status", { paramsSchema: t => t.Object({ jobId: t.String() }) }).definition;',
+  );
+  const result = await generateNetworkTypes(join(dir, "src"), dir, "mail");
+  expect((await discoverChannels(join(dir, "src/channels"))).length).toBe(3);
+  expect(result.contracts).not.toContain("chat/room-123");
+  expect(result.contracts).not.toContain("orders.updated");
+  expect(result.contracts).toContain('"jobId": string');
+  expect(result.contracts).toContain("messages: Record<string, unknown>");
+  expect(result.schema["x-tako"].primitives).toHaveLength(1);
+  expect(result.schema["x-tako"].primitives[0]!.params).toMatchObject({
+    type: "object",
+    required: ["jobId"],
+  });
+});
 afterEach(async () => {
   for (const dir of temps.splice(0)) await rm(dir, { recursive: true, force: true });
 });

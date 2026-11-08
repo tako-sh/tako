@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 pub fn install(state: &Arc<Mutex<State>>, workflows: &tako_workflows::WorkflowManager) {
     let state = Arc::downgrade(state);
-    workflows.set_network_router(Arc::new(move |target, invocation| {
+    workflows.set_network_router(Arc::new(move |_caller, target, invocation| {
         let Some(state) = state.upgrade() else {
             return tako_core::Response::error("dev server unavailable");
         };

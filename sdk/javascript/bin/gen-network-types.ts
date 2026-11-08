@@ -11,6 +11,13 @@ if (import.meta.main) {
     throw new Error("usage: tako-sh-gen-network-types <app-root> <declaration-dir> <app-name>");
   }
   process.stdout.write(
-    JSON.stringify(await generateNetworkTypes(resolve(root), resolve(declarationDir), app)),
+    JSON.stringify(
+      await generateNetworkTypes(
+        resolve(root),
+        resolve(declarationDir),
+        app,
+        JSON.parse(await Bun.stdin.text()).imports,
+      ),
+    ),
   );
 }

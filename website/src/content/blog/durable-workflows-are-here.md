@@ -33,6 +33,35 @@ export default defineWorkflow("fulfill-order", {
 
 Each run and completed step is stored in the app's workflow database with first-write-wins checkpoint semantics. Retries use exponential backoff with jitter, capped at an hour, and can be overridden per workflow (`retries: 4` means four retries after the first attempt). The execution contract is at least once, so step bodies must be idempotent. See the [Workflows reference](/docs/workflows/) for the full details.
 
+## Return a result to another app
+
+A workflow can return JSON from its handler. For an app named `orders`, a small read workflow could be:
+
+```ts
+// orders/src/workflows/order-status.ts
+import { defineWorkflow } from "tako.sh";
+import { db } from "../db";
+
+export default defineWorkflow("order-status", {
+  handler: async (input: { orderId: string }, ctx) => {
+    const order = await ctx.run("load", () => db.orders.find(input.orderId));
+    return { orderId: order.id, status: order.status };
+  },
+});
+```
+
+`db` is application code. Another managed app imports the generated `orders/tako-schema.json` through root-level `schemas` in `tako.toml`, runs `tako gen`, and calls the workflow by address:
+
+```ts
+import { workflow } from "tako.sh";
+
+const status = await workflow("orders.order-status").run({ orderId: "ord_123" });
+```
+
+`.run()` enqueues and waits; execution begins when a worker claims the run. `.enqueue()` returns its ID immediately, and `.result(id)` waits for the retained result later. Inside another workflow, `.run()` checkpoints the child ID and terminal outcome, and defers the parent while waiting. Replaying the parent reuses the child; external effects still need idempotency. A waiting timeout does not cancel the child.
+
+For a request/response operation that should execute without enqueueing, define a function in `network-handlers/` and use `call("orders.lookup-order", input)` instead. Direct calls have no automatic retry policy. Both forms stay in the caller's network and environment. The [Network Primitives reference](/docs/network-primitives/) covers generated TypeScript, Go, and Rust types and the current JavaScript recipient requirement.
+
 ## Sleep for days, wait for signals
 
 Two primitives turn "workflow" into "long-running business process."

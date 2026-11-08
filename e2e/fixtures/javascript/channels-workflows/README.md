@@ -18,7 +18,7 @@ Used by both the CLI dev e2e suite (`e2e/cli/tests/dev.test.ts`) and the
 deploy/docker harness.
 
 The deployment harness also installs `caller/` as a second app. Its root
-`tako.imports.ts` selects producer types from the generated `tako.exports.d.ts`.
+The caller's `schemas` imports the producer's generated `tako-schema.json`; generation writes its `tako.imports.ts`.
 `POST /call` invokes `echo`, which directly calls `uppercase`; `POST /run` starts
 the caller's `relay` workflow, durably waits for `broadcast`, and returns its
 stored result. The harness checks both responses and rejects public access to

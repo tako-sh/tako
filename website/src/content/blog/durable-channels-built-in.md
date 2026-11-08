@@ -72,10 +72,27 @@ Each channel has four lifecycle knobs:
 
 The replay log is not a replacement for your product database. Chat messages, document operations, and audit history still belong in app-owned storage when they are canonical. Channels handle delivery and short reconnect replay so the backend can publish once without checking whether a browser happens to be connected.
 
+## Publish from another app
+
+An app named `web` owns the channel above as `web.chat`. Another managed app in the same network and environment can publish to it through a string address:
+
+```ts
+import { channel } from "tako.sh";
+
+await channel("web.chat", { roomId: "lobby" }).publish({
+  type: "msg",
+  data: { text: "Your report is ready", userId: "system" },
+});
+```
+
+Run `tako gen` in `web`, add `schemas = ["../web/tako-schema.json"]` at the root of the caller's `tako.toml`, and run `tako gen` there too. Generated types check the address, params, message name, and payload without importing the web app's source. Go and Rust callers can compile the same schema into their own DTOs.
+
+The publication uses the recipient's channel definition and acknowledges publication; it does not wait for browsers to process the message. Subscriber authorization still applies to connections, and `roomId` still does not partition the stream. Any app in the same network and environment can publish, while public internet clients and generic private peers cannot invoke the internal primitive. See [Network Primitives](/docs/network-primitives/) for transport, language support, and delivery limits.
+
 ## Why we built it in
 
 Most deploy tools stop at "get your code running." Kamal, Dokku, Coolify — they ship your container, point a proxy at it, and hand you the keys. Anything your app needs beyond HTTP is something you glue in yourself.
 
 We think that's a weird place to stop. A proxy that already terminates TLS, tracks connected clients, and survives your app restarting is in the right position to own durable channels too. It's less code in your app, one less service to run, and one less vendor on your invoice.
 
-Durable channels are one piece of Tako's platform layer. The [roadmap](/blog/build-your-own-edge-network-on-commodity-hardware/) also includes queues, scheduled workflows, and image optimization — the primitives apps actually need, right where your app already lives. Try them today: `tako init`, add a channel, `tako dev`, and you have a realtime feature running locally over [real HTTPS](/blog/local-dev-with-real-https/). See the [Channels reference](/docs/channels/) for the current contract.
+Durable channels sit alongside [workflows](/docs/workflows/), [network handlers](/docs/network-primitives/), and [image optimization](/docs/images/) in Tako's platform layer. Try them with `tako init`, add a channel, and run `tako dev` for a realtime feature over [local HTTPS](/blog/local-dev-with-real-https/). See the [Channels reference](/docs/channels/) for the current contract.

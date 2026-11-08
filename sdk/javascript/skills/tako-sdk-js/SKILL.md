@@ -635,15 +635,16 @@ Workflow handlers return JSON results (no return becomes null), persisted with s
 
 Within a workflow, `.run()` durably saves the child ID before enqueue, reuses it after an uncertain acknowledgment, and caches the terminal outcome. Pending children defer the parent and free its worker slot without spending retries. Use a stable optional `{ step: "child-name" }`, or keep call order stable within each enclosing named `ctx.run`. Keep the target and input stable across replay. Retention bounds deduplication; detached `.enqueue()` still needs an explicit stable ID when repeated. Child workflows own their execution retries (default two retries after the first attempt, unless overridden).
 
-`tako gen` keeps generated `tako.exports.d.ts`, handwritten `tako.imports.ts`, and local `tako.d.ts` together at the existing declaration location, normally project root. `app_root` controls discovery, not the output location. Publish/copy `tako.exports.d.ts` through your own package; Tako never edits package exports. Generated names end in `Workflow`, `Channel`, or `Handler` and include input/result metadata. Consumer imports do not reappear in consumer exports.
+`tako gen` exports `tako-schema.json` beside `tako.toml`. List producer schema paths or HTTP(S) URLs under root-level `schemas`; generated `tako.imports.ts`, convenience `tako.exports.d.ts`, and local `tako.d.ts` stay together at the existing declaration location, normally project root. `app_root` controls discovery. Imported contract names combine app, primitive, and kind, such as `MailSendEmailWorkflow`. Consumers do not re-export imports. Tako does not edit package exports.
 
-```ts
-// tako.imports.ts — one file for every primitive kind
-export type { SendEmailWorkflow, ProgressChannel } from "@acme/mail-types";
-export type { LookupHandler } from "@acme/users-types";
+```toml
+# tako.toml — paths resolve from this file, including sibling apps
+schemas = ["../mail/tako-schema.json", "https://schemas.example.com/users/v1/tako-schema.json"]
 ```
 
-Run generation in producer and consumer and include `tako.d.ts` in the TS project. Test a real caller/recipient flow, a handler chain, and a child workflow replay; confirm stored results and side-effect idempotency. See [Network Primitives](https://tako.sh/docs/network-primitives).
+Commit `tako-schema.lock`: it embeds hashed remote schemas and supports offline generation. Use `tako gen --update-schemas` to refresh; ordinary generation rereads local files and uses the remote lock. Migrate handwritten imports by listing producer schemas, removing the handwritten file, and rerunning generation. No `github:` shorthand or external JSON Schema references are supported. JSON data only; optional and nullable remain distinct. Native consumers get Go/Rust DTOs from the same schema; 64-bit integers must use decimal strings or explicit JavaScript-safe bounds. Unsupported native structural types fail instead of becoming unknown.
+
+Only addressable channel names appear in network exports; local names containing dots/slashes remain local. Raw channel `.definition` exports retain params and use an unknown message map when message metadata is erased. Private app calls authenticate through the app socket and signed cross-server proofs; generic network peers cannot invoke the dispatcher. Include `tako.d.ts` in the TS project. Verify producer/consumer generation, a real handler chain, and child workflow replay with stored results and idempotent effects. See [Network Primitives](https://tako.sh/docs/network-primitives).
 
 ## Workflows
 
