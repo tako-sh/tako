@@ -3,6 +3,7 @@ import { call, channel, workflow, setNetworkCaller } from "../../src/network";
 import { ChannelRegistry, setChannelSocketPublisher } from "../../src/channels";
 import { defineChannel } from "../../src/channels/define";
 import { handleNetworkInvocation } from "../../src/network-endpoint";
+import { closeInternalSocketPoolsForTests } from "../../src/tako/socket";
 
 afterEach(() => {
   setNetworkCaller(null);
@@ -143,14 +144,26 @@ test("recipient workflow owns retries and acknowledges enqueue without waiting f
     TAKO_INTERNAL_SOCKET: process.env.TAKO_INTERNAL_SOCKET,
   };
   const captured: any[] = [];
-  const server = createServer((socket) =>
-    socket.once("data", (data) => {
-      captured.push(JSON.parse(data.toString()));
-      socket.end(
-        JSON.stringify({ status: "ok", data: { id: "remote-run", deduplicated: false } }) + "\n",
-      );
-    }),
-  );
+  let connectionCount = 0;
+  const server = createServer((socket) => {
+    connectionCount += 1;
+    // Match the persistent JSONL transport used by the internal socket pool.
+    socket.setEncoding("utf8");
+    let buffer = "";
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      for (;;) {
+        const newline = buffer.indexOf("\n");
+        if (newline === -1) return;
+        const line = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        captured.push(JSON.parse(line));
+        socket.write(
+          JSON.stringify({ status: "ok", data: { id: "remote-run", deduplicated: false } }) + "\n",
+        );
+      }
+    });
+  });
   try {
     await mkdir(join(root, "workflows"));
     await writeFile(
@@ -182,6 +195,7 @@ test("recipient workflow owns retries and acknowledges enqueue without waiting f
     expect((await invoke({ max_attempts: 2 })).status).toBe(200);
     expect((await invoke({ max_attempts: 0 })).status).toBe(400);
     expect(captured).toHaveLength(2);
+    expect(connectionCount).toBe(1);
     expect(captured[0]).toMatchObject({
       command: "enqueue_run",
       app: "mail/staging",
@@ -194,6 +208,7 @@ test("recipient workflow owns retries and acknowledges enqueue without waiting f
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
+    closeInternalSocketPoolsForTests();
     if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(root, { recursive: true, force: true });
   }
