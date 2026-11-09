@@ -19,7 +19,7 @@ services:
       timeout: 3s
       retries: 10
   redis:
-    image: docker.io/library/redis:7-alpine
+    image: docker.io/library/redis:7-alpine@sha256:c5d34a98396a4775e223c74e929162c35c5a2182901ba26b50ade939941ce14b
     restart: unless-stopped
     command: [redis-server, --appendonly, "yes"]
     volumes:
