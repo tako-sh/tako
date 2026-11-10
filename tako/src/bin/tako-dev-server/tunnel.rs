@@ -36,9 +36,18 @@ const TUNNEL_CLOSE_REPLACED: u16 = 4410;
 
 #[derive(Debug, Clone)]
 pub(crate) struct TunnelRegistration {
+    generation: u64,
     pub(crate) url: String,
     pub(crate) expires_at: u64,
     pub(crate) abort_handle: AbortHandle,
+}
+
+#[derive(Default)]
+pub(crate) struct TunnelLifecycle {
+    generation: u64,
+    // Keep this gate across app re-registration so an old remote registration
+    // cannot rotate the session token after a newer enable has completed.
+    registration: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -85,8 +94,8 @@ async fn enable_tunnel(
     state: &Arc<Mutex<State>>,
     config_path: &str,
 ) -> Result<(String, u64), String> {
-    let snapshot = {
-        let s = state.lock().map_err(|_| "dev server state poisoned")?;
+    let (snapshot, app_instance, generation, registration) = {
+        let mut s = state.lock().map_err(|_| "dev server state poisoned")?;
         let Some(app) = s.apps.get(config_path) else {
             return Err("app is not registered".to_string());
         };
@@ -96,14 +105,64 @@ async fn enable_tunnel(
         let Some(host) = primary_local_host(&app.hosts) else {
             return Err("app has no concrete local host".to_string());
         };
-        TunnelSnapshot {
+        let app_instance = app.bootstrap_token.clone();
+        let snapshot = TunnelSnapshot {
             config_path: config_path.to_string(),
             app_name: app.name.clone(),
             local_host: host,
             listen_addr: s.listen_addr.clone(),
-        }
+        };
+        let lifecycle = s
+            .tunnel_lifecycles
+            .entry(config_path.to_string())
+            .or_default();
+        lifecycle.generation = lifecycle.generation.wrapping_add(1);
+        (
+            snapshot,
+            app_instance,
+            lifecycle.generation,
+            lifecycle.registration.clone(),
+        )
     };
+    // Own registration to completion even if the control client disconnects.
+    // The next enable waits until an earlier remote token rotation has finished.
+    let state = state.clone();
+    tokio::spawn(async move {
+        let _registration = registration.lock().await;
+        enable_tunnel_generation(state, snapshot, app_instance, generation).await
+    })
+    .await
+    .map_err(|error| format!("tunnel registration failed: {error}"))?
+}
 
+fn registration_is_current(
+    state: &State,
+    config_path: &str,
+    app_instance: &str,
+    generation: u64,
+) -> bool {
+    state
+        .tunnel_lifecycles
+        .get(config_path)
+        .is_some_and(|lifecycle| lifecycle.generation == generation)
+        && state
+            .apps
+            .get(config_path)
+            .is_some_and(|app| app.bootstrap_token == app_instance)
+}
+
+async fn enable_tunnel_generation(
+    state: Arc<Mutex<State>>,
+    snapshot: TunnelSnapshot,
+    app_instance: String,
+    generation: u64,
+) -> Result<(String, u64), String> {
+    {
+        let s = state.lock().map_err(|_| "dev server state poisoned")?;
+        if !registration_is_current(&s, &snapshot.config_path, &app_instance, generation) {
+            return Err("tunnel enable was superseded".into());
+        }
+    }
     let base_url = tunnel_base_url();
     let identity = TakoIdentity::load_or_create()?;
     let public_key = identity.public_key()?;
@@ -124,8 +183,9 @@ async fn enable_tunnel(
     .await?;
     let connect_url = tunnel_connect_url(&base_url, &created.host, &created.session)?;
 
-    let state_for_task = Arc::clone(state);
-    let config_for_task = snapshot.config_path.clone();
+    let config_path = snapshot.config_path.clone();
+    let state_for_task = state.clone();
+    let config_for_task = config_path.clone();
     let url_for_task = created.url.clone();
     let (start_tx, start_rx) = oneshot::channel();
     let task = tokio::spawn(async move {
@@ -138,39 +198,39 @@ async fn enable_tunnel(
             state_for_task,
             config_for_task,
             url_for_task,
+            generation,
         )
         .await;
     });
     let abort_handle = task.abort_handle();
-
-    let (app_name, url, expires_at) = {
-        let mut s = state.lock().map_err(|_| "dev server state poisoned")?;
-        let Some(app) = s.apps.get_mut(config_path) else {
-            abort_handle.abort();
-            return Err("app is not registered".to_string());
-        };
-        let app_name = app.name.clone();
-        app.tunnel = Some(TunnelRegistration {
-            url: created.url.clone(),
-            expires_at: created.expires_at,
-            abort_handle,
-        });
-        (app_name, created.url.clone(), created.expires_at)
-    };
-    let _ = start_tx.send(());
-    let s = state.lock().map_err(|_| "dev server state poisoned")?;
+    let mut s = state.lock().map_err(|_| "dev server state poisoned")?;
+    if !registration_is_current(&s, &config_path, &app_instance, generation) {
+        abort_handle.abort();
+        return Err("tunnel enable was superseded".into());
+    }
+    let app = s
+        .apps
+        .get_mut(&config_path)
+        .expect("current registration has an app");
+    let app_name = app.name.clone();
+    app.tunnel = Some(TunnelRegistration {
+        generation,
+        url: created.url.clone(),
+        expires_at: created.expires_at,
+        abort_handle,
+    });
     s.events.broadcast(Response::Event {
         event: protocol::DevEvent::TunnelModeChanged {
-            config_path: config_path.to_string(),
+            config_path,
             app_name,
             enabled: true,
-            url: Some(url),
-            expires_at: Some(expires_at),
+            url: Some(created.url.clone()),
+            expires_at: Some(created.expires_at),
             close_reason: None,
         },
     });
-
-    Ok((created.url, expires_at))
+    let _ = start_tx.send(());
+    Ok((created.url, created.expires_at))
 }
 
 type TunnelCloseReason = protocol::TunnelCloseReason;
@@ -204,10 +264,32 @@ fn disable_tunnel(
     config_path: &str,
     reason: TunnelCloseReason,
 ) -> (Option<String>, Option<u64>) {
+    disable_tunnel_generation(state, config_path, reason, None)
+}
+
+fn disable_tunnel_generation(
+    state: &Arc<Mutex<State>>,
+    config_path: &str,
+    reason: TunnelCloseReason,
+    expected: Option<u64>,
+) -> (Option<String>, Option<u64>) {
     let mut s = match state.lock() {
         Ok(s) => s,
         Err(_) => return (None, None),
     };
+    if let Some(expected) = expected
+        && s.apps
+            .get(config_path)
+            .and_then(|app| app.tunnel.as_ref())
+            .is_none_or(|tunnel| tunnel.generation != expected)
+    {
+        return (None, None);
+    }
+    let lifecycle = s
+        .tunnel_lifecycles
+        .entry(config_path.to_string())
+        .or_default();
+    lifecycle.generation = lifecycle.generation.wrapping_add(1);
     let Some(app) = s.apps.get_mut(config_path) else {
         return (None, None);
     };
@@ -223,11 +305,6 @@ fn disable_tunnel(
     let url = tunnel.url;
     let expires_at = tunnel.expires_at;
     let app_name = app.name.clone();
-    drop(s);
-    let s = match state.lock() {
-        Ok(s) => s,
-        Err(_) => return (Some(url), Some(expires_at)),
-    };
     s.events.broadcast(Response::Event {
         event: protocol::DevEvent::TunnelModeChanged {
             config_path: config_path.to_string(),
@@ -241,7 +318,7 @@ fn disable_tunnel(
     (Some(url), Some(expires_at))
 }
 
-fn tunnel_is_current(state: &Arc<Mutex<State>>, config_path: &str, url: &str) -> bool {
+fn tunnel_is_current(state: &Arc<Mutex<State>>, config_path: &str, generation: u64) -> bool {
     let s = match state.lock() {
         Ok(s) => s,
         Err(_) => return false,
@@ -249,7 +326,7 @@ fn tunnel_is_current(state: &Arc<Mutex<State>>, config_path: &str, url: &str) ->
     s.apps
         .get(config_path)
         .and_then(|app| app.tunnel.as_ref())
-        .is_some_and(|tunnel| tunnel.url == url)
+        .is_some_and(|tunnel| tunnel.generation == generation)
 }
 
 async fn current_upstream_port(
@@ -277,6 +354,7 @@ fn broadcast_tunnel_connection(
     app_name: &str,
     url: &str,
     connected: bool,
+    generation: u64,
 ) {
     let s = match state.lock() {
         Ok(s) => s,
@@ -285,7 +363,7 @@ fn broadcast_tunnel_connection(
     if s.apps
         .get(config_path)
         .and_then(|app| app.tunnel.as_ref())
-        .is_none_or(|tunnel| tunnel.url != url)
+        .is_none_or(|tunnel| tunnel.generation != generation)
     {
         return;
     }
@@ -379,12 +457,13 @@ async fn run_tunnel_session(
     state: Arc<Mutex<State>>,
     config_path: String,
     url: String,
+    generation: u64,
 ) {
     let mut delay = TUNNEL_RECONNECT_INITIAL_DELAY;
     let mut reported_reconnecting = false;
 
     loop {
-        if !tunnel_is_current(&state, &config_path, &url) {
+        if !tunnel_is_current(&state, &config_path, generation) {
             return;
         }
 
@@ -397,6 +476,7 @@ async fn run_tunnel_session(
                         &snapshot.app_name,
                         &url,
                         true,
+                        generation,
                     );
                     reported_reconnecting = false;
                 }
@@ -415,7 +495,7 @@ async fn run_tunnel_session(
                     }
                     Err(TunnelConnectionEnd::Terminal { reason, message }) => {
                         tracing::info!("Tunnel disabled: {message}");
-                        disable_tunnel(&state, &config_path, reason);
+                        disable_tunnel_generation(&state, &config_path, reason, Some(generation));
                         return;
                     }
                 }
@@ -428,16 +508,23 @@ async fn run_tunnel_session(
             }
             Err(TunnelConnectError::Terminal { reason, message }) => {
                 tracing::warn!("Tunnel disabled: {message}");
-                disable_tunnel(&state, &config_path, reason);
+                disable_tunnel_generation(&state, &config_path, reason, Some(generation));
                 return;
             }
         }
 
-        if !tunnel_is_current(&state, &config_path, &url) {
+        if !tunnel_is_current(&state, &config_path, generation) {
             return;
         }
         if !reported_reconnecting {
-            broadcast_tunnel_connection(&state, &config_path, &snapshot.app_name, &url, false);
+            broadcast_tunnel_connection(
+                &state,
+                &config_path,
+                &snapshot.app_name,
+                &url,
+                false,
+                generation,
+            );
             reported_reconnecting = true;
         }
 
@@ -1150,3 +1237,6 @@ mod benchmark;
 #[cfg(test)]
 #[path = "tunnel_transport_tests.rs"]
 mod transport_tests;
+
+#[cfg(test)]
+mod lifecycle_tests;
