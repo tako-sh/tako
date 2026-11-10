@@ -319,10 +319,14 @@ mod tests {
             fixture.keys.wireguard_private_key().unwrap().as_str()
         )));
         assert!(config.contains(&format!("Address = {own}/128\n")));
-        assert!(config.contains(&format!("AllowedIPs = {address}/128\n")));
+        // Inspect routing fields, not the whole configuration: random base64
+        // keys can contain "/0" without installing a default route.
+        let allowed_ips: Vec<_> = config
+            .lines()
+            .filter_map(|line| line.strip_prefix("AllowedIPs = "))
+            .collect();
+        assert_eq!(allowed_ips, vec![format!("{address}/128")]);
         assert_eq!(config.matches("[Peer]").count(), 1);
-        assert_eq!(config.matches("AllowedIPs = ").count(), 1);
-        assert!(!config.contains("/0"));
         assert!(config.contains("Endpoint = 192.0.2.10:51820\n"));
         assert!(config.contains("PersistentKeepalive = 25\n"));
         assert!(configuration(&fixture.profile, &LocalDeviceKeys::generate().unwrap()).is_err());

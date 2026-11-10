@@ -102,7 +102,7 @@ pub(crate) async fn handle_idle_event(state: &ServerState, event: IdleEvent) {
     let Some(app_ref) = state.app_manager.get_app(name) else {
         return;
     };
-    let Ok(_lifecycle) = app_ref.lifecycle_gate.try_write() else {
+    let Ok(lifecycle) = app_ref.lifecycle_gate.try_write() else {
         return;
     };
     if app_ref.state() == AppState::Stopped {
@@ -130,12 +130,6 @@ pub(crate) async fn handle_idle_event(state: &ServerState, event: IdleEvent) {
                     return;
                 }
                 app_ref.set_instance_state(&instance, InstanceState::Draining);
-                if let Err(e) = instance.kill().await {
-                    tracing::warn!(app = %app, instance = %instance_id, "Failed to kill idle instance: {}", e);
-                }
-                app_ref.remove_instance(&instance_id);
-                crate::metrics::remove_instance_metrics(&app, &instance_id);
-
                 let running_count = app_ref
                     .get_instances()
                     .iter()
@@ -153,6 +147,18 @@ pub(crate) async fn handle_idle_event(state: &ServerState, event: IdleEvent) {
                     app_ref.set_state(AppState::Idle);
                     state.cold_start.reset(&app);
                 }
+
+                // Routing and cold starts may proceed once the idle instance is
+                // excluded and scale-to-zero state is published. Keep shared
+                // admission until shutdown finishes so stop/restore still wait
+                // for this instance, without blocking healthy peers for the
+                // entire process termination grace period.
+                let _lifecycle = tokio::sync::RwLockWriteGuard::downgrade(lifecycle);
+                if let Err(e) = instance.kill().await {
+                    tracing::warn!(app = %app, instance = %instance_id, "Failed to kill idle instance: {}", e);
+                }
+                app_ref.remove_instance(&instance_id);
+                crate::metrics::remove_instance_metrics(&app, &instance_id);
             }
         }
         IdleEvent::AppIdle { app } => {
@@ -403,6 +409,118 @@ mod tests {
         assert_eq!(app.get_instances().len(), 1);
         assert_eq!(app.get_instances()[0].id, serving.id);
         assert_eq!(app.last_error().as_deref(), Some("v2 rollout failed"));
+    }
+
+    #[tokio::test]
+    async fn idle_shutdown_keeps_routing_and_cold_starts_available() {
+        use std::process::Stdio;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        for min_instances in [0, 1] {
+            let dir = tempfile::tempdir().unwrap();
+            let state = Arc::new(
+                ServerState::new(
+                    dir.path().into(),
+                    Arc::new(crate::tls::CertManager::new(
+                        crate::tls::CertManagerConfig {
+                            cert_dir: dir.path().join("certs"),
+                            ..Default::default()
+                        },
+                    )),
+                    None,
+                    Arc::new(parking_lot::RwLock::new(HashMap::new())),
+                )
+                .unwrap(),
+            );
+            let app = state.app_manager.register_app(crate::instances::AppConfig {
+                name: "idle-routing".into(),
+                min_instances,
+                idle_timeout: Duration::ZERO,
+                ..Default::default()
+            });
+            let name = app.name();
+            state.load_balancer.register_app(app.clone());
+            app.set_state(AppState::Running);
+            state.cold_start.begin(&name);
+            state.cold_start.mark_ready(&name);
+            let idle = app.allocate_instance();
+            app.set_instance_state(&idle, InstanceState::Healthy);
+            let serving = (min_instances != 0).then(|| {
+                let instance = app.allocate_instance();
+                app.set_instance_state(&instance, InstanceState::Healthy);
+                instance
+            });
+
+            // Hold native shutdown open deterministically, rather than relying
+            // on a sleep landing inside the termination grace period.
+            let mut child = tokio::process::Command::new("/bin/sh")
+                .args(["-c", "trap '' TERM; printf ready; read line"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            let mut stdin = child.stdin.take().unwrap();
+            let mut ready = [0; 5];
+            let mut stdout = child.stdout.take().unwrap();
+            tokio::time::timeout(Duration::from_secs(5), stdout.read_exact(&mut ready))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(&ready, b"ready");
+            idle.set_process(child);
+            tokio::time::sleep(Duration::from_millis(2)).await;
+            let eviction_state = state.clone();
+            let event = IdleEvent::InstanceIdle {
+                app: name.clone(),
+                instance_id: idle.id.clone(),
+            };
+            let eviction = tokio::spawn(async move {
+                handle_idle_event(&eviction_state, event).await;
+            });
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while idle.state() != InstanceState::Draining {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(!eviction.is_finished());
+            assert!(app.lifecycle_gate.try_write().is_err());
+
+            let serving = serving.unwrap_or_else(|| {
+                // The final idle instance must publish scale-to-zero before
+                // allowing a new cold start; shutdown must not reset it later.
+                let _admission = app.lifecycle_gate.try_read().unwrap();
+                assert_eq!(app.state(), AppState::Idle);
+                assert!(state.cold_start.begin(&name).leader);
+                let instance = app.allocate_instance();
+                app.set_state(AppState::Running);
+                app.set_instance_state(&instance, InstanceState::Healthy);
+                state.cold_start.mark_ready(&name);
+                instance
+            });
+            let resolution = crate::proxy::resolve_app_backend(
+                &state.load_balancer,
+                &state.cold_start,
+                &state.drain_requested,
+                &state.spawn_gate,
+                &name,
+            )
+            .await;
+            let crate::proxy::BackendResolution::Ready { backend, .. } = resolution else {
+                panic!("idle shutdown blocked a healthy backend");
+            };
+            assert_eq!(backend.instance_id(), serving.id);
+            stdin.write_all(b"done\n").await.unwrap();
+            tokio::time::timeout(Duration::from_secs(5), eviction)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(app.get_instance(&idle.id).is_none());
+            assert_eq!(app.state(), AppState::Running);
+            assert!(!state.cold_start.begin(&name).leader);
+        }
     }
 
     #[tokio::test]
