@@ -11,6 +11,9 @@ const BACKUP_INDEX_VERSION: u8 = 1;
 pub(super) struct BackupIndex {
     version: u8,
     pub(super) backups: Vec<BackupInfo>,
+    /// Deletion intent is persisted before touching either remote object.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) pending_deletions: Vec<BackupInfo>,
 }
 
 impl Default for BackupIndex {
@@ -18,6 +21,7 @@ impl Default for BackupIndex {
         Self {
             version: BACKUP_INDEX_VERSION,
             backups: Vec::new(),
+            pending_deletions: Vec::new(),
         }
     }
 }

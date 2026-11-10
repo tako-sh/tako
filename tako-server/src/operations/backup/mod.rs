@@ -24,7 +24,7 @@ use encryption::{
 use index::{backup_index_key, backup_object_prefix, latest_backup};
 use s3::{
     DOWNLOAD_URL_EXPIRES_SECONDS, S3_URL_EXPIRES_SECONDS, download_object, prune_retention,
-    put_json_object, upload_file,
+    put_json_object, queue_retention, upload_file,
 };
 pub(crate) use snapshot::snapshot_data_tree;
 use snapshot::{create_backup_archive, restore_data_tree, sha256_file_hex};
@@ -175,7 +175,7 @@ impl crate::ServerState {
                     .cmp(&a.created_at_unix_secs)
                     .then_with(|| b.id.cmp(&a.id))
             });
-            prune_retention(&client, &backup.storage, &mut index, backup.retention_days).await;
+            queue_retention(&mut index, backup.retention_days);
             put_json_object(
                 &client,
                 &backup.storage,
@@ -183,6 +183,25 @@ impl crate::ServerState {
                 &index,
             )
             .await?;
+
+            // Persist the new backup and deletion intent before deleting any
+            // objects. A failed final index write leaves safe, retryable work.
+            if !index.pending_deletions.is_empty() {
+                prune_retention(&client, &backup.storage, &mut index).await;
+                if let Err(error) = put_json_object(
+                    &client,
+                    &backup.storage,
+                    &backup_index_key(app, self),
+                    &index,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        app,
+                        "Failed to acknowledge backup retention cleanup: {error}"
+                    );
+                }
+            }
 
             Ok(info)
         }
