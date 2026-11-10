@@ -137,7 +137,7 @@ async fn write_resp(
     w: &mut tokio::net::unix::OwnedWriteHalf,
     resp: &Response,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    write_json_line(w, resp).await?;
+    tokio::time::timeout(std::time::Duration::from_secs(30), write_json_line(w, resp)).await??;
     Ok(())
 }
 

@@ -38,16 +38,21 @@ pub(crate) async fn resolve_app_backend(
     if draining.load(std::sync::atomic::Ordering::Acquire) {
         return BackendResolution::Unavailable;
     }
+    let Some(app) = lb.app_manager().get_app(app_name) else {
+        return BackendResolution::AppMissing;
+    };
+    let Ok(lifecycle) = app.lifecycle_gate.clone().try_read_owned() else {
+        return BackendResolution::Unavailable;
+    };
+    if app.state() == crate::socket::AppState::Stopped {
+        return BackendResolution::Unavailable;
+    }
     if let Some(backend) = lb.get_backend(app_name) {
         return BackendResolution::Ready {
             backend,
             cold_start_wait: None,
         };
     }
-
-    let Some(app) = lb.app_manager().get_app(app_name) else {
-        return BackendResolution::AppMissing;
-    };
 
     if app.config.read().min_instances != 0 {
         return BackendResolution::Unavailable;
@@ -63,6 +68,9 @@ pub(crate) async fn resolve_app_backend(
         let spawn_gate = spawn_gate.clone();
 
         tokio::spawn(async move {
+            // Transfer admission to the task before it can be scheduled. A stop
+            // waits for this attempt, then removes every instance it produced.
+            let _lifecycle = lifecycle;
             // A drain holds the gate for writing while it stops instances, so
             // a spawn admitted here is still stopped by it. Never wait: a
             // pending drain fails every cold start anyway.
@@ -84,6 +92,8 @@ pub(crate) async fn resolve_app_backend(
                 cold_start.mark_failed(&app_name, "spawn_failed");
             }
         });
+    } else {
+        drop(lifecycle);
     }
 
     let wait_started_at = std::time::Instant::now();

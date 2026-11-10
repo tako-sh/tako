@@ -11,13 +11,19 @@ impl crate::ServerState {
         let lock = self.get_deploy_lock(app_name).await;
         let _guard = lock.lock().await;
 
+        let Some(app) = self.app_manager.get_app(app_name) else {
+            return Response::error(format!("App not found: {app_name}"));
+        };
+        let _lifecycle = app.lifecycle_gate.write().await;
+        self.cold_start.mark_failed(app_name, "app_stopped");
+
         // Drain workflow worker first so in-flight tasks get a chance to
         // finish before HTTP instances are torn down. 120s hard cap.
         self.workflows
             .stop(app_name, Duration::from_secs(120))
             .await;
 
-        match self.app_manager.stop_app(app_name).await {
+        match self.app_manager.stop_app_locked(&app).await {
             Ok(()) => Response::ok(serde_json::json!({
                 "status": "stopped",
                 "app": app_name

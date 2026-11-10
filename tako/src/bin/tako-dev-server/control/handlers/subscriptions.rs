@@ -102,8 +102,15 @@ pub(super) async fn subscribe_logs(
     loop {
         tokio::select! {
             maybe_entry = rx.recv() => {
-                let Some(entry) = maybe_entry else {
-                    break;
+                let entry = match maybe_entry {
+                    Ok(entry) => entry,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        if write_resp(w, &Response::LogsTruncated).await.is_err() {
+                            break;
+                        }
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 };
                 if write_resp(
                     w,

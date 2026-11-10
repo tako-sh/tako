@@ -99,6 +99,15 @@ pub(crate) async fn handle_idle_event(state: &ServerState, event: IdleEvent) {
     let Ok(_guard) = lock.try_lock() else {
         return;
     };
+    let Some(app_ref) = state.app_manager.get_app(name) else {
+        return;
+    };
+    let Ok(_lifecycle) = app_ref.lifecycle_gate.try_write() else {
+        return;
+    };
+    if app_ref.state() == AppState::Stopped {
+        return;
+    }
     match event {
         IdleEvent::InstanceIdle { app, instance_id } => {
             if let Some(app_ref) = state.app_manager.get_app(&app)
@@ -120,6 +129,7 @@ pub(crate) async fn handle_idle_event(state: &ServerState, event: IdleEvent) {
                 {
                     return;
                 }
+                app_ref.set_instance_state(&instance, InstanceState::Draining);
                 if let Err(e) = instance.kill().await {
                     tracing::warn!(app = %app, instance = %instance_id, "Failed to kill idle instance: {}", e);
                 }
@@ -187,6 +197,12 @@ async fn replace_instance_if_needed(
             return;
         }
     };
+    let Ok(_lifecycle) = app.lifecycle_gate.try_read() else {
+        return;
+    };
+    if app.state() == AppState::Stopped {
+        return;
+    }
 
     // A rollout owns every Compose container mutation for this app. Health
     // events may observe intentional stop-first transitions; never race them

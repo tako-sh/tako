@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, FileExt, MetadataExt, PermissionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rustix::fs::{self, AtFlags, FileType, Mode, OFlags};
 use sha2::{Digest, Sha256};
@@ -183,7 +183,46 @@ pub(super) fn create_backup_archive(
     Ok(())
 }
 
-pub(super) fn restore_data_tree(extracted_dir: &Path, data_root: &Path) -> Result<(), String> {
+#[derive(Debug)]
+#[must_use = "commit the validated restore or roll it back after stopping the app"]
+pub(super) struct RestoredData {
+    data_root: PathBuf,
+    previous: PathBuf,
+}
+
+impl RestoredData {
+    pub(super) fn commit(self) -> Result<(), String> {
+        if self.previous.exists() {
+            std::fs::remove_dir_all(&self.previous).map_err(|error| {
+                format!("remove previous data {}: {error}", self.previous.display())
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Call only after stopping all processes that may access the restored tree.
+    pub(super) fn rollback(self) -> Result<(), String> {
+        let failed = self.previous.with_extension("failed");
+        std::fs::rename(&self.data_root, &failed)
+            .map_err(|error| format!("preserve failed restore at {}: {error}", failed.display()))?;
+        if self.previous.exists()
+            && let Err(error) = std::fs::rename(&self.previous, &self.data_root)
+        {
+            return Err(format!(
+                "recover original data from {}: {error}; restored data remains at {}",
+                self.previous.display(),
+                failed.display()
+            ));
+        }
+        let _ = std::fs::remove_dir_all(failed);
+        Ok(())
+    }
+}
+
+pub(super) fn restore_data_tree(
+    extracted_dir: &Path,
+    data_root: &Path,
+) -> Result<RestoredData, String> {
     if ["app", "tako"].iter().any(|name| {
         !std::fs::symlink_metadata(extracted_dir.join(name)).is_ok_and(|meta| meta.is_dir())
     }) {
@@ -206,13 +245,14 @@ pub(super) fn restore_data_tree(extracted_dir: &Path, data_root: &Path) -> Resul
         })?;
     }
     match std::fs::rename(extracted_dir, data_root) {
-        Ok(()) => {
-            let _ = std::fs::remove_dir_all(previous);
-            Ok(())
-        }
+        Ok(()) => Ok(RestoredData {
+            data_root: data_root.to_path_buf(),
+            previous,
+        }),
         Err(error) => {
             if previous.exists() {
-                let _ = std::fs::rename(&previous, data_root);
+                std::fs::rename(&previous, data_root).map_err(|rollback| format!(
+                    "restore failed: {error}; original data remains at {} because rollback failed: {rollback}", previous.display()))?;
             }
             Err(format!("restore data dir {}: {error}", data_root.display()))
         }
@@ -263,6 +303,45 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    #[test]
+    fn restore_retains_previous_data_until_restart_is_validated() {
+        let temp = TempDir::new().unwrap();
+        let live = temp.path().join("data");
+        let extracted = temp.path().join("extracted");
+        for root in [&live, &extracted] {
+            std::fs::create_dir_all(root.join("app")).unwrap();
+            std::fs::create_dir_all(root.join("tako")).unwrap();
+        }
+        std::fs::write(live.join("app/marker"), "original").unwrap();
+        std::fs::write(extracted.join("app/marker"), "backup").unwrap();
+        let swap = restore_data_tree(&extracted, &live).unwrap();
+        let previous = std::fs::read_dir(temp.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".data-restore-prev-")
+            })
+            .expect("original data must survive until restart succeeds")
+            .path();
+        assert_eq!(
+            std::fs::read_to_string(previous.join("app/marker")).unwrap(),
+            "original"
+        );
+        assert_eq!(
+            std::fs::read_to_string(live.join("app/marker")).unwrap(),
+            "backup"
+        );
+        swap.rollback().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(live.join("app/marker")).unwrap(),
+            "original"
+        );
+        assert!(!previous.exists());
+    }
+
     #[tokio::test]
     #[ignore = "requires Docker Compose and shared host/container project paths"]
     async fn compose_preparation_survives_app_data_restore() {
@@ -284,7 +363,7 @@ services:
     command: [httpd, -f, -p, '8080', -h, /www]
     volumes: ['./public:/www:ro']
     healthcheck:
-      test: [CMD, wget, -q, -O, /dev/null, 'http://127.0.0.1:8080/']
+      test: [CMD, wget, -Y, 'off', -q, -O, /dev/null, 'http://127.0.0.1:8080/']
       interval: 1s
       timeout: 1s
       retries: 3
@@ -337,7 +416,10 @@ services:
         let extracted = temp.path().join("extracted");
         crate::extract_zstd_archive(&archive, &extracted).unwrap();
         std::fs::write(data_root.join("app/marker"), "after-backup").unwrap();
-        restore_data_tree(&extracted, &data_root).unwrap();
+        restore_data_tree(&extracted, &data_root)
+            .unwrap()
+            .commit()
+            .unwrap();
         assert_eq!(
             std::fs::read_to_string(data_root.join("app/marker")).unwrap(),
             "from-backup"
@@ -348,7 +430,15 @@ services:
         restored.finish().await.unwrap();
         assert_eq!(restored.ingress().unwrap().id, id);
         let output = tokio::process::Command::new("docker")
-            .args(["exec", &id, "wget", "-qO-", "http://127.0.0.1:8080/"])
+            .args([
+                "exec",
+                &id,
+                "wget",
+                "-Y",
+                "off",
+                "-qO-",
+                "http://127.0.0.1:8080/",
+            ])
             .output()
             .await
             .unwrap();
@@ -608,7 +698,10 @@ services:
         std::fs::write(extracted.join("tako/cache.sqlite-shm"), b"shm").unwrap();
         std::fs::write(extracted.join("tako/workflows.sqlite"), b"workflows").unwrap();
 
-        restore_data_tree(&extracted, &data_root).unwrap();
+        restore_data_tree(&extracted, &data_root)
+            .unwrap()
+            .commit()
+            .unwrap();
 
         assert!(data_root.join("app/app.db").exists());
         assert!(!data_root.join("tako/channels.sqlite").exists());

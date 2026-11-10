@@ -131,6 +131,7 @@ impl Drop for Native {
 pub(crate) struct ProxyChannelStore {
     store: Arc<ChannelStore>,
     native: Option<Native>,
+    local_file: Option<crate::channels::LocalChannelFile>,
 }
 impl Deref for ProxyChannelStore {
     type Target = Arc<ChannelStore>;
@@ -170,23 +171,44 @@ impl ProxyChannelStore {
             .map_err(|_| unavailable())?;
         }
         let reader_only = link.is_some();
-        let store = tokio::task::spawn_blocking(move || {
-            if reader_only {
+        let (store, local_file) = tokio::task::spawn_blocking(move || {
+            let path = match &config {
+                ChannelStoreConfig::Sqlite { path } => Some(path.clone()),
+                _ => None,
+            };
+            let previous_file = path
+                .as_ref()
+                .and_then(|path| crate::channels::LocalChannelFile::capture(path.clone()).ok());
+            let store = if reader_only {
                 ChannelStore::open_reader_config(config)
             } else {
                 ChannelStore::open_config(config)
+            }?;
+            if previous_file
+                .as_ref()
+                .is_some_and(|file| !file.is_current())
+            {
+                return Err(ChannelError::Storage(
+                    "channel data changed while opening reader".into(),
+                ));
             }
+            let local_file = path
+                .map(crate::channels::LocalChannelFile::capture)
+                .transpose()
+                .map_err(|_| ChannelError::Storage("cannot identify channel storage".into()))?;
+            Ok::<_, ChannelError>((store, local_file))
         })
         .await
         .map_err(|_| ChannelError::Storage("channel store worker failed".into()))?
         .map_err(|_| ChannelError::Storage("cannot open channel storage".into()))?;
         let store = Arc::new(store);
         if let Some(link) = link {
-            Self::subscribe(store, app, postgres_url, link).await
+            Self::subscribe(store, app, postgres_url, link, local_file).await
         } else {
             Ok(Self {
                 store,
                 native: None,
+                local_file,
             })
         }
     }
@@ -195,6 +217,7 @@ impl ProxyChannelStore {
         app: AppEnv,
         postgres_url: Option<Zeroizing<String>>,
         link: Arc<dyn BrokerLink>,
+        local_file: Option<crate::channels::LocalChannelFile>,
     ) -> Result<Self, ChannelError> {
         // A subscriber is established before callers can capture replay heads.
         let subscription = link
@@ -209,9 +232,11 @@ impl ProxyChannelStore {
             postgres_url.clone(),
             subscription,
             ready,
+            local_file.clone(),
         ));
         Ok(Self {
             store,
+            local_file,
             native: Some(Native {
                 link,
                 app,
@@ -236,6 +261,15 @@ impl ProxyChannelStore {
         }
     }
     pub(crate) fn check_backend(&self, postgres_url: Option<&str>) -> Result<(), ChannelError> {
+        if self
+            .local_file
+            .as_ref()
+            .is_some_and(|file| !file.is_current())
+        {
+            return Err(ChannelError::Storage(
+                "channel data was replaced; reopen reader".into(),
+            ));
+        }
         if let Some(native) = &self.native
             && native.postgres_url.as_ref().map(|url| url.as_str()) != postgres_url
         {
@@ -246,6 +280,13 @@ impl ProxyChannelStore {
         Ok(())
     }
     pub(crate) async fn ensure_ready(&self) -> Result<(), ChannelError> {
+        if self
+            .local_file
+            .as_ref()
+            .is_some_and(|file| !file.is_current())
+        {
+            return Err(unavailable());
+        }
         let Some(native) = &self.native else {
             return Ok(());
         };
@@ -399,10 +440,14 @@ async fn notifications(
     postgres_url: Option<Zeroizing<String>>,
     mut subscription: Subscription,
     ready: watch::Sender<Readiness>,
+    local_file: Option<crate::channels::LocalChannelFile>,
 ) {
     let _reset = ResetOnDrop(store.clone());
     loop {
         while let Ok(notification) = subscription.recv().await {
+            if local_file.as_ref().is_some_and(|file| !file.is_current()) {
+                return;
+            }
             let Some(reader) = store.upgrade() else {
                 return;
             };
@@ -423,6 +468,9 @@ async fn notifications(
         let mut delay = FIRST_RETRY;
         loop {
             tokio::time::sleep(delay).await;
+            if local_file.as_ref().is_some_and(|file| !file.is_current()) {
+                return;
+            }
             if store.strong_count() == 0 {
                 return;
             }

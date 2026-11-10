@@ -11,6 +11,7 @@ Repository scripts used by installers, CI checks, and local development workflow
 - `publish-intel-release.sh <sha>`: Uploads the signed Intel archive and checksum only when `latest` still points to the build's commit. The caller must hold the `release-assets` GitHub Actions concurrency group through the check and upload.
 - `bump-rust-sdk-version.ts`: Bumps the published Rust SDK crate version in `sdk/rust/Cargo.toml` and `Cargo.lock`. Prefer `just sdk-rust patch|minor|major`. The release workflow publishes the Rust SDK only when this Cargo package version changes; `sdk-rust-latest` is moved by CI only after a successful crates.io publish.
 - `install-tako-server.sh`: POSIX installer for `tako-server` on Linux hosts.
+  - Edit its source fragments in `scripts/server-installer/`, then run `python3 scripts/build-server-installer.py`. The generated script remains standalone for downloads and piping to `sh`. CI checks that the generated artifact matches its sources before running the installer regression suite.
   - Both installers download assets from the rolling `latest` release (override with `TAKO_RELEASE_TAG`).
   - GitHub-hosted downloads use `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`.
   - Hosted installers require HTTPS download overrides by default; set `TAKO_ALLOW_INSECURE_DOWNLOAD_BASE=1` only for local test mirrors.

@@ -1,6 +1,77 @@
 use super::*;
 
 #[tokio::test]
+async fn stopped_on_demand_app_cannot_be_cold_started() {
+    let temp = TempDir::new().unwrap();
+    let manager = Arc::new(AppManager::new(temp.path().to_path_buf()));
+    let lb = Arc::new(LoadBalancer::new(manager.clone()));
+    let app = manager.register_app(AppConfig {
+        name: "stopped".into(),
+        min_instances: 0,
+        ..Default::default()
+    });
+    app.set_state(crate::socket::AppState::Idle);
+    lb.register_app(app.clone());
+    manager.stop_app("stopped").await.unwrap();
+    let proxy = TakoProxy::new(
+        lb,
+        Arc::new(RwLock::new(RouteTable::default())),
+        ProxyConfig::default(),
+        Arc::new(ColdStartManager::new(ColdStartConfig {
+            startup_timeout: Duration::from_secs(1),
+            max_queued_requests: 1,
+        })),
+        CloudflareIpRanges::default(),
+    );
+    assert!(matches!(
+        proxy.resolve_backend("stopped").await,
+        BackendResolution::Unavailable
+    ));
+    assert_eq!(app.state(), crate::socket::AppState::Stopped);
+    assert!(app.get_instances().is_empty());
+    assert!(app.last_error().is_none());
+}
+
+#[tokio::test]
+async fn lifecycle_mutation_blocks_routing_and_waits_for_admitted_spawns() {
+    let temp = TempDir::new().unwrap();
+    let manager = Arc::new(AppManager::new(temp.path().to_path_buf()));
+    let lb = Arc::new(LoadBalancer::new(manager.clone()));
+    let app = manager.register_app(AppConfig {
+        name: "gated".into(),
+        min_instances: 0,
+        ..Default::default()
+    });
+    app.set_state(crate::socket::AppState::Idle);
+    lb.register_app(app.clone());
+    let proxy = TakoProxy::new(
+        lb,
+        Arc::new(RwLock::new(RouteTable::default())),
+        ProxyConfig::default(),
+        Arc::new(ColdStartManager::new(ColdStartConfig::default())),
+        CloudflareIpRanges::default(),
+    );
+    let mutation = app.lifecycle_gate.write().await;
+    assert!(matches!(
+        proxy.resolve_backend("gated").await,
+        BackendResolution::Unavailable
+    ));
+    drop(mutation);
+    let spawning = app.lifecycle_gate.read().await;
+    let stopping = tokio::spawn(async move { manager.stop_app("gated").await });
+    tokio::task::yield_now().await;
+    assert!(!stopping.is_finished());
+    app.allocate_instance();
+    drop(spawning);
+    stopping.await.unwrap().unwrap();
+    assert!(app.get_instances().is_empty());
+    assert!(matches!(
+        proxy.resolve_backend("gated").await,
+        BackendResolution::Unavailable
+    ));
+}
+
+#[tokio::test]
 async fn resolve_backend_waits_for_ready_on_on_demand_apps() {
     let manager = Arc::new(AppManager::new(PathBuf::from("/tmp/tako-test")));
     let lb = Arc::new(LoadBalancer::new(manager.clone()));
@@ -10,6 +81,7 @@ async fn resolve_backend_waits_for_ready_on_on_demand_apps() {
         min_instances: 0,
         ..Default::default()
     });
+    app.set_state(crate::socket::AppState::Idle);
     lb.register_app(app.clone());
 
     let routes = Arc::new(parking_lot::RwLock::new(RouteTable::default()));
@@ -51,6 +123,7 @@ async fn resolve_backend_returns_startup_timeout_after_wait_timeout() {
         min_instances: 0,
         ..Default::default()
     });
+    app.set_state(crate::socket::AppState::Idle);
     lb.register_app(app);
 
     let routes = Arc::new(parking_lot::RwLock::new(RouteTable::default()));
@@ -82,6 +155,7 @@ async fn resolve_backend_returns_startup_failed_when_cold_start_fails() {
         min_instances: 0,
         ..Default::default()
     });
+    app.set_state(crate::socket::AppState::Idle);
     lb.register_app(app);
 
     let routes = Arc::new(parking_lot::RwLock::new(RouteTable::default()));
@@ -118,6 +192,7 @@ async fn resolve_backend_returns_queue_full_when_cold_start_queue_is_full() {
         min_instances: 0,
         ..Default::default()
     });
+    app.set_state(crate::socket::AppState::Idle);
     lb.register_app(app);
 
     let routes = Arc::new(parking_lot::RwLock::new(RouteTable::default()));
@@ -157,6 +232,7 @@ async fn resolve_backend_returns_unavailable_for_non_on_demand_apps_without_back
         min_instances: 1,
         ..Default::default()
     });
+    app.set_state(crate::socket::AppState::Idle);
     lb.register_app(app);
 
     let routes = Arc::new(parking_lot::RwLock::new(RouteTable::default()));

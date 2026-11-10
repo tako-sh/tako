@@ -24,6 +24,8 @@ pub struct App {
     routing_suppressed_instances: RwLock<HashSet<String>>,
     /// Current app state
     state: RwLock<AppState>,
+    /// Serializes stop/restore against cold starts and health replacements.
+    pub(crate) lifecycle_gate: Arc<tokio::sync::RwLock<()>>,
 
     /// Most recent error message (if any)
     last_error: RwLock<Option<String>>,
@@ -54,6 +56,7 @@ impl App {
             instance_transitions: parking_lot::Mutex::new(()),
             routing_suppressed_instances: RwLock::new(HashSet::new()),
             state: RwLock::new(AppState::Stopped),
+            lifecycle_gate: Arc::new(tokio::sync::RwLock::new(())),
             last_error: RwLock::new(None),
             instance_tx,
             log_handle,

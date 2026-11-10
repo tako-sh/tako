@@ -99,7 +99,7 @@ pub enum LogStreamEntry {
 }
 
 pub async fn subscribe_events()
--> Result<tokio::sync::mpsc::UnboundedReceiver<DevServerEvent>, Box<dyn std::error::Error>> {
+-> Result<tokio::sync::mpsc::Receiver<DevServerEvent>, Box<dyn std::error::Error>> {
     let sock = socket_path()?;
     let stream = UnixStream::connect(&sock).await?;
     let mut c = LineClient::new(stream);
@@ -114,7 +114,7 @@ pub async fn subscribe_events()
         _ => return Err(format!("unexpected response: {}", line).into()),
     }
 
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, rx) = tokio::sync::mpsc::channel(512);
     tokio::spawn(async move {
         loop {
             let line = match c.read_line().await {
@@ -127,7 +127,9 @@ pub async fn subscribe_events()
             let Some(ev) = parse_event_line(&line) else {
                 continue;
             };
-            let _ = tx.send(ev);
+            if tx.send(ev).await.is_err() {
+                break;
+            }
         }
     });
 
@@ -137,7 +139,7 @@ pub async fn subscribe_events()
 pub async fn subscribe_logs(
     config_path: &str,
     after: Option<u64>,
-) -> Result<tokio::sync::mpsc::UnboundedReceiver<LogStreamEntry>, Box<dyn std::error::Error>> {
+) -> Result<tokio::sync::mpsc::Receiver<LogStreamEntry>, Box<dyn std::error::Error>> {
     let sock = socket_path()?;
     let stream = UnixStream::connect(&sock).await?;
     let mut c = LineClient::new(stream);
@@ -157,7 +159,7 @@ pub async fn subscribe_logs(
         _ => return Err(format!("unexpected response: {}", line).into()),
     }
 
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, rx) = tokio::sync::mpsc::channel(512);
     tokio::spawn(async move {
         loop {
             let line = match c.read_line().await {
@@ -183,12 +185,13 @@ pub async fn subscribe_logs(
                             id,
                             line: entry_line,
                         })
+                        .await
                         .is_err()
                     {
                         break;
                     }
                 }
-                Some("LogsTruncated") if tx.send(LogStreamEntry::Truncated).is_err() => {
+                Some("LogsTruncated") if tx.send(LogStreamEntry::Truncated).await.is_err() => {
                     break;
                 }
                 _ => {}

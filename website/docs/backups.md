@@ -41,6 +41,13 @@ The server snapshots `/opt/tako/apps/<app>/<env>/data/`:
 
 Deploy creates a backup after successful finalization when enabled. The server scheduler also creates due backups at roughly 24-hour intervals. A release rollback preserves the current backup target and encryption keys. Each server backs up its own local data.
 
+Only one backup or restore can run per app at a time; a concurrent request returns
+a busy error. Scheduled remote transfers release the app's deployment lock after
+the local snapshot is ready. Failed retention deletions remain queued for a later
+backup attempt; expired entries are excluded from backup listings. Remote
+transfers have a 30-minute total deadline and a 60-second stalled-read deadline;
+metadata requests have a 30-second deadline.
+
 If a data file has multiple hard links, the backup fails. Replace the app's link with a private copy before retrying.
 
 With an active SQLite write-ahead log (WAL), Tako normally captures a small log first, then lets writers commit while it copies the main database. On Linux hosts that support Landlock ABI 3 or newer, Tako uses a read-only SQLite connection restricted to the verified database files when the log exceeds 4 MiB or its lock is busy. The restricted reader can finish while a writer has uncommitted changes. On hosts without these kernel permissions, Tako uses the locked capture for WALs of any size. A checkpoint may wait until the read finishes.
@@ -75,6 +82,12 @@ tako backups restore <backup-id> --env production --server la
 ```
 
 Restore verifies the archive checksum and decrypts it, stops app and workflow processes, replaces the data tree, then synchronizes workflows and resumes the app according to its desired instance state. It replaces data and can interrupt service; it is not a merge or a code rollback. An agent must establish authorization for the selected restore before using a confirmation-skipping flag.
+
+Tako blocks cold starts and health replacements while swapping data. It retains
+the previous data until restart succeeds. If restart fails, Tako stops the
+restored processes, puts the original data back, and leaves the app stopped for
+inspection. If cleanup or recovery itself fails, the error identifies retained
+data for manual recovery.
 
 ## Verify recovery
 

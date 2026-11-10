@@ -21,9 +21,8 @@ impl ImageSource {
 pub(crate) fn parse_source(source: &str) -> Result<ImageSource, ImageError> {
     if source.is_empty()
         || source.len() > MAX_SOURCE_CHARS
-        || source.contains('\0')
-        || source.contains('\r')
-        || source.contains('\n')
+        || source.bytes().any(|byte| byte.is_ascii_control())
+        || source.trim() != source
         || source.contains('#')
         || path_has_dot_segments(source)
     {
@@ -37,7 +36,11 @@ pub(crate) fn parse_source(source: &str) -> Result<ImageSource, ImageError> {
         {
             return Err(ImageError::InvalidSource);
         }
-        return Ok(ImageSource::LocalPath(source.to_string()));
+        let url = Url::parse(&format!("https://tako.invalid{source}"))
+            .map_err(|_| ImageError::InvalidSource)?;
+        return Ok(ImageSource::LocalPath(
+            url[url::Position::BeforePath..].to_string(),
+        ));
     }
 
     let url = Url::parse(source).map_err(|_| ImageError::InvalidSource)?;
@@ -55,7 +58,7 @@ pub(crate) fn parse_source(source: &str) -> Result<ImageSource, ImageError> {
         return Err(ImageError::InvalidSource);
     }
 
-    Ok(ImageSource::RemoteUrl(source.to_string()))
+    Ok(ImageSource::RemoteUrl(url.to_string()))
 }
 
 pub(crate) fn validate_public_source_allowed(
@@ -69,10 +72,9 @@ pub(crate) fn validate_public_source_allowed(
                 .local_patterns
                 .as_deref()
                 .unwrap_or(&default_patterns);
-            if patterns
-                .iter()
-                .any(|pattern| path_pattern_matches(pattern, path))
-            {
+            if patterns.iter().any(|pattern| {
+                path_pattern_matches(pattern, path.split('?').next().unwrap_or(path))
+            }) {
                 Ok(())
             } else {
                 Err(ImageError::InvalidSignature)
@@ -146,6 +148,23 @@ fn remote_pattern_matches(pattern: &str, source: &str) -> bool {
     if !matches!(source_url.scheme(), "http" | "https") {
         return false;
     }
+    let authority = pattern
+        .split_once("://")
+        .map_or(pattern, |(_, rest)| rest)
+        .split('/')
+        .next()
+        .unwrap_or_default();
+    let explicit_port = authority.rsplit_once(':').is_some_and(|(_, port)| {
+        !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit())
+    });
+    if has_explicit_scheme || explicit_port {
+        if pattern_url.port_or_known_default() != source_url.port_or_known_default() {
+            return false;
+        }
+    } else if source_url.port().is_some() {
+        // An omitted scheme allows HTTP or HTTPS on their standard ports.
+        return false;
+    }
     let Some(pattern_host) = pattern_url.host_str() else {
         return false;
     };
@@ -168,8 +187,26 @@ fn host_pattern_matches(pattern: &str, host: &str) -> bool {
 }
 
 fn path_has_dot_segments(path: &str) -> bool {
-    path.split('/')
-        .any(|segment| segment == "." || segment == "..")
+    // Reject ambiguous separators and dot segments before URL parsing can
+    // normalize them outside the allowed path. Check nested encodings too,
+    // since an upstream app may decode a path again.
+    let mut path = path.split('?').next().unwrap_or(path).to_ascii_lowercase();
+    loop {
+        if path.contains('\\') || path.contains("%2f") || path.contains("%5c") {
+            return true;
+        }
+        let decoded = path.replace("%2e", ".").replace("%25", "%");
+        if decoded
+            .split('/')
+            .any(|segment| segment == "." || segment == "..")
+        {
+            return true;
+        }
+        if decoded == path {
+            return false;
+        }
+        path = decoded;
+    }
 }
 
 fn path_pattern_matches(pattern: &str, path: &str) -> bool {
@@ -290,6 +327,66 @@ mod tests {
             parse_source("https://cdn.example.com/uploads/../admin/secret.png"),
             Err(ImageError::InvalidSource)
         );
+    }
+
+    #[test]
+    fn rejects_paths_that_change_scope_when_normalized() {
+        for path in [
+            "/images/%2e%2e/private.png",
+            "/images/.%2E/private.png",
+            "/images/%252e%252e/private.png",
+            "/images/..\\private.png",
+            "/images/%2f../private.png",
+            "/images/%5c../private.png",
+            "/images/.\t./private.png",
+            "/images/..?ignored=/avatar.png",
+        ] {
+            assert_eq!(parse_source(path), Err(ImageError::InvalidSource), "{path}");
+            let remote = format!("https://cdn.example.com{path}");
+            assert_eq!(
+                parse_source(&remote),
+                Err(ImageError::InvalidSource),
+                "{remote}"
+            );
+        }
+    }
+
+    #[test]
+    fn remote_patterns_constrain_ports() {
+        assert!(!remote_pattern_matches(
+            "https://cdn.example.com:8443/**",
+            "https://cdn.example.com:9443/a.png"
+        ));
+        assert!(!remote_pattern_matches(
+            "https://cdn.example.com/**",
+            "https://cdn.example.com:8443/a.png"
+        ));
+        assert!(!remote_pattern_matches(
+            "cdn.example.com:443/**",
+            "http://cdn.example.com/a.png"
+        ));
+        assert!(remote_pattern_matches(
+            "cdn.example.com/**",
+            "http://cdn.example.com/a.png"
+        ));
+        assert!(remote_pattern_matches(
+            "cdn.example.com/**",
+            "https://cdn.example.com/a.png"
+        ));
+        assert!(remote_pattern_matches(
+            "cdn.example.com:8443/**",
+            "http://cdn.example.com:8443/a.png"
+        ));
+    }
+
+    #[test]
+    fn local_pattern_checks_path_without_query() {
+        let config = ImagesConfig {
+            local_patterns: Some(vec!["/images/avatar.png".into()]),
+            ..Default::default()
+        };
+        let source = parse_source("/images/avatar.png?version=2").unwrap();
+        validate_public_source_allowed(&source, &config).unwrap();
     }
 
     #[test]

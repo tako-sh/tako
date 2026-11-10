@@ -4,6 +4,31 @@ use crate::instances::{INTERNAL_TOKEN_HEADER, Instance, internal_app_host_for_ap
 use crate::release::{app_runtime_data_paths, requested_deployment_identity};
 use std::path::{Path, PathBuf};
 
+/// A restored data tree has a new inode even when its configured path is unchanged.
+/// Use stat, not an extra open/close of the SQLite file (POSIX locks are process-wide).
+#[derive(Clone)]
+pub(crate) struct LocalChannelFile {
+    path: PathBuf,
+    identity: (u64, u64),
+}
+
+impl LocalChannelFile {
+    pub(crate) fn capture(path: PathBuf) -> std::io::Result<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::metadata(&path)?;
+        Ok(Self {
+            path,
+            identity: (metadata.dev(), metadata.ino()),
+        })
+    }
+
+    pub(crate) fn is_current(&self) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(&self.path)
+            .is_ok_and(|metadata| (metadata.dev(), metadata.ino()) == self.identity)
+    }
+}
+
 pub(crate) fn app_channels_db_path(data_dir: &Path, app_name: &str) -> PathBuf {
     let (name, environment) = requested_deployment_identity(app_name);
     let deployment_id = tako_core::deployment_app_id(&name, &environment);

@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::Duration;
 
 use crate::object_storage::{
     S3Method, S3PresignOptions, presign_s3_url, presign_s3_url_with_options,
@@ -9,6 +10,21 @@ use super::{index::BackupIndex, now_unix_secs};
 pub(super) const DOWNLOAD_URL_EXPIRES_SECONDS: u32 = 15 * 60;
 pub(super) const S3_URL_EXPIRES_SECONDS: u32 = 60 * 60;
 const JSON_CONTENT_TYPE: &str = "application/json";
+pub(super) const TRANSFER_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+pub(super) const METADATA_TIMEOUT: Duration = Duration::from_secs(30);
+
+pub(super) fn backup_http_client(timeout: Duration) -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .read_timeout(Duration::from_secs(60))
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| format!("build backup HTTP client: {error}"))
+}
+
+#[cfg(test)]
+mod tests;
 
 pub(super) async fn upload_file(
     client: &reqwest::Client,
@@ -57,6 +73,7 @@ pub(super) async fn put_json_object<T: serde::Serialize>(
     let response = client
         .put(url)
         .header("content-type", JSON_CONTENT_TYPE)
+        .timeout(METADATA_TIMEOUT)
         .body(body)
         .send()
         .await
@@ -106,30 +123,53 @@ pub(super) async fn download_object(
         .map_err(|e| format!("flush download file {}: {e}", path.display()))
 }
 
-async fn delete_object(client: &reqwest::Client, storage: &tako_core::StorageBinding, key: &str) {
-    let Ok(url) = presign_s3_url(storage, key, S3Method::Delete, S3_URL_EXPIRES_SECONDS) else {
-        return;
-    };
-    if let Err(error) = client.delete(url).send().await {
-        tracing::debug!(key, "Failed to delete expired backup object: {error}");
+async fn delete_object(
+    client: &reqwest::Client,
+    storage: &tako_core::StorageBinding,
+    key: &str,
+) -> Result<(), String> {
+    let url = presign_s3_url(storage, key, S3Method::Delete, S3_URL_EXPIRES_SECONDS)?;
+    let response = client
+        .delete(url)
+        .timeout(METADATA_TIMEOUT)
+        .send()
+        .await
+        .map_err(|error| format!("delete expired backup object {key}: {error}"))?;
+    if response.status().is_success() || response.status() == reqwest::StatusCode::NOT_FOUND {
+        Ok(())
+    } else {
+        Err(format!(
+            "delete expired backup object {key} returned {}",
+            response.status()
+        ))
     }
+}
+
+pub(super) fn queue_retention(index: &mut BackupIndex, retention_days: u16) {
+    let cutoff = now_unix_secs().saturating_sub(i64::from(retention_days) * 24 * 60 * 60);
+    index.backups.retain(|backup| {
+        if backup.created_at_unix_secs < cutoff {
+            index.pending_deletions.push(backup.clone());
+            false
+        } else {
+            true
+        }
+    });
 }
 
 pub(super) async fn prune_retention(
     client: &reqwest::Client,
     storage: &tako_core::StorageBinding,
     index: &mut BackupIndex,
-    retention_days: u16,
 ) {
-    let cutoff = now_unix_secs().saturating_sub(i64::from(retention_days) * 24 * 60 * 60);
-    let mut retained = Vec::with_capacity(index.backups.len());
-    for backup in std::mem::take(&mut index.backups) {
-        if backup.created_at_unix_secs < cutoff {
-            delete_object(client, storage, &backup.archive_key).await;
-            delete_object(client, storage, &backup.manifest_key).await;
-        } else {
-            retained.push(backup);
+    let mut pending = Vec::new();
+    for backup in std::mem::take(&mut index.pending_deletions) {
+        let archive = delete_object(client, storage, &backup.archive_key).await;
+        let manifest = delete_object(client, storage, &backup.manifest_key).await;
+        if let Err(error) = archive.and(manifest) {
+            tracing::warn!(backup = %backup.id, "Retention cleanup will retry: {error}");
+            pending.push(backup);
         }
     }
-    index.backups = retained;
+    index.pending_deletions = pending;
 }

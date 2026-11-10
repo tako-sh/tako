@@ -17,12 +17,13 @@ import (
 // MockServer emulates the tako-server enqueue socket with an in-memory
 // task store — just enough to drive worker lifecycle tests end-to-end.
 type mockServer struct {
-	l        net.Listener
-	path     string
-	mu       sync.Mutex
-	tasks    map[string]*Run
-	idCount  int
-	received []map[string]any
+	l            net.Listener
+	path         string
+	mu           sync.Mutex
+	tasks        map[string]*Run
+	idCount      int
+	received     []map[string]any
+	saveFailures map[string]int
 }
 
 func startMockServer(t *testing.T) *mockServer {
@@ -168,6 +169,10 @@ func (s *mockServer) dispatch(cmd map[string]any) map[string]any {
 	case "save_step":
 		id, _ := cmd["id"].(string)
 		stepName, _ := cmd["step_name"].(string)
+		if s.saveFailures[stepName] > 0 {
+			s.saveFailures[stepName]--
+			return map[string]any{"status": "error", "message": "checkpoint unavailable"}
+		}
 		if t := s.tasks[id]; t != nil {
 			if t.StepState == nil {
 				t.StepState = map[string]any{}

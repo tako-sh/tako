@@ -38,9 +38,6 @@ impl crate::ServerState {
         };
 
         for persisted in apps {
-            let Ok(_management) = self.management_lock.try_lock() else {
-                return;
-            };
             if self.is_draining() {
                 return;
             }
@@ -70,5 +67,59 @@ impl crate::ServerState {
                 tracing::warn!(app = %app, "Scheduled backup failed: {error}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn stalled_storage_does_not_hold_management_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = Arc::new(
+            crate::ServerState::new(
+                temp.path().into(),
+                Arc::new(crate::tls::CertManager::new(
+                    crate::tls::CertManagerConfig {
+                        cert_dir: temp.path().join("certs"),
+                        ..Default::default()
+                    },
+                )),
+                None,
+                Arc::new(parking_lot::RwLock::new(Default::default())),
+            )
+            .unwrap(),
+        );
+        let config = crate::instances::AppConfig {
+            name: "scheduled".into(),
+            ..Default::default()
+        };
+        let app = config.deployment_id();
+        state.state_store.upsert_app(&config, &[]).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let backup = serde_json::from_value(serde_json::json!({
+            "storage": {"provider": "s3", "bucket": "fixture", "endpoint": format!("https://{}", listener.local_addr().unwrap()),
+                "region": "local", "access_key_id": "fixture", "secret_access_key": "fixture", "force_path_style": true},
+            "backup_keys": [{"id": "backup-key-0123456789abcdef", "key_base64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}]
+        })).unwrap();
+        super::super::validate_backup_binding(&backup).unwrap();
+        state.state_store.set_backup(&app, Some(&backup)).unwrap();
+        let scheduler = tokio::spawn({
+            let state = state.clone();
+            async move { state.run_due_backups().await }
+        });
+        // Hold the socket without completing TLS: the storage operation is pending.
+        let (_socket, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let available = state.management_lock.try_lock().is_ok();
+        scheduler.abort();
+        let _ = scheduler.await;
+        assert!(
+            available,
+            "a remote storage stall blocked all management commands"
+        );
     }
 }

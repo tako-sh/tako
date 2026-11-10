@@ -232,6 +232,28 @@ fn log_buffer_push_and_subscribe_returns_backlog() {
 }
 
 #[test]
+fn slow_log_subscribers_have_bounded_queues_and_can_resume() {
+    let buf = LogBuffer::new();
+    let (_, mut rx, _) = buf.subscribe(None);
+    for index in 0..10_000 {
+        buf.push(format!("line-{index}"));
+    }
+    assert!(
+        rx.try_recv().is_err(),
+        "a lagging subscriber must be notified"
+    );
+    let mut received = 0;
+    while rx.try_recv().is_ok() {
+        received += 1;
+    }
+    assert_eq!(received, 512);
+    let (backlog, _, truncated) = buf.subscribe(Some(0));
+    assert!(truncated);
+    assert_eq!(backlog.len(), 500);
+    assert_eq!(backlog.last().unwrap().id, 9999);
+}
+
+#[test]
 fn log_buffer_subscribe_after_returns_entries_after_id() {
     let buf = LogBuffer::new();
     for i in 0..5 {

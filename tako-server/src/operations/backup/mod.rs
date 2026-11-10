@@ -23,8 +23,8 @@ use encryption::{
 };
 use index::{backup_index_key, backup_object_prefix, latest_backup};
 use s3::{
-    DOWNLOAD_URL_EXPIRES_SECONDS, S3_URL_EXPIRES_SECONDS, download_object, prune_retention,
-    put_json_object, upload_file,
+    DOWNLOAD_URL_EXPIRES_SECONDS, S3_URL_EXPIRES_SECONDS, TRANSFER_TIMEOUT, backup_http_client,
+    download_object, prune_retention, put_json_object, queue_retention, upload_file,
 };
 pub(crate) use snapshot::snapshot_data_tree;
 use snapshot::{create_backup_archive, restore_data_tree, sha256_file_hex};
@@ -69,8 +69,15 @@ impl crate::ServerState {
     }
 
     async fn backup_app_now(&self, app: &str) -> Result<BackupInfo, String> {
+        let backup_lock = self.backup_operation_lock(app);
+        let _backup = backup_lock
+            .try_lock()
+            .map_err(|_| format!("A backup operation is already in progress for {app}."))?;
         let lock = self.get_deploy_lock(app).await;
         let _guard = lock.lock().await;
+        if self.is_draining() {
+            return Err("Server is draining".into());
+        }
         let backup = self
             .state_store
             .get_backup(app)
@@ -128,6 +135,9 @@ impl crate::ServerState {
             .await
             .map_err(|e| format!("backup worker failed: {e}"))?;
             let (sha256_hex, encryption) = archive_result?;
+            // The snapshot is independent of the live app now. Remote I/O must
+            // not keep stop/delete/deploy waiting on this lifecycle lock.
+            drop(_guard);
             let size_bytes = tokio::fs::metadata(&encrypted_archive_path)
                 .await
                 .map_err(|e| {
@@ -157,7 +167,7 @@ impl crate::ServerState {
                 encryption,
             };
 
-            let client = reqwest::Client::new();
+            let client = backup_http_client(TRANSFER_TIMEOUT)?;
             let mut index = self.read_backup_index(&backup, app).await?;
             upload_file(
                 &client,
@@ -175,7 +185,7 @@ impl crate::ServerState {
                     .cmp(&a.created_at_unix_secs)
                     .then_with(|| b.id.cmp(&a.id))
             });
-            prune_retention(&client, &backup.storage, &mut index, backup.retention_days).await;
+            queue_retention(&mut index, backup.retention_days);
             put_json_object(
                 &client,
                 &backup.storage,
@@ -183,6 +193,25 @@ impl crate::ServerState {
                 &index,
             )
             .await?;
+
+            // Persist the new backup and deletion intent before deleting any
+            // objects. A failed final index write leaves safe, retryable work.
+            if !index.pending_deletions.is_empty() {
+                prune_retention(&client, &backup.storage, &mut index).await;
+                if let Err(error) = put_json_object(
+                    &client,
+                    &backup.storage,
+                    &backup_index_key(app, self),
+                    &index,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        app,
+                        "Failed to acknowledge backup retention cleanup: {error}"
+                    );
+                }
+            }
 
             Ok(info)
         }
@@ -265,6 +294,10 @@ impl crate::ServerState {
     }
 
     async fn restore_backup_inner(&self, app: &str, backup_id: &str) -> Result<BackupInfo, String> {
+        let backup_lock = self.backup_operation_lock(app);
+        let _backup = backup_lock
+            .try_lock()
+            .map_err(|_| format!("A backup operation is already in progress for {app}."))?;
         let lock = self.get_deploy_lock(app).await;
         let _guard = lock.lock().await;
         let backup = self
@@ -291,7 +324,7 @@ impl crate::ServerState {
         create_private_work_dir(&work_dir).await?;
 
         let result: Result<BackupInfo, String> = async {
-            let client = reqwest::Client::new();
+            let client = backup_http_client(TRANSFER_TIMEOUT)?;
             download_object(
                 &client,
                 &backup.storage,
@@ -328,13 +361,14 @@ impl crate::ServerState {
 
             crate::extract_zstd_archive(&archive_path, &extract_dir)?;
             let data_root = app_runtime_data_paths(&self.runtime.data_dir, app).root;
+            let _lifecycle = app_ref.lifecycle_gate.write().await;
+            self.cold_start.mark_failed(app, "restoring_backup");
             self.workflows.stop(app, Duration::from_secs(120)).await;
             self.app_manager
-                .stop_app(app)
+                .stop_app_locked(&app_ref)
                 .await
                 .map_err(|error| format!("Stop failed before restore: {error}"))?;
-            restore_data_tree(&extract_dir, &data_root)?;
-            ensure_app_runtime_data_dirs(&self.runtime.data_dir, app)?;
+            let swap = restore_data_tree(&extract_dir, &data_root)?;
 
             let release_path = release_app_path(&self.runtime.data_dir, &config);
             let runtime_bin_path =
@@ -342,19 +376,31 @@ impl crate::ServerState {
                     .await
                     .ok()
                     .flatten();
-            self.sync_app_workflows(app, &release_path, runtime_bin_path.as_deref())
-                .await;
-            if config.min_instances > 0 {
-                self.app_manager
-                    .start_app(app)
-                    .await
-                    .map_err(|error| format!("Restart failed after restore: {error}"))?;
-                if let Some(app_ref) = self.app_manager.get_app(app) {
-                    app_ref.set_state(crate::socket::AppState::Running);
+            let restarted = async {
+                ensure_app_runtime_data_dirs(&self.runtime.data_dir, app)?;
+                if self.is_draining() { return Err("Server began draining during restore".to_string()); }
+                self.try_sync_app_workflows(app, &release_path, runtime_bin_path.as_deref()).await
+                    .map_err(|error| format!("Restart workflows after restore: {error}"))?;
+                if config.min_instances > 0 {
+                    self.app_manager.start_app_locked(&app_ref).await
+                        .map_err(|error| format!("Restart failed after restore: {error}"))?;
                 }
-            } else if let Some(app_ref) = self.app_manager.get_app(app) {
+                Ok::<(), String>(())
+            }.await;
+            if let Err(error) = restarted {
+                self.workflows.stop(app, Duration::from_secs(120)).await;
+                // Never swap files underneath a process whose stop failed.
+                self.app_manager.stop_app_locked(&app_ref).await
+                    .map_err(|stop| format!("{error}; could not stop restored app: {stop}; original data retained for recovery"))?;
+                swap.rollback().map_err(|rollback| format!("{error}; {rollback}"))?;
+                return Err(format!("{error}; original data restored, app left stopped"));
+            }
+            if config.min_instances == 0 {
                 app_ref.set_state(crate::socket::AppState::Idle);
-                self.cold_start.reset(app);
+            }
+            self.cold_start.reset(app);
+            if let Err(error) = swap.commit() {
+                tracing::warn!(app, "Restore succeeded but previous data cleanup failed: {error}");
             }
 
             Ok(info)
@@ -377,6 +423,14 @@ impl crate::ServerState {
             .into_iter()
             .find(|backup| backup.id == backup_id)
             .ok_or_else(|| format!("Backup not found: {backup_id}"))
+    }
+
+    fn backup_operation_lock(&self, app: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+        self.backup_locks
+            .write()
+            .entry(app.to_string())
+            .or_default()
+            .clone()
     }
 }
 

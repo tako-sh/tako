@@ -123,11 +123,13 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Test release scripts
-        run: python3 -m unittest discover -s scripts/tests -v
+        run: |
+          python3 scripts/build-server-installer.py --check
+          python3 -m unittest discover -s scripts/tests -v
 
       - name: Run workspace tests
         env:
-          TAKO_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:${{ job.services.postgres.ports[5432] }}/postgres
+          TAKO_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:${{ job.services.postgres.ports['5432'] }}/postgres
         run: |
           cargo test --workspace --locked --lib --bins
           cargo test -p tako-network --locked --test '*'
