@@ -7,7 +7,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: [CMD-SHELL, "wget -q -O /dev/null http://127.0.0.1:8080/"]
+      test: [CMD-SHELL, "wget -Y off -q -O /dev/null http://127.0.0.1:8080/"]
       interval: 1s
       timeout: 2s
       retries: 3

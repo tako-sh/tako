@@ -664,7 +664,10 @@ async fn production_rollouts_preserve_dependencies_and_recover_interrupted_gener
     let bad = fixture
         .release(
             "bad",
-            &yaml.replace("wget -q -O /dev/null http://127.0.0.1:8080/", "exit 1"),
+            &yaml.replace(
+                "wget -Y off -q -O /dev/null http://127.0.0.1:8080/",
+                "exit 1",
+            ),
         )
         .await;
     let mut failed = bad.begin_rollout().await.unwrap();
@@ -723,7 +726,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: [CMD-SHELL, "wget -q -O /dev/null http://127.0.0.1:8080/"]
+      test: [CMD-SHELL, "wget -Y off -q -O /dev/null http://127.0.0.1:8080/"]
       interval: 1s
       retries: 2
   redis:

@@ -36,6 +36,7 @@ pub(crate) fn apply_coverage_env(cmd: &mut Command) {
 /// Helper to run tako CLI commands
 pub(crate) fn run_tako(args: &[&str], cwd: &Path) -> std::process::Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_tako"));
+    cmd.env_remove("RUST_LOG");
     cmd.args(args)
         .current_dir(cwd)
         .stdin(Stdio::null())
@@ -48,6 +49,7 @@ pub(crate) fn run_tako(args: &[&str], cwd: &Path) -> std::process::Output {
 /// Helper to run tako CLI commands with stdin input
 pub(crate) fn run_tako_with_stdin(args: &[&str], cwd: &Path, input: &str) -> std::process::Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_tako"));
+    cmd.env_remove("RUST_LOG");
     cmd.args(args)
         .current_dir(cwd)
         .stdin(Stdio::piped())
@@ -72,6 +74,7 @@ pub(crate) fn run_tako_with_env(
     tako_home: &Path,
 ) -> std::process::Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_tako"));
+    cmd.env_remove("RUST_LOG");
     cmd.args(args)
         .current_dir(cwd)
         .env("HOME", home)
@@ -89,6 +92,7 @@ pub(crate) fn run_tako_with_extra_env(
     envs: &[(&str, &str)],
 ) -> std::process::Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_tako"));
+    cmd.env_remove("RUST_LOG");
     cmd.args(args)
         .current_dir(cwd)
         .envs(envs.iter().copied())
@@ -107,6 +111,7 @@ pub(crate) fn run_tako_with_stdin_and_env(
     tako_home: &Path,
 ) -> std::process::Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_tako"));
+    cmd.env_remove("RUST_LOG");
     cmd.args(args)
         .current_dir(cwd)
         .env("HOME", home)

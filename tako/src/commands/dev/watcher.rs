@@ -362,7 +362,11 @@ mod tests {
         std::fs::create_dir_all(&channels).unwrap();
         let declaration = channels.join("catalog.mts");
         std::fs::write(&declaration, "export default {};\n").unwrap();
-        let cutoff = SystemTime::now();
+        let cutoff = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        std::fs::File::open(&declaration)
+            .unwrap()
+            .set_modified(cutoff - Duration::from_secs(1))
+            .unwrap();
         assert_eq!(
             classify_path(
                 project_dir,
@@ -660,13 +664,20 @@ mod tests {
         std::fs::create_dir_all(&stores_dir).unwrap();
         let store = stores_dir.join("messages.ts");
         std::fs::write(&store, "export default null;\n").unwrap();
-        let cutoff = SystemTime::now();
+        let cutoff = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        std::fs::File::open(&store)
+            .unwrap()
+            .set_modified(cutoff - Duration::from_secs(1))
+            .unwrap();
         assert_eq!(
             classify_path(project_dir, &app_root, &config_path, &store, Some(cutoff)),
             None
         );
-        std::thread::sleep(Duration::from_millis(2));
         std::fs::write(&store, "export default 1;\n").unwrap();
+        std::fs::File::open(&store)
+            .unwrap()
+            .set_modified(cutoff + Duration::from_secs(1))
+            .unwrap();
         assert_eq!(
             classify_path(project_dir, &app_root, &config_path, &store, Some(cutoff)),
             Some(WatchChange::Channels)
@@ -749,7 +760,14 @@ mod tests {
         let workflow_file = workflows_dir.join("broadcast.ts");
         std::fs::write(&channel_file, "export default null;\n").unwrap();
         std::fs::write(&workflow_file, "export default null;\n").unwrap();
-        let watcher_started_after_existing_files = SystemTime::now();
+        let watcher_started_after_existing_files =
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        for path in [&channel_file, &workflow_file] {
+            std::fs::File::open(path)
+                .unwrap()
+                .set_modified(watcher_started_after_existing_files - Duration::from_secs(1))
+                .unwrap();
+        }
 
         assert_eq!(
             classify_path(
@@ -772,9 +790,14 @@ mod tests {
             None
         );
 
-        std::thread::sleep(Duration::from_millis(2));
         std::fs::write(&channel_file, "export default 1;\n").unwrap();
         std::fs::write(&workflow_file, "export default 1;\n").unwrap();
+        for path in [&channel_file, &workflow_file] {
+            std::fs::File::open(path)
+                .unwrap()
+                .set_modified(watcher_started_after_existing_files + Duration::from_secs(1))
+                .unwrap();
+        }
 
         assert_eq!(
             classify_path(

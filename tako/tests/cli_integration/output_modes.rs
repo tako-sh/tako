@@ -11,6 +11,7 @@ fn ci_flag_disables_ansi_colors() {
     fs::write(tako_dir.join("config.toml"), "").unwrap();
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_tako"));
+    cmd.env_remove("RUST_LOG");
     cmd.args(["--ci", "servers", "list"])
         .current_dir(project_dir)
         .env("HOME", project_dir)
@@ -41,6 +42,7 @@ fn verbose_flag_produces_timestamped_output() {
     fs::write(tako_dir.join("config.toml"), "").unwrap();
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_tako"));
+    cmd.env_remove("RUST_LOG");
     cmd.args(["--verbose", "servers", "list"])
         .current_dir(project_dir)
         .env("HOME", project_dir)
@@ -75,6 +77,7 @@ fn ci_and_verbose_combined() {
     fs::write(tako_dir.join("config.toml"), "").unwrap();
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_tako"));
+    cmd.env_remove("RUST_LOG");
     cmd.args(["--ci", "--verbose", "servers", "list"])
         .current_dir(project_dir)
         .env("HOME", project_dir)
@@ -113,6 +116,7 @@ fn verbose_output_goes_to_stderr() {
     fs::write(tako_dir.join("config.toml"), "").unwrap();
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_tako"));
+    cmd.env_remove("RUST_LOG");
     cmd.args(["--verbose", "servers", "list"])
         .current_dir(project_dir)
         .env("HOME", project_dir)
