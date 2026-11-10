@@ -136,13 +136,17 @@ async fn backup_request_deadline_covers_a_stalled_response_body() {
     let url = format!("http://{}", listener.local_addr().unwrap());
     let fixture = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
-        let mut request = [0; 4096];
-        stream.read(&mut request).await.unwrap();
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            stream.read_exact(&mut byte).await.unwrap();
+            request.push(byte[0]);
+        }
         stream
             .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\npartial")
             .await
             .unwrap();
-        let _ = stream.read(&mut request).await;
+        let _ = stream.read(&mut [0]).await;
     });
     let client = backup_http_client(Duration::from_millis(100)).unwrap();
     let response = client.get(url).send().await.unwrap();
