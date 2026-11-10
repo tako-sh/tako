@@ -257,6 +257,28 @@ async fn new_broker() -> (tempfile::TempDir, Broker) {
     ));
     (temp, broker)
 }
+
+#[tokio::test]
+async fn registration_reopens_channels_after_data_tree_restore() {
+    let (temp, mut broker) = new_broker().await;
+    publish(&mut broker, 1).await;
+    let previous = broker.apps.get(&app()).unwrap().store.clone();
+    let root = temp.path().join(app().as_str());
+    std::fs::rename(root.join("data"), root.join("previous-data")).unwrap();
+    std::fs::create_dir_all(root.join("data/tako")).unwrap();
+    assert!(matches!(
+        broker.local(Request::Register { app: app(), postgres_url: None }).await.unwrap(),
+        Reply::Response(Response::Ok)
+    ));
+    let current = broker.apps.get(&app()).unwrap().store.clone();
+    assert!(!Arc::ptr_eq(&previous, &current), "restore must replace the old writer");
+    publish(&mut broker, 2).await;
+    assert_eq!(current.read_after("events", None, 10).unwrap().len(), 1);
+    let reader = ChannelStore::open_reader_config(tako_channels::ChannelStoreConfig::sqlite(
+        root.join("data/tako/channels.sqlite")
+    )).unwrap();
+    assert_eq!(reader.read_after("events", None, 10).unwrap()[0].data, serde_json::json!(2));
+}
 async fn publish(broker: &mut Broker, n: usize) -> ChannelMessage {
     match broker
         .local(Request::Publish {

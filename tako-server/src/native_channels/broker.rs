@@ -78,6 +78,7 @@ pub(super) async fn run(
 }
 pub(super) struct Application {
     pub store: Arc<ChannelStore>,
+    local_file: Option<crate::channels::LocalChannelFile>,
     pub(super) postgres_url: Option<Zeroizing<String>>,
     publications: broadcast::Receiver<ChannelPublication>,
     pub(super) subscribers: Vec<wire::Sender>,
@@ -156,7 +157,15 @@ impl Broker {
         deadline: tokio::time::Instant,
     ) -> io::Result<()> {
         let replacing = match self.apps.get(&app) {
-            Some(existing) if existing.postgres_url == postgres_url => return Ok(()),
+            Some(existing)
+                if existing.postgres_url == postgres_url
+                    && existing
+                        .local_file
+                        .as_ref()
+                        .is_none_or(|file| file.is_current()) =>
+            {
+                return Ok(());
+            }
             Some(_) => true,
             None => false,
         };
@@ -176,6 +185,10 @@ impl Broker {
         let url = postgres_url.clone();
         let app_id = app.to_string();
         let open = tokio::task::spawn_blocking(move || {
+            let local = url.is_none();
+            let previous_file = local
+                .then(|| crate::channels::LocalChannelFile::capture(path.clone()).ok())
+                .flatten();
             let store = if let Some(url) = url {
                 ChannelStore::open_postgres(&url, &app_id)
             } else {
@@ -184,15 +197,26 @@ impl Broker {
                 ChannelStore::open_sqlite(&path)
             }
             .map_err(|_| error("cannot open channel storage"))?;
+            if previous_file
+                .as_ref()
+                .is_some_and(|file| !file.is_current())
+            {
+                return Err(error("channel data changed while opening storage"));
+            }
+            let local_file = if local {
+                Some(crate::channels::LocalChannelFile::capture(path)?)
+            } else {
+                None
+            };
             store
                 .invalidate_replay()
                 .map_err(|_| error("cannot fence channel replay"))?;
-            Ok::<_, io::Error>(Arc::new(store))
+            Ok::<_, io::Error>((Arc::new(store), local_file))
         });
         // Commands run one at a time, so an unresponsive database must not hold
         // the broker past the caller's deadline: the worker finishes or fails on
         // its own, and other applications keep publishing meanwhile.
-        let store = match tokio::time::timeout_at(deadline, open).await {
+        let (store, local_file) = match tokio::time::timeout_at(deadline, open).await {
             Ok(joined) => joined.map_err(|_| error("channel storage worker failed"))??,
             Err(_) => return Err(error("channel storage did not open before the deadline")),
         };
@@ -204,6 +228,7 @@ impl Broker {
             // replay from the previous one.
             let application = self.apps.get_mut(&app).expect("registered application");
             application.store = store;
+            application.local_file = local_file;
             application.postgres_url = postgres_url;
             application.publications = publications;
             application.presence.clear_remote(&self.local);
@@ -215,6 +240,7 @@ impl Broker {
             app,
             Application {
                 store,
+                local_file,
                 postgres_url,
                 publications,
                 subscribers: Vec::new(),

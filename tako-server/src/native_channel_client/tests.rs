@@ -109,7 +109,7 @@ async fn attached() -> (ProxyChannelStore, Arc<FakeBroker>, DuplexStream) {
     let link = Arc::new(FakeBroker::default());
     let server = link.stream().await;
     let store = Arc::new(ChannelStore::open_in_memory().unwrap());
-    let proxy = ProxyChannelStore::subscribe(store, scope(), None, link.clone())
+    let proxy = ProxyChannelStore::subscribe(store, scope(), None, link.clone(), None)
         .await
         .unwrap();
     (proxy, link, server)
@@ -133,6 +133,47 @@ async fn initial_registration_and_subscription_precede_reader_exposure() {
     assert_eq!(*link.calls.lock(), vec!["register", "subscribe"]);
     assert!(proxy.read_after("events", None, 100).unwrap().is_empty());
     drop(writer);
+}
+
+#[tokio::test]
+async fn replaced_sqlite_tree_invalidates_cached_reader_and_notifications() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("data");
+    std::fs::create_dir(&root).unwrap();
+    let path = root.join("channels.sqlite");
+    let _writer = ChannelStore::open_sqlite(&path).unwrap();
+    let link = Arc::new(FakeBroker::default());
+    let mut notices = link.stream().await;
+    let proxy = ProxyChannelStore::open_with_link(
+        ChannelStoreConfig::sqlite(path),
+        scope(),
+        Some(link.clone()),
+    )
+    .await
+    .unwrap();
+    let mut resets = proxy.resets("events");
+    std::fs::rename(&root, temp.path().join("previous-data")).unwrap();
+    std::fs::create_dir(&root).unwrap();
+    assert!(
+        proxy.check_backend(None).is_err(),
+        "cache must reopen a replaced database"
+    );
+    assert!(
+        proxy.ensure_ready().await.is_err(),
+        "old readers must fail closed"
+    );
+    notice(&mut notices, Notification::Gap).await;
+    tokio::time::timeout(Duration::from_secs(1), resets.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !proxy.native.as_ref().unwrap().task.is_finished() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("stale subscriptions must stop instead of reconnecting the old reader");
 }
 #[tokio::test]
 async fn notification_delivery_does_not_reinsert_or_republish() {
@@ -272,7 +313,7 @@ async fn failed_initial_subscription_does_not_expose_a_ready_reader() {
     let link = Arc::new(FakeBroker::default());
     let store = Arc::new(ChannelStore::open_in_memory().unwrap());
     assert!(
-        ProxyChannelStore::subscribe(store, scope(), None, link)
+        ProxyChannelStore::subscribe(store, scope(), None, link, None)
             .await
             .is_err()
     );
