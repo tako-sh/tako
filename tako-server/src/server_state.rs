@@ -632,7 +632,7 @@ impl ServerState {
         }
     }
 
-    async fn try_sync_app_workflows(
+    pub(crate) async fn try_sync_app_workflows(
         &self,
         app_name: &str,
         release_path: &std::path::Path,

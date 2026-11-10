@@ -44,6 +44,9 @@ pub(crate) async fn resolve_app_backend(
     let Ok(lifecycle) = app.lifecycle_gate.clone().try_read_owned() else {
         return BackendResolution::Unavailable;
     };
+    if app.state() == crate::socket::AppState::Stopped {
+        return BackendResolution::Unavailable;
+    }
     if let Some(backend) = lb.get_backend(app_name) {
         return BackendResolution::Ready {
             backend,
@@ -51,7 +54,7 @@ pub(crate) async fn resolve_app_backend(
         };
     }
 
-    if app.config.read().min_instances != 0 || app.state() == crate::socket::AppState::Stopped {
+    if app.config.read().min_instances != 0 {
         return BackendResolution::Unavailable;
     }
 
