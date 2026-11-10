@@ -64,6 +64,7 @@ pub struct Instance {
     container: RwLock<Option<(crate::container_runtime::ContainerEngine, String)>>,
     compose: RwLock<Option<ComposeInstance>>,
     stop_lock: tokio::sync::Mutex<()>,
+    terminate_at: RwLock<Option<tokio::time::Instant>>,
     /// Process ID
     pid: AtomicU32,
     /// Current state
@@ -115,6 +116,7 @@ impl Instance {
             container: RwLock::new(None),
             compose: RwLock::new(None),
             stop_lock: tokio::sync::Mutex::new(()),
+            terminate_at: RwLock::new(None),
             pid: AtomicU32::new(0),
             state: AtomicU8::new(encode_instance_state(InstanceState::Starting)),
             started_at: RwLock::new(None),
@@ -315,6 +317,10 @@ impl Instance {
 
     /// Kill the process
     pub async fn kill(&self) -> Result<(), std::io::Error> {
+        self.kill_with_grace(Duration::from_secs(15)).await
+    }
+
+    pub(super) async fn kill_with_grace(&self, grace: Duration) -> Result<(), std::io::Error> {
         let _guard = self.stop_lock.lock().await;
         let compose = self.compose.read().clone();
         if let Some(compose) = compose {
@@ -332,12 +338,29 @@ impl Instance {
             crate::container_runtime::remove_container(engine, &name).await?;
             *self.container.write() = None;
         }
-        {
+        let deadline = {
             let mut process = self.process.write();
-            if let Some(child) = process.as_mut() {
-                child.start_kill()?;
+            let mut terminate_at = self.terminate_at.write();
+            if terminate_at.is_none() {
+                if let Some(child) = process.as_mut()
+                    && child.try_wait()?.is_none()
+                {
+                    #[cfg(unix)]
+                    if let Some(pid) = child.id()
+                        && unsafe { libc::kill(pid as i32, libc::SIGTERM) } != 0
+                    {
+                        let error = std::io::Error::last_os_error();
+                        if error.raw_os_error() != Some(libc::ESRCH) {
+                            return Err(error);
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    child.start_kill()?;
+                }
+                *terminate_at = Some(tokio::time::Instant::now() + grace);
             }
-        }
+            terminate_at.unwrap()
+        };
         loop {
             let stopped = {
                 let mut process = self.process.write();
@@ -346,6 +369,9 @@ impl Instance {
                         process.take();
                         true
                     } else {
+                        if tokio::time::Instant::now() >= deadline {
+                            child.start_kill()?;
+                        }
                         false
                     }
                 } else {
@@ -354,6 +380,12 @@ impl Instance {
             };
             if stopped {
                 break;
+            }
+            if tokio::time::Instant::now() >= deadline + Duration::from_secs(5) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "process did not exit after SIGKILL",
+                ));
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }

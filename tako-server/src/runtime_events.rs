@@ -120,6 +120,7 @@ pub(crate) async fn handle_idle_event(state: &ServerState, event: IdleEvent) {
                 {
                     return;
                 }
+                app_ref.set_instance_state(&instance, InstanceState::Draining);
                 if let Err(e) = instance.kill().await {
                     tracing::warn!(app = %app, instance = %instance_id, "Failed to kill idle instance: {}", e);
                 }

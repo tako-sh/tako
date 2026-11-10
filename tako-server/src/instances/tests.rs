@@ -4,6 +4,66 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use tokio::sync::mpsc;
 
+#[cfg(unix)]
+#[tokio::test]
+async fn stopping_native_instance_allows_sigterm_cleanup() {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("stopped");
+    let mut child = tokio::process::Command::new("sh")
+        .args([
+            "-c",
+            "trap 'echo stopped > \"$1\"; exit 0' TERM; echo ready; while :; do sleep 0.01; done",
+            "fixture",
+        ])
+        .arg(&marker)
+        .stdout(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    assert_eq!(lines.next_line().await.unwrap().as_deref(), Some("ready"));
+    let instance = Instance::new("shutdown".into(), "v1".into(), noop_log_handle());
+    instance.set_process(child);
+    instance.kill().await.unwrap();
+    assert_eq!(std::fs::read_to_string(marker).unwrap(), "stopped\n");
+    assert!(!instance.is_alive().await);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cancelled_stop_keeps_its_force_kill_deadline() {
+    use std::time::Duration;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let mut child = tokio::process::Command::new("sh")
+        .args([
+            "-c",
+            "trap '' TERM; echo ready; while :; do sleep 0.01; done",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    assert_eq!(lines.next_line().await.unwrap().as_deref(), Some("ready"));
+    let instance = Instance::new("forced".into(), "v1".into(), noop_log_handle());
+    instance.set_process(child);
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(20),
+            instance.kill_with_grace(Duration::from_millis(50))
+        )
+        .await
+        .is_err()
+    );
+    // Resuming with the production grace must preserve the first stop deadline.
+    tokio::time::timeout(Duration::from_secs(2), instance.kill())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!instance.is_alive().await);
+}
+
 #[test]
 fn test_instance_state_transitions() {
     let instance = Instance::new("test-1".to_string(), "v1".to_string(), noop_log_handle());
