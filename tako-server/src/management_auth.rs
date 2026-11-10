@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -31,24 +31,25 @@ pub(crate) struct ManagementAuthState {
 
 #[derive(Default)]
 struct SeenNonces {
-    order: VecDeque<SeenNonce>,
+    expirations: BTreeMap<i64, Vec<String>>,
     set: HashSet<String>,
 }
 
-struct SeenNonce {
-    value: String,
-    seen_at: i64,
-}
-
 impl ManagementAuthState {
-    fn accept_nonce(&self, nonce: &str, now: i64) -> Result<(), ManagementAuthError> {
+    fn accept_nonce(
+        &self,
+        nonce: &str,
+        now: i64,
+        expires_at: i64,
+    ) -> Result<(), ManagementAuthError> {
         let mut seen = self.seen.lock();
-        let oldest_allowed = now - AUTH_WINDOW_SECS;
-        while let Some(old) = seen.order.front()
-            && old.seen_at < oldest_allowed
+        while let Some((&expiry, _)) = seen.expirations.first_key_value()
+            && expiry < now
         {
-            if let Some(old) = seen.order.pop_front() {
-                seen.set.remove(&old.value);
+            if let Some((_, nonces)) = seen.expirations.pop_first() {
+                for nonce in nonces {
+                    seen.set.remove(&nonce);
+                }
             }
         }
 
@@ -57,10 +58,12 @@ impl ManagementAuthState {
         }
 
         let value = nonce.to_string();
-        seen.order.push_back(SeenNonce {
-            value: value.clone(),
-            seen_at: now,
-        });
+        // A future-dated signature remains valid longer than the window measured
+        // from receipt. Retain its nonce through the signed timestamp's expiry.
+        seen.expirations
+            .entry(expires_at)
+            .or_default()
+            .push(value.clone());
         seen.set.insert(value);
         Ok(())
     }
@@ -72,18 +75,27 @@ pub(crate) fn verify_signed_request(
     headers: &HeaderMap,
     body: &[u8],
 ) -> Result<(), ManagementAuthError> {
+    verify_signed_request_at(data_dir, state, headers, body, current_unix_secs()?)
+}
+
+fn verify_signed_request_at(
+    data_dir: &Path,
+    state: &ManagementAuthState,
+    headers: &HeaderMap,
+    body: &[u8],
+    now: i64,
+) -> Result<(), ManagementAuthError> {
     let key_fingerprint = required_header(headers, HEADER_KEY_FINGERPRINT)?;
     let timestamp = required_header(headers, HEADER_TIMESTAMP)?;
     let nonce = required_header(headers, HEADER_NONCE)?;
     let signature = required_header(headers, HEADER_SIGNATURE)?;
 
-    let now = current_unix_secs()?;
-    validate_timestamp(timestamp, now)?;
+    let signed_at = validate_timestamp(timestamp, now)?;
     validate_nonce(nonce)?;
 
     let key = load_authorized_key(data_dir, key_fingerprint)?;
     verify_signature(&key, timestamp, nonce, signature, body)?;
-    state.accept_nonce(nonce, now)?;
+    state.accept_nonce(nonce, now, signed_at.saturating_add(AUTH_WINDOW_SECS))?;
     Ok(())
 }
 
@@ -114,16 +126,16 @@ fn current_unix_secs() -> Result<i64, ManagementAuthError> {
         .as_secs() as i64)
 }
 
-fn validate_timestamp(timestamp: &str, now: i64) -> Result<(), ManagementAuthError> {
+fn validate_timestamp(timestamp: &str, now: i64) -> Result<i64, ManagementAuthError> {
     let timestamp = timestamp
         .parse::<i64>()
         .map_err(|_| ManagementAuthError::Failed)?;
 
-    if (now - timestamp).abs() > AUTH_WINDOW_SECS {
+    if now.abs_diff(timestamp) > AUTH_WINDOW_SECS as u64 {
         return Err(ManagementAuthError::Failed);
     }
 
-    Ok(())
+    Ok(timestamp)
 }
 
 fn validate_nonce(nonce: &str) -> Result<(), ManagementAuthError> {
@@ -273,19 +285,51 @@ mod tests {
     }
 
     #[test]
+    fn future_dated_signature_cannot_be_replayed_while_still_valid() {
+        let temp = tempfile::tempdir().unwrap();
+        let key = test_key();
+        write_authorized_key(temp.path(), &key);
+        let body = br#"{"command":"list"}"#;
+        let headers = signed_headers(&key, "1300", "future_nonce_1234", body);
+        let state = ManagementAuthState::default();
+        verify_signed_request_at(temp.path(), &state, &headers, body, 1000).unwrap();
+        for now in [1301, 1600] {
+            assert!(verify_signed_request_at(temp.path(), &state, &headers, body, now).is_err());
+        }
+    }
+
+    #[test]
+    fn extreme_timestamps_are_rejected_without_overflow() {
+        for timestamp in [i64::MIN, i64::MAX] {
+            assert!(validate_timestamp(&timestamp.to_string(), 1000).is_err());
+        }
+    }
+
+    #[test]
     fn accept_nonce_rejects_replay_after_many_later_requests() {
         let state = ManagementAuthState::default();
         // CodeQL[rust/hard-coded-cryptographic-value]: fixed nonce is a replay-test fixture, not a production nonce.
         let first_nonce = "nonce00000000001";
-        state.accept_nonce(first_nonce, 1_000).unwrap();
+        state.accept_nonce(first_nonce, 1_000, 1_300).unwrap();
 
         for index in 2..=5_000 {
             let nonce = format!("nonce{index:011}");
-            state.accept_nonce(&nonce, 1_001).unwrap();
+            state.accept_nonce(&nonce, 1_001, 1_301).unwrap();
         }
 
-        let err = state.accept_nonce(first_nonce, 1_002).unwrap_err();
+        let err = state.accept_nonce(first_nonce, 1_002, 1_300).unwrap_err();
         assert!(matches!(err, ManagementAuthError::Failed));
+    }
+
+    #[test]
+    fn nonce_expiry_is_ordered_by_signature_time() {
+        let state = ManagementAuthState::default();
+        state.accept_nonce("future", 1000, 1600).unwrap();
+        state.accept_nonce("past", 1000, 1000).unwrap();
+        state.accept_nonce("new", 1001, 1301).unwrap();
+        let seen = state.seen.lock();
+        assert!(!seen.set.contains("past"));
+        assert!(seen.set.contains("future"));
     }
 
     #[test]
