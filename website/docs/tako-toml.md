@@ -154,7 +154,7 @@ The default sizes are `[320, 640, 960, 1200, 1920]`, qualities `[75]`, and forma
 
 The JavaScript `imageUrl` and `imageSrcSet` helpers currently accept only the five default widths, even if you configure additional server sizes. Keep helper-generated widths in the server allowlist. Non-default quality values also need to be allowed by the server.
 
-Local image paths default to `["/**"]`; setting `local_patterns` replaces that default. Remote images are denied unless they match `remote_patterns`. Patterns are glob-like URL strings: `*` matches one segment and `**` matches the rest of a path. Remote patterns without a protocol match both `http` and `https`.
+Local image paths default to `["/**"]`; setting `local_patterns` replaces that default. Remote images are denied unless they match `remote_patterns`. Patterns are glob-like URL strings: `*` matches one segment and `**` matches the rest of a path. Remote patterns without a protocol match both `http` and `https` on their standard ports. An explicit port must match exactly; a pattern with a protocol and no port permits only that protocol's default port. Query strings do not participate in path matching. Sources with dot segments, encoded path separators, backslashes, or control characters are rejected.
 
 ## Storage
 

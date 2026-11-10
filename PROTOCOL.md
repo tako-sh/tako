@@ -176,6 +176,15 @@ Chunks are at most 64 KiB and are flushed without batching SSE events.
 Response headers have a 30-second deadline; body streaming has no total timeout.
 Each session allows 32 HTTP requests and 32 WebSockets concurrently. Request
 bodies remain buffered with a 2 MiB limit; WebSocket messages are limited to 1 MiB.
+The relay admits requests before reading uploads, which must finish within 15
+seconds. A relay-wide limit of 128 public HTTP requests and WebSockets also covers
+pending uploads and streamed responses; unavailable capacity returns HTTP 503.
+
+Registration challenges are opaque authenticated tokens with a five-minute
+expiry. Clients sign the returned nonce unchanged. Only a successfully signed
+registration consumes replay-cache space: up to 64 per SSH key fingerprint and
+4,096 across the relay until expiry. A key's OpenSSH comment remains part of its
+stable URL identity but does not change its quota principal.
 
 WebSocket exchanges start with `WebSocketOpen` → `WebSocketResponse` (HTTP status
 and headers). The relay waits up to 30 seconds before upgrading the browser and
@@ -188,3 +197,8 @@ messages; `WebSocketClose` cancels both pending handshakes and active sockets.
 with a 75-second acknowledgement deadline. Reconnects use bounded jitter and only
 reset backoff after a stable connection. Session-owned tasks are aborted on every
 exit, including cancellation of the session future.
+
+Before merging paired changes, run `python3 scripts/test-conformance.py ../tako`
+from the Tunnel checkout. It builds both real peers and checks registration,
+HTTP/SSE, WebSockets, cancellation, replacement, and shutdown. Tunnel's CI can
+also verify a selected Tako revision using its `tako_ref` workflow input.
