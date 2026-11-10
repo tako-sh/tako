@@ -129,10 +129,7 @@ func (s *StepAPI) Run(name string, out any, fn func() (any, error), opts ...Step
 	for attempt := uint32(1); attempt <= attempts; attempt++ {
 		value, err := fn()
 		if err == nil {
-			s.mu.Lock()
-			s.state[name] = value
-			s.mu.Unlock()
-			if perr := s.client.SaveStep(s.ctx, s.runID, s.workerID, name, value); perr != nil {
+			if perr := s.saveStep(name, value); perr != nil {
 				return fmt.Errorf("persist step state: %w", perr)
 			}
 			return assignCached(value, out)
@@ -150,6 +147,18 @@ func (s *StepAPI) Run(name string, out any, fn func() (any, error), opts ...Step
 		}
 	}
 	return lastErr
+}
+
+// Cache only acknowledged checkpoints. A caller may catch a persistence error
+// and retry the same step without ending this execution.
+func (s *StepAPI) saveStep(name string, value any) error {
+	if err := s.client.SaveStep(s.ctx, s.runID, s.workerID, name, value); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.state[name] = value
+	s.mu.Unlock()
+	return nil
 }
 
 func isControlSignal(err error) bool {
@@ -176,9 +185,8 @@ func (s *StepAPI) Sleep(name string, d time.Duration) error {
 				}
 				s.mu.Lock()
 				if _, hasName := s.state[name]; !hasName {
-					s.state[name] = true
 					s.mu.Unlock()
-					return s.client.SaveStep(s.ctx, s.runID, s.workerID, name, true)
+					return s.saveStep(name, true)
 				}
 				s.mu.Unlock()
 				return nil
@@ -190,19 +198,14 @@ func (s *StepAPI) Sleep(name string, d time.Duration) error {
 
 	wakeAt := time.Now().Add(d)
 	wakeMs := wakeAt.UnixMilli()
-	marker := map[string]any{"wakeAt": wakeMs}
-	s.mu.Lock()
-	s.state[key] = marker
-	s.mu.Unlock()
-	if err := s.client.SaveStep(s.ctx, s.runID, s.workerID, key, marker); err != nil {
+	// Match the representation restored from JSON on a subsequent claim.
+	marker := map[string]any{"wakeAt": float64(wakeMs)}
+	if err := s.saveStep(key, marker); err != nil {
 		return err
 	}
 	if d < inlineSleepThreshold {
 		time.Sleep(d)
-		s.mu.Lock()
-		s.state[name] = true
-		s.mu.Unlock()
-		return s.client.SaveStep(s.ctx, s.runID, s.workerID, name, true)
+		return s.saveStep(name, true)
 	}
 	return &deferSignal{wakeAt: &wakeAt}
 }

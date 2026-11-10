@@ -152,8 +152,8 @@ export function createStepAPI(
       for (let attempt = 1; attempt <= attempts; attempt++) {
         try {
           const result = await fn(context);
-          stepState[name] = result as unknown;
           await client.saveStep(runId, workerId, name, result ?? null);
+          stepState[name] = result as unknown;
           log.info("Step completed", { step: name, ms: Date.now() - startedAt });
           return result;
         } catch (err) {
@@ -180,8 +180,8 @@ export function createStepAPI(
       if (stored) {
         if (Date.now() >= stored.wakeAt) {
           if (!Object.prototype.hasOwnProperty.call(stepState, name)) {
-            stepState[name] = true;
             await client.saveStep(runId, workerId, name, true);
+            stepState[name] = true;
             log.info("Sleep completed", { step: name, ms: durationMs });
           } else {
             log.debug("Sleep cached", { step: name });
@@ -192,13 +192,13 @@ export function createStepAPI(
       }
 
       const wakeAt = Date.now() + durationMs;
-      stepState[key] = { wakeAt };
       await client.saveStep(runId, workerId, key, { wakeAt });
+      stepState[key] = { wakeAt };
 
       if (durationMs < INLINE_SLEEP_THRESHOLD_MS) {
         await new Promise((r) => setTimeout(r, durationMs));
-        stepState[name] = true;
         await client.saveStep(runId, workerId, name, true);
+        stepState[name] = true;
         log.info("Sleep completed", { step: name, ms: durationMs });
         return;
       }
