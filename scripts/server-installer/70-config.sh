@@ -1,3 +1,4 @@
+
 # ── Server config (config.json) ──────────────────────────────────────
 # Stores server_name (metrics label).
 
@@ -124,4 +125,3 @@ maybe_prompt_server_name() {
 maybe_prompt_server_name
 
 configure_public_ports
-

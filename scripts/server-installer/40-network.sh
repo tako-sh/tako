@@ -1,3 +1,4 @@
+
 install_pkgs() {
   # Avoid arrays for POSIX sh compatibility.
   if need_cmd apt-get; then
@@ -415,5 +416,3 @@ After=tako-network.target'
   echo 'OK native WireGuard installed. Allow its UDP listen port in your cloud security group if required.'
   echo 'OK native network agent installed; activation requires native-network.json and service-start mode.'
 }
-
-

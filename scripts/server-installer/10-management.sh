@@ -293,4 +293,3 @@ configure_public_ports() {
   TAKO_PUBLIC_PORT_ARGS="--http-port $TAKO_HTTP_PORT --https-port $TAKO_HTTPS_PORT"
   echo "OK public ports: HTTP $TAKO_HTTP_PORT, HTTPS $TAKO_HTTPS_PORT"
 }
-

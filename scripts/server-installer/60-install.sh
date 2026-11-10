@@ -1,3 +1,4 @@
+
 ensure_nc() {
   nc_supports_unix_socket() {
     if ! need_cmd nc; then
@@ -320,4 +321,3 @@ ENROLL_PY
 else
   echo 'No new SSH key supplied; existing SSH and management keys retained'
 fi
-

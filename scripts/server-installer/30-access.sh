@@ -1,3 +1,4 @@
+
 ensure_privileged_bind_capability() {
   : # Native units grant capabilities to the proxy; the agent binary has none.
 }
@@ -129,4 +130,3 @@ maybe_prompt_ssh_pubkey() {
     fi
   fi
 }
-

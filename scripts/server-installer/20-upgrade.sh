@@ -1,3 +1,4 @@
+
 install_upgrade_helpers() {
   mkdir -p /etc/tako
   # The privileged helper reads only this root-owned configuration.
@@ -236,4 +237,3 @@ EOF
     fi
   fi
 }
-
