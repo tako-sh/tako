@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
-use tokio::sync::mpsc;
+use tokio::sync::broadcast;
 
 const PID_FILE_DIR: &str = ".tako/pids";
 
@@ -39,7 +39,7 @@ struct LogBufferInner {
     entries: VecDeque<LogEntry>,
     next_id: u64,
     capacity: usize,
-    subscribers: Vec<mpsc::UnboundedSender<LogEntry>>,
+    sender: broadcast::Sender<LogEntry>,
 }
 
 /// Thread-safe, clonable log ring buffer.
@@ -64,7 +64,7 @@ impl LogBuffer {
                 entries: VecDeque::with_capacity(LOG_BUFFER_CAPACITY),
                 next_id: 0,
                 capacity: LOG_BUFFER_CAPACITY,
-                subscribers: Vec::new(),
+                sender: broadcast::channel(512).0,
             })),
         }
     }
@@ -83,9 +83,7 @@ impl LogBuffer {
             inner.entries.pop_front();
         }
         inner.entries.push_back(entry.clone());
-        inner
-            .subscribers
-            .retain(|tx| tx.send(entry.clone()).is_ok());
+        let _ = inner.sender.send(entry);
     }
 
     /// Subscribe to the log stream. Returns:
@@ -95,9 +93,9 @@ impl LogBuffer {
     pub fn subscribe(
         &self,
         after: Option<u64>,
-    ) -> (Vec<LogEntry>, mpsc::UnboundedReceiver<LogEntry>, bool) {
-        let mut inner = self.inner.lock().unwrap();
-        let (tx, rx) = mpsc::unbounded_channel();
+    ) -> (Vec<LogEntry>, broadcast::Receiver<LogEntry>, bool) {
+        let inner = self.inner.lock().unwrap();
+        let rx = inner.sender.subscribe();
 
         let oldest_id = inner.entries.front().map(|e| e.id);
         let truncated = match (after, oldest_id) {
@@ -116,7 +114,6 @@ impl LogBuffer {
             None => inner.entries.iter().cloned().collect(),
         };
 
-        inner.subscribers.push(tx);
         (backlog, rx, truncated)
     }
 

@@ -1,6 +1,48 @@
 use super::*;
 
 #[tokio::test]
+async fn lagging_log_stream_reports_truncation_then_continues() {
+    let (state, _tmp) = test_state();
+    insert_test_app(&state, "/proj", "my-app");
+    let buffer = state.lock().unwrap().apps["/proj/tako.toml"]
+        .log_buffer
+        .clone();
+    let (server, client) = tokio::net::UnixStream::pair().unwrap();
+    let handler = tokio::spawn(async move { handle_client(server, state).await });
+    let (read, mut write) = client.into_split();
+    let mut lines = BufReader::new(read).lines();
+    write
+        .write_all(b"{\"type\":\"SubscribeLogs\",\"config_path\":\"/proj/tako.toml\"}\n")
+        .await
+        .unwrap();
+    assert!(
+        lines
+            .next_line()
+            .await
+            .unwrap()
+            .unwrap()
+            .contains("LogsSubscribed")
+    );
+    // Do not yield while flooding: the subscriber must observe the gap.
+    for i in 0..2000 {
+        buffer.push(format!("line-{i}"));
+    }
+    assert!(
+        lines
+            .next_line()
+            .await
+            .unwrap()
+            .unwrap()
+            .contains("LogsTruncated")
+    );
+    let first: Response = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+    assert!(matches!(first, Response::LogEntry { id: 1488, .. }));
+    drop(lines);
+    drop(write);
+    handler.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn subscribe_logs_streams_backlog_and_live_entries() {
     let (state, _tmp) = test_state();
     insert_test_app(&state, "/proj", "my-app");
