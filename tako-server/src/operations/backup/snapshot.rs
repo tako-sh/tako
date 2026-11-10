@@ -363,7 +363,7 @@ services:
     command: [httpd, -f, -p, '8080', -h, /www]
     volumes: ['./public:/www:ro']
     healthcheck:
-      test: [CMD, wget, -q, -O, /dev/null, 'http://127.0.0.1:8080/']
+      test: [CMD, wget, -Y, 'off', -q, -O, /dev/null, 'http://127.0.0.1:8080/']
       interval: 1s
       timeout: 1s
       retries: 3
@@ -430,7 +430,15 @@ services:
         restored.finish().await.unwrap();
         assert_eq!(restored.ingress().unwrap().id, id);
         let output = tokio::process::Command::new("docker")
-            .args(["exec", &id, "wget", "-qO-", "http://127.0.0.1:8080/"])
+            .args([
+                "exec",
+                &id,
+                "wget",
+                "-Y",
+                "off",
+                "-qO-",
+                "http://127.0.0.1:8080/",
+            ])
             .output()
             .await
             .unwrap();
