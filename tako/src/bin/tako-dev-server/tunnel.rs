@@ -86,3 +86,6 @@ mod transport_tests;
 
 #[cfg(test)]
 mod lifecycle_tests;
+
+#[cfg(all(test, unix))]
+mod conformance;
