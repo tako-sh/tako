@@ -23,8 +23,8 @@ use encryption::{
 };
 use index::{backup_index_key, backup_object_prefix, latest_backup};
 use s3::{
-    DOWNLOAD_URL_EXPIRES_SECONDS, S3_URL_EXPIRES_SECONDS, download_object, prune_retention,
-    put_json_object, queue_retention, upload_file,
+    DOWNLOAD_URL_EXPIRES_SECONDS, S3_URL_EXPIRES_SECONDS, TRANSFER_TIMEOUT, backup_http_client,
+    download_object, prune_retention, put_json_object, queue_retention, upload_file,
 };
 pub(crate) use snapshot::snapshot_data_tree;
 use snapshot::{create_backup_archive, restore_data_tree, sha256_file_hex};
@@ -69,8 +69,15 @@ impl crate::ServerState {
     }
 
     async fn backup_app_now(&self, app: &str) -> Result<BackupInfo, String> {
+        let backup_lock = self.backup_operation_lock(app);
+        let _backup = backup_lock
+            .try_lock()
+            .map_err(|_| format!("A backup operation is already in progress for {app}."))?;
         let lock = self.get_deploy_lock(app).await;
         let _guard = lock.lock().await;
+        if self.is_draining() {
+            return Err("Server is draining".into());
+        }
         let backup = self
             .state_store
             .get_backup(app)
@@ -128,6 +135,9 @@ impl crate::ServerState {
             .await
             .map_err(|e| format!("backup worker failed: {e}"))?;
             let (sha256_hex, encryption) = archive_result?;
+            // The snapshot is independent of the live app now. Remote I/O must
+            // not keep stop/delete/deploy waiting on this lifecycle lock.
+            drop(_guard);
             let size_bytes = tokio::fs::metadata(&encrypted_archive_path)
                 .await
                 .map_err(|e| {
@@ -157,7 +167,7 @@ impl crate::ServerState {
                 encryption,
             };
 
-            let client = reqwest::Client::new();
+            let client = backup_http_client(TRANSFER_TIMEOUT)?;
             let mut index = self.read_backup_index(&backup, app).await?;
             upload_file(
                 &client,
@@ -284,6 +294,10 @@ impl crate::ServerState {
     }
 
     async fn restore_backup_inner(&self, app: &str, backup_id: &str) -> Result<BackupInfo, String> {
+        let backup_lock = self.backup_operation_lock(app);
+        let _backup = backup_lock
+            .try_lock()
+            .map_err(|_| format!("A backup operation is already in progress for {app}."))?;
         let lock = self.get_deploy_lock(app).await;
         let _guard = lock.lock().await;
         let backup = self
@@ -310,7 +324,7 @@ impl crate::ServerState {
         create_private_work_dir(&work_dir).await?;
 
         let result: Result<BackupInfo, String> = async {
-            let client = reqwest::Client::new();
+            let client = backup_http_client(TRANSFER_TIMEOUT)?;
             download_object(
                 &client,
                 &backup.storage,
@@ -409,6 +423,14 @@ impl crate::ServerState {
             .into_iter()
             .find(|backup| backup.id == backup_id)
             .ok_or_else(|| format!("Backup not found: {backup_id}"))
+    }
+
+    fn backup_operation_lock(&self, app: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+        self.backup_locks
+            .write()
+            .entry(app.to_string())
+            .or_default()
+            .clone()
     }
 }
 

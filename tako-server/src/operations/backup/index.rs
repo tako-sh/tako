@@ -35,7 +35,7 @@ impl crate::ServerState {
         validate_backup_binding(backup)?;
         let key = backup_index_key(app, self);
         let url = presign_s3_url(&backup.storage, &key, S3Method::Get, S3_URL_EXPIRES_SECONDS)?;
-        let response = reqwest::Client::new()
+        let response = super::s3::backup_http_client(super::s3::METADATA_TIMEOUT)?
             .get(url)
             .send()
             .await

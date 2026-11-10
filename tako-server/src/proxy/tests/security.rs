@@ -15,6 +15,7 @@ fn proxy_for_app(root: &std::path::Path) -> TakoProxy {
     let instance = app.allocate_instance();
     app.set_instance_state(&instance, InstanceState::Healthy);
     let lb = Arc::new(LoadBalancer::new(manager));
+    app.set_state(crate::socket::AppState::Running);
     lb.register_app(app);
     let mut routes = RouteTable::default();
     routes.set_app_routes("security-test".into(), vec!["app.example".into()]);

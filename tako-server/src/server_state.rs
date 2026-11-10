@@ -105,6 +105,7 @@ pub struct ServerState {
     /// re-resolves channel backends only then instead of on every request.
     pub(crate) channel_credentials_generation: Arc<std::sync::atomic::AtomicU64>,
     pub(crate) deploy_locks: AsyncRwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    pub(crate) backup_locks: SyncRwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     prepared_deploy_ssl: AsyncRwLock<HashMap<PreparedDeployKey, PreparedDeploySsl>>,
     pub(crate) cold_start: Arc<crate::scaling::ColdStartManager>,
     pub(crate) state_store: Arc<SqliteStateStore>,
@@ -394,6 +395,7 @@ impl ServerState {
             spawn_gate,
             channel_credentials_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             deploy_locks: AsyncRwLock::new(HashMap::new()),
+            backup_locks: SyncRwLock::new(HashMap::new()),
             prepared_deploy_ssl: AsyncRwLock::new(HashMap::new()),
             cold_start,
             state_store,

@@ -128,3 +128,28 @@ async fn partial_delete_retains_cleanup_intent() {
     assert!(index.backups.is_empty());
     assert_eq!(index.pending_deletions.len(), 1);
 }
+
+#[tokio::test]
+async fn backup_request_deadline_covers_a_stalled_response_body() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let fixture = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0; 4096];
+        stream.read(&mut request).await.unwrap();
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\npartial")
+            .await
+            .unwrap();
+        let _ = stream.read(&mut request).await;
+    });
+    let client = backup_http_client(Duration::from_millis(100)).unwrap();
+    let response = client.get(url).send().await.unwrap();
+    let error = tokio::time::timeout(Duration::from_secs(2), response.bytes())
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(error.is_timeout());
+    fixture.abort();
+}

@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::Duration;
 
 use crate::object_storage::{
     S3Method, S3PresignOptions, presign_s3_url, presign_s3_url_with_options,
@@ -9,6 +10,18 @@ use super::{index::BackupIndex, now_unix_secs};
 pub(super) const DOWNLOAD_URL_EXPIRES_SECONDS: u32 = 15 * 60;
 pub(super) const S3_URL_EXPIRES_SECONDS: u32 = 60 * 60;
 const JSON_CONTENT_TYPE: &str = "application/json";
+pub(super) const TRANSFER_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+pub(super) const METADATA_TIMEOUT: Duration = Duration::from_secs(30);
+
+pub(super) fn backup_http_client(timeout: Duration) -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .read_timeout(Duration::from_secs(60))
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| format!("build backup HTTP client: {error}"))
+}
 
 #[cfg(test)]
 mod tests;
@@ -60,6 +73,7 @@ pub(super) async fn put_json_object<T: serde::Serialize>(
     let response = client
         .put(url)
         .header("content-type", JSON_CONTENT_TYPE)
+        .timeout(METADATA_TIMEOUT)
         .body(body)
         .send()
         .await
@@ -117,6 +131,7 @@ async fn delete_object(
     let url = presign_s3_url(storage, key, S3Method::Delete, S3_URL_EXPIRES_SECONDS)?;
     let response = client
         .delete(url)
+        .timeout(METADATA_TIMEOUT)
         .send()
         .await
         .map_err(|error| format!("delete expired backup object {key}: {error}"))?;
