@@ -86,6 +86,12 @@ impl AppManager {
             .get_app(name)
             .ok_or_else(|| InstanceError::AppNotFound(name.to_string()))?;
 
+        let _lifecycle = app.lifecycle_gate.write().await;
+        self.start_app_locked(&app).await
+    }
+
+    /// Caller must hold the app's lifecycle write guard.
+    pub(crate) async fn start_app_locked(&self, app: &Arc<App>) -> Result<(), InstanceError> {
         let min_instances = app.config.read().min_instances;
         app.set_state(AppState::Running);
 
@@ -107,6 +113,12 @@ impl AppManager {
             .get_app(name)
             .ok_or_else(|| InstanceError::AppNotFound(name.to_string()))?;
 
+        let _lifecycle = app.lifecycle_gate.write().await;
+        self.stop_app_locked(&app).await
+    }
+
+    /// Caller must hold the app's lifecycle write guard.
+    pub(crate) async fn stop_app_locked(&self, app: &Arc<App>) -> Result<(), InstanceError> {
         app.set_state(AppState::Stopped);
 
         let compose_config = app.config.read().clone();
