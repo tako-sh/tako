@@ -138,10 +138,15 @@ async fn recovery_restores_pid_and_latest_lifecycle_without_replaying_history() 
                 message: "old failure".into(),
             },
         });
-        s.events.broadcast(Response::Event {
-            event: ready.clone(),
-        });
     }
+    // Registration and restart producers announce ready, then running. The
+    // latter must not discard readiness before a disconnected client recovers.
+    super::super::process::broadcast_dev_event(&state, ready.clone());
+    super::super::process::broadcast_app_status(&state, config, "running");
+    assert_eq!(
+        state.lock().unwrap().events.current_app_event(config),
+        Some(ready.clone())
+    );
     let (mut lines, writer, handler) = event_subscription(state.clone(), Some(config)).await;
     let mut events = Vec::new();
     for _ in 0..5 {
@@ -167,6 +172,17 @@ async fn recovery_restores_pid_and_latest_lifecycle_without_replaying_history() 
     drop(lines);
     drop(writer);
     handler.await.unwrap().unwrap();
+
+    super::super::process::broadcast_app_status(&state, config, "idle");
+    assert!(
+        state
+            .lock()
+            .unwrap()
+            .events
+            .current_app_event(config)
+            .is_none()
+    );
+    super::super::process::broadcast_dev_event(&state, ready.clone());
 
     // Unregistration releases cached state and late readiness cannot recreate it.
     {

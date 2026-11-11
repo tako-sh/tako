@@ -64,7 +64,11 @@ impl EventsHub {
                     status,
                     ..
                 } => {
-                    inner.app_states.remove(config_path);
+                    // Successful starts announce ready before running. Keep
+                    // that lifecycle state available for recovery snapshots.
+                    if status != "running" {
+                        inner.app_states.remove(config_path);
+                    }
                     if status == "stopped" {
                         inner.tunnel_states.remove(config_path);
                     }
