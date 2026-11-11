@@ -35,6 +35,8 @@ For [network primitives](/network-primitives/), run both apps under this daemon 
 
 Tako does not watch arbitrary source files for restart. Framework dev servers and runtimes own hot reload.
 
+Local startup has no readiness deadline, so native builds such as `cargo run` can finish compiling. Every 30 seconds, Tako logs an informational “App has not started after 30s; still waiting…” message with the total elapsed time (30s, 60s, 90s, and so on). The app becomes ready when it signals its bound port; an exited process or a closed or invalid readiness pipe is a startup failure. Stop, restart, and config reload can interrupt the wait. This does not change deployment or Compose health-check timeouts.
+
 ## Routes
 
 If `container = "Dockerfile"` is set for deploys, `tako dev` still runs the CLI command override, configured dev command, preset dev command, or native runtime default. It does not build or run the container file locally. If deploy uses `start` for a built native artifact, set `dev` separately for the local development command.

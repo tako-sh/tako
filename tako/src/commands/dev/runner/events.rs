@@ -259,9 +259,8 @@ fn handle_non_interactive_event(event: DevEvent) -> bool {
             crate::output::stream_line(&format!("App pid {}", pid));
         }
         DevEvent::AppProcessExited(_) => {}
-        DevEvent::AppError(e) => {
-            eprintln!("App error: {}", e);
-        }
+        // App errors are rendered once through the log stream.
+        DevEvent::AppError(_) => {}
         DevEvent::ClientConnected { is_self, client_id } => {
             if !is_self {
                 crate::output::stream_line(&format!("Client {} connected", client_id));

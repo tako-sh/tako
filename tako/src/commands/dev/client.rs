@@ -444,7 +444,8 @@ pub(super) async fn run_connected_dev_client(
                         Some(event) = event_rx.recv() => {
                             match event {
                                 DevEvent::AppStopped => crate::output::stream_line("○ App stopped (idle)"),
-                                DevEvent::AppError(e) => eprintln!("App error: {}", e),
+                                // App errors are rendered once through the log stream.
+                                DevEvent::AppError(_) => {},
                                 DevEvent::ExitWithMessage(msg) => {
                                     crate::output::stream_line(&msg);
                                     break;

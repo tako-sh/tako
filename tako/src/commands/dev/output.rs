@@ -510,10 +510,13 @@ pub async fn run_dev_output(
                         fs.status = "exited".to_string();
                         fs.refresh(&mut footer, &app_name, &adapter_name, &hosts, port);
                     }
-                    DevEvent::AppError(ref e) => {
+                    DevEvent::AppError(_) => {
+                        // The daemon sends the diagnostic through the log stream.
+                        app_pid = None;
+                        fs.cpu = None;
+                        fs.mem_bytes = None;
                         fs.status = "error".to_string();
                         fs.refresh(&mut footer, &app_name, &adapter_name, &hosts, port);
-                        footer.println(&format!("\x1b[38;2;232;163;160merror:{RESET} {e}"));
                     }
                     DevEvent::ClientConnected { is_self, client_id } => {
                         footer.println(&client_connected_block(is_self, client_id));
