@@ -256,7 +256,7 @@ async fn kill_and_reap_app_process_waits_for_killed_child() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn readiness_times_out_when_route_becomes_active_without_fd4_signal() {
+async fn readiness_keeps_waiting_when_route_becomes_active_without_fd4_signal() {
     let routes = Routes::default();
     let (shutdown_tx, _shutdown_rx) = watch::channel(false);
     let state = Arc::new(Mutex::new(State::new(
@@ -324,6 +324,326 @@ async fn readiness_times_out_when_route_becomes_active_without_fd4_signal() {
     )
     .await
     .expect_err("route activation must not replace fd 4 readiness");
+}
+
+#[cfg(unix)]
+#[tokio::test(start_paused = true)]
+async fn slow_startup_logs_elapsed_time_until_readiness_without_failing() {
+    use std::future::{Future, poll_fn};
+    use std::io::Write;
+    use std::task::Poll;
+
+    let directory = tempfile::tempdir().unwrap();
+    let (state, config_path) = idle_wake_app(directory.path());
+    let route_id = format!("reg:{config_path}");
+    let app = state.lock().unwrap().apps[&config_path].clone();
+    let (_, mut logs, _) = app.log_buffer.subscribe(None);
+    let (read_fd, write_fd) = create_readiness_pipe().unwrap();
+    let mut waiting = Box::pin(activate_after_readiness(
+        &state,
+        &config_path,
+        &route_id,
+        &app,
+        Some(read_fd),
+    ));
+    assert!(
+        poll_fn(|cx| Poll::Ready(waiting.as_mut().poll(cx)))
+            .await
+            .is_pending()
+    );
+    assert!(
+        logs.try_recv().is_err(),
+        "no notice before the first 30 seconds"
+    );
+
+    for elapsed in (30..=180).step_by(30) {
+        tokio::time::advance(Duration::from_secs(30)).await;
+        assert!(
+            poll_fn(|cx| Poll::Ready(waiting.as_mut().poll(cx)))
+                .await
+                .is_pending()
+        );
+        let entry = logs.try_recv().expect("one notice every 30 seconds");
+        let log: serde_json::Value = serde_json::from_str(&entry.line).unwrap();
+        assert_eq!(log["level"], "info");
+        assert_eq!(log["scope"], "tako");
+        assert_eq!(
+            log["msg"],
+            format!("App has not started after {elapsed}s; still waiting…")
+        );
+        assert!(logs.try_recv().is_err(), "each notice is logged once");
+        assert!(
+            !state
+                .lock()
+                .unwrap()
+                .routes
+                .lookup("wake.test", "/")
+                .unwrap()
+                .active
+        );
+    }
+
+    writeln!(std::fs::File::from(write_fd), "54321").unwrap();
+    waiting.await.unwrap();
+    assert!(
+        state
+            .lock()
+            .unwrap()
+            .routes
+            .lookup("wake.test", "/")
+            .unwrap()
+            .active
+    );
+    assert_eq!(
+        state.lock().unwrap().apps[&config_path].upstream_port,
+        54321
+    );
+    tokio::time::advance(Duration::from_secs(60)).await;
+    assert!(logs.try_recv().is_err(), "notices stop after readiness");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn closed_or_invalid_readiness_pipe_is_a_real_startup_failure() {
+    use std::io::Write;
+
+    let directory = tempfile::tempdir().unwrap();
+    let (state, config_path) = idle_wake_app(directory.path());
+    let app = state.lock().unwrap().apps[&config_path].clone();
+    for signal in ["", "not a port\n", "0\n"] {
+        let (read_fd, write_fd) = create_readiness_pipe().unwrap();
+        std::fs::File::from(write_fd)
+            .write_all(signal.as_bytes())
+            .unwrap();
+        let error = activate_after_readiness(
+            &state,
+            &config_path,
+            &format!("reg:{config_path}"),
+            &app,
+            Some(read_fd),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error,
+            "app closed fd 4 without signaling a valid readiness port"
+        );
+        assert!(
+            !state
+                .lock()
+                .unwrap()
+                .routes
+                .lookup("wake.test", "/")
+                .unwrap()
+                .active
+        );
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn startup_detects_exit_even_when_a_descendant_keeps_readiness_open() {
+    let directory = tempfile::tempdir().unwrap();
+    let (state, config_path) = idle_wake_app(directory.path());
+    state
+        .lock()
+        .unwrap()
+        .apps
+        .get_mut(&config_path)
+        .unwrap()
+        .command = vec![
+        "sh".into(),
+        "-c".into(),
+        "cat <&3 >/dev/null; sleep 60 & exit 7".into(),
+    ];
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        spawn_and_monitor_app(state.clone(), &config_path),
+    )
+    .await;
+    kill_all_app_processes(&state);
+    let error = result
+        .expect("child exit must interrupt readiness")
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("app exited before signaling readiness"),
+        "{error}"
+    );
+    assert!(error.to_string().contains('7'), "{error}");
+    let s = state.lock().unwrap();
+    assert!(s.apps[&config_path].pid.is_none());
+    assert!(s.apps[&config_path].is_idle);
+    assert!(!s.routes.lookup("wake.test", "/").unwrap().active);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn queued_startup_can_be_cancelled_before_it_acquires_the_lifecycle_lock() {
+    use std::future::{Future, poll_fn};
+    use std::task::Poll;
+
+    let directory = tempfile::tempdir().unwrap();
+    let (state, config_path) = idle_wake_app(directory.path());
+    let lock = crate::compose::app_lock(&state, &config_path);
+    let guard = lock.lock().await;
+    let mut starting = Box::pin(spawn_and_monitor_app(state.clone(), &config_path));
+    assert!(
+        poll_fn(|cx| Poll::Ready(starting.as_mut().poll(cx)))
+            .await
+            .is_pending()
+    );
+    cancel_app_startup(&state, &config_path);
+    drop(guard);
+    let error = starting.await.unwrap_err();
+    assert!(error.is::<AppStartupCancelled>());
+    assert!(state.lock().unwrap().apps[&config_path].pid.is_none());
+}
+
+#[cfg(unix)]
+async fn control_request(state: Arc<Mutex<State>>, request: crate::protocol::Request) -> Response {
+    let (server, client) = tokio::net::UnixStream::pair().unwrap();
+    let handler = tokio::spawn(crate::control::handle_client(server, state));
+    let response = {
+        let mut client = tokio::io::BufReader::new(client);
+        tako_socket::write_json_line(client.get_mut(), &request)
+            .await
+            .unwrap();
+        tako_socket::read_json_line(&mut client)
+            .await
+            .unwrap()
+            .unwrap()
+    };
+    handler.await.unwrap().unwrap();
+    response
+}
+
+#[cfg(unix)]
+async fn wait_for_startup_event(events: &mut tokio::sync::mpsc::Receiver<Response>, ready: bool) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match events.recv().await.unwrap() {
+                Response::Event {
+                    event: DevEvent::AppPid { .. },
+                } if !ready => return,
+                Response::Event {
+                    event: DevEvent::AppReady { .. },
+                } if ready => return,
+                Response::Event {
+                    event: DevEvent::AppError { message, .. },
+                } => panic!("unexpected startup error: {message}"),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("startup event should arrive promptly");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn restart_and_stop_interrupt_pending_readiness_without_error_logs() {
+    use crate::protocol::Request;
+
+    let directory = tempfile::tempdir().unwrap();
+    let (state, config_path) = idle_wake_app(directory.path());
+    let mut events = state.lock().unwrap().events.subscribe();
+    state
+        .lock()
+        .unwrap()
+        .apps
+        .get_mut(&config_path)
+        .unwrap()
+        .command = vec![
+        "sh".into(),
+        "-c".into(),
+        "cat <&3 >/dev/null; exec sleep 60".into(),
+    ];
+    let log_buffer = state.lock().unwrap().apps[&config_path].log_buffer.clone();
+    let response = control_request(
+        state.clone(),
+        Request::RestartApp {
+            config_path: config_path.clone(),
+        },
+    )
+    .await;
+    assert!(matches!(response, Response::AppRestarting { .. }));
+    wait_for_startup_event(&mut events, false).await;
+    let first_pid = state.lock().unwrap().apps[&config_path].pid.unwrap();
+
+    // Restart while the first command is still waiting, then stop the next wait.
+    let response = tokio::time::timeout(
+        Duration::from_secs(5),
+        control_request(
+            state.clone(),
+            Request::RestartApp {
+                config_path: config_path.clone(),
+            },
+        ),
+    )
+    .await
+    .expect("restart must interrupt readiness");
+    assert!(matches!(response, Response::AppRestarting { .. }));
+    wait_for_startup_event(&mut events, false).await;
+    assert_ne!(
+        state.lock().unwrap().apps[&config_path].pid,
+        Some(first_pid)
+    );
+
+    let response = tokio::time::timeout(
+        Duration::from_secs(5),
+        control_request(
+            state.clone(),
+            Request::UnregisterApp {
+                config_path: config_path.clone(),
+            },
+        ),
+    )
+    .await
+    .expect("stop must interrupt readiness");
+    assert!(matches!(response, Response::AppUnregistered { .. }));
+    assert!(!state.lock().unwrap().apps.contains_key(&config_path));
+    for entry in log_buffer.subscribe(None).0 {
+        let log: serde_json::Value = serde_json::from_str(&entry.line).unwrap();
+        assert_ne!(
+            log["level"], "error",
+            "cancellation is not a startup failure"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn shutdown_interrupts_pending_readiness() {
+    let directory = tempfile::tempdir().unwrap();
+    let (state, config_path) = idle_wake_app(directory.path());
+    let mut events = state.lock().unwrap().events.subscribe();
+    state
+        .lock()
+        .unwrap()
+        .apps
+        .get_mut(&config_path)
+        .unwrap()
+        .command = vec![
+        "sh".into(),
+        "-c".into(),
+        "cat <&3 >/dev/null; exec sleep 60".into(),
+    ];
+    let starting = tokio::spawn({
+        let state = state.clone();
+        let config_path = config_path.clone();
+        async move { spawn_and_monitor_app(state, &config_path).await }
+    });
+    wait_for_startup_event(&mut events, false).await;
+    state.lock().unwrap().shutdown_tx.send_replace(true);
+    let error = tokio::time::timeout(Duration::from_secs(5), starting)
+        .await
+        .expect("shutdown must interrupt readiness")
+        .unwrap()
+        .unwrap_err();
+    assert!(error.is::<AppStartupCancelled>());
+    assert!(state.lock().unwrap().apps[&config_path].pid.is_none());
 }
 
 #[cfg(unix)]

@@ -7,9 +7,9 @@ use std::time::Duration;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 
 use crate::process::{
-    app_name_for, broadcast_app_status, broadcast_dev_event, forward_child_log_line,
-    kill_app_process, monitor_handoff_pid, push_scoped_log, push_user_action,
-    spawn_and_monitor_app,
+    AppStartupCancelled, app_name_for, broadcast_app_status, broadcast_dev_event,
+    cancel_app_startup, forward_child_log_line, kill_app_process, monitor_handoff_pid,
+    push_scoped_log, push_user_action, spawn_and_monitor_app,
 };
 use crate::protocol::{self, Response};
 use crate::route_pattern::split_route_pattern;
@@ -58,6 +58,7 @@ pub(super) async fn register_app(
         workflow_retention_ms,
     } = args;
 
+    cancel_app_startup(&state, &config_path);
     let lock = crate::compose::app_lock(&state, &config_path);
     let _guard = lock.lock().await;
     let compose = compose
@@ -311,6 +312,7 @@ async fn ensure_workflow_runtime(
 }
 
 pub(super) async fn unregister_app(state: &Arc<Mutex<State>>, config_path: String) -> Response {
+    cancel_app_startup(state, &config_path);
     let lock = crate::compose::app_lock(state, &config_path);
     let _guard = lock.lock().await;
     if let Err(message) = crate::compose::stop(state, &config_path).await {
@@ -379,6 +381,7 @@ pub(super) async fn unregister_app(state: &Arc<Mutex<State>>, config_path: Strin
 }
 
 pub(super) async fn restart_app(state: &Arc<Mutex<State>>, config_path: String) -> Response {
+    cancel_app_startup(state, &config_path);
     let lock = crate::compose::app_lock(state, &config_path);
     let _guard = lock.lock().await;
     if let Err(message) = crate::compose::stop(state, &config_path).await {
@@ -591,6 +594,7 @@ fn spawn_registered_app_process(state: Arc<Mutex<State>>, config_path: String) {
                 );
                 broadcast_app_status(&state, &config_path, "running");
             }
+            Err(e) if e.is::<AppStartupCancelled>() => {}
             Err(e) => {
                 tracing::warn!(config_path = %config_path, error = %e, "failed to spawn app");
                 let log_buffer = {
@@ -640,6 +644,7 @@ fn spawn_restarted_app_process(state: Arc<Mutex<State>>, config_path: String) {
                 );
                 broadcast_app_status(&state, &config_path, "running");
             }
+            Err(e) if e.is::<AppStartupCancelled>() => {}
             Err(e) => {
                 tracing::warn!(config_path = %config_path, error = %e, "failed to restart app");
                 let log_buffer = {

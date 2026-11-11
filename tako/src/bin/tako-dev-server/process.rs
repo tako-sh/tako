@@ -9,7 +9,31 @@ use crate::protocol::{DevEvent, Response};
 use crate::state;
 use tokio::io::AsyncBufReadExt;
 
-const APP_READINESS_TIMEOUT: Duration = Duration::from_secs(30);
+const APP_STARTUP_NOTICE_INTERVAL: Duration = Duration::from_secs(30);
+
+#[derive(Debug, thiserror::Error)]
+#[error("app startup cancelled")]
+pub(crate) struct AppStartupCancelled;
+
+// Interrupt readiness before taking the lifecycle lock, which startup holds.
+pub(crate) fn cancel_app_startup(state: &Arc<Mutex<State>>, config_path: &str) {
+    if let Some(cancel) = state.lock().unwrap().app_startups.get(config_path) {
+        cancel.send_replace(());
+    }
+}
+
+fn startup_cancellation(
+    state: &Arc<Mutex<State>>,
+    config_path: &str,
+) -> tokio::sync::watch::Receiver<()> {
+    state
+        .lock()
+        .unwrap()
+        .app_startups
+        .entry(config_path.to_string())
+        .or_insert_with(|| tokio::sync::watch::channel(()).0)
+        .subscribe()
+}
 
 pub(crate) async fn monitor_handoff_pid(
     state: Arc<Mutex<State>>,
@@ -83,11 +107,11 @@ async fn kill_and_reap_app_process(
     match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
         Ok(Ok(status)) => Some(status),
         Ok(Err(e)) => {
-            tracing::warn!(error = %e, "failed to reap app process after readiness timeout");
+            tracing::warn!(error = %e, "failed to reap app process after startup ended");
             None
         }
         Err(_) => {
-            tracing::warn!("timed out reaping app process after readiness timeout");
+            tracing::warn!("timed out reaping app process after startup ended");
             None
         }
     }
@@ -138,21 +162,27 @@ pub(crate) async fn spawn_and_monitor_app(
     state: Arc<Mutex<State>>,
     config_path: &str,
 ) -> Result<u32, Box<dyn std::error::Error + Send + Sync>> {
+    // Subscribe before waiting for the lock so a queued startup is cancellable too.
+    let cancel_rx = startup_cancellation(&state, config_path);
     let lock = crate::compose::app_lock(&state, config_path);
     let _guard = lock.lock().await;
-    spawn_and_monitor_app_locked(state, config_path).await
+    spawn_and_monitor_app_locked(state, config_path, cancel_rx).await
 }
 
 // The caller holds this app's lifecycle lock through spawn and readiness.
 async fn spawn_and_monitor_app_locked(
     state: Arc<Mutex<State>>,
     config_path: &str,
+    mut cancel_rx: tokio::sync::watch::Receiver<()>,
 ) -> Result<u32, Box<dyn std::error::Error + Send + Sync>> {
+    if cancel_rx.has_changed().unwrap_or(true) {
+        return Err(AppStartupCancelled.into());
+    }
     if *state.lock().unwrap().shutdown_tx.borrow() {
         return Err("development server is shutting down".into());
     }
+    // Another queued start may have completed while we waited for the lock.
     if let Some(app) = state.lock().unwrap().apps.get(config_path)
-        && app.compose.is_some()
         && let Some(pid) = app.pid
     {
         return Ok(pid);
@@ -202,10 +232,23 @@ async fn spawn_and_monitor_app_locked(
         },
     );
 
-    // Wait for the app to signal its bound port on fd 4, then activate the route.
-    if let Err(e) =
-        activate_after_readiness(&state, config_path, &route_id, &app_clone, readiness_fd).await
-    {
+    // Dev commands may compile for minutes before the HTTP process even starts.
+    // Keep waiting for readiness, but allow lifecycle commands and shutdown to
+    // interrupt the wait and detect exits even if a descendant retains fd 4.
+    let mut shutdown_rx = state.lock().unwrap().shutdown_tx.subscribe();
+    let readiness: Result<(), Box<dyn std::error::Error + Send + Sync>> = tokio::select! {
+        biased;
+        _ = cancel_rx.changed() => Err(AppStartupCancelled.into()),
+        _ = shutdown_rx.wait_for(|shutdown| *shutdown) => Err(AppStartupCancelled.into()),
+        status = child.wait() => Err(match status {
+            Ok(status) => format!("app exited before signaling readiness ({status})").into(),
+            Err(error) => format!("failed to wait for app readiness: {error}").into(),
+        }),
+        result = activate_after_readiness(&state, config_path, &route_id, &app_clone, readiness_fd) => {
+            result.map_err(Into::into)
+        }
+    };
+    if let Err(e) = readiness {
         kill_and_reap_app_process(&mut child, Some(pid)).await;
         state::remove_pid_file(&project_dir, config_path);
         {
@@ -216,7 +259,7 @@ async fn spawn_and_monitor_app_locked(
             }
             s.routes.set_active(&route_id, false);
         }
-        return Err(e.into());
+        return Err(e);
     }
 
     let state_for_monitor = state.clone();
@@ -333,10 +376,12 @@ fn create_bootstrap_pipe(
 /// closes without a valid port (e.g. the process crashed before signaling).
 #[cfg(unix)]
 async fn wait_for_readiness(readiness_fd: OwnedFd) -> Option<u16> {
-    let file = tokio::fs::File::from_std(std::fs::File::from(readiness_fd));
-    let mut lines = tokio::io::BufReader::new(file).lines();
+    // A blocking file read cannot be cancelled while another process holds the
+    // pipe open. Tokio's pipe receiver releases the fd when this future is dropped.
+    let pipe = tokio::net::unix::pipe::Receiver::from_owned_fd(readiness_fd).ok()?;
+    let mut lines = tokio::io::BufReader::new(pipe).lines();
     match lines.next_line().await {
-        Ok(Some(line)) => line.trim().parse::<u16>().ok(),
+        Ok(Some(line)) => line.trim().parse::<u16>().ok().filter(|port| *port != 0),
         _ => None,
     }
 }
@@ -354,10 +399,28 @@ async fn activate_after_readiness(
 ) -> Result<(), String> {
     #[cfg(unix)]
     if let Some(fd) = readiness_fd {
-        let port = tokio::time::timeout(APP_READINESS_TIMEOUT, wait_for_readiness(fd))
-            .await
-            .ok()
-            .flatten();
+        let readiness = wait_for_readiness(fd);
+        tokio::pin!(readiness);
+        let started = tokio::time::Instant::now();
+        let mut notices = tokio::time::interval_at(
+            started + APP_STARTUP_NOTICE_INTERVAL,
+            APP_STARTUP_NOTICE_INTERVAL,
+        );
+        notices.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let port = loop {
+            tokio::select! {
+                biased;
+                port = &mut readiness => break port,
+                _ = notices.tick() => {
+                    push_scoped_log(
+                        &app.log_buffer,
+                        "info",
+                        "tako",
+                        &format!("App has not started after {}s; still waiting…", started.elapsed().as_secs()),
+                    );
+                }
+            }
+        };
 
         match port {
             Some(port) => {
@@ -382,7 +445,7 @@ async fn activate_after_readiness(
 fn readiness_failure_message(app: &state::RuntimeApp) -> String {
     app.readiness_failure_hint
         .clone()
-        .unwrap_or_else(|| "app did not signal readiness on fd 4 within 30s".to_string())
+        .unwrap_or_else(|| "app closed fd 4 without signaling a valid readiness port".to_string())
 }
 
 /// Merge user-supplied env with Tako's runtime contract.
@@ -580,6 +643,7 @@ pub(crate) async fn wake_registration(
     config_path: &str,
     request_route: Option<(String, String)>,
 ) {
+    let cancel_rx = startup_cancellation(&state, config_path);
     let lock = crate::compose::app_lock(&state, config_path);
     let _guard = lock.lock().await;
     let (app_name, log_buffer) = {
@@ -605,9 +669,12 @@ pub(crate) async fn wake_registration(
     };
 
     tracing::info!(app_name = %app_name, "waking idle app on request");
-    if let Err(error) = spawn_and_monitor_app_locked(state.clone(), config_path).await {
+    if let Err(error) = spawn_and_monitor_app_locked(state.clone(), config_path, cancel_rx).await {
         if let Some(app) = state.lock().unwrap().apps.get_mut(config_path) {
             app.is_idle = true;
+        }
+        if error.is::<AppStartupCancelled>() {
+            return;
         }
         let message = error.to_string();
         push_scoped_log(&log_buffer, "Error", "tako", &message);
@@ -663,6 +730,7 @@ pub(crate) async fn stale_app_cleanup_loop(state: Arc<Mutex<State>>) {
             removed
         };
         for config_path in removed {
+            cancel_app_startup(&state, &config_path);
             let lock = crate::compose::app_lock(&state, &config_path);
             let _guard = lock.lock().await;
             if let Err(error) = crate::compose::stop(&state, &config_path).await {
