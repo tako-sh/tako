@@ -41,8 +41,8 @@ pub(crate) async fn handle_client(
 
         let resp = match req {
             Request::Ping => Response::Pong,
-            Request::SubscribeEvents => {
-                subscriptions::subscribe_events(&state, &mut r, &mut w).await?;
+            Request::SubscribeEvents { config_path } => {
+                subscriptions::subscribe_events(&state, &mut r, &mut w, config_path).await?;
                 return Ok(());
             }
             Request::SubscribeLogs { config_path, after } => {

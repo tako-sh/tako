@@ -95,6 +95,20 @@ async fn kill_and_reap_app_process(
 
 pub(crate) fn broadcast_dev_event(state: &Arc<Mutex<State>>, event: DevEvent) {
     let s = state.lock().unwrap();
+    // A spawn/readiness task may finish after unregistration. Do not recreate
+    // cached lifecycle state (or notify clients) for an app that was removed.
+    let config_path = match &event {
+        DevEvent::AppLaunching { config_path, .. }
+        | DevEvent::AppPid { config_path, .. }
+        | DevEvent::AppStarted { config_path, .. }
+        | DevEvent::AppReady { config_path, .. }
+        | DevEvent::AppProcessExited { config_path, .. }
+        | DevEvent::AppError { config_path, .. } => Some(config_path),
+        _ => None,
+    };
+    if config_path.is_some_and(|path| !s.apps.contains_key(path)) {
+        return;
+    }
     s.events.broadcast(Response::Event { event });
 }
 
@@ -670,6 +684,7 @@ pub(crate) async fn stale_app_cleanup_loop(state: Arc<Mutex<State>>) {
                 continue;
             }
             let mut s = state.lock().unwrap();
+            s.events.forget_app(&config_path);
             if let Some(app) = s.apps.remove(&config_path) {
                 if let Some(pid) = app.pid {
                     kill_app_process(pid);

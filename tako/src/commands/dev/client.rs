@@ -101,7 +101,9 @@ pub(super) async fn run_connected_dev_client(
             let mut got_stop = false;
 
             let connected = async {
-                let ev_rx = crate::dev_server_client::subscribe_events().await.ok()?;
+                let ev_rx = crate::dev_server_client::subscribe_events(&config_key)
+                    .await
+                    .ok()?;
                 Some(ev_rx)
             };
 
@@ -110,7 +112,14 @@ pub(super) async fn run_connected_dev_client(
                     .await
                     .ok();
 
-                while let Some(ev) = ev_rx.recv().await {
+                loop {
+                    let ev = tokio::select! {
+                        _ = event_tx.closed() => return,
+                        event = ev_rx.recv() => match event {
+                            Some(event) => event,
+                            None => break,
+                        },
+                    };
                     use crate::dev_server_client::DevServerEvent;
                     match ev {
                         DevServerEvent::AppStatusChanged {
@@ -120,6 +129,13 @@ pub(super) async fn run_connected_dev_client(
                         } if config_path == &config_key && status == "stopped" => {
                             got_stop = true;
                             break;
+                        }
+                        DevServerEvent::AppStatusChanged {
+                            ref config_path,
+                            ref status,
+                            ..
+                        } if config_path == &config_key && status == "idle" => {
+                            let _ = event_tx.send(DevEvent::AppStopped).await;
                         }
                         DevServerEvent::ClientConnected {
                             ref config_path,
