@@ -148,6 +148,9 @@ pub(super) async fn register_app(
             .map(|a| a.upstream_port)
             .unwrap_or(0);
 
+        // The new registration has no process or tunnel yet. Its recovery
+        // snapshot must not replay the previous registration's ready/error state.
+        s.events.forget_app(&config_path);
         s.apps.insert(
             config_path.clone(),
             RuntimeApp {
