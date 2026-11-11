@@ -48,7 +48,11 @@ pub enum Request {
     /// List all registered apps.
     ListRegisteredApps,
     ListApps,
-    SubscribeEvents,
+    SubscribeEvents {
+        /// Reconcile this app when recovering a disconnected subscription.
+        #[serde(default)]
+        config_path: Option<String>,
+    },
     StopServer,
 }
 
@@ -330,7 +334,7 @@ mod tests {
 
     #[test]
     fn serde_roundtrip_events() {
-        let req = Request::SubscribeEvents;
+        let req = Request::SubscribeEvents { config_path: None };
         let json = serde_json::to_string(&req).unwrap();
         assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), req);
 

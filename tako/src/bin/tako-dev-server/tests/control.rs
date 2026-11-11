@@ -1,5 +1,196 @@
 use super::*;
 
+async fn event_subscription(
+    state: Arc<Mutex<State>>,
+    config_path: Option<&str>,
+) -> (
+    tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+    tokio::net::unix::OwnedWriteHalf,
+    tokio::task::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>,
+) {
+    let (a, b) = tokio::net::UnixStream::pair().unwrap();
+    let handler = tokio::spawn(async move { handle_client(a, state).await });
+    let (r, mut w) = b.into_split();
+    let request = serde_json::json!({"type": "SubscribeEvents", "config_path": config_path});
+    w.write_all(format!("{request}\n").as_bytes())
+        .await
+        .unwrap();
+    let mut lines = BufReader::new(r).lines();
+    let response: Response =
+        serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+    assert!(matches!(response, Response::Subscribed));
+    (lines, w, handler)
+}
+
+#[tokio::test]
+async fn overflow_recovery_snapshots_missed_exit_before_live_events() {
+    let (state, _tmp) = test_state();
+    let config = "/proj/tako.toml";
+    insert_test_app(&state, "/proj", "my-app");
+    let (mut lines, writer, handler) = event_subscription(state.clone(), None).await;
+    {
+        let s = state.lock().unwrap();
+        // No async yield: deterministically exhaust the 512-entry hub queue.
+        for _ in 0..513 {
+            s.events.broadcast(Response::Event {
+                event: protocol::DevEvent::RequestStarted {
+                    host: "my-app.test".into(),
+                    path: "/".into(),
+                },
+            });
+        }
+    }
+    let count = tokio::time::timeout(Duration::from_secs(2), async {
+        let mut count = 0;
+        while lines.next_line().await.unwrap().is_some() {
+            count += 1;
+        }
+        count
+    })
+    .await
+    .unwrap();
+    assert_eq!(count, 512);
+    drop(writer);
+    handler.await.unwrap().unwrap();
+
+    let exited = protocol::DevEvent::AppProcessExited {
+        config_path: config.into(),
+        app_name: "my-app".into(),
+        message: "App exited (exit code 42)".into(),
+    };
+    {
+        let mut s = state.lock().unwrap();
+        let app = s.apps.get_mut(config).unwrap();
+        app.is_idle = true;
+        app.pid = None;
+        s.events.broadcast(Response::Event {
+            event: exited.clone(),
+        });
+    }
+    let (mut lines, writer, handler) = event_subscription(state.clone(), Some(config)).await;
+    let live = protocol::DevEvent::AppLaunching {
+        config_path: config.into(),
+        app_name: "my-app".into(),
+    };
+    state.lock().unwrap().events.broadcast(Response::Event {
+        event: live.clone(),
+    });
+    let mut events = Vec::new();
+    for _ in 0..5 {
+        let line = tokio::time::timeout(Duration::from_secs(1), lines.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let Response::Event { event } = serde_json::from_str(&line).unwrap() else {
+            panic!("expected event")
+        };
+        events.push(event);
+    }
+    assert!(
+        matches!(&events[0], protocol::DevEvent::AppStatusChanged { status, .. } if status == "idle")
+    );
+    assert_eq!(events[1], exited);
+    assert!(matches!(
+        events[2],
+        protocol::DevEvent::LanModeChanged { enabled: false, .. }
+    ));
+    assert!(matches!(
+        events[3],
+        protocol::DevEvent::TunnelModeChanged { enabled: false, .. }
+    ));
+    assert_eq!(events[4], live);
+    drop(lines);
+    drop(writer);
+    handler.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn recovery_reports_app_removed_during_disconnect() {
+    let (state, _tmp) = test_state();
+    let (mut lines, writer, handler) = event_subscription(state, Some("/removed/tako.toml")).await;
+    let response: Response =
+        serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+    assert!(matches!(response, Response::Event {
+        event: protocol::DevEvent::AppStatusChanged { config_path, status, .. }
+    } if config_path == "/removed/tako.toml" && status == "stopped"));
+    drop(lines);
+    drop(writer);
+    handler.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn recovery_restores_pid_and_latest_lifecycle_without_replaying_history() {
+    let (state, _tmp) = test_state();
+    let config = "/proj/tako.toml";
+    insert_test_app(&state, "/proj", "my-app");
+    let ready = protocol::DevEvent::AppReady {
+        config_path: config.into(),
+        app_name: "my-app".into(),
+    };
+    {
+        let mut s = state.lock().unwrap();
+        s.apps.get_mut(config).unwrap().pid = Some(42);
+        s.events.broadcast(Response::Event {
+            event: protocol::DevEvent::AppError {
+                config_path: config.into(),
+                app_name: "my-app".into(),
+                message: "old failure".into(),
+            },
+        });
+        s.events.broadcast(Response::Event {
+            event: ready.clone(),
+        });
+    }
+    let (mut lines, writer, handler) = event_subscription(state.clone(), Some(config)).await;
+    let mut events = Vec::new();
+    for _ in 0..5 {
+        let line = lines.next_line().await.unwrap().unwrap();
+        let Response::Event { event } = serde_json::from_str(&line).unwrap() else {
+            panic!("expected event")
+        };
+        events.push(event);
+    }
+    assert!(
+        matches!(&events[0], protocol::DevEvent::AppStatusChanged { status, .. } if status == "running")
+    );
+    assert!(matches!(
+        events[1],
+        protocol::DevEvent::AppPid { pid: 42, .. }
+    ));
+    assert_eq!(events[2], ready);
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, protocol::DevEvent::AppError { .. }))
+    );
+    drop(lines);
+    drop(writer);
+    handler.await.unwrap().unwrap();
+
+    // Unregistration releases cached state and late readiness cannot recreate it.
+    {
+        let mut s = state.lock().unwrap();
+        s.apps.remove(config);
+        s.events.broadcast(Response::Event {
+            event: protocol::DevEvent::AppStatusChanged {
+                config_path: config.into(),
+                app_name: "my-app".into(),
+                status: "stopped".into(),
+            },
+        });
+    }
+    super::super::process::broadcast_dev_event(&state, ready);
+    assert!(
+        state
+            .lock()
+            .unwrap()
+            .events
+            .current_app_event(config)
+            .is_none()
+    );
+}
+
 #[tokio::test]
 async fn info_reports_connected_control_clients() {
     let (a, b) = tokio::net::UnixStream::pair().unwrap();

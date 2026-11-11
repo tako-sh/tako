@@ -1,4 +1,8 @@
+use std::path::Path;
+use std::time::Duration;
+
 use tokio::net::UnixStream;
+use tokio::sync::mpsc;
 
 use super::connection::{LineClient, socket_path};
 
@@ -98,38 +102,83 @@ pub enum LogStreamEntry {
     Truncated,
 }
 
-pub async fn subscribe_events()
--> Result<tokio::sync::mpsc::Receiver<DevServerEvent>, Box<dyn std::error::Error>> {
+pub async fn subscribe_events(
+    config_path: &str,
+) -> Result<mpsc::Receiver<DevServerEvent>, Box<dyn std::error::Error>> {
     let sock = socket_path()?;
-    let stream = UnixStream::connect(&sock).await?;
+    subscribe_events_at(&sock, config_path)
+        .await
+        .map_err(Into::into)
+}
+
+async fn connect_events(sock: &Path, config_path: Option<&str>) -> Result<LineClient, String> {
+    let stream = UnixStream::connect(sock).await.map_err(|e| e.to_string())?;
     let mut c = LineClient::new(stream);
-    c.send_line(r#"{"type":"SubscribeEvents"}"#).await?;
+    let request = serde_json::json!({"type": "SubscribeEvents", "config_path": config_path});
+    c.send_line(&request.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
 
     // Wait for Subscribed.
-    let line = c.read_line().await?;
-    let v: serde_json::Value = serde_json::from_str(&line)?;
+    let line = c.read_line().await.map_err(|e| e.to_string())?;
+    let v: serde_json::Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
     match v.get("type").and_then(|t| t.as_str()) {
-        Some("Subscribed") => {}
-        Some("Error") => return Err(format!("dev-server error: {}", v).into()),
-        _ => return Err(format!("unexpected response: {}", line).into()),
+        Some("Subscribed") => Ok(c),
+        Some("Error") => Err(format!("dev-server error: {}", v)),
+        _ => Err(format!("unexpected response: {}", line)),
     }
+}
 
-    let (tx, rx) = tokio::sync::mpsc::channel(512);
+const EVENT_RECONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+async fn subscribe_events_at(
+    sock: &Path,
+    config_path: &str,
+) -> Result<mpsc::Receiver<DevServerEvent>, String> {
+    // The owning CLI subscribes before registration. Only reconnects request a
+    // snapshot, since an absent registration then means the app was stopped.
+    let mut c = tokio::time::timeout(EVENT_RECONNECT_TIMEOUT, connect_events(sock, None))
+        .await
+        .map_err(|_| "dev-server event subscription timed out".to_string())??;
+    let sock = sock.to_owned();
+    let config_path = config_path.to_string();
+    let (tx, rx) = mpsc::channel(512);
     tokio::spawn(async move {
         loop {
-            let line = match c.read_line().await {
-                Ok(l) => l,
-                Err(_) => break,
-            };
-            if line.trim().is_empty() {
-                continue;
+            loop {
+                let line = tokio::select! {
+                    _ = tx.closed() => return,
+                    line = c.read_line() => match line {
+                        Ok(line) => line,
+                        Err(_) => break,
+                    },
+                };
+                if let Some(event) = parse_event_line(&line)
+                    && tx.send(event).await.is_err()
+                {
+                    return;
+                }
             }
-            let Some(ev) = parse_event_line(&line) else {
-                continue;
+            // Overflow closes only the subscription, not the app. Keep the
+            // public receiver alive while reconnecting and reconciling state.
+            // A dead/unresponsive daemon still closes it within a finite time.
+            let reconnect = async {
+                let mut delay = Duration::from_millis(100);
+                loop {
+                    tokio::time::sleep(delay).await;
+                    if let Ok(client) = connect_events(&sock, Some(&config_path)).await {
+                        return client;
+                    }
+                    delay = (delay * 2).min(Duration::from_secs(1));
+                }
             };
-            if tx.send(ev).await.is_err() {
-                break;
-            }
+            c = tokio::select! {
+                _ = tx.closed() => return,
+                result = tokio::time::timeout(EVENT_RECONNECT_TIMEOUT, reconnect) => match result {
+                    Ok(client) => client,
+                    Err(_) => return,
+                },
+            };
         }
     });
 
@@ -306,5 +355,135 @@ fn parse_tunnel_close_reason(value: &str) -> Option<TunnelCloseReason> {
         "limit_exceeded" => Some(TunnelCloseReason::LimitExceeded),
         "replaced" => Some(TunnelCloseReason::Replaced),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+    use tokio::net::UnixListener;
+    use tokio::time::timeout;
+
+    async fn accept_subscription(listener: &UnixListener, recovering: bool) -> LineClient {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut server = LineClient::new(stream);
+        let request: serde_json::Value =
+            serde_json::from_str(&server.read_line().await.unwrap()).unwrap();
+        assert_eq!(request["type"], "SubscribeEvents");
+        assert_eq!(
+            request["config_path"],
+            if recovering {
+                serde_json::json!("/app/tako.toml")
+            } else {
+                serde_json::Value::Null
+            }
+        );
+        server.send_line(r#"{"type":"Subscribed"}"#).await.unwrap();
+        server
+    }
+
+    #[tokio::test]
+    async fn reconnect_preserves_receiver_and_delivers_snapshot_then_live_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("events.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        let server = tokio::spawn(async move {
+            let mut first = accept_subscription(&listener, false).await;
+            first.send_line(r#"{"type":"Event","event":{"type":"AppPid","config_path":"/app/tako.toml","app_name":"app","pid":10}}"#).await.unwrap();
+            drop(first);
+            let mut second = accept_subscription(&listener, true).await;
+            // Reconcile an exit and disabled tunnel missed during the gap.
+            for line in [
+                r#"{"type":"Event","event":{"type":"AppProcessExited","config_path":"/app/tako.toml","app_name":"app","message":"App exited (exit code 42)"}}"#,
+                r#"{"type":"Event","event":{"type":"TunnelModeChanged","config_path":"/app/tako.toml","app_name":"app","enabled":false}}"#,
+                r#"{"type":"Event","event":{"type":"AppPid","config_path":"/app/tako.toml","app_name":"app","pid":20}}"#,
+            ] {
+                second.send_line(line).await.unwrap();
+            }
+            // Dropping the consumer must close the idle socket and task.
+            assert!(
+                timeout(Duration::from_secs(1), second.read_line())
+                    .await
+                    .unwrap()
+                    .is_err()
+            );
+        });
+        let mut events = subscribe_events_at(&sock, "/app/tako.toml").await.unwrap();
+        let mut received = Vec::new();
+        for _ in 0..4 {
+            received.push(
+                timeout(Duration::from_secs(2), events.recv())
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            );
+        }
+        assert!(matches!(
+            received[0],
+            DevServerEvent::AppPid { pid: 10, .. }
+        ));
+        assert!(
+            matches!(&received[1], DevServerEvent::AppProcessExited { message, .. } if message.contains("42"))
+        );
+        assert!(matches!(
+            received[2],
+            DevServerEvent::TunnelModeChanged { enabled: false, .. }
+        ));
+        assert!(matches!(
+            received[3],
+            DevServerEvent::AppPid { pid: 20, .. }
+        ));
+        drop(events);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn missed_stop_is_delivered_after_reconnect() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("events.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        let server = tokio::spawn(async move {
+            drop(accept_subscription(&listener, false).await);
+            let mut second = accept_subscription(&listener, true).await;
+            second.send_line(r#"{"type":"Event","event":{"type":"AppStatusChanged","config_path":"/app/tako.toml","app_name":"","status":"stopped"}}"#).await.unwrap();
+            assert!(
+                timeout(Duration::from_secs(1), second.read_line())
+                    .await
+                    .unwrap()
+                    .is_err()
+            );
+        });
+        let mut events = subscribe_events_at(&sock, "/app/tako.toml").await.unwrap();
+        let event = timeout(Duration::from_secs(2), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(event, DevServerEvent::AppStatusChanged { status, .. } if status == "stopped")
+        );
+        drop(events);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn unavailable_daemon_eventually_closes_receiver() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("events.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        let server = tokio::spawn(async move {
+            drop(accept_subscription(&listener, false).await);
+            drop(listener);
+        });
+        let mut events = subscribe_events_at(&sock, "/app/tako.toml").await.unwrap();
+        server.await.unwrap();
+        assert!(
+            timeout(
+                EVENT_RECONNECT_TIMEOUT + Duration::from_secs(1),
+                events.recv()
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
     }
 }

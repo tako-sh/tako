@@ -2,6 +2,86 @@ use super::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::test]
+async fn recovery_restores_tunnel_expiry_and_disconnected_state() {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let config = "/tmp/recovery-test.toml";
+    let state = super::tests::tunnel_state_with_app(config, 0, false);
+    let task = tokio::spawn(std::future::pending::<()>());
+    {
+        let mut s = state.lock().unwrap();
+        s.apps.get_mut(config).unwrap().tunnel = Some(TunnelRegistration {
+            generation: 1,
+            url: "https://recovery.example.com".into(),
+            expires_at: 12345,
+            abort_handle: task.abort_handle(),
+        });
+    }
+    broadcast_tunnel_connection(
+        &state,
+        config,
+        "app",
+        "https://recovery.example.com",
+        false,
+        1,
+    );
+    let (server, client) = tokio::net::UnixStream::pair().unwrap();
+    let handler = tokio::spawn({
+        let state = state.clone();
+        async move { crate::control::handle_client(server, state).await }
+    });
+    let (reader, mut writer) = client.into_split();
+    writer
+        .write_all(
+            format!(
+                "{}\n",
+                serde_json::json!({"type": "SubscribeEvents", "config_path": config})
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut lines = BufReader::new(reader).lines();
+    assert_eq!(
+        lines.next_line().await.unwrap().unwrap(),
+        r#"{"type":"Subscribed"}"#
+    );
+    let mut events = Vec::new();
+    for _ in 0..4 {
+        let line = tokio::time::timeout(Duration::from_secs(1), lines.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let Response::Event { event } = serde_json::from_str(&line).unwrap() else {
+            panic!("expected event")
+        };
+        events.push(event);
+    }
+    assert!(matches!(&events[2], protocol::DevEvent::TunnelModeChanged {
+        enabled: true, url: Some(url), expires_at: Some(12345), ..
+    } if url == "https://recovery.example.com"));
+    assert!(
+        matches!(&events[3], protocol::DevEvent::TunnelConnectionChanged {
+        connected: false, url, ..
+    } if url == "https://recovery.example.com")
+    );
+    disable_tunnel(&state, config, TunnelCloseReason::User);
+    assert!(
+        state
+            .lock()
+            .unwrap()
+            .events
+            .current_tunnel_event(config)
+            .is_none()
+    );
+    drop(lines);
+    drop(writer);
+    handler.await.unwrap().unwrap();
+    task.await.unwrap_err();
+}
+
+#[tokio::test]
 async fn retired_session_cannot_clear_or_report_for_new_session_at_same_url() {
     let config = "/tmp/generation-test.toml";
     let state = super::tests::tunnel_state_with_app(config, 0, false);

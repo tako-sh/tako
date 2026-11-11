@@ -10,7 +10,7 @@ pub(super) async fn spawn_dev_event_forwarder(
     should_exit_tx: watch::Sender<bool>,
     log_tx: mpsc::Sender<ScopedLog>,
 ) {
-    let mut ev_rx = match crate::dev_server_client::subscribe_events().await {
+    let mut ev_rx = match crate::dev_server_client::subscribe_events(&config_key).await {
         Ok(rx) => Some(rx),
         Err(e) => {
             let _ = log_tx
@@ -26,7 +26,20 @@ pub(super) async fn spawn_dev_event_forwarder(
     if let Some(mut ev_rx) = ev_rx.take() {
         tokio::spawn(async move {
             use crate::dev_server_client::DevServerEvent;
-            while let Some(ev) = ev_rx.recv().await {
+            loop {
+                let ev = tokio::select! {
+                    _ = event_tx.closed() => break,
+                    event = ev_rx.recv() => match event {
+                        Some(event) => event,
+                        None => {
+                            let _ = event_tx.send(DevEvent::ExitWithMessage(
+                                "disconnected from dev server".to_string(),
+                            )).await;
+                            let _ = should_exit_tx.send(true);
+                            break;
+                        }
+                    },
+                };
                 match ev {
                     DevServerEvent::AppStatusChanged {
                         ref config_path,
@@ -40,6 +53,13 @@ pub(super) async fn spawn_dev_event_forwarder(
                             .await;
                         let _ = should_exit_tx.send(true);
                         break;
+                    }
+                    DevServerEvent::AppStatusChanged {
+                        ref config_path,
+                        ref status,
+                        ..
+                    } if config_path == &config_key && status == "idle" => {
+                        let _ = event_tx.send(DevEvent::AppStopped).await;
                     }
                     DevServerEvent::ClientConnected {
                         ref config_path,

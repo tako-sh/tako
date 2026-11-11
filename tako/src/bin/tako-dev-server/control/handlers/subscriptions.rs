@@ -17,16 +17,28 @@ pub(super) async fn subscribe_events(
     state: &Arc<Mutex<State>>,
     r: &mut BufReader<OwnedReadHalf>,
     w: &mut OwnedWriteHalf,
+    config_path: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let rx = {
+    let (rx, snapshot) = {
         let s = state.lock().unwrap();
-        s.events.subscribe()
+        // Lifecycle and tunnel updates hold this lock. Capture their state and
+        // subscribe together so newer updates cannot precede the snapshot.
+        let snapshot = config_path
+            .as_deref()
+            .map(|path| event_snapshot(&s, path))
+            .unwrap_or_default();
+        (s.events.subscribe(), snapshot)
     };
 
     let _control_client = ControlClientSubscription::register(state);
     let mut rx = rx;
     if write_resp(w, &Response::Subscribed).await.is_err() {
         return Ok(());
+    }
+    for event in snapshot {
+        if write_resp(w, &Response::Event { event }).await.is_err() {
+            return Ok(());
+        }
     }
     let mut disconnect_probe = [0_u8; 1];
     loop {
@@ -48,6 +60,57 @@ pub(super) async fn subscribe_events(
         }
     }
     Ok(())
+}
+
+fn event_snapshot(state: &State, config_path: &str) -> Vec<protocol::DevEvent> {
+    use protocol::DevEvent;
+
+    let Some(app) = state.apps.get(config_path) else {
+        return vec![DevEvent::AppStatusChanged {
+            config_path: config_path.to_string(),
+            app_name: String::new(),
+            status: "stopped".to_string(),
+        }];
+    };
+    let config_path = config_path.to_string();
+    let app_name = app.name.clone();
+    let mut events = vec![DevEvent::AppStatusChanged {
+        config_path: config_path.clone(),
+        app_name: app_name.clone(),
+        status: if app.is_idle { "idle" } else { "running" }.to_string(),
+    }];
+    if let Some(pid) = app.pid {
+        events.push(DevEvent::AppPid {
+            config_path: config_path.clone(),
+            app_name: app_name.clone(),
+            pid,
+        });
+    }
+    if let Some(event) = state.events.current_app_event(&config_path) {
+        events.push(event);
+    }
+    events.push(DevEvent::LanModeChanged {
+        enabled: state.lan_enabled,
+        lan_ip: state.lan_ip.clone(),
+        ca_url: state
+            .lan_ip
+            .as_ref()
+            .map(|ip| format!("http://{ip}/ca.pem")),
+    });
+    events.push(DevEvent::TunnelModeChanged {
+        config_path: config_path.clone(),
+        app_name,
+        enabled: app.tunnel.is_some(),
+        url: app.tunnel.as_ref().map(|tunnel| tunnel.url.clone()),
+        expires_at: app.tunnel.as_ref().map(|tunnel| tunnel.expires_at),
+        close_reason: None,
+    });
+    if app.tunnel.is_some()
+        && let Some(event) = state.events.current_tunnel_event(&config_path)
+    {
+        events.push(event);
+    }
+    events
 }
 
 pub(super) async fn subscribe_logs(
