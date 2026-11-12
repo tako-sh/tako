@@ -3,6 +3,7 @@ package internal
 import (
 	"encoding/json"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -140,8 +141,10 @@ type ChannelDefinition struct {
 	ChannelLifecycleConfig
 	// ParamsSchema is a JSON Schema for the query params that bind a channel.
 	// Validated params select the channel stream, so declare flat string,
-	// integer, number, or boolean properties. Verify must still check that
-	// the caller may use the requested params.
+	// integer, number, or boolean properties. "from" and "last_message_id"
+	// are reserved query names, so [ChannelRegistry.Register] panics if a
+	// property uses one. Verify must still check that the caller may use the
+	// requested params.
 	ParamsSchema json.RawMessage
 	// Auth configures where credentials are read from. Nil means public.
 	Auth *ChannelAuthScheme
@@ -219,10 +222,23 @@ func NewChannelRegistry() *ChannelRegistry {
 // Channels is the process-local channel registry used by Tako endpoints.
 var Channels = NewChannelRegistry()
 
-// Register adds or replaces a channel definition.
+// ReservedChannelParamNames are the query names Tako reserves on channel
+// routes: "from" (where a reader starts) and "last_message_id" (the
+// WebSocket replay cursor). Channel and presence params cannot use them.
+var ReservedChannelParamNames = []string{"from", "last_message_id"}
+
+// Register adds or replaces a channel definition. It panics if the
+// definition is invalid, including a params schema property named "from" or
+// "last_message_id".
 func (r *ChannelRegistry) Register(name string, definition ChannelDefinition) {
 	if definition.Ephemeral && definition.ReplayWindowMs != 0 {
 		panic("ephemeral channels cannot set ReplayWindowMs")
+	}
+	// Store reads carry params as JSON; channel and presence params are query values.
+	if !strings.HasPrefix(name, storeChannelPrefix) {
+		if reserved := reservedParamName(definition.ParamsSchema); reserved != "" {
+			panic("tako: channel " + strconv.Quote(name) + " declares param " + strconv.Quote(reserved) + ", a name Tako reserves on channel routes; rename the param")
+		}
 	}
 	if definition.ParamsSchema == nil {
 		definition.ParamsSchema = json.RawMessage(`{"type":"object"}`)
@@ -234,6 +250,21 @@ func (r *ChannelRegistry) Register(name string, definition ChannelDefinition) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.definitions[name] = definition
+}
+
+func reservedParamName(schema json.RawMessage) string {
+	var parsed struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if len(schema) == 0 || json.Unmarshal(schema, &parsed) != nil {
+		return ""
+	}
+	for _, name := range ReservedChannelParamNames {
+		if _, ok := parsed.Properties[name]; ok {
+			return name
+		}
+	}
+	return ""
 }
 
 // Clear removes all registered channel definitions.

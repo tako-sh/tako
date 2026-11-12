@@ -141,6 +141,13 @@ export interface EventSourceFactoryInit {
   lastEventId?: string;
 }
 
+/**
+ * Where a reader without a cursor starts. `"start"` replays every message the
+ * stream still retains, then continues live. Omit to start at the head (live
+ * messages only).
+ */
+export type ChannelReadFrom = "start";
+
 /** Options for {@link import("./channels").Channel.subscribe}. */
 export interface ChannelSubscribeOptions {
   /** Override the base URL. Required outside the browser. */
@@ -149,13 +156,23 @@ export interface ChannelSubscribeOptions {
   headers?: Record<string, string>;
   /** Bearer token shorthand for header auth. Omit for public or cookie-auth channels. */
   authorization?: string;
-  /** Last seen message id — triggers replay from that point. */
+  /** Last seen message id — triggers replay from that point. Wins over `from`. */
   lastEventId?: string;
+  /**
+   * `"start"` replays every retained message before live ones. Reconnects
+   * resume from the last received message, not from the start again.
+   */
+  from?: ChannelReadFrom;
   /** Inject a custom SSE implementation (e.g. for tests). */
   eventSourceFactory?: (url: string, init?: EventSourceFactoryInit) => unknown;
   /** Recovery runs outside the channel's application messages. */
   onRecovery?: (reason: SseRecoveryReason) => void;
   onError?: (error: Error) => void;
+  /**
+   * Called once when the server closed the stream, after every earlier
+   * message. The subscription stops for good and does not reconnect.
+   */
+  onClose?: () => void;
   signal?: AbortSignal;
 }
 
@@ -169,8 +186,15 @@ export interface ChannelConnectOptions {
   headers?: Record<string, string>;
   /** Bearer token shorthand for header auth. Omit for public or cookie-auth channels. */
   authorization?: string;
-  /** Last seen message id — replays missed frames before live traffic. */
+  /** Last seen message id — replays missed frames before live traffic. Wins over `from`. */
   lastMessageId?: string;
+  /** `"start"` replays every retained message before live ones. */
+  from?: ChannelReadFrom;
+  /**
+   * Called once when the server closed the stream (close code 4200), after
+   * every earlier message. Do not reconnect; `send()` then throws.
+   */
+  onClose?: () => void;
   /** Inject a custom `WebSocket` implementation (e.g. for Node, tests). */
   webSocketFactory?: (url: string) => unknown;
 }
@@ -201,7 +225,10 @@ export interface ChannelSocket {
   raw: unknown;
   /** Close the socket with an optional code/reason. */
   close: (code?: number, reason?: string) => void;
-  /** Send a payload. Objects are JSON-stringified; binary types are passed through. */
+  /**
+   * Send a payload. Objects are JSON-stringified; binary types are passed
+   * through. Throws once the server closed the stream.
+   */
   send: (data: unknown) => void;
 }
 

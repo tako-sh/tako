@@ -3,18 +3,19 @@
  *
  * Server-side SDK code (app fetch handlers, workflow bodies, cron ticks)
  * reaches `tako-server` via a single unix socket. Workflow RPCs and
- * server-side channel `.publish()` both land here — no HTTPS, no auth, same
+ * server-side channel `.publish()` and `.close()` all land here — no HTTPS, no auth, same
  * trust boundary as the hosting process.
  *
  * Env vars set by the server when spawning an instance or worker:
  *   TAKO_INTERNAL_SOCKET — path to the shared unix socket
  *   TAKO_APP_NAME        — app name used on every command payload
- *   TAKO_BUILD           — build sent with channel publishes, when set
+ *   TAKO_BUILD           — build sent with channel publishes and closes, when set
  */
 
 import { createConnection } from "node:net";
 import type { Socket } from "node:net";
-import { setChannelSocketPublisher } from "../channels";
+import { setChannelSocketCloser, setChannelSocketPublisher } from "../channels";
+import type { ChannelLifecycleConfig } from "../channels/meta";
 import { setNetworkCaller } from "../network";
 import { createLogger } from "../logger";
 import type { ChannelMessage, ChannelPublishInput } from "../types";
@@ -100,7 +101,8 @@ export function assertInternalSocketEnvConsistency(): void {
 }
 
 /**
- * Install a channel publisher that routes `Channel.publish()` calls through
+ * Install a channel publisher and closer that route `Channel.publish()` and
+ * `Channel.close()` calls through
  * the Tako internal socket when `TAKO_INTERNAL_SOCKET` + `TAKO_APP_NAME` are
  * set. Called from the server and worker bootstraps so app/workflow code can
  * publish without an HTTPS round-trip back through the proxy.
@@ -138,6 +140,26 @@ export function installChannelSocketPublisherFromEnv(): boolean {
         payload: message,
       });
       return result as ChannelMessage<T>;
+    },
+  );
+  setChannelSocketCloser(
+    async (
+      channel: string,
+      params: Record<string, ChannelParamValue>,
+      lifecycle: ChannelLifecycleConfig | undefined,
+    ) => {
+      // Same stream selection as publish; the lifecycle tells the server the
+      // stream is durable and how long to retain its terminal marker.
+      const build = process.env[BUILD_ENV] || undefined;
+      const result = await callInternal(socketPath, {
+        command: "channel_close",
+        app,
+        channel,
+        ...(Object.keys(params).length > 0 && { params }),
+        ...(build !== undefined && { build }),
+        ...(lifecycle !== undefined && { lifecycle }),
+      });
+      return result as ChannelMessage<null>;
     },
   );
   return true;

@@ -29,6 +29,7 @@ export interface ChannelConfig<
 > extends ChannelLifecycleConfig {
   /**
    * TypeBox schema for query params required to bind this channel.
+   * Properties cannot be named `from` or `last_message_id`.
    *
    * Omit for an unparameterized channel.
    */
@@ -95,6 +96,12 @@ export type ChannelHandle<
     message: { type: T; data: Messages[T] },
     options?: ChannelPublishOptions,
   ): Promise<ChannelMessage<Messages[T]>>;
+  /**
+   * Close this stream from server-side code: subscribers get every earlier
+   * message, then the end of the stream, and later publishes fail. Rejects on
+   * ephemeral channels and outside the Tako server runtime.
+   */
+  close(): Promise<ChannelMessage<null>>;
   /**
    * Subscribe to messages with the default browser transport.
    */
@@ -187,6 +194,9 @@ function makeHandle<P, M, Transport extends ChannelLiveTransport>(
     ) {
       return makeChannel().publish(message, options);
     },
+    close() {
+      return makeChannel().close();
+    },
     subscribe(options?: ChannelSubscribeOptions) {
       return makeChannel().subscribe(options);
     },
@@ -234,7 +244,8 @@ function attachMeta<P, Transport extends ChannelLiveTransport, T extends object>
  *
  * Params select the stream: `chat({ roomId: "a" })` and `chat({ roomId: "b" })`
  * have separate messages, replay, and subscribers. Params are flat string,
- * number, or boolean values. `auth.verify` must still check that the caller
+ * number, or boolean values, and cannot be named `from` or `last_message_id`
+ * (reserved on channel routes). `auth.verify` must still check that the caller
  * may use the requested params.
  *
  * @example

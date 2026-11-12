@@ -105,6 +105,9 @@ impl PresenceDefinition {
         Self::default()
     }
 
+    /// JSON Schema for the flat query params that scope membership. Its
+    /// properties cannot be named `from` or `last_message_id`: Tako reserves
+    /// both on channel routes and never passes them as params.
     pub fn params_schema(mut self, schema: Value) -> Self {
         self.params_schema = schema;
         self

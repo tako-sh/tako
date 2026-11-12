@@ -41,13 +41,30 @@
  * });
  * ```
  *
+ * Read a stream from its start and stop when the server closes it, such as
+ * a streamed reply that must survive a page refresh:
+ * @example
+ * ```typescript
+ * const { messages, closed } = useChannel<{ content: string }>("reply", {
+ *   params: { replyId },
+ *   from: "start",
+ * });
+ * // Each message carries the whole text so far.
+ * const text = messages.at(-1)?.data.content ?? "";
+ * ```
+ *
  * The `messages` buffer is capped at the last 500 entries. `publish` is a
  * one-shot fetch — use `channel.publish(...)` from `tako.sh/client` directly
  * rather than a hook.
  */
 
 import { useCallback, useEffect, useInsertionEffect, useMemo, useRef, useState } from "react";
-import { Channel, type ChannelSubscribeOptions, type SseRecoveryReason } from "./channels";
+import {
+  CHANNEL_STREAM_CLOSED_CODE,
+  Channel,
+  type ChannelSubscribeOptions,
+  type SseRecoveryReason,
+} from "./channels";
 import type { ChannelConnectOptions, ChannelMessage } from "./types";
 
 import {
@@ -60,7 +77,7 @@ export { usePresence, type UsePresenceOptions, type PresenceConnection } from ".
 export type { PresenceMember } from "./presence";
 
 const MAX_MESSAGES = 500;
-type Status = "connecting" | "open";
+type Status = "connecting" | "open" | "closed";
 type MessageHandler<T> = (msg: ChannelMessage<T>) => void;
 
 function appendCapped<T>(buffer: ChannelMessage<T>[], msg: ChannelMessage<T>): ChannelMessage<T>[] {
@@ -72,13 +89,24 @@ function appendCapped<T>(buffer: ChannelMessage<T>[], msg: ChannelMessage<T>): C
 export interface ChannelConnection<T = unknown> {
   /** All messages received since mount or the last `clear()`, capped at 500. */
   readonly messages: ChannelMessage<T>[];
-  /** `"connecting"` before the first open or while reconnecting; `"open"` otherwise. */
+  /**
+   * `"connecting"` before the first open or while reconnecting; `"open"` while
+   * live; `"closed"` once the server closed the stream (final).
+   */
   readonly status: Status;
+  /**
+   * `true` once the server closed the stream, after every earlier message was
+   * delivered. The hook does not reconnect; `send()` then throws.
+   */
+  readonly closed: boolean;
   /** Last error seen (parse failure or transport error). Cleared on successful reconnect. */
   readonly error: Error | null;
   /** Empty the message buffer. */
   clear(): void;
-  /** Send a payload over the underlying WebSocket. Present only when `transport: "ws"`. */
+  /**
+   * Send a payload over the underlying WebSocket. Present only when
+   * `transport: "ws"`. Throws once the stream is closed.
+   */
   send?(data: unknown): void;
 }
 
@@ -97,6 +125,12 @@ interface BaseHookOptions<T> {
   onRecovery?: (reason: SseRecoveryReason) => void;
   /** Reload application state when the replay history has expired. */
   onResync?: () => void;
+  /**
+   * Called once when the server closed the stream. The latest handler is
+   * always used. `from: "start"` (transport option) replays retained messages
+   * first; reconnects within one mount resume by cursor.
+   */
+  onClose?: () => void;
 }
 
 /**
@@ -161,6 +195,7 @@ export function useChannel<T = unknown>(
     identity: typeof identity;
     send(data: unknown): void;
   } | null>(null);
+  const closedRef = useRef<typeof identity | null>(null);
 
   useEffect(() => {
     let disposed = false;
@@ -168,13 +203,26 @@ export function useChannel<T = unknown>(
     const active = () => !disposed && latestIdentity.current === identity;
     let lastMessageId = (currentOptions as ChannelConnectOptions).lastMessageId;
     const seen = new Set<string>();
+    let closed = false;
     setState({ identity, messages: [], status: "connecting", error: null });
 
     const update = (status: Status, error: Error | null = null) => {
-      if (active()) setState((previous) => ({ ...previous, status, error }));
+      if (active() && !closed) setState((previous) => ({ ...previous, status, error }));
+    };
+    // The server closed the stream after its last message: final, no reconnect.
+    const closeStream = () => {
+      if (!active() || closed) return;
+      update("closed");
+      closed = true;
+      closedRef.current = identity;
+      try {
+        optionsRef.current.onClose?.();
+      } catch (error) {
+        console.error("useChannel onClose handler threw:", error);
+      }
     };
     const recover = (reason: SseRecoveryReason) => {
-      if (!active()) return;
+      if (!active() || closed) return;
       update("connecting");
       try {
         void Promise.resolve(optionsRef.current.onRecovery?.(reason)).catch((error) => {
@@ -236,6 +284,7 @@ export function useChannel<T = unknown>(
         const connection = channel.connect({
           ...connectionOptions,
           ...(lastMessageId !== undefined && { lastMessageId }),
+          onClose: closeStream,
         });
         const target = connection.raw as EventTarget;
         let connected = true;
@@ -263,6 +312,10 @@ export function useChannel<T = unknown>(
           cleanup();
           if (!active()) return;
           const code = (event as CloseEvent).code;
+          if (code === CHANNEL_STREAM_CLOSED_CODE) {
+            closeStream();
+            return;
+          }
           if (terminalClose(code)) {
             update("connecting", new Error(`channel "${name}" rejected (${code}).`));
             return;
@@ -292,6 +345,7 @@ export function useChannel<T = unknown>(
     const subscription = channel.subscribe({
       ...(currentOptions as ChannelSubscribeOptions),
       onRecovery: recover,
+      onClose: closeStream,
       onError: (error) => {
         if (!active()) return;
         update("connecting", error);
@@ -326,11 +380,14 @@ export function useChannel<T = unknown>(
   }, [identity]);
   const send = useCallback(
     (data: unknown) => {
+      if (closedRef.current === identity) {
+        throw new Error(`Channel '${name}' stream is closed; it accepts no more messages.`);
+      }
       if (latestIdentity.current === identity && socketRef.current?.identity === identity) {
         socketRef.current.send(data);
       }
     },
-    [identity],
+    [identity, name],
   );
   const visible =
     state.identity === identity
@@ -339,6 +396,7 @@ export function useChannel<T = unknown>(
   return {
     messages: visible.messages,
     status: visible.status,
+    closed: visible.status === "closed",
     error: visible.error,
     clear,
     ...(transport === "ws" && { send }),

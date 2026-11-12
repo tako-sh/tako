@@ -2,6 +2,7 @@ package internal
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -192,4 +193,24 @@ func TestEphemeralChannelRejectsReplayWindow(t *testing.T) {
 		}
 	}()
 	NewChannelRegistry().Register("invalid", ChannelDefinition{ChannelLifecycleConfig: ChannelLifecycleConfig{Ephemeral: true, ReplayWindowMs: 10}})
+}
+
+func TestChannelRegistrationRejectsReservedParamNames(t *testing.T) {
+	for _, name := range []string{"from", "last_message_id"} {
+		func() {
+			defer func() {
+				message, _ := recover().(string)
+				if !strings.Contains(message, `declares param "`+name+`"`) {
+					t.Fatalf("expected reserved param %q to panic, got %q", name, message)
+				}
+			}()
+			NewChannelRegistry().Register("reply", ChannelDefinition{
+				ParamsSchema: json.RawMessage(`{"type":"object","properties":{"` + name + `":{"type":"string"}}}`),
+			})
+		}()
+	}
+	// Stores carry params as JSON, not query values.
+	NewChannelRegistry().Register(storeChannelPrefix+"notes", ChannelDefinition{
+		ParamsSchema: json.RawMessage(`{"type":"object","properties":{"from":{"type":"string"}}}`),
+	})
 }

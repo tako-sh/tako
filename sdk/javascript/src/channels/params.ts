@@ -4,7 +4,19 @@
  * schema declares for that property (`integer`, `number`, `boolean`;
  * everything else stays a string). A server-side publish must name the same
  * stream, so it sends the values a subscriber's query would be coerced to.
+ *
+ * `from` and `last_message_id` are reserved query names (the replay start and
+ * the WebSocket replay cursor), so no channel param may use them.
  */
+
+/** Query names tako-server reserves on channel routes; channel params cannot use them. */
+export const RESERVED_CHANNEL_PARAM_NAMES: readonly string[] = ["from", "last_message_id"];
+
+function reservedParam(key: string): TypeError {
+  return new TypeError(
+    `Channel param '${key}' uses a reserved name. Tako reserves ${RESERVED_CHANNEL_PARAM_NAMES.map((name) => `'${name}'`).join(" and ")} on channel routes; rename the param.`,
+  );
+}
 
 /** Scalar value a channel param can carry. */
 export type ChannelParamValue = string | number | boolean;
@@ -19,12 +31,14 @@ function invalidParam(key: string, reason: string): Error {
  * Serialize params into the query pairs subscribe and connect send.
  * `undefined` and `null` values are omitted.
  *
- * @throws {TypeError} If a value is an object, array, or another non-scalar.
+ * @throws {TypeError} If a value is an object, array, or another non-scalar,
+ * or a key is a reserved name (`from`, `last_message_id`).
  */
 export function channelParamQuery(params: Record<string, unknown>): Array<[string, string]> {
   const pairs: Array<[string, string]> = [];
   for (const [key, value] of Object.entries(params)) {
     if (value === undefined || value === null) continue;
+    if (RESERVED_CHANNEL_PARAM_NAMES.includes(key)) throw reservedParam(key);
     if (typeof value === "string") {
       pairs.push([key, value]);
     } else if (typeof value === "number") {
@@ -97,12 +111,18 @@ export function channelStreamParams(
 /**
  * Reject params schemas whose properties cannot travel as query values.
  *
- * @throws {TypeError} If a declared property type is `object` or `array`.
+ * @throws {TypeError} If a declared property type is `object` or `array`, or
+ * a property uses a reserved name (`from`, `last_message_id`).
  */
 export function assertFlatChannelParamsSchema(channel: string, schema: object): void {
   const properties = (schema as { properties?: unknown }).properties;
   if (!properties || typeof properties !== "object") return;
   for (const key of Object.keys(properties)) {
+    if (RESERVED_CHANNEL_PARAM_NAMES.includes(key)) {
+      throw new TypeError(
+        `Channel '${channel}' declares param '${key}', a name Tako reserves on channel routes (${RESERVED_CHANNEL_PARAM_NAMES.map((name) => `'${name}'`).join(", ")}). Rename the param.`,
+      );
+    }
     const type = declaredType(schema, key);
     const types = Array.isArray(type) ? type : [type];
     if (types.includes("object") || types.includes("array")) {
