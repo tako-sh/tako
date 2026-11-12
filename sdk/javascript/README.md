@@ -25,6 +25,40 @@ The `tako.sh` package's named exports include the `tako` runtime object, definit
 bun add tako.sh
 ```
 
+## HTTP health checks
+
+The package includes a health check command for Node.js 20+ and Bun:
+
+```bash
+npx tako.sh healthcheck http://127.0.0.1:3000/health
+```
+
+The URL argument overrides `TAKO_HEALTHCHECK_URL`. Without either, the command
+checks `http://127.0.0.1:${PORT:-3000}/health`. It makes one GET request, exits
+silently with code 0 for HTTP 2xx, and prints a short error with exit code 1 for
+other statuses, connection failures, or timeouts. Redirects are not followed,
+and the response body is not read. Retries and intervals belong to the caller.
+
+The timeout defaults to 2000 milliseconds. Set `--timeout <ms>` to override
+`TAKO_HEALTHCHECK_TIMEOUT_MS`.
+
+For Docker, install `tako.sh` as a production dependency during the image build
+and invoke its local binary so probes do not need registry access. In a Bun image:
+
+```yaml
+healthcheck:
+  test: ["CMD", "bun", "./node_modules/.bin/tako.sh", "healthcheck"]
+  interval: 5s
+  timeout: 3s
+  retries: 10
+```
+
+In a Node.js image, use
+`test: ["CMD", "./node_modules/.bin/tako.sh", "healthcheck"]`.
+The runtime image must include the installed package and its binary; bundling
+only application code does not include the CLI. Use `tako.sh healthcheck --help`
+for command help.
+
 ## Presence
 
 ```ts

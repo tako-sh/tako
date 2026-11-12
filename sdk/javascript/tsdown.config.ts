@@ -18,6 +18,7 @@ export default defineConfig([
     clean: true,
     minify: false,
     entry: {
+      cli: "bin/cli.ts",
       index: "src/index.ts",
       runtime: "src/runtime.ts",
       server: "src/server.ts",
