@@ -816,26 +816,11 @@ impl DatabaseSwap {
     }
 
     /// Put the original databases and sidecars back. Call only after
-    /// stopping all processes that may open these databases.
-    pub(super) fn rollback(mut self) -> Result<(), String> {
-        match run_restore_request(&RestoreRequest::RollBack {
-            dir: self.dir.path().to_path_buf(),
-        }) {
-            Ok(_) => self.dir.finish().or_else(|error| {
-                tracing::warn!("Restore rolled back but its rollback copy remains: {error}");
-                Ok(())
-            }),
-            Err(error) => {
-                let kept = self
-                    .dir
-                    .abandon(&format!("rollback failed: {}", error.message));
-                Err(format!(
-                    "{}; original data remains in {}",
-                    error.message,
-                    kept.display()
-                ))
-            }
-        }
+    /// stopping all processes that may open these databases. Runs in this
+    /// process: it only inspects, renames, and unlinks files, and never
+    /// opens a database.
+    pub(super) fn rollback(self) -> Result<(), String> {
+        self.dir.roll_back()
     }
 
     /// See [`RollbackDir::abandon`].
@@ -881,24 +866,25 @@ pub(super) fn swap_databases_in_worker(
             Err(SwapError::intact(error.message))
         }
         Err(error) if error.reported => Err(not_intact(&mut dir, error.message)),
-        // The worker died: the intent record says what to undo.
+        // The worker never ran (fork failed, or the binary is gone): there
+        // is no record, and the rollback below only removes the directory.
+        // Or it died: the record says what to undo. Either way the rollback
+        // runs here, so it does not depend on starting another worker.
         Err(error) => {
-            let rolled_back = run_restore_request(&RestoreRequest::RollBack {
-                dir: dir.path().to_path_buf(),
-            });
-            match rolled_back {
-                Ok(_) => {
-                    if let Err(cleanup) = dir.finish() {
-                        tracing::warn!(
-                            "Restore rolled back but its rollback copy remains: {cleanup}"
-                        );
-                    }
-                    Err(SwapError::intact(error.message))
-                }
-                Err(rollback) => Err(not_intact(
-                    &mut dir,
-                    format!("{}; {}", error.message, rollback.message),
-                )),
+            let message = if error.started {
+                error.message
+            } else {
+                format!(
+                    "{}; the restore worker never ran, so nothing was changed",
+                    error.message
+                )
+            };
+            match dir.roll_back() {
+                Ok(()) => Err(SwapError::intact(message)),
+                Err(rollback) => Err(SwapError {
+                    message: format!("{message}; {rollback}"),
+                    originals_intact: false,
+                }),
             }
         }
     }
@@ -914,9 +900,6 @@ pub(super) enum RestoreRequest {
         dir: PathBuf,
         /// Written into the intent record: the server's, not the worker's.
         generation: String,
-    },
-    RollBack {
-        dir: PathBuf,
     },
 }
 
@@ -936,6 +919,8 @@ pub(super) struct RequestError {
     pub(super) originals_intact: bool,
     /// The worker ran to the end and reported this error itself.
     pub(super) reported: bool,
+    /// The worker process was started.
+    pub(super) started: bool,
 }
 
 fn run_restore_request(request: &RestoreRequest) -> Result<RestoreReply, RequestError> {
@@ -943,10 +928,15 @@ fn run_restore_request(request: &RestoreRequest) -> Result<RestoreReply, Request
         message,
         originals_intact: false,
         reported: false,
+        started: true,
     };
     let request = serde_json::to_string(request).map_err(|e| crashed(e.to_string()))?;
-    let stdout = super::worker::run_worker(&["--restore-worker".as_ref(), request.as_ref()])
-        .map_err(crashed)?;
+    let stdout =
+        super::worker::run_worker_checked(&["--restore-worker".as_ref(), request.as_ref()])
+            .map_err(|error| RequestError {
+                started: error.started,
+                ..crashed(error.message)
+            })?;
     let reply: RestoreReply = serde_json::from_slice(&stdout)
         .map_err(|e| crashed(format!("restore worker sent an invalid reply: {e}")))?;
     match reply.error {
@@ -954,6 +944,7 @@ fn run_restore_request(request: &RestoreRequest) -> Result<RestoreReply, Request
             message,
             originals_intact: reply.originals_intact,
             reported: true,
+            started: true,
         }),
         None => Ok(reply),
     }
@@ -983,11 +974,6 @@ pub(crate) fn run_restore_worker(request: &str) -> Result<String, String> {
                     reply.error = Some(error.message);
                     reply.originals_intact = error.originals_intact;
                 }
-            }
-        }
-        RestoreRequest::RollBack { dir } => {
-            if let Err(error) = roll_back(&dir) {
-                reply.error = Some(error);
             }
         }
     }

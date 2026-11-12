@@ -541,7 +541,7 @@ fn swap_refuses_unsafe_live_paths_before_changing_anything() {
 }
 
 #[test]
-fn the_server_swaps_and_rolls_back_in_a_worker_process() {
+fn the_server_swaps_in_a_worker_process_and_rolls_back_itself() {
     let fixture = fixture();
     let swap =
         journal::swap_databases_in_worker(&fixture.staged, &fixture.databases, &fixture.data)
@@ -550,6 +550,57 @@ fn the_server_swaps_and_rolls_back_in_a_worker_process() {
     assert_eq!(value(&fixture.data.join("app/data.sqlite")), "snapshot");
     swap.rollback().unwrap();
     assert_live_state_is_original(&fixture);
+}
+
+/// A worker that cannot start never changed anything: the restore says so
+/// and keeps the originals in place.
+#[test]
+fn a_restore_worker_that_cannot_start_changes_nothing() {
+    use crate::operations::backup::worker::tests::{Fault, inject_faults};
+    let fixture = fixture();
+    let before = tree_state(&fixture.data);
+    inject_faults(&[Some(Fault::SpawnFails)]);
+    let error =
+        journal::swap_databases_in_worker(&fixture.staged, &fixture.databases, &fixture.data)
+            .unwrap_err();
+    assert!(error.originals_intact, "{}", error.message);
+    assert!(
+        error.message.contains("nothing was changed"),
+        "{}",
+        error.message
+    );
+    assert_eq!(tree_state(&fixture.data), before);
+    assert!(all_restore_dirs(fixture.temp.path()).is_empty());
+}
+
+/// The rollback after a worker died runs in the server, so it does not
+/// depend on starting another worker.
+#[test]
+fn a_dead_restore_worker_is_rolled_back_without_another_worker() {
+    use crate::operations::backup::worker::tests::{Fault, inject_faults};
+    let fixture = fixture();
+    inject_faults(&[Some(Fault::CrashAfterRun), Some(Fault::SpawnFails)]);
+    let error =
+        journal::swap_databases_in_worker(&fixture.staged, &fixture.databases, &fixture.data)
+            .unwrap_err();
+    inject_faults(&[]);
+    assert!(error.originals_intact, "{}", error.message);
+    assert_live_state_is_original(&fixture);
+    assert!(all_restore_dirs(fixture.temp.path()).is_empty());
+}
+
+fn all_restore_dirs(temp: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(temp)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".data-restore-")
+        })
+        .map(|entry| entry.path())
+        .collect()
 }
 
 /// A file is a sidecar only when the database it is named after exists
