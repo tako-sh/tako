@@ -805,6 +805,7 @@ impl crate::ServerState {
             ));
         }
         state.post_deploy_backup_queued = true;
+        self.record_post_deploy_backup_queued(app, true);
         Ok(None)
     }
 }
@@ -1553,6 +1554,53 @@ mod tests {
             "{}",
             failure.message
         );
+    }
+
+    /// The deploy reported the backup as queued, so a restart before the
+    /// snapshot finished must not drop it.
+    #[tokio::test]
+    async fn a_queued_post_deploy_backup_survives_a_restart() {
+        let fixture = RestoreFixture::new();
+        unreachable_storage(&fixture);
+        let (state, app) = (&fixture.state, fixture.app.as_str());
+        let snapshot = state.lock_for_database_snapshot(app).unwrap();
+        assert!(matches!(
+            state.backup_after_deploy(app).await,
+            Some(PostDeployBackup::Queued)
+        ));
+        drop(snapshot);
+        // A restart forgets everything in memory.
+        state.database_snapshots.write().clear();
+        state.run_queued_post_deploy_backup(app).await;
+        let schedule = state.backup_schedule_state(app);
+        assert_eq!(
+            schedule.failure().map(|failure| failure.reason),
+            Some(BackupFailureReason::Failed),
+            "the queued backup did not run"
+        );
+        // It ran once; it is not queued again.
+        state.database_snapshots.write().clear();
+        state.run_queued_post_deploy_backup(app).await;
+        assert!(state.backup_schedule_state(app).failure().is_none());
+    }
+
+    /// An app deleted and created again with the same name starts with a
+    /// clean schedule.
+    #[tokio::test]
+    async fn deleting_an_app_forgets_its_backup_schedule() {
+        let fixture = RestoreFixture::new();
+        let (state, app) = (&fixture.state, fixture.app.as_str());
+        {
+            let mut states = state.database_snapshots.write();
+            let schedule = states.entry(app.to_string()).or_default();
+            schedule.post_deploy_backup_queued = true;
+            schedule.record_full_failure(now_unix_secs(), BackupFailureReason::Failed, "x".into());
+        }
+        let response = state.delete_app(app).await;
+        assert!(response.is_ok(), "{response:?}");
+        let schedule = state.backup_schedule_state(app);
+        assert!(!schedule.post_deploy_backup_queued);
+        assert!(schedule.failure().is_none());
     }
 
     #[tokio::test]
