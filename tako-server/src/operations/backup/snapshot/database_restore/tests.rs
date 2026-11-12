@@ -726,14 +726,19 @@ fn a_restore_that_would_turn_a_database_into_a_sidecar_is_refused() {
 /// A restore moves files with rename and link, which cannot cross
 /// filesystems. It refuses up front instead of failing part way.
 #[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "needs a writable directory on a second filesystem, /dev/shm on Linux"
+)]
 fn a_restore_across_filesystems_is_refused_before_changing_anything() {
     let shm = Path::new("/dev/shm");
-    let other = match std::fs::metadata(shm) {
-        Ok(meta) if meta.dev() != std::fs::metadata(std::env::temp_dir()).unwrap().dev() => {
-            TempDir::new_in(shm).unwrap()
-        }
-        _ => return,
-    };
+    let meta = std::fs::metadata(shm).expect("this test needs /dev/shm");
+    assert_ne!(
+        meta.dev(),
+        std::fs::metadata(std::env::temp_dir()).unwrap().dev(),
+        "this test needs /dev/shm on another filesystem than the temporary directory"
+    );
+    let other = TempDir::new_in(shm).unwrap();
     let fixture = fixture();
     let before = tree_state(&fixture.data);
     let staged = other.path().join("databases");

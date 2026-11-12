@@ -885,9 +885,15 @@ mod tests {
         let temp = TempDir::new().unwrap();
         std::fs::create_dir(temp.path().join("same")).unwrap();
         assert!(require_same_filesystem(temp.path(), &[&temp.path().join("same")]).is_ok());
-        let error = require_same_filesystem(temp.path(), &[Path::new("/proc")]).unwrap_err();
+        // A filesystem of its own on each platform: procfs, or devfs on macOS.
+        let other = Path::new(if cfg!(target_os = "linux") {
+            "/proc"
+        } else {
+            "/dev"
+        });
+        let error = require_same_filesystem(temp.path(), &[other]).unwrap_err();
         assert!(
-            error.contains("/proc is on a different filesystem"),
+            error.contains(&format!("{} is on a different filesystem", other.display())),
             "{error}"
         );
     }
