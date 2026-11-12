@@ -281,6 +281,7 @@ fn plan_and_swap(
     dir: &Path,
     steps: &mut Steps,
 ) -> Result<RestoredDatabases, String> {
+    super::refuse_symlinked_data_root(data_root)?;
     let root = open_data_root(data_root)?;
     let in_snapshot: BTreeSet<&Path> = databases.iter().map(PathBuf::as_path).collect();
     let live = list_database_tree(data_root)?;

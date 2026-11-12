@@ -179,7 +179,9 @@ filesystem and mount as the Tako data directory. When `data/` or a directory a
 restored database sits in is a separate mount (including a bind mount), restore
 refuses before changing anything. A full restore also refuses while anything is
 mounted anywhere below `data/`, such as `data/app/uploads`, because it replaces the
-whole directory. Removing a rollback copy never crosses into another mount.
+whole directory. Restore also refuses when `data/` itself is a symlink, which a
+full restore would replace with a plain directory. Removing a rollback copy never
+crosses into another mount.
 
 ## Resolve an unfinished restore
 

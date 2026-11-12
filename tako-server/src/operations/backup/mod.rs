@@ -509,6 +509,7 @@ impl crate::ServerState {
             let full = info.kind == BackupKind::Full;
             move || -> Result<(), String> {
                 refuse_unfinished_restores(&data_root)?;
+                snapshot::refuse_symlinked_data_root(&data_root)?;
                 if full {
                     snapshot::refuse_mounts_in_data_tree(&data_root)?;
                 }

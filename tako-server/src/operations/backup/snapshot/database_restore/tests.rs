@@ -540,6 +540,25 @@ fn swap_refuses_unsafe_live_paths_before_changing_anything() {
     assert!(!outside.join("target").exists());
 }
 
+/// A symlinked data directory is refused with a message that says so,
+/// before anything changes.
+#[test]
+fn swap_refuses_a_symlinked_data_directory() {
+    let fixture = fixture();
+    let target = fixture.temp.path().join("volume");
+    std::fs::rename(&fixture.data, &target).unwrap();
+    std::os::unix::fs::symlink(&target, &fixture.data).unwrap();
+    let error = swap(&fixture, &fixture.databases).1.unwrap_err();
+    assert!(error.originals_intact);
+    assert!(
+        error.message.contains("is a symlink"),
+        "the refusal must say the data directory is a symlink"
+    );
+    std::fs::remove_file(&fixture.data).unwrap();
+    std::fs::rename(&target, &fixture.data).unwrap();
+    assert_live_state_is_original(&fixture);
+}
+
 #[test]
 fn the_server_swaps_in_a_worker_process_and_rolls_back_itself() {
     let fixture = fixture();
