@@ -735,3 +735,35 @@ async fn operator_deploys_wait_for_automatic_recovery_but_not_for_each_other() {
         "{waited:?}"
     );
 }
+
+#[tokio::test]
+async fn an_idle_scale_to_zero_app_stops_reporting_old_restarts() {
+    let dir = crate::isolation::fixture::TestDataDir::new().unwrap();
+    let state = test_state(dir.path());
+    for idle_state in [AppState::Idle, AppState::Running] {
+        let app = running_app(
+            &state,
+            dir.path(),
+            &format!("on-demand-{idle_state}"),
+            0,
+            sh(READY),
+        );
+        let instance = healthy_instance(&app);
+        // It crashed while serving a request; nothing replaces it (min 0).
+        handle_health_event(&state, dead(&app, &instance)).await;
+        assert!(app.get_instances().is_empty());
+        assert!(app.recovery_status().is_some());
+        app.set_state(idle_state);
+
+        let start = Instant::now();
+        tick(&state, start).await;
+        tick(&state, start + Duration::from_secs(59)).await;
+        assert!(app.recovery_status().is_some(), "{idle_state}");
+        tick(&state, start + Duration::from_secs(60)).await;
+        assert!(
+            app.recovery_status().is_none(),
+            "{idle_state}: an idle app kept its old restart report"
+        );
+        assert!(app.get_instances().is_empty(), "{idle_state}");
+    }
+}

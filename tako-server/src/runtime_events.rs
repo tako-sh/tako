@@ -446,13 +446,18 @@ fn reconciles(app: &App) -> bool {
 /// Cheap, lock-free look at one app: does it need the reconcile at all?
 /// Also feeds the stable-window observation that forgets an old backoff.
 fn needs_recovery(app: &App, now: Instant) -> bool {
-    if !reconciles(app) {
+    let reconciles = reconciles(app);
+    // An idle on-demand app is never reconciled, but it is still observed so
+    // an old restart report settles instead of lingering until a deploy.
+    if !reconciles && app.state() != AppState::Idle {
         return false;
     }
     let survey = survey(app);
     let settled = survey.dead.is_empty() && survey.present >= survey.target;
-    app.observe_recovery_health(settled && survey.present > 0 && survey.all_healthy, now);
-    !settled
+    // Healthy: at its minimum with every current instance healthy. With a
+    // minimum of zero and no instances left there is nothing to recover.
+    app.observe_recovery_health(settled && survey.all_healthy, now);
+    reconciles && !settled
 }
 
 /// Level-triggered instance recovery. Health events are edge-triggered: a
