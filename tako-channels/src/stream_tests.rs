@@ -630,6 +630,27 @@ fn sqlite_refuses_new_streams_beyond_the_app_limit_without_breaking_existing_one
     store.append("base", &payload(json!(3))).unwrap();
     store.sync_channel("other-base", &lifecycle).unwrap();
     assert_eq!(store.read_after(existing.key(), None, 10).unwrap().len(), 1);
+    // A mesh event for a new stream is acknowledged and reported as such, so
+    // the broker can say which app is at its limit; existing streams apply.
+    let event = |sequence: u64, channel: &str| crate::ChannelEvent {
+        id: crate::ChannelEventId {
+            origin: "peer".into(),
+            sequence,
+        },
+        channel: channel.into(),
+        payload: payload(json!(4)),
+        ephemeral: false,
+        lifecycle: None,
+        created_at_unix_ms: None,
+    };
+    assert_eq!(
+        store.ingest_remote(&event(1, room("new").key())).unwrap(),
+        crate::RemoteIngest::StreamLimit
+    );
+    assert_eq!(
+        store.ingest_remote(&event(2, existing.key())).unwrap(),
+        crate::RemoteIngest::Applied
+    );
 }
 
 #[test]

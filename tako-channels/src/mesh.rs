@@ -33,6 +33,11 @@ pub struct ChannelEvent {
     /// A peer without one keeps the stream's current lifecycle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle: Option<crate::ChannelLifecycle>,
+    /// When the origin stored this durable event, in Unix milliseconds. Peers
+    /// stamp their copy with it, so a message, and a close marker, expire at
+    /// the same moment on every node whenever each one prunes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at_unix_ms: Option<i64>,
 }
 
 /// Transport authenticates and app-scopes these publications before remote ingest.
@@ -47,9 +52,13 @@ pub enum ChannelPublication {
 pub enum RemoteIngest {
     Applied,
     Duplicate,
-    /// Acknowledged in sequence but not stored: the app is at its stream
-    /// limit, or the stream was already closed. Nothing to deliver.
+    /// Acknowledged in sequence but not stored: the stream was already
+    /// closed. Nothing to deliver.
     Dropped,
+    /// Acknowledged in sequence but not stored: the event would start a new
+    /// stream and the app is at [`crate::MAX_STREAMS`]. This node's readers
+    /// of that stream never receive it; the caller reports it.
+    StreamLimit,
 }
 
 pub(crate) type StreamChanges = HashMap<String, watch::Sender<Option<i64>>>;

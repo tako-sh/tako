@@ -562,6 +562,7 @@ async fn unknown_remote_app_never_creates_database() {
                     payload: payload(1),
                     ephemeral: false,
                     lifecycle: None,
+                    created_at_unix_ms: None,
                 }),
             },
         )
@@ -757,6 +758,7 @@ async fn postgres_wake_seam_never_reinserts_or_echoes_and_commit_dispatches_only
                     payload: payload(1),
                     ephemeral: false,
                     lifecycle: None,
+                    created_at_unix_ms: None,
                 }),
             },
         )
@@ -1771,4 +1773,16 @@ async fn the_broker_answers_the_feature_probe_without_queueing_a_command() {
         Response::Features { features } if features == vec![ipc::PUBLISH_LIFECYCLE.to_owned()]
     ));
     task.await.unwrap().unwrap();
+}
+
+#[test]
+fn stream_limit_drops_are_reported_at_most_once_a_minute_with_their_count() {
+    let mut warning = broker::StreamLimitWarning::default();
+    let start = tokio::time::Instant::now();
+    assert_eq!(warning.dropped(start), Some(1));
+    for second in 1..60 {
+        assert_eq!(warning.dropped(start + Duration::from_secs(second)), None);
+    }
+    assert_eq!(warning.dropped(start + Duration::from_secs(60)), Some(60));
+    assert_eq!(warning.dropped(start + Duration::from_secs(61)), None);
 }
