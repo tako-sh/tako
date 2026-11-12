@@ -201,7 +201,7 @@ tako releases ls [--env <env>]
 tako releases rollback <release-id> [--env <env>] [-y|--yes]
 ```
 
-Release descriptions default to the commit subject for clean checkouts, `Uncommitted changes based on: <commit subject>` for dirty checkouts, or `Local source snapshot` without Git history. Set `tako deploy --description "Fix reconnect handling"` to override the description. The dirty status remains visible with a custom description. `releases list --json` includes `description`, `commit_message`, and `git_dirty` for each release.
+Release descriptions default to the commit subject for clean checkouts, `Uncommitted changes based on: <commit subject>` for dirty checkouts, or `Local source snapshot` without Git history. Set `tako deploy --description "Fix reconnect handling"` to override the description. The dirty status remains visible with a custom description. `releases list --json` includes `description`, `commit_message`, `git_dirty`, and `sdk` for each release. `sdk` is `{ "language", "name", "version" }` for the Tako SDK detected at deploy time, or `null` when the release has none.
 
 Lists release/build history or rolls an environment back to a previous release. Rollback uses the standard rolling-update flow and reports partial server failures individually.
 

@@ -763,6 +763,17 @@ pub struct ListResponse {
     pub apps: Vec<AppStatus>,
 }
 
+/// The Tako SDK a release was built against, as its manifest records it.
+/// Informational only: no compatibility decision depends on it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReleaseSdk {
+    /// `javascript`, `go`, or `rust`.
+    pub language: String,
+    /// Package, module, or crate name as the ecosystem spells it.
+    pub name: String,
+    pub version: String,
+}
+
 /// Release/build metadata for an app.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReleaseInfo {
@@ -775,6 +786,9 @@ pub struct ReleaseInfo {
     pub description: Option<String>,
     #[serde(default)]
     pub git_dirty: Option<bool>,
+    /// Absent when the release has no detectable Tako SDK.
+    #[serde(default)]
+    pub sdk: Option<ReleaseSdk>,
 }
 
 /// Response payload for `list_releases`.

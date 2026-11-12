@@ -428,6 +428,41 @@ fn test_list_releases_command_serialization() {
 }
 
 #[test]
+fn release_info_reports_the_recorded_sdk() {
+    let release = ReleaseInfo {
+        version: "abc1234".to_string(),
+        current: true,
+        deployed_at_unix_secs: Some(1_700_000_000),
+        commit_message: None,
+        description: None,
+        git_dirty: None,
+        sdk: Some(ReleaseSdk {
+            language: "go".to_string(),
+            name: "tako.sh".to_string(),
+            version: "v0.4.1".to_string(),
+        }),
+    };
+    let json = serde_json::to_value(&release).unwrap();
+    assert_eq!(
+        json["sdk"],
+        serde_json::json!({"language":"go","name":"tako.sh","version":"v0.4.1"})
+    );
+    assert_eq!(
+        serde_json::from_value::<ReleaseInfo>(json).unwrap(),
+        release
+    );
+
+    // A release without a detectable SDK reports null, and a response that
+    // omits the field reads the same way.
+    let unknown: ReleaseInfo = serde_json::from_str(
+        r#"{"version":"abc1234","current":false,"deployed_at_unix_secs":null}"#,
+    )
+    .unwrap();
+    assert_eq!(unknown.sdk, None);
+    assert!(serde_json::to_value(&unknown).unwrap()["sdk"].is_null());
+}
+
+#[test]
 fn test_rollback_command_serialization() {
     let cmd = Command::Rollback {
         app: "my-app".to_string(),

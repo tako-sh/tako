@@ -6,6 +6,8 @@ The protocol version is `0`. Breaking changes are allowed until protocol v1. Cha
 
 Tako has one active protocol version. The CLI, server, and every deploy artifact must declare that exact version; compatibility does not negotiate version ranges or capability sets. Deploy artifacts record it as `protocol_version` in `app.json`.
 
+Deploy artifacts may also record the Tako SDK the app is built against as `sdk` in `app.json`: `{ "language", "name", "version" }`, where `language` is `javascript`, `go`, or `rust`. The CLI reads it from the app's dependency files at deploy time: the installed or locked `tako.sh` package, the `tako.sh` requirement in `go.mod` (`(devel)` when a `replace` points at a local directory, or the replacement module and version), or the `tako` crate in `Cargo.lock`. It is omitted when no SDK is found, including prebuilt images, Compose projects, and containers with `container_options.sdk = false`. The server reports it in `list_releases` and never gates on it.
+
 Normal deploys check the CLI/server protocol before parallel deployment starts. After upload, the server checks the artifact again before preparing dependencies, running a release command, synchronizing workflows, or starting app processes. `--force` bypasses only these version gates so an operator can attempt an incompatible deploy; normal validation and readiness checks still apply.
 
 `PrepareRelease` carries the current deployment's secrets for preparation, including Compose interpolation on a first deploy. Preparation does not replace persisted app secrets; activation persists them after preparation succeeds.
