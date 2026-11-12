@@ -77,6 +77,7 @@ pub(super) fn spawn_standby_monitor(rt: &Runtime, config: StandbyPromotionConfig
                                 )
                             })
                             .await;
+                            config.state.stop_apps_with_unresolved_restores().await;
                             recovered = true;
                         }
 

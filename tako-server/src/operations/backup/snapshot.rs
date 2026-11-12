@@ -500,9 +500,10 @@ impl RestoredData {
         self.dir.roll_back()
     }
 
-    /// See [`RollbackDir::abandon`].
+    /// See [`RollbackDir::abandon`]. The swap completed, so the live tree
+    /// is the restored one.
     pub(super) fn abandon(mut self, reason: &str) -> PathBuf {
-        self.dir.abandon(reason)
+        self.dir.abandon(reason, journal::IntentState::Restored)
     }
 
     #[cfg(test)]
@@ -636,7 +637,7 @@ fn restore_data_tree_with(
         paths.push(data_root);
     }
     if let Err(error) = require_same_filesystem(dir.path(), &paths) {
-        if let Err(cleanup) = dir.finish() {
+        if let Err(cleanup) = dir.finish_unchanged() {
             tracing::warn!("Refused restore left its rollback directory: {cleanup}");
         }
         return Err(SwapError::intact(error));
@@ -680,13 +681,16 @@ fn restore_data_tree_with(
         // the original moving back counts as kept.
         Err(error) => match full_rollback(&intent, dir.path(), false) {
             Ok(()) => {
-                if let Err(cleanup) = dir.finish() {
+                if let Err(cleanup) = dir.finish_unchanged() {
                     tracing::warn!("Restore rolled back but its rollback copy remains: {cleanup}");
                 }
                 Err(SwapError::intact(error))
             }
             Err(rollback) => {
-                let kept = dir.abandon(&format!("{error}; {rollback}"));
+                let kept = dir.abandon(
+                    &format!("{error}; {rollback}"),
+                    journal::IntentState::Swapping,
+                );
                 Err(SwapError {
                     message: format!(
                         "{error}; {rollback}; original data remains at {}",

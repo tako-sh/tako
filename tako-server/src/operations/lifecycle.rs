@@ -56,6 +56,9 @@ impl crate::ServerState {
             Some(app) => app,
             None => return Response::error(format!("App not found: {}", app_name)),
         };
+        if let Some(response) = self.refuse_unresolved_restore(app_name) {
+            return response;
+        }
 
         let previous_config = app.config.read().clone();
         if previous_config.compose.is_some() {

@@ -94,6 +94,9 @@ impl crate::ServerState {
                 return Response::error(message);
             }
         };
+        if let Some(response) = self.refuse_unresolved_restore(app_name) {
+            return response;
+        }
 
         let env_vars = match env_vars_from_release_dir(&release_path) {
             Ok(vars) => vars,
