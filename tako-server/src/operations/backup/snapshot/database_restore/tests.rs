@@ -254,9 +254,15 @@ fn fixture() -> Fixture {
     std::fs::write(data.join("app/data.sqlite-shm"), b"newer shm").unwrap();
     std::fs::write(data.join("tako/workflows.sqlite-journal"), b"newer journal").unwrap();
     std::fs::write(data.join("app/upload.bin"), b"upload").unwrap();
+    // Modes the app controls: never carried over to the restored copy.
     std::fs::set_permissions(
         data.join("app/data.sqlite"),
-        std::fs::Permissions::from_mode(0o660),
+        std::fs::Permissions::from_mode(0o777),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        data.join("tako/workflows.sqlite"),
+        std::fs::Permissions::from_mode(0o666),
     )
     .unwrap();
     Fixture {
@@ -374,8 +380,13 @@ fn swap_replaces_only_snapshot_databases_and_drops_their_sidecars() {
     ] {
         assert!(!data.join(sidecar).exists(), "{sidecar}");
     }
+    // The modes app data provisioning sets: group read/write in app/,
+    // service-only in tako/.
+    let mode = |path: &str| std::fs::metadata(data.join(path)).unwrap().mode() & 0o7777;
+    assert_eq!(mode("app/data.sqlite"), 0o660);
+    assert_eq!(mode("app/new/created.sqlite"), 0o660);
+    assert_eq!(mode("tako/workflows.sqlite"), 0o600);
     let meta = std::fs::metadata(data.join("app/data.sqlite")).unwrap();
-    assert_eq!(meta.mode() & 0o777, 0o660);
     assert_eq!(meta.nlink(), 1);
     assert_eq!(
         std::fs::read(data.join("app/other.sqlite")).unwrap(),
