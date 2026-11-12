@@ -421,6 +421,8 @@ Local workflow transactions synchronize the SQLite write-ahead log before acknow
 
 Each claim receives a distinct ownership identifier. After a lease is reclaimed, a delayed earlier attempt cannot heartbeat, save a step, or change the new attempt’s run state, even when the same process claims the run again. This protects workflow state; external side effects still need application-level idempotency.
 
+With shared Postgres storage, leases are written, renewed, and checked against the database clock rather than each server's own clock. Servers whose clocks disagree therefore cannot reclaim a run another server's worker still holds, or leave a lost worker's run stranded. Due times (`runAt`, sleep and wait deadlines, cron boundaries) still follow the clock of the server or worker that set them, so keep server clocks synchronized.
+
 Tako keeps finished runs for at least 184 days by default, covering six calendar months, then removes them and their saved steps in small batches. The age is measured from completion, so long sleeps and waits do not shorten a run's history. Cleanup is best effort while the workflow runtime is active; stopped or retired stores can keep older rows until the runtime starts again. To change the age or keep history indefinitely, set `retention` in `tako.toml`:
 
 ```toml

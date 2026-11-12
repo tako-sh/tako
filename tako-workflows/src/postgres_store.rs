@@ -9,14 +9,35 @@ use super::enqueue::{
 
 const DEFAULT_MAX_ATTEMPTS: u32 = 3;
 
+/// The database clock in Unix milliseconds. Leases are written and compared
+/// with it, never with a server's own clock. Servers sharing a store can
+/// disagree about the time: a lease judged by a clock ahead of the one that
+/// wrote it is reclaimed while its worker still runs, duplicating steps.
+/// `statement_timestamp()` is stable within a statement, so the expiry
+/// comparison can still use the running-lease index.
+const DB_NOW_MS: &str = "(EXTRACT(EPOCH FROM statement_timestamp()) * 1000)::BIGINT";
+
 pub(super) struct PostgresRunsDb {
     client: Mutex<Client>,
     schema: String,
     app_id: String,
+    /// This server's clock, in Unix milliseconds, for scheduling and history
+    /// timestamps. Leases use [`DB_NOW_MS`] instead. Tests replace it to
+    /// stand in for a server whose clock disagrees with the database.
+    clock: fn() -> i64,
 }
 
 impl PostgresRunsDb {
     pub(super) fn open(url: &str, schema: &str, app_id: &str) -> Result<Self, RunsDbError> {
+        Self::open_with_clock(url, schema, app_id, now_ms)
+    }
+
+    fn open_with_clock(
+        url: &str,
+        schema: &str,
+        app_id: &str,
+        clock: fn() -> i64,
+    ) -> Result<Self, RunsDbError> {
         validate_identifier(schema)?;
         let mut client = Client::connect(url, NoTls)?;
         init_schema(&mut client, schema)?;
@@ -24,7 +45,12 @@ impl PostgresRunsDb {
             client: Mutex::new(client),
             schema: schema.to_string(),
             app_id: app_id.to_string(),
+            clock,
         })
+    }
+
+    fn now(&self) -> i64 {
+        (self.clock)()
     }
 
     pub(super) fn enqueue(
@@ -33,7 +59,7 @@ impl PostgresRunsDb {
         payload: &serde_json::Value,
         opts: &EnqueueOpts,
     ) -> Result<EnqueueRunResponse, RunsDbError> {
-        let now = now_ms();
+        let now = self.now();
         let run_at = opts.run_at_ms.unwrap_or(now);
         let max_attempts = opts.max_attempts.unwrap_or(DEFAULT_MAX_ATTEMPTS) as i64;
         let payload_json = serde_json::to_string(payload)?;
@@ -92,8 +118,8 @@ impl PostgresRunsDb {
         if names.is_empty() {
             return Ok(None);
         }
-        let now = now_ms();
-        let lease_until = now.saturating_add(clamp_lease_ms(lease_ms));
+        let now = self.now();
+        let lease_ms = clamp_lease_ms(lease_ms);
         let mut client = self.client.lock();
         let mut tx = client.transaction()?;
         // The candidate is a CTE so it is chosen once. As a subquery in FROM
@@ -103,20 +129,21 @@ impl PostgresRunsDb {
         let row = tx.query_opt(
             &format!(
                 "WITH candidate AS (
-                    SELECT id FROM {}.runs
+                    SELECT id FROM {schema}.runs
                     WHERE app_id=$1 AND status='pending' AND run_at <= $4 AND name = ANY($5)
                     ORDER BY run_at
                     LIMIT 1
                     FOR UPDATE SKIP LOCKED
                  )
-                 UPDATE {}.runs r
-                 SET status='running', worker_id=$2, lease_until=$3, attempts=attempts+1
+                 UPDATE {schema}.runs r
+                 SET status='running', worker_id=$2, lease_until={DB_NOW_MS} + $3,
+                     attempts=attempts+1
                  FROM candidate
                  WHERE r.app_id=$1 AND r.id=candidate.id
                  RETURNING r.id, r.name, r.payload, r.status, r.attempts, r.max_attempts, r.run_at",
-                self.schema, self.schema
+                schema = self.schema
             ),
-            &[&self.app_id, &worker_id, &lease_until, &now, &names],
+            &[&self.app_id, &worker_id, &lease_ms, &now, &names],
         )?;
         let Some(row) = row else {
             tx.commit()?;
@@ -191,10 +218,9 @@ impl PostgresRunsDb {
         worker_id: &str,
         lease_ms: u64,
     ) -> Result<(), RunsDbError> {
-        let lease_until = now_ms().saturating_add(clamp_lease_ms(lease_ms));
         self.update_running(
-            "lease_until = $4",
-            &[&self.app_id, &id, &worker_id, &lease_until],
+            &format!("lease_until = {DB_NOW_MS} + $4"),
+            &[&self.app_id, &id, &worker_id, &clamp_lease_ms(lease_ms)],
         )
     }
 
@@ -230,7 +256,7 @@ impl PostgresRunsDb {
                  ON CONFLICT(app_id, run_id, name) DO NOTHING",
                 self.schema
             ),
-            &[&self.app_id, &run_id, &step_name, &result, &now_ms()],
+            &[&self.app_id, &run_id, &step_name, &result, &self.now()],
         )?;
         tx.commit()?;
         Ok(())
@@ -268,7 +294,7 @@ impl PostgresRunsDb {
     ) -> Result<(), RunsDbError> {
         self.update_running(
             "status='succeeded', result=$5, last_error=NULL, worker_id=NULL, lease_until=NULL, finished_at=$4",
-            &[&self.app_id, &id, &worker_id, &now_ms(), &serde_json::to_string(result)?],
+            &[&self.app_id, &id, &worker_id, &self.now(), &serde_json::to_string(result)?],
         )
     }
 
@@ -280,7 +306,7 @@ impl PostgresRunsDb {
     ) -> Result<(), RunsDbError> {
         self.update_running(
             "status='cancelled', last_error=$4, worker_id=NULL, lease_until=NULL, finished_at=$5",
-            &[&self.app_id, &id, &worker_id, &reason, &now_ms()],
+            &[&self.app_id, &id, &worker_id, &reason, &self.now()],
         )
     }
 
@@ -295,7 +321,7 @@ impl PostgresRunsDb {
         if finalize {
             return self.update_running(
                 "status='dead', last_error=$4, worker_id=NULL, lease_until=NULL, finished_at=$5",
-                &[&self.app_id, &id, &worker_id, &error, &now_ms()],
+                &[&self.app_id, &id, &worker_id, &error, &self.now()],
             );
         }
         let next = next_run_at_ms.ok_or_else(|| {
@@ -372,7 +398,7 @@ impl PostgresRunsDb {
                     "WITH expired AS (
                     SELECT id, worker_id, attempts >= max_attempts AS exhausted
                     FROM {schema}.runs
-                    WHERE app_id=$1 AND status='running' AND lease_until < $2
+                    WHERE app_id=$1 AND status='running' AND lease_until < {DB_NOW_MS}
                     FOR UPDATE
                  )
                  UPDATE {schema}.runs r SET
@@ -384,7 +410,7 @@ impl PostgresRunsDb {
                  RETURNING expired.id, expired.worker_id, expired.exhausted",
                     schema = self.schema
                 ),
-                &[&self.app_id, &now_ms(), &WORKER_LOST_ERROR],
+                &[&self.app_id, &self.now(), &WORKER_LOST_ERROR],
             )?
             .into_iter()
             .map(|row| (row.get(0), row.get(1), row.get(2)))
@@ -458,7 +484,7 @@ impl PostgresRunsDb {
         payload: &serde_json::Value,
     ) -> Result<u64, RunsDbError> {
         let payload_json = serde_json::to_string(payload)?;
-        let now = now_ms();
+        let now = self.now();
         let mut client = self.client.lock();
         let mut tx = client.transaction()?;
         let waiters = tx.query(
@@ -537,7 +563,7 @@ impl PostgresRunsDb {
                      )",
                     self.schema
                 ),
-                &[&self.app_id, &now_ms()],
+                &[&self.app_id, &self.now()],
             )?
             .get(0);
         Ok(exists)
@@ -564,7 +590,7 @@ impl PostgresRunsDb {
                 &[&self.app_id, &names],
             )?;
         }
-        let now = now_ms();
+        let now = self.now();
         for schedule in schedules {
             tx.execute(
                 &format!(
@@ -766,6 +792,121 @@ mod tests {
         db.client
             .lock()
             .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .unwrap();
+    }
+
+    const SKEW_MS: i64 = 60 * 60 * 1000;
+    const LEASE_MS: u64 = 60_000;
+
+    fn fast_clock() -> i64 {
+        now_ms() + SKEW_MS
+    }
+
+    fn slow_clock() -> i64 {
+        now_ms() - SKEW_MS
+    }
+
+    /// Milliseconds left on a run's lease, measured by the database clock.
+    fn remaining_lease(gate: &mut Client, schema: &str, id: &str) -> i64 {
+        gate.query_one(
+            &format!(
+                "SELECT lease_until - (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT
+                 FROM {schema}.runs WHERE app_id='app' AND id=$1"
+            ),
+            &[&id],
+        )
+        .unwrap()
+        .get(0)
+    }
+
+    /// Three servers share one store. One clock runs an hour ahead of the
+    /// database and one an hour behind. Leases written and judged by those
+    /// clocks would be reclaimed an hour early (duplicating steps) or an
+    /// hour late (stalling runs whose worker died).
+    #[test]
+    fn leases_follow_the_database_clock_on_servers_with_skewed_clocks() {
+        let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let schema = format!(
+            "lease_clock_{}",
+            nanoid::nanoid!(12, &['a', 'b', 'c', 'd', 'e', 'f'])
+        );
+        let accurate = PostgresRunsDb::open(&url, &schema, "app").unwrap();
+        let fast = PostgresRunsDb::open_with_clock(&url, &schema, "app", fast_clock).unwrap();
+        let slow = PostgresRunsDb::open_with_clock(&url, &schema, "app", slow_clock).unwrap();
+        let mut gate = Client::connect(&url, NoTls).unwrap();
+        let full_lease = (LEASE_MS as i64 - 5_000)..=LEASE_MS as i64;
+        // Due on every server's own clock: scheduling is not what is tested.
+        let due = EnqueueOpts {
+            run_at_ms: Some(0),
+            ..Default::default()
+        };
+
+        for (name, server) in [("fast", &fast), ("slow", &slow)] {
+            let id = accurate
+                .enqueue("work", &serde_json::json!({}), &due)
+                .unwrap()
+                .id;
+            let run = server
+                .claim(name, &["work".into()], LEASE_MS)
+                .unwrap()
+                .unwrap();
+            assert_eq!(run.id, id);
+            let remaining = remaining_lease(&mut gate, &schema, &id);
+            assert!(
+                full_lease.contains(&remaining),
+                "{name} server claimed with {remaining}ms of lease"
+            );
+            // No server takes the run from a worker that still holds its lease.
+            for reclaimer in [&accurate, &fast, &slow] {
+                assert_eq!(reclaimer.reclaim_expired().unwrap().count, 0, "{name}");
+            }
+
+            // Shorten the lease, then renew it through the skewed server.
+            gate.execute(
+                &format!(
+                    "UPDATE {schema}.runs SET lease_until = lease_until - 50000
+                     WHERE app_id='app' AND id=$1"
+                ),
+                &[&id],
+            )
+            .unwrap();
+            server.heartbeat(&id, name, LEASE_MS).unwrap();
+            let remaining = remaining_lease(&mut gate, &schema, &id);
+            assert!(
+                full_lease.contains(&remaining),
+                "{name} server renewed to {remaining}ms of lease"
+            );
+            for reclaimer in [&accurate, &fast, &slow] {
+                assert_eq!(reclaimer.reclaim_expired().unwrap().count, 0, "{name}");
+            }
+
+            // Once the database clock passes the lease, every server reclaims it.
+            gate.execute(
+                &format!(
+                    "UPDATE {schema}.runs
+                     SET lease_until = (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT - 1
+                     WHERE app_id='app' AND id=$1"
+                ),
+                &[&id],
+            )
+            .unwrap();
+            assert_eq!(server.reclaim_expired().unwrap().workers, vec![name]);
+            assert!(matches!(
+                accurate.heartbeat(&id, name, LEASE_MS),
+                Err(RunsDbError::StaleWorker)
+            ));
+            let run = accurate
+                .claim("next", &["work".into()], LEASE_MS)
+                .unwrap()
+                .unwrap();
+            assert_eq!((run.id, run.attempts), (id.clone(), 2));
+            accurate
+                .complete(&id, "next", &serde_json::Value::Null)
+                .unwrap();
+        }
+        gate.batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
             .unwrap();
     }
 
