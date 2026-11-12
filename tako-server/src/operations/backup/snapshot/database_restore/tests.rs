@@ -465,7 +465,7 @@ fn recovery_after_a_crash_at_any_step_restores_the_pre_restore_tree() {
             journal::recover_rollback_dir(&path).unwrap(),
             journal::Recovery::InUse
         );
-        drop(dir);
+        dir.leave_for_recovery();
         let recovered = journal::recover_rollback_dir(&path).unwrap();
         assert_eq!(
             recovered,
@@ -488,10 +488,9 @@ fn recovery_removes_the_originals_of_a_committed_restore() {
     let (dir, summary) = swap(&fixture, &fixture.databases);
     summary.unwrap();
     let path = dir.path().to_path_buf();
-    let mut intent = journal::read_intent(&path).unwrap().unwrap();
-    intent.state = journal::IntentState::Committed;
-    journal::write_intent(&path, &intent).unwrap();
-    drop(dir);
+    // The server died right after the commit point.
+    journal::retire(&path).unwrap();
+    dir.leave_for_recovery();
     assert_eq!(
         journal::recover_rollback_dir(&path).unwrap(),
         journal::Recovery::Cleaned

@@ -28,9 +28,10 @@ use encryption::{
     find_backup_key, validate_backup_key,
 };
 use index::{backup_index_key, backup_object_prefix, latest_backup};
-use journal::{DatabaseSwap, swap_databases_in_worker};
+use journal::{DatabaseSwap, refuse_unfinished_restores, swap_databases_in_worker};
 pub(crate) use journal::{
-    recover_interrupted_restores, run_restore_worker, sweep_backup_work_dirs,
+    RecoveryMode, recover_interrupted_restores, run_restore_worker, start_restore_generation,
+    sweep_backup_work_dirs,
 };
 use s3::{
     DOWNLOAD_URL_EXPIRES_SECONDS, S3_URL_EXPIRES_SECONDS, TRANSFER_TIMEOUT, backup_http_client,
@@ -458,6 +459,9 @@ impl crate::ServerState {
             .map_err(|error| format!("read backup config: {error}"))?
             .ok_or_else(|| format!("Backups are not configured for {app}."))?;
         let info = self.find_backup(&backup, app, backup_id).await?;
+        let data_root = app_runtime_data_paths(&self.runtime.data_dir, app).root;
+        // Before downloading anything; the swap checks again.
+        refuse_unfinished_restores(&data_root)?;
 
         let app_ref = self
             .app_manager
@@ -542,7 +546,6 @@ impl crate::ServerState {
             };
             let _ = tokio::fs::remove_file(&archive_path).await;
 
-            let data_root = app_runtime_data_paths(&self.runtime.data_dir, app).root;
             let release_path = release_app_path(&self.runtime.data_dir, &config);
             let runtime_bin_path =
                 resolve_release_runtime_bin(&release_path, &self.runtime.data_dir)
@@ -576,7 +579,9 @@ impl crate::ServerState {
                             self.leave_stopped(
                                 app,
                                 &app_ref,
-                                format!("{message}; original data kept, but restart failed: {restart}"),
+                                format!(
+                                    "{message}; original data kept, but restart failed: {restart}"
+                                ),
                             )
                             .await
                         }
@@ -618,7 +623,9 @@ impl crate::ServerState {
                             self.leave_stopped(
                                 app,
                                 &app_ref,
-                                format!("{message}; original data kept, but restart failed: {restart}"),
+                                format!(
+                                    "{message}; original data kept, but restart failed: {restart}"
+                                ),
                             )
                             .await
                         }
@@ -627,17 +634,27 @@ impl crate::ServerState {
             };
 
             if let Err(error) = restart().await {
-                // Never swap files underneath a process whose stop failed.
-                let closed = self
-                    .workflows
-                    .close_store(app, WORKFLOW_STOP_TIMEOUT)
-                    .await
-                    .map_err(|stop| {
-                        format!("{error}; could not stop restored workflows: {stop}; original data retained for recovery")
-                    })?;
-                self.app_manager.stop_app_locked(&app_ref).await.map_err(|stop| {
-                    format!("{error}; could not stop restored app: {stop}; original data retained for recovery")
-                })?;
+                // Never swap files underneath a process whose stop failed:
+                // give up and leave both copies for the operator.
+                let closed = match self.workflows.close_store(app, WORKFLOW_STOP_TIMEOUT).await {
+                    Ok(closed) => closed,
+                    Err(stop) => {
+                        let message = format!("{error}; could not stop restored workflows: {stop}");
+                        let kept = swap.abandon(&message);
+                        return Err(format!(
+                            "{message}; restored data left live, original data kept in {}",
+                            kept.display()
+                        ));
+                    }
+                };
+                if let Err(stop) = self.app_manager.stop_app_locked(&app_ref).await {
+                    let message = format!("{error}; could not stop restored app: {stop}");
+                    let kept = swap.abandon(&message);
+                    return Err(format!(
+                        "{message}; restored data left live, original data kept in {}",
+                        kept.display()
+                    ));
+                }
                 swap.rollback()
                     .map_err(|rollback| format!("{error}; {rollback}; app left stopped"))?;
                 drop(closed);
@@ -650,7 +667,9 @@ impl crate::ServerState {
                         self.leave_stopped(
                             app,
                             &app_ref,
-                            format!("{error}; original data restored, but restart failed: {restart}"),
+                            format!(
+                                "{error}; original data restored, but restart failed: {restart}"
+                            ),
                         )
                         .await
                     }
@@ -658,10 +677,16 @@ impl crate::ServerState {
             }
             self.finish_restart(app, &app_ref, &config);
             if let Err(error) = swap.commit() {
-                tracing::warn!(app, "Restore succeeded but previous data cleanup failed: {error}");
+                tracing::warn!(
+                    app,
+                    "Restore succeeded but previous data cleanup failed: {error}"
+                );
             }
 
-            Ok(BackupRestoreResponse { backup: info, databases })
+            Ok(BackupRestoreResponse {
+                backup: info,
+                databases,
+            })
         }
         .await;
 
@@ -858,6 +883,14 @@ impl RestoreSwap {
         match self {
             Self::Tree(swap) => swap.rollback(),
             Self::Databases(swap) => swap.rollback(),
+        }
+    }
+
+    /// Give up while the server keeps running; returns where the originals are.
+    fn abandon(self, reason: &str) -> std::path::PathBuf {
+        match self {
+            Self::Tree(swap) => swap.abandon(reason),
+            Self::Databases(swap) => swap.abandon(reason),
         }
     }
 }

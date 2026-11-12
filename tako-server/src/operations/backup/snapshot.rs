@@ -480,12 +480,22 @@ pub(super) struct RestoredData {
 
 impl RestoredData {
     pub(super) fn commit(self) -> Result<(), String> {
-        journal::commit(self.dir.path())
+        self.dir.finish()
     }
 
     /// Call only after stopping all processes that may access the restored tree.
     pub(super) fn rollback(self) -> Result<(), String> {
-        journal::roll_back(self.dir.path())
+        self.dir.roll_back()
+    }
+
+    /// See [`RollbackDir::abandon`].
+    pub(super) fn abandon(mut self, reason: &str) -> PathBuf {
+        self.dir.abandon(reason)
+    }
+
+    #[cfg(test)]
+    fn leave_for_recovery(self) {
+        self.dir.leave_for_recovery();
     }
 }
 
@@ -589,14 +599,16 @@ fn restore_data_tree_with(
         .map_err(SwapError::intact)?;
     std::fs::create_dir_all(parent)
         .map_err(|e| SwapError::intact(format!("create data parent {}: {e}", parent.display())))?;
-    let dir = RollbackDir::create(data_root).map_err(SwapError::intact)?;
+    let mut dir = RollbackDir::create(data_root).map_err(SwapError::intact)?;
     let had_data = std::fs::symlink_metadata(data_root).is_ok();
     let mut paths = vec![extracted_dir];
     if had_data {
         paths.push(data_root);
     }
     if let Err(error) = require_same_filesystem(dir.path(), &paths) {
-        let _ = std::fs::remove_dir_all(dir.path());
+        if let Err(cleanup) = dir.finish() {
+            tracing::warn!("Refused restore left its rollback directory: {cleanup}");
+        }
         return Err(SwapError::intact(error));
     }
     let intent = RestoreIntent::full(data_root, had_data);
@@ -627,24 +639,32 @@ fn restore_data_tree_with(
     })();
     match result {
         Ok(()) => Ok(RestoredData { dir }),
-        Err(_) if steps.stopped() => Err(SwapError {
-            message: "stopped".into(),
-            originals_intact: false,
-        }),
+        Err(_) if steps.stopped() => {
+            dir.leave_for_recovery();
+            Err(SwapError {
+                message: "stopped".into(),
+                originals_intact: false,
+            })
+        }
         // Something may have put a tree at the data root meanwhile; only
         // the original moving back counts as kept.
         Err(error) => match full_rollback(&intent, dir.path(), false) {
             Ok(()) => {
-                let _ = std::fs::remove_dir_all(dir.path());
+                if let Err(cleanup) = dir.finish() {
+                    tracing::warn!("Restore rolled back but its rollback copy remains: {cleanup}");
+                }
                 Err(SwapError::intact(error))
             }
-            Err(rollback) => Err(SwapError {
-                message: format!(
-                    "{error}; {rollback}; original data remains at {}",
-                    original.display()
-                ),
-                originals_intact: false,
-            }),
+            Err(rollback) => {
+                let kept = dir.abandon(&format!("{error}; {rollback}"));
+                Err(SwapError {
+                    message: format!(
+                        "{error}; {rollback}; original data remains at {}",
+                        kept_tree(&kept).display()
+                    ),
+                    originals_intact: false,
+                })
+            }
         },
     }
 }
@@ -745,6 +765,10 @@ mod tests {
     }
 
     fn rollback_dirs(temp: &Path) -> Vec<PathBuf> {
+        dirs_named(temp, journal::ROLLBACK_DIR_PREFIX)
+    }
+
+    fn dirs_named(temp: &Path, prefix: &str) -> Vec<PathBuf> {
         std::fs::read_dir(temp)
             .unwrap()
             .filter_map(Result::ok)
@@ -753,7 +777,7 @@ mod tests {
                 path.file_name()
                     .unwrap()
                     .to_string_lossy()
-                    .starts_with(".data-restore-prev-")
+                    .starts_with(prefix)
             })
             .collect()
     }
@@ -780,7 +804,11 @@ mod tests {
         let error =
             restore_data_tree_with(&extracted, &live, Steps::new(Some(&mut intrude))).unwrap_err();
         assert!(!error.originals_intact, "{}", error.message);
-        let [dir] = rollback_dirs(temp.path()).try_into().unwrap();
+        // Never rolled back by a later start: the server kept running.
+        assert!(rollback_dirs(temp.path()).is_empty());
+        let [dir] = dirs_named(temp.path(), journal::ABANDONED_DIR_PREFIX)
+            .try_into()
+            .unwrap();
         let kept = dir.join("data");
         assert!(
             error
@@ -859,7 +887,7 @@ mod tests {
             "backup"
         );
         let [dir] = rollback_dirs(temp.path()).try_into().unwrap();
-        drop(swap);
+        swap.leave_for_recovery();
         assert_eq!(
             journal::recover_rollback_dir(&dir).unwrap(),
             journal::Recovery::RolledBack
@@ -869,6 +897,83 @@ mod tests {
             "original"
         );
         assert!(rollback_dirs(temp.path()).is_empty());
+    }
+
+    /// A full restore below a server data directory, as startup recovery
+    /// finds it.
+    fn app_restore_fixture(temp: &Path) -> (PathBuf, PathBuf) {
+        let env_dir = temp.join("apps/demo/production");
+        std::fs::create_dir_all(&env_dir).unwrap();
+        let (live, extracted) = full_restore_fixture(&env_dir);
+        (live, extracted)
+    }
+
+    fn marker(live: &Path) -> String {
+        std::fs::read_to_string(live.join("app/marker")).unwrap()
+    }
+
+    /// A commit that cannot write a new file (as when the disk is full)
+    /// must not leave a record that a later start rolls back over the
+    /// data the app wrote since.
+    #[test]
+    fn a_commit_without_free_space_never_leads_to_a_rollback_at_a_later_start() {
+        let temp = TempDir::new().unwrap();
+        let (live, extracted) = app_restore_fixture(temp.path());
+        let swap = restore_data_tree(&extracted, &live).unwrap();
+        let [dir] = rollback_dirs(&temp.path().join("apps/demo/production"))
+            .try_into()
+            .unwrap();
+        // Writing a new record fails as it would on ENOSPC.
+        std::fs::create_dir(dir.join("restore.json.tmp")).unwrap();
+        let _ = swap.commit();
+        std::fs::write(live.join("app/marker"), "written after the restore").unwrap();
+        journal::recover_as_next_start(temp.path());
+        assert_eq!(marker(&live), "written after the restore");
+    }
+
+    /// A server that gives up on a restore and keeps running (an early
+    /// return, a cancelled restore, a panic) leaves a record that a later
+    /// start reports and never applies.
+    #[test]
+    fn a_restore_given_up_by_a_running_server_is_never_rolled_back_later() {
+        let temp = TempDir::new().unwrap();
+        let (live, extracted) = app_restore_fixture(temp.path());
+        let swap = restore_data_tree(&extracted, &live).unwrap();
+        drop(swap);
+        std::fs::write(live.join("app/marker"), "written after the restore").unwrap();
+        journal::recover_as_next_start(temp.path());
+        assert_eq!(marker(&live), "written after the restore");
+
+        let temp = TempDir::new().unwrap();
+        let (live, extracted) = app_restore_fixture(temp.path());
+        let panicked = std::panic::catch_unwind(|| {
+            let _swap = restore_data_tree(&extracted, &live).unwrap();
+            panic!("restore panicked");
+        });
+        assert!(panicked.is_err());
+        journal::recover_as_next_start(temp.path());
+        assert_eq!(marker(&live), "backup");
+    }
+
+    /// A new restore never ignores the record an earlier one left.
+    #[test]
+    fn a_restore_refuses_while_an_earlier_restore_left_its_record() {
+        let temp = TempDir::new().unwrap();
+        let (live, extracted) = app_restore_fixture(temp.path());
+        drop(restore_data_tree(&extracted, &live).unwrap());
+        let extracted = temp.path().join("apps/demo/production/extracted-again");
+        std::fs::create_dir_all(extracted.join("app")).unwrap();
+        std::fs::create_dir_all(extracted.join("tako")).unwrap();
+        let error = restore_data_tree(&extracted, &live).unwrap_err();
+        assert!(error.originals_intact);
+        assert!(
+            error
+                .message
+                .contains("A previous restore of this app did not finish"),
+            "{}",
+            error.message
+        );
+        assert_eq!(marker(&live), "backup");
     }
 
     #[tokio::test]
