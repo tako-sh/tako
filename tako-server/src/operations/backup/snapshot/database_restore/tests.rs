@@ -465,7 +465,7 @@ fn recovery_after_a_crash_at_any_step_restores_the_pre_restore_tree() {
             journal::recover_rollback_dir(&path).unwrap(),
             journal::Recovery::InUse
         );
-        drop(dir);
+        dir.leave_for_recovery();
         let recovered = journal::recover_rollback_dir(&path).unwrap();
         assert_eq!(
             recovered,
@@ -488,10 +488,9 @@ fn recovery_removes_the_originals_of_a_committed_restore() {
     let (dir, summary) = swap(&fixture, &fixture.databases);
     summary.unwrap();
     let path = dir.path().to_path_buf();
-    let mut intent = journal::read_intent(&path).unwrap().unwrap();
-    intent.state = journal::IntentState::Committed;
-    journal::write_intent(&path, &intent).unwrap();
-    drop(dir);
+    // The server died right after the commit point.
+    journal::retire(&path).unwrap();
+    dir.leave_for_recovery();
     assert_eq!(
         journal::recover_rollback_dir(&path).unwrap(),
         journal::Recovery::Cleaned
@@ -542,15 +541,113 @@ fn swap_refuses_unsafe_live_paths_before_changing_anything() {
 }
 
 #[test]
-fn the_server_swaps_and_rolls_back_in_a_worker_process() {
+fn the_server_swaps_in_a_worker_process_and_rolls_back_itself() {
     let fixture = fixture();
-    let swap =
-        journal::swap_databases_in_worker(&fixture.staged, &fixture.databases, &fixture.data)
-            .unwrap();
+    let swap = swap_in_worker(&fixture).unwrap();
     assert_ne!(swap.worker_pid, std::process::id());
     assert_eq!(value(&fixture.data.join("app/data.sqlite")), "snapshot");
     swap.rollback().unwrap();
     assert_live_state_is_original(&fixture);
+}
+
+/// A worker that cannot start never changed anything: the restore says so
+/// and keeps the originals in place.
+#[test]
+fn a_restore_worker_that_cannot_start_changes_nothing() {
+    use crate::operations::backup::worker::tests::{Fault, inject_faults};
+    let fixture = fixture();
+    let before = tree_state(&fixture.data);
+    inject_faults(fixture.temp.path(), &[Fault::SpawnFails]);
+    let error = swap_in_worker(&fixture).unwrap_err();
+    assert!(error.originals_intact, "{}", error.message);
+    assert!(
+        error.message.contains("nothing was changed"),
+        "{}",
+        error.message
+    );
+    assert_eq!(tree_state(&fixture.data), before);
+    assert!(all_restore_dirs(fixture.temp.path()).is_empty());
+}
+
+/// The rollback after a worker died runs in the server, so it does not
+/// depend on starting another worker.
+#[test]
+fn a_dead_restore_worker_is_rolled_back_without_another_worker() {
+    use crate::operations::backup::worker::tests::{Fault, inject_faults};
+    let fixture = fixture();
+    inject_faults(
+        fixture.temp.path(),
+        &[Fault::CrashAfterRun, Fault::SpawnFails],
+    );
+    let error = swap_in_worker(&fixture).unwrap_err();
+    assert!(error.originals_intact, "{}", error.message);
+    assert_live_state_is_original(&fixture);
+    assert!(all_restore_dirs(fixture.temp.path()).is_empty());
+}
+
+fn swap_in_worker(fixture: &Fixture) -> Result<journal::DatabaseSwap, SwapError> {
+    journal::swap_databases_in_worker(
+        &fixture.staged,
+        &fixture.databases,
+        &fixture.data,
+        journal::RESTORE_WORKER_TIMEOUT,
+    )
+}
+
+/// A stuck worker is stopped after its timeout and its swap rolled back,
+/// and waiting for it never holds up the async runtime.
+#[tokio::test(flavor = "current_thread")]
+async fn a_stuck_restore_worker_is_stopped_and_rolled_back_off_the_runtime() {
+    use crate::operations::backup::worker::tests::{Fault, inject_faults};
+    let fixture = fixture();
+    inject_faults(fixture.temp.path(), &[Fault::HangAfterRun]);
+    let ticks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let ticker = tokio::spawn({
+        let ticks = ticks.clone();
+        async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                ticks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    });
+    let started = std::time::Instant::now();
+    let error = journal::swap_databases_off_runtime(
+        fixture.staged.clone(),
+        fixture.databases.clone(),
+        fixture.data.clone(),
+        std::time::Duration::from_secs(3),
+    )
+    .await
+    .unwrap_err();
+    ticker.abort();
+    assert!(started.elapsed() >= std::time::Duration::from_secs(3));
+    assert!(
+        ticks.load(std::sync::atomic::Ordering::Relaxed) >= 20,
+        "the runtime was blocked"
+    );
+    assert!(error.originals_intact, "{}", error.message);
+    assert!(
+        error.message.contains("did not finish within 3 seconds"),
+        "{}",
+        error.message
+    );
+    assert_live_state_is_original(&fixture);
+    assert!(all_restore_dirs(fixture.temp.path()).is_empty());
+}
+
+fn all_restore_dirs(temp: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(temp)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".data-restore-")
+        })
+        .map(|entry| entry.path())
+        .collect()
 }
 
 /// A file is a sidecar only when the database it is named after exists
@@ -629,14 +726,19 @@ fn a_restore_that_would_turn_a_database_into_a_sidecar_is_refused() {
 /// A restore moves files with rename and link, which cannot cross
 /// filesystems. It refuses up front instead of failing part way.
 #[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "needs a writable directory on a second filesystem, /dev/shm on Linux"
+)]
 fn a_restore_across_filesystems_is_refused_before_changing_anything() {
     let shm = Path::new("/dev/shm");
-    let other = match std::fs::metadata(shm) {
-        Ok(meta) if meta.dev() != std::fs::metadata(std::env::temp_dir()).unwrap().dev() => {
-            TempDir::new_in(shm).unwrap()
-        }
-        _ => return,
-    };
+    let meta = std::fs::metadata(shm).expect("this test needs /dev/shm");
+    assert_ne!(
+        meta.dev(),
+        std::fs::metadata(std::env::temp_dir()).unwrap().dev(),
+        "this test needs /dev/shm on another filesystem than the temporary directory"
+    );
+    let other = TempDir::new_in(shm).unwrap();
     let fixture = fixture();
     let before = tree_state(&fixture.data);
     let staged = other.path().join("databases");

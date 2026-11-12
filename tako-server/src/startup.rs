@@ -201,10 +201,19 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
-    // Before any app or workflow store opens app data: a restore that a
-    // crash interrupted is rolled back to the original data. A restore still
-    // running in another server process holds its lock and is left alone.
-    crate::operations::recover_interrupted_restores(&data_dir);
+    // Before any app or workflow store opens app data: at a normal start, a
+    // restore that the previous server's death interrupted is rolled back to
+    // the original data. A standby, an upgrade reload, and a promotion child
+    // start beside another server that may still serve this data directory:
+    // they only report unfinished restores.
+    let recovery_mode = if standby {
+        crate::operations::RecoveryMode::Standby
+    } else if promotion_child || reload_owner.is_some() {
+        crate::operations::RecoveryMode::Successor
+    } else {
+        crate::operations::RecoveryMode::Primary
+    };
+    crate::operations::recover_interrupted_restores(&data_dir, recovery_mode);
     if !standby && !promotion_child && reload_owner.is_none() {
         // Only this process can be using backup work directories now.
         crate::operations::sweep_backup_work_dirs(&data_dir);

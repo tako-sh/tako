@@ -21,6 +21,8 @@ const FULL_RETRY_CAP_SECS: i64 = 6 * 60 * 60;
 /// An unreadable index is read again after one tick, then backs off.
 const INDEX_RETRY_BASE_SECS: i64 = 10 * 60;
 const INDEX_RETRY_CAP_SECS: i64 = 60 * 60;
+/// Beside the app data directory, at `apps/<name>/<environment>/`.
+const POST_DEPLOY_BACKUP_MARKER: &str = "post-deploy-backup.queued";
 
 /// Consecutive failures of one scheduled step, kept in memory only. After a
 /// restart the first tick waits a full interval, so a crash loop never turns
@@ -192,7 +194,8 @@ impl crate::ServerState {
                 .or_default()
                 .post_deploy_backup_queued,
         );
-        if !queued {
+        // Queued before a restart, which kept only the marker.
+        if !queued && !self.post_deploy_backup_marker(app).exists() {
             return;
         }
         let result = match self.acquire_backup_lock(app) {
@@ -216,6 +219,9 @@ impl crate::ServerState {
                 Err(message)
             }
         };
+        if !matches!(result, Ok(None)) {
+            self.record_post_deploy_backup_queued(app, false);
+        }
         match result {
             Ok(Some(info)) => {
                 tracing::info!(app, backup = %info.id, "Created queued post-deploy backup")
@@ -327,6 +333,38 @@ impl crate::ServerState {
             ),
             Err(error) => tracing::warn!(app, "Scheduled backup failed: {error}"),
         }
+    }
+
+    /// Present while a post-deploy archive is queued, so a restart keeps
+    /// it. It sits in the app's directory, which deleting the app removes.
+    fn post_deploy_backup_marker(&self, app: &str) -> std::path::PathBuf {
+        let root = crate::release::app_runtime_data_paths(&self.runtime.data_dir, app).root;
+        root.with_file_name(POST_DEPLOY_BACKUP_MARKER)
+    }
+
+    pub(super) fn record_post_deploy_backup_queued(&self, app: &str, queued: bool) {
+        let marker = self.post_deploy_backup_marker(app);
+        let result = if queued {
+            std::fs::File::create(&marker).and_then(|file| file.sync_all())
+        } else {
+            match std::fs::remove_file(&marker) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                result => result,
+            }
+        };
+        if let Err(error) = result {
+            tracing::warn!(
+                app,
+                path = %marker.display(),
+                "Failed to record the queued post-deploy backup; a restart may drop it: {error}"
+            );
+        }
+    }
+
+    /// Forget the in-memory schedule of a deleted app, so an app created
+    /// again under the same name starts without its queue and backoff.
+    pub(crate) fn forget_backup_schedule(&self, app: &str) {
+        self.database_snapshots.write().remove(app);
     }
 
     pub(super) fn backup_schedule_state(&self, app: &str) -> DatabaseSnapshotState {

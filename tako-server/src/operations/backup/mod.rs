@@ -16,6 +16,7 @@ mod databases;
 mod encryption;
 mod index;
 mod journal;
+mod mounts;
 mod s3;
 mod scheduler;
 mod snapshot;
@@ -28,9 +29,12 @@ use encryption::{
     find_backup_key, validate_backup_key,
 };
 use index::{backup_index_key, backup_object_prefix, latest_backup};
-use journal::{DatabaseSwap, swap_databases_in_worker};
+use journal::{
+    DatabaseSwap, RESTORE_WORKER_TIMEOUT, refuse_unfinished_restores, swap_databases_off_runtime,
+};
 pub(crate) use journal::{
-    recover_interrupted_restores, run_restore_worker, sweep_backup_work_dirs,
+    RecoveryMode, recover_interrupted_restores, run_restore_worker, start_restore_generation,
+    sweep_backup_work_dirs,
 };
 use s3::{
     DOWNLOAD_URL_EXPIRES_SECONDS, S3_URL_EXPIRES_SECONDS, TRANSFER_TIMEOUT, backup_http_client,
@@ -147,7 +151,8 @@ impl crate::ServerState {
     }
 
     /// A full archive holds the snapshot copy, the compressed archive, and its
-    /// encrypted copy at once; each is at most the size of the data tree.
+    /// encrypted copy at once; each is at most the measured size of the data
+    /// tree, which counts block rounding and archive headers per file.
     async fn full_backup_disk_preflight(
         &self,
         app: &str,
@@ -458,6 +463,12 @@ impl crate::ServerState {
             .map_err(|error| format!("read backup config: {error}"))?
             .ok_or_else(|| format!("Backups are not configured for {app}."))?;
         let info = self.find_backup(&backup, app, backup_id).await?;
+        let data_root = app_runtime_data_paths(&self.runtime.data_dir, app).root;
+        // Before downloading anything; the swap checks again.
+        refuse_unfinished_restores(&data_root)?;
+        if info.kind == BackupKind::Full {
+            snapshot::refuse_mounts_in_data_tree(&data_root)?;
+        }
 
         let app_ref = self
             .app_manager
@@ -542,7 +553,6 @@ impl crate::ServerState {
             };
             let _ = tokio::fs::remove_file(&archive_path).await;
 
-            let data_root = app_runtime_data_paths(&self.runtime.data_dir, app).root;
             let release_path = release_app_path(&self.runtime.data_dir, &config);
             let runtime_bin_path =
                 resolve_release_runtime_bin(&release_path, &self.runtime.data_dir)
@@ -576,7 +586,9 @@ impl crate::ServerState {
                             self.leave_stopped(
                                 app,
                                 &app_ref,
-                                format!("{message}; original data kept, but restart failed: {restart}"),
+                                format!(
+                                    "{message}; original data kept, but restart failed: {restart}"
+                                ),
                             )
                             .await
                         }
@@ -590,11 +602,13 @@ impl crate::ServerState {
             let swapped = match staged {
                 StagedRestore::Full => restore_data_tree(&extract_dir, &data_root)
                     .map(|swap| (RestoreSwap::Tree(swap), None)),
-                StagedRestore::Databases(databases) => swap_databases_in_worker(
-                    &extract_dir.join(DATABASE_SNAPSHOT_ARCHIVE_ROOT),
-                    &databases,
-                    &data_root,
+                StagedRestore::Databases(databases) => swap_databases_off_runtime(
+                    extract_dir.join(DATABASE_SNAPSHOT_ARCHIVE_ROOT),
+                    databases,
+                    data_root.clone(),
+                    RESTORE_WORKER_TIMEOUT,
                 )
+                .await
                 .map(|swap| {
                     let summary = swap.summary().clone();
                     (RestoreSwap::Databases(swap), Some(summary))
@@ -618,7 +632,9 @@ impl crate::ServerState {
                             self.leave_stopped(
                                 app,
                                 &app_ref,
-                                format!("{message}; original data kept, but restart failed: {restart}"),
+                                format!(
+                                    "{message}; original data kept, but restart failed: {restart}"
+                                ),
                             )
                             .await
                         }
@@ -627,17 +643,27 @@ impl crate::ServerState {
             };
 
             if let Err(error) = restart().await {
-                // Never swap files underneath a process whose stop failed.
-                let closed = self
-                    .workflows
-                    .close_store(app, WORKFLOW_STOP_TIMEOUT)
-                    .await
-                    .map_err(|stop| {
-                        format!("{error}; could not stop restored workflows: {stop}; original data retained for recovery")
-                    })?;
-                self.app_manager.stop_app_locked(&app_ref).await.map_err(|stop| {
-                    format!("{error}; could not stop restored app: {stop}; original data retained for recovery")
-                })?;
+                // Never swap files underneath a process whose stop failed:
+                // give up and leave both copies for the operator.
+                let closed = match self.workflows.close_store(app, WORKFLOW_STOP_TIMEOUT).await {
+                    Ok(closed) => closed,
+                    Err(stop) => {
+                        let message = format!("{error}; could not stop restored workflows: {stop}");
+                        let kept = swap.abandon(&message);
+                        return Err(format!(
+                            "{message}; restored data left live, original data kept in {}",
+                            kept.display()
+                        ));
+                    }
+                };
+                if let Err(stop) = self.app_manager.stop_app_locked(&app_ref).await {
+                    let message = format!("{error}; could not stop restored app: {stop}");
+                    let kept = swap.abandon(&message);
+                    return Err(format!(
+                        "{message}; restored data left live, original data kept in {}",
+                        kept.display()
+                    ));
+                }
                 swap.rollback()
                     .map_err(|rollback| format!("{error}; {rollback}; app left stopped"))?;
                 drop(closed);
@@ -650,7 +676,9 @@ impl crate::ServerState {
                         self.leave_stopped(
                             app,
                             &app_ref,
-                            format!("{error}; original data restored, but restart failed: {restart}"),
+                            format!(
+                                "{error}; original data restored, but restart failed: {restart}"
+                            ),
                         )
                         .await
                     }
@@ -658,10 +686,16 @@ impl crate::ServerState {
             }
             self.finish_restart(app, &app_ref, &config);
             if let Err(error) = swap.commit() {
-                tracing::warn!(app, "Restore succeeded but previous data cleanup failed: {error}");
+                tracing::warn!(
+                    app,
+                    "Restore succeeded but previous data cleanup failed: {error}"
+                );
             }
 
-            Ok(BackupRestoreResponse { backup: info, databases })
+            Ok(BackupRestoreResponse {
+                backup: info,
+                databases,
+            })
         }
         .await;
 
@@ -771,6 +805,7 @@ impl crate::ServerState {
             ));
         }
         state.post_deploy_backup_queued = true;
+        self.record_post_deploy_backup_queued(app, true);
         Ok(None)
     }
 }
@@ -858,6 +893,14 @@ impl RestoreSwap {
         match self {
             Self::Tree(swap) => swap.rollback(),
             Self::Databases(swap) => swap.rollback(),
+        }
+    }
+
+    /// Give up while the server keeps running; returns where the originals are.
+    fn abandon(self, reason: &str) -> std::path::PathBuf {
+        match self {
+            Self::Tree(swap) => swap.abandon(reason),
+            Self::Databases(swap) => swap.abandon(reason),
         }
     }
 }
@@ -1005,10 +1048,29 @@ mod tests {
         std::fs::write(data.join("tako/workflows.sqlite"), vec![0; 20]).unwrap();
         std::fs::write(data.join("tako/channels.sqlite"), vec![0; 1000]).unwrap();
         std::os::unix::fs::symlink("/etc/hostname", data.join("app/link")).unwrap();
+        let entry = snapshot::ARCHIVE_ENTRY_BYTES;
+        let block = snapshot::DISK_BLOCK_BYTES;
+        // Two files of a block each, the link, and three directories, each
+        // with an archive entry.
         assert_eq!(
             snapshot::measure_data_tree(temp.path(), std::path::Path::new("data")).unwrap(),
-            120
+            2 * (block + entry) + entry + 3 * (block + entry)
         );
+    }
+
+    /// Many small files cost far more than their bytes: a disk block for
+    /// each copy and an archive header for each entry.
+    #[test]
+    fn measure_data_tree_counts_the_overhead_of_small_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("data");
+        std::fs::create_dir_all(data.join("app")).unwrap();
+        for index in 0..1000 {
+            std::fs::write(data.join(format!("app/{index}")), b"x").unwrap();
+        }
+        let measured =
+            snapshot::measure_data_tree(temp.path(), std::path::Path::new("data")).unwrap();
+        assert!(measured >= 1000 * (4096 + 512), "{measured}");
     }
 
     #[tokio::test]
@@ -1492,6 +1554,53 @@ mod tests {
             "{}",
             failure.message
         );
+    }
+
+    /// The deploy reported the backup as queued, so a restart before the
+    /// snapshot finished must not drop it.
+    #[tokio::test]
+    async fn a_queued_post_deploy_backup_survives_a_restart() {
+        let fixture = RestoreFixture::new();
+        unreachable_storage(&fixture);
+        let (state, app) = (&fixture.state, fixture.app.as_str());
+        let snapshot = state.lock_for_database_snapshot(app).unwrap();
+        assert!(matches!(
+            state.backup_after_deploy(app).await,
+            Some(PostDeployBackup::Queued)
+        ));
+        drop(snapshot);
+        // A restart forgets everything in memory.
+        state.database_snapshots.write().clear();
+        state.run_queued_post_deploy_backup(app).await;
+        let schedule = state.backup_schedule_state(app);
+        assert_eq!(
+            schedule.failure().map(|failure| failure.reason),
+            Some(BackupFailureReason::Failed),
+            "the queued backup did not run"
+        );
+        // It ran once; it is not queued again.
+        state.database_snapshots.write().clear();
+        state.run_queued_post_deploy_backup(app).await;
+        assert!(state.backup_schedule_state(app).failure().is_none());
+    }
+
+    /// An app deleted and created again with the same name starts with a
+    /// clean schedule.
+    #[tokio::test]
+    async fn deleting_an_app_forgets_its_backup_schedule() {
+        let fixture = RestoreFixture::new();
+        let (state, app) = (&fixture.state, fixture.app.as_str());
+        {
+            let mut states = state.database_snapshots.write();
+            let schedule = states.entry(app.to_string()).or_default();
+            schedule.post_deploy_backup_queued = true;
+            schedule.record_full_failure(now_unix_secs(), BackupFailureReason::Failed, "x".into());
+        }
+        let response = state.delete_app(app).await;
+        assert!(response.is_ok(), "{response:?}");
+        let schedule = state.backup_schedule_state(app);
+        assert!(!schedule.post_deploy_backup_queued);
+        assert!(schedule.failure().is_none());
     }
 
     #[tokio::test]

@@ -267,7 +267,7 @@ fn swap_databases_until(
         Err(error) => Err(match journal::roll_back(dir) {
             Ok(()) => SwapError::intact(error),
             Err(rollback) => SwapError {
-                message: format!("{error}; {rollback}; originals remain at {}", dir.display()),
+                message: format!("{error}; {rollback}"),
                 originals_intact: false,
             },
         }),

@@ -64,6 +64,9 @@ pub(super) fn spawn_standby_monitor(rt: &Runtime, config: StandbyPromotionConfig
                         }
 
                         tracing::info!("Promoting standby to full mode");
+                        // Restores the dead primary left are only reported
+                        // from now on: this process serves their data.
+                        crate::operations::start_restore_generation(&config.data_dir);
 
                         let server = SocketServer::new(&config.socket_path);
                         match server.bind() {
