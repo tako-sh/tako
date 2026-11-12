@@ -1,7 +1,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tako_core::{
-    BACKUP_INTERVAL_SECS, BackupDownloadUrlResponse, BackupInfo, BackupListResponse,
+    BACKUP_INTERVAL_SECS, BackupDownloadUrlResponse, BackupInfo, BackupKind, BackupListResponse,
     BackupStatusResponse, Response,
 };
 
@@ -11,23 +11,25 @@ use crate::release::{
     requested_deployment_identity, resolve_release_runtime_bin,
 };
 
+mod databases;
 mod encryption;
 mod index;
 mod s3;
 mod scheduler;
 mod snapshot;
 
+pub(crate) use databases::DatabaseSnapshotState;
 use encryption::{
-    active_backup_key, decrypt_backup_file, encrypt_backup_file, find_backup_key,
-    validate_backup_key,
+    active_backup_key, database_digest_key, decrypt_backup_file, encrypt_backup_file,
+    find_backup_key, validate_backup_key,
 };
 use index::{backup_index_key, backup_object_prefix, latest_backup};
 use s3::{
     DOWNLOAD_URL_EXPIRES_SECONDS, S3_URL_EXPIRES_SECONDS, TRANSFER_TIMEOUT, backup_http_client,
     download_object, prune_retention, put_json_object, queue_retention, upload_file,
 };
-pub(crate) use snapshot::snapshot_data_tree;
-use snapshot::{create_backup_archive, restore_data_tree, sha256_file_hex};
+use snapshot::{create_backup_archive, database_digest, restore_data_tree, sha256_file_hex};
+pub(crate) use snapshot::{measure_database_tree, snapshot_data_tree, snapshot_database_tree};
 
 impl crate::ServerState {
     pub(crate) async fn backup_now(&self, app: &str) -> Response {
@@ -125,16 +127,25 @@ impl crate::ServerState {
                             String::from_utf8_lossy(&output.stderr).trim()
                         ));
                     }
+                    // Lets the next hourly database snapshot skip if nothing
+                    // changed. Without it that snapshot is simply uploaded.
+                    let database_digest = database_digest_key(&backup_key)
+                        .and_then(|key| database_digest(&snapshot_dir, &key))
+                        .map(|digest| digest.hex)
+                        .inspect_err(|error| {
+                            tracing::warn!("Backup database digest unavailable: {error}")
+                        })
+                        .ok();
                     create_backup_archive(&snapshot_dir, &archive_path)?;
                     let encryption =
                         encrypt_backup_file(&archive_path, &encrypted_archive_path, &backup_key)?;
                     let sha256_hex = sha256_file_hex(&encrypted_archive_path)?;
-                    Ok::<_, String>((sha256_hex, encryption))
+                    Ok::<_, String>((sha256_hex, encryption, database_digest))
                 }
             })
             .await
             .map_err(|e| format!("backup worker failed: {e}"))?;
-            let (sha256_hex, encryption) = archive_result?;
+            let (sha256_hex, encryption, database_digest) = archive_result?;
             // The snapshot is independent of the live app now. Remote I/O must
             // not keep stop/delete/deploy waiting on this lifecycle lock.
             drop(_guard);
@@ -165,53 +176,11 @@ impl crate::ServerState {
                 archive_key,
                 manifest_key,
                 encryption,
+                kind: BackupKind::Full,
+                database_digest,
             };
-
-            let client = backup_http_client(TRANSFER_TIMEOUT)?;
-            let mut index = self.read_backup_index(&backup, app).await?;
-            upload_file(
-                &client,
-                &backup.storage,
-                &info.archive_key,
-                &encrypted_archive_path,
-            )
-            .await?;
-            put_json_object(&client, &backup.storage, &info.manifest_key, &info).await?;
-
-            index.backups.retain(|existing| existing.id != info.id);
-            index.backups.push(info.clone());
-            index.backups.sort_by(|a, b| {
-                b.created_at_unix_secs
-                    .cmp(&a.created_at_unix_secs)
-                    .then_with(|| b.id.cmp(&a.id))
-            });
-            queue_retention(&mut index, backup.retention_days);
-            put_json_object(
-                &client,
-                &backup.storage,
-                &backup_index_key(app, self),
-                &index,
-            )
-            .await?;
-
-            // Persist the new backup and deletion intent before deleting any
-            // objects. A failed final index write leaves safe, retryable work.
-            if !index.pending_deletions.is_empty() {
-                prune_retention(&client, &backup.storage, &mut index).await;
-                if let Err(error) = put_json_object(
-                    &client,
-                    &backup.storage,
-                    &backup_index_key(app, self),
-                    &index,
-                )
-                .await
-                {
-                    tracing::warn!(
-                        app,
-                        "Failed to acknowledge backup retention cleanup: {error}"
-                    );
-                }
-            }
+            self.publish_backup(&backup, app, &info, &encrypted_archive_path)
+                .await?;
 
             Ok(info)
         }
@@ -219,6 +188,70 @@ impl crate::ServerState {
 
         let _ = tokio::fs::remove_dir_all(&work_dir).await;
         result
+    }
+
+    /// Upload an encrypted archive and its manifest, then record it in the
+    /// index and apply retention. Call with the app's backup operation lock.
+    async fn publish_backup(
+        &self,
+        backup: &tako_core::BackupBinding,
+        app: &str,
+        info: &BackupInfo,
+        encrypted_archive_path: &std::path::Path,
+    ) -> Result<(), String> {
+        let client = backup_http_client(TRANSFER_TIMEOUT)?;
+        let mut index = self.read_backup_index(backup, app).await?;
+        upload_file(
+            &client,
+            &backup.storage,
+            &info.archive_key,
+            encrypted_archive_path,
+        )
+        .await?;
+        put_json_object(&client, &backup.storage, &info.manifest_key, info).await?;
+
+        index.backups.retain(|existing| existing.id != info.id);
+        index.backups.push(info.clone());
+        index.backups.sort_by(|a, b| {
+            b.created_at_unix_secs
+                .cmp(&a.created_at_unix_secs)
+                .then_with(|| b.id.cmp(&a.id))
+        });
+        queue_retention(&mut index, backup.retention_days);
+        put_json_object(
+            &client,
+            &backup.storage,
+            &backup_index_key(app, self),
+            &index,
+        )
+        .await?;
+
+        // Persist the new backup and deletion intent before deleting any
+        // objects. A failed final index write leaves safe, retryable work.
+        self.prune_queued_retention(&client, backup, app, &mut index)
+            .await;
+        Ok(())
+    }
+
+    async fn prune_queued_retention(
+        &self,
+        client: &reqwest::Client,
+        backup: &tako_core::BackupBinding,
+        app: &str,
+        index: &mut index::BackupIndex,
+    ) {
+        if index.pending_deletions.is_empty() {
+            return;
+        }
+        prune_retention(client, &backup.storage, index).await;
+        if let Err(error) =
+            put_json_object(client, &backup.storage, &backup_index_key(app, self), index).await
+        {
+            tracing::warn!(
+                app,
+                "Failed to acknowledge backup retention cleanup: {error}"
+            );
+        }
     }
 
     async fn list_backups_inner(&self, app: &str) -> Result<Vec<BackupInfo>, String> {
@@ -248,25 +281,23 @@ impl crate::ServerState {
                 retention_days: None,
                 last_backup: None,
                 next_backup_at_unix_secs: None,
+                last_database_snapshot_at_unix_secs: None,
+                last_database_snapshot_skip: None,
             });
         };
         let index = self.read_backup_index(&backup, app).await?;
-        let last_backup = latest_backup(index.backups.iter()).cloned();
-        let next_backup_at_unix_secs = last_backup
-            .as_ref()
-            .map(|backup| {
-                backup
-                    .created_at_unix_secs
-                    .saturating_add(BACKUP_INTERVAL_SECS)
-            })
-            .or_else(|| Some(now_unix_secs()));
-        Ok(BackupStatusResponse {
-            app: app.to_string(),
-            enabled: true,
-            retention_days: Some(backup.retention_days),
-            last_backup,
-            next_backup_at_unix_secs,
-        })
+        let skip = self
+            .database_snapshots
+            .read()
+            .get(app)
+            .and_then(|state| state.skip.clone());
+        Ok(enabled_backup_status(
+            app,
+            backup.retention_days,
+            &index.backups,
+            skip,
+            now_unix_secs(),
+        ))
     }
 
     async fn backup_download_url_inner(
@@ -280,6 +311,7 @@ impl crate::ServerState {
             .map_err(|error| format!("read backup config: {error}"))?
             .ok_or_else(|| format!("Backups are not configured for {app}."))?;
         let info = self.find_backup(&backup, app, backup_id).await?;
+        require_full_archive(&info, "Downloading")?;
         let url = presign_s3_url(
             &backup.storage,
             &info.archive_key,
@@ -306,6 +338,7 @@ impl crate::ServerState {
             .map_err(|error| format!("read backup config: {error}"))?
             .ok_or_else(|| format!("Backups are not configured for {app}."))?;
         let info = self.find_backup(&backup, app, backup_id).await?;
+        require_full_archive(&info, "Restoring")?;
 
         let app_ref = self
             .app_manager
@@ -434,6 +467,45 @@ impl crate::ServerState {
     }
 }
 
+fn enabled_backup_status(
+    app: &str,
+    retention_days: u16,
+    backups: &[BackupInfo],
+    last_database_snapshot_skip: Option<tako_core::BackupSkip>,
+    now: i64,
+) -> BackupStatusResponse {
+    let latest_of = |kind| latest_backup(backups.iter().filter(|backup| backup.kind == kind));
+    let last_backup = latest_of(BackupKind::Full).cloned();
+    let next_backup_at_unix_secs = last_backup
+        .as_ref()
+        .map(|backup| {
+            backup
+                .created_at_unix_secs
+                .saturating_add(BACKUP_INTERVAL_SECS)
+        })
+        .or(Some(now));
+    BackupStatusResponse {
+        app: app.to_string(),
+        enabled: true,
+        retention_days: Some(retention_days),
+        last_backup,
+        next_backup_at_unix_secs,
+        last_database_snapshot_at_unix_secs: latest_of(BackupKind::Databases)
+            .map(|backup| backup.created_at_unix_secs),
+        last_database_snapshot_skip,
+    }
+}
+
+/// Only full archives have a restore and download path so far.
+fn require_full_archive(info: &BackupInfo, action: &str) -> Result<(), String> {
+    match info.kind {
+        BackupKind::Full => Ok(()),
+        BackupKind::Databases => Err(format!(
+            "{action} a database snapshot is not supported yet. Use a full backup instead."
+        )),
+    }
+}
+
 async fn create_private_work_dir(path: &std::path::Path) -> Result<(), String> {
     tokio::fs::DirBuilder::new()
         .mode(0o700)
@@ -475,4 +547,62 @@ pub(super) fn now_unix_secs() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(id: &str, kind: BackupKind, created_at_unix_secs: i64) -> BackupInfo {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "app": "demo", "environment": "production", "server": "local",
+            "created_at_unix_secs": created_at_unix_secs, "size_bytes": 1, "sha256_hex": "",
+            "archive_key": "", "manifest_key": "",
+            "encryption": {"algorithm": "", "key_id": "", "nonce_base64": "", "tag_base64": ""},
+            "kind": kind,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn status_separates_full_archives_from_database_snapshots() {
+        let skip = tako_core::BackupSkip {
+            at_unix_secs: 400,
+            reason: tako_core::BackupSkipReason::Unchanged,
+            message: "unchanged".into(),
+        };
+        let backups = [
+            entry("d2", BackupKind::Databases, 300),
+            entry("b1", BackupKind::Full, 100),
+            entry("d1", BackupKind::Databases, 200),
+        ];
+        let status =
+            enabled_backup_status("demo/production", 30, &backups, Some(skip.clone()), 500);
+        assert_eq!(status.last_backup.unwrap().id, "b1");
+        assert_eq!(
+            status.next_backup_at_unix_secs,
+            Some(100 + BACKUP_INTERVAL_SECS)
+        );
+        assert_eq!(status.last_database_snapshot_at_unix_secs, Some(300));
+        assert_eq!(status.last_database_snapshot_skip, Some(skip));
+
+        let status = enabled_backup_status("demo/production", 30, &backups[..1], None, 500);
+        assert!(status.last_backup.is_none());
+        assert_eq!(status.next_backup_at_unix_secs, Some(500));
+    }
+
+    #[test]
+    fn restore_and_download_refuse_database_snapshots() {
+        assert!(require_full_archive(&entry("b1", BackupKind::Full, 1), "Restoring").is_ok());
+        let snapshot = entry("d1", BackupKind::Databases, 1);
+        assert_eq!(
+            require_full_archive(&snapshot, "Restoring").unwrap_err(),
+            "Restoring a database snapshot is not supported yet. Use a full backup instead."
+        );
+        assert!(
+            require_full_archive(&snapshot, "Downloading")
+                .unwrap_err()
+                .starts_with("Downloading a database snapshot is not supported yet.")
+        );
+    }
 }

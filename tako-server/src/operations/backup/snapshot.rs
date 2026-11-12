@@ -23,11 +23,54 @@ const READ_FLAGS: OFlags = OFlags::RDONLY
     .union(OFlags::NOFOLLOW)
     .union(OFlags::NONBLOCK);
 
+/// What a snapshot of the app data tree contains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SnapshotScope {
+    /// Every file, directory, and symlink.
+    Full,
+    /// Only SQLite databases, at their relative paths. Symlinks and other
+    /// files are left out; directories that end up empty are removed.
+    Databases,
+}
+
 pub(crate) fn snapshot_data_tree(
     anchor: &Path,
     relative: &Path,
     destination: &Path,
 ) -> Result<(), String> {
+    snapshot_tree(anchor, relative, destination, SnapshotScope::Full)
+}
+
+/// Same detection and capture as [`snapshot_data_tree`], restricted to the
+/// SQLite databases the full archive would contain.
+pub(crate) fn snapshot_database_tree(
+    anchor: &Path,
+    relative: &Path,
+    destination: &Path,
+) -> Result<(), String> {
+    snapshot_tree(anchor, relative, destination, SnapshotScope::Databases)
+}
+
+fn snapshot_tree(
+    anchor: &Path,
+    relative: &Path,
+    destination: &Path,
+    scope: SnapshotScope,
+) -> Result<(), String> {
+    let root = open_snapshot_root(anchor, relative)?;
+    let parent = destination
+        .parent()
+        .ok_or("snapshot destination has no parent")?;
+    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(destination)
+        .map_err(|e| format!("create snapshot dir {}: {e}", destination.display()))?;
+    copy_snapshot_dir(&root, Path::new(""), destination, scope)
+        .map_err(|e| format!("snapshot {}: {e}", anchor.join(relative).display()))
+}
+
+fn open_snapshot_root(anchor: &Path, relative: &Path) -> Result<File, String> {
     let flags = READ_FLAGS | OFlags::DIRECTORY;
     let mut root = fs::open(anchor, flags, Mode::empty())
         .map_err(|e| format!("open data root {}: {e}", anchor.display()))?;
@@ -38,19 +81,68 @@ pub(crate) fn snapshot_data_tree(
         root = fs::openat(&root, name, flags, Mode::empty())
             .map_err(|e| format!("open data directory {}: {e}", relative.display()))?;
     }
-    let parent = destination
-        .parent()
-        .ok_or("snapshot destination has no parent")?;
-    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    std::fs::DirBuilder::new()
-        .mode(0o700)
-        .create(destination)
-        .map_err(|e| format!("create snapshot dir {}: {e}", destination.display()))?;
-    copy_snapshot_dir(&File::from(root), Path::new(""), destination)
-        .map_err(|e| format!("snapshot {}: {e}", anchor.join(relative).display()))
+    Ok(File::from(root))
 }
 
-fn copy_snapshot_dir(parent: &File, relative: &Path, destination: &Path) -> io::Result<()> {
+/// Bytes of every SQLite database a [`snapshot_database_tree`] would capture,
+/// counting each main file and its `-wal`. Reads only file headers.
+pub(crate) fn measure_database_tree(anchor: &Path, relative: &Path) -> Result<u64, String> {
+    let root = open_snapshot_root(anchor, relative)?;
+    measure_database_dir(&root, Path::new(""))
+        .map_err(|e| format!("measure {}: {e}", anchor.join(relative).display()))
+}
+
+fn measure_database_dir(parent: &File, relative: &Path) -> io::Result<u64> {
+    let mut total = 0_u64;
+    for entry in fs::Dir::read_from(parent)? {
+        let entry = entry?;
+        let name = OsStr::from_bytes(entry.file_name().to_bytes());
+        if name == "." || name == ".." {
+            continue;
+        }
+        let path = relative.join(name);
+        if is_transient_tako_sqlite_file(&path) || is_sqlite_companion(parent, name)? {
+            continue;
+        }
+        let stat = match fs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(stat) => stat,
+            // The live tree may change while it is measured.
+            Err(rustix::io::Errno::NOENT) => continue,
+            Err(error) => return Err(error.into()),
+        };
+        match FileType::from_raw_mode(stat.st_mode) {
+            FileType::Directory => {
+                let dir = fs::openat(parent, name, READ_FLAGS | OFlags::DIRECTORY, Mode::empty())?;
+                total = total.saturating_add(measure_database_dir(&File::from(dir), &path)?);
+            }
+            FileType::RegularFile => {
+                let file = open_regular(parent, name)?;
+                if is_sqlite_database(&file)? {
+                    let mut wal = OsStr::new(name).to_os_string();
+                    wal.push("-wal");
+                    let wal_len =
+                        match fs::statat(parent, wal.as_os_str(), AtFlags::SYMLINK_NOFOLLOW) {
+                            Ok(stat) => stat.st_size as u64,
+                            Err(rustix::io::Errno::NOENT) => 0,
+                            Err(error) => return Err(error.into()),
+                        };
+                    total = total
+                        .saturating_add(file.metadata()?.len())
+                        .saturating_add(wal_len);
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(total)
+}
+
+fn copy_snapshot_dir(
+    parent: &File,
+    relative: &Path,
+    destination: &Path,
+    scope: SnapshotScope,
+) -> io::Result<()> {
     for entry in fs::Dir::read_from(parent)? {
         let entry = entry?;
         let name = OsStr::from_bytes(entry.file_name().to_bytes());
@@ -66,14 +158,23 @@ fn copy_snapshot_dir(parent: &File, relative: &Path, destination: &Path) -> io::
         let dest = destination.join(name);
         let stat = fs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW)?;
         match FileType::from_raw_mode(stat.st_mode) {
-            FileType::Symlink => {
+            FileType::Symlink if scope == SnapshotScope::Full => {
                 let target = fs::readlinkat(parent, name, Vec::new())?;
                 std::os::unix::fs::symlink(OsStr::from_bytes(target.to_bytes()), dest)?;
             }
             FileType::Directory => {
                 let dir = fs::openat(parent, name, READ_FLAGS | OFlags::DIRECTORY, Mode::empty())?;
                 std::fs::create_dir(&dest)?;
-                copy_snapshot_dir(&File::from(dir), &path, &dest)?;
+                copy_snapshot_dir(&File::from(dir), &path, &dest, scope)?;
+                // Keep the top-level app/ and tako/ roots so the archive
+                // layout matches the full archive.
+                if scope == SnapshotScope::Databases && !relative.as_os_str().is_empty() {
+                    match std::fs::remove_dir(&dest) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == io::ErrorKind::DirectoryNotEmpty => {}
+                        Err(error) => return Err(error),
+                    }
+                }
             }
             FileType::RegularFile => {
                 let mut file = open_regular(parent, name)?;
@@ -81,7 +182,7 @@ fn copy_snapshot_dir(parent: &File, relative: &Path, destination: &Path) -> io::
                     sqlite::snapshot(parent, name, file, &dest).map_err(|e| {
                         io::Error::other(format!("snapshot {}: {e}", path.display()))
                     })?;
-                } else {
+                } else if scope == SnapshotScope::Full {
                     let mut output = File::create_new(dest)?;
                     io::copy(&mut file, &mut output)?;
                     // The copy is owned by the service. Never publish set-ID
@@ -154,6 +255,25 @@ pub(super) fn create_backup_archive(
     snapshot_dir: &Path,
     archive_path: &Path,
 ) -> Result<(), String> {
+    create_archive(snapshot_dir, archive_path, Path::new(""))
+}
+
+/// Database snapshots nest `app/` and `tako/` below this root, so a full
+/// restore, which requires both at the top level, can never apply one.
+pub(super) const DATABASE_SNAPSHOT_ARCHIVE_ROOT: &str = "databases";
+
+pub(super) fn create_database_snapshot_archive(
+    snapshot_dir: &Path,
+    archive_path: &Path,
+) -> Result<(), String> {
+    create_archive(
+        snapshot_dir,
+        archive_path,
+        Path::new(DATABASE_SNAPSHOT_ARCHIVE_ROOT),
+    )
+}
+
+fn create_archive(snapshot_dir: &Path, archive_path: &Path, root: &Path) -> Result<(), String> {
     if let Some(parent) = archive_path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("create archive dir {}: {e}", parent.display()))?;
@@ -168,7 +288,7 @@ pub(super) fn create_backup_archive(
         let path = snapshot_dir.join(name);
         match std::fs::symlink_metadata(&path) {
             Ok(meta) if meta.is_dir() => archive
-                .append_dir_all(name, &path)
+                .append_dir_all(root.join(name), &path)
                 .map_err(|e| format!("append {name} data to backup archive: {e}"))?,
             Ok(_) => return Err(format!("backup data root {name} is not a directory")),
             Err(error) => return Err(format!("read backup data root {name}: {error}")),
@@ -180,6 +300,90 @@ pub(super) fn create_backup_archive(
     encoder
         .finish()
         .map_err(|e| format!("finish backup zstd stream: {e}"))?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct DatabaseDigest {
+    pub(super) hex: String,
+    pub(super) databases: usize,
+}
+
+/// Keyed digest of the SQLite databases in a private snapshot directory:
+/// each database's relative path and exact bytes, in path order. The files
+/// are compacted copies, so equal digests mean byte-identical databases.
+/// Keyed so the plaintext index cannot confirm guesses about the contents.
+pub(super) fn database_digest(snapshot_dir: &Path, key: &[u8]) -> Result<DatabaseDigest, String> {
+    let mut databases = Vec::new();
+    for name in ["app", "tako"] {
+        collect_snapshot_databases(&snapshot_dir.join(name), Path::new(name), &mut databases)
+            .map_err(|e| format!("scan snapshot databases: {e}"))?;
+    }
+    databases.sort();
+    let pkey = openssl::pkey::PKey::hmac(key).map_err(|e| format!("digest key: {e}"))?;
+    let mut signer = openssl::sign::Signer::new(openssl::hash::MessageDigest::sha256(), &pkey)
+        .map_err(|e| format!("digest: {e}"))?;
+    let mut buf = vec![0_u8; 128 * 1024];
+    for relative in &databases {
+        let path = snapshot_dir.join(relative);
+        let mut file =
+            std::fs::File::open(&path).map_err(|e| format!("open {}: {e}", path.display()))?;
+        let len = file
+            .metadata()
+            .map_err(|e| format!("stat {}: {e}", path.display()))?
+            .len();
+        let relative = relative.as_os_str().as_bytes();
+        for part in [
+            &(relative.len() as u64).to_le_bytes()[..],
+            relative,
+            &len.to_le_bytes()[..],
+        ] {
+            signer.update(part).map_err(|e| format!("digest: {e}"))?;
+        }
+        let mut read_total = 0_u64;
+        loop {
+            let read = file
+                .read(&mut buf)
+                .map_err(|e| format!("read {}: {e}", path.display()))?;
+            if read == 0 {
+                break;
+            }
+            read_total += read as u64;
+            signer
+                .update(&buf[..read])
+                .map_err(|e| format!("digest: {e}"))?;
+        }
+        if read_total != len {
+            return Err(format!("{} changed while hashing", path.display()));
+        }
+    }
+    let digest = signer.sign_to_vec().map_err(|e| format!("digest: {e}"))?;
+    Ok(DatabaseDigest {
+        hex: hex::encode(digest),
+        databases: databases.len(),
+    })
+}
+
+fn collect_snapshot_databases(
+    dir: &Path,
+    relative: &Path,
+    out: &mut Vec<PathBuf>,
+) -> io::Result<()> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let path = relative.join(entry.file_name());
+        if file_type.is_dir() {
+            collect_snapshot_databases(&entry.path(), &path, out)?;
+        } else if file_type.is_file() && is_sqlite_database(&File::open(entry.path())?)? {
+            out.push(path);
+        }
+    }
     Ok(())
 }
 
@@ -489,7 +693,7 @@ services:
         let pinned = File::open(&source).unwrap();
         std::fs::rename(&source, temp.path().join("moved")).unwrap();
         std::os::unix::fs::symlink(&outside, &source).unwrap();
-        copy_snapshot_dir(&pinned, Path::new("app"), &dest).unwrap();
+        copy_snapshot_dir(&pinned, Path::new("app"), &dest, SnapshotScope::Full).unwrap();
         assert_eq!(std::fs::read(dest.join("value")).unwrap(), b"inside");
         assert_eq!(
             std::fs::read_link(dest.join("link")).unwrap(),

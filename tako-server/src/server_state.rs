@@ -114,6 +114,10 @@ pub struct ServerState {
     pub(crate) channel_credentials_generation: Arc<std::sync::atomic::AtomicU64>,
     pub(crate) deploy_locks: AsyncRwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     pub(crate) backup_locks: SyncRwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Latest hourly database snapshot attempt per app. Not persisted: the
+    /// remote index keeps the cadence across restarts.
+    pub(crate) database_snapshots:
+        SyncRwLock<HashMap<String, crate::operations::DatabaseSnapshotState>>,
     prepared_deploy_ssl: AsyncRwLock<HashMap<PreparedDeployKey, PreparedDeploySsl>>,
     pub(crate) cold_start: Arc<crate::scaling::ColdStartManager>,
     pub(crate) state_store: Arc<SqliteStateStore>,

@@ -443,3 +443,74 @@ async fn ensure_route_certificate_generates_self_signed_for_private_domain() {
         .expect("generated cert should be cached");
     assert!(cached.is_self_signed);
 }
+
+#[tokio::test]
+async fn list_releases_reports_the_sdk_recorded_in_each_manifest() {
+    let temp = TempDir::new().unwrap();
+    let state = ServerState::new(
+        temp.path().into(),
+        Arc::new(CertManager::new(CertManagerConfig {
+            cert_dir: temp.path().join("certs"),
+            ..Default::default()
+        })),
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let app_id = "api/production";
+    state.app_manager.register_app(AppConfig {
+        name: "api".into(),
+        environment: "production".into(),
+        version: "with-sdk".into(),
+        path: temp.path().into(),
+        ..Default::default()
+    });
+    for (version, sdk) in [
+        ("without-sdk", None),
+        (
+            "with-sdk",
+            Some(serde_json::json!({
+                "language": "javascript",
+                "name": "tako.sh",
+                "version": "1.4.2",
+            })),
+        ),
+    ] {
+        let release = crate::release::app_release_root(temp.path(), app_id, version);
+        std::fs::create_dir_all(&release).unwrap();
+        write_release_manifest(&release, "bun", "index.ts", &[], None, 300);
+        if let Some(sdk) = sdk {
+            let path = release.join("app.json");
+            let mut manifest: Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            manifest["sdk"] = sdk;
+            std::fs::write(&path, manifest.to_string()).unwrap();
+        }
+    }
+
+    let Response::Ok { data } = state
+        .handle_command(Command::ListReleases { app: app_id.into() })
+        .await
+    else {
+        panic!("expected a release list");
+    };
+    let listed: tako_core::ListReleasesResponse = serde_json::from_value(data).unwrap();
+    let sdk_of = |version: &str| {
+        listed
+            .releases
+            .iter()
+            .find(|release| release.version == version)
+            .unwrap_or_else(|| panic!("missing release {version}"))
+            .sdk
+            .clone()
+    };
+    assert_eq!(
+        sdk_of("with-sdk"),
+        Some(tako_core::ReleaseSdk {
+            language: "javascript".into(),
+            name: "tako.sh".into(),
+            version: "1.4.2".into(),
+        })
+    );
+    assert_eq!(sdk_of("without-sdk"), None);
+}

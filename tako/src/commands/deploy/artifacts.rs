@@ -17,7 +17,7 @@ use super::format::{
 };
 use super::manifest::{
     build_container_deploy_archive_manifest, build_deploy_archive_manifest, decrypt_deploy_secrets,
-    resolve_deploy_main, resolve_deploy_version, resolve_git_commit_message,
+    detect_release_sdk, resolve_deploy_main, resolve_deploy_version, resolve_git_commit_message,
 };
 use super::task_tree::{ArtifactBuildGroup, DeployTaskTreeController};
 
@@ -106,6 +106,7 @@ pub(super) async fn prepare_build_phase(
         manifest.container_file = tako_config.container.clone();
         manifest.container_image = tako_config.image.clone();
         manifest.container_options = tako_config.container_options.clone();
+        manifest.sdk = container_release_sdk(&tako_config, &eff_app_dir, &source_root);
         if let Some(compose) = &tako_config.compose {
             if server_targets.len() != 1 {
                 return Err("Compose deployments require exactly one target server".into());
@@ -272,7 +273,7 @@ pub(super) async fn prepare_build_phase(
         );
     }
 
-    let manifest = build_deploy_archive_manifest(
+    let mut manifest = build_deploy_archive_manifest(
         &app_name,
         &env,
         &version,
@@ -293,6 +294,7 @@ pub(super) async fn prepare_build_phase(
         app_dir,
         install_dir,
     );
+    manifest.sdk = detect_release_sdk(runtime_adapter.id(), &eff_app_dir, &source_root);
     let deploy_secrets =
         decrypt_deploy_secrets(&env, &secrets, Some(&project_dir)).map_err(|e| e.to_string())?;
     let deploy_runtime_credentials = crate::commands::credentials::decrypt_runtime_credentials(
@@ -386,6 +388,20 @@ pub(super) async fn prepare_build_phase(
         use_unified_target_process: should_use_unified_js_target_process(&runtime_tool),
         artifacts_by_target,
     })
+}
+
+/// Only a container built from this source with the SDK contract enabled has
+/// a detectable SDK. A prebuilt image, a plain container, and a Compose
+/// project say nothing about one.
+pub(super) fn container_release_sdk(
+    config: &TakoToml,
+    app_dir: &Path,
+    source_root: &Path,
+) -> Option<tako_core::ReleaseSdk> {
+    if config.container.is_none() || config.compose.is_some() || !config.container_options.sdk {
+        return None;
+    }
+    detect_release_sdk("container", app_dir, source_root)
 }
 
 fn explicit_start_command(config: &TakoToml) -> Option<Vec<String>> {

@@ -3,7 +3,7 @@ title: Container Workflows
 description: "Run a Tako workflow worker from the same image as a container app, configure its explicit command, and understand the v0 socket and process limits."
 ---
 
-A container release can run a separate workflow process from the same image. The worker has its own entrypoint and receives the internal socket it needs to talk to Tako's workflow engine. The HTTP container does not receive that socket in v0.
+A container release can run a separate workflow process from the same image. The worker has its own entrypoint and receives the internal socket it needs to talk to Tako's workflow engine. The HTTP container does not receive that socket in v0. Both receive the app data directory, mounted at `container_options.data_dir` (`/tako/data` by default) with `TAKO_DATA_DIR` set to that path.
 
 ## Configure one worker command
 

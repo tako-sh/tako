@@ -128,7 +128,7 @@ if (!profile) {
 await tako.cache.delete(`profile:${userId}`);
 ```
 
-`get(key)` returns `undefined` for missing or expired keys. `put(key, value, { ttl })` stores a JSON-serializable value; `ttl` is milliseconds. `delete(key)` removes one key. Native dev and deploy runtimes store cache entries in Tako-managed local SQLite outside app backups. Container releases do not expose `TAKO_DATA_DIR` in v0, so the cache helper is unavailable there.
+`get(key)` returns `undefined` for missing or expired keys. `put(key, value, { ttl })` stores a JSON-serializable value; `ttl` is milliseconds. `delete(key)` removes one key. Native dev and deploy runtimes store cache entries in Tako-managed local SQLite outside app backups. Container releases set `TAKO_DATA_DIR` to the mounted app data path, but the cache file sits beside that mount in the container's own filesystem, so entries are lost when the container is replaced and are not shared between instances.
 
 ## Images
 

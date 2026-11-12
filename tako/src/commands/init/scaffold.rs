@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::build::{BuildAdapter, PresetDefinition};
-use crate::config::DEFAULT_JS_APP_ROOT;
+use crate::config::{DEFAULT_JS_APP_ROOT, TAKO_TOML_SCHEMA_DIRECTIVE};
 
 pub(super) fn parse_csv_list(value: &str) -> Vec<String> {
     value
@@ -231,7 +231,8 @@ app_root = "{}"
         format!("exclude = [{}]", items.join(", "))
     };
     format!(
-        r#"# Tako configuration
+        r#"{schema_directive}
+# Tako configuration
 # tako.toml reference: https://tako.sh/docs/tako-toml
 
 # Stable app identifier used for deploy paths and local dev hostnames.
@@ -300,6 +301,7 @@ route = "{production_route}"
 # servers = ["staging"]
 # idle_timeout = 120
 "#,
+        schema_directive = TAKO_TOML_SCHEMA_DIRECTIVE,
         app_name = app_name,
         main_line = main_line,
         runtime_line = runtime_line,

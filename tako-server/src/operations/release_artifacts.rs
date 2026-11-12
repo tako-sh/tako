@@ -332,7 +332,7 @@ fn remove_release(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(unix)]
-fn available_bytes(path: &Path) -> Result<u64, String> {
+pub(super) fn available_bytes(path: &Path) -> Result<u64, String> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
 
@@ -348,7 +348,7 @@ fn available_bytes(path: &Path) -> Result<u64, String> {
 }
 
 #[cfg(not(unix))]
-fn available_bytes(_path: &Path) -> Result<u64, String> {
+pub(super) fn available_bytes(_path: &Path) -> Result<u64, String> {
     Err("disk space checks require Unix".to_string())
 }
 

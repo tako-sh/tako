@@ -157,3 +157,36 @@ async fn backup_request_deadline_covers_a_stalled_response_body() {
     assert!(error.is_timeout());
     fixture.abort();
 }
+
+#[test]
+fn retention_expires_database_snapshots_after_48_hours_only() {
+    let now = 1_800_000_000;
+    let hour = 60 * 60;
+    let entry = |id: &str, kind: &str, age: i64| {
+        serde_json::json!({
+            "id": id, "app": "demo", "environment": "test", "server": "local",
+            "created_at_unix_secs": now - age, "size_bytes": 1, "sha256_hex": "unused",
+            "archive_key": format!("{id}.enc"), "manifest_key": format!("{id}.json"),
+            "encryption": {"algorithm":"unused", "key_id":"unused", "nonce_base64":"", "tag_base64":""},
+            "kind": kind
+        })
+    };
+    let mut index: BackupIndex = serde_json::from_value(serde_json::json!({
+        "version": 1, "backups": [
+            entry("db-fresh", "databases", 47 * hour),
+            entry("db-expired", "databases", 49 * hour),
+            entry("full-3d", "full", 72 * hour),
+            entry("full-expired", "full", 31 * 24 * hour),
+        ]
+    }))
+    .unwrap();
+    queue_retention_at(&mut index, 30, now);
+    let ids = |entries: &[tako_core::BackupInfo]| {
+        entries.iter().map(|b| b.id.clone()).collect::<Vec<_>>()
+    };
+    assert_eq!(ids(&index.backups), ["db-fresh", "full-3d"]);
+    assert_eq!(
+        ids(&index.pending_deletions),
+        ["db-expired", "full-expired"]
+    );
+}

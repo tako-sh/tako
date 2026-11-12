@@ -1,5 +1,7 @@
 mod backup;
-pub(crate) use backup::snapshot_data_tree;
+pub(crate) use backup::{
+    DatabaseSnapshotState, measure_database_tree, snapshot_data_tree, snapshot_database_tree,
+};
 mod compose;
 mod deploy;
 mod dispatch;

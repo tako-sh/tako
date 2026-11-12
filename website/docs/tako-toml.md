@@ -7,6 +7,18 @@ description: "Look up Tako project configuration for identity, runtimes, builds,
 
 App-scoped commands use `./tako.toml` by default. `-c path/to/config` selects another config file and treats that file's parent directory as the app directory.
 
+## Editor Support
+
+A JSON Schema for `tako.toml` is published at `https://tako.sh/schemas/tako-toml.json`. `tako init` writes this directive as the first line of new files, and edits that Tako makes to `tako.toml` keep it:
+
+```toml
+#:schema https://tako.sh/schemas/tako-toml.json
+```
+
+Editors based on Taplo, such as the Even Better TOML extension for VS Code, read the directive to validate fields, complete keys, and show field descriptions on hover. Add the line to an existing `tako.toml` to opt in.
+
+The schema catches unknown fields, wrong value types, and common shape mistakes such as an environment with both `route` and `routes`. It can be looser than the CLI's validation: rules that depend on other files or on combinations of fields, such as storage references, route patterns, or container release restrictions, are checked only by the CLI. The schema is designed never to reject a config the CLI accepts.
+
 ## Minimal Config
 
 ```toml

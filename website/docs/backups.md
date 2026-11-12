@@ -41,6 +41,8 @@ The server snapshots `/opt/tako/apps/<app>/<env>/data/`:
 
 Deploy creates a backup after successful finalization when enabled. The server scheduler also creates due backups at roughly 24-hour intervals. A release rollback preserves the current backup target and encryption keys. Each server backs up its own local data.
 
+Between full backups, the server also creates a database snapshot about every hour. It contains only the SQLite databases of the data tree, including workflow state, captured, compressed, and encrypted the same way. The snapshot is skipped when no database changed since the latest backup, when the databases total more than 512 MiB, or when free disk space is short; `tako backups status` shows the latest database snapshot and the latest skip reason. Database snapshots are kept for 48 hours and are listed with kind `databases`. Restoring or downloading a database snapshot is not supported yet; use a full backup.
+
 Only one backup or restore can run per app at a time; a concurrent request returns
 a busy error. Scheduled remote transfers release the app's deployment lock after
 the local snapshot is ready. Failed retention deletions remain queued for a later

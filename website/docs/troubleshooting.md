@@ -92,7 +92,7 @@ The container must:
 - Use a Tako SDK so `/status` handles the internal health probe.
 - Read secrets and storage bindings through SDK bootstrap, not individual env vars.
 
-In v0, container HTTP instances do not receive fd 3, fd 4, the internal socket, or `TAKO_DATA_DIR`.
+In v0, container HTTP instances do not receive fd 3, fd 4, or the internal socket. They do receive the app data directory, mounted at `container_options.data_dir` (`/tako/data` by default), with `TAKO_DATA_DIR` set to that path. Files written elsewhere in the container are lost when it is replaced.
 
 ## TLS Or Certificate Problems
 

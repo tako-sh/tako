@@ -705,6 +705,7 @@ pub enum UpgradeMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 #[derive(Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum SourceIpMode {
     #[default]
     Auto,
@@ -715,6 +716,7 @@ pub enum SourceIpMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum SslProvider {
     #[serde(rename = "letsencrypt")]
     #[default]
@@ -778,6 +780,50 @@ pub struct BackupInfo {
     pub archive_key: String,
     pub manifest_key: String,
     pub encryption: BackupEncryptionInfo,
+    /// Entries written before kinds existed are full archives.
+    #[serde(default)]
+    pub kind: BackupKind,
+    /// Keyed digest of the SQLite databases the entry captured, used to skip
+    /// unchanged database snapshots. Absent on older entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub database_digest: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BackupKind {
+    /// The whole app data tree.
+    #[default]
+    Full,
+    /// Only the SQLite databases of the app data tree.
+    Databases,
+}
+
+impl BackupKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Databases => "databases",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BackupSkipReason {
+    Unchanged,
+    NoDatabases,
+    TooLarge,
+    InsufficientDisk,
+    DeployInProgress,
+    BackupInProgress,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackupSkip {
+    pub at_unix_secs: i64,
+    pub reason: BackupSkipReason,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -792,10 +838,16 @@ pub struct BackupStatusResponse {
     pub enabled: bool,
     #[serde(default)]
     pub retention_days: Option<u16>,
+    /// The latest full archive.
     #[serde(default)]
     pub last_backup: Option<BackupInfo>,
     #[serde(default)]
     pub next_backup_at_unix_secs: Option<i64>,
+    #[serde(default)]
+    pub last_database_snapshot_at_unix_secs: Option<i64>,
+    /// The latest hourly database snapshot attempt that uploaded nothing.
+    #[serde(default)]
+    pub last_database_snapshot_skip: Option<BackupSkip>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -976,6 +1028,17 @@ pub struct ListResponse {
     pub apps: Vec<AppStatus>,
 }
 
+/// The Tako SDK a release was built against, as its manifest records it.
+/// Informational only: no compatibility decision depends on it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReleaseSdk {
+    /// `javascript`, `go`, or `rust`.
+    pub language: String,
+    /// Package, module, or crate name as the ecosystem spells it.
+    pub name: String,
+    pub version: String,
+}
+
 /// Release/build metadata for an app.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReleaseInfo {
@@ -988,6 +1051,9 @@ pub struct ReleaseInfo {
     pub description: Option<String>,
     #[serde(default)]
     pub git_dirty: Option<bool>,
+    /// Absent when the release has no detectable Tako SDK.
+    #[serde(default)]
+    pub sdk: Option<ReleaseSdk>,
 }
 
 /// Response payload for `list_releases`.

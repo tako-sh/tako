@@ -940,3 +940,39 @@ dev = ["vite", "dev"]
     );
     assert!(!project.path().join(".tako/tmp").exists());
 }
+
+#[test]
+fn container_release_sdk_is_detected_only_for_sdk_containers_built_from_source() {
+    let temp = TempDir::new().unwrap();
+    std::fs::write(
+        temp.path().join("Cargo.lock"),
+        "[[package]]\nname = \"tako\"\nversion = \"0.2.1\"\n",
+    )
+    .unwrap();
+    let detect = |config: &TakoToml| container_release_sdk(config, temp.path(), temp.path());
+
+    let dockerfile = TakoToml {
+        container: Some("Dockerfile".to_string()),
+        ..Default::default()
+    };
+    let sdk = detect(&dockerfile).expect("SDK container built from source");
+    assert_eq!(
+        (
+            sdk.language.as_str(),
+            sdk.name.as_str(),
+            sdk.version.as_str()
+        ),
+        ("rust", "tako", "0.2.1")
+    );
+
+    // The local files say nothing about a prebuilt image.
+    let image = TakoToml {
+        image: Some("ghcr.io/example/app:1".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(detect(&image), None);
+
+    let mut plain = dockerfile.clone();
+    plain.container_options.sdk = false;
+    assert_eq!(detect(&plain), None);
+}
