@@ -158,18 +158,21 @@ Each restore first writes a record of what it will change. If the server process
 dies in the middle of a restore, the next normal server start puts the original
 data back before any app starts, logs it, and removes leftover backup and restore
 work directories. The recovery point of that restore is not applied; run it again.
-A standby, an upgrade reload, or a promotion starts beside another server process
-and never puts data back; it only logs an unfinished restore, and so does every
-start after one of them.
+A standby, an upgrade reload, a promotion, and a normal start while another server
+process (such as a hot standby) serves the same data directory never put data
+back; they only log an unfinished restore. A normal start renames every
+unfinished restore it does not put back to `.data-restore-abandoned-<id>/`, so no
+later start puts it back over data written since.
 
 When the server gives up on a restore and keeps running (it could not stop the
 restored app, could not put the original data back, or could not record the
 restore as finished), it renames the directory to
 `.data-restore-abandoned-<id>/` and logs an error. Tako never applies such a
-directory: whatever is live stays live. Check the app data, keep what you need
-from the directory, then remove it. While an unfinished or abandoned restore
+directory: whatever is live stays live. While an unfinished or abandoned restore
 directory exists, a new restore of the app refuses and names it. Server starts
-log every such directory until it is removed.
+log every such directory until it is removed. If the live data may be partly
+restored, the app also stays stopped; see
+[Resolve an unfinished restore](#resolve-an-unfinished-restore).
 
 Restore moves files with rename, so the app data directory must be on the same
 filesystem and mount as the Tako data directory. When `data/` or a directory a
@@ -177,6 +180,49 @@ restored database sits in is a separate mount (including a bind mount), restore
 refuses before changing anything. A full restore also refuses while anything is
 mounted anywhere below `data/`, such as `data/app/uploads`, because it replaces the
 whole directory. Removing a rollback copy never crosses into another mount.
+
+## Resolve an unfinished restore
+
+A restore Tako did not finish leaves `apps/<app>/<env>/.data-restore-prev-<id>/` or
+`.data-restore-abandoned-<id>/` beside the app's `data/` directory, below the Tako
+data directory (`/var/lib/tako` by default). The directory holds the original data
+and a record, `restore.json`, whose `state` says what the live data is:
+
+- `"original"`: the original data was put back in full. Nothing to do beyond
+  removing the directory.
+- `"restored"`: the restore completed and only its cleanup or the restart failed.
+  The live data is the restored data. Nothing to do beyond removing the directory.
+- `"swapping"`, or a record Tako cannot read: the live data may be partly
+  restored, with some databases restored and others original. Tako keeps the app
+  stopped: server starts do not start it or its workflows, requests do not cold
+  start it, `tako status` shows the reason as its error, and deploys, release
+  commands, `tako scale`, and secret updates are refused with the same message.
+
+A directory without `restore.json` means the live data is whole, either the
+original or the restored data; remove it.
+
+To go back to the original data after a partial restore, with the app stopped,
+work as the user that owns the app data:
+
+1. For a **database snapshot** restore, the directory holds each original database
+   at its path below `data/` (for example `app/data.sqlite`), together with the
+   `-wal`, `-shm`, and `-journal` files it had. Put back every database it holds:
+   first remove the live `-wal`, `-shm`, and `-journal` files beside the live
+   database, then move the kept database and its own sidecar files into place,
+   replacing the live database. Never copy only the database file back while
+   another database's sidecar files sit beside it: SQLite would apply them to the
+   original database and corrupt it. A database listed in `restore.json` with
+   `"existed": false` was created by the restore and has no original; remove it
+   and its sidecar files if you do not want it.
+2. For a **full** restore, the directory holds the original data tree as `data/`
+   (and, if Tako began to put it back, the restored tree as `restored/`). Move the
+   live `apps/<app>/<env>/data` aside, then move `<directory>/data` to
+   `apps/<app>/<env>/data`. If `<directory>/data` is missing, the original tree
+   is already live.
+
+To keep the restored data instead, run the restore again after removing the
+directory. Either way, then remove the leftover directory and start the app with
+`tako deploy`. A normal server restart also starts it.
 
 ## Recover on a fresh server
 

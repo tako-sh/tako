@@ -1029,6 +1029,10 @@ mod tests {
             "{}",
             error.message
         );
+        assert!(
+            error.message.contains(journal::UNFINISHED_RESTORE_DOCS),
+            "the refusal must point to the steps that resolve it"
+        );
         assert_eq!(marker(&live), "backup");
     }
 
