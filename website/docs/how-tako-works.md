@@ -44,7 +44,7 @@ Native releases run from the prepared artifact. Container releases upload source
 
 Native HTTP instances bind `HOST=127.0.0.1` and `PORT=0`. The SDK binds an OS-assigned loopback port and reports it on fd 4. `tako-server` then probes the private endpoint and routes traffic through the app load balancer.
 
-Container HTTP instances receive `HOST=0.0.0.0`, `PORT=3000`, and `TAKO_BOOTSTRAP_DATA`. They do not receive fd 3, fd 4, the internal socket, or `TAKO_DATA_DIR` in v0. A configured container workflow `run` starts a separate process from the same image with the internal socket mounted; container releases support one configured workflow `run` command in v0.
+Container HTTP instances receive `HOST=0.0.0.0`, `PORT=3000`, and `TAKO_BOOTSTRAP_DATA`. The app data directory is mounted into the container at `container_options.data_dir` (`/tako/data` by default), and `TAKO_DATA_DIR` names that container path. They do not receive fd 3, fd 4, or the internal socket in v0. A configured container workflow `run` starts a separate process from the same image with the same data mount and `TAKO_DATA_DIR`, plus the internal socket; container releases support one configured workflow `run` command in v0.
 
 Secrets and storage bindings are stored encrypted on the server. Native app and worker processes receive them through the fd 3 bootstrap envelope. Containers receive the same envelope through `TAKO_BOOTSTRAP_DATA`. Backup storage is not exposed to app code unless it is also configured as an app storage binding.
 
@@ -86,7 +86,7 @@ Each deployed app has durable data under the server data directory:
 
 ```text
 /opt/tako/apps/{app}/{env}/data/
-├── app/   # exposed to app code as TAKO_DATA_DIR for native releases
+├── app/   # exposed to app code as TAKO_DATA_DIR; mounted into containers
 └── tako/  # Tako-owned workflow/channel/cache state
 ```
 
