@@ -109,6 +109,8 @@ web  healthy 0/0  production  abc123
 
 Read the app's output with `tako logs --env production --days 1`. `tako status --json` reports the same fields under `recovery`. The server keeps retrying on its own; a fixed deploy or `tako scale` starts new instances at once without waiting for the backoff.
 
+A deploy, release command, or `tako secrets sync` that arrives while the server is repairing the app can fail with `Automatic recovery of <app> is in progress; retry in a moment.` Retry the command: recovery pauses for about a minute after turning a command away, so the retry gets through as soon as the current repair step ends.
+
 ## TLS Or Certificate Problems
 
 Let's Encrypt exact routes use HTTP-01 by default, so public port 80 must reach the server's HTTP listener. If you use wildcard routes, or if exact routes should use DNS-01, set:
