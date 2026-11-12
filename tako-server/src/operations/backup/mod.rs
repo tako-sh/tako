@@ -151,7 +151,8 @@ impl crate::ServerState {
     }
 
     /// A full archive holds the snapshot copy, the compressed archive, and its
-    /// encrypted copy at once; each is at most the size of the data tree.
+    /// encrypted copy at once; each is at most the measured size of the data
+    /// tree, which counts block rounding and archive headers per file.
     async fn full_backup_disk_preflight(
         &self,
         app: &str,
@@ -1046,10 +1047,29 @@ mod tests {
         std::fs::write(data.join("tako/workflows.sqlite"), vec![0; 20]).unwrap();
         std::fs::write(data.join("tako/channels.sqlite"), vec![0; 1000]).unwrap();
         std::os::unix::fs::symlink("/etc/hostname", data.join("app/link")).unwrap();
+        let entry = snapshot::ARCHIVE_ENTRY_BYTES;
+        let block = snapshot::DISK_BLOCK_BYTES;
+        // Two files of a block each, the link, and three directories, each
+        // with an archive entry.
         assert_eq!(
             snapshot::measure_data_tree(temp.path(), std::path::Path::new("data")).unwrap(),
-            120
+            2 * (block + entry) + entry + 3 * (block + entry)
         );
+    }
+
+    /// Many small files cost far more than their bytes: a disk block for
+    /// each copy and an archive header for each entry.
+    #[test]
+    fn measure_data_tree_counts_the_overhead_of_small_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("data");
+        std::fs::create_dir_all(data.join("app")).unwrap();
+        for index in 0..1000 {
+            std::fs::write(data.join(format!("app/{index}")), b"x").unwrap();
+        }
+        let measured =
+            snapshot::measure_data_tree(temp.path(), std::path::Path::new("data")).unwrap();
+        assert!(measured >= 1000 * (4096 + 512), "{measured}");
     }
 
     #[tokio::test]

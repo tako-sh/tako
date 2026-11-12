@@ -91,8 +91,15 @@ fn open_snapshot_root(anchor: &Path, relative: &Path) -> Result<File, String> {
     Ok(File::from(root))
 }
 
-/// Bytes of the regular files a [`snapshot_data_tree`] would copy. Only stats
-/// entries and never opens a regular file, so it is safe in the server.
+/// A tar header and the most padding an entry can need.
+pub(super) const ARCHIVE_ENTRY_BYTES: u64 = 1024;
+/// The allocation unit most filesystems round each copied file up to.
+pub(super) const DISK_BLOCK_BYTES: u64 = 4096;
+
+/// An upper estimate of the bytes one copy of what [`snapshot_data_tree`]
+/// copies takes: each file rounded up to whole disk blocks, a block for
+/// each directory, and an archive entry for everything. Only stats entries
+/// and never opens a regular file, so it is safe in the server.
 pub(crate) fn measure_data_tree(anchor: &Path, relative: &Path) -> Result<u64, String> {
     fn walk(dir: &File, relative: &Path, total: &mut u64) -> io::Result<()> {
         for entry in fs::Dir::read_from(dir)? {
@@ -110,15 +117,19 @@ pub(crate) fn measure_data_tree(anchor: &Path, relative: &Path) -> Result<u64, S
                 Err(rustix::io::Errno::NOENT) => continue,
                 Err(error) => return Err(error.into()),
             };
-            match FileType::from_raw_mode(stat.st_mode) {
+            let bytes = match FileType::from_raw_mode(stat.st_mode) {
                 FileType::Directory => {
                     let child =
                         fs::openat(dir, name, READ_FLAGS | OFlags::DIRECTORY, Mode::empty())?;
                     walk(&File::from(child), &path, total)?;
+                    DISK_BLOCK_BYTES
                 }
-                FileType::RegularFile => *total = total.saturating_add(stat.st_size as u64),
-                _ => {}
-            }
+                FileType::RegularFile => (stat.st_size as u64)
+                    .div_ceil(DISK_BLOCK_BYTES)
+                    .saturating_mul(DISK_BLOCK_BYTES),
+                _ => 0,
+            };
+            *total = total.saturating_add(bytes.saturating_add(ARCHIVE_ENTRY_BYTES));
         }
         Ok(())
     }
