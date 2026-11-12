@@ -8,6 +8,8 @@ use std::{
         unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     },
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 use tako_channels::{
     ChannelAuthResponse, ChannelLifecycle, ChannelMessage, ChannelPublishPayload, PresenceMember,
@@ -67,7 +69,16 @@ pub(super) enum Request {
         channel: String,
         connection_id: String,
     },
+    /// Asks which optional request fields the broker understands. A broker from
+    /// an earlier release does not know this kind and drops the connection
+    /// unanswered; nothing is queued or committed either way.
+    Features,
 }
+/// The broker applies `Publish.lifecycle` with the append.
+pub(super) const PUBLISH_LIFECYCLE: &str = "publish_lifecycle";
+/// How long a publisher trusts a probe that found an earlier broker before it
+/// asks again, so a restarted network agent is noticed without a server restart.
+const PREVIOUS_BROKER_RECHECK: Duration = Duration::from_secs(60);
 fn serialize_auth<S: serde::Serializer>(
     auth: &ChannelAuthResponse,
     serializer: S,
@@ -122,6 +133,9 @@ pub(super) enum Response {
     /// The publish targets a stream with a retained close marker.
     StreamClosed,
     Rejected,
+    Features {
+        features: Vec<String>,
+    },
 }
 
 /// The broker refused a publish because its stream is closed: a final answer,
@@ -149,6 +163,9 @@ pub(super) enum Reply {
 #[derive(Clone)]
 pub struct Client {
     socket: PathBuf,
+    /// Whether the broker takes the lifecycle with a publish, and when an
+    /// answer of "no" was observed. A "yes" holds for the client's lifetime.
+    publish_lifecycle: Arc<Mutex<Option<(bool, Instant)>>>,
 }
 impl Client {
     pub(crate) async fn sign_invocation(
@@ -173,7 +190,47 @@ impl Client {
         }
     }
     pub fn new(socket: PathBuf) -> Self {
-        Self { socket }
+        Self {
+            socket,
+            publish_lifecycle: Arc::default(),
+        }
+    }
+    /// Whether `Publish.lifecycle` reaches this broker. The network agent is a
+    /// separate process that a server upgrade does not restart, so a broker from
+    /// the previous release may still serve this socket; it rejects the unknown
+    /// field, and the publisher then syncs the lifecycle before the publish.
+    async fn carries_publish_lifecycle(&self) -> io::Result<bool> {
+        let known = *self
+            .publish_lifecycle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match known {
+            Some((true, _)) => return Ok(true),
+            Some((false, at)) if at.elapsed() < PREVIOUS_BROKER_RECHECK => return Ok(false),
+            _ => (),
+        }
+        let supported = match self.request(Request::Features).await {
+            Ok((_, Response::Features { features })) => {
+                features.iter().any(|feature| feature == PUBLISH_LIFECYCLE)
+            }
+            Ok(_) => false,
+            // The previous broker reads the whole frame, fails to parse it, and
+            // closes the connection without an answer.
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::UnexpectedEof | io::ErrorKind::ConnectionReset
+                ) =>
+            {
+                false
+            }
+            Err(error) => return Err(error),
+        };
+        *self
+            .publish_lifecycle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some((supported, Instant::now()));
+        Ok(supported)
     }
     async fn request(&self, request: Request) -> io::Result<(UnixStream, Response)> {
         tokio::time::timeout(IO_TIMEOUT, async {
@@ -219,8 +276,16 @@ impl Client {
         channel: String,
         payload: ChannelPublishPayload,
         ephemeral: bool,
-        lifecycle: Option<ChannelLifecycle>,
+        mut lifecycle: Option<ChannelLifecycle>,
     ) -> io::Result<ChannelMessage> {
+        if lifecycle.is_some() && !self.carries_publish_lifecycle().await? {
+            // The previous sequence: the lifecycle is applied even when the
+            // publish is then refused.
+            if let Some(lifecycle) = lifecycle.take() {
+                self.sync_channel(app.clone(), channel.clone(), lifecycle.auth())
+                    .await?;
+            }
+        }
         match self
             .request(Request::Publish {
                 app,
@@ -365,6 +430,13 @@ where
                 Err(_) => Response::Rejected,
             },
             None => Response::Rejected,
+        };
+        let _admission = tokio::time::timeout_at(deadline, replies.wait(wire::MAX_FRAME)).await??;
+        return tokio::time::timeout_at(deadline, wire::write(&mut stream, &response)).await?;
+    }
+    if matches!(request.value, Request::Features) {
+        let response = Response::Features {
+            features: vec![PUBLISH_LIFECYCLE.into()],
         };
         let _admission = tokio::time::timeout_at(deadline, replies.wait(wire::MAX_FRAME)).await??;
         return tokio::time::timeout_at(deadline, wire::write(&mut stream, &response)).await?;
