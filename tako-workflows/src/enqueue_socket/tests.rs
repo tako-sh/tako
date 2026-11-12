@@ -94,6 +94,77 @@ fn network_calls_authenticate_the_caller_before_resolving_the_destination() {
     );
 }
 
+#[test]
+fn channel_publish_passes_the_stream_params_and_build_to_the_publisher() {
+    let lookup = lookup_for(Default::default());
+    let auth: PeerAuthFn = Arc::new(|app, _| {
+        if app == "web" {
+            Ok(())
+        } else {
+            Err("caller mismatch".into())
+        }
+    });
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed = seen.clone();
+    let publish: ChannelPublishFn = Arc::new(move |request| {
+        observed.lock().unwrap().push((
+            request.app.to_owned(),
+            request.channel.to_owned(),
+            request.params.clone(),
+            request.build.map(str::to_owned),
+            request.payload,
+        ));
+        Ok(serde_json::json!({"id": "1"}))
+    });
+    let payload = serde_json::json!({"type": "msg", "data": 1});
+    let command = |app: &str, extra: serde_json::Value| -> Command {
+        let mut command = serde_json::json!({
+            "command": "channel_publish", "app": app, "channel": "chat", "payload": payload,
+        });
+        command
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        serde_json::from_value(command).unwrap()
+    };
+    let bound = serde_json::json!({"params": {"room": "a"}, "build": "v1"});
+    for (app, extra, accepted) in [
+        ("web", bound.clone(), true),
+        // Unparameterized channels send neither field.
+        ("web", serde_json::json!({}), true),
+        ("other", bound, false),
+    ] {
+        let response = handle_command(
+            &lookup,
+            Some(&publish),
+            Some(&auth),
+            Some(1001),
+            None,
+            command(app, extra),
+        );
+        assert_eq!(response.data().is_some(), accepted, "{app}");
+    }
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![
+            (
+                "web".to_owned(),
+                "chat".to_owned(),
+                serde_json::json!({"room": "a"}),
+                Some("v1".to_owned()),
+                payload.clone(),
+            ),
+            (
+                "web".to_owned(),
+                "chat".to_owned(),
+                serde_json::Value::Null,
+                None,
+                payload.clone(),
+            ),
+        ]
+    );
+}
+
 #[tokio::test]
 async fn internal_socket_is_group_accessible_for_app_processes() {
     use std::os::unix::fs::PermissionsExt;

@@ -38,21 +38,7 @@ pub(super) fn websocket_origin_matches(request: &RequestHeader, is_https: bool) 
     origin.origin() == expected.origin()
 }
 
-pub(super) fn channel_params_query(query: Option<&str>) -> String {
-    let Some(query) = query else {
-        return String::new();
-    };
-
-    query
-        .split('&')
-        .filter(|pair| {
-            let key = pair.split_once('=').map_or(*pair, |(key, _)| key);
-            key != "last_message_id"
-        })
-        .filter(|pair| !pair.is_empty())
-        .collect::<Vec<_>>()
-        .join("&")
-}
+pub(super) use tako_channels::params::channel_params_query;
 
 pub(super) fn auth_scheme_requires_declared_credentials(scheme: &ChannelAuthScheme) -> bool {
     matches!(

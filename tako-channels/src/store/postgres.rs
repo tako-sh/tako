@@ -3,7 +3,12 @@ use parking_lot::Mutex;
 
 use crate::{ChannelAuthResponse, ChannelError, ChannelMessage, ChannelPublishPayload};
 
-use super::{channel_message_from_row, now_unix_ms, resolve_replay_cursor};
+use super::{IDLE_STREAM_GRACE_MS, channel_message_from_row, now_unix_ms, resolve_replay_cursor};
+
+/// Newest allocated message id. A stream is born caught up with the store, so a
+/// cursor issued before earlier bookkeeping was released is stale.
+const BORN_AT_SQL: &str = "COALESCE(pg_sequence_last_value(
+    pg_get_serial_sequence('{schema}.channel_messages', 'id')::regclass), 0)";
 
 pub(super) struct PostgresChannelStore {
     pub(super) client: Mutex<Client>,
@@ -59,8 +64,9 @@ impl PostgresChannelStore {
         )
         .map_err(|e| ChannelError::Storage(e.to_string()))?;
         tx.execute(&format!(
-            "INSERT INTO {}.channel_metadata (app_id, channel, replay_window_ms, inactivity_ttl_ms, keepalive_interval_ms, max_connection_lifetime_ms, last_activity_unix_ms)
-             VALUES ($1, $2, 600000, 0, 25000, 7200000, $3) ON CONFLICT(app_id, channel) DO NOTHING", self.schema
+            "INSERT INTO {schema}.channel_metadata (app_id, channel, replay_window_ms, inactivity_ttl_ms, keepalive_interval_ms, max_connection_lifetime_ms, last_activity_unix_ms, latest_message_id, highest_deleted_message_id)
+             VALUES ($1, $2, 600000, 0, 25000, 7200000, $3, {born}, {born}) ON CONFLICT(app_id, channel) DO NOTHING",
+            schema = self.schema, born = self.born_at(),
         ), &[&self.app_id, &channel, &now_unix_ms()]).map_err(|e| ChannelError::Storage(e.to_string()))?;
         tx.execute(
             &format!(
@@ -176,23 +182,30 @@ impl PostgresChannelStore {
             .map_err(|e| ChannelError::Storage(e.to_string()))?;
         client
             .execute(
+                // The stored connection lifetime only grows: idle cleanup must
+                // outwait the longest connection any grant allowed on this stream.
                 &format!(
-                    "INSERT INTO {}.channel_metadata (
+                    "INSERT INTO {schema}.channel_metadata AS metadata (
                         app_id,
                         channel,
                         replay_window_ms,
                         inactivity_ttl_ms,
                         keepalive_interval_ms,
                         max_connection_lifetime_ms,
-                        last_activity_unix_ms
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                        last_activity_unix_ms,
+                        latest_message_id,
+                        highest_deleted_message_id
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, {born}, {born})
                     ON CONFLICT(app_id, channel) DO UPDATE SET
                         replay_window_ms = excluded.replay_window_ms,
                         inactivity_ttl_ms = excluded.inactivity_ttl_ms,
                         keepalive_interval_ms = excluded.keepalive_interval_ms,
-                        max_connection_lifetime_ms = excluded.max_connection_lifetime_ms,
+                        max_connection_lifetime_ms = GREATEST(
+                            metadata.max_connection_lifetime_ms,
+                            excluded.max_connection_lifetime_ms),
                         last_activity_unix_ms = excluded.last_activity_unix_ms",
-                    self.schema
+                    schema = self.schema,
+                    born = self.born_at(),
                 ),
                 &[
                     &self.app_id,
@@ -259,9 +272,31 @@ impl PostgresChannelStore {
             &[&self.app_id, &now],
         )
         .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        // Release the bookkeeping of streams that retain no messages and can
+        // have no subscriber: every connection syncs its stream when it starts
+        // and ends within the stream's connection lifetime, on any server.
+        tx.execute(
+            &format!(
+                "DELETE FROM {schema}.channel_metadata AS metadata
+                 WHERE metadata.app_id = $1
+                   AND metadata.last_activity_unix_ms
+                       < $2 - metadata.max_connection_lifetime_ms - $3
+                   AND NOT EXISTS (
+                       SELECT 1 FROM {schema}.channel_messages AS messages
+                       WHERE messages.app_id = metadata.app_id
+                         AND messages.channel = metadata.channel)",
+                schema = self.schema,
+            ),
+            &[&self.app_id, &now, &IDLE_STREAM_GRACE_MS],
+        )
+        .map_err(|e| ChannelError::Storage(e.to_string()))?;
         tx.commit()
             .map_err(|e| ChannelError::Storage(e.to_string()))?;
         Ok(())
+    }
+
+    fn born_at(&self) -> String {
+        BORN_AT_SQL.replace("{schema}", &self.schema)
     }
 }
 
@@ -539,9 +574,10 @@ mod integration_tests {
             store.read_after("a", Some(id(&unseen)), 1).unwrap(),
             vec![head.clone()]
         );
+        // Inactive for longer than its TTL, but not for a whole connection lifetime.
         store.client.lock().execute(
-            &format!("UPDATE {}.channel_metadata SET inactivity_ttl_ms = 1, last_activity_unix_ms = 0 WHERE app_id = 'one' AND channel = 'a'", db.schema),
-            &[],
+            &format!("UPDATE {}.channel_metadata SET inactivity_ttl_ms = 1, last_activity_unix_ms = $1 WHERE app_id = 'one' AND channel = 'a'", db.schema),
+            &[&(now_unix_ms() - 10_000)],
         ).unwrap();
         store.prune(now_unix_ms()).unwrap();
         assert!(
@@ -635,15 +671,22 @@ mod integration_tests {
                     Err(ChannelError::StaleCursor)
                 ));
             }
+            // A stream is born caught up with the store: only the position
+            // just before its first message resumes it.
             let fresh = append(&store, "fresh");
+            let born = id(&fresh) - 1;
             assert_eq!(
-                store.read_after("fresh", Some(0), 10).unwrap(),
+                store.read_after("fresh", Some(born), 10).unwrap(),
                 vec![fresh.clone()]
             );
+            assert!(matches!(
+                store.read_after("fresh", Some(born - 1), 10),
+                Err(ChannelError::StaleCursor)
+            ));
             drop(store);
             let reopened = db.open("one");
             assert_eq!(
-                reopened.read_after("fresh", Some(0), 10).unwrap(),
+                reopened.read_after("fresh", Some(born), 10).unwrap(),
                 vec![fresh]
             );
             assert_eq!(

@@ -59,12 +59,23 @@ pub struct AppHandlers {
 /// `None` if the app isn't registered.
 pub type AppLookup = Arc<dyn Fn(&str) -> Option<AppHandlers> + Send + Sync>;
 
+/// One `Command::ChannelPublish` from an authenticated app process. `channel`
+/// and `params` select the stream; `build` is the publisher's build, when it
+/// declared one.
+pub struct ChannelPublishRequest<'a> {
+    pub app: &'a str,
+    pub channel: &'a str,
+    pub params: &'a serde_json::Value,
+    pub build: Option<&'a str>,
+    pub payload: serde_json::Value,
+}
+
 /// Closure that appends a `ChannelPublishPayload` to an app's channel
 /// store. Returns the stored message as a JSON value on success, or an
 /// error string on failure. Abstracted this way so `tako-workflows`
 /// doesn't need a direct dep on `tako-channels`.
 pub type ChannelPublishFn =
-    Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync>;
+    Arc<dyn Fn(ChannelPublishRequest<'_>) -> Result<serde_json::Value, String> + Send + Sync>;
 
 /// When set, every command's `app` must be authorized for the connecting
 /// process uid (from `SO_PEERCRED`). Used in production so one app cannot
@@ -417,7 +428,11 @@ fn handle_command(
     // outside the workflow manager, so we hand the payload to the
     // caller-provided closure and skip the workflow app lookup.
     if let Command::ChannelPublish {
-        channel, payload, ..
+        channel,
+        params,
+        build,
+        payload,
+        ..
     } = cmd
     {
         let Some(publish) = channel_publish else {
@@ -425,7 +440,14 @@ fn handle_command(
                 "channel publish is not configured on this internal socket".to_string(),
             );
         };
-        return match publish(&app, &channel, payload) {
+        let request = ChannelPublishRequest {
+            app: &app,
+            channel: &channel,
+            params: &params,
+            build: build.as_deref(),
+            payload,
+        };
+        return match publish(request) {
             Ok(message) => Response::ok(message),
             Err(e) => Response::error(format!("channel publish failed: {e}")),
         };

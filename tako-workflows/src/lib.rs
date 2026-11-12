@@ -28,8 +28,8 @@ pub use dispatcher::{DispatchSignal, WorkDispatcher};
 pub use enqueue::{DEFAULT_RETENTION_MS, POSTGRES_WORKFLOWS_SCHEMA, RunsDb, WorkflowStoreConfig};
 #[allow(unused_imports)]
 pub use enqueue_socket::{
-    AppHandlers, AppLookup, ChannelPublishFn, EnqueueSocketHandle, HealthCheck, OnClaimed,
-    OnEnqueue, PeerAuthFn, spawn as spawn_enqueue_socket,
+    AppHandlers, AppLookup, ChannelPublishFn, ChannelPublishRequest, EnqueueSocketHandle,
+    HealthCheck, OnClaimed, OnEnqueue, PeerAuthFn, spawn as spawn_enqueue_socket,
 };
 #[allow(unused_imports)]
 pub use in_flight::InFlightLimiter;

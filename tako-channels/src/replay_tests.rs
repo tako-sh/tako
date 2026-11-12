@@ -118,7 +118,8 @@ fn replay_cursor_fences_database_stream_epoch_and_future() {
     for (store, stream, value) in [
         (&b, "events", cursor(&message)),
         (&a, "other", cursor(&message)),
-        (&a, "events", ReplayCursor::postgres(1)),
+        (&a, "events", ReplayCursor::unscoped(1)),
+        (&a, "events", ReplayCursor::postgres("events", 1)),
         (
             &a,
             "events",
@@ -130,10 +131,7 @@ fn replay_cursor_fences_database_stream_epoch_and_future() {
         (
             &a,
             "events",
-            ReplayCursor {
-                scope: Some(([0; 16], cursor(&message).scope.unwrap().1)),
-                ..cursor(&message)
-            },
+            ReplayCursor::sqlite([0; 16], "events", cursor(&message).position),
         ),
     ] {
         assert!(matches!(

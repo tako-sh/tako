@@ -213,17 +213,27 @@ impl Default for ChannelLifecycle {
     }
 }
 
-impl ChannelDefinitionMeta {
-    pub fn lifecycle_auth(&self) -> ChannelAuthResponse {
+impl ChannelLifecycle {
+    /// The lifecycle as an anonymous grant, the shape stores sync.
+    pub fn auth(&self) -> ChannelAuthResponse {
         ChannelAuthResponse {
             ok: true,
             subject: None,
+            transport: None,
+            ephemeral: self.ephemeral,
+            replay_window_ms: self.replay_window_ms,
+            inactivity_ttl_ms: self.inactivity_ttl_ms,
+            keepalive_interval_ms: self.keepalive_interval_ms,
+            max_connection_lifetime_ms: self.max_connection_lifetime_ms,
+        }
+    }
+}
+
+impl ChannelDefinitionMeta {
+    pub fn lifecycle_auth(&self) -> ChannelAuthResponse {
+        ChannelAuthResponse {
             transport: self.transport.clone(),
-            ephemeral: self.lifecycle.ephemeral,
-            replay_window_ms: self.lifecycle.replay_window_ms,
-            inactivity_ttl_ms: self.lifecycle.inactivity_ttl_ms,
-            keepalive_interval_ms: self.lifecycle.keepalive_interval_ms,
-            max_connection_lifetime_ms: self.lifecycle.max_connection_lifetime_ms,
+            ..self.lifecycle.auth()
         }
     }
 }

@@ -14,6 +14,8 @@ use sqlite::SqliteChannelStore;
 pub use sqlite::SqliteReplayLimits;
 
 const CHANNELS_DB_FILENAME: &str = "channels.sqlite";
+/// A connection may outlive its lifetime by the time its last frames take.
+const IDLE_STREAM_GRACE_MS: i64 = 60_000;
 pub const POSTGRES_CHANNELS_SCHEMA: &str = "tako_channels";
 use crate::mesh::{DeliveryState, notify_committed};
 use crate::{ChannelEvent, ChannelPublication, RemoteIngest};
@@ -173,9 +175,10 @@ impl ChannelStore {
 
     /// Subscribe before reading replay so changes racing with the read remain visible.
     pub fn changes(&self, channel: &str) -> tokio::sync::watch::Receiver<Option<i64>> {
-        self.delivery
-            .changes
-            .lock()
+        let mut changes = self.delivery.changes.lock();
+        // Readers without a maintenance worker release finished streams here.
+        changes.retain(|_, sender| sender.receiver_count() > 0);
+        changes
             .entry(channel.to_owned())
             .or_insert_with(|| tokio::sync::watch::channel(None).0)
             .subscribe()
@@ -431,7 +434,7 @@ impl ChannelStore {
                     return Err(crate::ephemeral::unsupported());
                 }
                 (
-                    store.append(channel, payload)?,
+                    scope_postgres_id(channel, store.append(channel, payload)?)?,
                     ChannelPublication::Wake {
                         channel: channel.into(),
                     },
@@ -532,11 +535,17 @@ impl ChannelStore {
     ) -> Result<Vec<ChannelMessage>, ChannelError> {
         match self.backend.as_ref() {
             ChannelStoreBackend::Sqlite(store) => store.read_after(channel, after, limit),
-            ChannelStoreBackend::Postgres(store) => store.read_after(
-                channel,
-                after.map(ReplayCursor::pg_position).transpose()?,
-                limit,
-            ),
+            ChannelStoreBackend::Postgres(store) => store
+                .read_after(
+                    channel,
+                    after
+                        .map(|cursor| cursor.pg_position(channel))
+                        .transpose()?,
+                    limit,
+                )?
+                .into_iter()
+                .map(|message| scope_postgres_id(channel, message))
+                .collect(),
         }
     }
 
@@ -550,9 +559,11 @@ impl ChannelStore {
             ChannelStoreBackend::Postgres(store) => store
                 .replay_cursor(
                     channel,
-                    requested.map(ReplayCursor::pg_position).transpose()?,
+                    requested
+                        .map(|cursor| cursor.pg_position(channel))
+                        .transpose()?,
                 )
-                .map(|cursor| cursor.map(ReplayCursor::postgres)),
+                .map(|cursor| cursor.map(|position| ReplayCursor::postgres(channel, position))),
         }
     }
 
@@ -591,6 +602,19 @@ pub(super) fn resolve_replay_cursor(
         return Err(ChannelError::StaleCursor);
     }
     Ok(Some(requested))
+}
+
+/// PostgreSQL rows carry bare positions; clients get stream-bound cursors.
+fn scope_postgres_id(
+    channel: &str,
+    mut message: ChannelMessage,
+) -> Result<ChannelMessage, ChannelError> {
+    let position = message
+        .id
+        .parse::<i64>()
+        .map_err(|e| ChannelError::Storage(e.to_string()))?;
+    message.id = ReplayCursor::postgres(channel, position).to_string();
+    Ok(message)
 }
 
 pub(super) fn channel_message_from_row(
@@ -679,6 +703,31 @@ mod ordering_tests {
 #[cfg(test)]
 mod notification_tests {
     use super::*;
+
+    #[test]
+    fn fanout_state_is_released_with_the_last_subscriber_of_a_stream() {
+        // Readers of a broker-owned database run no maintenance worker.
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("channels.sqlite");
+        let _writer = ChannelStore::open(&path).unwrap();
+        let reader = ChannelStore::open_reader_config(ChannelStoreConfig::sqlite(&path)).unwrap();
+        let streams: Vec<crate::ChannelStream> = (0..100)
+            .map(|n| crate::ChannelStream::new("chat", &serde_json::json!({ "room": n })))
+            .collect();
+        let held = (reader.changes("kept"), reader.resets("kept"));
+        for stream in &streams {
+            let _subscriber = (
+                reader.changes(stream.key()),
+                reader.resets(stream.key()),
+                reader.subscribe_ephemeral(stream.key()).unwrap(),
+            );
+        }
+        // The next subscription releases every stream nobody listens to.
+        let _next = (reader.changes("next"), reader.resets("next"));
+        assert_eq!(reader.delivery.changes.lock().len(), 2);
+        assert_eq!(reader.delivery.resets.lock().len(), 2);
+        drop(held);
+    }
 
     #[test]
     fn delayed_poll_or_publisher_cannot_regress_the_committed_head() {

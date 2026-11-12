@@ -19,13 +19,12 @@ use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::Session;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
-use tako_channels::ReplayCursor;
 use tako_channels::live_store::{
     STORE_CHANNEL_PREFIX, load_store, parse_store_route, serve_store_events_with_writer,
     store_scope, valid_store_name, validate_store_lifecycle, validate_store_query,
 };
 use tako_channels::params::{ParamsError, validate_query};
+use tako_channels::{ChannelStream, ReplayCursor};
 use ws::ChannelWebSocketAuth;
 
 mod drain;
@@ -233,6 +232,8 @@ impl TakoProxy {
             Ok(params) => params,
             Err(error) => return self.write_channel_error(session, error).await,
         };
+        // Validated params select the stream; the app authorizes the public name.
+        let stream = ChannelStream::new(&route.channel, &params);
 
         let is_websocket = session.as_downstream().is_upgrade_req();
         let request_headers = request_headers_to_map(session.req_header());
@@ -323,7 +324,7 @@ impl TakoProxy {
                     .write_channel_websocket(
                         session,
                         &store,
-                        &route.channel,
+                        &stream,
                         query_cursor,
                         presence_params,
                         auth_mode,
@@ -361,7 +362,7 @@ impl TakoProxy {
                 .write_channel_websocket(
                     session,
                     &store,
-                    &route.channel,
+                    &stream,
                     query_cursor,
                     presence_params,
                     ChannelWebSocketAuth::Authorized(auth_result),
@@ -440,7 +441,7 @@ impl TakoProxy {
             )
             .await;
         }
-        if let Err(error) = store.sync_channel_async(&route.channel, &auth_result).await {
+        if let Err(error) = store.sync_channel_async(stream.key(), &auth_result).await {
             ctx.observation.set_handler_result("error");
             return self.write_channel_error(session, error).await;
         }
@@ -456,7 +457,7 @@ impl TakoProxy {
                 .await;
         }
         if auth_result.ephemeral {
-            let events = match store.subscribe_ephemeral(&route.channel) {
+            let events = match store.subscribe_ephemeral(stream.key()) {
                 Ok(events) => events,
                 Err(error) => return self.write_channel_error(session, error).await,
             };
@@ -468,7 +469,8 @@ impl TakoProxy {
                 .write_response_header(Box::new(header), false)
                 .await?;
             ctx.observation.set_handler_result("sse");
-            return tako_channels::ephemeral::serve_events(session, events, &auth_result).await;
+            return tako_channels::ephemeral::serve_events(session, events, &auth_result, &stream)
+                .await;
         }
         let cursor = match parse_message_id_cursor(
             session
@@ -484,8 +486,8 @@ impl TakoProxy {
                 return self.write_channel_error(session, error).await;
             }
         };
-        let resets = store.resets(&route.channel);
-        let cursor = match store.replay_cursor_async(&route.channel, cursor).await {
+        let resets = store.resets(stream.key());
+        let cursor = match store.replay_cursor_async(stream.key(), cursor).await {
             Ok(cursor) => cursor,
             Err(error) => return self.write_channel_error(session, error).await,
         };
@@ -493,7 +495,7 @@ impl TakoProxy {
         self.write_channel_events(
             session,
             store.store(),
-            &route.channel,
+            &stream,
             cursor,
             &auth_result,
             resets,

@@ -327,13 +327,13 @@ mod tests {
                 .unwrap();
         assert_eq!(
             parsed.last_message_id,
-            Some(crate::ReplayCursor::postgres(42))
+            Some(crate::ReplayCursor::unscoped(42))
         );
 
         let parsed = parse_first_frame(r#"{"type":"tako.auth","lastMessageId":43}"#).unwrap();
         assert_eq!(
             parsed.last_message_id,
-            Some(crate::ReplayCursor::postgres(43))
+            Some(crate::ReplayCursor::unscoped(43))
         );
     }
 

@@ -124,28 +124,9 @@ pub fn parse_store_route(path: &str) -> std::result::Result<Option<String>, Chan
 /// The registry and verifier use the base name; storage uses this opaque,
 /// bounded key. Numeric query coercion may produce 1.0 where an SDK sends 1.
 pub fn store_scope(channel: &str, params: &Value) -> String {
-    fn normalize(value: &mut Value) {
-        match value {
-            Value::Object(object) => object.values_mut().for_each(normalize),
-            Value::Array(values) => values.iter_mut().for_each(normalize),
-            Value::Number(number) if number.is_f64() => {
-                let value = number.as_f64().expect("JSON numbers are finite");
-                if value.fract() == 0.0 {
-                    if value >= i64::MIN as f64 && value < i64::MAX as f64 {
-                        *number = (value as i64).into();
-                    } else if value >= 0.0 && value < u64::MAX as f64 {
-                        *number = (value as u64).into();
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    let mut params = params.clone();
-    normalize(&mut params);
     format!(
         "{STORE_CHANNEL_PREFIX}{}",
-        crate::presence_scope(channel, &params)
+        crate::stream::params_scope(channel, params)
     )
 }
 

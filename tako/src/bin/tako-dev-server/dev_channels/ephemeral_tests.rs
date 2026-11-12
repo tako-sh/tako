@@ -1,6 +1,7 @@
 use super::*;
 use pingora_core::protocols::l4::stream::Stream;
 use serde_json::json;
+use std::time::Duration;
 use tokio::net::TcpListener;
 
 #[tokio::test]
@@ -68,15 +69,12 @@ async fn subscription_uses_registry_mode_before_first_publish() {
     let message = dev_store
         .publish(
             &app_id,
-            "progress",
-            &ChannelPublishPayload {
-                r#type: "progress".into(),
-                data: json!(42),
-            },
-            Some(tako_channels::ChannelLifecycle {
-                ephemeral: true,
-                ..Default::default()
-            }),
+            &TrustedPublication::parse(
+                "progress",
+                &serde_json::Value::Null,
+                json!({"type": "progress", "data": 42, "lifecycle": {"ephemeral": true}}),
+            )
+            .unwrap(),
         )
         .unwrap();
     assert!(message.id.is_empty());

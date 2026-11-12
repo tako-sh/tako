@@ -112,9 +112,77 @@ pub(crate) async fn fetch_channel_registry(
     }
 }
 
+/// Bind a server-side publish to its stream. When the publisher's build has a
+/// loaded channel registry, its params are checked like subscribe params, so a
+/// mistyped binding fails instead of starting a stream nobody reads. Publishing
+/// never loads the registry: that would wait on, or wake, an app instance.
+pub(crate) fn trusted_publication(
+    registry: &registry::ChannelRegistry,
+    request: tako_workflows::ChannelPublishRequest<'_>,
+) -> Result<TrustedPublication, ChannelError> {
+    let publication = TrustedPublication::parse(request.channel, request.params, request.payload)?;
+    if let Some(definition) = request
+        .build
+        .and_then(|build| registry.cached(request.app, build, request.channel))
+    {
+        validate_publish_params(&definition, request.params)?;
+    }
+    Ok(publication)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn trusted_publications_check_params_against_the_publishers_loaded_build() {
+        let registry = registry::ChannelRegistry::new();
+        let definition: ChannelDefinitionMeta = serde_json::from_value(serde_json::json!({
+            "channel": "chat",
+            "paramsSchema": {
+                "type": "object",
+                "properties": {"room": {"type": "string"}},
+                "required": ["room"],
+                "additionalProperties": false
+            },
+            "auth": false
+        }))
+        .unwrap();
+        registry
+            .get_or_load("app/production", "v1", "chat", || async {
+                Ok(vec![definition])
+            })
+            .await
+            .unwrap();
+        let publish = |params: serde_json::Value, build: Option<&str>| {
+            trusted_publication(
+                &registry,
+                tako_workflows::ChannelPublishRequest {
+                    app: "app/production",
+                    channel: "chat",
+                    params: &params,
+                    build,
+                    payload: serde_json::json!({"type": "msg", "data": 1}),
+                },
+            )
+        };
+        let bound = publish(serde_json::json!({"room": "a"}), Some("v1")).unwrap();
+        assert_eq!(
+            bound.stream,
+            ChannelStream::new("chat", &serde_json::json!({"room": "a"}))
+        );
+        for params in [serde_json::json!({"rom": "a"}), serde_json::Value::Null] {
+            assert!(matches!(
+                publish(params, Some("v1")),
+                Err(ChannelError::BadRequest(_))
+            ));
+        }
+        // Without a loaded registry for the publisher's build, the shape is
+        // still checked but the schema is not.
+        assert!(publish(serde_json::json!({"rom": "a"}), Some("v2")).is_ok());
+        assert!(publish(serde_json::json!({"rom": "a"}), None).is_ok());
+        assert!(publish(serde_json::json!(["a"]), None).is_err());
+    }
 
     #[test]
     fn channel_db_path_is_scoped_by_deployment_environment() {

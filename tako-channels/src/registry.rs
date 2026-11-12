@@ -69,6 +69,19 @@ impl ChannelRegistry {
             .ok_or(ChannelError::NotDefined)
     }
 
+    /// A definition from an already loaded registry of exactly this build.
+    /// Never loads: publishers must not wait for, or wake, an app instance.
+    pub fn cached(&self, app: &str, build: &str, channel: &str) -> Option<ChannelDefinitionMeta> {
+        let cell = self
+            .by_app
+            .read()
+            .get(app)?
+            .iter()
+            .find(|(version, _)| version == build)
+            .map(|(_, cell)| cell.clone())?;
+        cell.get()?.get(channel).cloned()
+    }
+
     pub fn invalidate(&self, app: &str) {
         self.by_app.write().remove(app);
     }
@@ -154,6 +167,25 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(registry.by_app.read()["app"].len(), 2);
+    }
+
+    #[tokio::test]
+    async fn cached_definitions_are_exact_to_a_loaded_build() {
+        let registry = ChannelRegistry::new();
+        assert!(registry.cached("app", "v1", "chat").is_none());
+        registry
+            .get_or_load("app", "v1", "chat", || async { Ok(vec![meta("chat")]) })
+            .await
+            .unwrap();
+        assert_eq!(
+            registry.cached("app", "v1", "chat").unwrap().channel,
+            "chat"
+        );
+        assert!(registry.cached("app", "v1", "other").is_none());
+        assert!(registry.cached("app", "v2", "chat").is_none());
+        assert!(registry.cached("other", "v1", "chat").is_none());
+        registry.invalidate("app");
+        assert!(registry.cached("app", "v1", "chat").is_none());
     }
 
     #[tokio::test]

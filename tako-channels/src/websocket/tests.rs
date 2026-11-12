@@ -35,7 +35,7 @@ async fn presence_websockets_isolate_chats_and_track_verified_tabs() {
                 let _ = serve(
                     &mut session,
                     &store,
-                    "tako.presence:chat",
+                    &crate::ChannelStream::new("tako.presence:chat", &params),
                     None,
                     auth,
                     params,
@@ -142,8 +142,8 @@ async fn ephemeral_websockets_publish_live_without_replaying_old_events() {
                 let _ = serve(
                     &mut session,
                     &store,
-                    "live",
-                    Some(crate::ReplayCursor::postgres(-100)),
+                    &crate::ChannelStream::new("live", &json!({})),
+                    Some(crate::ReplayCursor::unscoped(-100)),
                     auth,
                     json!({}),
                     Default::default(),
@@ -207,8 +207,8 @@ async fn ephemeral_duplex_websockets_preserve_identity_without_replaying_old_eve
                 serve(
                     &mut session,
                     &server_store,
-                    "live",
-                    Some(crate::ReplayCursor::postgres(-100)),
+                    &crate::ChannelStream::new("live", &json!({})),
+                    Some(crate::ReplayCursor::unscoped(-100)),
                     serde_json::from_value(json!({"ok":true,"ephemeral":true,"transport":"ws"})).unwrap(),
                     json!({}),
                     Default::default(),

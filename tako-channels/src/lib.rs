@@ -10,9 +10,14 @@ pub use presence::{PRESENCE_CHANNEL_PREFIX, PresenceMember, PresenceSession, pre
 pub mod close_codes;
 pub mod error_codes;
 pub mod params;
+mod publication;
+pub use publication::{TrustedPublication, validate_publish_params};
 pub mod registry;
 mod routing;
+pub mod sse;
 mod store;
+mod stream;
+pub use stream::{ChannelStream, STREAM_CHANNEL_PREFIX, reserved_stream_name};
 mod types;
 mod writer;
 pub use writer::{ChannelWriter, LocalChannelWriter};
@@ -55,3 +60,6 @@ mod mesh_tests;
 
 #[cfg(test)]
 mod history_tests;
+
+#[cfg(test)]
+mod stream_tests;

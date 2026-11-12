@@ -41,7 +41,7 @@ fn replay_expires_without_subscribers_or_further_publishes() {
         last.id.parse().ok()
     );
     assert!(matches!(
-        store.replay_cursor("unknown", Some(ReplayCursor::postgres(1))),
+        store.replay_cursor("unknown", Some(ReplayCursor::unscoped(1))),
         Err(ChannelError::StaleCursor)
     ));
 }
@@ -54,6 +54,11 @@ fn parse_channel_route_rejects_invalid_paths() {
     ));
     assert!(matches!(
         parse_channel_route("/_tako/channels/chat/messages"),
+        Err(ChannelError::InvalidPath)
+    ));
+    // Stream keys are internal storage names, never routes.
+    assert!(matches!(
+        parse_channel_route("/_tako/channels/tako.stream%3Aabc"),
         Err(ChannelError::InvalidPath)
     ));
     assert!(parse_channel_route("/channels/chat").unwrap().is_none());
@@ -78,7 +83,7 @@ fn parse_channel_route_decodes_percent_encoded_segment() {
 #[test]
 fn parse_ws_last_message_id_reads_cursor() {
     let after = parse_ws_last_message_id(Some("last_message_id=42&noop=1")).unwrap();
-    assert_eq!(after, Some(ReplayCursor::postgres(42)));
+    assert_eq!(after, Some(ReplayCursor::unscoped(42)));
 }
 
 #[test]
@@ -489,7 +494,7 @@ fn channel_store_rejects_stale_cursors() {
     store.raw_execute("DELETE FROM channel_messages WHERE id = 1", ());
 
     assert!(matches!(
-        store.replay_cursor("chat:room-123", Some(ReplayCursor::postgres(0))),
+        store.replay_cursor("chat:room-123", Some(ReplayCursor::unscoped(0))),
         Err(ChannelError::StaleCursor)
     ));
 }

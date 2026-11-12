@@ -7,7 +7,7 @@ use crate::{
     ChannelAuthResponse, ChannelError, ChannelMessage, ChannelPublishPayload, ReplayCursor,
 };
 
-use super::{channel_message_from_row, now_unix_ms};
+use super::{IDLE_STREAM_GRACE_MS, channel_message_from_row, now_unix_ms};
 use rusqlite::OptionalExtension;
 
 // Autoincrement message IDs start at one, so zero is the initial cursor.
@@ -292,34 +292,38 @@ impl SqliteChannelStore {
         channel: &str,
         auth: &ChannelAuthResponse,
     ) -> Result<(), ChannelError> {
-        let conn = self.conn.lock();
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let now = now_unix_ms();
-        conn.execute(
-            "INSERT INTO channel_metadata (
-                channel,
-                replay_window_ms,
-                inactivity_ttl_ms,
-                keepalive_interval_ms,
-                max_connection_lifetime_ms,
-                last_activity_unix_ms
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-            ON CONFLICT(channel) DO UPDATE SET
-                replay_window_ms = excluded.replay_window_ms,
-                inactivity_ttl_ms = excluded.inactivity_ttl_ms,
-                keepalive_interval_ms = excluded.keepalive_interval_ms,
-                max_connection_lifetime_ms = excluded.max_connection_lifetime_ms,
-                last_activity_unix_ms = excluded.last_activity_unix_ms",
-            rusqlite::params![
-                channel,
-                auth.replay_window_ms as i64,
-                auth.inactivity_ttl_ms as i64,
-                auth.keepalive_interval_ms as i64,
-                auth.max_connection_lifetime_ms as i64,
-                now,
-            ],
-        )
-        .map_err(storage_err)?;
-
+        let lifecycle = [
+            auth.replay_window_ms as i64,
+            auth.inactivity_ttl_ms as i64,
+            auth.keepalive_interval_ms as i64,
+            auth.max_connection_lifetime_ms as i64,
+        ];
+        if !ensure_stream(&tx, channel, lifecycle, now)? {
+            // The stored connection lifetime only grows: idle cleanup must
+            // outwait the longest connection any grant allowed on this stream.
+            tx.execute(
+                "UPDATE channel_metadata SET
+                    replay_window_ms = ?2,
+                    inactivity_ttl_ms = ?3,
+                    keepalive_interval_ms = ?4,
+                    max_connection_lifetime_ms = MAX(max_connection_lifetime_ms, ?5),
+                    last_activity_unix_ms = ?6
+                 WHERE channel = ?1",
+                rusqlite::params![
+                    channel,
+                    lifecycle[0],
+                    lifecycle[1],
+                    lifecycle[2],
+                    lifecycle[3],
+                    now
+                ],
+            )
+            .map_err(storage_err)?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -468,10 +472,12 @@ fn append_event(
         ));
     }
     let now = now_unix_ms();
-    tx.execute(
-        "INSERT INTO channel_metadata (channel, replay_window_ms, inactivity_ttl_ms, keepalive_interval_ms, max_connection_lifetime_ms, last_activity_unix_ms)
-         VALUES (?1, 600000, 0, 25000, 7200000, ?2)
-         ON CONFLICT(channel) DO UPDATE SET last_activity_unix_ms = excluded.last_activity_unix_ms", rusqlite::params![event.channel, now])?;
+    if !ensure_stream(tx, &event.channel, DEFAULT_STREAM_LIFECYCLE, now)? {
+        tx.execute(
+            "UPDATE channel_metadata SET last_activity_unix_ms = ?2 WHERE channel = ?1",
+            rusqlite::params![event.channel, now],
+        )?;
+    }
     tx.execute("INSERT INTO channel_messages (channel, type, data_json, created_at_unix_ms) VALUES (?1, ?2, ?3, ?4)",
         rusqlite::params![event.channel, event.payload.r#type, data_json, now])?;
     let id = tx.last_insert_rowid();
@@ -489,6 +495,71 @@ fn append_event(
     enforce_store_budget(tx, limits)?;
     message.id = ReplayCursor::sqlite(epoch, &event.channel, id).to_string();
     Ok(message)
+}
+
+/// Replay window, inactivity TTL, keepalive interval and connection lifetime of
+/// a stream first seen through a publish, in milliseconds.
+const DEFAULT_STREAM_LIFECYCLE: [i64; 4] = [600_000, 0, 25_000, 7_200_000];
+
+/// Start a stream's bookkeeping when it has none. A stream is born caught up
+/// with the store: its head and replay floor begin at the newest allocated
+/// message id. A cursor issued before earlier bookkeeping was released is then
+/// stale instead of resuming past messages it never saw.
+fn ensure_stream(
+    conn: &rusqlite::Connection,
+    channel: &str,
+    lifecycle: [i64; 4],
+    now: i64,
+) -> Result<bool, ChannelError> {
+    let born = conn.execute(
+        "INSERT INTO channel_metadata (
+            channel,
+            replay_window_ms,
+            inactivity_ttl_ms,
+            keepalive_interval_ms,
+            max_connection_lifetime_ms,
+            last_activity_unix_ms,
+            latest_message_id
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, COALESCE(
+            (SELECT seq FROM sqlite_sequence WHERE name = 'channel_messages'), 0))
+        ON CONFLICT(channel) DO NOTHING",
+        rusqlite::params![
+            channel,
+            lifecycle[0],
+            lifecycle[1],
+            lifecycle[2],
+            lifecycle[3],
+            now
+        ],
+    )? == 1;
+    if born {
+        conn.execute(
+            "INSERT INTO channel_replay_floor(channel, floor)
+             SELECT channel, latest_message_id FROM channel_metadata
+             WHERE channel = ?1 AND latest_message_id > 0
+             ON CONFLICT(channel) DO UPDATE SET floor = MAX(floor, excluded.floor)",
+            [channel],
+        )?;
+    }
+    Ok(born)
+}
+
+/// Release the bookkeeping of streams that retain no messages and can have no
+/// subscriber. Every connection syncs its stream when it starts and ends within
+/// the stream's connection lifetime, so activity older than that lifetime
+/// proves nobody is connected, in this process or any other.
+fn release_idle_streams(conn: &rusqlite::Connection, now: i64) -> Result<(), ChannelError> {
+    const IDLE: &str = "SELECT channel FROM channel_metadata WHERE message_count = 0
+        AND last_activity_unix_ms < ?1 - max_connection_lifetime_ms - ?2";
+    conn.execute(
+        &format!("DELETE FROM channel_replay_floor WHERE channel IN ({IDLE})"),
+        [now, IDLE_STREAM_GRACE_MS],
+    )?;
+    conn.execute(
+        &format!("DELETE FROM channel_metadata WHERE channel IN ({IDLE})"),
+        [now, IDLE_STREAM_GRACE_MS],
+    )?;
+    Ok(())
 }
 
 fn load_limits(conn: &rusqlite::Connection) -> Result<SqliteReplayLimits, ChannelError> {
@@ -667,6 +738,7 @@ fn prune_replay(
         deleted += enforce_stream_budget(conn, limits, &channel)?;
     }
     deleted += enforce_store_budget(conn, limits)?;
+    release_idle_streams(conn, now)?;
     Ok(deleted)
 }
 

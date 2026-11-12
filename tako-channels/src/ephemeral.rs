@@ -1,5 +1,5 @@
 //! Process-local, bounded live fanout. Nothing is retained without a subscriber.
-use crate::{ChannelAuthResponse, ChannelError, ChannelMessage};
+use crate::{ChannelAuthResponse, ChannelError, ChannelMessage, ChannelStream};
 use parking_lot::Mutex;
 use std::{
     collections::HashMap,
@@ -97,10 +97,12 @@ impl Drop for EphemeralSubscription {
 
 /// Writes a live SSE stream after subscription has been established.
 /// The caller writes response headers only after creating the subscription.
+/// `stream` is the stream `events` subscribed to; frames carry its public name.
 pub async fn serve_events(
     session: &mut pingora_proxy::Session,
     mut events: EphemeralSubscription,
     auth: &ChannelAuthResponse,
+    stream: &ChannelStream,
 ) -> pingora_core::Result<bool> {
     use bytes::Bytes;
     use std::time::Duration;
@@ -118,7 +120,8 @@ pub async fn serve_events(
                     session.write_response_body(None, true).await?;
                     return Ok(true);
                 };
-                let frame = format!("data: {}\n\n", serde_json::to_string(&*message).expect("JSON channel message"));
+                let message = stream.public((*message).clone());
+                let frame = format!("data: {}\n\n", serde_json::to_string(&message).expect("JSON channel message"));
                 session.write_response_body(Some(Bytes::from(frame)), false).await?;
             }
             _ = tokio::time::sleep(interval) => {
@@ -285,7 +288,14 @@ mod transport_tests {
                 serde_json::json!({"ok":true,"ephemeral":true,"maxConnectionLifetimeMs":100}),
             )
             .unwrap();
-            serve_events(&mut session, events, &auth).await.unwrap();
+            serve_events(
+                &mut session,
+                events,
+                &auth,
+                &ChannelStream::new("live", &serde_json::json!({})),
+            )
+            .await
+            .unwrap();
             sent
         });
         let response = reqwest::Client::new()
@@ -354,7 +364,14 @@ mod duplex_tests {
             let auth =
                 serde_json::from_value(serde_json::json!({"ok":true,"ephemeral":true})).unwrap();
             let server = tokio::spawn(async move {
-                serve_events(&mut session, events, &auth).await.unwrap();
+                serve_events(
+                    &mut session,
+                    events,
+                    &auth,
+                    &ChannelStream::new("live", &serde_json::json!({})),
+                )
+                .await
+                .unwrap();
             });
             let mut client = BufReader::new(client);
             let mut response = String::new();

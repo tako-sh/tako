@@ -34,6 +34,34 @@ pub fn validate_query(schema: &Value, query: &str) -> Result<Value, ParamsError>
     Ok(value)
 }
 
+/// The params part of a channel route's query. `last_message_id` is the
+/// WebSocket replay cursor, never a param.
+pub fn channel_params_query(query: Option<&str>) -> String {
+    let Some(query) = query else {
+        return String::new();
+    };
+
+    query
+        .split('&')
+        .filter(|pair| {
+            let key = pair.split_once('=').map_or(*pair, |(key, _)| key);
+            key != "last_message_id"
+        })
+        .filter(|pair| !pair.is_empty())
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+/// Validate already typed params, such as those of a server-side publish,
+/// against the same schema that query params are checked with.
+pub fn validate_value(schema: &Value, params: &Value) -> Result<(), ParamsError> {
+    let validator = jsonschema::draft202012::new(schema)
+        .map_err(|error| ParamsError::InvalidSchema(error.to_string()))?;
+    validator
+        .validate(params)
+        .map_err(|error| ParamsError::Invalid(error.to_string()))
+}
+
 fn decode_query_component(value: &str, label: &str) -> Result<String, ParamsError> {
     let plus_decoded = value.replace('+', " ");
     percent_decode_str(&plus_decoded)
@@ -115,6 +143,19 @@ mod tests {
         let schema = json!({ "type": "object" });
         let value = validate_query(&schema, "").unwrap();
         assert_eq!(value, json!({}));
+    }
+
+    #[test]
+    fn typed_params_use_the_query_schema_without_coercion() {
+        validate_value(&schema(), &json!({"roomId": "room-9", "limit": 10})).unwrap();
+        for params in [
+            json!({"limit": 10}),
+            json!({"roomId": "room-9", "limit": "10"}),
+            json!({"roomId": ""}),
+        ] {
+            let error = validate_value(&schema(), &params).unwrap_err();
+            assert!(matches!(error, ParamsError::Invalid(_)), "got {error:?}");
+        }
     }
 
     #[test]

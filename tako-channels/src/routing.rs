@@ -15,6 +15,9 @@ pub fn parse_channel_route(path: &str) -> Result<Option<ChannelRoute>, ChannelEr
         .decode_utf8()
         .map_err(|_| ChannelError::InvalidPath)?
         .into_owned();
+    if crate::reserved_stream_name(&channel) {
+        return Err(ChannelError::InvalidPath);
+    }
 
     Ok(Some(ChannelRoute { channel }))
 }

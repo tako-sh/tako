@@ -12,6 +12,8 @@ pub(super) struct FakeBroker {
     pub(super) calls: parking_lot::Mutex<Vec<&'static str>>,
     pub(super) reject: AtomicBool,
     pub(super) publishes: AtomicUsize,
+    /// Channel names publications reached the broker under.
+    pub(super) channels: parking_lot::Mutex<Vec<String>>,
 }
 impl FakeBroker {
     async fn stream(&self) -> DuplexStream {
@@ -58,6 +60,7 @@ impl BrokerLink for FakeBroker {
     ) -> io::Result<ChannelMessage> {
         self.calls.lock().push("publish");
         self.publishes.fetch_add(1, Ordering::SeqCst);
+        self.channels.lock().push(channel.clone());
         if self.reject.load(Ordering::SeqCst) {
             return Err(io::Error::other("offline"));
         }

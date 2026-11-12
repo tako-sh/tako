@@ -8,13 +8,12 @@ use pingora_http::ResponseHeader;
 use pingora_proxy::Session;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use tako_channels::live_store::{
     STORE_CHANNEL_PREFIX, authorize_store, load_store, parse_store_route, serve_store_events,
     store_scope, valid_store_name,
 };
 use tako_channels::{
-    ChannelAuthResponse, ChannelError, ChannelPublishPayload, ChannelStore, ReplayCursor,
+    ChannelAuthResponse, ChannelError, ChannelStore, ChannelStream, TrustedPublication,
     parse_channel_route, parse_message_id_cursor,
 };
 
@@ -65,37 +64,15 @@ impl DevChannelStore {
         store
     }
 
-    /// Append a message to `channel` and return the stored record. Used
-    /// from the internal socket's `Command::ChannelPublish` path (server-side
-    /// channel `.publish()` from app/workflow code).
+    /// Apply a server-side publication from the internal socket's
+    /// `Command::ChannelPublish` path (channel `.publish()` from app or
+    /// workflow code) to the stream its params select.
     pub fn publish(
         &self,
         app_id: &str,
-        channel: &str,
-        payload: &ChannelPublishPayload,
-        lifecycle: Option<tako_channels::ChannelLifecycle>,
+        publication: &TrustedPublication,
     ) -> Result<tako_channels::ChannelMessage, tako_channels::ChannelError> {
-        let store = self.store_for_app(app_id);
-        if lifecycle
-            .as_ref()
-            .is_some_and(|lifecycle| lifecycle.ephemeral)
-        {
-            return store.publish_ephemeral(channel, payload);
-        }
-        if let Some(lifecycle) = lifecycle {
-            store.sync_channel(
-                channel,
-                &ChannelAuthResponse {
-                    ephemeral: lifecycle.ephemeral,
-                    replay_window_ms: lifecycle.replay_window_ms,
-                    inactivity_ttl_ms: lifecycle.inactivity_ttl_ms,
-                    keepalive_interval_ms: lifecycle.keepalive_interval_ms,
-                    max_connection_lifetime_ms: lifecycle.max_connection_lifetime_ms,
-                    ..dev_auth_response()
-                },
-            )?;
-        }
-        store.append(channel, payload)
+        self.store_for_app(app_id).publish_trusted(publication)
     }
 }
 
@@ -128,24 +105,38 @@ pub async fn try_handle(
         None,
     )
     .await;
-    let auth = match definitions.and_then(|value| {
+    let definition = match definitions.and_then(|value| {
         serde_json::from_value::<Vec<tako_channels::ChannelDefinitionMeta>>(value)
             .map_err(|e| tako_channels::ChannelError::BadRequest(e.to_string()))
     }) {
         Ok(definitions) => definitions
-            .iter()
-            .find(|meta| meta.channel == route.channel)
-            .map(|meta| meta.lifecycle_auth())
-            .unwrap_or_else(dev_auth_response),
+            .into_iter()
+            .find(|meta| meta.channel == route.channel),
         Err(_) => {
             return write_json(session, 503, r#"{"error":"Channel metadata unavailable"}"#).await;
         }
     };
+    // Params are validated and coerced as in production, so dev subscribers
+    // bind the same stream a server-side publish with the same params reaches.
+    let schema = definition.as_ref().map_or_else(
+        || serde_json::json!({"type":"object"}),
+        |meta| meta.params_schema.clone(),
+    );
+    let query = tako_channels::params::channel_params_query(session.req_header().uri.query());
+    let params = match tako_channels::params::validate_query(&schema, &query) {
+        Ok(params) => params,
+        Err(_) => return write_json(session, 400, r#"{"error":"Invalid channel params"}"#).await,
+    };
+    let auth = definition
+        .as_ref()
+        .map(|meta| meta.lifecycle_auth())
+        .unwrap_or_else(dev_auth_response);
     serve_sse(
         session,
         dev_store,
         &target.channel_store_key,
-        &route.channel,
+        &ChannelStream::new(&route.channel, &params),
+        params,
         auth,
     )
     .await
@@ -254,7 +245,8 @@ async fn serve_sse(
     session: &mut Session,
     dev_store: &DevChannelStore,
     app_id: &str,
-    channel: &str,
+    stream: &ChannelStream,
+    params: serde_json::Value,
     auth: ChannelAuthResponse,
 ) -> Result<bool> {
     let dev_store = dev_store.clone();
@@ -265,15 +257,6 @@ async fn serve_sse(
             pingora_core::Error::explain(pingora_core::ErrorType::InternalError, error.to_string())
         })?;
     if session.as_downstream().is_upgrade_req() {
-        let params = match tako_channels::params::validate_query(
-            &serde_json::json!({"type":"object"}),
-            session.req_header().uri.query().unwrap_or_default(),
-        ) {
-            Ok(params) => params,
-            Err(_) => {
-                return write_json(session, 400, r#"{"error":"Invalid presence params"}"#).await;
-            }
-        };
         let header =
             tako_channels::websocket::build_websocket_upgrade_response(session.req_header())
                 .map_err(|e| {
@@ -288,7 +271,7 @@ async fn serve_sse(
         return tako_channels::websocket::serve(
             session,
             &store,
-            channel,
+            stream,
             None,
             auth,
             params,
@@ -298,16 +281,23 @@ async fn serve_sse(
     }
 
     let ephemeral = if auth.ephemeral {
-        Some(store.subscribe_ephemeral(channel).map_err(|e| {
+        Some(store.subscribe_ephemeral(stream.key()).map_err(|e| {
             pingora_core::Error::explain(pingora_core::ErrorType::InternalError, e.to_string())
         })?)
     } else {
         None
     };
-    let mut resets = store.resets(channel);
-    let mut after = if auth.ephemeral {
+    let resets = store.resets(stream.key());
+    let after = if auth.ephemeral {
         None
     } else {
+        // Start the stream's bookkeeping before resolving its head, as
+        // production does: a stream first created by a later publish would
+        // otherwise reset this subscriber's cursor.
+        if let Err(e) = store.sync_channel_async(stream.key(), &auth).await {
+            let msg = format!(r#"{{"error":"Failed to sync channel: {e}"}}"#);
+            return write_json(session, 500, &msg).await;
+        }
         let requested = match parse_message_id_cursor(
             session
                 .req_header()
@@ -321,7 +311,7 @@ async fn serve_sse(
                 return write_json(session, 400, r#"{"error":"Invalid replay cursor"}"#).await;
             }
         };
-        match store.replay_cursor_async(channel, requested).await {
+        match store.replay_cursor_async(stream.key(), requested).await {
             Ok(cursor) => cursor,
             Err(ChannelError::StaleCursor) => {
                 return write_json(session, 410, r#"{"error":"Replay history expired"}"#).await;
@@ -333,9 +323,6 @@ async fn serve_sse(
         }
     };
 
-    let keepalive_interval = Duration::from_millis(auth.keepalive_interval_ms.max(1));
-    let max_connection_lifetime = Duration::from_millis(auth.max_connection_lifetime_ms.max(1));
-
     let mut header = ResponseHeader::build(200, None)?;
     header.insert_header("Content-Type", "text/event-stream")?;
     header.insert_header("Cache-Control", "no-store")?;
@@ -346,105 +333,9 @@ async fn serve_sse(
         .await?;
 
     if let Some(events) = ephemeral {
-        return tako_channels::ephemeral::serve_events(session, events, &auth).await;
+        return tako_channels::ephemeral::serve_events(session, events, &auth, stream).await;
     }
-    let started = tokio::time::Instant::now();
-    let mut next_keepalive = started + keepalive_interval;
-    let mut changes = store.changes(channel);
-    let mut read_replay = true;
-
-    loop {
-        if resets.has_changed().unwrap_or(true) {
-            session
-                .write_response_body(Some("id:\nevent: tako.reset\ndata: {}\n\n".into()), true)
-                .await?;
-            return Ok(true);
-        }
-        if read_replay {
-            changes.borrow_and_update();
-            match store.read_after_async(channel, after, 100).await {
-                Ok(messages) => {
-                    read_replay = messages.len() == 100;
-                    if !messages.is_empty() {
-                        for message in messages {
-                            if resets.has_changed().unwrap_or(true) {
-                                session
-                                    .write_response_body(
-                                        Some("id:\nevent: tako.reset\ndata: {}\n\n".into()),
-                                        true,
-                                    )
-                                    .await?;
-                                return Ok(true);
-                            }
-                            let encoded = serde_json::to_string(&message).unwrap_or_default();
-                            let frame = format!("id: {}\ndata: {}\n\n", message.id, encoded);
-                            if session
-                                .write_response_body(Some(frame.into_bytes().into()), false)
-                                .await
-                                .is_err()
-                            {
-                                return Ok(true);
-                            }
-                            after = Some(
-                                message
-                                    .id
-                                    .parse::<ReplayCursor>()
-                                    .expect("stored channel cursor is valid"),
-                            );
-                        }
-                        next_keepalive = tokio::time::Instant::now() + keepalive_interval;
-                    }
-                }
-                Err(ChannelError::StaleCursor) => {
-                    session
-                        .write_response_body(
-                            Some("id:\nevent: tako.reset\ndata: {}\n\n".into()),
-                            true,
-                        )
-                        .await?;
-                    return Ok(true);
-                }
-                Err(error) => {
-                    return Err(pingora_core::Error::explain(
-                        pingora_core::ErrorType::InternalError,
-                        error.to_string(),
-                    ));
-                }
-            }
-        }
-
-        if started.elapsed() >= max_connection_lifetime {
-            session.write_response_body(None, true).await?;
-            return Ok(true);
-        }
-
-        let now = tokio::time::Instant::now();
-        if now >= next_keepalive {
-            if session
-                .write_response_body(
-                    Some(": keepalive\n\n".to_string().into_bytes().into()),
-                    false,
-                )
-                .await
-                .is_err()
-            {
-                return Ok(true);
-            }
-            next_keepalive = now + keepalive_interval;
-        }
-
-        if read_replay {
-            continue;
-        }
-        tokio::select! {
-            _ = resets.changed() => {
-                session.write_response_body(Some("id:\nevent: tako.reset\ndata: {}\n\n".into()), true).await?;
-                return Ok(true);
-            },
-            _ = changes.changed() => read_replay = true,
-            _ = tokio::time::sleep_until(next_keepalive.min(started + max_connection_lifetime)) => {}
-        }
-    }
+    tako_channels::sse::serve_events(session, &store, stream, after, &auth, resets).await
 }
 
 async fn write_json(session: &mut Session, status: u16, body: &str) -> Result<bool> {
@@ -468,9 +359,12 @@ mod store_tests;
 mod ephemeral_tests;
 
 #[cfg(test)]
+mod stream_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use tako_channels::parse_channel_route;
+    use tako_channels::{ChannelPublishPayload, parse_channel_route};
 
     #[test]
     fn parse_subscribe_path() {
@@ -547,17 +441,12 @@ mod tests {
     #[test]
     fn dev_channel_store_keeps_apps_in_separate_dbs() {
         let dev_store = DevChannelStore::new();
-        let payload = ChannelPublishPayload {
-            r#type: "message".to_string(),
-            data: serde_json::json!({"text": "hello"}),
-        };
+        let payload = serde_json::json!({"type": "message", "data": {"text": "hello"}});
 
-        let first = dev_store
-            .publish("app/one", "chat", &payload, None)
-            .unwrap();
-        let second = dev_store
-            .publish("app/two", "chat", &payload, None)
-            .unwrap();
+        let publication =
+            TrustedPublication::parse("chat", &serde_json::Value::Null, payload).unwrap();
+        let first = dev_store.publish("app/one", &publication).unwrap();
+        let second = dev_store.publish("app/two", &publication).unwrap();
 
         assert_eq!(position(&first.id), 1);
         assert_eq!(position(&second.id), 1);
