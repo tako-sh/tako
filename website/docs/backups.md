@@ -62,7 +62,7 @@ A database snapshot finds databases by their SQLite file header and captures eac
 
 `tako backups status` reports the latest database snapshot and the reason the latest attempt was skipped.
 
-A full archive first checks free disk: it needs three times the size of the data tree plus 512 MiB for its temporary copies. When a scheduled full archive fails, for this or any other reason, it is retried after 1 hour, then 2 and 4 hours, then every 6 hours until one succeeds; hourly database snapshots keep running meanwhile. When the backup index in storage cannot be read, no scheduled backup runs for the app; the index is read again after 10 minutes, backing off to hourly. `tako backups status` shows the failure and the next attempt. The scheduler keeps this backoff in memory and waits 10 minutes after a server start before its first check.
+A full archive first checks free disk: it needs three times the size of the data tree plus 512 MiB for its temporary copies, counting each file as whole 4 KiB disk blocks plus an archive header, so a tree of many small files needs far more than its byte total. When a scheduled full archive fails, for this or any other reason, it is retried after 1 hour, then 2 and 4 hours, then every 6 hours until one succeeds; hourly database snapshots keep running meanwhile. When the backup index in storage cannot be read, no scheduled backup runs for the app; the index is read again after 10 minutes, backing off to hourly. `tako backups status` shows the failure and the next attempt. The scheduler keeps this backoff in memory and waits 10 minutes after a server start before its first check.
 
 The recovery point is therefore about an hour for SQLite data and about a day, or the latest deploy, for every other file. When hourly snapshots are skipped for size or disk space, SQLite data falls back to the daily recovery point.
 
@@ -70,7 +70,8 @@ Only one backup or restore can run per app at a time; a concurrent request retur
 a busy error. The post-deploy backup is the exception: when a database snapshot is
 running, the deploy finishes without waiting and reports the backup as queued; the
 server runs it as soon as the snapshot finishes and shows a failure in
-`tako backups status`. Any other busy or failed post-deploy backup is reported in the
+`tako backups status`. A queued backup survives a server restart and runs at the
+first check after the start. Any other busy or failed post-deploy backup is reported in the
 deploy output without failing the deploy. A database snapshot never waits for a
 deploy; it holds the app's deployment lock only while it copies the databases
 locally, and scheduled remote transfers release that lock after the local snapshot is
@@ -143,21 +144,39 @@ touches any file it stops every workflow worker of the app, including workers of
 replaced release that are still finishing runs (they get 2 minutes, then are
 killed), and closes the server's own handles on the workflow store; workflow run
 commands are refused until the restore finishes. Database files are inspected and
-swapped by a separate worker process. It retains the previous data beside the data
-directory until restart succeeds. If the swap or restart fails, Tako stops the
-restored processes, puts the original data back, including SQLite sidecar files,
-and restarts the app on it. If the original data could not be put back, the app is
-left stopped and the error names the directory that holds it. If the restart on
-the original data also fails, the app is left stopped for inspection.
+swapped by a separate worker process; a worker that cannot start changes nothing,
+and one still running after 15 minutes is stopped and its swap undone. Restore
+retains the previous data beside the data directory, in
+`apps/<app>/<env>/.data-restore-prev-<id>/`, until restart succeeds. If the swap or
+restart fails, Tako stops the restored processes, puts the original data back,
+including SQLite sidecar files, and restarts the app on it. If the original data
+could not be put back, the app is left stopped and the error names the directory
+that holds it. If the restart on the original data also fails, the app is left
+stopped for inspection.
 
-Each restore first writes a record of what it will change. If the server stops
-in the middle of a restore, the next server start puts the original data back
-before any app starts, logs it, and removes leftover backup and restore work
-directories. The recovery point of that restore is not applied; run it again.
+Each restore first writes a record of what it will change. If the server process
+dies in the middle of a restore, the next normal server start puts the original
+data back before any app starts, logs it, and removes leftover backup and restore
+work directories. The recovery point of that restore is not applied; run it again.
+A standby, an upgrade reload, or a promotion starts beside another server process
+and never puts data back; it only logs an unfinished restore, and so does every
+start after one of them.
+
+When the server gives up on a restore and keeps running (it could not stop the
+restored app, could not put the original data back, or could not record the
+restore as finished), it renames the directory to
+`.data-restore-abandoned-<id>/` and logs an error. Tako never applies such a
+directory: whatever is live stays live. Check the app data, keep what you need
+from the directory, then remove it. While an unfinished or abandoned restore
+directory exists, a new restore of the app refuses and names it. Server starts
+log every such directory until it is removed.
 
 Restore moves files with rename, so the app data directory must be on the same
-filesystem as the Tako data directory. When `data/` or a directory below it is a
-separate mount, restore refuses before changing anything.
+filesystem and mount as the Tako data directory. When `data/` or a directory a
+restored database sits in is a separate mount (including a bind mount), restore
+refuses before changing anything. A full restore also refuses while anything is
+mounted anywhere below `data/`, such as `data/app/uploads`, because it replaces the
+whole directory. Removing a rollback copy never crosses into another mount.
 
 ## Recover on a fresh server
 
