@@ -585,6 +585,31 @@ fn a_dead_restore_worker_is_rolled_back_without_another_worker() {
     assert!(all_restore_dirs(fixture.temp.path()).is_empty());
 }
 
+/// No path leaves a restore worker running once the server's call returns
+/// or unwinds: here no thread can be created to read the output of a
+/// worker that already runs.
+#[test]
+fn a_failure_between_starting_a_worker_and_waiting_leaves_none_running() {
+    use crate::operations::backup::worker::tests::{Fault, inject_faults, last_started};
+    let fixture = fixture();
+    inject_faults(fixture.temp.path(), &[Fault::ReaderFails]);
+    let result =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| swap_in_worker(&fixture)));
+    let pid = last_started() as libc::pid_t;
+    // A process that is gone and reaped no longer exists at all.
+    let alive = unsafe { libc::kill(pid, 0) } == 0;
+    if alive {
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+    }
+    assert!(!alive, "the worker must not outlive the call");
+    assert!(
+        matches!(&result, Ok(Err(error)) if error.originals_intact),
+        "the server must stop the worker and roll back what it did"
+    );
+    assert_live_state_is_original(&fixture);
+    assert!(all_restore_dirs(fixture.temp.path()).is_empty());
+}
+
 fn swap_in_worker(fixture: &Fixture) -> Result<journal::DatabaseSwap, SwapError> {
     journal::swap_databases_in_worker(
         &fixture.staged,
