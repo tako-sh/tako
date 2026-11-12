@@ -395,6 +395,7 @@ Use finite `tako logs --env production --days 1 --json` to inspect app and worke
 - Make side-effecting step bodies idempotent. `ctx.run` is durable but still at least once at the save boundary.
 - Supply `id` to deduplicate enqueues for the same business operation while its run history is retained.
 - Use `ctx.bail` for expected cancellation and `ctx.fail` for permanent failure.
+- To stream partial output, such as an LLM reply, to a browser that may refresh, publish chunks to a channel from a step and close the stream when the run finishes or fails; see [Stream A Reply That Survives A Refresh](/channels/#stream-a-reply-that-survives-a-refresh).
 - Keep `signal` and `.enqueue()` in server-side code.
 - Use Postgres for global workflows across multiple servers. Use `local: true` only when once per server is intentional.
 

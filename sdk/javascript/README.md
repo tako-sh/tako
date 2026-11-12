@@ -237,11 +237,13 @@ export default defineChannel("chat", {
 ```
 
 - The first argument is the wire channel name. New scaffolded files use the file stem as the default name, but Tako does not rewrite existing channel files if you choose a different name.
-- Dynamic values are typed params from `paramsSchema`, and they select the stream: `chat({ roomId: "a" })` and `chat({ roomId: "b" })` have separate messages, replay, and subscribers. Params do not grant access, so `verify` must check that the caller may use them. Params are flat string, number, or boolean values; keep context that must not split the stream, such as a client version, in headers or the credential.
+- Dynamic values are typed params from `paramsSchema`, and they select the stream: `chat({ roomId: "a" })` and `chat({ roomId: "b" })` have separate messages, replay, and subscribers. Params do not grant access, so `verify` must check that the caller may use them. Params are flat string, number, or boolean values, and cannot be named `from` or `last_message_id` (reserved on channel routes; `defineChannel` throws). Keep context that must not split the stream, such as a client version, in headers or the credential.
 - `auth` is optional — omit or set `false` for public channels. Declarative auth receives `{ header?, cookie?, params, channel, operation }`.
 - Call `.$messageTypes<T>()` to type the per-message-type payloads. Set `transport: "ws"` to enable WebSocket client publishing; omit it for SSE subscriptions.
 - By default, every publish is stored in Tako's bounded channel replay log before delivery. Single-server production stores replay in local SQLite by deployed app id (`{name}/{env}`); local dev keeps replay in memory for the current daemon process. Multi-server channels use shared Postgres configured through the `postgres_url` credential. `replayWindowMs` defaults to 10 minutes and can be overridden per channel.
 - SSE subscriptions reconnect until closed, and the React `useChannel` hook reconnects WebSockets with the latest cursor. A lower-level `Channel.connect()` returns one socket; its caller owns WebSocket reconnection.
+- Pass `from: "start"` to `subscribe()`, `connect()`, or `useChannel` to replay every retained message before live ones; an explicit cursor wins, and reconnects resume by cursor.
+- When server code calls `close()` on a stream, readers get every earlier message, then `onClose` once, and stop without reconnecting; `useChannel` reports `closed: true` and `status: "closed"`, and WebSocket `send()` throws after the close (code 4200).
 - Browser clients can pass `authorization: token` to send `Authorization: Bearer <token>` on SSE channels or the equivalent WebSocket auth frame. Use `headers.Authorization` for custom authorization values, and omit both options for public or cookie-auth channels.
 
 Publish by importing the channel wherever you need it:
@@ -258,7 +260,12 @@ await status.publish({ type: "ping", data: { at: Date.now() } });
 // Only subscribers bound to { roomId: "room1" } receive it.
 const room = chat({ roomId: "room1" });
 await room.publish({ type: "msg", data: { text: "hi", userId: "u-1" } });
+
+// End the stream for good: later publishes fail, readers stop after the last message.
+await room.close();
 ```
+
+`close()` runs only in the Tako server runtime and rejects ephemeral channels. Closing twice is safe. The stream stays closed while `replayWindowMs` retains its marker. See [Stream A Reply That Survives A Refresh](https://tako.sh/docs/channels/#stream-a-reply-that-survives-a-refresh) for resumable output such as LLM replies.
 
 For memory-only live events, use `defineChannel("live-progress", { ephemeral: true })`. This disables persistence and replay; messages have `id: ""`, and slow subscribers may miss events. Do not combine it with `replayWindowMs`. Supported in local dev and single-server production without shared Postgres; shared Postgres rejects ephemeral delivery.
 

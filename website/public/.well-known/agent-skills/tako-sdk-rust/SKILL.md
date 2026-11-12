@@ -75,7 +75,9 @@ returns `Option<PresenceGrant>`: `None` denies, while
 `Some(PresenceGrant::default())` allows an anonymous connection. Omit
 `.auth(...)` for a public space. Cookie-only auth uses `PresenceAuth { header_name:
 None, cookie_name: Some("session".into()) }`. Async verifiers receive the public
-space name, operation, schema-validated params, header, and cookie.
+space name, operation, schema-validated params, header, and cookie. Params schema
+properties cannot be named `from` or `last_message_id`; Tako reserves both on
+channel routes.
 
 `router_with_presence(app, registry)` wraps a custom Axum loop. Both presence
 adapter helpers preserve status probes and protect internal registry/auth routes

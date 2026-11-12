@@ -324,7 +324,7 @@ export default defineChannel("chat", {
 ```
 
 - The first argument is the channel name. `defineChannel("chat")` maps to `/_tako/channels/chat`; generated files conventionally use the file stem as the initial name.
-- `paramsSchema` serializes to JSON Schema; tako-server validates query params before app auth. Params select the stream: `chat({ roomId: "a" })` and `chat({ roomId: "b" })` have separate messages, replay, and subscribers. Params do not grant access, so `verify` must check that the caller may use the requested params. Keep params flat (string, number, boolean); nested objects and arrays are rejected. Context that must not split the stream (client version, locale) belongs in headers or the credential, not params.
+- `paramsSchema` serializes to JSON Schema; tako-server validates query params before app auth. Params select the stream: `chat({ roomId: "a" })` and `chat({ roomId: "b" })` have separate messages, replay, and subscribers. Params do not grant access, so `verify` must check that the caller may use the requested params. Keep params flat (string, number, boolean); nested objects and arrays are rejected. `from` and `last_message_id` are reserved route names: `defineChannel` throws if `paramsSchema` declares either. Context that must not split the stream (client version, locale) belongs in headers or the credential, not params.
 - `.$messageTypes<M>()` is a type-level narrower that declares the message map — runtime no-op. Omit for channels with no typed messages.
 - `auth` is optional. Omit or set `false` for public channels.
 - `transport: "ws"` enables WebSocket; the default is receive-only SSE. WebSocket frames are stored and broadcast as sent. Handle application mutations in your app's HTTP endpoints.
@@ -349,7 +349,16 @@ await chat({ roomId: "room1" }).publish({
   type: "msg",
   data: { text: "hello", userId },
 });
+
+// End the stream for good. Readers get every earlier message, then stop.
+await chat({ roomId: "room1" }).close();
 ```
+
+`close()` appends a durable terminal marker: later publishes to that stream fail, closing twice returns the same marker, and the stream stays closed while `replayWindowMs` retains the marker. It throws on ephemeral channels and outside the server runtime (browser). Errors from tako-server surface as `TakoError`, like publish errors. Close only after the last attempt that could publish: in a workflow, close on success and on final failure (for example, catch after `ctx.run` step retries, close, then `ctx.fail(error)` so run retries do not publish to the closed stream).
+
+#### Resumable streams (LLM replies)
+
+Give each reply its own stream (`paramsSchema: (t) => t.Object({ replyId: t.String() })`, with `verify` checking the caller may read that reply). A workflow step publishes chunks every ~250 ms (each publish is a durable write; never one per token) carrying the cumulative `content`, so repeated steps and replays never duplicate text, and closes the stream when done or failed. The browser uses `useChannel("reply", { params: { replyId }, from: "start" })`, renders the latest `content`, and stops at `closed`. After a refresh it replays then continues live (or reports `closed` at once). The proxy serves readers from the replay store, so the app can sleep. Once `replayWindowMs` drops the messages and marker, a new reader gets nothing and waits, so render finished replies from the app database and subscribe only while it says the reply is streaming. See https://tako.sh/docs/channels/#stream-a-reply-that-survives-a-refresh.
 
 ### Subscribing / connecting (client-side)
 
@@ -379,6 +388,8 @@ socket.send({ type: "typing", data: { userId: "me" } });
 ```
 
 `authorization` is optional. Omit it for public or cookie-auth channels; use `headers.Authorization` when the app expects a custom authorization value.
+
+`from: "start"` on `subscribe()` / `connect()` replays every retained message before live ones (query `from=start`); an explicit `lastEventId` / `lastMessageId` wins. `onClose` runs once when the server closed the stream (SSE `tako.close`, WebSocket close code 4200); the subscription stops without reconnecting, a custom `eventSourceFactory` source is closed for you, and `socket.send()` throws afterwards. Do not reconnect a raw `connect()` socket after 4200.
 
 For React apps, prefer `useChannel` from `tako.sh/react` — it wraps `Channel` with buffered state, reconnects, and an `onMessage` callback.
 
@@ -417,6 +428,9 @@ missing events affect state; reconnect alone cannot restore those events.
 Non-React SSE clients can reload on `onRecovery("history-expired")`. A raw
 `connect()` returns one WebSocket and requires application reconnection logic.
 A custom `eventSourceFactory` owns cursor reset and recovery callbacks itself.
+The terminal close (`tako.close`, code 4200) is final and never a business
+message; `tako.reset`, 4410, a 1000 `connection expired` close, and an SSE
+response that ends without `tako.close` stay reconnectable.
 
 Native network brokers replicate bounded SQLite replay and fan out to trusted
 server peers. Replay gaps trigger quiet SDK resync, not business reset messages;
@@ -584,7 +598,7 @@ const { messages, send } = useChannel("chat", {
 });
 ```
 
-Return shape (`ChannelConnection<T>`): `messages` (capped at 500, oldest-first), `status` (`"connecting" | "open"`), `error`, `clear()`, and `send(data)` on WebSocket only.
+Return shape (`ChannelConnection<T>`): `messages` (capped at 500, oldest-first), `status` (`"connecting" | "open" | "closed"`), `closed` (`true` once the server closed the stream; final, no reconnect), `error`, `clear()`, and `send(data)` on WebSocket only (throws after close). Options include `from: "start"` (replay retained messages first; reconnects resume by cursor) and `onClose`.
 
 #### Reacting to messages imperatively
 
