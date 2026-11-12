@@ -4,7 +4,7 @@ import type { Server, Socket } from "node:net";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { closeInternalSocketPoolsForTests } from "../../src/tako/socket";
-import { WorkflowsClient } from "../../src/workflows/rpc-client";
+import { isStaleOwnerError, WorkflowsClient } from "../../src/workflows/rpc-client";
 import type { Run } from "../../src/workflows/types";
 import type { RegisteredWorkflow, WorkflowHandler } from "../../src/workflows/worker";
 import { Worker } from "../../src/workflows/worker";
@@ -343,6 +343,18 @@ describe("Worker", () => {
 
   test("a lost lease stops the handler at its next checkpoint", async () => {
     const calls: string[] = [];
+    // Resolves once a heartbeat was rejected as stale. This reaction is
+    // registered before the worker's, so the worker has seen it by then.
+    let staleSeen!: () => void;
+    const stale = new Promise<void>((resolve) => (staleSeen = resolve));
+    const heartbeat = client.heartbeat.bind(client);
+    client.heartbeat = (...args) => {
+      const call = heartbeat(...args);
+      call.catch((err) => {
+        if (isStaleOwnerError(err)) staleSeen();
+      });
+      return call;
+    };
     const worker = new Worker({
       client,
       workerId: "w1",
@@ -354,7 +366,7 @@ describe("Worker", () => {
           });
           mock.operatorCancel(ctx.runId);
           // A heartbeat reports the lost ownership before the next step.
-          await new Promise((r) => setTimeout(r, 40));
+          await stale;
           await ctx.run("second", () => {
             calls.push("second");
           });
