@@ -612,6 +612,36 @@ async fn an_app_in_error_with_live_instances_keeps_recovering_after_repeated_cra
 }
 
 #[tokio::test]
+async fn an_app_in_error_keeps_its_minimum_after_its_restart_history_settles() {
+    let dir = crate::isolation::fixture::TestDataDir::new().unwrap();
+    let state = test_state(dir.path());
+    let app = running_app(&state, dir.path(), "error-settled", 1, sh(READY));
+    app.set_state(AppState::Error);
+    let instance = healthy_instance(&app);
+    // Earlier losses were repaired: the app is back at its minimum, healthy,
+    // and a stable minute later its history is forgotten.
+    let lost = app.allocate_instance();
+    app.record_instance_exit(lost.exit_report());
+    app.remove_instance(&lost.id);
+    let start = Instant::now();
+    tick(&state, start).await;
+    tick(&state, start + Duration::from_secs(60)).await;
+    assert!(app.recovery_status().is_none());
+
+    // The instance dies while the health path is skipped under a contended
+    // gate, so nothing records the loss. The reconcile still sees it.
+    {
+        let _recovering = app.recovery_gate.try_lock().unwrap();
+        handle_health_event(&state, dead(&app, &instance)).await;
+    }
+    tick(&state, start + Duration::from_secs(61)).await;
+    assert!(app.get_instance(&instance.id).is_none());
+    assert_eq!(live(&app), 1, "an app in Error was left below its minimum");
+    assert_eq!(app.state(), AppState::Error);
+    state.app_manager.stop_app(&app.name()).await.unwrap();
+}
+
+#[tokio::test]
 async fn a_backup_holding_the_deploy_lock_does_not_hold_back_native_recovery() {
     let dir = crate::isolation::fixture::TestDataDir::new().unwrap();
     let state = test_state(dir.path());

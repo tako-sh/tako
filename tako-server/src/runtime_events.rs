@@ -436,14 +436,15 @@ fn survey(app: &App) -> Survey {
 }
 
 /// Whether the reconcile may restore this app's instances. A running app,
-/// and an app in `Error` that health recovery is already repairing: a failed
-/// restore or rollback can leave live instances, the health path replaces
-/// them in any state but `Stopped`, and once it backs off it leaves the next
-/// replacement to the reconcile.
+/// and an app in `Error` that still has instances or is being repaired: a
+/// failed restore or rollback can leave live instances, the health path
+/// replaces them in any state but `Stopped`, and once it backs off it leaves
+/// the next replacement to the reconcile. An app in `Error` with neither was
+/// left stopped on purpose.
 fn reconciles(app: &App) -> bool {
     match app.state() {
         AppState::Running => true,
-        AppState::Error => app.has_recovery_history(),
+        AppState::Error => app.has_recovery_history() || !app.get_instances().is_empty(),
         AppState::Idle | AppState::Deploying | AppState::Stopped => false,
     }
 }
