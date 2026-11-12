@@ -260,6 +260,9 @@ fn domain_is_private_or_local(domain: &str) -> bool {
         || domain.parse::<IpAddr>().is_ok_and(ip_is_private_or_local)
 }
 
+/// Whether a remote image fetch must refuse `ip`. Only ordinary public unicast
+/// addresses pass; private, local, reserved, documentation, and benchmarking
+/// ranges do not, nor does an IPv6 form that leads to such an IPv4 address.
 pub fn ip_is_private_or_local(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => ipv4_is_private_or_local(ip),
@@ -268,27 +271,56 @@ pub fn ip_is_private_or_local(ip: IpAddr) -> bool {
 }
 
 fn ipv4_is_private_or_local(ip: Ipv4Addr) -> bool {
+    let [a, b, c, _] = ip.octets();
     ip.is_private()
         || ip.is_loopback()
         || ip.is_link_local()
         || ip.is_multicast()
-        || ip.is_broadcast()
-        || ip.is_unspecified()
+        // 192.0.2.0/24, 198.51.100.0/24, and 203.0.113.0/24 (RFC 5737).
+        || ip.is_documentation()
+        // 0.0.0.0/8 "this network" (RFC 791), including the unspecified address.
+        || a == 0
         // 100.64.0.0/10 (RFC 6598 shared address space) — used by CGNAT and
         // overlay networks like Tailscale; reachable hosts there are private.
-        || (ip.octets()[0] == 100 && (ip.octets()[1] & 0xc0) == 64)
+        || (a == 100 && (b & 0xc0) == 64)
+        // 192.0.0.0/24 IETF protocol assignments (RFC 6890).
+        || (a == 192 && b == 0 && c == 0)
+        // 192.88.99.0/24 deprecated 6to4 relay anycast (RFC 7526).
+        || (a == 192 && b == 88 && c == 99)
+        // 198.18.0.0/15 benchmarking (RFC 2544).
+        || (a == 198 && (b & 0xfe) == 18)
+        // 240.0.0.0/4 reserved (RFC 1112), including limited broadcast.
+        || a >= 240
 }
 
 fn ipv6_is_private_or_local(ip: Ipv6Addr) -> bool {
-    if let Some(mapped) = ip.to_ipv4_mapped() {
-        return ipv4_is_private_or_local(mapped);
+    let segments = ip.segments();
+    // IPv4-mapped (::ffff:0:0/96) and well-known NAT64 (64:ff9b::/96, RFC 6052)
+    // addresses reach the IPv4 host in their last 32 bits, so that host decides.
+    if let [0, 0, 0, 0, 0, 0xffff, high, low] | [0x64, 0xff9b, 0, 0, 0, 0, high, low] = segments {
+        let embedded = Ipv4Addr::from((u32::from(high) << 16) | u32::from(low));
+        return ipv4_is_private_or_local(embedded);
     }
-
-    ip.is_loopback()
-        || ip.is_unspecified()
-        || ip.is_multicast()
-        || ((ip.segments()[0] & 0xfe00) == 0xfc00)
-        || ((ip.segments()[0] & 0xffc0) == 0xfe80)
+    // Global unicast is allocated from 2000::/3 only (RFC 4291). Everything
+    // else is loopback, unspecified, IPv4-compatible (::/96), local-use NAT64
+    // (64:ff9b:1::/48), discard-only (100::/64), unique-local (fc00::/7),
+    // link-local (fe80::/10), site-local, multicast (ff00::/8), or unallocated.
+    if segments[0] & 0xe000 != 0x2000 {
+        return true;
+    }
+    match segments {
+        // 2001::/23 IETF protocol assignments, including Teredo (2001::/32),
+        // whose embedded IPv4 addresses are not checked individually.
+        [0x2001, second, ..] if second < 0x200 => true,
+        // 2001:db8::/32 documentation (RFC 3849).
+        [0x2001, 0xdb8, ..] => true,
+        // 2002::/16 6to4 (RFC 3056) tunnels to its embedded IPv4 address and
+        // is deprecated for public use, so the whole block is refused.
+        [0x2002, ..] => true,
+        // 3fff::/20 documentation (RFC 9637).
+        [0x3fff, second, ..] if second < 0x1000 => true,
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -296,20 +328,222 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rejects_private_and_shared_ipv4_ranges() {
+    fn rejects_every_non_public_ipv4_class() {
+        for (class, addresses) in [
+            (
+                "this network 0.0.0.0/8",
+                &["0.0.0.0", "0.1.2.3", "0.255.255.255"][..],
+            ),
+            ("private 10.0.0.0/8", &["10.0.0.1", "10.255.255.255"]),
+            (
+                "shared 100.64.0.0/10",
+                &["100.64.0.1", "100.100.100.100", "100.127.255.255"],
+            ),
+            ("loopback 127.0.0.0/8", &["127.0.0.1", "127.255.255.254"]),
+            (
+                "link-local 169.254.0.0/16",
+                &["169.254.0.1", "169.254.169.254"],
+            ),
+            ("private 172.16.0.0/12", &["172.16.0.1", "172.31.255.255"]),
+            (
+                "protocol assignments 192.0.0.0/24",
+                &["192.0.0.0", "192.0.0.8", "192.0.0.170", "192.0.0.255"],
+            ),
+            ("documentation 192.0.2.0/24", &["192.0.2.0", "192.0.2.255"]),
+            (
+                "6to4 relay anycast 192.88.99.0/24",
+                &["192.88.99.0", "192.88.99.255"],
+            ),
+            (
+                "private 192.168.0.0/16",
+                &["192.168.0.1", "192.168.255.255"],
+            ),
+            (
+                "benchmarking 198.18.0.0/15",
+                &["198.18.0.0", "198.19.255.255"],
+            ),
+            (
+                "documentation 198.51.100.0/24",
+                &["198.51.100.0", "198.51.100.255"],
+            ),
+            (
+                "documentation 203.0.113.0/24",
+                &["203.0.113.0", "203.0.113.255"],
+            ),
+            ("multicast 224.0.0.0/4", &["224.0.0.1", "239.255.255.255"]),
+            (
+                "reserved 240.0.0.0/4",
+                &["240.0.0.0", "250.1.2.3", "255.255.255.254"],
+            ),
+            ("broadcast", &["255.255.255.255"]),
+        ] {
+            for ip in addresses {
+                let ip: IpAddr = ip.parse().unwrap();
+                assert!(
+                    ip_is_private_or_local(ip),
+                    "{ip} ({class}) must be rejected"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_every_non_public_ipv6_class() {
+        for (class, addresses) in [
+            ("unspecified", &["::"][..]),
+            ("loopback", &["::1"]),
+            (
+                "IPv4-compatible ::/96",
+                &["::10.0.0.1", "::127.0.0.1", "::8.8.8.8", "::ffff"],
+            ),
+            (
+                "IPv4-mapped ::ffff:0:0/96 to a non-public IPv4",
+                &[
+                    "::ffff:10.0.0.1",
+                    "::ffff:127.0.0.1",
+                    "::ffff:169.254.169.254",
+                    "::ffff:192.0.0.8",
+                    "::ffff:198.18.0.1",
+                    "::ffff:203.0.113.9",
+                    "::ffff:240.0.0.1",
+                    "::ffff:255.255.255.255",
+                ],
+            ),
+            (
+                "IPv4-translated ::ffff:0:0:0/96",
+                &["::ffff:0:10.0.0.1", "::ffff:0:8.8.8.8"],
+            ),
+            (
+                "NAT64 64:ff9b::/96 to a non-public IPv4",
+                &[
+                    "64:ff9b::10.0.0.1",
+                    "64:ff9b::127.0.0.1",
+                    "64:ff9b::169.254.169.254",
+                    "64:ff9b::192.168.1.1",
+                    "64:ff9b::100.64.0.1",
+                    "64:ff9b::198.19.0.1",
+                    "64:ff9b::255.255.255.255",
+                ],
+            ),
+            (
+                "local-use NAT64 64:ff9b:1::/48",
+                &[
+                    "64:ff9b:1::10.0.0.1",
+                    "64:ff9b:1::8.8.8.8",
+                    "64:ff9b:1:ffff::1",
+                ],
+            ),
+            (
+                "discard 100::/64",
+                &["100::", "100::1", "100::ffff:ffff:ffff:ffff"],
+            ),
+            (
+                "Teredo 2001::/32",
+                &["2001::1", "2001:0:4136:e378:8000:63bf:3fff:fdd2"],
+            ),
+            (
+                "protocol assignments 2001::/23",
+                &["2001:1::1", "2001:2::1", "2001:20::1", "2001:1ff::1"],
+            ),
+            (
+                "documentation 2001:db8::/32",
+                &["2001:db8::", "2001:db8::1", "2001:db8:ffff::1"],
+            ),
+            (
+                "6to4 2002::/16",
+                &[
+                    "2002::1",
+                    "2002:a00:1::1",
+                    "2002:7f00:1::1",
+                    "2002:808:808::1",
+                ],
+            ),
+            ("documentation 3fff::/20", &["3fff::1", "3fff:fff:ffff::1"]),
+            ("segment routing 5f00::/16", &["5f00::1"]),
+            (
+                "unique-local fc00::/7",
+                &["fc00::1", "fd00:ec2::254", "fdff:ffff::1"],
+            ),
+            ("link-local fe80::/10", &["fe80::1", "febf::1"]),
+            ("site-local fec0::/10", &["fec0::1", "feff::1"]),
+            ("multicast ff00::/8", &["ff02::1", "ff0e::1"]),
+            (
+                "unallocated outside 2000::/3",
+                &["4000::1", "8000::1", "e000::1", "1::1"],
+            ),
+        ] {
+            for ip in addresses {
+                let ip: IpAddr = ip.parse().unwrap();
+                assert!(
+                    ip_is_private_or_local(ip),
+                    "{ip} ({class}) must be rejected"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn allows_public_ipv6_addresses() {
         for ip in [
-            "10.0.0.1",
-            "172.16.0.1",
-            "192.168.1.1",
-            "127.0.0.1",
-            "169.254.169.254",
-            "100.64.0.1",
-            "100.100.100.100",
-            "100.127.255.255",
-            "0.0.0.0",
+            "2606:4700:4700::1111",
+            "2001:4860:4860::8888",
+            "2a00:1450:4001:81b::200e",
+            "2001:200::1",
+            "2001:db7:ffff::1",
+            "2001:db9::1",
+            "2003::1",
+            "2400:cb00::1",
+            "3fff:1000::1",
+            // The embedded IPv4 address is the destination and it is public.
+            "::ffff:1.1.1.1",
+            "::ffff:8.8.8.8",
+            "64:ff9b::1.1.1.1",
+            "64:ff9b::8.8.8.8",
         ] {
             let ip: IpAddr = ip.parse().unwrap();
-            assert!(ip_is_private_or_local(ip), "{ip} should be private/local");
+            assert!(!ip_is_private_or_local(ip), "{ip} should be public");
+        }
+    }
+
+    #[test]
+    fn remote_sources_reject_non_public_address_literals() {
+        for host in [
+            "192.0.0.8",
+            "198.18.0.1",
+            "203.0.113.7",
+            "240.0.0.1",
+            "255.255.255.255",
+            "0.0.0.1",
+            // Legacy spellings the URL parser normalizes to IPv4.
+            "0x7f.1",
+            "2130706433",
+            "[::ffff:10.0.0.1]",
+            "[::ffff:a00:1]",
+            "[::10.0.0.1]",
+            "[64:ff9b::a00:1]",
+            "[64:ff9b:1::a00:1]",
+            "[100::1]",
+            "[2001:db8::1]",
+            "[2002:a00:1::1]",
+            "[2001::1]",
+            "[fd00::1]",
+            "[fe80::1]",
+            "[ff02::1]",
+        ] {
+            for url in [
+                format!("http://{host}/a.png"),
+                format!("https://{host}:8443/a.png"),
+            ] {
+                assert_eq!(parse_source(&url), Err(ImageError::InvalidSource), "{url}");
+            }
+        }
+        for host in ["1.1.1.1", "[2606:4700:4700::1111]", "[64:ff9b::808:808]"] {
+            let url = format!("https://{host}/a.png");
+            assert_eq!(
+                parse_source(&url),
+                Ok(ImageSource::RemoteUrl(url.clone())),
+                "{url}"
+            );
         }
     }
 
@@ -391,7 +625,35 @@ mod tests {
 
     #[test]
     fn allows_public_ipv4_addresses() {
-        for ip in ["1.1.1.1", "8.8.8.8", "100.63.255.255", "100.128.0.1"] {
+        for ip in [
+            "1.0.0.0",
+            "1.1.1.1",
+            "8.8.8.8",
+            "9.255.255.255",
+            "11.0.0.1",
+            "100.63.255.255",
+            "100.128.0.1",
+            "126.255.255.255",
+            "128.0.0.1",
+            "169.253.255.255",
+            "169.255.0.1",
+            "172.15.255.255",
+            "172.32.0.1",
+            "191.255.255.255",
+            "192.0.1.255",
+            "192.0.3.0",
+            "192.88.98.255",
+            "192.88.100.0",
+            "192.167.255.255",
+            "192.169.0.1",
+            "198.17.255.255",
+            "198.20.0.0",
+            "198.51.99.255",
+            "198.51.101.0",
+            "203.0.112.255",
+            "203.0.114.0",
+            "223.255.255.255",
+        ] {
             let ip: IpAddr = ip.parse().unwrap();
             assert!(!ip_is_private_or_local(ip), "{ip} should be public");
         }
