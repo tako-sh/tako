@@ -140,8 +140,10 @@ func RejectChannel() ChannelAuthDecision {
 type ChannelDefinition struct {
 	ChannelLifecycleConfig
 	// ParamsSchema is a JSON Schema for the query params that bind a channel.
-	// Validated params select the channel stream, so declare flat string,
-	// integer, number, or boolean properties. tako-server rejects a param the
+	// Validated params select the channel stream, so it must be one object
+	// schema with flat string, integer, number, or boolean properties under
+	// its top-level "properties" (no allOf, anyOf, oneOf, or $ref; Register
+	// panics otherwise). tako-server rejects a param the
 	// schema does not list under "properties" unless it sets
 	// "additionalProperties": true; nil means the channel takes no params. "from" and "last_message_id"
 	// are reserved query names, so [ChannelRegistry.Register] panics if a
@@ -238,6 +240,9 @@ func (r *ChannelRegistry) Register(name string, definition ChannelDefinition) {
 	}
 	// Store reads carry params as JSON; channel and presence params are query values.
 	if !strings.HasPrefix(name, storeChannelPrefix) {
+		if problem := nonFlatParamsSchema(definition.ParamsSchema); problem != "" {
+			panic("tako: channel " + strconv.Quote(name) + " params schema " + problem + "; declare every param under the top-level \"properties\" of one object schema")
+		}
 		if reserved := reservedParamName(definition.ParamsSchema); reserved != "" {
 			panic("tako: channel " + strconv.Quote(name) + " declares param " + strconv.Quote(reserved) + ", a name Tako reserves on channel routes; rename the param")
 		}
@@ -259,6 +264,37 @@ func (r *ChannelRegistry) Register(name string, definition ChannelDefinition) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.definitions[name] = definition
+}
+
+// nonFlatSchemaKeywords place properties outside a schema's top-level
+// "properties", where channel params are declared and coerced.
+var nonFlatSchemaKeywords = []string{"allOf", "anyOf", "oneOf", "not", "if", "then", "else", "$ref", "$dynamicRef", "dependentSchemas", "patternProperties"}
+
+// nonFlatParamsSchema describes why schema is not one flat object schema, or
+// returns "" when it is (or is nil). tako-server rejects such schemas too.
+func nonFlatParamsSchema(schema json.RawMessage) string {
+	if len(schema) == 0 {
+		return ""
+	}
+	var parsed map[string]json.RawMessage
+	if json.Unmarshal(schema, &parsed) != nil {
+		return "is not a JSON object"
+	}
+	for _, keyword := range nonFlatSchemaKeywords {
+		if _, ok := parsed[keyword]; ok {
+			return "uses " + strconv.Quote(keyword)
+		}
+	}
+	if kind, ok := parsed["type"]; ok && string(kind) != `"object"` {
+		return "has type " + string(kind)
+	}
+	if properties, ok := parsed["properties"]; ok {
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(properties, &fields) != nil {
+			return "has \"properties\" that is not an object"
+		}
+	}
+	return ""
 }
 
 func reservedParamName(schema json.RawMessage) string {

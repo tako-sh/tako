@@ -106,8 +106,10 @@ impl PresenceDefinition {
         Self::default()
     }
 
-    /// JSON Schema for the flat query params that scope membership. Its
-    /// properties cannot be named `from` or `last_message_id`: Tako reserves
+    /// JSON Schema for the flat query params that scope membership: one object
+    /// schema with the params under its top-level `properties` (no `allOf`,
+    /// `anyOf`, `oneOf`, or `$ref`; tako-server reports any other shape as an
+    /// invalid channel schema). Its properties cannot be named `from` or `last_message_id`: Tako reserves
     /// both on channel routes and never passes them as params. tako-server
     /// rejects params the schema does not declare under `properties` unless it
     /// sets `"additionalProperties": true`; the default schema takes none.

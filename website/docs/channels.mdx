@@ -191,6 +191,8 @@ A JavaScript number cannot carry every integer exactly, and a value that rounds 
 
 When the server knows the publishing build's definition, it rejects a publish whose params do not match the schema instead of starting a stream nobody reads.
 
+A params schema is one object schema with every param under its top-level `properties`: in JavaScript a single `t.Object({ ... })`, with `t.Composite([...])` to combine object schemas. Combinators and references (`t.Intersect`, `t.Union`, `t.Ref`, or `allOf`, `anyOf`, `oneOf`, `$ref` in JSON Schema) hide the params from the top level, so `defineChannel`, `definePresence`, and Go's `Channels.Register` and `RegisterPresence` reject them, and the server answers a subscribe or publish on such a channel with an invalid-schema error (`500`, logged) instead of treating its params as unknown. Combinators inside one property's own schema are fine.
+
 Only declared params exist. A param the schema does not list under `properties` is rejected with `400` (before authorization, so it never starts a stream), unless the schema explicitly sets `additionalProperties: true`. A channel without a params schema accepts no params. The JavaScript, Go, and Rust definitions emit `additionalProperties: false` for you; set `additionalProperties: true` only when every extra param should select its own stream.
 
 `from` and `last_message_id` are reserved query names on channel routes (where a reader starts and the WebSocket replay cursor), so no param can use them. JavaScript's `defineChannel` and Go's `Channels.Register` reject a params schema that declares either name, and the server rejects publish or close params that name them.

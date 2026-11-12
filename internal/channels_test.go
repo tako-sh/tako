@@ -230,3 +230,37 @@ func TestChannelRegistrationRejectsReservedParamNames(t *testing.T) {
 		ParamsSchema: json.RawMessage(`{"type":"object","properties":{"from":{"type":"string"}}}`),
 	})
 }
+
+func TestChannelRegistrationRejectsParamsSchemasThatAreNotOneFlatObject(t *testing.T) {
+	room := `{"type":"object","properties":{"roomId":{"type":"string"}}}`
+	for keyword, schema := range map[string]string{
+		"allOf": `{"allOf":[` + room + `],"additionalProperties":false}`,
+		"anyOf": `{"anyOf":[` + room + `]}`,
+		"$ref":  `{"$ref":"#/$defs/room","$defs":{"room":` + room + `}}`,
+		"type":  `{"type":"string"}`,
+	} {
+		for _, register := range []func(){
+			func() {
+				NewChannelRegistry().Register("room", ChannelDefinition{ParamsSchema: json.RawMessage(schema)})
+			},
+			func() { RegisterPresence("room", PresenceDefinition{ParamsSchema: json.RawMessage(schema)}) },
+		} {
+			func() {
+				defer func() {
+					message, _ := recover().(string)
+					if !strings.Contains(message, "top-level \"properties\"") || !strings.Contains(message, keyword) {
+						t.Fatalf("expected %s schema to panic, got %q", keyword, message)
+					}
+				}()
+				register()
+			}()
+		}
+	}
+	// Combinators inside a property are fine, and Stores keep their schema.
+	NewChannelRegistry().Register("room", ChannelDefinition{
+		ParamsSchema: json.RawMessage(`{"type":"object","properties":{"kind":{"anyOf":[{"const":"a"},{"const":"b"}]}}}`),
+	})
+	NewChannelRegistry().Register(storeChannelPrefix+"notes", ChannelDefinition{
+		ParamsSchema: json.RawMessage(`{"anyOf":[` + room + `]}`),
+	})
+}

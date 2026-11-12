@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { Type } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
 import { setChannelSocketPublisher } from "../../src/channels";
 import {
@@ -7,6 +8,7 @@ import {
   isChannelDefinition,
   isChannelExport,
 } from "../../src/channels/define";
+import { definePresence } from "../../src/presence/define";
 
 describe("defineChannel", () => {
   test("server publishes include lifecycle before any subscription", async () => {
@@ -200,5 +202,37 @@ describe("defineChannel params schemas declare every param", () => {
     expect(defineChannel("tako.store:notes").definition.paramsSchema).not.toHaveProperty(
       "additionalProperties",
     );
+  });
+});
+
+type T = typeof Type;
+
+describe("defineChannel params schemas are one flat object", () => {
+  test("combinators and references are rejected at definition time", () => {
+    const a = (t: T) => t.Object({ a: t.String() });
+    const b = (t: T) => t.Object({ b: t.String() });
+    for (const [keyword, paramsSchema] of [
+      ["allOf", (t: T) => t.Intersect([a(t), b(t)])],
+      ["anyOf", (t: T) => t.Union([a(t), b(t)])],
+      ["$ref", (t: T) => t.Ref("Room")],
+    ] as const) {
+      expect(() => defineChannel("room", { paramsSchema })).toThrow(
+        `Channel 'room' params schema uses '${keyword}'`,
+      );
+      expect(() => definePresence("room", { paramsSchema })).toThrow("t.Composite");
+    }
+    expect(() => defineChannel("room", { paramsSchema: (t) => t.String() })).toThrow(
+      `params schema has type "string"`,
+    );
+    // Composite flattens objects into one, and property-level unions are fine.
+    const room = defineChannel("room", {
+      paramsSchema: (t) =>
+        t.Composite([a(t), t.Object({ kind: t.Union([t.Literal("x"), t.Literal("y")]) })]),
+    });
+    expect(Object.keys(room.definition.paramsSchema.properties)).toEqual(["a", "kind"]);
+    // Store scopes carry JSON params and keep their schema as declared.
+    expect(() =>
+      defineChannel("tako.store:notes", { paramsSchema: (t) => t.Union([a(t), b(t)]) }),
+    ).not.toThrow();
   });
 });
