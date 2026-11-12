@@ -223,8 +223,13 @@ impl SqliteChannelStore {
             channel: channel.into(),
             payload: payload.clone(),
             ephemeral,
+            lifecycle: None,
         };
         let message = append_event(&tx, replay_epoch(&tx)?, &event, lifecycle)?;
+        let event = ChannelEvent {
+            lifecycle: stored_lifecycle(&tx, channel)?,
+            ..event
+        };
         tx.commit()?;
         Ok((message, Some(event)))
     }
@@ -284,11 +289,24 @@ impl SqliteChannelStore {
         }
         // A dropped event still advances its origin's sequence: it was
         // delivered, so the next one is no gap that would reset every reader.
-        let message = if !event.ephemeral && stream_limit_reached(&tx, &event.channel)? {
+        let message = if !event.ephemeral
+            && close_marker(&tx, replay_epoch(&tx)?, &event.channel, 0)?.is_some()
+        {
+            // Close wins on every node. A close is ordered after its origin's
+            // own publishes, which arrive first; a publish from another
+            // server that raced it is dropped instead of landing after the
+            // marker, and a second marker changes nothing.
+            None
+        } else if !event.ephemeral && stream_limit_reached(&tx, &event.channel)? {
             super::stream_limit_error(&event.channel);
             None
         } else {
-            Some(append_event(&tx, replay_epoch(&tx)?, event, None)?)
+            Some(append_event(
+                &tx,
+                replay_epoch(&tx)?,
+                event,
+                event.lifecycle.as_ref(),
+            )?)
         };
         tx.execute(
             "INSERT INTO channel_remote_origins(origin, sequence) VALUES (?1, ?2)
@@ -568,6 +586,30 @@ fn append_event(
 /// Replay window, inactivity TTL, keepalive interval and connection lifetime of
 /// a stream first seen through a publish, in milliseconds.
 const DEFAULT_STREAM_LIFECYCLE: [i64; 4] = [600_000, 0, 25_000, 7_200_000];
+
+/// The durable lifecycle a stream's bookkeeping holds.
+fn stored_lifecycle(
+    conn: &rusqlite::Connection,
+    channel: &str,
+) -> Result<Option<ChannelLifecycle>, ChannelError> {
+    Ok(conn
+        .query_row(
+            "SELECT replay_window_ms, inactivity_ttl_ms, keepalive_interval_ms,
+                max_connection_lifetime_ms
+             FROM channel_metadata WHERE channel = ?1",
+            [channel],
+            |row| {
+                Ok(ChannelLifecycle {
+                    ephemeral: false,
+                    replay_window_ms: row.get::<_, i64>(0)? as u64,
+                    inactivity_ttl_ms: row.get::<_, i64>(1)? as u64,
+                    keepalive_interval_ms: row.get::<_, i64>(2)? as u64,
+                    max_connection_lifetime_ms: row.get::<_, i64>(3)? as u64,
+                })
+            },
+        )
+        .optional()?)
+}
 
 fn lifecycle_columns(lifecycle: &ChannelLifecycle) -> [i64; 4] {
     [

@@ -354,7 +354,7 @@ await chat({ roomId: "room1" }).publish({
 await chat({ roomId: "room1" }).close();
 ```
 
-`close()` appends a durable terminal marker: later publishes to that stream fail, closing twice returns the same marker, and the stream stays closed while `replayWindowMs` retains the marker. It throws on ephemeral channels and outside the server runtime (browser). Errors from tako-server surface as `TakoError`, like publish errors. Close only after the last attempt that could publish: in a workflow, close on success and on final failure (for example, catch after `ctx.run` step retries, close, then `ctx.fail(error)` so run retries do not publish to the closed stream).
+`close()` appends a durable terminal marker: later publishes to that stream fail, closing twice returns the same marker, and the stream stays closed while `replayWindowMs` retains the marker. It throws on ephemeral channels and outside the server runtime (browser). Errors from tako-server surface as `TakoError`, like publish errors. With native multi-server replication, a publish from another server racing the close may be dropped, so publish and close a stream from one place. Close only after the last attempt that could publish: in a workflow, close on success and on final failure (for example, catch after `ctx.run` step retries, close, then `ctx.fail(error)` so run retries do not publish to the closed stream).
 
 #### Resumable streams (LLM replies)
 

@@ -561,6 +561,7 @@ async fn unknown_remote_app_never_creates_database() {
                     channel: "events".into(),
                     payload: payload(1),
                     ephemeral: false,
+                    lifecycle: None,
                 }),
             },
         )
@@ -755,6 +756,7 @@ async fn postgres_wake_seam_never_reinserts_or_echoes_and_commit_dispatches_only
                     channel: "events".into(),
                     payload: payload(1),
                     ephemeral: false,
+                    lifecycle: None,
                 }),
             },
         )

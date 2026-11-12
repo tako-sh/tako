@@ -758,6 +758,7 @@ mod ordering_tests {
                     data: 2.into(),
                 },
                 ephemeral: false,
+                lifecycle: None,
             })
         });
         // The held watch borrow pauses signal_gap while it owns the reset map.

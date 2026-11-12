@@ -252,6 +252,7 @@ fn transport_gaps_are_out_of_band_and_scoped_resets_do_not_publish() {
         channel: "a".into(),
         payload: payload(2),
         ephemeral: false,
+        lifecycle: None,
     };
     assert_eq!(store.ingest_remote(&event).unwrap(), RemoteIngest::Applied);
     assert!(a.has_changed().unwrap());
@@ -336,6 +337,7 @@ fn failed_publish_or_ingest_does_not_advance_identity_or_dedup() {
         channel: "a".into(),
         payload: oversized,
         ephemeral: false,
+        lifecycle: None,
     };
     let resets = store.resets("a");
     assert!(store.ingest_remote(&event).is_err());
@@ -440,6 +442,7 @@ fn postgres_mesh_uses_wake_hints_without_reinserting_remote_events() {
         channel: "a".into(),
         payload: payload(2),
         ephemeral: false,
+        lifecycle: None,
     };
     assert!(reader.ingest_remote(&remote).is_err());
     assert!(echoes.try_recv().is_err());

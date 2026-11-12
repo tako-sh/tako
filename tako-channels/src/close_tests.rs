@@ -718,3 +718,126 @@ fn postgres_rejected_publishes_leave_a_closed_stream_idle() {
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
         .unwrap();
 }
+
+#[test]
+fn mesh_close_wins_over_a_publish_that_races_it_on_every_node() {
+    let temp = tempfile::tempdir().unwrap();
+    let a = ChannelStore::open(&temp.path().join("a.sqlite")).unwrap();
+    let b = ChannelStore::open(&temp.path().join("b.sqlite")).unwrap();
+    let (mut from_a, mut from_b) = (a.publications(), b.publications());
+    let next = |publications: &mut tokio::sync::broadcast::Receiver<ChannelPublication>| {
+        let ChannelPublication::Event(event) = publications.try_recv().unwrap() else {
+            panic!("expected an event")
+        };
+        event
+    };
+    let stream = room("race");
+    a.append(stream.key(), &payload(json!(1))).unwrap();
+    assert_eq!(
+        b.ingest_remote(&next(&mut from_a)).unwrap(),
+        RemoteIngest::Applied
+    );
+
+    // A closes while B publishes, before either event reaches the other.
+    a.close(stream.key()).unwrap();
+    b.append(stream.key(), &payload(json!(2))).unwrap();
+    let (close, raced) = (next(&mut from_a), next(&mut from_b));
+    let resets = a.resets(stream.key());
+    assert_eq!(b.ingest_remote(&close).unwrap(), RemoteIngest::Applied);
+    // On A the racing publish would land after the marker: it is dropped.
+    assert_eq!(a.ingest_remote(&raced).unwrap(), RemoteIngest::Dropped);
+    let types = |store: &ChannelStore| -> Vec<String> {
+        store
+            .read_after(stream.key(), None, 10)
+            .unwrap()
+            .into_iter()
+            .map(|message| message.r#type)
+            .collect()
+    };
+    // Every node ends with the marker, and nothing follows it.
+    assert_eq!(types(&a), ["msg", CLOSE_MESSAGE_TYPE]);
+    assert_eq!(types(&b), ["msg", "msg", CLOSE_MESSAGE_TYPE]);
+
+    // Closes racing each other: each node keeps its first marker.
+    let other = room("both");
+    a.close(other.key()).unwrap();
+    b.close(other.key()).unwrap();
+    let (from_a_close, from_b_close) = (next(&mut from_a), next(&mut from_b));
+    assert_eq!(
+        a.ingest_remote(&from_b_close).unwrap(),
+        RemoteIngest::Dropped
+    );
+    assert_eq!(
+        b.ingest_remote(&from_a_close).unwrap(),
+        RemoteIngest::Dropped
+    );
+    assert!(a.close_marker(other.key()).unwrap().is_some());
+    assert!(b.close_marker(other.key()).unwrap().is_some());
+
+    // A dropped event is acknowledged in sequence: B's next event is no gap.
+    b.append(room("later").key(), &payload(json!(3))).unwrap();
+    assert_eq!(
+        a.ingest_remote(&next(&mut from_b)).unwrap(),
+        RemoteIngest::Applied
+    );
+    assert!(!resets.has_changed().unwrap(), "no reset storm");
+}
+
+#[test]
+fn mesh_peers_keep_a_stream_as_long_as_its_origin_does() {
+    let temp = tempfile::tempdir().unwrap();
+    let origin = ChannelStore::open(&temp.path().join("origin.sqlite")).unwrap();
+    let peer = ChannelStore::open(&temp.path().join("peer.sqlite")).unwrap();
+    let mut publications = origin.publications();
+    let mut next = || {
+        let ChannelPublication::Event(event) = publications.try_recv().unwrap() else {
+            panic!("expected an event")
+        };
+        event
+    };
+    let day = 24 * 60 * 60 * 1000;
+    let lifecycle = json!({"replayWindowMs": day});
+    let publish = TrustedPublication::parse(
+        "chat",
+        &json!({"room": "long"}),
+        json!({"type": "msg", "data": 1, "lifecycle": lifecycle}),
+    )
+    .unwrap();
+    origin.publish_trusted(&publish).unwrap();
+    let close =
+        TrustedPublication::close("chat", &json!({"room": "long"}), Some(lifecycle)).unwrap();
+    origin.publish_trusted(&close).unwrap();
+    let (message, marker) = (next(), next());
+    assert_eq!(message.lifecycle.as_ref().unwrap().replay_window_ms, day);
+    // The peer has no local subscriber and has never synced the stream.
+    for event in [&message, &marker] {
+        assert_eq!(peer.ingest_remote(event).unwrap(), RemoteIngest::Applied);
+    }
+    let key = publish.stream.key();
+    assert_eq!(
+        peer.raw_query_i64(
+            "SELECT replay_window_ms FROM channel_metadata WHERE channel = ?1",
+            [key]
+        ),
+        day as i64
+    );
+    // Past the default ten-minute window the peer still holds both rows and
+    // the stream is still closed there.
+    peer.prune_at(now() + 11 * 60 * 1000);
+    assert_eq!(peer.read_after(key, None, 10).unwrap().len(), 2);
+    assert!(matches!(
+        peer.append(key, &payload(json!(2))),
+        Err(ChannelError::StreamClosed)
+    ));
+
+    // A subscriber's grant on the origin travels the same way.
+    let synced = room("synced");
+    origin
+        .sync_channel(
+            synced.key(),
+            &auth(json!({"ok": true, "replayWindowMs": day})),
+        )
+        .unwrap();
+    origin.append(synced.key(), &payload(json!(3))).unwrap();
+    assert_eq!(next().lifecycle.unwrap().replay_window_ms, day);
+}
