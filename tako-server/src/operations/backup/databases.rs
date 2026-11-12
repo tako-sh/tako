@@ -197,12 +197,11 @@ impl crate::ServerState {
         let index = self.read_backup_index(&backup, app).await?;
         let previous = latest_backup(index.backups.iter()).cloned();
 
-        let lock = self.get_deploy_lock(app).await;
-        let Ok(guard) = lock.try_lock() else {
-            return skip(
-                BackupSkipReason::DeployInProgress,
-                "A deploy is in progress.",
-            );
+        let Some(guard) = self
+            .try_lock_deploy_for_scheduled_backup(app, std::time::Instant::now())
+            .await
+        else {
+            return skip(BackupSkipReason::DeployInProgress, super::DEPLOY_LOCK_BUSY);
         };
 
         let tmp_root = self.runtime.data_dir.join("tmp").join("backups");

@@ -15,9 +15,10 @@ pub(super) const METADATA_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(super) fn backup_http_client(timeout: Duration) -> Result<reqwest::Client, String> {
     let builder = reqwest::Client::builder();
-    // Storage fixtures in tests serve a self-signed certificate.
+    // Unit tests trust the storage fixture's authority in addition to the
+    // system roots; certificate validation is never relaxed.
     #[cfg(test)]
-    let builder = builder.danger_accept_invalid_certs(true);
+    let builder = builder.tls_certs_merge([tests::fixture_root_certificate()]);
     builder
         .connect_timeout(Duration::from_secs(10))
         .read_timeout(Duration::from_secs(60))

@@ -74,7 +74,10 @@ server runs it as soon as the snapshot finishes and shows a failure in
 deploy output without failing the deploy. A database snapshot never waits for a
 deploy; it holds the app's deployment lock only while it copies the databases
 locally, and scheduled remote transfers release that lock after the local snapshot is
-ready. Failed retention deletions remain queued for a later backup attempt; expired
+ready. A deploy, release command, or `tako secrets sync` that arrives while a scheduled
+backup holds that lock waits up to 2 seconds, then can fail with `A scheduled backup of
+<app> is in progress; retry in a moment.`; retry it, because scheduled backups then
+leave the lock to the retry for about a minute and run on a later check. Failed retention deletions remain queued for a later backup attempt; expired
 entries are excluded from backup listings. Remote transfers have a 30-minute total
 deadline and a 60-second stalled-read deadline; metadata requests have a 30-second
 deadline.

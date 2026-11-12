@@ -61,20 +61,57 @@ pub(in crate::operations::backup) fn object_fixture(
     (endpoint, fixture)
 }
 
+/// A test-only certificate authority and the 127.0.0.1 certificate it
+/// issued, shared by every storage fixture in the process.
+struct FixtureTls {
+    ca_pem: String,
+    cert_pem: String,
+    key_pem: String,
+}
+
+fn fixture_tls() -> &'static FixtureTls {
+    static TLS: std::sync::OnceLock<FixtureTls> = std::sync::OnceLock::new();
+    TLS.get_or_init(|| {
+        let mut ca_params = rcgen::CertificateParams::new(Vec::new()).unwrap();
+        ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        ca_params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "Tako backup storage fixture CA");
+        let ca =
+            rcgen::CertifiedIssuer::self_signed(ca_params, rcgen::KeyPair::generate().unwrap())
+                .unwrap();
+        let key = rcgen::KeyPair::generate().unwrap();
+        let cert = rcgen::CertificateParams::new(vec!["127.0.0.1".into()])
+            .unwrap()
+            .signed_by(&key, &ca)
+            .unwrap();
+        FixtureTls {
+            ca_pem: ca.pem(),
+            cert_pem: cert.pem(),
+            key_pem: key.serialize_pem(),
+        }
+    })
+}
+
+/// The authority behind every storage fixture's certificate. Unit-test
+/// clients trust it; certificate validation stays on.
+pub(in crate::operations::backup) fn fixture_root_certificate() -> reqwest::Certificate {
+    reqwest::Certificate::from_pem(fixture_tls().ca_pem.as_bytes()).unwrap()
+}
+
 fn tls_listener() -> (std::net::TcpListener, String, openssl::ssl::SslAcceptor) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let endpoint = format!("https://{}", listener.local_addr().unwrap());
-    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let tls = fixture_tls();
     let mut acceptor =
         openssl::ssl::SslAcceptor::mozilla_intermediate(openssl::ssl::SslMethod::tls()).unwrap();
     acceptor
-        .set_certificate(&openssl::x509::X509::from_pem(cert.cert.pem().as_bytes()).unwrap())
+        .set_certificate(&openssl::x509::X509::from_pem(tls.cert_pem.as_bytes()).unwrap())
         .unwrap();
     acceptor
         .set_private_key(
-            &openssl::pkey::PKey::private_key_from_pem(cert.signing_key.serialize_pem().as_bytes())
-                .unwrap(),
+            &openssl::pkey::PKey::private_key_from_pem(tls.key_pem.as_bytes()).unwrap(),
         )
         .unwrap();
     (listener, endpoint, acceptor.build())
@@ -146,12 +183,57 @@ fn storage_fixture(
     }))
     .unwrap();
     let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
+        .tls_certs_merge([fixture_root_certificate()])
         .no_proxy()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
     (storage, client, fixture)
+}
+
+#[tokio::test]
+async fn backup_clients_validate_the_storage_certificate() {
+    // Trusted: the fixture's authority issued its certificate for 127.0.0.1.
+    let (endpoint, fixture) = object_fixture(Default::default(), 1);
+    let response = backup_http_client(Duration::from_secs(5))
+        .unwrap()
+        .get(format!("{endpoint}/fixture/missing"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+    fixture.await.unwrap();
+
+    // Not trusted: a client without that authority refuses the same server.
+    let (listener, endpoint, acceptor) = tls_listener();
+    let server = tokio::task::spawn_blocking(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    stream.set_nonblocking(false).unwrap();
+                    assert!(acceptor.accept(stream).is_err());
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(std::time::Instant::now() < deadline);
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("accept: {error}"),
+            }
+        }
+    });
+    let error = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap()
+        .get(format!("{endpoint}/fixture/missing"))
+        .send()
+        .await
+        .unwrap_err();
+    assert!(error.is_connect(), "{error:?}");
+    server.await.unwrap();
 }
 
 #[tokio::test]
