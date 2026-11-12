@@ -38,6 +38,9 @@ pub(crate) struct DatabaseSnapshotState {
     pub(crate) running: bool,
     /// A post-deploy full archive waits for the running database snapshot.
     pub(crate) post_deploy_backup_queued: bool,
+    /// The marker of a queued post-deploy archive that already ran could
+    /// not be removed; it queues nothing more in this process.
+    pub(crate) post_deploy_marker_stale: bool,
     /// Consecutive failed full archives of the app, retried with backoff.
     pub(crate) full_failures: super::scheduler::Backoff,
     /// Consecutive failed reads of the remote index, which pause every

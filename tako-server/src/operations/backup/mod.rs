@@ -1776,6 +1776,32 @@ mod tests {
         assert!(state.backup_schedule_state(app).failure().is_none());
     }
 
+    /// A marker that cannot be removed queues no further archives: one
+    /// archive ran for it, and the server remembers that.
+    #[tokio::test]
+    async fn a_queued_backup_marker_that_cannot_be_removed_runs_one_archive() {
+        let fixture = RestoreFixture::new();
+        unreachable_storage(&fixture);
+        let (state, app) = (&fixture.state, fixture.app.as_str());
+        // As a restart finds it, and no unlink can remove it.
+        std::fs::create_dir_all(state.post_deploy_backup_marker(app).join("busy")).unwrap();
+        state.run_queued_post_deploy_backup(app).await;
+        assert!(
+            state.backup_schedule_state(app).failure().is_some(),
+            "the queued backup must run once"
+        );
+        for _ in 0..2 {
+            if let Some(schedule) = state.database_snapshots.write().get_mut(app) {
+                schedule.full_failures = Default::default();
+            }
+            state.run_queued_post_deploy_backup(app).await;
+            assert!(
+                state.backup_schedule_state(app).failure().is_none(),
+                "a marker that cannot be removed must not run the backup again"
+            );
+        }
+    }
+
     /// An app deleted and created again with the same name starts with a
     /// clean schedule.
     #[tokio::test]
@@ -1951,15 +1977,29 @@ mod tests {
             "operator retry must succeed after a backup"
         );
 
-        // The next tick runs both archives. The fixture refuses uploads, so
-        // each fails at its upload, and the lock is released all the same.
-        let server = fixture.serve(5);
+        // Its marker, as a restart would keep it.
+        state.record_post_deploy_backup_queued(app, true);
+        // The next tick runs one archive, which is both the due one and the
+        // queued one. The fixture refuses uploads, so it fails at its upload,
+        // and the lock is released all the same.
+        let server = fixture.serve(3);
         state.run_due_backups().await;
         let served = server.await.unwrap();
-        assert_eq!(served.len(), 5, "{served:?}");
-        for archive in [&served[..3], &served[3..]] {
-            assert!(archive.last().unwrap().starts_with("PUT "), "{served:?}");
-        }
+        assert_eq!(served.len(), 3);
+        assert!(
+            served[2].starts_with("PUT "),
+            "the archive must reach its upload"
+        );
+        // A second archive would have failed to connect once the fixture
+        // closed, after the first one's refused upload.
+        assert!(
+            state
+                .backup_schedule_state(app)
+                .failure()
+                .is_some_and(|failure| failure.message.contains("404")),
+            "only one archive may run for a due and a queued backup"
+        );
+        assert!(!state.post_deploy_backup_marker(app).exists());
         let schedule = state.backup_schedule_state(app);
         assert_eq!(
             schedule.failure().unwrap().reason,

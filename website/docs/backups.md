@@ -71,7 +71,8 @@ a busy error. The post-deploy backup is the exception: when a database snapshot 
 running, the deploy finishes without waiting and reports the backup as queued; the
 server runs it as soon as the snapshot finishes and shows a failure in
 `tako backups status`. A queued backup survives a server restart and runs at the
-first check after the start. Any other busy or failed post-deploy backup is reported in the
+first check after the start that can read the backup index. A full archive that
+is due at that check anyway also counts as the queued one. Any other busy or failed post-deploy backup is reported in the
 deploy output without failing the deploy. A database snapshot never waits for a
 deploy; it holds the app's deployment lock only while it copies the databases
 locally, and scheduled remote transfers release that lock after the local snapshot is
