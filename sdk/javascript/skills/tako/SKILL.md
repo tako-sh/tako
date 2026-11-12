@@ -178,9 +178,9 @@ read or validation failures must not trigger a backend fallback. Multi-server
 workflows still require Postgres unless intentionally local. Test expired history
 and the resulting authoritative-state reload.
 
-Local channel and Presence connections bypass auth callbacks. Verify their
-private access rules in a deployed test environment. Store reads and
-subscriptions enforce validation and authorization in both dev and production.
+Channel, Presence, and Store requests enforce params validation and the app's
+authorization in both dev and production, so private access rules can be
+tested locally with `tako dev`.
 
 Stores are live, authorized reads over an existing database, with explicit
 invalidation after committed writes. They do not automatically track SQL or

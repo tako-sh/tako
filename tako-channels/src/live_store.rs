@@ -1,8 +1,8 @@
 //! Read-only Store subscriptions built on the channel transport.
 
 use crate::{
-    ChannelAuthResponse, ChannelAuthScheme, ChannelDefinitionMeta, ChannelError,
-    ChannelHeaderValue, ChannelOperation, ChannelPublishPayload, ChannelStore,
+    ChannelAuthResponse, ChannelDefinitionMeta, ChannelError, ChannelOperation,
+    ChannelPublishPayload, ChannelStore,
 };
 use bytes::Bytes;
 use percent_encoding::percent_decode_str;
@@ -273,7 +273,6 @@ pub async fn load_store(
 }
 
 /// Local dev uses the same metadata, typed params, and authorization as production.
-/// Ordinary dev channels retain their existing permissive behavior.
 pub async fn authorize_store(
     endpoint: &str,
     internal_host: &str,
@@ -297,31 +296,13 @@ pub async fn authorize_store(
         .find(|definition| definition.channel == channel)
         .ok_or(ChannelError::NotDefined)?;
     let params = validate_store_query(&definition.params_schema, query)?;
-    let (header, cookie) = match &definition.auth {
-        ChannelAuthScheme::Public => (None, None),
-        ChannelAuthScheme::Required {
-            header_name,
-            cookie_name,
-        } => {
-            let header = header_name
-                .as_ref()
-                .and_then(|name| headers.get(&name.to_ascii_lowercase()))
-                .map(|raw| ChannelHeaderValue::parse(raw));
-            let cookie = cookie_name.as_ref().and_then(|name| {
-                headers.get("cookie")?.split(';').find_map(|pair| {
-                    let (key, value) = pair.trim().split_once('=')?;
-                    (key == name).then(|| value.to_owned())
-                })
-            });
-            if (header_name.is_some() || cookie_name.is_some())
-                && header.is_none()
-                && cookie.is_none()
-            {
-                return Err(ChannelError::Unauthorized);
-            }
-            (header, cookie)
-        }
-    };
+    let (header, cookie) = crate::authorize::extract_credentials(headers, &definition.auth);
+    if crate::authorize::auth_scheme_requires_declared_credentials(&definition.auth)
+        && header.is_none()
+        && cookie.is_none()
+    {
+        return Err(ChannelError::Unauthorized);
+    }
     let auth = crate::authorize_channel_request(
         endpoint,
         internal_host,

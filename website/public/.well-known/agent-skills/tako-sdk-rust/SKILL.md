@@ -92,9 +92,9 @@ scope sees its roster; permissions are checked again when the configured maximum
 connection lifetime expires. Configure the shared `postgres_url` credential for
 multiple servers; native registration is not detected by the JS deploy preflight.
 
-Local Presence connections bypass auth callbacks and use in-memory state.
-Verify private-room rejection and trusted identities in a deployed test
-environment. Deduplicate subjects when counting users across tabs; connection
+Local Presence connections run the same auth callbacks as production and use
+in-memory state, so private-room rejection and trusted identities can be
+verified with `tako dev`. Deduplicate subjects when counting users across tabs; connection
 IDs identify sessions, not people.
 
 ## Stores

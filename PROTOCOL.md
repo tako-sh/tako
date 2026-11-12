@@ -89,7 +89,7 @@ JavaScript `.run()` combines enqueue and result waiting. In a workflow, the SDK 
 
 Channel registry metadata, authorization responses, and internal publish lifecycle metadata carry optional `ephemeral: true`. Omission or false selects durable delivery. Ephemeral definitions omit `replayWindowMs`; supplying both is invalid. Durability is a definition setting and cannot be changed by client input or an authorization grant.
 
-Ephemeral publication uses a bounded process-local broadcast bus shared by the publisher and proxy stores for the same deployed app database path. It does not write channel metadata or message rows. Only active subscriptions receive events; lagging subscribers skip evicted events and reconnects have no replay. Ephemeral `ChannelMessage` values have an empty `id`; SSE frames omit the replay ID. Shared Postgres stores reject ephemeral delivery until a transient cross-server transport is available. Local development fetches channel registry metadata to select the same delivery mode while preserving permissive channel authorization.
+Ephemeral publication uses a bounded process-local broadcast bus shared by the publisher and proxy stores for the same deployed app database path. It does not write channel metadata or message rows. Only active subscriptions receive events; lagging subscribers skip evicted events and reconnects have no replay. Ephemeral `ChannelMessage` values have an empty `id`; SSE frames omit the replay ID. Shared Postgres stores reject ephemeral delivery until a transient cross-server transport is available. Local development reads the channel registry for params and the auth scheme and takes the delivery mode from the app's authorize answer, as production does.
 
 ## Channel streams
 
@@ -121,7 +121,7 @@ Server snapshots are `{ "type": "tako.presence", "connectionId": "...", "members
 
 Membership is scoped by deployed app/environment, wire name, and canonical validated params. Every authorized connection within one scope sees the same members. Params are serialized with recursively sorted object keys, then the wire name and params tuple is hashed with SHA-256 to produce a fixed-size storage key; query ordering does not create separate spaces. Each connection gets a server-generated ID, including separate tabs for one subject.
 
-The client renews a 45-second lease with an update every 15 seconds. Disconnect cleanup removes its record; expiry covers network loss and process crashes. Snapshots poll shared state at approximately one-second intervals. SQLite and Postgres store leases separately from replay, with Postgres keyed by app ID for cross-server visibility. Local dev uses the same WebSocket session loop and an in-memory store; local auth remains permissive as with channels.
+The client renews a 45-second lease with an update every 15 seconds. Disconnect cleanup removes its record; expiry covers network loss and process crashes. Snapshots poll shared state at approximately one-second intervals. SQLite and Postgres store leases separately from replay, with Postgres keyed by app ID for cross-server visibility. Local dev uses the same WebSocket session loop and an in-memory store, and authorizes connections through the app as production does.
 
 ## Stores
 

@@ -1,3 +1,4 @@
+pub mod authorize;
 mod client;
 mod cursor;
 mod mesh;

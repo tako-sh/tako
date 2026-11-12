@@ -183,7 +183,7 @@ func registerChatPresence() {
 
 A React frontend uses `usePresence` from `tako.sh/react` with the same public name, params, and authorization token. The Go SDK registers backend policies; it does not create a browser or native WebSocket client. `tako.PresenceSnapshot` and `tako.PresenceMember` expose the wire shapes for consumers that manage their own connections. Member metadata is `json.RawMessage` and must be validated before use.
 
-Every browser tab has its own server-assigned connection ID. The verified `Subject` identifies the user across tabs; deduplicate subjects when counting people. Presence metadata and membership are ephemeral, have no durable replay, and are scoped to the deployed app/environment. Shared Postgres carries membership across production servers. Local development uses in-memory state and bypasses auth callbacks, as with local channels. Verify private-room rejection and trusted identities in a deployed test environment.
+Every browser tab has its own server-assigned connection ID. The verified `Subject` identifies the user across tabs; deduplicate subjects when counting people. Presence metadata and membership are ephemeral, have no durable replay, and are scoped to the deployed app/environment. Shared Postgres carries membership across production servers. Local development uses in-memory state and runs the same auth callbacks as production, so private-room rejection and trusted identities can be verified with `tako dev`.
 
 ## Stores
 

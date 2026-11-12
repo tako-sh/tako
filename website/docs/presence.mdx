@@ -7,7 +7,7 @@ Presence tracks who is connected to a named space. Tako manages membership, meta
 
 Use [Stores](/stores/) to keep backend data and UI synchronized with optional cached offline reads. Presence describes current connections; Stores loads data from your existing database.
 
-Local subscriptions bypass authorization callbacks; verify private membership in a deployed test environment. Presence params partition membership, as channel params partition streams. Client metadata is untrusted; use the server-verified subject for identity.
+`tako dev` runs the same authorization callbacks as production, so private membership and verified subjects can be tested locally. Presence params partition membership, as channel params partition streams. Client metadata is untrusted; use the server-verified subject for identity.
 
 ## Define A Space
 
@@ -191,7 +191,7 @@ Connected clients receive membership changes within approximately one second. Cl
 
 Presence uses expiring records separate from durable channel replay. It does not replay old joins, leaves, or cursor positions. Use channels for durable live events and your app database for lasting records.
 
-Local development keeps presence in memory and permits connections without running auth callbacks, matching local channel behavior. Single-server production uses Tako-managed SQLite by default. Native networks exchange expiring, server-bound presence leases between trusted servers; presence does not replay durable history. Legacy multi-server deployments use the shared `postgres_url` credential so connections on different servers see the same members. Native multi-server presence can use SQLite without that credential; configured Postgres remains in use. Presence state is scoped to the deployed app and environment. Configure `postgres_url` explicitly for legacy multi-server Go and Rust apps; the deployment preflight currently detects JavaScript definition directories, not inline native registrations.
+Local development keeps presence in memory and authorizes connections through the app, as production does. Single-server production uses Tako-managed SQLite by default. Native networks exchange expiring, server-bound presence leases between trusted servers; presence does not replay durable history. Legacy multi-server deployments use the shared `postgres_url` credential so connections on different servers see the same members. Native multi-server presence can use SQLite without that credential; configured Postgres remains in use. Presence state is scoped to the deployed app and environment. Configure `postgres_url` explicitly for legacy multi-server Go and Rust apps; the deployment preflight currently detects JavaScript definition directories, not inline native registrations.
 
 ## Verify
 

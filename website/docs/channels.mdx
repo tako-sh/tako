@@ -7,7 +7,7 @@ Tako Channels are broadcast streams for live app events over SSE or WebSocket. C
 
 JavaScript and Go can register channel definitions. JavaScript additionally provides local server-side publication and can close a stream. JavaScript, Go, and Rust can [publish to a JavaScript-owned network channel](/network-primitives/). Rust currently has no general Channels registration API; its [Presence](/presence/) and [Stores](/stores/) registries are separate capabilities. Browser and React examples below use the JavaScript client with any supported backend definition.
 
-Local channel subscriptions bypass authorization callbacks. Test private access rules in a deployed test environment. Params select separate streams, but they are not access control: authorization must check that the caller may use the requested params.
+`tako dev` authorizes channel subscriptions and connections the same way production does: it wakes the app if needed, validates params against the app's definition, and runs the auth callback, so a denied client is rejected locally with the same status or WebSocket close code. Params select separate streams, but they are not access control: authorization must check that the caller may use the requested params.
 
 ## Choose Broadcast Semantics
 
@@ -500,4 +500,4 @@ Keep these limits in mind:
 
 ## Verify
 
-Connect two authorized clients and confirm both receive the same published event. Test a denied client in a deployed environment and reconnect with a retained replay cursor. Then reconnect after expiry and confirm the SDK resumes, the application reloads authoritative state, and no reset message reaches business handlers. Test an async reload failure and stop a reconnecting subscription with `close()`. For a closed stream, subscribe with `from: "start"` and confirm that every message arrives, then `closed`, with no reconnect, and that a publish after `close()` fails. On multiple servers, publish through one and subscribe through another using the configured native or shared Postgres transport. A successful local connection does not verify production authorization or cross-server fanout.
+Connect two authorized clients and confirm both receive the same published event. Confirm that a denied client is rejected, and reconnect with a retained replay cursor. Then reconnect after expiry and confirm the SDK resumes, the application reloads authoritative state, and no reset message reaches business handlers. Test an async reload failure and stop a reconnecting subscription with `close()`. For a closed stream, subscribe with `from: "start"` and confirm that every message arrives, then `closed`, with no reconnect, and that a publish after `close()` fails. On multiple servers, publish through one and subscribe through another using the configured native or shared Postgres transport. Local development keeps replay in memory on one daemon, so a successful local connection does not verify durable storage or cross-server fanout.

@@ -553,7 +553,9 @@ async fn publish_identity_from_instance_env_matches_the_proxy_registry_key() {
                 channel: "chat",
                 params: &params,
                 build: env.get("TAKO_BUILD").map(String::as_str),
-                payload: serde_json::json!({"type": "msg", "data": 1}),
+                write: tako_workflows::ChannelWrite::Publish(
+                    serde_json::json!({"type": "msg", "data": 1}),
+                ),
             },
         )
     };

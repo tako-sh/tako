@@ -1,41 +1,13 @@
 use super::*;
-use pingora_core::protocols::l4::stream::Stream;
 use serde_json::json;
 use std::time::Duration;
-use tokio::net::TcpListener;
 
-/// An app that only serves its channel registry.
+/// An app whose authorizer allows every operation with its definition's lifecycle.
 async fn registry_app(definitions: serde_json::Value) -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    tokio::spawn(async move {
-        loop {
-            let (socket, _) = listener.accept().await.unwrap();
-            let body = definitions.to_string();
-            tokio::spawn(async move {
-                let mut session = Session::new_h1(Box::new(Stream::from(socket)));
-                session.read_request().await.unwrap();
-                assert_eq!(session.req_header().uri.path(), "/channels/registry");
-                let mut header = ResponseHeader::build(200, None).unwrap();
-                header.insert_header("Content-Length", body.len()).unwrap();
-                header
-                    .insert_header("Content-Type", "application/json")
-                    .unwrap();
-                header
-                    .insert_header("x-tako-internal-token", "test-token")
-                    .unwrap();
-                session
-                    .write_response_header(Box::new(header), false)
-                    .await
-                    .unwrap();
-                session
-                    .write_response_body(Some(body.into()), true)
-                    .await
-                    .unwrap();
-            });
-        }
-    });
-    port
+    let lifecycle = test_app::grant(&definitions[0]);
+    test_app::fake_app(definitions, move |_| (200, lifecycle.clone()))
+        .await
+        .0
 }
 
 #[tokio::test]
@@ -52,29 +24,8 @@ async fn params_select_the_stream_subscribers_and_publishers_share() {
         "maxConnectionLifetimeMs": 2000,
     }]))
     .await;
-    let routes = crate::proxy::Routes::default();
-    routes.set_routes("app".into(), vec!["app.test".into()], app_port, true);
-    routes.set_store_auth("app", "app.tako".into(), "test-token".into());
-    let target = routes.lookup("app.test", "/").unwrap();
-    let app_id = target.channel_store_key.clone();
     let dev_store = DevChannelStore::new();
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let endpoint = listener.local_addr().unwrap();
-    {
-        let dev_store = dev_store.clone();
-        tokio::spawn(async move {
-            loop {
-                let (socket, _) = listener.accept().await.unwrap();
-                let (dev_store, target) = (dev_store.clone(), target.clone());
-                tokio::spawn(async move {
-                    let mut session = Session::new_h1(Box::new(Stream::from(socket)));
-                    session.read_request().await.unwrap();
-                    let path = session.req_header().uri.path().to_owned();
-                    let _ = try_handle(&mut session, &dev_store, &target, &path, "GET").await;
-                });
-            }
-        });
-    }
+    let (endpoint, app_id) = test_app::dev_proxy(app_port, &dev_store).await;
     let subscribe =
         |query: &str| reqwest::get(format!("http://{endpoint}/_tako/channels/chat?{query}"));
 
@@ -141,29 +92,8 @@ async fn closed_streams_replay_from_start_and_end_readers_as_in_production() {
         "maxConnectionLifetimeMs": 3000,
     }]))
     .await;
-    let routes = crate::proxy::Routes::default();
-    routes.set_routes("app".into(), vec!["app.test".into()], app_port, true);
-    routes.set_store_auth("app", "app.tako".into(), "test-token".into());
-    let target = routes.lookup("app.test", "/").unwrap();
-    let app_id = target.channel_store_key.clone();
     let dev_store = DevChannelStore::new();
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let endpoint = listener.local_addr().unwrap();
-    {
-        let dev_store = dev_store.clone();
-        tokio::spawn(async move {
-            loop {
-                let (socket, _) = listener.accept().await.unwrap();
-                let (dev_store, target) = (dev_store.clone(), target.clone());
-                tokio::spawn(async move {
-                    let mut session = Session::new_h1(Box::new(Stream::from(socket)));
-                    session.read_request().await.unwrap();
-                    let path = session.req_header().uri.path().to_owned();
-                    let _ = try_handle(&mut session, &dev_store, &target, &path, "GET").await;
-                });
-            }
-        });
-    }
+    let (endpoint, app_id) = test_app::dev_proxy(app_port, &dev_store).await;
     // The internal socket's close command, as main.rs applies it.
     let write = |write: tako_workflows::ChannelWrite| {
         let publication = trusted_publication(tako_workflows::ChannelPublishRequest {
