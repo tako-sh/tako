@@ -1,0 +1,53 @@
+{
+  "description": "Bailing ends the run as cancelled with the given reason.",
+  "drive": "run",
+  "workflows": ["bail"],
+  "steps": [
+    {
+      "expect": {
+        "command": "claim_run",
+        "app": "scenario-app",
+        "worker_id": {
+          "$var": "process_worker",
+          "is": {
+            "$type": "string"
+          }
+        },
+        "names": ["bail"],
+        "lease_ms": {
+          "$var": "lease_ms",
+          "is": {
+            "$positive": true
+          }
+        }
+      },
+      "reply": {
+        "status": "ok",
+        "data": {
+          "id": "run-1",
+          "worker_id": "claim-1",
+          "name": "bail",
+          "payload": {},
+          "status": "running",
+          "attempts": 1,
+          "max_attempts": 3,
+          "run_at_ms": 1700000000000,
+          "step_state": {}
+        }
+      }
+    },
+    {
+      "expect": {
+        "command": "cancel_run",
+        "app": "scenario-app",
+        "id": "run-1",
+        "worker_id": "claim-1",
+        "reason": "not needed"
+      },
+      "reply": {
+        "status": "ok",
+        "data": {}
+      }
+    }
+  ]
+}

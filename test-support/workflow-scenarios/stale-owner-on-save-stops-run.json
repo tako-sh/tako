@@ -1,0 +1,55 @@
+{
+  "description": "A run_not_owned rejection of a step save means another owner has the run: the worker stops without saving more, completing, or failing it.",
+  "drive": "run",
+  "workflows": ["steps"],
+  "steps": [
+    {
+      "expect": {
+        "command": "claim_run",
+        "app": "scenario-app",
+        "worker_id": {
+          "$var": "process_worker",
+          "is": {
+            "$type": "string"
+          }
+        },
+        "names": ["steps"],
+        "lease_ms": {
+          "$var": "lease_ms",
+          "is": {
+            "$positive": true
+          }
+        }
+      },
+      "reply": {
+        "status": "ok",
+        "data": {
+          "id": "run-1",
+          "worker_id": "claim-1",
+          "name": "steps",
+          "payload": {},
+          "status": "running",
+          "attempts": 1,
+          "max_attempts": 3,
+          "run_at_ms": 1700000000000,
+          "step_state": {}
+        }
+      }
+    },
+    {
+      "expect": {
+        "command": "save_step",
+        "app": "scenario-app",
+        "id": "run-1",
+        "worker_id": "claim-1",
+        "step_name": "a",
+        "result": "a-done"
+      },
+      "reply": {
+        "status": "error",
+        "message": "save_step failed: stale worker: run is no longer owned by this worker",
+        "code": "run_not_owned"
+      }
+    }
+  ]
+}

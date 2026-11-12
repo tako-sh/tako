@@ -1,0 +1,30 @@
+{
+  "description": "At start the worker registers the schedule of every scheduled workflow, with its attempt budget when it sets one, and nothing for unscheduled workflows.",
+  "drive": "start",
+  "workflows": ["nightly", "hourly", "steps"],
+  "steps": [
+    {
+      "expect": {
+        "command": "register_schedules",
+        "app": "scenario-app",
+        "schedules": {
+          "$unordered": [
+            {
+              "name": "nightly",
+              "cron": "0 3 * * *",
+              "max_attempts": 5
+            },
+            {
+              "name": "hourly",
+              "cron": "0 * * * *"
+            }
+          ]
+        }
+      },
+      "reply": {
+        "status": "ok",
+        "data": {}
+      }
+    }
+  ]
+}

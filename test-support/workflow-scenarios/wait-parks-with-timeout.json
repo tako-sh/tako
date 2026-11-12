@@ -1,0 +1,57 @@
+{
+  "description": "Waiting for an event with a ten-minute timeout parks the run with a timeout ten minutes away.",
+  "drive": "run",
+  "workflows": ["wait-timeout"],
+  "steps": [
+    {
+      "expect": {
+        "command": "claim_run",
+        "app": "scenario-app",
+        "worker_id": {
+          "$var": "process_worker",
+          "is": {
+            "$type": "string"
+          }
+        },
+        "names": ["wait-timeout"],
+        "lease_ms": {
+          "$var": "lease_ms",
+          "is": {
+            "$positive": true
+          }
+        }
+      },
+      "reply": {
+        "status": "ok",
+        "data": {
+          "id": "run-1",
+          "worker_id": "claim-1",
+          "name": "wait-timeout",
+          "payload": {},
+          "status": "running",
+          "attempts": 1,
+          "max_attempts": 3,
+          "run_at_ms": 1700000000000,
+          "step_state": {}
+        }
+      }
+    },
+    {
+      "expect": {
+        "command": "wait_for_event",
+        "app": "scenario-app",
+        "id": "run-1",
+        "worker_id": "claim-1",
+        "step_name": "approval",
+        "event_name": "approval",
+        "timeout_at_ms": {
+          "$ms_from_now": [599000, 600000]
+        }
+      },
+      "reply": {
+        "status": "ok",
+        "data": {}
+      }
+    }
+  ]
+}
