@@ -50,6 +50,10 @@ pub struct RequestCtx {
     pub(super) native_remote: Option<std::net::Ipv6Addr>,
     pub(super) backend: Option<Backend>,
     pub(super) backend_request_started: bool,
+    /// Classified as an upgraded or streaming connection (WebSocket, SSE).
+    pub(super) long_lived: bool,
+    /// The started backend request is counted as long-lived on its instance.
+    pub(super) backend_long_lived: bool,
     pub(super) is_https: bool,
     pub(super) matched_route_path: Option<Arc<str>>,
     pub(super) request_timer: Option<RequestTimer>,
@@ -85,6 +89,29 @@ impl RequestCtx {
         if let Some(ref backend) = self.backend {
             backend.request_started();
             self.backend_request_started = true;
+            self.count_backend_long_lived();
+        }
+    }
+
+    /// Classify this request as long-lived for the server-wide drain and for
+    /// its instance's drain, which then no longer waits for it.
+    pub(super) fn mark_long_lived(&mut self) {
+        if !self.long_lived {
+            self.long_lived = true;
+            if let Some(guard) = &self.request_guard {
+                guard.mark_long_lived();
+            }
+        }
+        self.count_backend_long_lived();
+    }
+
+    fn count_backend_long_lived(&mut self) {
+        if !self.long_lived || !self.backend_request_started || self.backend_long_lived {
+            return;
+        }
+        if let Some(ref backend) = self.backend {
+            backend.request_became_long_lived();
+            self.backend_long_lived = true;
         }
     }
 
@@ -94,9 +121,14 @@ impl RequestCtx {
         }
 
         if let Some(ref backend) = self.backend {
-            backend.request_finished();
+            if self.backend_long_lived {
+                backend.long_lived_request_finished();
+            } else {
+                backend.request_finished();
+            }
         }
         self.backend_request_started = false;
+        self.backend_long_lived = false;
     }
 
     pub(super) fn record_backend(&mut self, backend: &Backend) {
@@ -121,6 +153,8 @@ impl ProxyHttp for TakoProxy {
             native_remote: None,
             backend: None,
             backend_request_started: false,
+            long_lived: false,
+            backend_long_lived: false,
             is_https: false,
             matched_route_path: None,
             request_timer: None,
@@ -328,10 +362,8 @@ impl ProxyHttp for TakoProxy {
         upstream_response: &mut ResponseHeader,
         ctx: &mut Self::CTX,
     ) -> Result<()> {
-        if (upstream_response.status.as_u16() == 101 || native::is_event_stream(upstream_response))
-            && let Some(guard) = &ctx.request_guard
-        {
-            guard.mark_long_lived();
+        if upstream_response.status.as_u16() == 101 || native::is_event_stream(upstream_response) {
+            ctx.mark_long_lived();
         }
         upstream_response.insert_header("X-Request-ID", ctx.observation.request_id())?;
         ctx.observation.finish_upstream_response();

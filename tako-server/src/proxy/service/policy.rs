@@ -28,10 +28,10 @@ impl TakoProxy {
         let Some(guard) = self.proxy_requests.register(socket) else {
             return native::reject(session, 503).await;
         };
-        if session.req_header().headers.contains_key("upgrade") {
-            guard.mark_long_lived();
-        }
         ctx.request_guard = Some(guard);
+        if session.req_header().headers.contains_key("upgrade") {
+            ctx.mark_long_lived();
+        }
         if self.draining.load(std::sync::atomic::Ordering::Acquire) {
             return native::reject(session, 503).await;
         }

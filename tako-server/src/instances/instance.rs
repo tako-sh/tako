@@ -24,6 +24,13 @@ pub(super) fn generate_internal_token() -> String {
     nanoid::nanoid!(32)
 }
 
+// One atomic holds both in-flight counts so a drain reads a consistent pair:
+// the total in the high half, the long-lived (upgraded or streaming) subset in
+// the low half. Concurrent requests are bounded far below 2^32.
+const IN_FLIGHT_ONE: u64 = 1 << 32;
+const LONG_LIVED_ONE: u64 = 1;
+const LONG_LIVED_MASK: u64 = IN_FLIGHT_ONE - 1;
+
 pub(super) fn encode_instance_state(state: InstanceState) -> u8 {
     match state {
         InstanceState::Starting => 0,
@@ -78,7 +85,8 @@ pub struct Instance {
     /// Total requests handled
     requests_total: AtomicU64,
 
-    /// In-flight requests (best-effort; used to avoid killing while serving)
+    /// In-flight requests (best-effort; used to avoid killing while serving),
+    /// packed with the long-lived subset; see `IN_FLIGHT_ONE`.
     in_flight: AtomicU64,
     /// Last request completion time as millis since UNIX_EPOCH (for idle timeout)
     pub(super) last_request_ms: AtomicU64,
@@ -274,18 +282,42 @@ impl Instance {
 
     pub fn request_started(&self) {
         self.requests_total.fetch_add(1, Ordering::Relaxed);
-        self.in_flight.fetch_add(1, Ordering::Relaxed);
+        self.in_flight.fetch_add(IN_FLIGHT_ONE, Ordering::Relaxed);
+    }
+
+    /// Reclassify one started request as an upgraded or streaming connection.
+    /// It stays in `in_flight` but no longer holds an instance drain.
+    pub fn request_became_long_lived(&self) {
+        self.in_flight.fetch_add(LONG_LIVED_ONE, Ordering::Relaxed);
     }
 
     pub fn request_finished(&self) {
-        if self.in_flight.fetch_sub(1, Ordering::Relaxed) == 1 {
+        self.finish_request(IN_FLIGHT_ONE);
+    }
+
+    pub fn long_lived_request_finished(&self) {
+        self.finish_request(IN_FLIGHT_ONE + LONG_LIVED_ONE);
+    }
+
+    fn finish_request(&self, delta: u64) {
+        if self.in_flight.fetch_sub(delta, Ordering::Relaxed) >> 32 == 1 {
             self.last_request_ms
                 .store(now_unix_millis(), Ordering::Relaxed);
         }
     }
 
     pub fn in_flight(&self) -> u64 {
-        self.in_flight.load(Ordering::Relaxed)
+        self.in_flight.load(Ordering::Relaxed) >> 32
+    }
+
+    /// In-flight requests an instance drain waits for: all but long-lived ones.
+    pub fn short_in_flight(&self) -> u64 {
+        let packed = self.in_flight.load(Ordering::Relaxed);
+        (packed >> 32).saturating_sub(packed & LONG_LIVED_MASK)
+    }
+
+    pub fn long_lived_in_flight(&self) -> u64 {
+        self.in_flight.load(Ordering::Relaxed) & LONG_LIVED_MASK
     }
 
     pub fn requests_total(&self) -> u64 {

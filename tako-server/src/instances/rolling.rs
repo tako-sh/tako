@@ -33,6 +33,28 @@ impl Default for RollingUpdateConfig {
     }
 }
 
+/// Poll interval while an instance drain waits for short requests.
+const DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Wait until `instance` serves no ordinary short requests, or `drain_timeout`
+/// passes. Returns whether the short requests finished in time.
+///
+/// Upgraded and streaming connections (WebSocket, SSE) are not waited for:
+/// they do not end on their own, so waiting would only hold the drain for the
+/// whole timeout and still end in a reset. Stopping the instance sends SIGTERM,
+/// which is the app's cue to close them cleanly within the stop grace period.
+pub(crate) async fn wait_for_short_requests(instance: &Instance, drain_timeout: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + drain_timeout;
+    while instance.short_in_flight() > 0 {
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep_until(deadline.min(tokio::time::Instant::now() + DRAIN_POLL_INTERVAL))
+            .await;
+    }
+    true
+}
+
 /// Result of a rolling update
 #[derive(Debug)]
 pub struct RollingUpdateResult {
@@ -302,19 +324,23 @@ impl RollingUpdater {
         // Mark as draining (load balancer should stop sending new requests)
         app.set_instance_state(instance, InstanceState::Draining);
 
-        // Wait until all in-flight requests finish or drain_timeout is reached
-        let deadline = tokio::time::Instant::now() + self.config.drain_timeout;
-        while instance.in_flight() > 0 {
-            if tokio::time::Instant::now() >= deadline {
-                tracing::warn!(
-                    app = %app.name(),
-                    instance = %instance.id,
-                    in_flight = instance.in_flight(),
-                    "Drain timeout exceeded, forcing stop"
-                );
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
+        // Wait until short in-flight requests finish or drain_timeout is reached
+        if !wait_for_short_requests(instance, self.config.drain_timeout).await {
+            tracing::warn!(
+                app = %app.name(),
+                instance = %instance.id,
+                in_flight = instance.in_flight(),
+                "Drain timeout exceeded, forcing stop"
+            );
+        }
+        let long_lived = instance.long_lived_in_flight();
+        if long_lived > 0 {
+            tracing::debug!(
+                app = %app.name(),
+                instance = %instance.id,
+                long_lived,
+                "Stopping instance with open long-lived connections"
+            );
         }
 
         // At this point the stable replacement set is already in routing. A
@@ -566,6 +592,90 @@ mod tests {
         assert!(result.is_ok());
 
         // Instance should be removed from app
+        assert!(app.get_instance(&instance.id).is_none());
+    }
+
+    fn updater_with_drain_timeout(drain_timeout: Duration) -> RollingUpdater {
+        RollingUpdater::new(
+            Arc::new(Spawner::new()),
+            RollingUpdateConfig {
+                drain_timeout,
+                ..RollingUpdateConfig::default()
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn drain_does_not_wait_for_long_lived_connections() {
+        let app = create_test_app("long-lived-drain-app");
+        let instance = app.allocate_instance();
+        app.set_instance_state(&instance, InstanceState::Healthy);
+        for _ in 0..2 {
+            instance.request_started();
+            instance.request_became_long_lived();
+        }
+
+        let updater = updater_with_drain_timeout(Duration::from_secs(30));
+        let started = std::time::Instant::now();
+        timeout(
+            Duration::from_secs(5),
+            updater.drain_and_stop(&app, &instance),
+        )
+        .await
+        .expect("drain must not wait for long-lived connections")
+        .expect("drain and stop");
+
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(app.get_instance(&instance.id).is_none());
+        // The proxy still owns these requests and releases them on close.
+        assert_eq!(instance.in_flight(), 2);
+    }
+
+    #[tokio::test]
+    async fn drain_waits_for_short_requests_until_they_finish() {
+        let app = create_test_app("short-drain-app");
+        let instance = app.allocate_instance();
+        app.set_instance_state(&instance, InstanceState::Healthy);
+        instance.request_started();
+        instance.request_started();
+        instance.request_became_long_lived();
+
+        let finisher = {
+            let instance = instance.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                instance.request_finished();
+            })
+        };
+        let updater = updater_with_drain_timeout(Duration::from_secs(30));
+        let started = std::time::Instant::now();
+        updater
+            .drain_and_stop(&app, &instance)
+            .await
+            .expect("drain and stop");
+        finisher.await.unwrap();
+
+        let elapsed = started.elapsed();
+        assert!(elapsed >= Duration::from_millis(200), "{elapsed:?}");
+        assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+        assert_eq!(instance.short_in_flight(), 0);
+    }
+
+    #[tokio::test]
+    async fn drain_stops_after_timeout_when_short_requests_remain() {
+        let app = create_test_app("stuck-drain-app");
+        let instance = app.allocate_instance();
+        app.set_instance_state(&instance, InstanceState::Healthy);
+        instance.request_started();
+
+        let updater = updater_with_drain_timeout(Duration::from_millis(150));
+        let started = std::time::Instant::now();
+        updater
+            .drain_and_stop(&app, &instance)
+            .await
+            .expect("drain and stop");
+
+        assert!(started.elapsed() >= Duration::from_millis(150));
         assert!(app.get_instance(&instance.id).is_none());
     }
 

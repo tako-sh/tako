@@ -80,6 +80,8 @@ If an instance exits or fails its health checks, the server replaces it. The fir
 
 During rolling deploys, new instances do not receive public traffic and old instances are not drained until every replacement batch stays healthy for a short stability window. If active health probing marks a new batch unhealthy during that window, deploy rolls back and keeps the previous release serving.
 
+Draining an instance, for a deploy or a scale-down, stops new requests to it and waits up to 30 seconds for its ordinary requests to finish. WebSocket upgrades and server-sent event responses do not hold the drain: once ordinary requests finish, the server sends `SIGTERM` and kills the process if it has not exited after a grace period (15 seconds for native processes). Open sockets and streams to that instance are closed, and clients should reconnect. The JavaScript SDK ends server-sent event streams cleanly on `SIGTERM`; an app that serves its own WebSockets should close them with code `1012` (service restart). Channel and presence connections are served by `tako-server`, not by app instances, and stay open across deploys. Idle scale-down still counts every open connection, so an instance with an open socket is never treated as idle.
+
 Health checks call `/status` with `Host: <app>.tako` and `X-Tako-Internal-Token`. SDK adapters handle this endpoint and echo the token. Browser-facing production 5xx bodies stay generic; detailed startup, proxy, storage, channel, and image diagnostics go to app logs.
 
 ## Data And Backups

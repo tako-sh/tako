@@ -64,6 +64,69 @@ async fn proxy_context_finishes_only_requests_started_upstream() {
     assert_eq!(instance.in_flight(), 0);
 }
 
+#[tokio::test]
+async fn proxy_context_keeps_long_lived_instance_counts_balanced() {
+    let manager = Arc::new(AppManager::new(PathBuf::from("/tmp/tako-test")));
+    let lb = Arc::new(LoadBalancer::new(manager.clone()));
+    let app = manager.register_app(AppConfig {
+        name: "test-app".to_string(),
+        ..Default::default()
+    });
+    lb.register_app(app.clone());
+    let instance = app.allocate_instance();
+    app.set_instance_state(&instance, InstanceState::Healthy);
+    let proxy = TakoProxy::new(
+        lb.clone(),
+        Arc::new(parking_lot::RwLock::new(RouteTable::default())),
+        ProxyConfig::default(),
+        Arc::new(ColdStartManager::new(
+            crate::scaling::ColdStartConfig::default(),
+        )),
+        CloudflareIpRanges::default(),
+    );
+    let counts = || {
+        (
+            instance.in_flight(),
+            instance.short_in_flight(),
+            instance.long_lived_in_flight(),
+        )
+    };
+
+    // Late classification: an SSE or 101 response after the request started.
+    let mut late = proxy.new_ctx();
+    late.backend = lb.get_backend("test-app");
+    late.mark_backend_request_started();
+    assert_eq!(counts(), (1, 1, 0));
+    late.mark_long_lived();
+    late.mark_long_lived();
+    assert_eq!(counts(), (1, 0, 1));
+    late.finish_backend_request();
+    assert_eq!(counts(), (0, 0, 0));
+
+    // Early classification: an Upgrade request before a backend is chosen,
+    // confirmed again by the 101 response, then retried after a drain refusal.
+    let mut early = proxy.new_ctx();
+    early.mark_long_lived();
+    early.backend = lb.get_backend("test-app");
+    early.mark_backend_request_started();
+    assert_eq!(counts(), (1, 0, 1));
+    early.finish_backend_request();
+    assert_eq!(counts(), (0, 0, 0));
+    early.mark_backend_request_started();
+    early.mark_long_lived();
+    assert_eq!(counts(), (1, 0, 1));
+
+    // A short request alongside; dropping contexts releases their counts.
+    let mut short = proxy.new_ctx();
+    short.backend = lb.get_backend("test-app");
+    short.mark_backend_request_started();
+    assert_eq!(counts(), (2, 1, 1));
+    drop(early);
+    assert_eq!(counts(), (1, 1, 0));
+    drop(short);
+    assert_eq!(counts(), (0, 0, 0));
+}
+
 #[test]
 fn test_tako_proxy_with_acme() {
     let manager = Arc::new(AppManager::new(PathBuf::from("/tmp/tako-test")));
@@ -164,6 +227,8 @@ fn request_context_skips_metric_timers_when_metrics_are_disabled() {
         native_remote: None,
         backend: None,
         backend_request_started: false,
+        long_lived: false,
+        backend_long_lived: false,
         is_https: false,
         matched_route_path: None,
         request_timer: None,

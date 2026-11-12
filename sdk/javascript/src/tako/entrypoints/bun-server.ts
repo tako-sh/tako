@@ -11,13 +11,14 @@ import { installConsoleBridge } from "../console-bridge";
 import { installErrorHooks } from "../error-hooks";
 import { installStdioBridge } from "../stdio-bridge";
 import { initBootstrapFromFd, readBootstrapData } from "../secrets-fd";
+import { createGracefulShutdown } from "../shutdown";
 
 installStdioBridge("app");
 installErrorHooks("app");
 installConsoleBridge("app");
 initBootstrapFromFd(readBootstrapData);
 
-const { run, host, port, setDraining } = createEntrypoint();
+const { run, host, port, setDraining, longLivedResponses } = createEntrypoint();
 
 if (import.meta.main) {
   let server: ReturnType<typeof Bun.serve> | undefined;
@@ -27,8 +28,13 @@ if (import.meta.main) {
     return server.port;
   });
 
-  process.on("SIGTERM", () => {
-    setDraining();
-    void server?.stop(true);
-  });
+  process.on(
+    "SIGTERM",
+    createGracefulShutdown({
+      setDraining,
+      responses: longLivedResponses,
+      stopServer: () => server?.stop(),
+      forceClose: () => void server?.stop(true),
+    }),
+  );
 }

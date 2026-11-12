@@ -87,7 +87,7 @@ Use `start-first` only when old and new containers can safely overlap, including
 
 If readiness fails, Tako removes the new containers and restarts any predecessors it stopped. Healthy unchanged containers remain running. Failed recovery is reported as an application error. The active release, routes, replica overrides, and encrypted credentials commit together. On a server restart, Tako reconciles that committed release, adopts matching containers, and removes abandoned generations. A normal Tako server shutdown leaves production Compose containers running for adoption on startup.
 
-Start-first updates protect traffic through Tako's HTTP ingress. Updates to databases or other dependencies can still cause downtime, and migrations must remain compatible with the versions that overlap. Internal clients using Docker DNS can see a candidate before Tako admits it to public HTTP routing. Existing requests drain for up to 30 seconds; longer requests or persistent connections need application-level reconnect handling.
+Start-first updates protect traffic through Tako's HTTP ingress. Updates to databases or other dependencies can still cause downtime, and migrations must remain compatible with the versions that overlap. Internal clients using Docker DNS can see a candidate before Tako admits it to public HTTP routing. Existing requests drain for up to 30 seconds; WebSockets and server-sent event streams do not hold the drain and are closed when the old container stops, so clients need reconnect handling.
 
 ## Scale individual services
 
