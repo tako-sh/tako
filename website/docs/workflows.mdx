@@ -83,6 +83,8 @@ func main() {
 
 The Go `fulfillOrder` helper is app-owned. Install the Go worker module with `go get github.com/tako-sh/tako/sdk/go`, build a worker binary, and configure its command in `[workflows].run` when needed. `WithMaxAttempts(5)` counts all attempts; JavaScript `retries: 4` counts retries after the first attempt.
 
+Both SDKs store the attempt budget on the run when it is enqueued, and the worker honors the stored value. Go's `Enqueue` stores the `WithMaxAttempts` budget only in a process that registered the workflow; from another binary, pass `EnqueueOpts.MaxAttempts`. Runs created by a cron schedule get the workflow's own budget, `retries` or `WithMaxAttempts`, which the worker registers with the schedule when it starts.
+
 The payload type flows into `.enqueue(payload)`, so callers get normal TypeScript checking without a generated workflow registry. The workflow name must be unique within the app. Using the filename stem as the name keeps discovery and logs easy to follow.
 
 Useful definition options include:
@@ -176,13 +178,80 @@ Deleting a finished run's history also frees its ID. A later enqueue with that I
 
 JavaScript workflow handlers can return JSON data. Tako saves the result when it marks the run succeeded; an absent return becomes `null`. Use `await task.result(runId, { timeout: "30s" })` to retrieve it, or `await task.run(payload)` to enqueue and wait. Both imported `defineWorkflow` handles and `workflow("app.name")` network handles expose these methods. A wait timeout leaves the child running and its result retrievable by ID.
 
+Go handlers keep the `error` return value and set the result with `ctx.SetResult(value)`. The last call wins, a value that does not JSON-encode is rejected with an error, and a handler that never calls it completes with `null`. `workflow.Result(ctx, name, runID)` reads the current outcome once and returns `nil` for a missing run; poll `pending` and `running` runs with your own deadline:
+
+<CodeGroup>
+
+```ts JavaScript
+// src/workflows/generate-report.ts
+import { defineWorkflow } from "tako.sh";
+
+export default defineWorkflow("generate-report", {
+  handler: async (payload: { month: string }, ctx) => {
+    const url = await ctx.run("render", () => renderReport(payload.month));
+    return { url };
+  },
+});
+
+// Server-side caller: import generateReport from "./workflows/generate-report".
+const report = await generateReport.result(runId, { timeout: "30s" });
+```
+
+```go Go
+// Inside a registered Go workflow handler.
+var url string
+if err := ctx.Step.Run("render", &url, func() (any, error) {
+    return renderReport(payload.Month)
+}); err != nil {
+    return err
+}
+return ctx.SetResult(map[string]string{"url": url})
+
+// Server-side caller with access to the Tako internal socket.
+state, err := workflow.Result(ctx, "generate-report", runID)
+if err != nil { return err }
+if state != nil && state.Status == "succeeded" {
+    var report struct { URL string `json:"url"` }
+    err = json.Unmarshal(state.Result, &report)
+}
+```
+
+</CodeGroup>
+
+`renderReport` is app-owned in both examples.
+
 Within another JavaScript workflow, `.run()` checkpoints the child identity and terminal outcome. It defers the parent while the child is pending, releasing the worker slot without consuming a retry. Parent replay reuses the same child and cached result. Give calls stable `step` names, or preserve their call order within each named `ctx.run` scope. Use a stable enqueue ID for detached `.enqueue()` calls that can repeat. Retain child history long enough for parent retries: pruning a run also frees its ID.
 
-See [Network Primitives](/network-primitives/#workflow-results) for typed examples, timeout/failure behavior, and Go/Rust result readers. Automatic durable child calls and workflow handler return values currently belong to the JavaScript SDK; the Go worker completes successful handlers with a null result.
+See [Network Primitives](/network-primitives/#workflow-results) for typed examples, timeout/failure behavior, and Go/Rust result readers for JavaScript-owned workflows. Automatic durable child calls currently belong to the JavaScript SDK; the Go worker SDK has no `.run()` equivalent.
 
 ## Durable Steps With `ctx.run`
 
 `ctx.run(name, fn)` saves the function's result. When the workflow is claimed again, a completed step with the same name returns its saved result instead of calling `fn` again. Keep step names stable for the lifetime of a workflow run, and keep returned values JSON serializable.
+
+Step names must also be unique within a run. `ctx.run`, `ctx.sleep`, and `ctx.waitFor` (Go: `ctx.Step.Run`, `Sleep`, and `WaitFor`) share one namespace of saved steps, so give repeated work an index or ID in its name:
+
+<CodeGroup>
+
+```ts JavaScript
+for (const item of order.items) {
+  await ctx.run(`reserve:${item.sku}`, () => inventory.reserve(item));
+}
+```
+
+```go Go
+// Inside a registered Go workflow handler.
+for _, item := range order.Items {
+    if err := ctx.Step.Run("reserve:"+item.SKU, nil, func() (any, error) {
+        return nil, inventory.Reserve(item)
+    }); err != nil {
+        return err
+    }
+}
+```
+
+</CodeGroup>
+
+Using a name a second time in one execution of the handler does not return the first result: the call fails and the run becomes `dead` immediately, with an error that names the step. This is a programming error that another attempt cannot fix, so it does not spend the retry budget. A step completed by an earlier attempt still replays its saved result once per execution. A step whose body threw saved nothing, so the handler may catch the error and call the same name again.
 
 The durability boundary is the saved result, not the side effect itself. If a worker stops after `fn` completes but before Tako saves the result, that step runs again on the next claim. Step bodies therefore have an at-least-once execution contract. Use provider idempotency keys, upserts, conditional writes, or another domain-specific guard for side effects.
 
@@ -318,9 +387,13 @@ func approveOrder(ctx context.Context, orderID, userID string) (uint64, error) {
 | Throw a regular error             | Retry while attempts remain, then become `dead`.       |
 | `ctx.bail(reason?)`               | `cancelled` immediately, with no retry.                |
 | `ctx.fail(error)`                 | `dead` immediately, with no retry.                     |
+| Reuse a step name in one run      | `dead` immediately, with no retry.                     |
+| Worker lost during the attempt    | Retry while attempts remain, then become `dead`.       |
 | Long `ctx.sleep` or `ctx.waitFor` | Return to `pending` without spending the retry budget. |
 
 Run retries use exponential backoff with 20% jitter. The default delay starts at one second and is capped at one hour. `retries: 4` means four retries after the first attempt, for five total attempts.
+
+A worker that is killed mid-run (out of memory, `SIGKILL`, a host crash) or stops renewing its lease cannot report a failure. Tako reclaims the run when its lease expires, 60 seconds after the last heartbeat. The lost attempt counts against the retry budget: with attempts left, the run returns to `pending` immediately and resumes from its saved steps; on its last attempt it becomes `dead` with the error `worker lost; retry budget exhausted`. A handler that reliably kills its worker therefore stops after its budget instead of restarting forever.
 
 Go handlers return `nil` for success, an ordinary error for retry, `ctx.Bail(reason)` for cancellation, or `ctx.Fail(err)` for permanent failure. Return errors from `ctx.Step` operations so the worker can park or retry the run.
 
@@ -347,6 +420,8 @@ On one server, Tako stores durable workflow state locally. Runs belong to the de
 Local workflow transactions synchronize the SQLite write-ahead log before acknowledging changes, including enqueues and saved steps. Acknowledged state survives a process or host crash when the filesystem and storage device honor synchronization requests. This does not protect against loss of the disk or server; configure [backups](/backups/) for recovery. External step side effects still have the at-least-once contract described above.
 
 Each claim receives a distinct ownership identifier. After a lease is reclaimed, a delayed earlier attempt cannot heartbeat, save a step, or change the new attempt’s run state, even when the same process claims the run again. This protects workflow state; external side effects still need application-level idempotency.
+
+With shared Postgres storage, leases are written, renewed, and checked against the database clock rather than each server's own clock. Servers whose clocks disagree therefore cannot reclaim a run another server's worker still holds, or leave a lost worker's run stranded. Due times (`runAt`, sleep and wait deadlines, cron boundaries) still follow the clock of the server or worker that set them, so keep server clocks synchronized.
 
 Tako keeps finished runs for at least 184 days by default, covering six calendar months, then removes them and their saved steps in small batches. The age is measured from completion, so long sleeps and waits do not shorten a run's history. Cleanup is best effort while the workflow runtime is active; stopped or retired stores can keep older rows until the runtime starts again. To change the age or keep history indefinitely, set `retention` in `tako.toml`:
 
@@ -382,16 +457,53 @@ Tako validates the multi-server storage choice before build and deploy work begi
 
 `tako dev` discovers JavaScript and TypeScript workflows under `<app_root>/workflows/`. The dev daemon owns the durable state and starts a separate scale-to-zero worker when work becomes runnable. Worker output appears in the same log stream as the app. Workflow definition changes refresh the runtime, and a fresh worker picks up the new code on subsequent work.
 
-Cron schedules are synchronized from the current workflow definitions when a worker starts. Removing a schedule removes its registered cron entry on the next worker startup.
+Cron schedules are synchronized from the current workflow definitions when a worker starts, together with each workflow's retry setting. Removing a schedule removes its registered cron entry on the next worker startup.
 
 `tako deploy` validates the storage model, packages workflow definitions with the app, and installs the workflow runtime for the release. A new release replaces the previous worker runtime after in-flight work drains. Removing the workflows directory in a later release retires the old workflow runtime. Durable runs remain scoped to the app and environment across releases.
 
 Use finite `tako logs --env production --days 1 --json` to inspect app and worker output with an agent; an attached terminal can follow it with `--tail`. See [Operations](/operations/) for log inspection, [Development](/development/) for local runtime details, and [Deployment](/deployment/) for release behavior.
 
+## Inspect And Repair Runs
+
+`tako workflows` reads and changes the runs of a deployed environment. It is not available for `development`; read the `tako dev` log stream locally.
+
+Find runs that used up their retries:
+
+```bash
+tako workflows list --env production --status dead
+tako workflows list --env production --name send-email --limit 100
+```
+
+The list shows each run's attempts, when it finished or is next due, and the first line of its last error. Open one run to see where it stopped:
+
+```bash
+tako workflows show <run-id> --env production
+```
+
+`show` prints the payload, the saved steps oldest first with their completion time and result, any event waits, and the full stored error. The last saved step is the last checkpoint that succeeded; the error belongs to the code that runs after it. Large payloads and results are cut to a preview with their stored size, and only the 100 most recent steps are listed.
+
+Fix the cause first, for example by deploying a corrected handler or restoring a dependency, then retry:
+
+```bash
+tako workflows retry <run-id> --env production
+```
+
+Retry accepts `dead` and `cancelled` runs. The run becomes `pending`, due now, with a fresh retry budget. Saved steps are kept, so completed steps return their saved results and the handler continues after its last checkpoint. Retrying without fixing the cause spends the new budget the same way.
+
+Cancel work that is no longer wanted:
+
+```bash
+tako workflows cancel <run-id> --env production
+```
+
+Cancel accepts `pending` and `running` runs and removes their event waits. It asks for confirmation in a terminal; pass `--yes` in scripts. A pending run is cancelled immediately. A running handler is not interrupted: its worker loses the run, and the handler stops at its next checkpoint, such as the next step, sleep, or wait. Code between checkpoints keeps running until then, and side effects already started are not undone. The cancelled run is not reclaimed or retried unless you retry it.
+
+With several servers and no `postgres_url`, each server keeps its own runs. `list` merges them and labels each run with its server. Run IDs are independent per server; when two servers hold the same ID, pass `--server` to choose one. With `postgres_url`, every server shares the same runs, which are listed once and changed once. See the [CLI reference](/cli/#workflows) for every option and the JSON output.
+
 ## Practical Rules
 
 - Keep workflow payloads and step results JSON serializable.
-- Give every step a stable name. Changing a name creates a different checkpoint for existing runs.
+- Give every step a stable name that is unique within the run. Changing a name creates a different checkpoint for existing runs; reusing one in the same execution fails the run.
 - Make side-effecting step bodies idempotent. `ctx.run` is durable but still at least once at the save boundary.
 - Supply `id` to deduplicate enqueues for the same business operation while its run history is retained.
 - Use `ctx.bail` for expected cancellation and `ctx.fail` for permanent failure.

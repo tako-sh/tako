@@ -409,6 +409,32 @@ pub enum Command {
         address: String,
         request: crate::network::NetworkRequest,
     },
+
+    /// Operator: list an app's workflow runs on this server's store, newest
+    /// first. `limit` defaults to [`WORKFLOW_RUNS_DEFAULT_LIMIT`] and must be
+    /// between 1 and [`WORKFLOW_RUNS_MAX_LIMIT`].
+    ListWorkflowRuns {
+        app: String,
+        #[serde(default)]
+        status: Option<WorkflowRunStatus>,
+        /// Only runs of this workflow.
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        limit: Option<u32>,
+    },
+
+    /// Operator: read one run with its saved steps. Large values are capped.
+    GetWorkflowRun { app: String, id: String },
+
+    /// Operator: return a `dead` or `cancelled` run to `pending`, due now,
+    /// with a fresh retry budget. Saved steps are kept.
+    RetryWorkflowRun { app: String, id: String },
+
+    /// Operator: cancel a `pending` or `running` run. Unlike the worker's
+    /// `CancelRun`, it carries no claim owner: a running attempt is fenced
+    /// and its later writes are rejected as stale.
+    CancelWorkflowRun { app: String, id: String },
 }
 
 /// A single cron schedule for a workflow.
@@ -419,6 +445,10 @@ pub struct ScheduleSpec {
     /// Cron expression. 6-field format (sec min hour day month dayofweek) per
     /// the `cron` crate, or 5-field (the worker SDK normalizes).
     pub cron: String,
+    /// The workflow's attempt budget (inclusive of the first) for the runs
+    /// this schedule creates. Defaults to 3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_attempts: Option<u32>,
 }
 
 /// Options for `Command::EnqueueRun`.
@@ -471,6 +501,189 @@ pub struct RunPayload {
     pub max_attempts: u32,
     pub run_at_ms: i64,
     pub step_state: serde_json::Value,
+}
+
+/// Default page size of `ListWorkflowRuns`.
+pub const WORKFLOW_RUNS_DEFAULT_LIMIT: u32 = 50;
+/// Largest page `ListWorkflowRuns` accepts.
+pub const WORKFLOW_RUNS_MAX_LIMIT: u32 = 200;
+/// `last_error` is capped at this many bytes in `ListWorkflowRuns`.
+pub const WORKFLOW_LIST_ERROR_MAX_BYTES: usize = 1024;
+/// `last_error` is capped at this many bytes in `GetWorkflowRun`.
+pub const WORKFLOW_RUN_ERROR_MAX_BYTES: usize = 8 * 1024;
+/// The run payload and result are capped at this many bytes of JSON text.
+pub const WORKFLOW_RUN_VALUE_MAX_BYTES: usize = 32 * 1024;
+/// Each saved step result is capped at this many bytes of JSON text.
+pub const WORKFLOW_STEP_VALUE_MAX_BYTES: usize = 2 * 1024;
+/// `GetWorkflowRun` returns at most this many of the most recent steps, and
+/// at most this many event waits.
+pub const WORKFLOW_RUN_MAX_STEPS: usize = 100;
+/// Workflow, step and event names and claim owners are cut to at most this
+/// many bytes in `ListWorkflowRuns` and `GetWorkflowRun`.
+pub const WORKFLOW_NAME_MAX_BYTES: usize = 256;
+/// `ListWorkflowRuns` and `GetWorkflowRun` replies serialize to at most this
+/// many bytes, inside the 1 MiB frame. A list stops early and sets
+/// `has_more`; a run drops its oldest steps.
+pub const WORKFLOW_REPLY_MAX_BYTES: usize = 768 * 1024;
+
+/// Lifecycle status of a workflow run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowRunStatus {
+    Pending,
+    Running,
+    Succeeded,
+    Cancelled,
+    Dead,
+}
+
+impl WorkflowRunStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Cancelled => "cancelled",
+            Self::Dead => "dead",
+        }
+    }
+}
+
+impl std::fmt::Display for WorkflowRunStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for WorkflowRunStatus {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "running" => Ok(Self::Running),
+            "succeeded" => Ok(Self::Succeeded),
+            "cancelled" => Ok(Self::Cancelled),
+            "dead" => Ok(Self::Dead),
+            other => Err(format!("unknown workflow run status '{other}'")),
+        }
+    }
+}
+
+/// Which workflow store answered. A `postgres` store is shared by every
+/// server of the app/environment; a `sqlite` store belongs to one server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowStoreKind {
+    Sqlite,
+    Postgres,
+}
+
+/// A stored JSON value, capped for management replies.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CappedJson {
+    /// The value, or null when it was truncated.
+    pub value: serde_json::Value,
+    /// True when the value exceeded its cap and only `preview` is returned.
+    pub truncated: bool,
+    /// Size of the stored JSON text in bytes.
+    pub bytes: u64,
+    /// When truncated: the start of the stored JSON text, cut at a UTF-8
+    /// boundary within the cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
+}
+
+/// One row of `ListWorkflowRuns`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkflowRunSummary {
+    pub id: String,
+    pub name: String,
+    pub status: WorkflowRunStatus,
+    /// Attempts started with the current budget.
+    pub attempts: u32,
+    pub max_attempts: u32,
+    pub created_at_ms: i64,
+    /// When the run is next due (pending) or was last due. Null while it is
+    /// parked until a signal with no timeout.
+    pub run_at_ms: Option<i64>,
+    pub finished_at_ms: Option<i64>,
+    pub last_error: Option<String>,
+    #[serde(default)]
+    pub last_error_truncated: bool,
+}
+
+/// Response payload for `Command::ListWorkflowRuns`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ListWorkflowRunsResponse {
+    pub app: String,
+    pub store: WorkflowStoreKind,
+    pub runs: Vec<WorkflowRunSummary>,
+    /// True when more runs match than `runs` holds.
+    pub has_more: bool,
+}
+
+/// A completed step saved for a run.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorkflowRunStep {
+    pub name: String,
+    pub completed_at_ms: i64,
+    pub result: CappedJson,
+}
+
+/// A run parked waiting for an event.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkflowRunWait {
+    pub step_name: String,
+    pub event_name: String,
+    pub expires_at_ms: Option<i64>,
+}
+
+/// Every stored field of a run.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorkflowRunDetail {
+    pub id: String,
+    pub name: String,
+    pub status: WorkflowRunStatus,
+    pub attempts: u32,
+    pub max_attempts: u32,
+    pub created_at_ms: i64,
+    pub run_at_ms: Option<i64>,
+    pub finished_at_ms: Option<i64>,
+    /// Lease expiry of a running attempt.
+    pub lease_until_ms: Option<i64>,
+    /// Claim owner of a running attempt.
+    pub worker_id: Option<String>,
+    pub last_error: Option<String>,
+    #[serde(default)]
+    pub last_error_truncated: bool,
+    pub payload: CappedJson,
+    /// Present once the run succeeded.
+    pub result: Option<CappedJson>,
+    /// The most recent saved steps, oldest first.
+    pub steps: Vec<WorkflowRunStep>,
+    /// Saved steps in the store; more than `steps.len()` when older ones were left out.
+    pub steps_total: u64,
+    pub waits: Vec<WorkflowRunWait>,
+}
+
+/// Response payload for `Command::GetWorkflowRun`. `run` is null when this
+/// store has no run with that ID.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GetWorkflowRunResponse {
+    pub app: String,
+    pub store: WorkflowStoreKind,
+    pub run: Option<WorkflowRunDetail>,
+}
+
+/// Response payload for `Command::RetryWorkflowRun` and `Command::CancelWorkflowRun`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkflowRunTransition {
+    pub app: String,
+    pub store: WorkflowStoreKind,
+    pub id: String,
+    pub previous_status: WorkflowRunStatus,
+    pub status: WorkflowRunStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -769,6 +982,55 @@ pub struct AppStatus {
     pub state: AppState,
 
     pub last_error: Option<String>,
+    /// Present only while there is instance recovery activity to report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<RecoveryStatus>,
+}
+
+/// Instance recovery activity since the app was deployed or last stayed healthy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoveryStatus {
+    /// Replacement starts attempted by the server.
+    pub restart_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_exit: Option<InstanceExit>,
+    /// Set while the server backs off before the next replacement start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_restart_at_unix_secs: Option<i64>,
+}
+
+/// The most recent instance the server lost.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstanceExit {
+    pub reason: InstanceExitReason,
+    /// Observed process exit code, when the process exited by itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    /// Signal that terminated the process, when one did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal: Option<i32>,
+    pub at_unix_secs: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstanceExitReason {
+    /// The process exited after it had become healthy.
+    Crashed,
+    /// Health probes failed until the instance was declared dead.
+    Unhealthy,
+    /// The instance never became healthy.
+    FailedToStart,
+}
+
+impl std::fmt::Display for InstanceExitReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InstanceExitReason::Crashed => write!(f, "crashed"),
+            InstanceExitReason::Unhealthy => write!(f, "unhealthy"),
+            InstanceExitReason::FailedToStart => write!(f, "failed to start"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

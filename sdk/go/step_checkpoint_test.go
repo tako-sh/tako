@@ -2,7 +2,9 @@ package tako
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -24,6 +26,138 @@ func checkpointAPI(t *testing.T, state map[string]any, failedStep string) (*Step
 	return &StepAPI{client: client, ctx: ctx, runID: run.ID, workerID: run.WorkerID, state: state}, server
 }
 
+// nextExecution models the handler running again over the same saved steps.
+func nextExecution(api *StepAPI) *StepAPI {
+	return &StepAPI{client: api.client, ctx: api.ctx, runID: api.runID, workerID: api.workerID, state: api.state}
+}
+
+func assertReuseError(t *testing.T, err error, name string) {
+	t.Helper()
+	var failed *failSignal
+	if !errors.As(err, &failed) {
+		t.Fatalf("expected a permanent failure for reused step %q, got %v", name, err)
+	}
+	message := failed.err.Error()
+	for _, want := range []string{`"` + name + `"`, "unique within a run", `"` + name + `:1"`} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("error %q does not mention %s", message, want)
+		}
+	}
+}
+
+func TestStepNameReusedWithinOneExecutionFails(t *testing.T) {
+	api, _ := checkpointAPI(t, map[string]any{}, "")
+	var processed []string
+	process := func(item string) func() (any, error) {
+		return func() (any, error) { processed = append(processed, item); return item, nil }
+	}
+	var got string
+	if err := api.Run("process", &got, process("first")); err != nil || got != "first" {
+		t.Fatalf("first use: %q, %v", got, err)
+	}
+	got = ""
+	assertReuseError(t, api.Run("process", &got, process("second")), "process")
+	if got != "" || len(processed) != 1 {
+		t.Fatalf("reuse returned %q after running %v", got, processed)
+	}
+}
+
+func TestReplayedStepReturnsItsResultOncePerExecution(t *testing.T) {
+	api, _ := checkpointAPI(t, map[string]any{"charge": "receipt-1"}, "")
+	calls := 0
+	body := func() (any, error) { calls++; return "receipt-2", nil }
+	for _, execution := range []*StepAPI{api, nextExecution(api)} {
+		var got string
+		if err := execution.Run("charge", &got, body); err != nil || got != "receipt-1" {
+			t.Fatalf("replay: %q, %v", got, err)
+		}
+		assertReuseError(t, execution.Run("charge", &got, body), "charge")
+	}
+	if calls != 0 {
+		t.Fatalf("replayed step executed %d times", calls)
+	}
+}
+
+func TestRunSleepAndWaitForShareOneStepNamespace(t *testing.T) {
+	type use struct {
+		kind string
+		call func(*StepAPI) error
+	}
+	uses := []use{
+		{"run", func(api *StepAPI) error {
+			return api.Run("gate", nil, func() (any, error) { return "again", nil })
+		}},
+		{"sleep", func(api *StepAPI) error { return api.Sleep("gate", 0) }},
+		{"waitFor", func(api *StepAPI) error { return api.WaitFor("gate", nil, 0) }},
+	}
+	for _, first := range uses {
+		for _, second := range uses {
+			t.Run(first.kind+" then "+second.kind, func(t *testing.T) {
+				// State saved by an earlier execution lets every kind of first use return.
+				state := map[string]any{"gate": float64(1)}
+				if first.kind == "sleep" {
+					state = map[string]any{"__sleep:gate": map[string]any{"wakeAt": float64(0)}, "gate": true}
+				}
+				api, server := checkpointAPI(t, state, "")
+				if err := first.call(api); err != nil {
+					t.Fatal(err)
+				}
+				assertReuseError(t, second.call(api), "gate")
+				server.mu.Lock()
+				defer server.mu.Unlock()
+				if saved := len(server.tasks[api.runID].StepState); saved != 0 {
+					t.Fatalf("reuse saved %d steps", saved)
+				}
+			})
+		}
+	}
+}
+
+func TestWaitThatParksDoesNotConsumeItsNameForTheNextExecution(t *testing.T) {
+	api, _ := checkpointAPI(t, map[string]any{}, "")
+	var parked *waitSignal
+	if err := api.WaitFor("approval", nil, 0); !errors.As(err, &parked) {
+		t.Fatalf("expected the run to park, got %v", err)
+	}
+	api.state["approval"] = map[string]any{"approved": true}
+	var decision struct {
+		Approved bool `json:"approved"`
+	}
+	if err := nextExecution(api).WaitFor("approval", &decision, 0); err != nil || !decision.Approved {
+		t.Fatalf("resume: %+v, %v", decision, err)
+	}
+}
+
+func TestReusedStepNameKillsTheRunWithoutSpendingRetries(t *testing.T) {
+	s := workerEnv(t)
+	var processed []string
+	RegisterWorkflow("batch", func(ctx *WorkflowContext, _ json.RawMessage) error {
+		for _, item := range []string{"a", "b", "c"} {
+			if err := ctx.Step.Run("process", nil, func() (any, error) {
+				processed = append(processed, item)
+				return item, nil
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	id := s.seed("batch", 5)
+	runUntil(t, func() bool { return s.status(id) != "pending" && s.status(id) != "running" })
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if task := s.tasks[id]; task.Status != "dead" || task.Attempts != 1 {
+		t.Fatalf("status = %s after %d attempts", task.Status, task.Attempts)
+	}
+	if !strings.Contains(s.errors[id], `step name "process" was used more than once`) {
+		t.Fatalf("stored error = %q", s.errors[id])
+	}
+	if len(processed) != 1 {
+		t.Fatalf("processed = %v", processed)
+	}
+}
+
 func TestStepCheckpointFailureDoesNotCacheSuccess(t *testing.T) {
 	api, server := checkpointAPI(t, map[string]any{}, "charge")
 	calls := 0
@@ -35,8 +169,8 @@ func TestStepCheckpointFailureDoesNotCacheSuccess(t *testing.T) {
 	if _, ok := api.state["charge"]; ok {
 		t.Fatal("failed checkpoint was cached")
 	}
-	for range 2 {
-		if err := api.Run("charge", &result, body); err != nil {
+	for _, execution := range []*StepAPI{api, nextExecution(api)} {
+		if err := execution.Run("charge", &result, body); err != nil {
 			t.Fatal(err)
 		}
 		if result != 2 {

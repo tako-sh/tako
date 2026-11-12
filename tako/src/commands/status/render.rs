@@ -1,9 +1,9 @@
 use super::remote::{display_server_version, sort_global_apps};
-use super::time::format_deployed_at;
+use super::time::{format_deployed_at, format_duration_human};
 use super::{GlobalServerStatusResult, ServerStatusResult};
 use crate::config::ServersToml;
 use crate::output;
-use tako_core::{AppState, InstanceState};
+use tako_core::{AppState, InstanceState, RecoveryStatus};
 
 #[derive(Clone, Copy)]
 pub(super) enum StatusColor {
@@ -179,10 +179,48 @@ fn format_app_lines(apps: &[super::GlobalAppStatusResult]) -> Vec<String> {
             if let Some(error) = &status.services_error {
                 lines.push(format!("{}Services  {}", output::INDENT.repeat(3), error));
             }
+            if let Some(recovery) = &status.recovery {
+                lines.push(format!(
+                    "{}{}",
+                    output::INDENT.repeat(3),
+                    format_recovery(recovery, ::time::OffsetDateTime::now_utc().unix_timestamp())
+                ));
+            }
         }
     }
 
     lines
+}
+
+/// One line on why instances were restarted and when the next start is due.
+fn format_recovery(recovery: &RecoveryStatus, now_unix_secs: i64) -> String {
+    let mut segments = vec![format!("Restarts  {}", recovery.restart_count)];
+    if let Some(exit) = &recovery.last_exit {
+        let mut last = format!("last {}", exit.reason);
+        match (exit.exit_code, exit.signal) {
+            (_, Some(signal)) => last.push_str(&format!(" (signal {signal})")),
+            (Some(code), None) => last.push_str(&format!(" (exit code {code})")),
+            (None, None) => {}
+        }
+        if let Some(at) = format_deployed_at(exit.at_unix_secs) {
+            last.push_str(&format!(" {at}"));
+        }
+        segments.push(last);
+    }
+    if let Some(next) = recovery.next_restart_at_unix_secs {
+        let wait = next.saturating_sub(now_unix_secs);
+        segments.push(if wait <= 0 {
+            "next restart due".to_string()
+        } else if wait < 60 {
+            output::theme_warning(format!("next restart in {wait}s"))
+        } else {
+            output::theme_warning(format!(
+                "next restart in {}",
+                format_duration_human(wait as u64)
+            ))
+        });
+    }
+    segments.join("  ")
 }
 
 pub(super) fn service_status_display(status: &str) -> (String, StatusColor) {
@@ -227,7 +265,7 @@ pub(super) fn app_state_summary(status: Option<&ServerStatusResult>) -> (String,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tako_core::{AppStatus, InstanceStatus};
+    use tako_core::{AppStatus, InstanceExitReason, InstanceStatus};
 
     #[test]
     fn format_server_status_lines_uses_compact_sections() {
@@ -268,6 +306,7 @@ mod tests {
                         builds: vec![],
                         state: AppState::Running,
                         last_error: None,
+                        recovery: None,
                     }),
                     deployed_at_unix_secs: None,
                     error: None,
@@ -291,6 +330,111 @@ mod tests {
                 "  Apps",
                 "    web  healthy 1/1  production  abc123",
             ]
+        );
+    }
+
+    #[test]
+    fn format_recovery_explains_restarts_the_last_exit_and_the_next_attempt() {
+        let exit = |reason, exit_code, signal| tako_core::InstanceExit {
+            reason,
+            exit_code,
+            signal,
+            at_unix_secs: 1_772_798_400,
+        };
+        let at = format_deployed_at(1_772_798_400).unwrap();
+        let now = 1_772_798_410;
+
+        let backing_off = RecoveryStatus {
+            restart_count: 3,
+            last_exit: Some(exit(InstanceExitReason::FailedToStart, Some(1), None)),
+            next_restart_at_unix_secs: Some(now + 8),
+        };
+        assert_eq!(
+            format_recovery(&backing_off, now),
+            format!("Restarts  3  last failed to start (exit code 1) {at}  next restart in 8s")
+        );
+        let later = RecoveryStatus {
+            next_restart_at_unix_secs: Some(now + 120),
+            ..backing_off.clone()
+        };
+        assert!(format_recovery(&later, now).ends_with("next restart in 2m"));
+        let due = RecoveryStatus {
+            next_restart_at_unix_secs: Some(now),
+            ..backing_off
+        };
+        assert!(format_recovery(&due, now).ends_with("next restart due"));
+
+        let killed = RecoveryStatus {
+            restart_count: 1,
+            last_exit: Some(exit(InstanceExitReason::Crashed, None, Some(9))),
+            next_restart_at_unix_secs: None,
+        };
+        assert_eq!(
+            format_recovery(&killed, now),
+            format!("Restarts  1  last crashed (signal 9) {at}")
+        );
+        let hung = RecoveryStatus {
+            restart_count: 1,
+            last_exit: Some(exit(InstanceExitReason::Unhealthy, None, None)),
+            next_restart_at_unix_secs: None,
+        };
+        assert_eq!(
+            format_recovery(&hung, now),
+            format!("Restarts  1  last unhealthy {at}")
+        );
+    }
+
+    #[test]
+    fn format_server_status_lines_shows_recovery_under_the_app() {
+        let mut global = GlobalServerStatusResult {
+            service_status: "active".to_string(),
+            server_version: None,
+            server_uptime: None,
+            process_uptime: None,
+            routes: Vec::new(),
+            apps: vec![super::super::GlobalAppStatusResult {
+                app_name: "web".to_string(),
+                env_name: "production".to_string(),
+                status: ServerStatusResult {
+                    service_status: "active".to_string(),
+                    server_version: None,
+                    app_status: Some(AppStatus {
+                        replica_overrides: Default::default(),
+                        services: Vec::new(),
+                        services_error: None,
+                        name: "web".to_string(),
+                        version: "abc123".to_string(),
+                        instances: vec![],
+                        builds: vec![],
+                        state: AppState::Running,
+                        last_error: Some("Instance marked dead".to_string()),
+                        recovery: Some(RecoveryStatus {
+                            restart_count: 2,
+                            last_exit: None,
+                            next_restart_at_unix_secs: None,
+                        }),
+                    }),
+                    deployed_at_unix_secs: None,
+                    error: None,
+                },
+            }],
+            error: None,
+        };
+
+        let lines = format_server_status_lines("prod-a", None, &global);
+        assert_eq!(
+            &lines[lines.len() - 2..],
+            [
+                "    web  healthy 0/0  production  abc123",
+                "      Restarts  2",
+            ]
+        );
+
+        global.apps[0].status.app_status.as_mut().unwrap().recovery = None;
+        let lines = format_server_status_lines("prod-a", None, &global);
+        assert_eq!(
+            lines.last().unwrap(),
+            "    web  healthy 0/0  production  abc123"
         );
     }
 

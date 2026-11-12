@@ -14,3 +14,4 @@ mod release_artifacts;
 mod releases;
 mod secrets;
 mod tls;
+mod workflows;

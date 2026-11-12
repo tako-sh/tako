@@ -139,6 +139,9 @@ impl crate::ServerState {
         }
 
         crate::runtime_events::update_instance_count_metric(app_name, &app);
+        // The operator just set the instance count and saw it take effect;
+        // earlier crash history and its backoff no longer apply.
+        app.reset_recovery();
         if app.get_instances().is_empty() && effective_instances == 0 {
             app.set_state(AppState::Idle);
             self.cold_start.reset(app_name);
@@ -163,18 +166,18 @@ impl crate::ServerState {
         instance: &Arc<crate::instances::Instance>,
     ) -> Result<(), String> {
         app.set_instance_state(instance, InstanceState::Draining);
-        let deadline = tokio::time::Instant::now() + RollingUpdateConfig::default().drain_timeout;
-        while instance.in_flight() > 0 {
-            if tokio::time::Instant::now() >= deadline {
-                tracing::warn!(
-                    app = %app.name(),
-                    instance = %instance.id,
-                    in_flight = instance.in_flight(),
-                    "Scale drain timeout exceeded, forcing stop"
-                );
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
+        if !crate::instances::wait_for_short_requests(
+            instance,
+            RollingUpdateConfig::default().drain_timeout,
+        )
+        .await
+        {
+            tracing::warn!(
+                app = %app.name(),
+                instance = %instance.id,
+                in_flight = instance.in_flight(),
+                "Scale drain timeout exceeded, forcing stop"
+            );
         }
 
         instance

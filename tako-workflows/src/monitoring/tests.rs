@@ -193,3 +193,30 @@ async fn scrape_exports_claims_without_database_io_and_removes_stopped_apps() {
     manager.shutdown_all(Duration::ZERO).await;
     assert!(registry.gather().is_empty());
 }
+
+/// The synchronous Postgres client panics when it closes on a runtime
+/// thread. A store and its sampled health reader must release their
+/// connections off the runtime wherever their last handle is dropped.
+#[tokio::test]
+async fn postgres_store_and_health_reader_can_be_dropped_in_async_code() {
+    let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
+        return;
+    };
+    let db = crate::blocking::run(move || {
+        let db = RunsDb::open_postgres(&url, "monitor-drop").unwrap();
+        db.monitoring.sample().unwrap();
+        db
+    })
+    .await
+    .unwrap();
+    assert!(
+        db.monitoring
+            .reader
+            .as_ref()
+            .unwrap()
+            .lock()
+            .client
+            .is_some()
+    );
+    drop(db);
+}

@@ -16,6 +16,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use parking_lot::RwLock;
+use tako_core::{
+    GetWorkflowRunResponse, ListWorkflowRunsResponse, WORKFLOW_RUNS_DEFAULT_LIMIT,
+    WORKFLOW_RUNS_MAX_LIMIT, WorkflowRunStatus, WorkflowRunTransition, WorkflowStoreKind,
+};
 
 use super::cron::{self, CronTickerHandle};
 use super::dispatcher::WorkDispatcher;
@@ -120,6 +124,17 @@ pub enum WorkflowManagerError {
     Db(#[from] RunsDbError),
     #[error("supervisor error: {0}")]
     Supervisor(#[from] super::supervisor::SupervisorError),
+    #[error("{0}")]
+    InvalidRequest(String),
+    #[error("workflow storage task failed: {0}")]
+    Task(#[from] tokio::task::JoinError),
+}
+
+/// The store an operator command reads or changes, and the app's active
+/// runtime when this server runs one.
+struct OperatorStore {
+    db: Arc<RunsDb>,
+    handlers: Option<AppHandlers>,
 }
 
 impl WorkflowManager {
@@ -289,14 +304,22 @@ impl WorkflowManager {
             WorkflowStoreConfig::Sqlite { path } => path.clone(),
             WorkflowStoreConfig::Postgres { .. } => self.workflows_db_path(app),
         };
-        let db = Arc::new(RunsDb::open_config(store_config)?);
+        // The synchronous Postgres client cannot connect on a runtime thread.
+        let (db, in_flight) = crate::blocking::run(move || {
+            RunsDb::open_config(store_config).map(|db| {
+                let in_flight = db.in_flight_by_worker();
+                (db, in_flight)
+            })
+        })
+        .await??;
+        let db = Arc::new(db);
 
         let spec = spec_fn(db_path);
         let limiter = Arc::new(InFlightLimiter::new(spec.concurrency));
         // Rehydrate: any rows still `status='running'` from a previous
         // process count against the live budget until their leases expire
         // and `reclaim_expired_with_workers` drops them.
-        if let Ok(snapshot) = db.in_flight_by_worker() {
+        if let Ok(snapshot) = in_flight {
             limiter.rehydrate(snapshot);
         }
         let supervisor = Arc::new(WorkerSupervisor::new(spec));
@@ -434,6 +457,150 @@ impl WorkflowManager {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_file_name(format!("{WORKFLOWS_DB_FILENAME}-wal")));
         let _ = std::fs::remove_file(path.with_file_name(format!("{WORKFLOWS_DB_FILENAME}-shm")));
+    }
+
+    /// Use the active runtime's store, or open the app's store for this call
+    /// so stopped apps stay inspectable. `None` when this server has no
+    /// SQLite store for the app; opening one would create an empty file.
+    fn operator_store(&self, app: &str) -> Result<Option<OperatorStore>, WorkflowManagerError> {
+        if let Some(handlers) = self.apps.read().get(app).map(AppWorkflow::handlers) {
+            return Ok(Some(OperatorStore {
+                db: handlers.db.clone(),
+                handlers: Some(handlers),
+            }));
+        }
+        let config = self.workflow_store_config(app);
+        if let WorkflowStoreConfig::Sqlite { path } = &config
+            && !path.exists()
+        {
+            return Ok(None);
+        }
+        Ok(Some(OperatorStore {
+            db: Arc::new(RunsDb::open_config(config)?),
+            handlers: None,
+        }))
+    }
+
+    fn store_kind(&self, app: &str) -> WorkflowStoreKind {
+        match self.workflow_store_config(app) {
+            WorkflowStoreConfig::Sqlite { .. } => WorkflowStoreKind::Sqlite,
+            WorkflowStoreConfig::Postgres { .. } => WorkflowStoreKind::Postgres,
+        }
+    }
+
+    /// Newest runs first. `limit` defaults to 50 and must be 1–200.
+    pub async fn list_runs(
+        self: &Arc<Self>,
+        app: &str,
+        status: Option<WorkflowRunStatus>,
+        name: Option<String>,
+        limit: Option<u32>,
+    ) -> Result<ListWorkflowRunsResponse, WorkflowManagerError> {
+        let limit = limit.unwrap_or(WORKFLOW_RUNS_DEFAULT_LIMIT);
+        if !(1..=WORKFLOW_RUNS_MAX_LIMIT).contains(&limit) {
+            return Err(WorkflowManagerError::InvalidRequest(format!(
+                "Workflow run list limit must be between 1 and {WORKFLOW_RUNS_MAX_LIMIT}"
+            )));
+        }
+        let manager = self.clone();
+        let app = app.to_string();
+        crate::blocking::run(move || {
+            let Some(store) = manager.operator_store(&app)? else {
+                return Ok(ListWorkflowRunsResponse {
+                    store: manager.store_kind(&app),
+                    app,
+                    runs: Vec::new(),
+                    has_more: false,
+                });
+            };
+            let (runs, has_more) = store.db.list_runs(status, name.as_deref(), limit)?;
+            Ok(ListWorkflowRunsResponse {
+                store: store.db.store_kind(),
+                app,
+                runs,
+                has_more,
+            })
+        })
+        .await?
+    }
+
+    pub async fn get_run(
+        self: &Arc<Self>,
+        app: &str,
+        id: &str,
+    ) -> Result<GetWorkflowRunResponse, WorkflowManagerError> {
+        let manager = self.clone();
+        let (app, id) = (app.to_string(), id.to_string());
+        crate::blocking::run(move || {
+            let Some(store) = manager.operator_store(&app)? else {
+                return Ok(GetWorkflowRunResponse {
+                    store: manager.store_kind(&app),
+                    app,
+                    run: None,
+                });
+            };
+            Ok(GetWorkflowRunResponse {
+                store: store.db.store_kind(),
+                run: store.db.get_run(&id)?,
+                app,
+            })
+        })
+        .await?
+    }
+
+    /// See [`RunsDb::retry_run`]. Wakes this server's workers when it runs the app.
+    pub async fn retry_run(
+        self: &Arc<Self>,
+        app: &str,
+        id: &str,
+    ) -> Result<WorkflowRunTransition, WorkflowManagerError> {
+        let manager = self.clone();
+        let (app, id) = (app.to_string(), id.to_string());
+        crate::blocking::run(move || {
+            let store = manager
+                .operator_store(&app)?
+                .ok_or_else(|| RunsDbError::RunNotFound { id: id.clone() })?;
+            let previous_status = store.db.retry_run(&id)?;
+            if let Some(handlers) = &store.handlers {
+                (handlers.on_enqueue)();
+            }
+            Ok(WorkflowRunTransition {
+                store: store.db.store_kind(),
+                app,
+                id,
+                previous_status,
+                status: WorkflowRunStatus::Pending,
+            })
+        })
+        .await?
+    }
+
+    /// See [`RunsDb::cancel_run`]. Frees the fenced attempt's concurrency
+    /// slot when this server's runtime holds it.
+    pub async fn cancel_run(
+        self: &Arc<Self>,
+        app: &str,
+        id: &str,
+    ) -> Result<WorkflowRunTransition, WorkflowManagerError> {
+        let manager = self.clone();
+        let (app, id) = (app.to_string(), id.to_string());
+        crate::blocking::run(move || {
+            let store = manager
+                .operator_store(&app)?
+                .ok_or_else(|| RunsDbError::RunNotFound { id: id.clone() })?;
+            let cancelled = store.db.cancel_run(&id)?;
+            if let (Some(handlers), Some(worker_id)) = (&store.handlers, &cancelled.worker_id) {
+                handlers.limiter.release_claim(worker_id);
+            }
+            Ok(WorkflowRunTransition {
+                store: store.db.store_kind(),
+                app,
+                id,
+                previous_status: cancelled.previous_status,
+                status: WorkflowRunStatus::Cancelled,
+            })
+        })
+        .await?
     }
 
     pub fn supervisor_for(&self, app: &str) -> Option<Arc<WorkerSupervisor>> {
@@ -657,6 +824,208 @@ mod tests {
         .await
         .unwrap();
         assert!(!old.is_running());
+    }
+
+    #[tokio::test]
+    async fn operator_commands_use_the_active_runtime_or_the_stored_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let m = Arc::new(WorkflowManager::new(tmp.path()));
+
+        // No store on this server: nothing to show, and no file is created.
+        let list = m.list_runs("a", None, None, None).await.unwrap();
+        assert_eq!(
+            (list.store, list.runs.len()),
+            (WorkflowStoreKind::Sqlite, 0)
+        );
+        assert!(m.get_run("a", "r1").await.unwrap().run.is_none());
+        for error in [
+            m.retry_run("a", "r1").await.unwrap_err(),
+            m.cancel_run("a", "r1").await.unwrap_err(),
+        ] {
+            assert_eq!(error.to_string(), "db error: Workflow run not found: r1");
+        }
+        assert!(!m.workflows_db_path("a").exists());
+        for limit in [0, WORKFLOW_RUNS_MAX_LIMIT + 1] {
+            assert_eq!(
+                m.list_runs("a", None, None, Some(limit))
+                    .await
+                    .unwrap_err()
+                    .to_string(),
+                "Workflow run list limit must be between 1 and 200"
+            );
+        }
+
+        m.ensure("a", None, |db| dummy_spec(tmp.path().into(), db))
+            .await
+            .unwrap();
+        let handlers = m.apps.read()["a"].handlers();
+        for id in ["r1", "r2"] {
+            let options = tako_core::EnqueueOpts {
+                id: Some(id.into()),
+                ..Default::default()
+            };
+            handlers
+                .db
+                .enqueue("work", &serde_json::json!({}), &options)
+                .unwrap();
+        }
+        let claimed = handlers
+            .limiter
+            .claim(&handlers.db, "worker", &["work".into()], 60_000)
+            .unwrap()
+            .unwrap();
+        assert_eq!(handlers.limiter.count("worker"), 1);
+
+        // Cancelling the running attempt frees its concurrency slot.
+        let cancelled = m.cancel_run("a", &claimed.id).await.unwrap();
+        assert_eq!(cancelled.previous_status, WorkflowRunStatus::Running);
+        assert_eq!(cancelled.status, WorkflowRunStatus::Cancelled);
+        assert_eq!(handlers.limiter.count("worker"), 0);
+        let listed = m
+            .list_runs("a", Some(WorkflowRunStatus::Cancelled), None, Some(1))
+            .await
+            .unwrap();
+        assert_eq!(listed.runs[0].id, claimed.id);
+        assert!(!listed.has_more);
+
+        // A stopped app's runs stay inspectable and repairable.
+        m.stop("a", Duration::from_secs(1)).await;
+        let retried = m.retry_run("a", &claimed.id).await.unwrap();
+        assert_eq!(retried.previous_status, WorkflowRunStatus::Cancelled);
+        let shown = m.get_run("a", &claimed.id).await.unwrap().run.unwrap();
+        assert_eq!(
+            (shown.status, shown.attempts),
+            (WorkflowRunStatus::Pending, 0)
+        );
+        assert_eq!(
+            m.list_runs("a", None, None, None).await.unwrap().runs.len(),
+            2
+        );
+    }
+
+    /// Two servers share one Postgres store. The server that does not run
+    /// the attempt can still cancel it, and the attempt is fenced.
+    #[tokio::test]
+    async fn operator_commands_reach_runs_of_other_servers_in_a_shared_postgres_store() {
+        let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let app = format!("operator-{}", nanoid::nanoid!(8, &['a', 'b', 'c', 'd']));
+        let servers: Vec<_> = (0..2)
+            .map(|_| {
+                let tmp = tempfile::tempdir().unwrap();
+                let m = Arc::new(WorkflowManager::new(tmp.path()));
+                let url = url.clone();
+                m.set_postgres_url_resolver(Arc::new(move |_| Some(url.clone())));
+                (tmp, m)
+            })
+            .collect();
+        let (running, operator) = (&servers[0].1, &servers[1].1);
+        running
+            .ensure(&app, None, |db| dummy_spec(servers[0].0.path().into(), db))
+            .await
+            .unwrap();
+        let handlers = running.apps.read()[&app].handlers();
+        // The synchronous Postgres client must stay off runtime threads.
+        let blocking = |f: Box<dyn FnOnce(&RunsDb) -> String + Send>| {
+            let db = handlers.db.clone();
+            async move { tokio::task::spawn_blocking(move || f(&db)).await.unwrap() }
+        };
+        let id = blocking(Box::new(|db| {
+            db.enqueue("work", &serde_json::json!({}), &Default::default())
+                .unwrap()
+                .id
+        }))
+        .await;
+        let owner = blocking(Box::new(|db| {
+            db.claim("worker", &["work".into()], 60_000)
+                .unwrap()
+                .unwrap()
+                .worker_id
+        }))
+        .await;
+
+        let list = operator.list_runs(&app, None, None, None).await.unwrap();
+        assert_eq!(list.store, WorkflowStoreKind::Postgres);
+        assert_eq!(list.runs[0].id, id);
+        let cancelled = operator.cancel_run(&app, &id).await.unwrap();
+        assert_eq!(cancelled.previous_status, WorkflowRunStatus::Running);
+        let (late_id, late_owner) = (id.clone(), owner.clone());
+        let late = blocking(Box::new(move |db| {
+            db.save_step(&late_id, &late_owner, "late", &serde_json::json!(1))
+                .unwrap_err()
+                .to_string()
+        }))
+        .await;
+        assert_eq!(late, RunsDbError::StaleWorker.to_string());
+        assert_eq!(
+            running
+                .get_run(&app, &id)
+                .await
+                .unwrap()
+                .run
+                .unwrap()
+                .status,
+            WorkflowRunStatus::Cancelled
+        );
+        running.stop(&app, Duration::from_secs(1)).await;
+        // The last store handle is released in async code.
+        drop(handlers);
+
+        tokio::task::spawn_blocking(move || {
+            let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+            for table in ["steps", "event_waiters", "runs"] {
+                client
+                    .execute(
+                        &format!("DELETE FROM {POSTGRES_WORKFLOWS_SCHEMA}.{table} WHERE app_id=$1"),
+                        &[&app],
+                    )
+                    .unwrap();
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    /// The synchronous Postgres client panics when it closes on a runtime
+    /// thread. Each lifecycle path below releases the store's last handle
+    /// in async code.
+    #[tokio::test]
+    async fn postgres_store_survives_every_lifecycle_path_that_releases_it() {
+        let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let m = WorkflowManager::new(tmp.path());
+        m.set_postgres_url_resolver(Arc::new(move |_| Some(url.clone())));
+        let app = format!("lifecycle-{}", nanoid::nanoid!(8, &['a', 'b', 'c', 'd']));
+        let cwd = tmp.path().to_path_buf();
+        let start = || m.ensure(&app, None, |db| dummy_spec(cwd.clone(), db));
+
+        // A replacement that fails to start is the only holder of its store.
+        m.ensure(&app, None, |db| invalid_start_spec(cwd.clone(), db))
+            .await
+            .unwrap_err();
+
+        start().await.unwrap();
+        m.stop(&app, Duration::from_secs(1)).await;
+
+        start().await.unwrap();
+        start().await.unwrap();
+        let (_, replaced) = m.retired.lock().pop().unwrap();
+        replaced.await.unwrap();
+
+        m.retire(&app).await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while m.has(&app) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        start().await.unwrap();
+        m.shutdown_all(Duration::from_secs(1)).await;
     }
 
     #[tokio::test]

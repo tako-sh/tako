@@ -309,6 +309,11 @@ pub(super) fn expand_status_by_running_builds(
                 builds: Vec::new(),
                 state: build.state,
                 last_error: app_status.last_error.clone(),
+                // Recovery is about the instances of the current release.
+                recovery: app_status
+                    .recovery
+                    .clone()
+                    .filter(|_| build.version == app_status.version),
             }),
             deployed_at_unix_secs: status.deployed_at_unix_secs,
             error: status.error.clone(),

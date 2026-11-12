@@ -415,6 +415,10 @@ fn management_rpc_timeout_for_command(command: &Command) -> Duration {
         | Command::GetSecretsHash { .. }
         | Command::EnqueueRun { .. }
         | Command::Signal { .. }
+        | Command::ListWorkflowRuns { .. }
+        | Command::GetWorkflowRun { .. }
+        | Command::RetryWorkflowRun { .. }
+        | Command::CancelWorkflowRun { .. }
         | Command::RegisterSchedules { .. }
         | Command::ClaimRun { .. }
         | Command::HeartbeatRun { .. }

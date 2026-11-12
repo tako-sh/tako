@@ -42,6 +42,42 @@ fn test_command_serialization() {
 }
 
 #[test]
+fn app_status_recovery_is_omitted_when_empty_and_roundtrips() {
+    let quiet = serde_json::json!({
+        "name": "my-app/production",
+        "version": "v1",
+        "instances": [],
+        "builds": [],
+        "state": "running",
+        "last_error": null,
+    });
+    let status: AppStatus = serde_json::from_value(quiet.clone()).unwrap();
+    assert!(status.recovery.is_none());
+    assert_eq!(serde_json::to_value(&status).unwrap(), quiet);
+
+    let mut recovering = quiet;
+    recovering["recovery"] = serde_json::json!({
+        "restart_count": 3,
+        "last_exit": {"reason": "failed_to_start", "exit_code": 1, "at_unix_secs": 1_778_220_000},
+        "next_restart_at_unix_secs": 1_778_220_004_i64,
+    });
+    let status: AppStatus = serde_json::from_value(recovering.clone()).unwrap();
+    let recovery = status.recovery.as_ref().unwrap();
+    assert_eq!(recovery.restart_count, 3);
+    let exit = recovery.last_exit.as_ref().unwrap();
+    assert_eq!(exit.reason, InstanceExitReason::FailedToStart);
+    assert_eq!((exit.exit_code, exit.signal), (Some(1), None));
+    assert_eq!(serde_json::to_value(&status).unwrap(), recovering);
+
+    for (reason, wire) in [
+        (InstanceExitReason::Crashed, "crashed"),
+        (InstanceExitReason::Unhealthy, "unhealthy"),
+    ] {
+        assert_eq!(serde_json::to_value(reason).unwrap(), wire);
+    }
+}
+
+#[test]
 fn management_auth_message_includes_context_and_body() {
     // CodeQL[rust/hard-coded-cryptographic-value]: fixed nonce keeps this protocol fixture deterministic.
     let message = management_auth_message("1778220000", "abc123", br#"{"command":"list"}"#);
@@ -857,5 +893,216 @@ fn test_server_runtime_info_pid_roundtrip() {
     assert_eq!(
         parsed.server_identity.as_deref(),
         Some("SHA256:testidentity")
+    );
+}
+
+#[test]
+fn workflow_run_operator_commands_roundtrip() {
+    let list: Command = serde_json::from_str(
+        r#"{"command":"list_workflow_runs","app":"my-app/production","status":"dead","name":"send-email","limit":10}"#,
+    )
+    .unwrap();
+    match &list {
+        Command::ListWorkflowRuns {
+            app,
+            status,
+            name,
+            limit,
+        } => {
+            assert_eq!(app, "my-app/production");
+            assert_eq!(*status, Some(WorkflowRunStatus::Dead));
+            assert_eq!(name.as_deref(), Some("send-email"));
+            assert_eq!(*limit, Some(10));
+        }
+        _ => panic!("expected ListWorkflowRuns"),
+    }
+    let json = serde_json::to_value(&list).unwrap();
+    assert_eq!(json["command"], "list_workflow_runs");
+    assert_eq!(json["status"], "dead");
+
+    let defaults: Command =
+        serde_json::from_str(r#"{"command":"list_workflow_runs","app":"a/b"}"#).unwrap();
+    assert!(matches!(
+        defaults,
+        Command::ListWorkflowRuns {
+            status: None,
+            name: None,
+            limit: None,
+            ..
+        }
+    ));
+    assert!(
+        serde_json::from_str::<Command>(
+            r#"{"command":"list_workflow_runs","app":"a/b","status":"failed"}"#
+        )
+        .is_err()
+    );
+
+    for (name, command) in [
+        (
+            "get_workflow_run",
+            Command::GetWorkflowRun {
+                app: "a/b".into(),
+                id: "run-1".into(),
+            },
+        ),
+        (
+            "retry_workflow_run",
+            Command::RetryWorkflowRun {
+                app: "a/b".into(),
+                id: "run-1".into(),
+            },
+        ),
+        (
+            "cancel_workflow_run",
+            Command::CancelWorkflowRun {
+                app: "a/b".into(),
+                id: "run-1".into(),
+            },
+        ),
+    ] {
+        let json = serde_json::to_value(&command).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"command": name, "app": "a/b", "id": "run-1"})
+        );
+        let parsed: Command = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            std::mem::discriminant(&parsed),
+            std::mem::discriminant(&command)
+        );
+    }
+    // The worker-scoped cancel still requires its claim owner.
+    assert!(
+        serde_json::from_str::<Command>(r#"{"command":"cancel_run","app":"a/b","id":"run-1"}"#)
+            .is_err()
+    );
+}
+
+#[test]
+fn workflow_run_operator_responses_roundtrip() {
+    let summary = WorkflowRunSummary {
+        id: "run-1".into(),
+        name: "send-email".into(),
+        status: WorkflowRunStatus::Pending,
+        attempts: 0,
+        max_attempts: 3,
+        created_at_ms: 1,
+        run_at_ms: None,
+        finished_at_ms: None,
+        last_error: Some("boom".into()),
+        last_error_truncated: true,
+    };
+    let list = ListWorkflowRunsResponse {
+        app: "a/b".into(),
+        store: WorkflowStoreKind::Postgres,
+        runs: vec![summary],
+        has_more: false,
+    };
+    let json = serde_json::to_value(&list).unwrap();
+    assert_eq!(json["store"], "postgres");
+    assert_eq!(json["runs"][0]["status"], "pending");
+    assert!(json["runs"][0]["run_at_ms"].is_null());
+    assert_eq!(
+        serde_json::from_value::<ListWorkflowRunsResponse>(json).unwrap(),
+        list
+    );
+
+    let truncated = CappedJson {
+        value: serde_json::Value::Null,
+        truncated: true,
+        bytes: 40_000,
+        preview: Some("{\"a\":".into()),
+    };
+    let detail = GetWorkflowRunResponse {
+        app: "a/b".into(),
+        store: WorkflowStoreKind::Sqlite,
+        run: Some(WorkflowRunDetail {
+            id: "run-1".into(),
+            name: "send-email".into(),
+            status: WorkflowRunStatus::Succeeded,
+            attempts: 1,
+            max_attempts: 3,
+            created_at_ms: 1,
+            run_at_ms: Some(1),
+            finished_at_ms: Some(2),
+            lease_until_ms: None,
+            worker_id: None,
+            last_error: None,
+            last_error_truncated: false,
+            payload: truncated.clone(),
+            result: Some(CappedJson {
+                value: serde_json::json!(null),
+                truncated: false,
+                bytes: 4,
+                preview: None,
+            }),
+            steps: vec![WorkflowRunStep {
+                name: "charge".into(),
+                completed_at_ms: 2,
+                result: truncated,
+            }],
+            steps_total: 150,
+            waits: vec![WorkflowRunWait {
+                step_name: "approval".into(),
+                event_name: "approval".into(),
+                expires_at_ms: None,
+            }],
+        }),
+    };
+    let json = serde_json::to_value(&detail).unwrap();
+    assert!(json["run"]["result"].get("preview").is_none());
+    assert_eq!(json["run"]["payload"]["preview"], "{\"a\":");
+    assert_eq!(
+        serde_json::from_value::<GetWorkflowRunResponse>(json).unwrap(),
+        detail
+    );
+
+    let transition = WorkflowRunTransition {
+        app: "a/b".into(),
+        store: WorkflowStoreKind::Sqlite,
+        id: "run-1".into(),
+        previous_status: WorkflowRunStatus::Dead,
+        status: WorkflowRunStatus::Pending,
+    };
+    let json = serde_json::to_string(&transition).unwrap();
+    assert_eq!(
+        serde_json::from_str::<WorkflowRunTransition>(&json).unwrap(),
+        transition
+    );
+    for status in [
+        WorkflowRunStatus::Pending,
+        WorkflowRunStatus::Running,
+        WorkflowRunStatus::Succeeded,
+        WorkflowRunStatus::Cancelled,
+        WorkflowRunStatus::Dead,
+    ] {
+        assert_eq!(status.as_str().parse::<WorkflowRunStatus>(), Ok(status));
+        assert_eq!(
+            serde_json::to_value(status).unwrap(),
+            serde_json::json!(status.as_str())
+        );
+    }
+}
+
+#[test]
+fn register_schedules_carries_an_optional_retry_budget() {
+    let command: Command = serde_json::from_value(serde_json::json!({
+        "command": "register_schedules",
+        "app": "a",
+        "schedules": [
+            {"name": "nightly", "cron": "0 0 * * *", "max_attempts": 5},
+            {"name": "hourly", "cron": "0 * * * *"},
+        ],
+    }))
+    .unwrap();
+    let Command::RegisterSchedules { schedules, .. } = command else {
+        panic!("not register_schedules");
+    };
+    assert_eq!(schedules[0].max_attempts, Some(5));
+    assert_eq!(schedules[1].max_attempts, None);
+    assert_eq!(
+        serde_json::to_value(&schedules[1]).unwrap(),
+        serde_json::json!({"name": "hourly", "cron": "0 * * * *"})
     );
 }

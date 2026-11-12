@@ -1,4 +1,7 @@
-//! Bound synchronous storage operations before dispatching them off the runtime.
+//! Bound synchronous storage operations before dispatching them off the runtime,
+//! and keep blocking destructors off it too.
+
+use std::ops::{Deref, DerefMut};
 
 use tokio::sync::Semaphore;
 
@@ -43,6 +46,45 @@ async fn run_with<T: Send + 'static>(
         operation()
     })
     .await
+}
+
+/// Owns a value whose destructor blocks, such as the synchronous Postgres
+/// client: it closes its connection with `block_on`, which panics on a
+/// runtime thread. Stores are released from async code (stop, retire,
+/// replacement, a metrics scrape holding the last handle), so the value is
+/// moved to a plain thread when it is dropped inside a runtime. A plain
+/// thread, not the blocking pool, also works while the runtime shuts down.
+pub(crate) struct ReleaseOffRuntime<T: Send + 'static>(Option<T>);
+
+impl<T: Send + 'static> ReleaseOffRuntime<T> {
+    pub(crate) fn new(value: T) -> Self {
+        Self(Some(value))
+    }
+}
+
+impl<T: Send + 'static> Deref for ReleaseOffRuntime<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.0.as_ref().expect("value is present until drop")
+    }
+}
+
+impl<T: Send + 'static> DerefMut for ReleaseOffRuntime<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.0.as_mut().expect("value is present until drop")
+    }
+}
+
+impl<T: Send + 'static> Drop for ReleaseOffRuntime<T> {
+    fn drop(&mut self) {
+        let Some(value) = self.0.take() else {
+            return;
+        };
+        if tokio::runtime::Handle::try_current().is_ok() {
+            std::thread::spawn(move || drop(value));
+        }
+    }
 }
 
 #[cfg(test)]

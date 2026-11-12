@@ -50,7 +50,9 @@ fn visit(command: &Command, path: Vec<String>, tools: &mut BTreeMap<String, Comm
         let read_only = matches!(path[0].as_str(), "doctor" | "status" | "logs" | "version")
             || path
                 .last()
-                .is_some_and(|last| matches!(last.as_str(), "list" | "status"));
+                .is_some_and(|last| matches!(last.as_str(), "list" | "status" | "show"));
+        // Retrying a run only adds work; every other write may stop or remove it.
+        let destructive = !read_only && path != ["workflows", "retry"];
         let description = format!(
             "{}\nUses the configured Tako project and CLI credentials. {}{}",
             command
@@ -73,7 +75,7 @@ fn visit(command: &Command, path: Vec<String>, tools: &mut BTreeMap<String, Comm
         let tool = Tool::new(name.clone(), description, schema(command, &path)).with_annotations(
             ToolAnnotations::new()
                 .read_only(read_only)
-                .destructive(!read_only)
+                .destructive(destructive)
                 .open_world(true),
         );
         tools.insert(

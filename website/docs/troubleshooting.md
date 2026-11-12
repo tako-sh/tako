@@ -94,6 +94,21 @@ The container must:
 
 In v0, container HTTP instances do not receive fd 3, fd 4, or the internal socket. They do receive the app data directory, mounted at `container_options.data_dir` (`/tako/data` by default), with `TAKO_DATA_DIR` set to that path. Files written elsewhere in the container are lost when it is replaced.
 
+## App Keeps Restarting
+
+When instances exit or fail health checks, the server replaces them and backs off between repeated attempts, up to 30 seconds. `tako status` shows a `Restarts` row under the app:
+
+```text
+web  healthy 0/0  production  abc123
+  Restarts  4  last failed to start (exit code 1) Nov 12, 2026 10:00  next restart in 16s
+```
+
+- `crashed`: the process exited after it had been healthy. Check the exit code or signal; signal 9 often means the host ran out of memory.
+- `unhealthy`: the process kept running but stopped answering health checks.
+- `failed to start`: the instance never became healthy, often a missing secret, a startup exception, or a port that was never reported.
+
+Read the app's output with `tako logs --env production --days 1`. `tako status --json` reports the same fields under `recovery`. The server keeps retrying on its own; a fixed deploy or `tako scale` starts new instances at once without waiting for the backoff.
+
 ## TLS Or Certificate Problems
 
 Let's Encrypt exact routes use HTTP-01 by default, so public port 80 must reach the server's HTTP listener. If you use wildcard routes, or if exact routes should use DNS-01, set:
@@ -122,6 +137,19 @@ tako logs --env production --json
 History mode with `--json` returns one object with a `logs` array. `--tail --json` emits one JSONL event per stdout line until interrupted.
 
 Remote fetch failures are command failures, not empty log results.
+
+## Workflow Runs Fail Or Stall
+
+Logs show each attempt's output. To see where a run stopped, read its stored state:
+
+```bash
+tako workflows list --env production --status dead
+tako workflows show <run-id> --env production
+```
+
+`show` lists the saved steps and the stored error. The run failed after its last saved step. Fix the cause, then `tako workflows retry <run-id> --env production` resumes it with a fresh retry budget. A `pending` run with no due time is waiting for a signal; check its waits. A `running` run whose worker was lost is reclaimed 60 seconds after its last heartbeat.
+
+These commands work against deployed environments only. When servers keep separate workflow state, a server that cannot be reached is reported as a warning and its runs are missing from the list. See [Inspect and repair runs](/workflows/#inspect-and-repair-runs).
 
 ## Backups Fail
 

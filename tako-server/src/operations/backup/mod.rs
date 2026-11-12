@@ -84,8 +84,7 @@ impl crate::ServerState {
         let _backup = self
             .acquire_backup_lock(app, wait_for_database_snapshot)
             .await?;
-        let lock = self.get_deploy_lock(app).await;
-        let _guard = lock.lock().await;
+        let _guard = self.lock_deploy_for_backup(app).await;
         if self.is_draining() {
             return Err("Server is draining".into());
         }

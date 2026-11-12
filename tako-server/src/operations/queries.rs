@@ -41,6 +41,7 @@ impl crate::ServerState {
             builds,
             state: app.state(),
             last_error: app.last_error(),
+            recovery: app.recovery_status(),
         };
 
         Response::ok(status)
