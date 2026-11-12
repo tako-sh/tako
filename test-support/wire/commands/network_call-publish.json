@@ -1,0 +1,17 @@
+{
+  "address": "chat.messages",
+  "app": "demo",
+  "command": "network_call",
+  "request": {
+    "message": {
+      "data": {
+        "text": "hi"
+      },
+      "type": "message"
+    },
+    "operation": "publish",
+    "params": {
+      "room": "lobby"
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "app": "demo",
+  "command": "enqueue_run",
+  "name": "send-email",
+  "opts": {},
+  "payload": {
+    "to": "a@example.com"
+  }
+}

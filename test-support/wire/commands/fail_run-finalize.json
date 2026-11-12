@@ -1,0 +1,9 @@
+{
+  "app": "demo",
+  "command": "fail_run",
+  "error": "smtp timeout",
+  "finalize": true,
+  "id": "run-1",
+  "next_run_at_ms": null,
+  "worker_id": "claim-7"
+}

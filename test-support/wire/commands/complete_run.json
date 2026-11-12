@@ -1,0 +1,9 @@
+{
+  "app": "demo",
+  "command": "complete_run",
+  "id": "run-1",
+  "result": {
+    "sent": true
+  },
+  "worker_id": "claim-7"
+}

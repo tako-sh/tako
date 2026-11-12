@@ -1,0 +1,7 @@
+{
+  "app": "demo",
+  "command": "defer_run",
+  "id": "run-1",
+  "wake_at_ms": 1767229200000,
+  "worker_id": "claim-7"
+}

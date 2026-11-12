@@ -1,0 +1,9 @@
+{
+  "address": "mail.send-email",
+  "app": "demo",
+  "command": "network_call",
+  "request": {
+    "id": "run-1",
+    "operation": "result"
+  }
+}

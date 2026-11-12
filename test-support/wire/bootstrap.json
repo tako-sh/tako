@@ -1,0 +1,25 @@
+{
+  "secrets": {
+    "API_KEY": "key-123",
+    "DATABASE_URL": "postgres://db/app"
+  },
+  "storages": {
+    "files": {
+      "force_path_style": false,
+      "path": "/var/lib/tako/apps/demo/storage/files",
+      "provider": "local",
+      "signing_key": "signing-example"
+    },
+    "uploads": {
+      "access_key_id": "AKIAEXAMPLE",
+      "bucket": "demo-uploads",
+      "endpoint": "https://s3.example.com",
+      "force_path_style": true,
+      "provider": "s3",
+      "public_base_url": "https://cdn.example.com",
+      "region": "auto",
+      "secret_access_key": "secret-example"
+    }
+  },
+  "token": "tok-abc"
+}

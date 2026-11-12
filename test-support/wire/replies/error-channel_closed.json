@@ -1,0 +1,5 @@
+{
+  "code": "channel_closed",
+  "message": "rejected: channel_closed",
+  "status": "error"
+}

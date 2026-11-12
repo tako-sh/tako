@@ -1,0 +1,22 @@
+{
+  "app": "demo",
+  "build": "v7",
+  "channel": "board",
+  "command": "channel_publish",
+  "params": {
+    "base": "north",
+    "page": 2
+  },
+  "payload": {
+    "data": {
+      "text": "hi"
+    },
+    "lifecycle": {
+      "inactivityTtlMs": 0,
+      "keepaliveIntervalMs": 25000,
+      "maxConnectionLifetimeMs": 7200000,
+      "replayWindowMs": 600000
+    },
+    "type": "message"
+  }
+}

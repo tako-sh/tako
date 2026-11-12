@@ -1,0 +1,12 @@
+{
+  "app": "demo",
+  "channel": "tako.store:messages",
+  "command": "channel_publish",
+  "payload": {
+    "data": {},
+    "scopeParams": {
+      "chatId": "chat-a"
+    },
+    "type": "tako.store.invalidate"
+  }
+}
