@@ -690,9 +690,9 @@ pub(crate) enum RecoveryMode {
     Primary,
     /// An upgrade reload, a native promotion child, an in-process standby
     /// promotion, or a normal start beside another serving process: each
-    /// takes over from or runs beside a server that may still be running. Changes nothing and starts a new
-    /// generation, so records of the server it replaces are only reported
-    /// at later starts.
+    /// takes over from or runs beside a server that may still be running.
+    /// Changes nothing and starts a new generation, so records of the
+    /// server it replaces are only reported at later starts.
     Successor,
     /// A standby beside a running primary. Changes nothing, and its own
     /// restores are never rolled back automatically.
