@@ -87,9 +87,9 @@ impl crate::ServerState {
         };
 
         let lock = self.get_deploy_lock(app_name).await;
-        let _guard = match lock.try_lock() {
-            Ok(guard) => guard,
-            Err(_) => {
+        let _guard = match self.lock_deploy_for_operator(app_name, &lock).await {
+            Some(guard) => guard,
+            None => {
                 tracing::warn!(
                     app = app_name,
                     "Deploy rejected: another deploy in progress"
@@ -356,7 +356,7 @@ impl crate::ServerState {
         self.sync_app_workflows(app_name, &release_path, runtime_bin_path.as_deref())
             .await;
 
-        if app.get_instances().is_empty() {
+        let response = if app.get_instances().is_empty() {
             if deploy_config.min_instances == 0 {
                 match self.start_on_demand_warm_instance(&app).await {
                     Ok(()) => {
@@ -501,7 +501,13 @@ impl crate::ServerState {
                     Response::error(format!("Rolling update failed: {}", e))
                 }
             }
+        };
+        if response.is_ok() {
+            // A release that passed rollout starts with a clean crash history;
+            // a stale backoff must not delay recovery of the new instances.
+            app.reset_recovery();
         }
+        response
     }
 
     pub(crate) async fn start_on_demand_warm_instance(&self, app: &Arc<App>) -> Result<(), String> {

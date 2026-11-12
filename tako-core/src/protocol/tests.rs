@@ -42,6 +42,42 @@ fn test_command_serialization() {
 }
 
 #[test]
+fn app_status_recovery_is_omitted_when_empty_and_roundtrips() {
+    let quiet = serde_json::json!({
+        "name": "my-app/production",
+        "version": "v1",
+        "instances": [],
+        "builds": [],
+        "state": "running",
+        "last_error": null,
+    });
+    let status: AppStatus = serde_json::from_value(quiet.clone()).unwrap();
+    assert!(status.recovery.is_none());
+    assert_eq!(serde_json::to_value(&status).unwrap(), quiet);
+
+    let mut recovering = quiet;
+    recovering["recovery"] = serde_json::json!({
+        "restart_count": 3,
+        "last_exit": {"reason": "failed_to_start", "exit_code": 1, "at_unix_secs": 1_778_220_000},
+        "next_restart_at_unix_secs": 1_778_220_004_i64,
+    });
+    let status: AppStatus = serde_json::from_value(recovering.clone()).unwrap();
+    let recovery = status.recovery.as_ref().unwrap();
+    assert_eq!(recovery.restart_count, 3);
+    let exit = recovery.last_exit.as_ref().unwrap();
+    assert_eq!(exit.reason, InstanceExitReason::FailedToStart);
+    assert_eq!((exit.exit_code, exit.signal), (Some(1), None));
+    assert_eq!(serde_json::to_value(&status).unwrap(), recovering);
+
+    for (reason, wire) in [
+        (InstanceExitReason::Crashed, "crashed"),
+        (InstanceExitReason::Unhealthy, "unhealthy"),
+    ] {
+        assert_eq!(serde_json::to_value(reason).unwrap(), wire);
+    }
+}
+
+#[test]
 fn management_auth_message_includes_context_and_body() {
     // CodeQL[rust/hard-coded-cryptographic-value]: fixed nonce keeps this protocol fixture deterministic.
     let message = management_auth_message("1778220000", "abc123", br#"{"command":"list"}"#);

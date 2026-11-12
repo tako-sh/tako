@@ -79,7 +79,7 @@ export function startNodeServer(
   host: string,
   port: number,
   handleRequest: (req: Request) => Promise<Response>,
-): Promise<{ actualPort: number; close: () => void }> {
+): Promise<{ actualPort: number; close: () => Promise<void>; closeAllConnections: () => void }> {
   return new Promise((resolve) => {
     const server = createServer(async (req, res) => {
       try {
@@ -98,7 +98,21 @@ export function startNodeServer(
     server.listen(port, host, () => {
       const addr = server.address();
       const actualPort = typeof addr === "object" && addr ? addr.port : port;
-      resolve({ actualPort, close: () => server.close() });
+      resolve({
+        actualPort,
+        // Stop accepting and wait for active requests. Keep-alive connections
+        // that go idle after their last response are closed as they settle.
+        close: () =>
+          new Promise<void>((done) => {
+            const idle = setInterval(() => server.closeIdleConnections(), 100);
+            idle.unref();
+            server.close(() => {
+              clearInterval(idle);
+              done();
+            });
+          }),
+        closeAllConnections: () => server.closeAllConnections(),
+      });
     });
   });
 }

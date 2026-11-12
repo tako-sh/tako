@@ -75,8 +75,7 @@ impl crate::ServerState {
         let _backup = backup_lock
             .try_lock()
             .map_err(|_| format!("A backup operation is already in progress for {app}."))?;
-        let lock = self.get_deploy_lock(app).await;
-        let _guard = lock.lock().await;
+        let _guard = self.lock_deploy_for_backup(app).await;
         if self.is_draining() {
             return Err("Server is draining".into());
         }

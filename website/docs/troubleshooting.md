@@ -94,6 +94,21 @@ The container must:
 
 In v0, container HTTP instances do not receive fd 3, fd 4, or the internal socket. They do receive the app data directory, mounted at `container_options.data_dir` (`/tako/data` by default), with `TAKO_DATA_DIR` set to that path. Files written elsewhere in the container are lost when it is replaced.
 
+## App Keeps Restarting
+
+When instances exit or fail health checks, the server replaces them and backs off between repeated attempts, up to 30 seconds. `tako status` shows a `Restarts` row under the app:
+
+```text
+web  healthy 0/0  production  abc123
+  Restarts  4  last failed to start (exit code 1) Nov 12, 2026 10:00  next restart in 16s
+```
+
+- `crashed`: the process exited after it had been healthy. Check the exit code or signal; signal 9 often means the host ran out of memory.
+- `unhealthy`: the process kept running but stopped answering health checks.
+- `failed to start`: the instance never became healthy, often a missing secret, a startup exception, or a port that was never reported.
+
+Read the app's output with `tako logs --env production --days 1`. `tako status --json` reports the same fields under `recovery`. The server keeps retrying on its own; a fixed deploy or `tako scale` starts new instances at once without waiting for the backoff.
+
 ## TLS Or Certificate Problems
 
 Let's Encrypt exact routes use HTTP-01 by default, so public port 80 must reach the server's HTTP listener. If you use wildcard routes, or if exact routes should use DNS-01, set:

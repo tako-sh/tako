@@ -1,7 +1,12 @@
 use crate::ServerState;
-use crate::instances::{App, HealthEvent, InstanceEvent};
+use crate::instances::{App, HealthEvent, Instance, InstanceEvent, effective_instance_limit};
 use crate::scaling::IdleEvent;
 use crate::socket::{AppState, InstanceState};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+/// How often the level-triggered instance reconcile looks at every app.
+pub(crate) const INSTANCE_RECONCILE_INTERVAL: Duration = Duration::from_secs(2);
 
 pub(crate) async fn handle_instance_event(state: &ServerState, event: InstanceEvent) {
     if state.is_draining() {
@@ -215,12 +220,18 @@ async fn replace_instance_if_needed(
     // with an independent reconciliation or orphan cleanup.
     let lock = state.get_deploy_lock(app_name).await;
     let _compose_guard = if app.config.read().compose.is_some() {
-        match lock.try_lock() {
-            Ok(guard) => Some(guard),
-            Err(_) => return,
+        match try_lock_deploy_for_recovery(&app, &lock) {
+            Some(guard) => Some(guard),
+            None => return,
         }
     } else {
         None
+    };
+
+    // The periodic reconcile may already be repairing this app. It sees this
+    // instance too, so leave it there rather than start a second replacement.
+    let Ok(_recovering) = app.recovery_gate.try_lock() else {
+        return;
     };
 
     let instance = match app.get_instance(instance_id) {
@@ -230,6 +241,7 @@ async fn replace_instance_if_needed(
             return;
         }
     };
+    app.record_instance_exit(instance.exit_report());
 
     let failed_build = instance.build_version().to_string();
     let current_version = app.version();
@@ -276,42 +288,463 @@ async fn replace_instance_if_needed(
     }
     app.remove_instance(instance_id);
 
-    let spawner = state.app_manager.spawner();
+    // A first loss is replaced at once. While instances keep failing, the
+    // periodic reconcile starts the replacement when the backoff expires.
+    if let Some(wait) = app.restart_backoff_remaining(Instant::now()) {
+        tracing::warn!(
+            app = %app_name,
+            instance = %instance_id,
+            wait_ms = wait.as_millis() as u64,
+            "Instances keep failing; delaying the replacement"
+        );
+        return;
+    }
+
     if app.config.read().compose.is_some() {
-        if let Err(error) = spawner.reconcile_compose(&app).await {
-            app.set_last_error(format!("Compose recovery failed: {error}"));
-            tracing::error!(app = %app_name, %error, "Could not reconcile Compose replicas");
-        }
-        update_instance_count_metric(app_name, &app);
+        recover_compose(state, app_name, &app).await;
         return;
     }
     let new_instance = app.allocate_instance();
+    start_replacement(state, app_name, &app, new_instance).await;
+}
 
-    match spawner.spawn(&app, new_instance.clone()).await {
+async fn recover_compose(state: &ServerState, app_name: &str, app: &App) {
+    app.record_restart();
+    if let Err(error) = state.app_manager.spawner().reconcile_compose(app).await {
+        app.set_last_error(format!("Compose recovery failed: {error}"));
+        app.record_instance_exit(tako_core::InstanceExit {
+            reason: tako_core::InstanceExitReason::FailedToStart,
+            exit_code: None,
+            signal: None,
+            at_unix_secs: (crate::drain_observer::unix_millis() / 1000) as i64,
+        });
+        tracing::error!(app = %app_name, %error, "Could not reconcile Compose replicas");
+    }
+    update_instance_count_metric(app_name, app);
+}
+
+/// Start an already allocated replacement. Returns whether it became healthy.
+/// Caller holds the spawn gate, the app's lifecycle gate and its recovery gate.
+async fn start_replacement(
+    state: &ServerState,
+    app_name: &str,
+    app: &App,
+    instance: Arc<Instance>,
+) -> bool {
+    app.record_restart();
+    match state
+        .app_manager
+        .spawner()
+        .spawn(app, instance.clone())
+        .await
+    {
         Ok(()) => {
             tracing::info!(
                 app = %app_name,
-                old_instance = %instance_id,
-                new_instance = %new_instance.id,
+                instance = %instance.id,
                 "Successfully spawned replacement instance"
             );
+            true
         }
         Err(e) => {
             tracing::error!(
                 app = %app_name,
-                instance = %new_instance.id,
+                instance = %instance.id,
                 "Failed to spawn replacement instance: {}",
                 e
             );
-            app.remove_instance(&new_instance.id);
+            // A deploy, scale-down or stop that arrived meanwhile owns this
+            // instance and stopped it on purpose; that is not a failed start.
+            if app.remove_instance(&instance.id).is_some()
+                && matches!(app.state(), AppState::Running | AppState::Error)
+                && app.version() == instance.build_version()
+            {
+                app.record_instance_exit(instance.exit_report());
+                app.set_last_error(format!("Replacement instance failed to start: {e}"));
+            }
+            false
         }
     }
 }
 
+/// What the reconcile needs to know about one app's instances.
+struct Survey {
+    /// Current-version instances that are up, coming up, or only failing
+    /// probes. The health checker turns the last kind into healthy or dead
+    /// within a few probes, so they are not missing yet.
+    present: u32,
+    all_healthy: bool,
+    /// Instances of any version that may still own a process.
+    running: u32,
+    /// Dead instances that nobody removed.
+    dead: Vec<Arc<Instance>>,
+    /// Instances the app should have, within the server's limit.
+    target: u32,
+    limit: u32,
+}
+
+fn survey(app: &App) -> Survey {
+    let (version, min_instances, limit) = {
+        let config = app.config.read();
+        let limit = if config.compose.is_some() {
+            // Replica counts of a Compose stack are validated by its rollout.
+            u32::MAX
+        } else {
+            effective_instance_limit(config.max_instances)
+        };
+        (config.version.clone(), config.min_instances, limit)
+    };
+    let mut survey = Survey {
+        present: 0,
+        all_healthy: true,
+        running: 0,
+        dead: Vec::new(),
+        target: min_instances.min(limit),
+        limit,
+    };
+    for instance in app.get_instances() {
+        // A rollout owns its candidates, alive or dead, until cutover.
+        if app.is_instance_routing_suppressed(&instance.id) {
+            survey.running += 1;
+            continue;
+        }
+        let state = instance.state();
+        match state {
+            InstanceState::Stopped => {
+                survey.dead.push(instance);
+                continue;
+            }
+            InstanceState::Draining => {}
+            InstanceState::Starting
+            | InstanceState::Ready
+            | InstanceState::Healthy
+            | InstanceState::Unhealthy => {
+                if instance.build_version() == version {
+                    survey.present += 1;
+                    survey.all_healthy &= state == InstanceState::Healthy;
+                }
+            }
+        }
+        survey.running += 1;
+    }
+    survey
+}
+
+/// Whether the reconcile may restore this app's instances. A running app,
+/// and an app in `Error` that health recovery is already repairing: a failed
+/// restore or rollback can leave live instances, the health path replaces
+/// them in any state but `Stopped`, and once it backs off it leaves the next
+/// replacement to the reconcile.
+fn reconciles(app: &App) -> bool {
+    match app.state() {
+        AppState::Running => true,
+        AppState::Error => app.has_recovery_history(),
+        AppState::Idle | AppState::Deploying | AppState::Stopped => false,
+    }
+}
+
+/// Cheap, lock-free look at one app: does it need the reconcile at all?
+/// Also feeds the stable-window observation that forgets an old backoff.
+fn needs_recovery(app: &App, now: Instant) -> bool {
+    let reconciles = reconciles(app);
+    // An idle on-demand app is never reconciled, but it is still observed so
+    // an old restart report settles instead of lingering until a deploy.
+    if !reconciles && app.state() != AppState::Idle {
+        return false;
+    }
+    let survey = survey(app);
+    let settled = survey.dead.is_empty() && survey.present >= survey.target;
+    // Healthy: at its minimum with every current instance healthy. With a
+    // minimum of zero and no instances left there is nothing to recover.
+    app.observe_recovery_health(settled && survey.all_healthy, now);
+    reconciles && !settled
+}
+
+/// Level-triggered instance recovery. Health events are edge-triggered: a
+/// replacement that was skipped under a contended gate, or that failed to
+/// start, leaves nothing behind for the health loop to notice. This looks at
+/// the level instead: every running app that is below its minimum instance
+/// count, or still holds a dead instance, gets one recovery pass.
+///
+/// Each app recovers in its own task, so one slow start cannot delay another
+/// app. The returned handles are only awaited by tests.
+pub(crate) fn reconcile_instances(
+    state: &Arc<ServerState>,
+    now: Instant,
+) -> Vec<tokio::task::JoinHandle<()>> {
+    if state.is_draining() {
+        return Vec::new();
+    }
+    state
+        .app_manager
+        .list_apps()
+        .iter()
+        .filter_map(|name| state.app_manager.get_app(name))
+        .filter(|app| needs_recovery(app, now))
+        .map(|app| {
+            let state = state.clone();
+            tokio::spawn(async move { recover_app(&state, &app, now).await })
+        })
+        .collect()
+}
+
+/// How often an operator operation looks again while recovery holds the
+/// deploy lock.
+const OPERATOR_DEPLOY_LOCK_POLL: Duration = Duration::from_millis(50);
+
+/// The per-app deploy lock, held by automatic recovery. An operator deploy or
+/// secrets update that finds the lock held this way waits for it instead of
+/// failing; see `ServerState::lock_deploy_for_operator`.
+pub(crate) struct RecoveryDeployLock<'a> {
+    // Fields drop in order: the lock is released before the holder count
+    // drops, so the count covers the whole time the lock is held.
+    _guard: tokio::sync::MutexGuard<'a, ()>,
+    _holder: CountGuard<'a>,
+}
+
+/// Increments a counter for as long as it lives.
+struct CountGuard<'a>(&'a std::sync::atomic::AtomicU32);
+
+impl<'a> CountGuard<'a> {
+    fn new(count: &'a std::sync::atomic::AtomicU32) -> Self {
+        count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self(count)
+    }
+}
+
+impl Drop for CountGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Try the deploy lock for automatic recovery. Yields to an operator
+/// operation that is already waiting for it.
+pub(crate) fn try_lock_deploy_for_recovery<'a>(
+    app: &'a App,
+    lock: &'a tokio::sync::Mutex<()>,
+) -> Option<RecoveryDeployLock<'a>> {
+    if app
+        .operators_awaiting_deploy_lock
+        .load(std::sync::atomic::Ordering::SeqCst)
+        != 0
+    {
+        return None;
+    }
+    // Counted before trying, so an operator that finds the lock busy never
+    // mistakes recovery for another operator operation.
+    let holder = CountGuard::new(&app.recovery_deploy_lock_holders);
+    let guard = lock.try_lock().ok()?;
+    Some(RecoveryDeployLock {
+        _guard: guard,
+        _holder: holder,
+    })
+}
+
+impl ServerState {
+    /// Take the deploy lock for an operator deploy or secrets update. When
+    /// another operator operation holds it this fails at once, as before.
+    /// When automatic recovery holds it (a Compose reconcile can take the
+    /// startup timeout), wait up to the app's startup timeout: a crash loop
+    /// must not turn away the deploy that fixes it.
+    pub(crate) async fn lock_deploy_for_operator<'a>(
+        &self,
+        app_name: &str,
+        lock: &'a tokio::sync::Mutex<()>,
+    ) -> Option<tokio::sync::MutexGuard<'a, ()>> {
+        if let Ok(guard) = lock.try_lock() {
+            return Some(guard);
+        }
+        let app = self.app_manager.get_app(app_name)?;
+        let _waiting = CountGuard::new(&app.operators_awaiting_deploy_lock);
+        let deadline = tokio::time::Instant::now() + app.config.read().startup_timeout;
+        loop {
+            if let Ok(guard) = lock.try_lock() {
+                return Some(guard);
+            }
+            if app
+                .recovery_deploy_lock_holders
+                .load(std::sync::atomic::Ordering::SeqCst)
+                == 0
+                || tokio::time::Instant::now() >= deadline
+            {
+                return None;
+            }
+            tokio::time::sleep(OPERATOR_DEPLOY_LOCK_POLL).await;
+        }
+    }
+}
+
+/// The per-app deploy lock, held by a backup. A backup does not change the
+/// instance set, so while it holds the lock (the snapshot can take minutes)
+/// native recovery may still claim instance slots. Dropping this closes that
+/// window before it releases the lock: whoever takes the lock next, such as a
+/// rollout taking its old-instance snapshot, sees every slot claimed meanwhile.
+pub(crate) struct BackupDeployLock {
+    app: Option<Arc<App>>,
+    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl Drop for BackupDeployLock {
+    fn drop(&mut self) {
+        if let Some(app) = &self.app {
+            *app.recovery_claims_open.lock() = false;
+        }
+        self.guard.take();
+    }
+}
+
+impl ServerState {
+    pub(crate) async fn lock_deploy_for_backup(&self, app_name: &str) -> BackupDeployLock {
+        let guard = self.get_deploy_lock(app_name).await.lock_owned().await;
+        let app = self.app_manager.get_app(app_name);
+        if let Some(app) = &app {
+            *app.recovery_claims_open.lock() = true;
+        }
+        BackupDeployLock {
+            app,
+            guard: Some(guard),
+        }
+    }
+}
+
+/// Run `claim`, which changes a native app's instance set, where recovery may
+/// do so: under the deploy lock, or inside a backup's claim window. `None`
+/// when neither is available; the next tick tries again. `claim` must not
+/// wait: it holds both locks.
+fn claim_instances<T>(
+    app: &App,
+    lock: &tokio::sync::Mutex<()>,
+    claim: impl FnOnce() -> T,
+) -> Option<T> {
+    let mutation = try_lock_deploy_for_recovery(app, lock);
+    let claims_open = app.recovery_claims_open.lock();
+    if mutation.is_none() && !*claims_open {
+        return None;
+    }
+    Some(claim())
+}
+
+/// Remove the app's dead instances and report each loss, exactly once.
+fn retire_dead(app: &App, app_name: &str) -> Vec<Arc<Instance>> {
+    let mut retired = Vec::new();
+    for instance in survey(app).dead {
+        let exit = instance.exit_report();
+        if app.remove_instance(&instance.id).is_some() {
+            app.record_instance_exit(exit);
+            crate::metrics::remove_instance_metrics(app_name, &instance.id);
+            retired.push(instance);
+        }
+    }
+    retired
+}
+
+/// One recovery pass for one app. Every gate is only tried: if a drain, stop,
+/// restore, deploy, scale, secrets update or health replacement is in the
+/// way, this pass does nothing and the next tick looks again.
+async fn recover_app(state: &ServerState, app: &Arc<App>, now: Instant) {
+    let app_name = app.name();
+    // Same gates, in the same order, as `replace_instance_if_needed`.
+    let Ok(_spawning) = state.spawn_gate.try_read() else {
+        return;
+    };
+    if state.is_draining() {
+        return;
+    }
+    let Ok(_lifecycle) = app.lifecycle_gate.try_read() else {
+        return;
+    };
+    if !reconciles(app) {
+        return;
+    }
+    // Deploy, scale, secrets and idle eviction hold this lock while they
+    // change the instance set; never count or remove instances under them.
+    let lock = state.get_deploy_lock(&app_name).await;
+
+    if app.config.read().compose.is_some() {
+        let Some(_mutation) = try_lock_deploy_for_recovery(app, &lock) else {
+            return;
+        };
+        let Ok(_recovering) = app.recovery_gate.try_lock() else {
+            return;
+        };
+        // As for health events, a rollout owns every Compose container
+        // mutation: keep the lock for the whole stack reconciliation.
+        let retired = retire_dead(app, &app_name);
+        for instance in &retired {
+            if let Err(e) = instance.kill().await {
+                tracing::error!(app = %app_name, instance = %instance.id, "Failed to kill instance: {}", e);
+            }
+        }
+        let survey = survey(app);
+        if (retired.is_empty() && survey.present >= survey.target)
+            || app.restart_backoff_remaining(now).is_some()
+        {
+            return;
+        }
+        tracing::info!(app = %app_name, "Reconciling Compose replicas below the minimum");
+        recover_compose(state, &app_name, app).await;
+        return;
+    }
+
+    let Ok(_recovering) = app.recovery_gate.try_lock() else {
+        return;
+    };
+    // A native start can take as long as the startup timeout, and deploys
+    // and secrets updates wait while recovery holds the deploy lock, so only
+    // claim each slot under it and start outside: a rollout that arrives
+    // meanwhile finds the starting instance and retires it with the old ones.
+    // The health path starts native replacements without that lock, so a
+    // backup holding it must not hold recovery back either.
+    let Some(retired) = claim_instances(app, &lock, || retire_dead(app, &app_name)) else {
+        return;
+    };
+    for instance in retired {
+        if let Err(e) = instance.kill().await {
+            tracing::error!(app = %app_name, instance = %instance.id, "Failed to kill instance: {}", e);
+        }
+    }
+    loop {
+        if app.restart_backoff_remaining(now).is_some() {
+            break;
+        }
+        let claimed = claim_instances(app, &lock, || {
+            if !reconciles(app)
+                || state
+                    .drain_requested
+                    .load(std::sync::atomic::Ordering::Acquire)
+            {
+                return None;
+            }
+            let survey = survey(app);
+            if survey.present >= survey.target || survey.running >= survey.limit {
+                return None;
+            }
+            tracing::info!(
+                app = %app_name,
+                present = survey.present,
+                min = survey.target,
+                "Starting an instance to restore the minimum"
+            );
+            Some(app.allocate_instance())
+        });
+        let Some(instance) = claimed.flatten() else {
+            break;
+        };
+        if !start_replacement(state, &app_name, app, instance).await {
+            break;
+        }
+    }
+    update_instance_count_metric(&app_name, app);
+}
+
+#[cfg(test)]
+mod recovery_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{collections::HashMap, sync::Arc, time::Duration};
+    use std::collections::HashMap;
 
     #[tokio::test]
     async fn dead_instances_are_handled_without_the_management_lock_and_not_during_drain() {

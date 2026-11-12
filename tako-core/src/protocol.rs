@@ -946,6 +946,55 @@ pub struct AppStatus {
     pub state: AppState,
 
     pub last_error: Option<String>,
+    /// Present only while there is instance recovery activity to report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<RecoveryStatus>,
+}
+
+/// Instance recovery activity since the app was deployed or last stayed healthy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoveryStatus {
+    /// Replacement starts attempted by the server.
+    pub restart_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_exit: Option<InstanceExit>,
+    /// Set while the server backs off before the next replacement start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_restart_at_unix_secs: Option<i64>,
+}
+
+/// The most recent instance the server lost.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstanceExit {
+    pub reason: InstanceExitReason,
+    /// Observed process exit code, when the process exited by itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    /// Signal that terminated the process, when one did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal: Option<i32>,
+    pub at_unix_secs: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstanceExitReason {
+    /// The process exited after it had become healthy.
+    Crashed,
+    /// Health probes failed until the instance was declared dead.
+    Unhealthy,
+    /// The instance never became healthy.
+    FailedToStart,
+}
+
+impl std::fmt::Display for InstanceExitReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InstanceExitReason::Crashed => write!(f, "crashed"),
+            InstanceExitReason::Unhealthy => write!(f, "unhealthy"),
+            InstanceExitReason::FailedToStart => write!(f, "failed to start"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

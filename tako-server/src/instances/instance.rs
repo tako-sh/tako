@@ -24,6 +24,13 @@ pub(super) fn generate_internal_token() -> String {
     nanoid::nanoid!(32)
 }
 
+// One atomic holds both in-flight counts so a drain reads a consistent pair:
+// the total in the high half, the long-lived (protocol-upgraded) subset in
+// the low half. Concurrent requests are bounded far below 2^32.
+const IN_FLIGHT_ONE: u64 = 1 << 32;
+const LONG_LIVED_ONE: u64 = 1;
+const LONG_LIVED_MASK: u64 = IN_FLIGHT_ONE - 1;
+
 pub(super) fn encode_instance_state(state: InstanceState) -> u8 {
     match state {
         InstanceState::Starting => 0,
@@ -69,12 +76,17 @@ pub struct Instance {
     pid: AtomicU32,
     /// Current state
     state: AtomicU8,
+    /// Set once the instance has been healthy; tells a crash from a failed start.
+    was_healthy: AtomicBool,
+    /// Exit status and wall-clock time of the process, where its exit was observed.
+    observed_exit: RwLock<Option<(std::process::ExitStatus, u64)>>,
     /// When the instance started
     started_at: RwLock<Option<Instant>>,
     /// Total requests handled
     requests_total: AtomicU64,
 
-    /// In-flight requests (best-effort; used to avoid killing while serving)
+    /// In-flight requests (best-effort; used to avoid killing while serving),
+    /// packed with the long-lived subset; see `IN_FLIGHT_ONE`.
     in_flight: AtomicU64,
     /// Last request completion time as millis since UNIX_EPOCH (for idle timeout)
     pub(super) last_request_ms: AtomicU64,
@@ -119,6 +131,8 @@ impl Instance {
             terminate_at: RwLock::new(None),
             pid: AtomicU32::new(0),
             state: AtomicU8::new(encode_instance_state(InstanceState::Starting)),
+            was_healthy: AtomicBool::new(false),
+            observed_exit: RwLock::new(None),
             started_at: RwLock::new(None),
             requests_total: AtomicU64::new(0),
             in_flight: AtomicU64::new(0),
@@ -135,9 +149,41 @@ impl Instance {
     /// Set raw lifecycle state. Use `App::set_instance_state` for transitions
     /// that can add or remove the instance from request routing.
     pub fn set_state(&self, state: InstanceState) -> InstanceState {
+        if state == InstanceState::Healthy {
+            self.was_healthy.store(true, Ordering::Release);
+        }
         let encoded = encode_instance_state(state);
         let previous = self.state.swap(encoded, Ordering::AcqRel);
         decode_instance_state(previous)
+    }
+
+    /// Describe the loss of this instance for status reporting. Call before
+    /// `kill`, which detaches Compose containers.
+    pub(crate) fn exit_report(&self) -> tako_core::InstanceExit {
+        let observed = *self.observed_exit.read();
+        // A Compose instance's process is its log follower, whose status says
+        // nothing about the container; `AppStatus.services` reports that.
+        let status = observed
+            .map(|(status, _)| status)
+            .filter(|_| self.compose.read().is_none());
+        let reason = if !self.was_healthy.load(Ordering::Acquire) {
+            tako_core::InstanceExitReason::FailedToStart
+        } else if observed.is_some() {
+            tako_core::InstanceExitReason::Crashed
+        } else {
+            tako_core::InstanceExitReason::Unhealthy
+        };
+        #[cfg(unix)]
+        let signal =
+            status.and_then(|status| std::os::unix::process::ExitStatusExt::signal(&status));
+        #[cfg(not(unix))]
+        let signal = None;
+        tako_core::InstanceExit {
+            reason,
+            exit_code: status.and_then(|status| status.code()),
+            signal,
+            at_unix_secs: (observed.map_or_else(now_unix_millis, |(_, at)| at) / 1000) as i64,
+        }
     }
 
     pub fn pid(&self) -> Option<u32> {
@@ -236,18 +282,43 @@ impl Instance {
 
     pub fn request_started(&self) {
         self.requests_total.fetch_add(1, Ordering::Relaxed);
-        self.in_flight.fetch_add(1, Ordering::Relaxed);
+        self.in_flight.fetch_add(IN_FLIGHT_ONE, Ordering::Relaxed);
+    }
+
+    /// Reclassify one started request as an upgraded connection (the app
+    /// answered `101 Switching Protocols`, for example a WebSocket).
+    /// It stays in `in_flight` but no longer holds an instance drain.
+    pub fn request_became_long_lived(&self) {
+        self.in_flight.fetch_add(LONG_LIVED_ONE, Ordering::Relaxed);
     }
 
     pub fn request_finished(&self) {
-        if self.in_flight.fetch_sub(1, Ordering::Relaxed) == 1 {
+        self.finish_request(IN_FLIGHT_ONE);
+    }
+
+    pub fn long_lived_request_finished(&self) {
+        self.finish_request(IN_FLIGHT_ONE + LONG_LIVED_ONE);
+    }
+
+    fn finish_request(&self, delta: u64) {
+        if self.in_flight.fetch_sub(delta, Ordering::Relaxed) >> 32 == 1 {
             self.last_request_ms
                 .store(now_unix_millis(), Ordering::Relaxed);
         }
     }
 
     pub fn in_flight(&self) -> u64 {
-        self.in_flight.load(Ordering::Relaxed)
+        self.in_flight.load(Ordering::Relaxed) >> 32
+    }
+
+    /// In-flight requests an instance drain waits for: all but long-lived ones.
+    pub fn short_in_flight(&self) -> u64 {
+        let packed = self.in_flight.load(Ordering::Relaxed);
+        (packed >> 32).saturating_sub(packed & LONG_LIVED_MASK)
+    }
+
+    pub fn long_lived_in_flight(&self) -> u64 {
+        self.in_flight.load(Ordering::Relaxed) & LONG_LIVED_MASK
     }
 
     pub fn requests_total(&self) -> u64 {
@@ -283,14 +354,25 @@ impl Instance {
         }
     }
 
+    /// Keep the first exit this server observed without having stopped the
+    /// process itself.
+    fn note_exit(&self, status: std::process::ExitStatus) {
+        self.observed_exit
+            .write()
+            .get_or_insert((status, now_unix_millis()));
+    }
+
     /// Check if process is still running
     pub async fn is_alive(&self) -> bool {
         let mut process = self.process.write();
         if let Some(ref mut child) = *process {
             match child.try_wait() {
-                Ok(Some(_)) => false, // Process exited
-                Ok(None) => true,     // Still running
-                Err(_) => false,      // Error checking
+                Ok(Some(status)) => {
+                    self.note_exit(status);
+                    false
+                }
+                Ok(None) => true, // Still running
+                Err(_) => false,  // Error checking
             }
         } else {
             false
@@ -342,8 +424,12 @@ impl Instance {
             let mut process = self.process.write();
             let mut terminate_at = self.terminate_at.write();
             if terminate_at.is_none() {
+                // A process that is already gone exited by itself; keep that status.
                 if let Some(child) = process.as_mut()
-                    && child.try_wait()?.is_none()
+                    && child
+                        .try_wait()?
+                        .map(|status| self.note_exit(status))
+                        .is_none()
                 {
                     #[cfg(unix)]
                     if let Some(pid) = child.id()
