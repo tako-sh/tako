@@ -1,0 +1,8 @@
+{
+  "data": {
+    "error": "smtp timeout",
+    "result": null,
+    "status": "dead"
+  },
+  "status": "ok"
+}

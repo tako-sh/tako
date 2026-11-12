@@ -1,0 +1,7 @@
+{
+  "app": "demo",
+  "command": "cancel_run",
+  "id": "run-1",
+  "reason": "customer asked",
+  "worker_id": "claim-7"
+}

@@ -1,0 +1,10 @@
+{
+  "app": "demo",
+  "command": "save_step",
+  "id": "run-1",
+  "result": {
+    "id": "u1"
+  },
+  "step_name": "fetch-user",
+  "worker_id": "claim-7"
+}

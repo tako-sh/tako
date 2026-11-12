@@ -405,9 +405,9 @@ pub enum Command {
     ChannelPublish {
         app: String,
         channel: String,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
         params: serde_json::Value,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         build: Option<String>,
         payload: serde_json::Value,
     },
@@ -420,11 +420,11 @@ pub enum Command {
     ChannelClose {
         app: String,
         channel: String,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
         params: serde_json::Value,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         build: Option<String>,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         lifecycle: Option<serde_json::Value>,
     },
     /// Authenticated app-to-app call. `app` is the caller, never the destination.

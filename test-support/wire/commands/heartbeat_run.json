@@ -1,0 +1,7 @@
+{
+  "app": "demo",
+  "command": "heartbeat_run",
+  "id": "run-1",
+  "lease_ms": 30000,
+  "worker_id": "claim-7"
+}

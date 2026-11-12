@@ -212,6 +212,8 @@ part of this protocol.
 
 Update the typed owner, every producer and consumer, and the serialization or integration tests in one change. Update this document only when a cross-component boundary or invariant changes. User-facing behavior belongs in the website docs and SDK READMEs.
 
+The internal-socket commands the SDKs send, the replies they parse, and the bootstrap envelope have JSON fixtures in `test-support/wire/`. `tako-core` tests generate them from the typed owners; the JavaScript, Go, and Rust SDK tests check their request builders and reply parsers against the same files.
+
 ## Public development tunnels
 
 The public tunnel relay (`tako-sh/tunnel`) and `tako-dev-server` negotiate

@@ -1,0 +1,8 @@
+{
+  "app": "demo",
+  "command": "signal",
+  "event_name": "order-approved",
+  "payload": {
+    "orderId": "42"
+  }
+}
