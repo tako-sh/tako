@@ -12,8 +12,8 @@ use std::{
 };
 use tako_channels::PresenceMember;
 use tako_channels::{
-    ChannelAuthResponse, ChannelError, ChannelMessage, ChannelPublishPayload, ChannelStore,
-    ChannelStoreConfig,
+    ChannelAuthResponse, ChannelError, ChannelLifecycle, ChannelMessage, ChannelPublishPayload,
+    ChannelStore, ChannelStoreConfig,
 };
 use tako_network::AppEnv;
 use tokio::{sync::watch, task::JoinHandle};
@@ -48,6 +48,7 @@ trait BrokerLink: Send + Sync {
         channel: String,
         payload: ChannelPublishPayload,
         ephemeral: bool,
+        lifecycle: Option<ChannelLifecycle>,
     ) -> io::Result<ChannelMessage>;
     async fn update_presence(
         &self,
@@ -85,8 +86,10 @@ impl BrokerLink for Client {
         channel: String,
         payload: ChannelPublishPayload,
         ephemeral: bool,
+        lifecycle: Option<ChannelLifecycle>,
     ) -> io::Result<ChannelMessage> {
-        self.publish(app, channel, payload, ephemeral).await
+        self.publish(app, channel, payload, ephemeral, lifecycle)
+            .await
     }
     async fn update_presence(
         &self,
@@ -336,6 +339,7 @@ impl ProxyChannelStore {
                     channel.into(),
                     payload.clone(),
                     ephemeral,
+                    None,
                 )
                 .await
                 .map_err(|error| {

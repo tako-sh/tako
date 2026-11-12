@@ -8,8 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::stream::close_payload;
 use crate::{
-    CLOSE_MESSAGE_TYPE, ChannelAuthResponse, ChannelError, ChannelMessage, ChannelPublishPayload,
-    ReplayCursor, ReplayFrom,
+    CLOSE_MESSAGE_TYPE, ChannelAuthResponse, ChannelError, ChannelLifecycle, ChannelMessage,
+    ChannelPublishPayload, ReplayCursor, ReplayFrom,
 };
 use postgres::PostgresChannelStore;
 use sqlite::SqliteChannelStore;
@@ -449,7 +449,7 @@ impl ChannelStore {
         channel: &str,
         payload: &ChannelPublishPayload,
     ) -> Result<ChannelMessage, ChannelError> {
-        self.publish(channel, payload, true)
+        self.publish(channel, payload, true, None)
     }
 
     pub fn append(
@@ -457,7 +457,20 @@ impl ChannelStore {
         channel: &str,
         payload: &ChannelPublishPayload,
     ) -> Result<ChannelMessage, ChannelError> {
-        self.publish(channel, payload, false)
+        self.publish(channel, payload, false, None)
+    }
+
+    /// Append to a durable stream and apply the lifecycle its definition
+    /// declares in the same write, after the close check: a publish rejected
+    /// because the stream is closed changes neither the stream's lifecycle
+    /// nor its activity. Without a lifecycle this is [`Self::append`].
+    pub fn append_with_lifecycle(
+        &self,
+        channel: &str,
+        payload: &ChannelPublishPayload,
+        lifecycle: Option<&ChannelLifecycle>,
+    ) -> Result<ChannelMessage, ChannelError> {
+        self.publish(channel, payload, false, lifecycle)
     }
 
     /// Close a stream durably by appending its terminal marker. Later
@@ -473,6 +486,7 @@ impl ChannelStore {
         channel: &str,
         payload: &ChannelPublishPayload,
         ephemeral: bool,
+        lifecycle: Option<&ChannelLifecycle>,
     ) -> Result<ChannelMessage, ChannelError> {
         self.ensure_writable()?;
         if ephemeral && payload.r#type == CLOSE_MESSAGE_TYPE {
@@ -483,7 +497,7 @@ impl ChannelStore {
         let _publication = self.delivery.publish.lock();
         let (message, publication) = match self.backend.as_ref() {
             ChannelStoreBackend::Sqlite(store) => {
-                let (message, event) = store.publish(channel, payload, ephemeral)?;
+                let (message, event) = store.publish(channel, payload, ephemeral, lifecycle)?;
                 // An already closed stream returns its marker; nothing new to deliver.
                 let Some(event) = event else {
                     return Ok(message);
@@ -494,7 +508,7 @@ impl ChannelStore {
                 if ephemeral {
                     return Err(crate::ephemeral::unsupported());
                 }
-                let (message, appended) = store.append(channel, payload)?;
+                let (message, appended) = store.append(channel, payload, lifecycle)?;
                 let message = scope_postgres_id(channel, message)?;
                 if !appended {
                     return Ok(message);

@@ -128,15 +128,8 @@ async fn send(link: &dyn BrokerLink, publication: &Publication) -> Result<Channe
     )
     .await
     .map_err(|_| "native channel registration rejected or unavailable")?;
-    if let Some(lifecycle) = &publication.lifecycle {
-        link.sync(
-            publication.app.clone(),
-            publication.channel.clone(),
-            lifecycle.auth(),
-        )
-        .await
-        .map_err(|_| "native channel lifecycle sync rejected or unavailable")?;
-    }
+    // The lifecycle travels with the publish: the broker applies it only once
+    // the stream accepts the message.
     link.publish(
         publication.app.clone(),
         publication.channel.clone(),
@@ -145,6 +138,7 @@ async fn send(link: &dyn BrokerLink, publication: &Publication) -> Result<Channe
             .lifecycle
             .as_ref()
             .is_some_and(|lifecycle| lifecycle.ephemeral),
+        publication.lifecycle.clone(),
     )
     .await
     .map_err(|error| {

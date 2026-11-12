@@ -299,6 +299,7 @@ async fn publish(broker: &mut Broker, n: usize) -> ChannelMessage {
             channel: "events".into(),
             payload: payload(n),
             ephemeral: false,
+            lifecycle: None,
         })
         .await
         .unwrap()
@@ -342,6 +343,7 @@ async fn fifo_commit_and_mesh_order_across_concurrent_local_duplex_publishers() 
                     channel: "events".into(),
                     payload: payload(n),
                     ephemeral: n % 2 == 0,
+                    lifecycle: None,
                 },
             )
             .await
@@ -463,6 +465,7 @@ async fn closing_replicates_the_marker_once_and_closed_streams_reject_publishes(
         channel: "events".into(),
         payload,
         ephemeral: false,
+        lifecycle: None,
     };
     let Reply::Response(Response::Published { message: marker }) =
         broker.local(request(close.clone())).await.unwrap()
@@ -804,6 +807,7 @@ async fn transport_frame_overflow_is_gap_after_successful_commit() {
                 data: serde_json::json!("x".repeat(MAX_FRAME)),
             },
             ephemeral: false,
+            lifecycle: None,
         })
         .await
         .unwrap();
@@ -1265,6 +1269,7 @@ async fn disconnected_or_expired_ipc_cannot_commit_queued_mutations() {
                 channel: "events".into(),
                 payload: payload(1),
                 ephemeral: false,
+                lifecycle: None,
             },
         )
         .await

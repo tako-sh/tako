@@ -147,10 +147,7 @@ impl ChannelStore {
         let message = if publication.ephemeral() {
             self.publish_ephemeral(key, &publication.payload)?
         } else {
-            if let Some(auth) = publication.lifecycle_auth() {
-                self.sync_channel(key, &auth)?;
-            }
-            self.append(key, &publication.payload)?
+            self.append_with_lifecycle(key, &publication.payload, publication.lifecycle.as_ref())?
         };
         Ok(publication.stream.public(message))
     }

@@ -28,7 +28,9 @@ async fn synchronous_publisher_works_inside_a_runtime_without_nested_block_on() 
         )
         .unwrap();
     assert_eq!(result["channel"], "events");
-    assert_eq!(*link.calls.lock(), vec!["register", "sync", "publish"]);
+    // The lifecycle rides on the publish itself; no separate sync touches the stream.
+    assert_eq!(*link.calls.lock(), vec!["register", "publish"]);
+    assert!(link.lifecycle.lock().as_ref().unwrap().ephemeral);
     assert_eq!(link.publishes.load(Ordering::SeqCst), 1);
 }
 #[test]
@@ -71,7 +73,11 @@ fn closes_reach_the_broker_as_markers_and_closed_streams_reject_by_name() {
     let marker = publisher.publish("chat", &close, None).unwrap();
     assert_eq!(marker["channel"], "events");
     assert_eq!(marker["type"], tako_channels::CLOSE_MESSAGE_TYPE);
-    assert_eq!(*link.calls.lock(), vec!["register", "sync", "publish"]);
+    assert_eq!(*link.calls.lock(), vec!["register", "publish"]);
+    assert_eq!(
+        link.lifecycle.lock().as_ref().unwrap().replay_window_ms,
+        1000
+    );
 
     link.closed.store(true, Ordering::SeqCst);
     let error = publisher

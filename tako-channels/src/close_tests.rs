@@ -627,3 +627,94 @@ async fn websocket_delivers_every_message_then_the_stream_closed_frame() {
     .await
     .unwrap();
 }
+
+/// A publish rejected because its stream is closed must not count as activity:
+/// it would keep an inactivity-TTL stream, and its marker, alive forever.
+fn rejected_publishes_leave_a_closed_stream_idle(
+    store: &ChannelStore,
+    last_activity: &mut dyn FnMut(Option<i64>) -> i64,
+) {
+    let lifecycle = Some(json!({"inactivityTtlMs": 60_000}));
+    let close = TrustedPublication::close("chat", &json!({"room": "idle"}), lifecycle).unwrap();
+    store.publish_trusted(&close).unwrap();
+    let idle = last_activity(Some(1));
+    assert_eq!(idle, 1);
+    let publish = TrustedPublication::parse(
+        "chat",
+        &json!({"room": "idle"}),
+        json!({"type": "msg", "data": 1, "lifecycle": {"inactivityTtlMs": 60_000}}),
+    )
+    .unwrap();
+    assert!(matches!(
+        store.publish_trusted(&publish),
+        Err(ChannelError::StreamClosed)
+    ));
+    assert_eq!(
+        last_activity(None),
+        idle,
+        "rejected publish touched the stream"
+    );
+    // Inactivity retires the marker, and the stream accepts publishes again.
+    store.prune_at(now());
+    store.publish_trusted(&publish).unwrap();
+}
+
+#[test]
+fn sqlite_rejected_publishes_leave_a_closed_stream_idle() {
+    let store = ChannelStore::open_in_memory_without_maintenance();
+    let key = room("idle").key().to_owned();
+    let conn = |set: Option<i64>| {
+        if let Some(value) = set {
+            store.raw_execute(
+                "UPDATE channel_metadata SET last_activity_unix_ms = ?1 WHERE channel = ?2",
+                rusqlite::params![value, key],
+            );
+        }
+        store.raw_query_i64(
+            "SELECT last_activity_unix_ms FROM channel_metadata WHERE channel = ?1",
+            [&key],
+        )
+    };
+    let mut conn = conn;
+    rejected_publishes_leave_a_closed_stream_idle(&store, &mut conn);
+}
+
+#[test]
+fn postgres_rejected_publishes_leave_a_closed_stream_idle() {
+    let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
+        return;
+    };
+    let schema = format!("channel_rejected_{}", std::process::id());
+    let store = ChannelStore::open_postgres_with_schema(&url, &schema, "app").unwrap();
+    let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let key = room("idle").key().to_owned();
+    let mut activity = |set: Option<i64>| -> i64 {
+        if let Some(value) = set {
+            client
+                .execute(
+                    &format!(
+                        "UPDATE {schema}.channel_metadata SET last_activity_unix_ms = $1
+                         WHERE app_id = 'app' AND channel = $2"
+                    ),
+                    &[&value, &key],
+                )
+                .unwrap();
+        }
+        client
+            .query_one(
+                &format!(
+                    "SELECT last_activity_unix_ms FROM {schema}.channel_metadata
+                     WHERE app_id = 'app' AND channel = $1"
+                ),
+                &[&key],
+            )
+            .unwrap()
+            .get(0)
+    };
+    rejected_publishes_leave_a_closed_stream_idle(&store, &mut activity);
+    drop(store);
+    postgres::Client::connect(&url, postgres::NoTls)
+        .unwrap()
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .unwrap();
+}

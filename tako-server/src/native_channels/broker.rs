@@ -345,6 +345,7 @@ impl Broker {
                 channel,
                 payload,
                 ephemeral,
+                lifecycle,
             } => {
                 if !valid_channel(&channel) || payload.r#type.len() > 1024 {
                     return Ok(Reply::Response(Response::Rejected));
@@ -358,7 +359,7 @@ impl Broker {
                         if ephemeral {
                             store.publish_ephemeral(&channel, &payload)
                         } else {
-                            store.append(&channel, &payload)
+                            store.append_with_lifecycle(&channel, &payload, lifecycle.as_ref())
                         }
                     })
                     .await;

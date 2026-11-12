@@ -9,7 +9,9 @@ use std::{
     },
     path::{Path, PathBuf},
 };
-use tako_channels::{ChannelAuthResponse, ChannelMessage, ChannelPublishPayload, PresenceMember};
+use tako_channels::{
+    ChannelAuthResponse, ChannelLifecycle, ChannelMessage, ChannelPublishPayload, PresenceMember,
+};
 use tako_network::AppEnv;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite},
@@ -37,6 +39,10 @@ pub(super) enum Request {
         channel: String,
         payload: ChannelPublishPayload,
         ephemeral: bool,
+        /// The definition's lifecycle, applied with the append so a publish
+        /// rejected by a closed stream does not touch it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lifecycle: Option<ChannelLifecycle>,
     },
     SyncChannel {
         app: AppEnv,
@@ -213,6 +219,7 @@ impl Client {
         channel: String,
         payload: ChannelPublishPayload,
         ephemeral: bool,
+        lifecycle: Option<ChannelLifecycle>,
     ) -> io::Result<ChannelMessage> {
         match self
             .request(Request::Publish {
@@ -220,6 +227,7 @@ impl Client {
                 channel,
                 payload,
                 ephemeral,
+                lifecycle,
             })
             .await?
             .1

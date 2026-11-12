@@ -4,8 +4,8 @@ use parking_lot::Mutex;
 use std::path::Path;
 
 use crate::{
-    CLOSE_MESSAGE_TYPE, ChannelAuthResponse, ChannelError, ChannelMessage, ChannelPublishPayload,
-    ReplayCursor,
+    CLOSE_MESSAGE_TYPE, ChannelAuthResponse, ChannelError, ChannelLifecycle, ChannelMessage,
+    ChannelPublishPayload, ReplayCursor,
 };
 
 use super::{IDLE_STREAM_GRACE_MS, channel_message_from_row, now_unix_ms};
@@ -196,6 +196,7 @@ impl SqliteChannelStore {
         channel: &str,
         payload: &ChannelPublishPayload,
         ephemeral: bool,
+        lifecycle: Option<&ChannelLifecycle>,
     ) -> Result<(ChannelMessage, Option<ChannelEvent>), ChannelError> {
         let mut conn = self.conn.lock();
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -223,7 +224,7 @@ impl SqliteChannelStore {
             payload: payload.clone(),
             ephemeral,
         };
-        let message = append_event(&tx, replay_epoch(&tx)?, &event)?;
+        let message = append_event(&tx, replay_epoch(&tx)?, &event, lifecycle)?;
         tx.commit()?;
         Ok((message, Some(event)))
     }
@@ -287,7 +288,7 @@ impl SqliteChannelStore {
             super::stream_limit_error(&event.channel);
             None
         } else {
-            Some(append_event(&tx, replay_epoch(&tx)?, event)?)
+            Some(append_event(&tx, replay_epoch(&tx)?, event, None)?)
         };
         tx.execute(
             "INSERT INTO channel_remote_origins(origin, sequence) VALUES (?1, ?2)
@@ -377,35 +378,13 @@ impl SqliteChannelStore {
     ) -> Result<(), ChannelError> {
         let mut conn = self.conn.lock();
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let now = now_unix_ms();
         let lifecycle = [
             auth.replay_window_ms as i64,
             auth.inactivity_ttl_ms as i64,
             auth.keepalive_interval_ms as i64,
             auth.max_connection_lifetime_ms as i64,
         ];
-        if !ensure_stream(&tx, channel, lifecycle, now)? {
-            // The stored connection lifetime only grows: idle cleanup must
-            // outwait the longest connection any grant allowed on this stream.
-            tx.execute(
-                "UPDATE channel_metadata SET
-                    replay_window_ms = ?2,
-                    inactivity_ttl_ms = ?3,
-                    keepalive_interval_ms = ?4,
-                    max_connection_lifetime_ms = MAX(max_connection_lifetime_ms, ?5),
-                    last_activity_unix_ms = ?6
-                 WHERE channel = ?1",
-                rusqlite::params![
-                    channel,
-                    lifecycle[0],
-                    lifecycle[1],
-                    lifecycle[2],
-                    lifecycle[3],
-                    now
-                ],
-            )
-            .map_err(storage_err)?;
-        }
+        touch_stream(&tx, channel, Some(lifecycle), now_unix_ms())?;
         tx.commit()?;
         Ok(())
     }
@@ -541,6 +520,7 @@ fn append_event(
     tx: &rusqlite::Connection,
     epoch: [u8; 16],
     event: &ChannelEvent,
+    lifecycle: Option<&ChannelLifecycle>,
 ) -> Result<ChannelMessage, ChannelError> {
     let mut message = ChannelMessage {
         id: String::new(),
@@ -565,12 +545,7 @@ fn append_event(
         ));
     }
     let now = now_unix_ms();
-    if !ensure_stream(tx, &event.channel, DEFAULT_STREAM_LIFECYCLE, now)? {
-        tx.execute(
-            "UPDATE channel_metadata SET last_activity_unix_ms = ?2 WHERE channel = ?1",
-            rusqlite::params![event.channel, now],
-        )?;
-    }
+    touch_stream(tx, &event.channel, lifecycle.map(lifecycle_columns), now)?;
     tx.execute("INSERT INTO channel_messages (channel, type, data_json, created_at_unix_ms) VALUES (?1, ?2, ?3, ?4)",
         rusqlite::params![event.channel, event.payload.r#type, data_json, now])?;
     let id = tx.last_insert_rowid();
@@ -593,6 +568,59 @@ fn append_event(
 /// Replay window, inactivity TTL, keepalive interval and connection lifetime of
 /// a stream first seen through a publish, in milliseconds.
 const DEFAULT_STREAM_LIFECYCLE: [i64; 4] = [600_000, 0, 25_000, 7_200_000];
+
+fn lifecycle_columns(lifecycle: &ChannelLifecycle) -> [i64; 4] {
+    [
+        lifecycle.replay_window_ms as i64,
+        lifecycle.inactivity_ttl_ms as i64,
+        lifecycle.keepalive_interval_ms as i64,
+        lifecycle.max_connection_lifetime_ms as i64,
+    ]
+}
+
+/// Record activity on a stream, starting its bookkeeping when it has none,
+/// and apply `lifecycle` when one is given (otherwise a new stream gets the
+/// default). The stored connection lifetime only grows: idle cleanup must
+/// outwait the longest connection any grant allowed on this stream.
+fn touch_stream(
+    conn: &rusqlite::Connection,
+    channel: &str,
+    lifecycle: Option<[i64; 4]>,
+    now: i64,
+) -> Result<(), ChannelError> {
+    if ensure_stream(
+        conn,
+        channel,
+        lifecycle.unwrap_or(DEFAULT_STREAM_LIFECYCLE),
+        now,
+    )? {
+        return Ok(());
+    }
+    match lifecycle {
+        Some(lifecycle) => conn.execute(
+            "UPDATE channel_metadata SET
+                replay_window_ms = ?2,
+                inactivity_ttl_ms = ?3,
+                keepalive_interval_ms = ?4,
+                max_connection_lifetime_ms = MAX(max_connection_lifetime_ms, ?5),
+                last_activity_unix_ms = ?6
+             WHERE channel = ?1",
+            rusqlite::params![
+                channel,
+                lifecycle[0],
+                lifecycle[1],
+                lifecycle[2],
+                lifecycle[3],
+                now
+            ],
+        )?,
+        None => conn.execute(
+            "UPDATE channel_metadata SET last_activity_unix_ms = ?2 WHERE channel = ?1",
+            rusqlite::params![channel, now],
+        )?,
+    };
+    Ok(())
+}
 
 /// Start a stream's bookkeeping when it has none. A stream is born caught up
 /// with the store: its head and replay floor begin at the newest allocated

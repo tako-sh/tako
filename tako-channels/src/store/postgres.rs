@@ -2,7 +2,8 @@ use ::postgres::{Client, NoTls};
 use parking_lot::Mutex;
 
 use crate::{
-    CLOSE_MESSAGE_TYPE, ChannelAuthResponse, ChannelError, ChannelMessage, ChannelPublishPayload,
+    CLOSE_MESSAGE_TYPE, ChannelAuthResponse, ChannelError, ChannelLifecycle, ChannelMessage,
+    ChannelPublishPayload,
 };
 
 use super::{IDLE_STREAM_GRACE_MS, channel_message_from_row, now_unix_ms, resolve_replay_cursor};
@@ -55,11 +56,13 @@ impl PostgresChannelStore {
 
     /// Append one message, or close the stream when `payload` is the close
     /// marker. Returns whether a row was appended: closing a closed stream
-    /// returns its marker instead.
+    /// returns its marker instead. `lifecycle` is applied to the stream only
+    /// once the close check passed, so a rejected publish changes nothing.
     pub(super) fn append(
         &self,
         channel: &str,
         payload: &ChannelPublishPayload,
+        lifecycle: Option<&ChannelLifecycle>,
     ) -> Result<(ChannelMessage, bool), ChannelError> {
         let data_json = serde_json::to_string(&payload.data)
             .map_err(|e| ChannelError::BadRequest(format!("serialize payload: {e}")))?;
@@ -85,21 +88,27 @@ impl PostgresChannelStore {
             return Err(ChannelError::StreamClosed);
         }
         self.admit_stream(&mut tx, channel)?;
-        tx.execute(&format!(
-            "INSERT INTO {schema}.channel_metadata (app_id, channel, replay_window_ms, inactivity_ttl_ms, keepalive_interval_ms, max_connection_lifetime_ms, last_activity_unix_ms, latest_message_id, highest_deleted_message_id)
-             VALUES ($1, $2, 600000, 0, 25000, 7200000, $3, {born}, {born}) ON CONFLICT(app_id, channel) DO NOTHING",
-            schema = self.schema, born = self.born_at(),
-        ), &[&self.app_id, &channel, &now_unix_ms()]).map_err(|e| ChannelError::Storage(e.to_string()))?;
-        tx.execute(
-            &format!(
-                "UPDATE {}.channel_metadata
-                 SET last_activity_unix_ms = $3
-                 WHERE app_id = $1 AND channel = $2",
-                self.schema
-            ),
-            &[&self.app_id, &channel, &now_unix_ms()],
-        )
-        .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        let now = now_unix_ms();
+        match lifecycle {
+            Some(lifecycle) => self.upsert_stream(&mut tx, channel, lifecycle, now)?,
+            None => {
+                let defaults = ChannelLifecycle::default();
+                tx.execute(&format!(
+                    "INSERT INTO {schema}.channel_metadata (app_id, channel, replay_window_ms, inactivity_ttl_ms, keepalive_interval_ms, max_connection_lifetime_ms, last_activity_unix_ms, latest_message_id, highest_deleted_message_id)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, {born}, {born})
+                     ON CONFLICT(app_id, channel) DO UPDATE SET last_activity_unix_ms = excluded.last_activity_unix_ms",
+                    schema = self.schema, born = self.born_at(),
+                ), &[
+                    &self.app_id,
+                    &channel,
+                    &(defaults.replay_window_ms as i64),
+                    &(defaults.inactivity_ttl_ms as i64),
+                    &(defaults.keepalive_interval_ms as i64),
+                    &(defaults.max_connection_lifetime_ms as i64),
+                    &now,
+                ]).map_err(|e| ChannelError::Storage(e.to_string()))?;
+            }
+        }
         let row = tx
             .query_one(
                 &format!(
@@ -238,44 +247,18 @@ impl PostgresChannelStore {
         // Without the publish lock, concurrent subscribers on several servers
         // can overshoot the limit by the streams they start at once.
         self.admit_stream(&mut *client, channel)?;
-        client
-            .execute(
-                // The stored connection lifetime only grows: idle cleanup must
-                // outwait the longest connection any grant allowed on this stream.
-                &format!(
-                    "INSERT INTO {schema}.channel_metadata AS metadata (
-                        app_id,
-                        channel,
-                        replay_window_ms,
-                        inactivity_ttl_ms,
-                        keepalive_interval_ms,
-                        max_connection_lifetime_ms,
-                        last_activity_unix_ms,
-                        latest_message_id,
-                        highest_deleted_message_id
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, {born}, {born})
-                    ON CONFLICT(app_id, channel) DO UPDATE SET
-                        replay_window_ms = excluded.replay_window_ms,
-                        inactivity_ttl_ms = excluded.inactivity_ttl_ms,
-                        keepalive_interval_ms = excluded.keepalive_interval_ms,
-                        max_connection_lifetime_ms = GREATEST(
-                            metadata.max_connection_lifetime_ms,
-                            excluded.max_connection_lifetime_ms),
-                        last_activity_unix_ms = excluded.last_activity_unix_ms",
-                    schema = self.schema,
-                    born = self.born_at(),
-                ),
-                &[
-                    &self.app_id,
-                    &channel,
-                    &(auth.replay_window_ms as i64),
-                    &(auth.inactivity_ttl_ms as i64),
-                    &(auth.keepalive_interval_ms as i64),
-                    &(auth.max_connection_lifetime_ms as i64),
-                    &now,
-                ],
-            )
-            .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        self.upsert_stream(
+            &mut *client,
+            channel,
+            &ChannelLifecycle {
+                ephemeral: false,
+                replay_window_ms: auth.replay_window_ms,
+                inactivity_ttl_ms: auth.inactivity_ttl_ms,
+                keepalive_interval_ms: auth.keepalive_interval_ms,
+                max_connection_lifetime_ms: auth.max_connection_lifetime_ms,
+            },
+            now,
+        )?;
 
         Ok(())
     }
@@ -368,6 +351,55 @@ impl PostgresChannelStore {
         } else {
             batch.last().cloned().unwrap_or_default()
         };
+        Ok(())
+    }
+
+    /// Start or update a stream's bookkeeping with `lifecycle` and record
+    /// activity. The stored connection lifetime only grows: idle cleanup must
+    /// outwait the longest connection any grant allowed on this stream.
+    fn upsert_stream(
+        &self,
+        client: &mut impl ::postgres::GenericClient,
+        channel: &str,
+        lifecycle: &ChannelLifecycle,
+        now: i64,
+    ) -> Result<(), ChannelError> {
+        client
+            .execute(
+                &format!(
+                    "INSERT INTO {schema}.channel_metadata AS metadata (
+                        app_id,
+                        channel,
+                        replay_window_ms,
+                        inactivity_ttl_ms,
+                        keepalive_interval_ms,
+                        max_connection_lifetime_ms,
+                        last_activity_unix_ms,
+                        latest_message_id,
+                        highest_deleted_message_id
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, {born}, {born})
+                    ON CONFLICT(app_id, channel) DO UPDATE SET
+                        replay_window_ms = excluded.replay_window_ms,
+                        inactivity_ttl_ms = excluded.inactivity_ttl_ms,
+                        keepalive_interval_ms = excluded.keepalive_interval_ms,
+                        max_connection_lifetime_ms = GREATEST(
+                            metadata.max_connection_lifetime_ms,
+                            excluded.max_connection_lifetime_ms),
+                        last_activity_unix_ms = excluded.last_activity_unix_ms",
+                    schema = self.schema,
+                    born = self.born_at(),
+                ),
+                &[
+                    &self.app_id,
+                    &channel,
+                    &(lifecycle.replay_window_ms as i64),
+                    &(lifecycle.inactivity_ttl_ms as i64),
+                    &(lifecycle.keepalive_interval_ms as i64),
+                    &(lifecycle.max_connection_lifetime_ms as i64),
+                    &now,
+                ],
+            )
+            .map_err(|e| ChannelError::Storage(e.to_string()))?;
         Ok(())
     }
 
@@ -648,6 +680,7 @@ mod integration_tests {
                     r#type: "event".into(),
                     data: serde_json::json!(channel),
                 },
+                None,
             )
             .unwrap()
             .0
