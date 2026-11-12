@@ -15,6 +15,7 @@ use super::{
     DATABASE_SNAPSHOT_ARCHIVE_ROOT, READ_FLAGS, TAKO_DATA_DIR, is_sqlite_database,
     is_transient_tako_sqlite_file, list_database_tree, open_regular,
 };
+use crate::operations::backup::journal::{self, IntentDatabase, RestoreIntent};
 
 const DATA_ROOTS: [&str; 2] = ["app", TAKO_DATA_DIR];
 /// Files SQLite pairs with a database. Left beside a replaced database they
@@ -191,34 +192,6 @@ fn create_private_dirs(path: &Path) -> Result<(), String> {
         .map_err(|e| format!("create {}: {e}", path.display()))
 }
 
-/// Live databases replaced by a database snapshot restore. The originals and
-/// their sidecars stay in `previous`, outside the data tree, until
-/// [`DatabaseSwap::commit`] or [`DatabaseSwap::rollback`].
-#[derive(Debug)]
-#[must_use = "commit the validated restore or roll it back after stopping the app"]
-pub(in crate::operations::backup) struct DatabaseSwap {
-    previous: PathBuf,
-    entries: Vec<SwappedDatabase>,
-    /// Directories created for databases that did not exist live, deepest last.
-    created_dirs: Vec<(File, OsString)>,
-    summary: RestoredDatabases,
-}
-
-#[derive(Debug)]
-struct SwappedDatabase {
-    relative: PathBuf,
-    /// The live parent directory, pinned so later path changes cannot
-    /// redirect a rollback.
-    dir: File,
-    name: OsString,
-    /// The original database is linked into `previous`.
-    kept_original: bool,
-    /// The snapshot copy is in place under the live name.
-    replaced: bool,
-    /// Suffixes of the sidecars moved from the live directory to `previous`.
-    sidecars: Vec<&'static str>,
-}
-
 /// A failed [`swap_databases`].
 #[derive(Debug)]
 pub(in crate::operations::backup) struct SwapError {
@@ -228,7 +201,7 @@ pub(in crate::operations::backup) struct SwapError {
 }
 
 impl SwapError {
-    fn intact(message: String) -> Self {
+    pub(in crate::operations::backup) fn intact(message: String) -> Self {
         Self {
             message,
             originals_intact: true,
@@ -237,89 +210,165 @@ impl SwapError {
 }
 
 /// Put each extracted database in `staged_root` (`databases/` of the
-/// extraction) in place of its live counterpart below `data_root`. Call only
-/// with every process that may open these databases stopped.
+/// extraction) in place of its live counterpart below `data_root`, keeping
+/// the originals in the rollback directory `dir`. Call only with every
+/// process that may open these databases stopped, and never in a process
+/// that holds SQLite locks: the checks open the live databases.
 ///
 /// Every target is checked before anything changes. A database whose path
 /// does not exist live is created with any missing parent directories. A
 /// live path that is a symlink, crosses a symlink or a non-directory, is a
 /// hard link, or holds something other than a SQLite database is refused.
+///
+/// The intent record is written before the first change. For each database
+/// the original and its sidecars first get a second name in `dir`, so `dir`
+/// always holds a complete original set; only then are the live sidecars
+/// removed and the snapshot copy renamed over the database. A failure rolls
+/// back here; a crash is rolled back by the next server start.
 pub(in crate::operations::backup) fn swap_databases(
     staged_root: &Path,
     databases: &[PathBuf],
     data_root: &Path,
-) -> Result<DatabaseSwap, SwapError> {
-    let root = File::from(
-        fs::open(data_root, READ_FLAGS | OFlags::DIRECTORY, Mode::empty()).map_err(|e| {
-            SwapError::intact(format!("open data dir {}: {e}", data_root.display()))
-        })?,
-    );
+    dir: &Path,
+) -> Result<RestoredDatabases, SwapError> {
+    swap_databases_until(staged_root, databases, data_root, dir, None)
+}
+
+/// [`swap_databases`], stopping without any cleanup before mutating step
+/// `stop_at` as if the process died there.
+fn swap_databases_until(
+    staged_root: &Path,
+    databases: &[PathBuf],
+    data_root: &Path,
+    dir: &Path,
+    stop_at: Option<usize>,
+) -> Result<RestoredDatabases, SwapError> {
+    let mut steps = Steps { next: 0, stop_at };
+    match plan_and_swap(staged_root, databases, data_root, dir, &mut steps) {
+        Ok(summary) => Ok(summary),
+        Err(_) if steps.stopped() => Err(SwapError {
+            message: "stopped".into(),
+            originals_intact: false,
+        }),
+        // Also removes the rollback directory, which nothing may need.
+        Err(error) => Err(match journal::roll_back(dir) {
+            Ok(()) => SwapError::intact(error),
+            Err(rollback) => SwapError {
+                message: format!("{error}; {rollback}; originals remain at {}", dir.display()),
+                originals_intact: false,
+            },
+        }),
+    }
+}
+
+fn plan_and_swap(
+    staged_root: &Path,
+    databases: &[PathBuf],
+    data_root: &Path,
+    dir: &Path,
+    steps: &mut Steps,
+) -> Result<RestoredDatabases, String> {
+    let root = open_data_root(data_root)?;
     let in_snapshot: BTreeSet<&Path> = databases.iter().map(PathBuf::as_path).collect();
-    let untouched = list_database_tree(data_root)
-        .map_err(SwapError::intact)?
+    let untouched = list_database_tree(data_root)?
         .into_iter()
         .filter(|path| !in_snapshot.contains(path.as_path()))
         .map(|path| path.to_string_lossy().into_owned())
         .collect();
+    let mut planned = Vec::new();
+    let mut created_dirs: Vec<PathBuf> = Vec::new();
     for relative in databases {
-        check_target(&root, relative).map_err(|e| {
-            SwapError::intact(format!("Cannot restore {}: {e}", relative.display()))
-        })?;
+        let target = check_target(&root, relative)
+            .map_err(|e| format!("Cannot restore {}: {e}", relative.display()))?;
+        for missing in target.missing_dirs {
+            if !created_dirs.contains(&missing) {
+                created_dirs.push(missing);
+            }
+        }
+        planned.push(IntentDatabase {
+            relative: relative.clone(),
+            existed: target.existed,
+        });
+    }
+    let mut summary = RestoredDatabases {
+        untouched,
+        ..RestoredDatabases::default()
+    };
+    for database in &planned {
+        let path = database.relative.to_string_lossy().into_owned();
+        if database.existed {
+            summary.replaced.push(path);
+        } else {
+            summary.created.push(path);
+        }
     }
 
-    let parent = data_root.parent().ok_or_else(|| {
-        SwapError::intact(format!("data root has no parent: {}", data_root.display()))
-    })?;
-    let previous = parent.join(format!(".data-restore-prev-{}", nanoid::nanoid!(8)));
-    std::fs::DirBuilder::new()
-        .mode(0o700)
-        .create(&previous)
-        .map_err(|e| SwapError::intact(format!("create {}: {e}", previous.display())))?;
-    let mut swap = DatabaseSwap {
-        previous,
-        entries: Vec::new(),
-        created_dirs: Vec::new(),
-        summary: RestoredDatabases {
-            untouched,
-            ..RestoredDatabases::default()
-        },
-    };
-    for relative in databases {
-        if let Err(error) = swap.replace(&root, staged_root, relative) {
-            let error = format!("restore {}: {error}", relative.display());
-            return Err(match swap.rollback() {
-                Ok(()) => SwapError::intact(error),
-                Err(rollback) => SwapError {
-                    message: format!("{error}; {rollback}"),
-                    originals_intact: false,
-                },
-            });
-        }
+    let intent = RestoreIntent::databases(data_root, planned, created_dirs);
+    steps
+        .step()
+        .and_then(|()| journal::write_intent(dir, &intent))
+        .map_err(|e| format!("record restore intent in {}: {e}", dir.display()))?;
+    for database in &intent.databases {
+        replace(&root, staged_root, dir, &database.relative, steps)
+            .map_err(|e| format!("restore {}: {e}", database.relative.display()))?;
     }
-    for entry in &swap.entries {
-        let path = entry.relative.to_string_lossy().into_owned();
-        if entry.kept_original {
-            swap.summary.replaced.push(path);
-        } else {
-            swap.summary.created.push(path);
-        }
-    }
-    Ok(swap)
+    Ok(summary)
 }
 
-fn check_target(root: &File, relative: &Path) -> io::Result<()> {
+/// Counts mutating steps for tests that stop a swap between two of them.
+struct Steps {
+    next: usize,
+    stop_at: Option<usize>,
+}
+
+impl Steps {
+    fn step(&mut self) -> io::Result<()> {
+        let current = self.next;
+        self.next += 1;
+        if self.stop_at == Some(current) {
+            return Err(io::Error::other("stopped"));
+        }
+        Ok(())
+    }
+
+    fn stopped(&self) -> bool {
+        self.stop_at.is_some_and(|stop| stop < self.next)
+    }
+}
+
+fn open_data_root(data_root: &Path) -> Result<File, String> {
+    fs::open(data_root, READ_FLAGS | OFlags::DIRECTORY, Mode::empty())
+        .map(File::from)
+        .map_err(|e| format!("open data dir {}: {e}", data_root.display()))
+}
+
+struct Target {
+    existed: bool,
+    /// Missing parent directories, relative to the data root, parents first.
+    missing_dirs: Vec<PathBuf>,
+}
+
+fn check_target(root: &File, relative: &Path) -> io::Result<Target> {
     let (parents, name) = split_relative(relative)?;
     let mut dir = root.try_clone()?;
-    for component in parents {
+    for (depth, component) in parents.iter().enumerate() {
         match fs::openat(
             &dir,
-            component,
+            *component,
             READ_FLAGS | OFlags::DIRECTORY,
             Mode::empty(),
         ) {
             Ok(next) => dir = File::from(next),
             // The rest of the path is created.
-            Err(rustix::io::Errno::NOENT) => return Ok(()),
+            Err(rustix::io::Errno::NOENT) => {
+                let missing_dirs = (depth..parents.len())
+                    .map(|end| parents[..=end].iter().collect())
+                    .collect();
+                return Ok(Target {
+                    existed: false,
+                    missing_dirs,
+                });
+            }
             Err(rustix::io::Errno::LOOP | rustix::io::Errno::NOTDIR) => {
                 return Err(io::Error::other(format!(
                     "{} is not a directory",
@@ -331,7 +380,12 @@ fn check_target(root: &File, relative: &Path) -> io::Result<()> {
     }
     let stat = match fs::statat(&dir, name, AtFlags::SYMLINK_NOFOLLOW) {
         Ok(stat) => stat,
-        Err(rustix::io::Errno::NOENT) => return Ok(()),
+        Err(rustix::io::Errno::NOENT) => {
+            return Ok(Target {
+                existed: false,
+                missing_dirs: Vec::new(),
+            });
+        }
         Err(error) => return Err(error.into()),
     };
     if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
@@ -343,7 +397,10 @@ fn check_target(root: &File, relative: &Path) -> io::Result<()> {
             "the live file is not a SQLite database; move it away and retry",
         ));
     }
-    Ok(())
+    Ok(Target {
+        existed: true,
+        missing_dirs: Vec::new(),
+    })
 }
 
 fn split_relative(relative: &Path) -> io::Result<(Vec<&OsStr>, &OsStr)> {
@@ -366,172 +423,247 @@ fn with_suffix(name: &OsStr, suffix: &str) -> OsString {
     value
 }
 
-impl DatabaseSwap {
-    pub(in crate::operations::backup) fn summary(&self) -> &RestoredDatabases {
-        &self.summary
-    }
-
-    fn replace(&mut self, root: &File, staged_root: &Path, relative: &Path) -> io::Result<()> {
-        let (parents, name) = split_relative(relative)?;
-        let dir = self.open_or_create_parents(root, &parents)?;
-        self.entries.push(SwappedDatabase {
-            relative: relative.to_path_buf(),
-            dir,
-            name: name.to_os_string(),
-            kept_original: false,
-            replaced: false,
-            sidecars: Vec::new(),
-        });
-        let entry = self.entries.last_mut().expect("entry was just pushed");
-        let kept = self.previous.join(relative);
-        if let Some(parent) = kept.parent() {
-            std::fs::DirBuilder::new()
-                .recursive(true)
-                .mode(0o700)
-                .create(parent)?;
-        }
-
-        // Move sidecars out first: a crash can then leave the original
-        // database without its log, never the snapshot copy with it.
-        for suffix in SIDECAR_SUFFIXES {
-            let sidecar = with_suffix(name, suffix);
-            match fs::statat(&entry.dir, sidecar.as_os_str(), AtFlags::SYMLINK_NOFOLLOW) {
-                Ok(_) => {}
-                Err(rustix::io::Errno::NOENT) => continue,
-                Err(error) => return Err(error.into()),
+/// Open the live directory `parents` below the data root without following
+/// symlinks, creating missing components when `create` is set.
+fn open_live_dir(root: &File, parents: &[&OsStr], create: bool) -> io::Result<File> {
+    let mut dir = root.try_clone()?;
+    for component in parents {
+        let flags = READ_FLAGS | OFlags::DIRECTORY;
+        let next = match fs::openat(&dir, *component, flags, Mode::empty()) {
+            Ok(next) => next,
+            Err(rustix::io::Errno::NOENT) if create => {
+                fs::mkdirat(&dir, *component, Mode::from_raw_mode(0o700))?;
+                fs::fsync(&dir)?;
+                fs::openat(&dir, *component, flags, Mode::empty())?
             }
-            fs::renameat(
-                &entry.dir,
-                sidecar.as_os_str(),
-                CWD,
-                with_suffix(kept.as_os_str(), suffix),
-            )?;
-            entry.sidecars.push(suffix);
-        }
-
-        let staged = staged_root.join(relative);
-        let staged_file = std::fs::OpenOptions::new().read(true).open(&staged)?;
-        let original = match fs::statat(&entry.dir, name, AtFlags::SYMLINK_NOFOLLOW) {
-            Ok(stat) if FileType::from_raw_mode(stat.st_mode) == FileType::RegularFile => {
-                Some(open_regular(&entry.dir, name)?.metadata()?)
-            }
-            Ok(_) => return Err(io::Error::other("the live path is not a regular file")),
-            Err(rustix::io::Errno::NOENT) => None,
             Err(error) => return Err(error.into()),
         };
-        match &original {
-            Some(meta) => {
-                staged_file
-                    .set_permissions(std::fs::Permissions::from_mode(meta.mode() & 0o777))?;
-                // Restoring the owner needs privileges the service may lack;
-                // the app data provisioning on restart repairs it either way.
-                let _ = std::os::unix::fs::fchown(&staged_file, Some(meta.uid()), Some(meta.gid()));
-                // A second name for the original: the replacement below stays
-                // atomic, and the original remains the rollback copy.
-                fs::linkat(&entry.dir, name, CWD, &kept, AtFlags::empty())?;
-                entry.kept_original = true;
-            }
-            None => staged_file.set_permissions(std::fs::Permissions::from_mode(0o600))?,
-        }
-        staged_file.sync_all()?;
-        fs::renameat(CWD, &staged, &entry.dir, name)?;
-        entry.replaced = true;
-        fs::fsync(&entry.dir)?;
-        Ok(())
+        dir = File::from(next);
     }
+    Ok(dir)
+}
 
-    fn open_or_create_parents(&mut self, root: &File, parents: &[&OsStr]) -> io::Result<File> {
-        let mut dir = root.try_clone()?;
-        for component in parents {
-            let flags = READ_FLAGS | OFlags::DIRECTORY;
-            let next = match fs::openat(&dir, *component, flags, Mode::empty()) {
-                Ok(next) => next,
-                Err(rustix::io::Errno::NOENT) => {
-                    fs::mkdirat(&dir, *component, Mode::from_raw_mode(0o700))?;
-                    self.created_dirs
-                        .push((dir.try_clone()?, component.to_os_string()));
-                    fs::openat(&dir, *component, flags, Mode::empty())?
-                }
-                Err(error) => return Err(error.into()),
-            };
-            dir = File::from(next);
-        }
-        Ok(dir)
-    }
-
-    /// Discard the originals once the app runs on the restored databases.
-    pub(in crate::operations::backup) fn commit(self) -> Result<(), String> {
-        std::fs::remove_dir_all(&self.previous).map_err(|error| {
-            format!(
-                "remove previous databases {}: {error}",
-                self.previous.display()
-            )
-        })
-    }
-
-    /// Put the original databases and sidecars back and remove databases and
-    /// directories the restore created. Call only after stopping all
-    /// processes that may open these databases.
-    pub(in crate::operations::backup) fn rollback(self) -> Result<(), String> {
-        let mut errors = Vec::new();
-        for entry in self.entries.iter().rev() {
-            if let Err(error) = entry.rollback(&self.previous) {
-                errors.push(format!("{}: {error}", entry.relative.display()));
-            }
-        }
-        for (parent, name) in self.created_dirs.iter().rev() {
-            match fs::unlinkat(parent, name.as_os_str(), AtFlags::REMOVEDIR) {
-                Ok(()) | Err(rustix::io::Errno::NOENT | rustix::io::Errno::NOTEMPTY) => {}
-                Err(error) => errors.push(format!("remove {}: {error}", name.to_string_lossy())),
-            }
-        }
-        if !errors.is_empty() {
-            return Err(format!(
-                "could not put back original databases ({}); originals remain at {}",
-                errors.join("; "),
-                self.previous.display()
-            ));
-        }
-        let _ = std::fs::remove_dir_all(&self.previous);
-        Ok(())
+fn lstat(path: &Path) -> io::Result<Option<fs::Stat>> {
+    match fs::lstat(path) {
+        Ok(stat) => Ok(Some(stat)),
+        Err(rustix::io::Errno::NOENT) => Ok(None),
+        Err(error) => Err(error.into()),
     }
 }
 
-impl SwappedDatabase {
-    fn rollback(&self, previous: &Path) -> io::Result<()> {
-        let kept = previous.join(&self.relative);
-        if self.replaced {
-            // A restart attempt may have created sidecars for the snapshot copy.
-            for suffix in SIDECAR_SUFFIXES {
-                match fs::unlinkat(
-                    &self.dir,
-                    with_suffix(&self.name, suffix).as_os_str(),
-                    AtFlags::empty(),
-                ) {
-                    Ok(()) | Err(rustix::io::Errno::NOENT) => {}
-                    Err(error) => return Err(error.into()),
+fn statat(dir: &File, name: &OsStr) -> io::Result<Option<fs::Stat>> {
+    match fs::statat(dir, name, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(stat) => Ok(Some(stat)),
+        Err(rustix::io::Errno::NOENT) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn same_file(a: &fs::Stat, b: &fs::Stat) -> bool {
+    a.st_dev == b.st_dev && a.st_ino == b.st_ino
+}
+
+fn sync_parent(path: &Path) -> io::Result<()> {
+    match path.parent() {
+        Some(parent) => File::open(parent)?.sync_all(),
+        None => Ok(()),
+    }
+}
+
+fn replace(
+    root: &File,
+    staged_root: &Path,
+    dir: &Path,
+    relative: &Path,
+    steps: &mut Steps,
+) -> io::Result<()> {
+    let (parents, name) = split_relative(relative)?;
+    let mut live = root.try_clone()?;
+    for (depth, component) in parents.iter().enumerate() {
+        match open_live_dir(&live, &[*component], false) {
+            Ok(next) => live = next,
+            Err(error) if error.raw_os_error() == Some(libc::ENOENT) => {
+                for missing in &parents[depth..] {
+                    steps.step()?;
+                    live = open_live_dir(&live, &[*missing], true)?;
                 }
+                break;
             }
-            if self.kept_original {
-                fs::renameat(CWD, &kept, &self.dir, self.name.as_os_str())?;
-            } else {
-                fs::unlinkat(&self.dir, self.name.as_os_str(), AtFlags::empty())?;
+            Err(error) => return Err(error),
+        }
+    }
+    let kept = dir.join(relative);
+    if let Some(parent) = kept.parent() {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(parent)?;
+    }
+
+    // A complete second set of the originals first.
+    let original = match statat(&live, name)? {
+        Some(stat) if FileType::from_raw_mode(stat.st_mode) == FileType::RegularFile => {
+            Some(open_regular(&live, name)?.metadata()?)
+        }
+        Some(_) => return Err(io::Error::other("the live path is not a regular file")),
+        None => None,
+    };
+    if original.is_some() {
+        steps.step()?;
+        fs::linkat(&live, name, CWD, &kept, AtFlags::empty())?;
+    }
+    let mut sidecars = Vec::new();
+    for suffix in SIDECAR_SUFFIXES {
+        let sidecar = with_suffix(name, suffix);
+        if statat(&live, &sidecar)?.is_none() {
+            continue;
+        }
+        steps.step()?;
+        fs::linkat(
+            &live,
+            sidecar.as_os_str(),
+            CWD,
+            with_suffix(kept.as_os_str(), suffix),
+            AtFlags::empty(),
+        )?;
+        sidecars.push(sidecar);
+    }
+    sync_parent(&kept)?;
+
+    // Then the live sidecars go: left beside the snapshot copy they could
+    // roll newer pages into it.
+    for sidecar in &sidecars {
+        steps.step()?;
+        fs::unlinkat(&live, sidecar.as_os_str(), AtFlags::empty())?;
+    }
+
+    let staged = staged_root.join(relative);
+    let staged_file = std::fs::OpenOptions::new().read(true).open(&staged)?;
+    match &original {
+        Some(meta) => {
+            staged_file.set_permissions(std::fs::Permissions::from_mode(meta.mode() & 0o777))?;
+            // Restoring the owner needs privileges the service may lack;
+            // the app data provisioning on restart repairs it either way.
+            let _ = std::os::unix::fs::fchown(&staged_file, Some(meta.uid()), Some(meta.gid()));
+        }
+        None => staged_file.set_permissions(std::fs::Permissions::from_mode(0o600))?,
+    }
+    staged_file.sync_all()?;
+    steps.step()?;
+    fs::renameat(CWD, &staged, &live, name)?;
+    fs::fsync(&live)?;
+    Ok(())
+}
+
+/// Undo a database swap from its intent record and what the file system
+/// shows. Each database is in one of the states its steps leave behind,
+/// told apart by whether the kept copy and the live file are one inode:
+///
+/// - kept copy present and the live name is the same file: not replaced
+///   yet; drop the extra name.
+/// - kept copy present and the live name is another file: replaced; the
+///   live sidecars belong to the snapshot copy, so they go, and the kept
+///   copy moves back.
+/// - no kept copy: the database did not exist before (remove what the swap
+///   created), or its first step never ran.
+///
+/// Then each kept sidecar is moved back unless the live one is the same
+/// file. Repeating a rollback after it stopped part way is safe.
+pub(in crate::operations::backup) fn database_rollback(
+    intent: &RestoreIntent,
+    dir: &Path,
+) -> Result<(), String> {
+    let root = open_data_root(&intent.data_root)?;
+    let mut errors = Vec::new();
+    for database in intent.databases.iter().rev() {
+        if let Err(error) = roll_back_database(&root, dir, database) {
+            errors.push(format!("{}: {error}", database.relative.display()));
+        }
+    }
+    for created in intent.created_dirs.iter().rev() {
+        let result = split_relative(created).and_then(|(parents, name)| {
+            let parent = match open_live_dir(&root, &parents, false) {
+                Ok(parent) => parent,
+                Err(error) if error.raw_os_error() == Some(libc::ENOENT) => return Ok(()),
+                Err(error) => return Err(error),
+            };
+            match fs::unlinkat(&parent, name, AtFlags::REMOVEDIR) {
+                Ok(()) | Err(rustix::io::Errno::NOENT | rustix::io::Errno::NOTEMPTY) => Ok(()),
+                Err(error) => Err(error.into()),
             }
-        } else if self.kept_original {
-            // Linked but not replaced: the live name is still the original.
+        });
+        if let Err(error) = result {
+            errors.push(format!("remove {}: {error}", created.display()));
+        }
+    }
+    if !errors.is_empty() {
+        return Err(format!(
+            "could not put back original databases ({})",
+            errors.join("; ")
+        ));
+    }
+    Ok(())
+}
+
+fn roll_back_database(root: &File, dir: &Path, database: &IntentDatabase) -> io::Result<()> {
+    let (parents, name) = split_relative(&database.relative)?;
+    let live = match open_live_dir(root, &parents, false) {
+        Ok(live) => live,
+        // Never created, and nothing was kept for it.
+        Err(error) if error.raw_os_error() == Some(libc::ENOENT) && !database.existed => {
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
+    let kept = dir.join(&database.relative);
+    let remove_live_sidecars = || -> io::Result<()> {
+        for suffix in SIDECAR_SUFFIXES {
+            match fs::unlinkat(
+                &live,
+                with_suffix(name, suffix).as_os_str(),
+                AtFlags::empty(),
+            ) {
+                Ok(()) | Err(rustix::io::Errno::NOENT) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(())
+    };
+    match (lstat(&kept)?, statat(&live, name)?) {
+        (Some(kept_stat), Some(live_stat)) if same_file(&kept_stat, &live_stat) => {
             std::fs::remove_file(&kept)?;
         }
-        for suffix in &self.sidecars {
-            fs::renameat(
-                CWD,
-                with_suffix(kept.as_os_str(), suffix),
-                &self.dir,
-                with_suffix(&self.name, suffix).as_os_str(),
-            )?;
+        (Some(_), _) => {
+            remove_live_sidecars()?;
+            fs::renameat(CWD, &kept, &live, name)?;
         }
-        fs::fsync(&self.dir)?;
-        Ok(())
+        (None, Some(_)) if !database.existed => {
+            remove_live_sidecars()?;
+            fs::unlinkat(&live, name, AtFlags::empty())?;
+        }
+        (None, _) => {}
     }
+    for suffix in SIDECAR_SUFFIXES {
+        let kept_sidecar = with_suffix(kept.as_os_str(), suffix);
+        let Some(kept_stat) = lstat(Path::new(&kept_sidecar))? else {
+            continue;
+        };
+        let live_sidecar = with_suffix(name, suffix);
+        match statat(&live, &live_sidecar)? {
+            Some(live_stat) if same_file(&kept_stat, &live_stat) => {
+                std::fs::remove_file(&kept_sidecar)?;
+            }
+            Some(_) => {
+                return Err(io::Error::other(format!(
+                    "{} exists beside the original database",
+                    live_sidecar.to_string_lossy()
+                )));
+            }
+            None => fs::renameat(CWD, &kept_sidecar, &live, live_sidecar.as_os_str())?,
+        }
+    }
+    fs::fsync(&live)?;
+    Ok(())
 }
 
 #[cfg(test)]

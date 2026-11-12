@@ -1,4 +1,5 @@
 use super::*;
+use crate::operations::backup::journal::RollbackDir;
 use tempfile::TempDir;
 
 fn database(path: &Path, value: &str) {
@@ -277,6 +278,38 @@ fn previous_dirs(temp: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Every directory and file below `root` with its link count, mode, and
+/// bytes, so a comparison also catches extra names and stray sidecars.
+fn tree_state(root: &Path) -> std::collections::BTreeMap<PathBuf, String> {
+    let mut state = std::collections::BTreeMap::new();
+    let mut dirs = vec![root.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let meta = std::fs::symlink_metadata(&path).unwrap();
+            let relative = path.strip_prefix(root).unwrap().to_path_buf();
+            if meta.is_dir() {
+                state.insert(relative, "dir".to_string());
+                dirs.push(path);
+            } else {
+                let bytes = std::fs::read(&path).unwrap();
+                state.insert(
+                    relative,
+                    format!(
+                        "links={} mode={:o} {}",
+                        meta.nlink(),
+                        meta.mode() & 0o7777,
+                        hex::encode(sha2::Digest::finalize(
+                            <sha2::Sha256 as sha2::Digest>::new_with_prefix(bytes)
+                        ))
+                    ),
+                );
+            }
+        }
+    }
+    state
+}
+
 /// Checks sidecars before opening databases: SQLite may discard a log it
 /// does not recognize when it opens the database.
 fn assert_live_state_is_original(fixture: &Fixture) {
@@ -304,15 +337,24 @@ fn assert_live_state_is_original(fixture: &Fixture) {
     assert!(previous_dirs(fixture.temp.path()).is_empty());
 }
 
+fn swap(
+    fixture: &Fixture,
+    databases: &[PathBuf],
+) -> (RollbackDir, Result<RestoredDatabases, SwapError>) {
+    let dir = RollbackDir::create(&fixture.data).unwrap();
+    let result = swap_databases(&fixture.staged, databases, &fixture.data, dir.path());
+    (dir, result)
+}
+
 #[test]
 fn swap_replaces_only_snapshot_databases_and_drops_their_sidecars() {
     let fixture = fixture();
     let data = &fixture.data;
     let other_before = std::fs::read(data.join("app/other.sqlite")).unwrap();
-    let swap = swap_databases(&fixture.staged, &fixture.databases, data).unwrap();
+    let (dir, summary) = swap(&fixture, &fixture.databases);
     assert_eq!(
-        swap.summary(),
-        &RestoredDatabases {
+        summary.unwrap(),
+        RestoredDatabases {
             replaced: vec!["app/data.sqlite".into(), "tako/workflows.sqlite".into()],
             created: vec!["app/new/created.sqlite".into()],
             untouched: vec!["app/other.sqlite".into()],
@@ -343,12 +385,13 @@ fn swap_replaces_only_snapshot_databases_and_drops_their_sidecars() {
 
     // The originals are the rollback copy, outside the data tree.
     let [previous] = previous_dirs(fixture.temp.path()).try_into().unwrap();
+    assert_eq!(previous, dir.path());
     assert_eq!(
         std::fs::read(previous.join("app/data.sqlite-wal")).unwrap(),
         b"newer wal"
     );
     assert_eq!(value(&previous.join("app/data.sqlite")), "live");
-    swap.commit().unwrap();
+    journal::commit(dir.path()).unwrap();
     assert!(!previous.exists());
     assert_eq!(value(&data.join("app/data.sqlite")), "snapshot");
 }
@@ -357,11 +400,12 @@ fn swap_replaces_only_snapshot_databases_and_drops_their_sidecars() {
 fn rollback_restores_original_databases_and_sidecars() {
     let fixture = fixture();
     let data = &fixture.data;
-    let swap = swap_databases(&fixture.staged, &fixture.databases, data).unwrap();
+    let (dir, summary) = swap(&fixture, &fixture.databases);
+    summary.unwrap();
     // A failed restart opened the restored databases and left sidecars.
     std::fs::write(data.join("app/data.sqlite-wal"), b"restored wal").unwrap();
     std::fs::write(data.join("app/new/created.sqlite-shm"), b"restored shm").unwrap();
-    swap.rollback().unwrap();
+    journal::roll_back(dir.path()).unwrap();
     assert_live_state_is_original(&fixture);
 }
 
@@ -371,11 +415,81 @@ fn a_failed_replacement_rolls_back_the_databases_already_replaced() {
     let mut databases = fixture.databases.clone();
     // Sorted after the real entries; its staged copy does not exist.
     databases.push("tako/zz-missing.sqlite".into());
-    let error = swap_databases(&fixture.staged, &databases, &fixture.data).unwrap_err();
+    let (_dir, result) = swap(&fixture, &databases);
+    let error = result.unwrap_err();
     assert!(error.originals_intact);
     let error = error.message;
     assert!(error.contains("restore tako/zz-missing.sqlite"), "{error}");
     assert_live_state_is_original(&fixture);
+}
+
+/// Stop the swap before each of its mutating steps, as if the server died
+/// there, then run the startup recovery: the tree is the pre-restore tree.
+#[test]
+fn recovery_after_a_crash_at_any_step_restores_the_pre_restore_tree() {
+    let mut stop_at = 0;
+    loop {
+        let fixture = fixture();
+        let before = tree_state(&fixture.data);
+        let dir = RollbackDir::create(&fixture.data).unwrap();
+        let path = dir.path().to_path_buf();
+        let result = swap_databases_until(
+            &fixture.staged,
+            &fixture.databases,
+            &fixture.data,
+            &path,
+            Some(stop_at),
+        );
+        if result.is_ok() {
+            // Past the last step; every boundary was covered.
+            assert!(stop_at > 10, "only {stop_at} steps");
+            break;
+        }
+        assert_eq!(result.unwrap_err().message, "stopped");
+        // A running restore holds its directory.
+        assert_eq!(
+            journal::recover_rollback_dir(&path).unwrap(),
+            journal::Recovery::InUse
+        );
+        drop(dir);
+        let recovered = journal::recover_rollback_dir(&path).unwrap();
+        assert_eq!(
+            recovered,
+            if stop_at == 0 {
+                journal::Recovery::Cleaned
+            } else {
+                journal::Recovery::RolledBack
+            },
+            "step {stop_at}"
+        );
+        assert_eq!(tree_state(&fixture.data), before, "step {stop_at}");
+        assert_live_state_is_original(&fixture);
+        stop_at += 1;
+    }
+}
+
+#[test]
+fn recovery_removes_the_originals_of_a_committed_restore() {
+    let fixture = fixture();
+    let (dir, summary) = swap(&fixture, &fixture.databases);
+    summary.unwrap();
+    let path = dir.path().to_path_buf();
+    let mut intent = journal::read_intent(&path).unwrap().unwrap();
+    intent.state = journal::IntentState::Committed;
+    journal::write_intent(&path, &intent).unwrap();
+    drop(dir);
+    assert_eq!(
+        journal::recover_rollback_dir(&path).unwrap(),
+        journal::Recovery::Cleaned
+    );
+    assert!(!path.exists());
+    assert_eq!(value(&fixture.data.join("app/data.sqlite")), "snapshot");
+    assert_eq!(
+        std::fs::metadata(fixture.data.join("app/data.sqlite"))
+            .unwrap()
+            .nlink(),
+        1
+    );
 }
 
 #[test]
@@ -385,22 +499,21 @@ fn swap_refuses_unsafe_live_paths_before_changing_anything() {
     let outside = fixture.temp.path().join("outside");
     std::fs::create_dir(&outside).unwrap();
     std::os::unix::fs::symlink(&outside, data.join("app/new")).unwrap();
-    let error = swap_databases(&fixture.staged, &fixture.databases, data)
-        .unwrap_err()
-        .message;
+    let error = swap(&fixture, &fixture.databases).1.unwrap_err().message;
     assert!(
         error.contains("Cannot restore app/new/created.sqlite: new is not a directory"),
         "{error}"
     );
     assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
     std::fs::remove_file(data.join("app/new")).unwrap();
+    for dir in previous_dirs(fixture.temp.path()) {
+        std::fs::remove_dir_all(dir).unwrap();
+    }
     assert_live_state_is_original(&fixture);
 
     std::fs::remove_file(data.join("app/data.sqlite")).unwrap();
     std::fs::write(data.join("app/data.sqlite"), b"not a database").unwrap();
-    let error = swap_databases(&fixture.staged, &fixture.databases, data)
-        .unwrap_err()
-        .message;
+    let error = swap(&fixture, &fixture.databases).1.unwrap_err().message;
     assert!(error.contains("is not a SQLite database"), "{error}");
     assert_eq!(
         std::fs::read(data.join("app/data.sqlite")).unwrap(),
@@ -409,10 +522,19 @@ fn swap_refuses_unsafe_live_paths_before_changing_anything() {
 
     std::fs::remove_file(data.join("app/data.sqlite")).unwrap();
     std::os::unix::fs::symlink(outside.join("target"), data.join("app/data.sqlite")).unwrap();
-    let error = swap_databases(&fixture.staged, &fixture.databases, data)
-        .unwrap_err()
-        .message;
+    let error = swap(&fixture, &fixture.databases).1.unwrap_err().message;
     assert!(error.contains("not a regular file"), "{error}");
     assert!(!outside.join("target").exists());
-    assert!(previous_dirs(fixture.temp.path()).is_empty());
+}
+
+#[test]
+fn the_server_swaps_and_rolls_back_in_a_worker_process() {
+    let fixture = fixture();
+    let swap =
+        journal::swap_databases_in_worker(&fixture.staged, &fixture.databases, &fixture.data)
+            .unwrap();
+    assert_ne!(swap.worker_pid, std::process::id());
+    assert_eq!(value(&fixture.data.join("app/data.sqlite")), "snapshot");
+    swap.rollback().unwrap();
+    assert_live_state_is_original(&fixture);
 }

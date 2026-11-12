@@ -1,7 +1,6 @@
 //! Hourly database snapshots: only the SQLite databases of the app data tree,
 //! captured like the full archive, between daily full archives.
 
-use std::ffi::OsStr;
 use std::path::Path;
 
 use tako_core::{BackupInfo, BackupKeyBinding, BackupKind, BackupSkip, BackupSkipReason};
@@ -12,6 +11,7 @@ use super::encryption::{active_backup_key, database_digest_key, encrypt_backup_f
 use super::index::{BackupIndex, backup_object_prefix, latest_backup};
 use super::s3::{TRANSFER_TIMEOUT, backup_http_client, put_json_object, queue_retention};
 use super::snapshot::{create_database_snapshot_archive, database_digest, sha256_file_hex};
+use super::worker::run_worker;
 use super::{create_private_work_dir, now_unix_secs, validate_backup_binding};
 
 pub(super) const DATABASE_SNAPSHOT_INTERVAL_SECS: i64 = 60 * 60;
@@ -158,25 +158,6 @@ fn encrypted_archive_path(work_dir: &Path) -> std::path::PathBuf {
     work_dir.join("databases.tar.zst.enc")
 }
 
-/// SQLite POSIX locks belong to the process. Closing a descriptor to a live
-/// workflow DB in the server could release the server's own locks.
-fn run_worker(flag: &str, args: &[&OsStr]) -> Result<Vec<u8>, String> {
-    let worker = std::env::current_exe().map_err(|e| e.to_string())?;
-    let output = std::process::Command::new(worker)
-        .arg(flag)
-        .args(args)
-        .output()
-        .map_err(|e| format!("start snapshot worker: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "snapshot worker failed ({}): {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    Ok(output.stdout)
-}
-
 impl crate::ServerState {
     /// Create one database snapshot unless it would be unsafe or redundant.
     /// Never waits: a running backup, restore, or deploy is reported as a skip.
@@ -235,10 +216,11 @@ impl crate::ServerState {
             let measured = tokio::task::spawn_blocking({
                 let (data_dir, data_root) = (data_dir.clone(), data_root.clone());
                 move || {
-                    let stdout = run_worker(
-                        "--measure-databases",
-                        &[data_dir.as_os_str(), data_root.as_os_str()],
-                    )?;
+                    let stdout = run_worker(&[
+                        "--measure-databases".as_ref(),
+                        data_dir.as_os_str(),
+                        data_root.as_os_str(),
+                    ])?;
                     String::from_utf8_lossy(&stdout)
                         .trim()
                         .parse::<u64>()
@@ -259,14 +241,12 @@ impl crate::ServerState {
                             &backup_key,
                             previous.as_ref(),
                             |snapshot_dir| {
-                                run_worker(
-                                    "--snapshot-databases",
-                                    &[
-                                        data_dir.as_os_str(),
-                                        data_root.as_os_str(),
-                                        snapshot_dir.as_os_str(),
-                                    ],
-                                )
+                                run_worker(&[
+                                    "--snapshot-databases".as_ref(),
+                                    data_dir.as_os_str(),
+                                    data_root.as_os_str(),
+                                    snapshot_dir.as_os_str(),
+                                ])
                                 .map(drop)
                             },
                         )

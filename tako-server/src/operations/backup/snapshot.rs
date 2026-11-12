@@ -12,7 +12,7 @@ mod database_restore;
 mod sqlite;
 
 pub(super) use database_restore::{
-    DatabaseSwap, SwapError, extract_database_snapshot, swap_databases,
+    SwapError, database_rollback, extract_database_snapshot, swap_databases,
 };
 
 const TAKO_DATA_DIR: &str = "tako";

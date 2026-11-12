@@ -15,9 +15,11 @@ use crate::release::{
 mod databases;
 mod encryption;
 mod index;
+mod journal;
 mod s3;
 mod scheduler;
 mod snapshot;
+mod worker;
 
 use databases::DISK_RESERVE_BYTES;
 pub(crate) use databases::DatabaseSnapshotState;
@@ -26,13 +28,17 @@ use encryption::{
     find_backup_key, validate_backup_key,
 };
 use index::{backup_index_key, backup_object_prefix, latest_backup};
+use journal::{DatabaseSwap, swap_databases_in_worker};
+pub(crate) use journal::{
+    recover_interrupted_restores, run_restore_worker, sweep_backup_work_dirs,
+};
 use s3::{
     DOWNLOAD_URL_EXPIRES_SECONDS, S3_URL_EXPIRES_SECONDS, TRANSFER_TIMEOUT, backup_http_client,
     download_object, prune_retention, put_json_object, queue_retention, upload_file,
 };
 use snapshot::{
-    DATABASE_SNAPSHOT_ARCHIVE_ROOT, DatabaseSwap, RestoredData, SwapError, create_backup_archive,
-    database_digest, extract_database_snapshot, restore_data_tree, sha256_file_hex, swap_databases,
+    DATABASE_SNAPSHOT_ARCHIVE_ROOT, RestoredData, SwapError, create_backup_archive,
+    database_digest, extract_database_snapshot, restore_data_tree, sha256_file_hex,
 };
 pub(crate) use snapshot::{measure_database_tree, snapshot_data_tree, snapshot_database_tree};
 
@@ -173,23 +179,12 @@ impl crate::ServerState {
                 let encrypted_archive_path = encrypted_archive_path.clone();
                 let backup_key = backup_key.clone();
                 move || {
-                    // SQLite POSIX locks belong to the process. Closing a descriptor
-                    // to a live workflow DB here could release the server's own locks.
-                    let worker = std::env::current_exe().map_err(|e| e.to_string())?;
-                    let output = std::process::Command::new(worker)
-                        .arg("--snapshot-data")
-                        .arg(data_dir)
-                        .arg(data_root)
-                        .arg(&snapshot_dir)
-                        .output()
-                        .map_err(|e| format!("start snapshot worker: {e}"))?;
-                    if !output.status.success() {
-                        return Err(format!(
-                            "snapshot worker failed ({}): {}",
-                            output.status,
-                            String::from_utf8_lossy(&output.stderr).trim()
-                        ));
-                    }
+                    worker::run_worker(&[
+                        "--snapshot-data".as_ref(),
+                        data_dir.as_os_str(),
+                        data_root.as_os_str(),
+                        snapshot_dir.as_os_str(),
+                    ])?;
                     // Lets the next hourly database snapshot skip if nothing
                     // changed. Without it that snapshot is simply uploaded.
                     let database_digest = database_digest_key(&backup_key)
@@ -563,7 +558,7 @@ impl crate::ServerState {
                         // that also failed, which leaves no data dir.
                         originals_intact: data_root.exists(),
                     }),
-                StagedRestore::Databases(databases) => swap_databases(
+                StagedRestore::Databases(databases) => swap_databases_in_worker(
                     &extract_dir.join(DATABASE_SNAPSHOT_ARCHIVE_ROOT),
                     &databases,
                     &data_root,

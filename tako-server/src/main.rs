@@ -302,6 +302,10 @@ pub struct Args {
     #[arg(long, hide = true, num_args = 2, value_names = ["DATA_DIR", "RELATIVE_SOURCE"])]
     pub measure_databases: Option<Vec<std::path::PathBuf>>,
 
+    /// Run one step of a backup restore described by a JSON request.
+    #[arg(long, hide = true, value_name = "REQUEST")]
+    pub restore_worker: Option<String>,
+
     /// Read a busy WAL database within the filesystem ruleset supplied on stdin.
     #[cfg(target_os = "linux")]
     #[arg(long, hide = true, num_args = 2, value_names = ["SOURCE", "DESTINATION"])]
@@ -374,6 +378,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if let Some(paths) = &args.snapshot_databases {
         operations::snapshot_database_tree(&paths[0], &paths[1], &paths[2])?;
+        return Ok(());
+    }
+    if let Some(request) = &args.restore_worker {
+        println!("{}", operations::run_restore_worker(request)?);
         return Ok(());
     }
     if let Some(paths) = &args.measure_databases {
