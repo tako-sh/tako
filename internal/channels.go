@@ -142,8 +142,9 @@ type ChannelDefinition struct {
 	// ParamsSchema is a JSON Schema for the query params that bind a channel.
 	// Validated params select the channel stream, so it must be one object
 	// schema with flat string, integer, number, or boolean properties under
-	// its top-level "properties" (no allOf, anyOf, oneOf, or $ref; Register
-	// panics otherwise). tako-server rejects a param the
+	// its top-level "properties" (no $ref; a top-level allOf, anyOf, oneOf,
+	// not, if/then/else, or dependentSchemas may only add constraints such as
+	// "required" over those properties; Register panics otherwise). tako-server rejects a param the
 	// schema does not list under "properties" unless it sets
 	// "additionalProperties": true; nil means the channel takes no params. "from" and "last_message_id"
 	// are reserved query names, so [ChannelRegistry.Register] panics if a
@@ -268,10 +269,82 @@ func (r *ChannelRegistry) Register(name string, definition ChannelDefinition) {
 
 // nonFlatSchemaKeywords place properties outside a schema's top-level
 // "properties", where channel params are declared and coerced.
-var nonFlatSchemaKeywords = []string{"allOf", "anyOf", "oneOf", "not", "if", "then", "else", "$ref", "$dynamicRef", "dependentSchemas", "patternProperties"}
+var nonFlatSchemaKeywords = []string{"$ref", "$dynamicRef", "patternProperties"}
+
+// Combinators whose subschemas apply to the whole params object. They may add
+// constraints such as "required" over the declared params, but a param
+// declared inside one would be neither coerced nor allowed.
+var (
+	arrayCombinators  = []string{"allOf", "anyOf", "oneOf"}
+	schemaCombinators = []string{"not", "if", "then", "else"}
+	mapCombinators    = []string{"dependentSchemas"}
+)
+
+// declaringKeywords declare params when a combinator subschema uses them.
+var declaringKeywords = []string{"properties", "patternProperties", "additionalProperties", "$ref", "$dynamicRef"}
+
+type combinatorSubschema struct {
+	combinator string
+	schema     json.RawMessage
+}
+
+// combinatorSubschemas lists the subschemas a schema's combinators apply to
+// the same instance, each with the combinator that holds it.
+func combinatorSubschemas(schema map[string]json.RawMessage) []combinatorSubschema {
+	var subschemas []combinatorSubschema
+	for _, keyword := range arrayCombinators {
+		var items []json.RawMessage
+		if raw, ok := schema[keyword]; ok && json.Unmarshal(raw, &items) == nil {
+			for _, item := range items {
+				subschemas = append(subschemas, combinatorSubschema{keyword, item})
+			}
+		}
+	}
+	for _, keyword := range schemaCombinators {
+		if raw, ok := schema[keyword]; ok {
+			subschemas = append(subschemas, combinatorSubschema{keyword, raw})
+		}
+	}
+	for _, keyword := range mapCombinators {
+		var entries map[string]json.RawMessage
+		if raw, ok := schema[keyword]; ok && json.Unmarshal(raw, &entries) == nil {
+			names := make([]string, 0, len(entries))
+			for name := range entries {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			for _, name := range names {
+				subschemas = append(subschemas, combinatorSubschema{keyword, entries[name]})
+			}
+		}
+	}
+	return subschemas
+}
+
+// declaringKeyword returns the keyword through which a combinator subschema,
+// or one nested in it, declares params. "additionalProperties": false only
+// constrains.
+func declaringKeyword(subschema json.RawMessage) string {
+	var parsed map[string]json.RawMessage
+	if json.Unmarshal(subschema, &parsed) != nil {
+		return ""
+	}
+	for _, keyword := range declaringKeywords {
+		if raw, ok := parsed[keyword]; ok && strings.TrimSpace(string(raw)) != "false" {
+			return keyword
+		}
+	}
+	for _, nested := range combinatorSubschemas(parsed) {
+		if keyword := declaringKeyword(nested.schema); keyword != "" {
+			return keyword
+		}
+	}
+	return ""
+}
 
 // nonFlatParamsSchema describes why schema is not one flat object schema, or
-// returns "" when it is (or is nil). tako-server rejects such schemas too.
+// returns "" when it is (or is nil). Top-level combinators may only add
+// constraints over the declared params. tako-server rejects such schemas too.
 func nonFlatParamsSchema(schema json.RawMessage) string {
 	if len(schema) == 0 {
 		return ""
@@ -292,6 +365,11 @@ func nonFlatParamsSchema(schema json.RawMessage) string {
 		var fields map[string]json.RawMessage
 		if json.Unmarshal(properties, &fields) != nil {
 			return "has \"properties\" that is not an object"
+		}
+	}
+	for _, subschema := range combinatorSubschemas(parsed) {
+		if keyword := declaringKeyword(subschema.schema); keyword != "" {
+			return "declares params through " + strconv.Quote(keyword) + " inside " + strconv.Quote(subschema.combinator) + " (combinators may only add constraints such as \"required\" over the top-level \"properties\")"
 		}
 	}
 	return ""

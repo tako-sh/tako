@@ -1,3 +1,4 @@
+use crate::live_store::STORE_CHANNEL_PREFIX;
 use crate::{ChannelDefinitionMeta, ChannelError};
 use parking_lot::RwLock;
 use std::collections::{HashMap, VecDeque};
@@ -64,9 +65,18 @@ impl ChannelRegistry {
         // existing caller but cannot repopulate the current app registry.
         let definitions = cell
             .get_or_try_init(|| async {
+                let definitions = load().await?;
+                for (channel, error) in invalid_params_schemas(&definitions) {
+                    tracing::warn!(
+                        app,
+                        build,
+                        channel,
+                        %error,
+                        "channel params schema is invalid; its subscribes and publishes will fail"
+                    );
+                }
                 Ok::<_, ChannelError>(
-                    load()
-                        .await?
+                    definitions
                         .into_iter()
                         .map(|definition| (definition.channel.clone(), definition))
                         .collect(),
@@ -103,6 +113,22 @@ impl ChannelRegistry {
     }
 }
 
+/// Channel and presence definitions whose params schema every request would
+/// reject. Stores validate their params as JSON and are not checked here.
+fn invalid_params_schemas(
+    definitions: &[ChannelDefinitionMeta],
+) -> Vec<(&str, crate::params::ParamsError)> {
+    definitions
+        .iter()
+        .filter(|definition| !definition.channel.starts_with(STORE_CHANNEL_PREFIX))
+        .filter_map(|definition| {
+            crate::params::check_params_schema(&definition.params_schema)
+                .err()
+                .map(|error| (definition.channel.as_str(), error))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,6 +143,38 @@ mod tests {
             transport: None,
             lifecycle: Default::default(),
         }
+    }
+
+    #[tokio::test]
+    async fn a_registry_with_an_invalid_params_schema_loads_and_names_it() {
+        let mut broken = meta("broken");
+        broken.params_schema = serde_json::json!({"type": "object",
+            "allOf": [{"properties": {"roomId": {"type": "string"}}}]});
+        let mut constrained = meta("tako.presence:room");
+        constrained.params_schema = serde_json::json!({"type": "object",
+            "properties": {"roomId": {"type": "string"}},
+            "oneOf": [{"required": ["roomId"]}]});
+        let mut store = meta("tako.store:notes");
+        store.params_schema = serde_json::json!({"anyOf": [{"type": "object"}]});
+        let mut presence = meta("tako.presence:lobby");
+        presence.params_schema = serde_json::json!({"$ref": "#/$defs/x"});
+        let definitions = vec![meta("chat"), broken, constrained, store, presence];
+        let invalid: Vec<_> = invalid_params_schemas(&definitions)
+            .into_iter()
+            .map(|(channel, _)| channel)
+            .collect();
+        assert_eq!(invalid, ["broken", "tako.presence:lobby"]);
+
+        // The warning never rejects the registry: valid channels keep working.
+        let registry = ChannelRegistry::new();
+        registry
+            .get_or_load("app", "v1", "chat", || async { Ok(definitions.clone()) })
+            .await
+            .unwrap();
+        assert!(matches!(
+            registry.cached("app", "v1", "broken"),
+            CachedDefinition::Defined(_)
+        ));
     }
 
     #[tokio::test]

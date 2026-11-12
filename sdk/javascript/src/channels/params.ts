@@ -140,28 +140,86 @@ export function channelStreamParams(
   return bound;
 }
 
-/** Keywords that place properties outside the schema's top-level `properties`. */
-const NON_FLAT_SCHEMA_KEYWORDS = [
-  "allOf",
-  "anyOf",
-  "oneOf",
-  "not",
-  "if",
-  "then",
-  "else",
+/** Top-level keywords that place properties outside the schema's top-level `properties`. */
+const NON_FLAT_SCHEMA_KEYWORDS = ["$ref", "$dynamicRef", "patternProperties"];
+
+/** Combinators whose subschemas apply to the whole params object. */
+const ARRAY_COMBINATORS = ["allOf", "anyOf", "oneOf"];
+const SCHEMA_COMBINATORS = ["not", "if", "then", "else"];
+const MAP_COMBINATORS = ["dependentSchemas"];
+
+/** Keywords of a combinator subschema that declare params. */
+const DECLARING_KEYWORDS = [
+  "properties",
+  "patternProperties",
+  "additionalProperties",
   "$ref",
   "$dynamicRef",
-  "dependentSchemas",
-  "patternProperties",
 ];
+
+function isSchemaObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** The subschemas a schema's combinators apply to the same instance, with their combinator. */
+function combinatorSubschemas(schema: Record<string, unknown>): Array<[string, unknown]> {
+  const subschemas: Array<[string, unknown]> = [];
+  for (const keyword of ARRAY_COMBINATORS) {
+    const items = schema[keyword];
+    if (Array.isArray(items)) for (const item of items) subschemas.push([keyword, item]);
+  }
+  for (const keyword of SCHEMA_COMBINATORS) {
+    if (keyword in schema) subschemas.push([keyword, schema[keyword]]);
+  }
+  for (const keyword of MAP_COMBINATORS) {
+    const entries = schema[keyword];
+    if (isSchemaObject(entries)) {
+      for (const subschema of Object.values(entries)) subschemas.push([keyword, subschema]);
+    }
+  }
+  return subschemas;
+}
+
+/**
+ * The keyword through which a combinator subschema, or one nested in it,
+ * declares params. `additionalProperties: false` only constrains.
+ */
+function declaringKeyword(subschema: unknown): string | undefined {
+  if (!isSchemaObject(subschema)) return undefined;
+  const keyword = DECLARING_KEYWORDS.find(
+    (name) => name in subschema && subschema[name] !== false && subschema[name] !== undefined,
+  );
+  if (keyword !== undefined) return keyword;
+  for (const [, nested] of combinatorSubschemas(subschema)) {
+    const found = declaringKeyword(nested);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+function combinatorProblem(schema: Record<string, unknown>): string | undefined {
+  for (const [combinator, subschema] of combinatorSubschemas(schema)) {
+    const keyword = declaringKeyword(subschema);
+    if (keyword !== undefined) {
+      return `declares params through '${keyword}' inside '${combinator}' (combinators may only add constraints such as 'required' over the top-level 'properties')`;
+    }
+  }
+  return undefined;
+}
 
 /**
  * Reject params schemas whose properties cannot travel as query values.
  *
+ * Top-level combinators (`allOf`, `anyOf`, `oneOf`, `not`, `if`/`then`/`else`,
+ * `dependentSchemas`) may add constraints such as `required` over the declared
+ * params, but may not declare params themselves.
+ *
  * @throws {TypeError} If the schema is not one object schema with its params
  * under top-level `properties` (for example `t.Intersect`, `t.Union`, or
- * `t.Ref`), a declared property type is `object` or `array`, or a property
- * uses a reserved name (`from`, `last_message_id`).
+ * `t.Ref`), a combinator declares `properties`, `patternProperties`,
+ * `additionalProperties` (other than `false`) or a `$ref`, a declared property
+ * type is `object` or `array`, or a property uses a reserved name (`from`,
+ * `last_message_id`).
  */
 export function assertFlatChannelParamsSchema(channel: string, schema: object): void {
   const { type: schemaType, properties } = schema as { type?: unknown; properties?: unknown };
@@ -173,7 +231,7 @@ export function assertFlatChannelParamsSchema(channel: string, schema: object): 
         ? `has type ${JSON.stringify(schemaType)}`
         : properties !== undefined && (typeof properties !== "object" || properties === null)
           ? "has 'properties' that is not an object"
-          : undefined;
+          : combinatorProblem(schema as Record<string, unknown>);
   if (problem !== undefined) {
     throw new TypeError(
       `Channel '${channel}' params schema ${problem}. Params must be declared under the top-level 'properties' of one object schema: use a single t.Object({...}), and combine object schemas with t.Composite([...]).`,

@@ -679,10 +679,19 @@ impl ChannelStore {
 }
 
 pub(super) fn now_unix_ms() -> i64 {
-    SystemTime::now()
+    let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis() as i64
+        .as_millis() as i64;
+    #[cfg(test)]
+    let now = now + SERVER_CLOCK_SKEW_MS.get();
+    now
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How far this test thread's server clock runs ahead of the real one.
+    pub(super) static SERVER_CLOCK_SKEW_MS: std::cell::Cell<i64> = const { std::cell::Cell::new(0) };
 }
 
 pub(super) fn resolve_replay_cursor(

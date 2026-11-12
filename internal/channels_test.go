@@ -2,6 +2,7 @@ package internal
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -256,6 +257,22 @@ func TestChannelRegistrationRejectsParamsSchemasThatAreNotOneFlatObject(t *testi
 			}()
 		}
 	}
+	// A combinator that declares params is rejected wherever it nests.
+	for _, tc := range []struct{ keyword, combinator, schema string }{
+		{"properties", "anyOf", `{"type":"object","properties":{"u":{"type":"string"}},"anyOf":[{"allOf":[{"not":{"properties":{"t":{}}}}]}]}`},
+		{"additionalProperties", "oneOf", `{"type":"object","properties":{"u":{"type":"string"}},"oneOf":[{"additionalProperties":true}]}`},
+		{"additionalProperties", "if", `{"type":"object","properties":{"u":{"type":"string"}},"if":{"additionalProperties":{"type":"string"}}}`},
+		{"$ref", "not", `{"type":"object","properties":{"u":{"type":"string"}},"not":{"$ref":"#/$defs/x"}}`},
+		{"patternProperties", "dependentSchemas", `{"type":"object","properties":{"u":{"type":"string"}},"dependentSchemas":{"u":{"patternProperties":{"^t":{}}}}}`},
+	} {
+		want := strconv.Quote(tc.keyword) + " inside " + strconv.Quote(tc.combinator)
+		if problem := nonFlatParamsSchema(json.RawMessage(tc.schema)); !strings.Contains(problem, want) {
+			t.Fatalf("a combinator declaring %s must be rejected naming it", tc.keyword)
+		}
+	}
+	if problem := nonFlatParamsSchema(json.RawMessage(`{"patternProperties":{"^u":{}}}`)); !strings.Contains(problem, "patternProperties") {
+		t.Fatal("a top-level patternProperties must be rejected")
+	}
 	// Combinators inside a property are fine, and Stores keep their schema.
 	NewChannelRegistry().Register("room", ChannelDefinition{
 		ParamsSchema: json.RawMessage(`{"type":"object","properties":{"kind":{"anyOf":[{"const":"a"},{"const":"b"}]}}}`),
@@ -263,4 +280,24 @@ func TestChannelRegistrationRejectsParamsSchemasThatAreNotOneFlatObject(t *testi
 	NewChannelRegistry().Register(storeChannelPrefix+"notes", ChannelDefinition{
 		ParamsSchema: json.RawMessage(`{"anyOf":[` + room + `]}`),
 	})
+}
+
+func TestChannelRegistrationAcceptsTopLevelCombinatorsThatOnlyConstrainParams(t *testing.T) {
+	ids := `"type":"object","properties":{"userId":{"type":"string"},"teamId":{"type":"string"}}`
+	for _, constraint := range []string{
+		`"oneOf":[{"required":["userId"]},{"required":["teamId"]}]`,
+		`"if":{"required":["userId"]},"then":{"required":["teamId"]}`,
+		`"not":{"required":["teamId"]}`,
+		`"dependentSchemas":{"teamId":{"required":["userId"]}}`,
+		`"allOf":[{"anyOf":[{"required":["userId"]},{"additionalProperties":false}]}]`,
+	} {
+		schema := json.RawMessage(`{` + ids + `,` + constraint + `}`)
+		registry := NewChannelRegistry()
+		registry.Register("scoped", ChannelDefinition{ParamsSchema: schema})
+		RegisterPresence("scoped", PresenceDefinition{ParamsSchema: schema})
+		// The constraint reaches tako-server unchanged, which enforces it.
+		if got := registry.Lookup("scoped").ParamsSchema; string(got) != string(schema) {
+			t.Fatal("a constraint-only schema must be registered unchanged")
+		}
+	}
 }

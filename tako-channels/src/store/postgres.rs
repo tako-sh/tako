@@ -162,57 +162,52 @@ impl PostgresChannelStore {
 
     /// The stream's first terminal marker that readers can still see. An
     /// expired one still closes the stream to publishes until it is deleted.
+    /// One statement, so it reads one snapshot without a transaction.
     pub(super) fn close_marker(
         &self,
         channel: &str,
     ) -> Result<Option<ChannelMessage>, ChannelError> {
-        let mut client = self.client.lock();
-        let mut tx = client
-            .build_transaction()
-            .isolation_level(::postgres::IsolationLevel::RepeatableRead)
-            .start()
-            .map_err(|e| ChannelError::Storage(e.to_string()))?;
-        let floor = self.expired_floor(&mut tx, channel, now_unix_ms())?;
-        let marker = self
-            .first_close_marker(&mut tx, channel)?
-            .filter(|marker| marker.id.parse::<i64>().is_ok_and(|id| id > floor));
-        tx.commit()
-            .map_err(|e| ChannelError::Storage(e.to_string()))?;
-        Ok(marker)
+        self.client
+            .lock()
+            .query_opt(
+                &format!(
+                    "SELECT id, channel, type, data_json
+                     FROM {schema}.channel_messages
+                     WHERE app_id = $1 AND channel = $2 AND type = '{CLOSE_MESSAGE_TYPE}'
+                       AND id > {floor}
+                     ORDER BY id ASC
+                     LIMIT 1",
+                    schema = self.schema,
+                    floor = expired_floor_sql(&self.schema),
+                ),
+                &[&self.app_id, &channel],
+            )
+            .map_err(|e| ChannelError::Storage(e.to_string()))?
+            .map(|row| channel_message_from_row((row.get(0), row.get(1), row.get(2), row.get(3))))
+            .transpose()
     }
 
-    /// Highest position of a stream that has expired, including rows
-    /// maintenance has not deleted yet: by inactivity every row, otherwise rows
-    /// older than the replay window. Readers apply it, so what they see never
-    /// depends on when the round-robin pruning reaches the stream.
-    fn expired_floor(
+    /// The replay bounds a cursor is checked against: the floor below which
+    /// history is gone or expired, and the stream head.
+    fn replay_bounds(
         &self,
         client: &mut impl ::postgres::GenericClient,
         channel: &str,
-        now: i64,
-    ) -> Result<i64, ChannelError> {
-        Ok(client
-            .query_opt(
+    ) -> Result<(i64, Option<i64>), ChannelError> {
+        let row = client
+            .query_one(
                 &format!(
-                    "SELECT CASE
-                        WHEN metadata.inactivity_ttl_ms > 0
-                          AND metadata.last_activity_unix_ms < $3 - metadata.inactivity_ttl_ms
-                        THEN (SELECT MAX(id) FROM {schema}.channel_messages
-                              WHERE app_id = $1 AND channel = $2)
-                        WHEN metadata.replay_window_ms > 0
-                        THEN (SELECT MAX(id) FROM {schema}.channel_messages
-                              WHERE app_id = $1 AND channel = $2
-                                AND created_at_unix_ms < $3 - metadata.replay_window_ms)
-                     END
-                     FROM {schema}.channel_metadata AS metadata
-                     WHERE metadata.app_id = $1 AND metadata.channel = $2",
-                    schema = self.schema
+                    "SELECT GREATEST(COALESCE((SELECT highest_deleted_message_id FROM {schema}.channel_metadata
+                                               WHERE app_id = $1 AND channel = $2), 0), {floor}),
+                            (SELECT NULLIF(latest_message_id, 0) FROM {schema}.channel_metadata
+                             WHERE app_id = $1 AND channel = $2)",
+                    schema = self.schema,
+                    floor = expired_floor_sql(&self.schema),
                 ),
-                &[&self.app_id, &channel, &now],
+                &[&self.app_id, &channel],
             )
-            .map_err(|e| ChannelError::Storage(e.to_string()))?
-            .and_then(|row| row.get::<_, Option<i64>>(0))
-            .unwrap_or(0))
+            .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        Ok((row.get(0), row.get(1)))
     }
 
     pub(super) fn read_after(
@@ -222,32 +217,35 @@ impl PostgresChannelStore {
         limit: u32,
     ) -> Result<Vec<ChannelMessage>, ChannelError> {
         let mut client = self.client.lock();
+        // Reads never prune; the computed floor hides rows still waiting for
+        // it. A cursor is checked against the same snapshot, and the same
+        // database time, that the page is read from.
         let mut tx = client
             .build_transaction()
             .isolation_level(::postgres::IsolationLevel::RepeatableRead)
             .start()
             .map_err(|e| ChannelError::Storage(e.to_string()))?;
-        // Reads never prune; the computed floor hides rows still waiting for it.
-        let expired = self.expired_floor(&mut tx, channel, now_unix_ms())?;
         if after.is_some() {
-            let bounds = tx.query_one(&format!(
-                "SELECT COALESCE((SELECT highest_deleted_message_id FROM {}.channel_metadata WHERE app_id = $1 AND channel = $2), 0),
-                        (SELECT NULLIF(latest_message_id, 0) FROM {}.channel_metadata WHERE app_id = $1 AND channel = $2)", self.schema, self.schema
-            ), &[&self.app_id, &channel]).map_err(|e| ChannelError::Storage(e.to_string()))?;
-            resolve_replay_cursor(after, bounds.get::<_, i64>(0).max(expired), bounds.get(1))?;
+            let (floor, head) = self.replay_bounds(&mut tx, channel)?;
+            resolve_replay_cursor(after, floor, head)?;
         }
-        let after = Some(after.unwrap_or(0).max(expired));
         let rows = tx
             .query(
                 &format!(
                     "SELECT id, channel, type, data_json
-                     FROM {}.channel_messages
-                     WHERE app_id = $1 AND channel = $2 AND id > COALESCE($3::BIGINT, 0)
+                     FROM {schema}.channel_messages
+                     WHERE app_id = $1 AND channel = $2 AND id > GREATEST($3::BIGINT, {floor})
                      ORDER BY id ASC
                      LIMIT $4",
-                    self.schema
+                    schema = self.schema,
+                    floor = expired_floor_sql(&self.schema),
                 ),
-                &[&self.app_id, &channel, &after, &i64::from(limit)],
+                &[
+                    &self.app_id,
+                    &channel,
+                    &after.unwrap_or(0),
+                    &i64::from(limit),
+                ],
             )
             .map_err(|e| ChannelError::Storage(e.to_string()))?;
 
@@ -270,20 +268,8 @@ impl PostgresChannelStore {
         channel: &str,
         requested: Option<i64>,
     ) -> Result<Option<i64>, ChannelError> {
-        let mut client = self.client.lock();
-        let mut tx = client
-            .build_transaction()
-            .isolation_level(::postgres::IsolationLevel::RepeatableRead)
-            .start()
-            .map_err(|e| ChannelError::Storage(e.to_string()))?;
-        let expired = self.expired_floor(&mut tx, channel, now_unix_ms())?;
-        let row = tx.query_one(&format!(
-            "SELECT COALESCE((SELECT highest_deleted_message_id FROM {}.channel_metadata WHERE app_id = $1 AND channel = $2), 0),
-                        (SELECT NULLIF(latest_message_id, 0) FROM {}.channel_metadata WHERE app_id = $1 AND channel = $2)", self.schema, self.schema
-        ), &[&self.app_id, &channel]).map_err(|e| ChannelError::Storage(e.to_string()))?;
-        tx.commit()
-            .map_err(|e| ChannelError::Storage(e.to_string()))?;
-        resolve_replay_cursor(requested, row.get::<_, i64>(0).max(expired), row.get(1))
+        let (floor, head) = self.replay_bounds(&mut *self.client.lock(), channel)?;
+        resolve_replay_cursor(requested, floor, head)
     }
 
     pub(super) fn sync_channel(
@@ -336,7 +322,7 @@ impl PostgresChannelStore {
     /// [`MAINTENANCE_BATCH`] streams, continuing after the last one next tick,
     /// and at most that many idle streams are released. Cursors outside the
     /// replay window are refused, and expired rows hidden, by the floor readers
-    /// compute (`expired_floor`), so pruning a stream a few ticks late never
+    /// compute (`expired_floor_sql`), so pruning a stream a few ticks late never
     /// serves expired history to a `from=start` or resumed reader.
     pub(super) fn prune(&self, now: i64) -> Result<(), ChannelError> {
         let mut client = self.client.lock();
@@ -493,6 +479,33 @@ impl PostgresChannelStore {
     fn born_at(&self) -> String {
         BORN_AT_SQL.replace("{schema}", &self.schema)
     }
+}
+
+/// The database's current time in Unix milliseconds: the clock that stamps
+/// every row, whichever server inserted it. `now()` is fixed for a
+/// transaction, so every statement of a read judges expiry at one moment.
+const DATABASE_NOW_MS: &str = "(extract(epoch from now()) * 1000)::BIGINT";
+
+/// Highest expired position of the stream `$2` of app `$1`, including rows
+/// maintenance has not deleted yet: by inactivity every row, otherwise rows
+/// older than the replay window, both by the database clock. Readers apply
+/// it, so what they see never depends on when the round-robin pruning
+/// reaches the stream, nor on which server they are connected to.
+fn expired_floor_sql(schema: &str) -> String {
+    format!(
+        "COALESCE((SELECT CASE
+            WHEN metadata.inactivity_ttl_ms > 0
+              AND metadata.last_activity_unix_ms < {DATABASE_NOW_MS} - metadata.inactivity_ttl_ms
+            THEN (SELECT MAX(id) FROM {schema}.channel_messages
+                  WHERE app_id = $1 AND channel = $2)
+            WHEN metadata.replay_window_ms > 0
+            THEN (SELECT MAX(id) FROM {schema}.channel_messages
+                  WHERE app_id = $1 AND channel = $2
+                    AND created_at_unix_ms < {DATABASE_NOW_MS} - metadata.replay_window_ms)
+         END
+         FROM {schema}.channel_metadata AS metadata
+         WHERE metadata.app_id = $1 AND metadata.channel = $2), 0)"
+    )
 }
 
 /// Streams that retain nothing, longest idle first, through
@@ -771,6 +784,41 @@ mod integration_tests {
 
     fn id(message: &ChannelMessage) -> i64 {
         message.id.parse().unwrap()
+    }
+
+    #[test]
+    fn postgres_readers_judge_expiry_by_the_database_clock() {
+        let db = Database::new();
+        let store = db.open("app");
+        let message = append(&store, "a");
+        let marker = store
+            .append(
+                "a",
+                &ChannelPublishPayload {
+                    r#type: CLOSE_MESSAGE_TYPE.into(),
+                    data: serde_json::Value::Null,
+                },
+                None,
+            )
+            .unwrap()
+            .0;
+        // This server's clock runs an hour ahead of the database that stamped
+        // the rows; its readers see what every other server's readers see.
+        super::super::SERVER_CLOCK_SKEW_MS.set(60 * 60 * 1000);
+        assert_eq!(
+            store.read_after("a", None, 10).unwrap(),
+            vec![message.clone(), marker.clone()]
+        );
+        assert_eq!(
+            store.read_after("a", Some(id(&message)), 10).unwrap(),
+            vec![marker.clone()]
+        );
+        assert_eq!(
+            store.replay_cursor("a", Some(id(&message))).unwrap(),
+            Some(id(&message))
+        );
+        assert_eq!(store.close_marker("a").unwrap(), Some(marker));
+        super::super::SERVER_CLOCK_SKEW_MS.set(0);
     }
 
     #[test]

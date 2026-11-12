@@ -934,3 +934,250 @@ fn mesh_peers_reopen_a_stream_once_its_marker_expired_where_the_publish_was_made
     assert!(b.close_marker(&key).unwrap().is_none());
     b.append(&key, &payload(json!(3))).unwrap();
 }
+
+fn remote(origin: &str, sequence: u64, channel: &str, kind: &str, created: i64) -> ChannelEvent {
+    ChannelEvent {
+        id: ChannelEventId {
+            origin: origin.into(),
+            sequence,
+        },
+        channel: channel.into(),
+        payload: ChannelPublishPayload {
+            r#type: kind.into(),
+            data: if kind == CLOSE_MESSAGE_TYPE {
+                Value::Null
+            } else {
+                json!(sequence)
+            },
+        },
+        ephemeral: false,
+        lifecycle: None,
+        created_at_unix_ms: Some(created),
+    }
+}
+
+fn stamps(store: &ChannelStore, channel: &str) -> Vec<i64> {
+    let conn = store.sqlite_conn();
+    let mut statement = conn
+        .prepare("SELECT created_at_unix_ms FROM channel_messages WHERE channel = ?1 ORDER BY id")
+        .unwrap();
+    statement
+        .query_map([channel], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+}
+
+const DEFAULT_WINDOW_MS: i64 = 600_000;
+
+#[test]
+fn a_fast_origin_clock_cannot_keep_a_closed_stream_closed_on_peers() {
+    let peer = ChannelStore::open_in_memory_without_maintenance();
+    let far = now() + 24 * 60 * 60 * 1000;
+    for event in [
+        remote("fast", 1, "feed", "msg", far),
+        remote("fast", 2, "feed", CLOSE_MESSAGE_TYPE, far),
+    ] {
+        assert_eq!(peer.ingest_remote(&event).unwrap(), RemoteIngest::Applied);
+    }
+    // Rows are never stamped in the future of the node that stores them.
+    assert!(stamps(&peer, "feed").iter().all(|stamp| *stamp <= now()));
+    assert_eq!(peer.read_after("feed", None, 10).unwrap().len(), 2);
+    assert!(matches!(
+        peer.append("feed", &payload(json!(3))),
+        Err(ChannelError::StreamClosed)
+    ));
+    // One window later the closed history is gone and the stream reopens,
+    // not a day later.
+    peer.prune_at(now() + DEFAULT_WINDOW_MS + 1_000);
+    assert!(peer.read_after("feed", None, 10).unwrap().is_empty());
+    peer.append("feed", &payload(json!(3))).unwrap();
+}
+
+#[test]
+fn a_slow_origin_clock_neither_hides_its_messages_nor_weakens_its_close() {
+    let peer = ChannelStore::open_in_memory_without_maintenance();
+    assert_eq!(
+        peer.ingest_remote(&remote("slow", 1, "feed", "msg", 0))
+            .unwrap(),
+        RemoteIngest::Applied
+    );
+    // Readers on the peer get the message, and maintenance keeps it for the
+    // stream's window.
+    assert_eq!(peer.read_after("feed", None, 10).unwrap().len(), 1);
+    peer.prune_at(now() + DEFAULT_WINDOW_MS / 2);
+    assert_eq!(peer.read_after("feed", None, 10).unwrap().len(), 1);
+
+    // Its close stays a close for a publish another server made right after.
+    assert_eq!(
+        peer.ingest_remote(&remote("slow", 2, "feed", CLOSE_MESSAGE_TYPE, 0))
+            .unwrap(),
+        RemoteIngest::Applied
+    );
+    assert_eq!(
+        peer.ingest_remote(&remote("other", 1, "feed", "msg", now()))
+            .unwrap(),
+        RemoteIngest::Dropped
+    );
+    assert!(peer.close_marker("feed").unwrap().is_some());
+}
+
+#[test]
+fn skewed_origins_keep_creation_times_in_id_order_within_a_stream() {
+    let peer = ChannelStore::open_in_memory_without_maintenance();
+    let first = now();
+    assert_eq!(
+        peer.ingest_remote(&remote("a", 1, "feed", "msg", first))
+            .unwrap(),
+        RemoteIngest::Applied
+    );
+    // A later id from a server whose clock is slightly behind.
+    assert_eq!(
+        peer.ingest_remote(&remote("b", 1, "feed", "msg", first - 1_000))
+            .unwrap(),
+        RemoteIngest::Applied
+    );
+    // And one whose clock is minutes behind, still inside the window.
+    assert_eq!(
+        peer.ingest_remote(&remote("b", 2, "feed", "msg", first - 5 * 60 * 1000))
+            .unwrap(),
+        RemoteIngest::Applied
+    );
+    let stored = stamps(&peer, "feed");
+    assert!(
+        stored.is_sorted(),
+        "creation times must not decrease with ids"
+    );
+
+    // Six minutes on, every row is still inside the ten-minute window: a
+    // reader sees all three and maintenance deletes none, with no holes.
+    let later = now() + 6 * 60 * 1000;
+    peer.prune_at(later);
+    assert_eq!(stamps(&peer, "feed").len(), 3);
+    assert_eq!(peer.read_after("feed", None, 10).unwrap().len(), 3);
+}
+
+fn window(replay_window_ms: u64) -> ChannelLifecycle {
+    ChannelLifecycle {
+        ephemeral: false,
+        replay_window_ms,
+        inactivity_ttl_ms: 0,
+        keepalive_interval_ms: 25_000,
+        max_connection_lifetime_ms: 7_200_000,
+    }
+}
+
+fn with_lifecycle(event: ChannelEvent, lifecycle: ChannelLifecycle) -> ChannelEvent {
+    ChannelEvent {
+        lifecycle: Some(lifecycle),
+        ..event
+    }
+}
+
+fn marker_stamp(store: &ChannelStore, channel: &str) -> i64 {
+    store.raw_query_i64(
+        "SELECT created_at_unix_ms FROM channel_messages WHERE channel = ?1 AND type = ?2",
+        [channel, CLOSE_MESSAGE_TYPE],
+    )
+}
+
+#[test]
+fn a_publish_made_before_the_close_never_reopens_a_short_window_stream() {
+    let peer = ChannelStore::open_in_memory_without_maintenance();
+    let close = with_lifecycle(
+        remote("a", 1, "feed", CLOSE_MESSAGE_TYPE, now()),
+        window(1_000),
+    );
+    assert_eq!(peer.ingest_remote(&close).unwrap(), RemoteIngest::Applied);
+    let closed_at = marker_stamp(&peer, "feed");
+    // Made half a second before the close on another server: a race the
+    // close wins, however short the window.
+    let raced = remote("b", 1, "feed", "msg", closed_at - 500);
+    assert_eq!(peer.ingest_remote(&raced).unwrap(), RemoteIngest::Dropped);
+    assert!(peer.close_marker("feed").unwrap().is_some());
+}
+
+#[test]
+fn the_reopen_check_uses_the_window_the_event_was_made_under() {
+    let peer = ChannelStore::open_in_memory_without_maintenance();
+    let old = window(60_000);
+    let close = with_lifecycle(
+        remote("a", 1, "feed", CLOSE_MESSAGE_TYPE, now()),
+        old.clone(),
+    );
+    assert_eq!(peer.ingest_remote(&close).unwrap(), RemoteIngest::Applied);
+    // A local subscriber already synced the new, longer definition.
+    peer.sync_channel(
+        "feed",
+        &auth(json!({"ok": true, "replayWindowMs": 3_600_000})),
+    )
+    .unwrap();
+    // The origin, still on the old definition, reopened once its marker was a
+    // minute old.
+    peer.raw_execute(
+        "UPDATE channel_messages SET created_at_unix_ms = created_at_unix_ms - 61000",
+        [],
+    );
+    let reopening = with_lifecycle(remote("a", 2, "feed", "msg", now()), old);
+    assert_eq!(
+        peer.ingest_remote(&reopening).unwrap(),
+        RemoteIngest::Applied
+    );
+    assert!(peer.close_marker("feed").unwrap().is_none());
+
+    // Without a lifecycle on the event, the stored definition decides.
+    let other = ChannelStore::open_in_memory_without_maintenance();
+    assert_eq!(other.ingest_remote(&close).unwrap(), RemoteIngest::Applied);
+    other
+        .sync_channel(
+            "feed",
+            &auth(json!({"ok": true, "replayWindowMs": 3_600_000})),
+        )
+        .unwrap();
+    other.raw_execute(
+        "UPDATE channel_messages SET created_at_unix_ms = created_at_unix_ms - 61000",
+        [],
+    );
+    assert_eq!(
+        other
+            .ingest_remote(&remote("a", 2, "feed", "msg", now()))
+            .unwrap(),
+        RemoteIngest::Dropped
+    );
+}
+
+#[test]
+fn a_reader_inside_closed_history_is_reset_when_a_reopen_deletes_it() {
+    let peer = ChannelStore::open_in_memory_without_maintenance();
+    let lifecycle = window(60_000);
+    for event in [
+        remote("a", 1, "feed", "msg", now()),
+        remote("a", 2, "feed", "msg", now()),
+        remote("a", 3, "feed", CLOSE_MESSAGE_TYPE, now()),
+    ] {
+        let event = with_lifecycle(event, lifecycle.clone());
+        assert_eq!(peer.ingest_remote(&event).unwrap(), RemoteIngest::Applied);
+    }
+    let page = peer.read_after("feed", None, 1).unwrap();
+    let below_marker = cursor(&page[0]);
+    // The marker expired where the origin is; it reopened and published.
+    peer.raw_execute(
+        "UPDATE channel_messages SET created_at_unix_ms = created_at_unix_ms - 61000",
+        [],
+    );
+    let reopening = with_lifecycle(remote("a", 4, "feed", "msg", now()), lifecycle);
+    assert_eq!(
+        peer.ingest_remote(&reopening).unwrap(),
+        RemoteIngest::Applied
+    );
+    // The reader never saw the close: it must start over, not continue into
+    // the stream's new life.
+    assert!(matches!(
+        peer.read_after("feed", Some(below_marker), 10),
+        Err(ChannelError::StaleCursor)
+    ));
+    assert!(matches!(
+        peer.replay_cursor("feed", Some(below_marker)),
+        Err(ChannelError::StaleCursor)
+    ));
+}

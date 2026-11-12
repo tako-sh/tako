@@ -1600,6 +1600,16 @@ enum PreviousRequest {
         auth: serde_json::Value,
     },
 }
+/// How a [`broker_stub`] behaves; tests may change it between requests.
+#[derive(Default)]
+struct StubControl {
+    /// Parse the frame set of the previous release instead of the current one.
+    previous: std::sync::atomic::AtomicBool,
+    /// Connections still to drop after the length prefix, as a busy or
+    /// stopping current broker does; recorded as `busy`.
+    drops: std::sync::atomic::AtomicUsize,
+}
+
 /// A broker stub on a real socket. `previous` selects the frame set of the
 /// previous release; otherwise it parses the current one. Each answered frame
 /// is recorded, unparsable ones as `dropped`.
@@ -1610,15 +1620,45 @@ async fn broker_stub(
     Client,
     Arc<parking_lot::Mutex<Vec<String>>>,
 ) {
+    let control = StubControl::default();
+    control
+        .previous
+        .store(previous, std::sync::atomic::Ordering::SeqCst);
+    let (temp, client, seen, _) = controlled_broker_stub(control).await;
+    (temp, client, seen)
+}
+
+async fn controlled_broker_stub(
+    control: StubControl,
+) -> (
+    tempfile::TempDir,
+    Client,
+    Arc<parking_lot::Mutex<Vec<String>>>,
+    Arc<StubControl>,
+) {
+    use std::sync::atomic::Ordering;
+    use tokio::io::AsyncReadExt;
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("channels.sock");
     let listener = tokio::net::UnixListener::bind(&path).unwrap();
     let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
     let log = seen.clone();
+    let control = Arc::new(control);
+    let controls = control.clone();
     tokio::spawn(async move {
         loop {
             let (mut stream, _) = listener.accept().await.unwrap();
             let budget = Budget::new(MAX_FRAME);
+            let previous = controls.previous.load(Ordering::SeqCst);
+            if controls
+                .drops
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .is_ok()
+            {
+                let _ = stream.read_u32().await;
+                log.lock().push("busy".into());
+                continue;
+            }
             let answer = |channel: String, payload: ChannelPublishPayload| Response::Published {
                 message: ChannelMessage {
                     id: "1".into(),
@@ -1689,7 +1729,7 @@ async fn broker_stub(
             let _ = wire::write(&mut stream, &response).await;
         }
     });
-    (temp, Client::new(path), seen)
+    (temp, Client::new(path), seen, control)
 }
 fn long_lifecycle() -> tako_channels::ChannelLifecycle {
     serde_json::from_value(serde_json::json!({ "replayWindowMs": 86_400_000 })).unwrap()
@@ -1711,11 +1751,13 @@ async fn a_lifecycle_publish_falls_back_to_sync_then_publish_on_a_previous_broke
             .unwrap();
         assert_eq!(message.data, serde_json::json!(n));
     }
-    // The probe is answered once; afterwards each publish syncs the lifecycle
+    // The probe goes unanswered twice, so the broker is taken to be the
+    // previous one; afterwards each publish syncs the lifecycle
     // first, as publishers did before the lifecycle travelled with the append.
     assert_eq!(
         *seen.lock(),
         vec![
+            "dropped",
             "dropped",
             "sync 86400000",
             "publish",
@@ -1751,6 +1793,97 @@ async fn a_lifecycle_publish_travels_with_the_append_on_a_current_broker() {
         *seen.lock(),
         vec!["features", "publish 86400000", "publish 86400000"]
     );
+}
+
+#[tokio::test]
+async fn a_probe_dropped_once_by_a_busy_current_broker_is_asked_again() {
+    let control = StubControl::default();
+    control.drops.store(1, std::sync::atomic::Ordering::SeqCst);
+    let (_temp, client, seen, _) = controlled_broker_stub(control).await;
+    for n in 0..2 {
+        client
+            .publish(
+                app(),
+                "events".into(),
+                payload(n),
+                false,
+                Some(long_lifecycle()),
+            )
+            .await
+            .unwrap();
+    }
+    // One dropped connection is not an answer: the second probe finds the
+    // current broker, and the lifecycle travels with every append.
+    assert_eq!(
+        *seen.lock(),
+        vec!["busy", "features", "publish 86400000", "publish 86400000"]
+    );
+}
+
+#[tokio::test]
+async fn a_previous_broker_answer_is_rechecked_after_a_minute() {
+    let control = StubControl::default();
+    control
+        .previous
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let (_temp, client, seen, control) = controlled_broker_stub(control).await;
+    let publish = |n| {
+        client.publish(
+            app(),
+            "events".into(),
+            payload(n),
+            false,
+            Some(long_lifecycle()),
+        )
+    };
+    publish(0).await.unwrap();
+    // The network agent restarts with the current broker.
+    control
+        .previous
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    // Within the minute the cached answer holds and no probe is sent.
+    client.age_feature_probe(Duration::from_secs(59));
+    publish(1).await.unwrap();
+    // Past it, the next publish asks again and finds the current broker.
+    client.age_feature_probe(Duration::from_secs(2));
+    publish(2).await.unwrap();
+    assert_eq!(
+        *seen.lock(),
+        vec![
+            "dropped",
+            "dropped",
+            "sync 86400000",
+            "publish",
+            "sync",
+            "publish",
+            "features",
+            "publish 86400000"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn an_unreachable_broker_fails_the_publish_without_caching_an_answer() {
+    let temp = tempfile::tempdir().unwrap();
+    let client = Client::new(temp.path().join("channels.sock"));
+    let error = client
+        .publish(
+            app(),
+            "events".into(),
+            payload(0),
+            false,
+            Some(long_lifecycle()),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            error.kind(),
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+        ),
+        "an unreachable broker must fail the publish as unreachable"
+    );
+    assert_eq!(client.cached_publish_lifecycle(), None);
 }
 
 #[tokio::test]

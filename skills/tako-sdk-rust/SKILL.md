@@ -80,8 +80,9 @@ properties cannot be named `from` or `last_message_id`; Tako reserves both on
 channel routes. tako-server rejects params the schema does not declare under
 `properties` unless it sets `"additionalProperties": true`; without
 `.params_schema(...)` a space takes no params. The schema must be one object
-schema with every param under its top-level `properties` (no `allOf`, `anyOf`,
-`oneOf`, or `$ref`); tako-server reports any other shape as an invalid schema.
+schema with every param under its top-level `properties` (no top-level `$ref`, and
+a top-level `allOf`, `anyOf`, `oneOf`, `not`, or `if` may only add constraints such
+as `required`); tako-server reports any other shape as an invalid schema.
 
 `router_with_presence(app, registry)` wraps a custom Axum loop. Both presence
 adapter helpers preserve status probes and protect internal registry/auth routes
