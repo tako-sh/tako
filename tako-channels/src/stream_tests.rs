@@ -832,3 +832,88 @@ fn postgres_stream_counter_stays_exact_across_creation_release_and_concurrency()
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
         .unwrap();
 }
+
+#[test]
+fn postgres_readers_never_see_expired_history_that_maintenance_has_not_deleted() {
+    let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
+        return;
+    };
+    let schema = format!("channel_expired_{}", std::process::id());
+    let store = ChannelStore::open_postgres_with_schema(&url, &schema, "app").unwrap();
+    let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let mut run = |sql: &str, channel: &str| {
+        client
+            .execute(
+                &sql.replace("{schema}", &schema),
+                &[&channel, &(now() - 61_000)],
+            )
+            .unwrap();
+    };
+    // By message age: rows older than the replay window are gone for readers.
+    let aged = room("aged");
+    store
+        .sync_channel(
+            aged.key(),
+            &auth(json!({"ok": true, "replayWindowMs": 60_000})),
+        )
+        .unwrap();
+    let old = store.append(aged.key(), &payload(json!(1))).unwrap();
+    let last_old = store.append(aged.key(), &payload(json!(2))).unwrap();
+    let fresh = store.append(aged.key(), &payload(json!(3))).unwrap();
+    run(
+        "UPDATE {schema}.channel_messages SET created_at_unix_ms = $2
+         WHERE app_id = 'app' AND channel = $1 AND data_json <> '3'",
+        aged.key(),
+    );
+    assert_eq!(
+        store.read_after(aged.key(), None, 10).unwrap(),
+        vec![fresh.clone()]
+    );
+    assert!(matches!(
+        store.read_after(aged.key(), Some(cursor(&old)), 10),
+        Err(ChannelError::StaleCursor)
+    ));
+    assert!(matches!(
+        store.replay_cursor(aged.key(), Some(cursor(&old))),
+        Err(ChannelError::StaleCursor)
+    ));
+    // A reader that saw every expired row resumes.
+    assert_eq!(
+        store
+            .read_after(aged.key(), Some(cursor(&last_old)), 10)
+            .unwrap(),
+        vec![fresh]
+    );
+
+    // By inactivity: the whole history of an idle stream is gone, its marker too.
+    let idle = room("idle");
+    store
+        .sync_channel(
+            idle.key(),
+            &auth(json!({"ok": true, "inactivityTtlMs": 60_000})),
+        )
+        .unwrap();
+    let first = store.append(idle.key(), &payload(json!(1))).unwrap();
+    store.close(idle.key()).unwrap();
+    run(
+        "UPDATE {schema}.channel_metadata SET last_activity_unix_ms = $2
+         WHERE app_id = 'app' AND channel = $1",
+        idle.key(),
+    );
+    assert!(store.read_after(idle.key(), None, 10).unwrap().is_empty());
+    assert!(matches!(
+        store.read_after(idle.key(), Some(cursor(&first)), 10),
+        Err(ChannelError::StaleCursor)
+    ));
+    assert_eq!(store.close_marker(idle.key()).unwrap(), None);
+    // Until maintenance deletes it, the marker still keeps the stream closed.
+    assert!(matches!(
+        store.append(idle.key(), &payload(json!(2))),
+        Err(ChannelError::StreamClosed)
+    ));
+    drop(store);
+    postgres::Client::connect(&url, postgres::NoTls)
+        .unwrap()
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .unwrap();
+}
