@@ -317,6 +317,9 @@ describe.skipIf(SKIP)("tako dev fixtures", () => {
       let firstMembers: unknown[] = [];
       for (let index = 0; index < 2; index++) {
         const socket = new WebSocket(url, {
+          // `tako dev` runs the app's verifier, and the lobby admits only this header.
+          // @ts-ignore - Bun extension: request headers on the upgrade.
+          headers: { authorization: "Bearer e2e" },
           // @ts-ignore - Bun extension: skip TLS verification for the self-signed dev CA.
           tls: { rejectUnauthorized: false },
         });
