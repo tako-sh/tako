@@ -151,10 +151,13 @@ describe("params a JavaScript number cannot carry exactly are rejected on both s
         expect(() => untyped.subscribe({ baseUrl: "https://app.test" })).toThrow(
           "outside the safe integer range",
         );
-        await expect(untyped.publish({ type: "msg", data: null })).rejects.toThrow(
-          "outside the safe integer range",
-        );
-        await expect(untyped.close()).rejects.toThrow("outside the safe integer range");
+        for (const write of [
+          () => untyped.publish({ type: "msg", data: null }),
+          () => untyped.close(),
+        ]) {
+          const error = await write().catch((caught: unknown) => caught);
+          expect(String(error)).toContain("outside the safe integer range");
+        }
       }
     }
     expect(closed).toBe(false);
