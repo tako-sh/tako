@@ -145,13 +145,64 @@ fn accept(
     acceptor.accept(stream).unwrap()
 }
 
+/// Read the head and the whole body, sized or chunked. Answering before
+/// the body is read and closing makes the client see a reset instead of
+/// the response.
 fn read_request(stream: &mut impl Read) -> Vec<u8> {
     let mut bytes = Vec::new();
-    while !bytes.windows(4).any(|value| value == b"\r\n\r\n") {
-        let mut chunk = [0; 4096];
-        let size = stream.read(&mut chunk).unwrap();
-        assert_ne!(size, 0);
-        bytes.extend_from_slice(&chunk[..size]);
+    let mut fill = |bytes: &mut Vec<u8>, needed: usize| {
+        while bytes.len() < needed {
+            let mut chunk = [0; 64 * 1024];
+            let size = stream.read(&mut chunk).unwrap();
+            assert_ne!(size, 0);
+            bytes.extend_from_slice(&chunk[..size]);
+        }
+    };
+    let find = |bytes: &[u8], from: usize| {
+        bytes[from..]
+            .windows(2)
+            .position(|value| value == b"\r\n")
+            .map(|at| from + at)
+    };
+    let mut head_end = None;
+    while head_end.is_none() {
+        let wanted = bytes.len() + 1;
+        fill(&mut bytes, wanted);
+        head_end = bytes
+            .windows(4)
+            .position(|value| value == b"\r\n\r\n")
+            .map(|end| end + 4);
+    }
+    let head_end = head_end.unwrap();
+    let head = String::from_utf8_lossy(&bytes[..head_end]).to_ascii_lowercase();
+    let header = |name: &str| {
+        head.lines()
+            .find_map(|line| line.strip_prefix(name)?.strip_prefix(':').map(str::trim))
+            .map(str::to_string)
+    };
+    if header("transfer-encoding").is_some_and(|value| value.contains("chunked")) {
+        let mut at = head_end;
+        loop {
+            let line_end = loop {
+                if let Some(end) = find(&bytes, at) {
+                    break end;
+                }
+                let wanted = bytes.len() + 1;
+                fill(&mut bytes, wanted);
+            };
+            let size_text = String::from_utf8_lossy(&bytes[at..line_end]).into_owned();
+            let size =
+                usize::from_str_radix(size_text.split(';').next().unwrap().trim(), 16).unwrap();
+            // The chunk and its CRLF; the last, empty one ends with a blank line.
+            at = line_end + 2 + size + 2;
+            fill(&mut bytes, at);
+            if size == 0 {
+                break;
+            }
+        }
+    } else {
+        let body_len = header("content-length").map_or(0, |value| value.parse().unwrap());
+        fill(&mut bytes, head_end + body_len);
     }
     bytes
 }
