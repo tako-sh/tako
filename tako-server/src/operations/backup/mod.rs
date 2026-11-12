@@ -36,6 +36,7 @@ use s3::{
     DOWNLOAD_URL_EXPIRES_SECONDS, S3_URL_EXPIRES_SECONDS, TRANSFER_TIMEOUT, backup_http_client,
     download_object, prune_retention, put_json_object, queue_retention, upload_file,
 };
+pub(crate) use scheduler::PostDeployBackup;
 use snapshot::{
     DATABASE_SNAPSHOT_ARCHIVE_ROOT, RestoredData, SwapError, create_backup_archive,
     database_digest, extract_database_snapshot, restore_data_tree, sha256_file_hex,
@@ -54,7 +55,7 @@ const WORKFLOW_STOP_TIMEOUT: Duration = if cfg!(test) {
 
 impl crate::ServerState {
     pub(crate) async fn backup_now(&self, app: &str) -> Response {
-        match self.backup_app_now(app, None).await {
+        match self.backup_app_now(app).await {
             Ok(info) => Response::ok(info),
             Err(error) => Response::error(error),
         }
@@ -91,17 +92,18 @@ impl crate::ServerState {
         }
     }
 
-    /// `wait_for_database_snapshot` bounds how long to wait when an hourly
-    /// database snapshot holds the backup lock; any other holder fails fast.
+    /// Create a full archive unless another backup operation holds the lock.
+    async fn backup_app_now(&self, app: &str) -> Result<BackupInfo, String> {
+        let backup = self.acquire_backup_lock(app)?;
+        self.full_backup_with_lock(app, backup).await
+    }
+
     /// Records the outcome for the scheduler's retry backoff and status.
-    async fn backup_app_now(
+    pub(super) async fn full_backup_with_lock(
         &self,
         app: &str,
-        wait_for_database_snapshot: Option<Duration>,
+        _backup: tokio::sync::OwnedMutexGuard<()>,
     ) -> Result<BackupInfo, String> {
-        let _backup = self
-            .acquire_backup_lock(app, wait_for_database_snapshot)
-            .await?;
         let result = match self.full_backup_disk_preflight(app).await {
             Ok(()) => self
                 .full_backup_locked(app)
@@ -411,7 +413,7 @@ impl crate::ServerState {
         app: &str,
         backup_id: &str,
     ) -> Result<BackupRestoreResponse, String> {
-        let _backup = self.acquire_backup_lock(app, None).await?;
+        let _backup = self.acquire_backup_lock(app)?;
         let lock = self.get_deploy_lock(app).await;
         let _guard = lock.lock().await;
         let backup = self
@@ -704,40 +706,36 @@ impl crate::ServerState {
             .clone()
     }
 
-    /// Take the app's backup lock without waiting, except, when
-    /// `wait_for_database_snapshot` is set, for up to that long while an
-    /// hourly database snapshot holds it. Waiters are served in order, so
-    /// the snapshot's release hands the lock to this caller.
-    async fn acquire_backup_lock(
+    /// Take the app's backup lock without waiting.
+    fn acquire_backup_lock(&self, app: &str) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
+        self.backup_operation_lock(app)
+            .try_lock_owned()
+            .map_err(|_| format!("A backup operation is already in progress for {app}."))
+    }
+
+    /// Take the app's backup lock, or, while an hourly database snapshot
+    /// holds it, queue a full archive for the scheduler to run as soon as
+    /// the snapshot releases it. `Ok(None)` means queued.
+    pub(super) fn acquire_backup_lock_or_queue(
         &self,
         app: &str,
-        wait_for_database_snapshot: Option<Duration>,
-    ) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
+    ) -> Result<Option<tokio::sync::OwnedMutexGuard<()>>, String> {
         let lock = self.backup_operation_lock(app);
-        let busy = || format!("A backup operation is already in progress for {app}.");
         // Under the state map's lock a database snapshot holds the backup
-        // lock exactly while it is marked running.
-        let snapshot_running = {
-            let states = self.database_snapshots.read();
-            if let Ok(guard) = lock.clone().try_lock_owned() {
-                return Ok(guard);
-            }
-            states.get(app).is_some_and(|state| state.running)
-        };
-        let Some(limit) = wait_for_database_snapshot else {
-            return Err(busy());
-        };
-        if !snapshot_running {
-            return Err(busy());
+        // lock exactly while it is marked running, and its scheduler task
+        // checks the queue only after releasing both.
+        let mut states = self.database_snapshots.write();
+        if let Ok(guard) = lock.try_lock_owned() {
+            return Ok(Some(guard));
         }
-        tokio::time::timeout(limit, lock.lock_owned())
-            .await
-            .map_err(|_| {
-                format!(
-                    "A database snapshot of {app} was still running after {}s.",
-                    limit.as_secs()
-                )
-            })
+        let state = states.entry(app.to_string()).or_default();
+        if !state.running {
+            return Err(format!(
+                "A backup operation is already in progress for {app}."
+            ));
+        }
+        state.post_deploy_backup_queued = true;
+        Ok(None)
     }
 }
 
@@ -1389,57 +1387,94 @@ mod tests {
         server.await.unwrap();
     }
 
+    /// Backups configured against storage that refuses connections, so a
+    /// full backup runs its local steps and fails at the upload.
+    fn unreachable_storage(fixture: &RestoreFixture) {
+        let backup = serde_json::from_value(serde_json::json!({
+            "storage": {"provider": "s3", "bucket": "fixture", "endpoint": "https://127.0.0.1:1",
+                "region": "local", "access_key_id": "fixture", "secret_access_key": "fixture",
+                "force_path_style": true},
+            "backup_keys": [{"id": KEY_ID, "key_base64": KEY}]
+        }))
+        .unwrap();
+        fixture
+            .state
+            .state_store
+            .set_backup(&fixture.app, Some(&backup))
+            .unwrap();
+    }
+
     #[tokio::test]
-    async fn post_deploy_backup_waits_for_a_running_database_snapshot_only() {
-        let temp = tempfile::tempdir().unwrap();
-        let state = test_state(temp.path());
-        let app = "demo/production";
+    async fn post_deploy_backup_is_queued_behind_a_database_snapshot_without_waiting() {
+        let fixture = RestoreFixture::new();
+        unreachable_storage(&fixture);
+        let (state, app) = (&fixture.state, fixture.app.as_str());
 
         let snapshot = state.lock_for_database_snapshot(app).unwrap();
-        assert!(state.database_snapshot_running(app));
-        let waiter = tokio::spawn({
-            let state = state.clone();
-            async move {
-                state
-                    .acquire_backup_lock(app, Some(Duration::from_secs(10)))
-                    .await
-                    .map(drop)
-            }
-        });
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        assert!(!waiter.is_finished(), "must wait for the snapshot");
-        drop(snapshot);
-        assert!(!state.database_snapshot_running(app));
-        waiter.await.unwrap().unwrap();
-
-        // Without a wait, and past the bound, a snapshot still means busy.
-        let snapshot = state.lock_for_database_snapshot(app).unwrap();
-        assert_eq!(
-            state.acquire_backup_lock(app, None).await.unwrap_err(),
-            "A backup operation is already in progress for demo/production."
+        let outcome = tokio::time::timeout(Duration::from_secs(1), state.backup_after_deploy(app))
+            .await
+            .expect("finalize must not wait for a database snapshot");
+        assert!(
+            matches!(outcome, Some(PostDeployBackup::Queued)),
+            "{outcome:?}"
         );
-        let error = state
-            .acquire_backup_lock(app, Some(Duration::from_millis(50)))
-            .await
-            .unwrap_err();
-        assert!(error.contains("database snapshot of demo/production was still running"));
+        assert!(state.backup_schedule_state(app).post_deploy_backup_queued);
         drop(snapshot);
 
-        // A full backup or restore holding the lock fails fast as before, and
-        // a database snapshot skips instead of waiting for it.
-        let full = state.acquire_backup_lock(app, None).await.unwrap();
-        let started = std::time::Instant::now();
-        let error = state
-            .acquire_backup_lock(app, Some(Duration::from_secs(10)))
-            .await
-            .unwrap_err();
+        // The scheduler runs it once the snapshot released the lock; its
+        // failure is visible in status like any other full archive.
+        state.run_queued_post_deploy_backup(app).await;
+        let schedule = state.backup_schedule_state(app);
+        assert!(!schedule.post_deploy_backup_queued);
+        let failure = schedule.failure().unwrap();
+        assert_eq!(failure.reason, BackupFailureReason::Failed);
+        // Nothing queued: nothing runs.
+        state.run_queued_post_deploy_backup(app).await;
+        assert_eq!(state.backup_schedule_state(app).failure(), Some(failure));
+
+        // A queued backup that finds the lock taken again gives up visibly.
+        let snapshot = state.lock_for_database_snapshot(app).unwrap();
+        state.backup_after_deploy(app).await;
+        let full = state.backup_operation_lock(app);
+        drop(snapshot);
+        let _held = full.try_lock_owned().unwrap();
+        state.run_queued_post_deploy_backup(app).await;
+        let failure = state.backup_schedule_state(app).failure().cloned().unwrap();
+        assert!(
+            failure.message.starts_with(
+                "The post-deploy backup queued behind a database snapshot could not start"
+            ),
+            "{}",
+            failure.message
+        );
+    }
+
+    #[tokio::test]
+    async fn post_deploy_backup_runs_at_once_when_the_lock_is_free_and_fails_fast_otherwise() {
+        let fixture = RestoreFixture::new();
+        unreachable_storage(&fixture);
+        let (state, app) = (&fixture.state, fixture.app.as_str());
+
+        // Free lock: the backup runs in finalize, as before.
+        let outcome = state.backup_after_deploy(app).await;
+        assert!(
+            matches!(outcome, Some(PostDeployBackup::Failed(_))),
+            "{outcome:?}"
+        );
+        assert!(!state.backup_schedule_state(app).post_deploy_backup_queued);
+        assert!(state.backup_schedule_state(app).failure().is_some());
+
+        // A full backup or restore holding the lock: busy, nothing queued.
+        let full = state.backup_operation_lock(app).try_lock_owned().unwrap();
+        let Some(PostDeployBackup::Failed(error)) = state.backup_after_deploy(app).await else {
+            panic!("expected a busy error");
+        };
         assert_eq!(
             error,
             "A backup operation is already in progress for demo/production."
         );
-        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(!state.backup_schedule_state(app).post_deploy_backup_queued);
         assert!(state.lock_for_database_snapshot(app).is_none());
-        assert!(!state.database_snapshot_running(app));
         drop(full);
     }
 

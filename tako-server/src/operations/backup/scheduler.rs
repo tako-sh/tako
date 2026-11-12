@@ -14,10 +14,6 @@ use super::{latest_backup, now_unix_secs};
 /// Short enough that hourly database snapshots stay close to an hour apart.
 /// Due checks use the remote index, so a restart neither bursts nor resets.
 const SCHEDULER_TICK: Duration = Duration::from_secs(10 * 60);
-/// A post-deploy backup waits this long for an hourly database snapshot that
-/// holds the backup lock, typically during its upload. It stays well inside
-/// the CLI's deadline for finalizing a deploy.
-const POST_DEPLOY_DATABASE_SNAPSHOT_WAIT: Duration = Duration::from_secs(5 * 60);
 /// A failed full archive is retried after an hour, then after twice the
 /// previous delay, up to this cap. Database snapshots keep their own cadence.
 const FULL_RETRY_BASE_SECS: i64 = 60 * 60;
@@ -145,18 +141,79 @@ pub(super) fn due_backup(
         .then_some(DueBackup::Databases)
 }
 
+/// What finalizing a deploy did about the post-deploy full archive.
+#[derive(Debug)]
+pub(crate) enum PostDeployBackup {
+    Created(Box<BackupInfo>),
+    /// An hourly database snapshot holds the backup lock; the scheduler runs
+    /// the archive as soon as the snapshot finishes.
+    Queued,
+    Failed(String),
+}
+
 impl crate::ServerState {
-    pub(crate) async fn backup_after_deploy(
-        &self,
-        app: &str,
-    ) -> Option<Result<BackupInfo, String>> {
+    /// Never waits for a database snapshot: finalizing a deploy runs inside
+    /// the CLI's deadline, and a snapshot upload can take minutes.
+    pub(crate) async fn backup_after_deploy(&self, app: &str) -> Option<PostDeployBackup> {
         match self.state_store.get_backup(app) {
-            Ok(Some(_)) => Some(
-                self.backup_app_now(app, Some(POST_DEPLOY_DATABASE_SNAPSHOT_WAIT))
-                    .await,
-            ),
-            Ok(None) => None,
-            Err(error) => Some(Err(format!("read backup config: {error}"))),
+            Ok(Some(_)) => {}
+            Ok(None) => return None,
+            Err(error) => {
+                return Some(PostDeployBackup::Failed(format!(
+                    "read backup config: {error}"
+                )));
+            }
+        }
+        Some(match self.acquire_backup_lock_or_queue(app) {
+            Ok(Some(backup)) => match self.full_backup_with_lock(app, backup).await {
+                Ok(info) => PostDeployBackup::Created(Box::new(info)),
+                Err(error) => PostDeployBackup::Failed(error),
+            },
+            Ok(None) => {
+                tracing::info!(app, "Post-deploy backup queued behind a database snapshot");
+                PostDeployBackup::Queued
+            }
+            Err(error) => PostDeployBackup::Failed(error),
+        })
+    }
+
+    /// Run a post-deploy full archive queued behind the database snapshot
+    /// that just finished. Its wait is that snapshot, which its transfer
+    /// timeouts bound. If another operation took the lock first, give up
+    /// with a status-visible failure rather than wait again.
+    pub(super) async fn run_queued_post_deploy_backup(&self, app: &str) {
+        let queued = std::mem::take(
+            &mut self
+                .database_snapshots
+                .write()
+                .entry(app.to_string())
+                .or_default()
+                .post_deploy_backup_queued,
+        );
+        if !queued {
+            return;
+        }
+        let result = match self.acquire_backup_lock(app) {
+            Ok(backup) => self.full_backup_with_lock(app, backup).await,
+            Err(error) => {
+                let message = format!(
+                    "The post-deploy backup queued behind a database snapshot could not start: {error}"
+                );
+                self.database_snapshots
+                    .write()
+                    .entry(app.to_string())
+                    .or_default()
+                    .record_full_failure(
+                        now_unix_secs(),
+                        BackupFailureReason::Failed,
+                        message.clone(),
+                    );
+                Err(message)
+            }
+        };
+        match result {
+            Ok(info) => tracing::info!(app, backup = %info.id, "Created queued post-deploy backup"),
+            Err(error) => tracing::warn!(app, "Queued post-deploy backup failed: {error}"),
         }
     }
 
@@ -224,7 +281,7 @@ impl crate::ServerState {
             };
             match due {
                 Some(DueBackup::Full) => {
-                    if let Err(error) = self.backup_app_now(&app, None).await {
+                    if let Err(error) = self.backup_app_now(&app).await {
                         tracing::warn!(app = %app, "Scheduled backup failed: {error}");
                     }
                 }
@@ -245,6 +302,16 @@ impl crate::ServerState {
     async fn run_scheduled_database_snapshot(&self, app: &str) {
         let started = now_unix_secs();
         let outcome = self.database_snapshot_now(app).await;
+        self.record_database_snapshot(app, started, outcome);
+        self.run_queued_post_deploy_backup(app).await;
+    }
+
+    fn record_database_snapshot(
+        &self,
+        app: &str,
+        started: i64,
+        outcome: Result<DatabaseSnapshotOutcome, String>,
+    ) {
         let mut states = self.database_snapshots.write();
         let state = states.entry(app.to_string()).or_default();
         match outcome {
