@@ -36,6 +36,11 @@ pub struct App {
     /// instance set alone, so recovery may claim instance slots meanwhile,
     /// holding this lock for the claim; see `BackupDeployLock`.
     pub(crate) recovery_claims_open: parking_lot::Mutex<bool>,
+    /// Automatic recovery tasks holding, or about to try, the deploy lock.
+    pub(crate) recovery_deploy_lock_holders: std::sync::atomic::AtomicU32,
+    /// Operator deploys and secrets updates waiting for recovery to release
+    /// the deploy lock. Recovery does not take the lock while any wait.
+    pub(crate) operators_awaiting_deploy_lock: std::sync::atomic::AtomicU32,
     /// Crash backoff and the last lost instance, for recovery and status.
     recovery: parking_lot::Mutex<Recovery>,
 
@@ -71,6 +76,8 @@ impl App {
             lifecycle_gate: Arc::new(tokio::sync::RwLock::new(())),
             recovery_gate: tokio::sync::Mutex::new(()),
             recovery_claims_open: parking_lot::Mutex::new(false),
+            recovery_deploy_lock_holders: std::sync::atomic::AtomicU32::new(0),
+            operators_awaiting_deploy_lock: std::sync::atomic::AtomicU32::new(0),
             recovery: parking_lot::Mutex::new(Recovery::default()),
             last_error: RwLock::new(None),
             instance_tx,

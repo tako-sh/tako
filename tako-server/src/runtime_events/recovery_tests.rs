@@ -668,3 +668,70 @@ async fn a_backup_holding_the_deploy_lock_does_not_hold_back_native_recovery() {
     );
     state.app_manager.stop_app(&name).await.unwrap();
 }
+
+#[tokio::test]
+async fn operator_deploys_wait_for_automatic_recovery_but_not_for_each_other() {
+    let dir = crate::isolation::fixture::TestDataDir::new().unwrap();
+    let state = test_state(dir.path());
+    let app = running_app(&state, dir.path(), "crash-loop", 1, sh(READY));
+    let name = app.name();
+    let lock = state.get_deploy_lock(&name).await;
+    let update_secrets = || {
+        let state = state.clone();
+        let name = name.clone();
+        async move {
+            state
+                .update_secrets(&name, HashMap::from([("FIX".into(), "1".into())]))
+                .await
+        }
+    };
+
+    // Automatic recovery holds the lock (think: a Compose reconcile waiting
+    // for health). The operator's update waits for it and then succeeds.
+    let recovering = try_lock_deploy_for_recovery(&app, &lock).unwrap();
+    let operator = tokio::spawn(update_secrets());
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !operator.is_finished(),
+        "rejected while recovery held the lock"
+    );
+    // A waiting operator wins the next round: recovery yields to it.
+    drop(recovering);
+    assert!(try_lock_deploy_for_recovery(&app, &lock).is_none());
+    let response = tokio::time::timeout(Duration::from_secs(5), operator)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(response.is_ok(), "{response:?}");
+    assert_eq!(app.config.read().secrets["FIX"], "1");
+    assert_eq!(
+        app.operators_awaiting_deploy_lock
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+    assert_eq!(
+        app.recovery_deploy_lock_holders
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+
+    // Another operator operation holds it: fail fast, as before.
+    let deploying = lock.lock().await;
+    let started = std::time::Instant::now();
+    let response = update_secrets().await;
+    assert!(!response.is_ok());
+    assert!(started.elapsed() < Duration::from_secs(1));
+    drop(deploying);
+
+    // The wait is bounded by the app's startup timeout.
+    app.config.write().startup_timeout = Duration::from_millis(200);
+    let _stuck = try_lock_deploy_for_recovery(&app, &lock).unwrap();
+    let started = std::time::Instant::now();
+    let response = update_secrets().await;
+    assert!(!response.is_ok());
+    let waited = started.elapsed();
+    assert!(
+        (Duration::from_millis(200)..Duration::from_secs(2)).contains(&waited),
+        "{waited:?}"
+    );
+}

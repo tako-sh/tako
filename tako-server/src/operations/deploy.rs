@@ -87,9 +87,9 @@ impl crate::ServerState {
         };
 
         let lock = self.get_deploy_lock(app_name).await;
-        let _guard = match lock.try_lock() {
-            Ok(guard) => guard,
-            Err(_) => {
+        let _guard = match self.lock_deploy_for_operator(app_name, &lock).await {
+            Some(guard) => guard,
+            None => {
                 tracing::warn!(
                     app = app_name,
                     "Deploy rejected: another deploy in progress"

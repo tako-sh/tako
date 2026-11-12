@@ -220,9 +220,9 @@ async fn replace_instance_if_needed(
     // with an independent reconciliation or orphan cleanup.
     let lock = state.get_deploy_lock(app_name).await;
     let _compose_guard = if app.config.read().compose.is_some() {
-        match lock.try_lock() {
-            Ok(guard) => Some(guard),
-            Err(_) => return,
+        match try_lock_deploy_for_recovery(&app, &lock) {
+            Some(guard) => Some(guard),
+            None => return,
         }
     } else {
         None
@@ -483,6 +483,93 @@ pub(crate) fn reconcile_instances(
         .collect()
 }
 
+/// How often an operator operation looks again while recovery holds the
+/// deploy lock.
+const OPERATOR_DEPLOY_LOCK_POLL: Duration = Duration::from_millis(50);
+
+/// The per-app deploy lock, held by automatic recovery. An operator deploy or
+/// secrets update that finds the lock held this way waits for it instead of
+/// failing; see `ServerState::lock_deploy_for_operator`.
+pub(crate) struct RecoveryDeployLock<'a> {
+    // Fields drop in order: the lock is released before the holder count
+    // drops, so the count covers the whole time the lock is held.
+    _guard: tokio::sync::MutexGuard<'a, ()>,
+    _holder: CountGuard<'a>,
+}
+
+/// Increments a counter for as long as it lives.
+struct CountGuard<'a>(&'a std::sync::atomic::AtomicU32);
+
+impl<'a> CountGuard<'a> {
+    fn new(count: &'a std::sync::atomic::AtomicU32) -> Self {
+        count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self(count)
+    }
+}
+
+impl Drop for CountGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Try the deploy lock for automatic recovery. Yields to an operator
+/// operation that is already waiting for it.
+pub(crate) fn try_lock_deploy_for_recovery<'a>(
+    app: &'a App,
+    lock: &'a tokio::sync::Mutex<()>,
+) -> Option<RecoveryDeployLock<'a>> {
+    if app
+        .operators_awaiting_deploy_lock
+        .load(std::sync::atomic::Ordering::SeqCst)
+        != 0
+    {
+        return None;
+    }
+    // Counted before trying, so an operator that finds the lock busy never
+    // mistakes recovery for another operator operation.
+    let holder = CountGuard::new(&app.recovery_deploy_lock_holders);
+    let guard = lock.try_lock().ok()?;
+    Some(RecoveryDeployLock {
+        _guard: guard,
+        _holder: holder,
+    })
+}
+
+impl ServerState {
+    /// Take the deploy lock for an operator deploy or secrets update. When
+    /// another operator operation holds it this fails at once, as before.
+    /// When automatic recovery holds it (a Compose reconcile can take the
+    /// startup timeout), wait up to the app's startup timeout: a crash loop
+    /// must not turn away the deploy that fixes it.
+    pub(crate) async fn lock_deploy_for_operator<'a>(
+        &self,
+        app_name: &str,
+        lock: &'a tokio::sync::Mutex<()>,
+    ) -> Option<tokio::sync::MutexGuard<'a, ()>> {
+        if let Ok(guard) = lock.try_lock() {
+            return Some(guard);
+        }
+        let app = self.app_manager.get_app(app_name)?;
+        let _waiting = CountGuard::new(&app.operators_awaiting_deploy_lock);
+        let deadline = tokio::time::Instant::now() + app.config.read().startup_timeout;
+        loop {
+            if let Ok(guard) = lock.try_lock() {
+                return Some(guard);
+            }
+            if app
+                .recovery_deploy_lock_holders
+                .load(std::sync::atomic::Ordering::SeqCst)
+                == 0
+                || tokio::time::Instant::now() >= deadline
+            {
+                return None;
+            }
+            tokio::time::sleep(OPERATOR_DEPLOY_LOCK_POLL).await;
+        }
+    }
+}
+
 /// The per-app deploy lock, held by a backup. A backup does not change the
 /// instance set, so while it holds the lock (the snapshot can take minutes)
 /// native recovery may still claim instance slots. Dropping this closes that
@@ -525,9 +612,9 @@ fn claim_instances<T>(
     lock: &tokio::sync::Mutex<()>,
     claim: impl FnOnce() -> T,
 ) -> Option<T> {
-    let mutation = lock.try_lock();
+    let mutation = try_lock_deploy_for_recovery(app, lock);
     let claims_open = app.recovery_claims_open.lock();
-    if mutation.is_err() && !*claims_open {
+    if mutation.is_none() && !*claims_open {
         return None;
     }
     Some(claim())
@@ -570,7 +657,7 @@ async fn recover_app(state: &ServerState, app: &Arc<App>, now: Instant) {
     let lock = state.get_deploy_lock(&app_name).await;
 
     if app.config.read().compose.is_some() {
-        let Ok(_mutation) = lock.try_lock() else {
+        let Some(_mutation) = try_lock_deploy_for_recovery(app, &lock) else {
             return;
         };
         let Ok(_recovering) = app.recovery_gate.try_lock() else {
@@ -598,8 +685,8 @@ async fn recover_app(state: &ServerState, app: &Arc<App>, now: Instant) {
     let Ok(_recovering) = app.recovery_gate.try_lock() else {
         return;
     };
-    // A native start can take as long as the startup timeout. Deploy and
-    // secrets updates reject themselves when the deploy lock is busy, so only
+    // A native start can take as long as the startup timeout, and deploys
+    // and secrets updates wait while recovery holds the deploy lock, so only
     // claim each slot under it and start outside: a rollout that arrives
     // meanwhile finds the starting instance and retires it with the old ones.
     // The health path starts native replacements without that lock, so a
