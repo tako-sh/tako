@@ -31,10 +31,10 @@ use encryption::{
 use index::{backup_index_key, backup_object_prefix, latest_backup};
 use journal::{
     DatabaseSwap, RESTORE_WORKER_TIMEOUT, refuse_unfinished_restores, swap_databases_off_runtime,
+    unresolved_restore, unresolved_restore_message,
 };
 pub(crate) use journal::{
-    RecoveryMode, recover_interrupted_restores, run_restore_worker, start_restore_generation,
-    sweep_backup_work_dirs,
+    RecoveryMode, recover_interrupted_restores, run_restore_worker, sweep_backup_work_dirs,
 };
 use s3::{
     DOWNLOAD_URL_EXPIRES_SECONDS, S3_URL_EXPIRES_SECONDS, TRANSFER_TIMEOUT, backup_http_client,
@@ -96,6 +96,44 @@ impl crate::ServerState {
         match self.restore_backup_inner(app, backup_id).await {
             Ok(restored) => Response::ok(restored),
             Err(error) => Response::error(error),
+        }
+    }
+
+    /// Why `app` must not start: a restore that did not finish left its data
+    /// partly restored or in an unknown state, until the operator removes
+    /// the directory it names.
+    pub(crate) fn unresolved_restore_block(&self, app: &str) -> Option<String> {
+        unresolved_restore(&app_runtime_data_paths(&self.runtime.data_dir, app).root)
+            .map(|dir| unresolved_restore_message(&dir))
+    }
+
+    /// Refuse an operator operation that would start `app` while
+    /// [`Self::unresolved_restore_block`] keeps it stopped.
+    pub(crate) fn refuse_unresolved_restore(&self, app: &str) -> Option<Response> {
+        self.unresolved_restore_block(app).map(Response::error)
+    }
+
+    /// Stop every app that [`Self::unresolved_restore_block`] keeps stopped,
+    /// as startup does: for a standby that takes over, whose apps already
+    /// run.
+    pub(crate) async fn stop_apps_with_unresolved_restores(&self) {
+        for name in self.app_manager.list_apps() {
+            let Some(reason) = self.unresolved_restore_block(&name) else {
+                continue;
+            };
+            let Some(app) = self.app_manager.get_app(&name) else {
+                continue;
+            };
+            let lock = self.get_deploy_lock(&name).await;
+            let _guard = lock.lock().await;
+            let _lifecycle = app.lifecycle_gate.write().await;
+            self.cold_start.mark_failed(&name, "restoring_backup");
+            self.workflows.stop(&name, WORKFLOW_STOP_TIMEOUT).await;
+            if let Err(error) = self.app_manager.stop_app_locked(&app).await {
+                tracing::error!(app = %name, "Could not stop the app: {error}");
+            }
+            tracing::error!(app = %name, "{reason}");
+            app.set_last_error(reason);
         }
     }
 
@@ -464,11 +502,21 @@ impl crate::ServerState {
             .ok_or_else(|| format!("Backups are not configured for {app}."))?;
         let info = self.find_backup(&backup, app, backup_id).await?;
         let data_root = app_runtime_data_paths(&self.runtime.data_dir, app).root;
-        // Before downloading anything; the swap checks again.
-        refuse_unfinished_restores(&data_root)?;
-        if info.kind == BackupKind::Full {
-            snapshot::refuse_mounts_in_data_tree(&data_root)?;
-        }
+        // Before downloading anything; the swap checks again. Removing a
+        // finished restore's directory can take a while.
+        off_runtime({
+            let data_root = data_root.clone();
+            let full = info.kind == BackupKind::Full;
+            move || -> Result<(), String> {
+                refuse_unfinished_restores(&data_root)?;
+                snapshot::refuse_symlinked_data_root(&data_root)?;
+                if full {
+                    snapshot::refuse_mounts_in_data_tree(&data_root)?;
+                }
+                Ok(())
+            }
+        })
+        .await??;
 
         let app_ref = self
             .app_manager
@@ -600,8 +648,22 @@ impl crate::ServerState {
                 .await
                 .map_err(|error| format!("Stop failed before restore: {error}"))?;
             let swapped = match staged {
-                StagedRestore::Full => restore_data_tree(&extract_dir, &data_root)
-                    .map(|swap| (RestoreSwap::Tree(swap), None)),
+                // The closure owns the rollback directory until the swap is
+                // done, even if this future is dropped meanwhile.
+                StagedRestore::Full => off_runtime({
+                    let extract_dir = extract_dir.clone();
+                    let data_root = data_root.clone();
+                    move || restore_data_tree(&extract_dir, &data_root)
+                })
+                .await
+                // A panic dropped the rollback directory, which abandoned it.
+                .unwrap_or_else(|message| {
+                    Err(SwapError {
+                        message,
+                        originals_intact: false,
+                    })
+                })
+                .map(|swap| (RestoreSwap::Tree(swap), None)),
                 StagedRestore::Databases(databases) => swap_databases_off_runtime(
                     extract_dir.join(DATABASE_SNAPSHOT_ARCHIVE_ROOT),
                     databases,
@@ -621,7 +683,10 @@ impl crate::ServerState {
                 Err(SwapError {
                     message,
                     originals_intact: false,
-                }) => return Err(format!("{message}; app left stopped")),
+                }) => {
+                    self.note_unresolved_restore(app, &app_ref);
+                    return Err(format!("{message}; app left stopped"));
+                }
                 Err(SwapError { message, .. }) => {
                     return Err(match restart().await {
                         Ok(()) => {
@@ -664,8 +729,13 @@ impl crate::ServerState {
                         kept.display()
                     ));
                 }
-                swap.rollback()
-                    .map_err(|rollback| format!("{error}; {rollback}; app left stopped"))?;
+                if let Err(rollback) = off_runtime(move || swap.rollback())
+                    .await
+                    .and_then(|rolled_back| rolled_back)
+                {
+                    self.note_unresolved_restore(app, &app_ref);
+                    return Err(format!("{error}; {rollback}; app left stopped"));
+                }
                 drop(closed);
                 return Err(match restart().await {
                     Ok(()) => {
@@ -685,7 +755,11 @@ impl crate::ServerState {
                 });
             }
             self.finish_restart(app, &app_ref, &config);
-            if let Err(error) = swap.commit() {
+            // A full commit removes the whole original tree.
+            if let Err(error) = off_runtime(move || swap.commit())
+                .await
+                .and_then(|committed| committed)
+            {
                 tracing::warn!(
                     app,
                     "Restore succeeded but previous data cleanup failed: {error}"
@@ -738,6 +812,14 @@ impl crate::ServerState {
             app_ref.set_state(crate::socket::AppState::Idle);
         }
         self.cold_start.reset(app);
+    }
+
+    /// A stopped app whose restore left its data partly restored: status
+    /// says why it stays stopped.
+    fn note_unresolved_restore(&self, app: &str, app_ref: &crate::instances::App) {
+        if let Some(reason) = self.unresolved_restore_block(app) {
+            app_ref.set_last_error(reason);
+        }
     }
 
     /// Stop whatever a failed restart left running. Cold starts stay blocked.
@@ -805,7 +887,6 @@ impl crate::ServerState {
             ));
         }
         state.post_deploy_backup_queued = true;
-        self.record_post_deploy_backup_queued(app, true);
         Ok(None)
     }
 }
@@ -903,6 +984,16 @@ impl RestoreSwap {
             Self::Databases(swap) => swap.abandon(reason),
         }
     }
+}
+
+/// Run restore file work on the blocking pool. The closure owns what it
+/// works on, so dropping the caller never drops it while the work runs.
+async fn off_runtime<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, String> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|error| format!("restore file worker failed: {error}"))
 }
 
 /// A database snapshot restore holds the encrypted object and its decrypted
@@ -1468,6 +1559,107 @@ mod tests {
         assert_eq!(fixture.previous_dirs(), 0);
     }
 
+    /// A directory a restore left beside the fixture's data, with a record
+    /// saying what the live data is, or without one.
+    fn leave_restore(
+        fixture: &RestoreFixture,
+        state: Option<journal::IntentState>,
+    ) -> std::path::PathBuf {
+        let dir = fixture
+            .data
+            .with_file_name(".data-restore-abandoned-unresolved");
+        std::fs::create_dir(&dir).unwrap();
+        if let Some(state) = state {
+            let mut intent = journal::RestoreIntent::full(&fixture.data, true);
+            intent.state = state;
+            journal::write_intent(&dir, &intent).unwrap();
+        }
+        dir
+    }
+
+    /// An app whose data a restore left partly restored is started by no
+    /// one, and says why, until the operator removes the directory; whole
+    /// data, original or restored, does not keep it stopped.
+    #[tokio::test]
+    async fn an_app_stays_stopped_while_a_restore_left_its_data_partly_restored() {
+        use journal::IntentState;
+        for (state, blocked) in [
+            (Some(IntentState::Swapping), true),
+            (Some(IntentState::Original), false),
+            (Some(IntentState::Restored), false),
+            (None, false),
+        ] {
+            let fixture = RestoreFixture::new();
+            let dir = leave_restore(&fixture, state);
+            let state = &fixture.state;
+            state.restore_from_state_store().await.unwrap();
+            let app = state.app_manager.get_app(&fixture.app).unwrap();
+            if !blocked {
+                assert_eq!(app.state(), crate::socket::AppState::Idle);
+                assert!(
+                    app.last_error().is_none(),
+                    "whole data must not block the app"
+                );
+                continue;
+            }
+            assert_eq!(app.state(), crate::socket::AppState::Stopped);
+            let names_dir = |message: &str| {
+                message.contains(&dir.display().to_string())
+                    && message.contains(journal::UNFINISHED_RESTORE_DOCS)
+            };
+            assert!(
+                app.last_error().is_some_and(|error| names_dir(&error)),
+                "status must name the directory and the docs"
+            );
+            let cold_start = crate::proxy::resolve_app_backend(
+                &state.load_balancer,
+                &state.cold_start,
+                &state.drain_requested,
+                &state.spawn_gate,
+                &fixture.app,
+            )
+            .await;
+            assert!(
+                matches!(cold_start, crate::proxy::BackendResolution::Unavailable),
+                "a request must not cold start a blocked app"
+            );
+            for response in [
+                state.scale_app(&fixture.app, Some(1), None, false).await,
+                state.update_secrets(&fixture.app, Default::default()).await,
+            ] {
+                assert!(
+                    matches!(&response, Response::Error { message, .. } if names_dir(message)),
+                    "an operator start must be refused with the same message"
+                );
+            }
+            assert_eq!(app.state(), crate::socket::AppState::Stopped);
+            assert!(app.get_instances().is_empty());
+
+            // Resolved: the next start serves the app again.
+            std::fs::remove_dir_all(&dir).unwrap();
+            state.restore_from_state_store().await.unwrap();
+            let app = state.app_manager.get_app(&fixture.app).unwrap();
+            assert_eq!(app.state(), crate::socket::AppState::Idle);
+            assert!(
+                state.refuse_unresolved_restore(&fixture.app).is_none(),
+                "the block must clear once the directory is gone"
+            );
+        }
+    }
+
+    /// A standby that takes over stops its running apps whose data a
+    /// restore of the dead primary left partly restored.
+    #[tokio::test]
+    async fn a_promoted_standby_stops_apps_a_restore_left_partly_restored() {
+        let fixture = RestoreFixture::new();
+        let app = fixture.state.app_manager.get_app(&fixture.app).unwrap();
+        app.set_state(crate::socket::AppState::Running);
+        leave_restore(&fixture, Some(journal::IntentState::Swapping));
+        fixture.state.stop_apps_with_unresolved_restores().await;
+        assert_eq!(app.state(), crate::socket::AppState::Stopped);
+        assert!(app.last_error().is_some(), "status must say why");
+    }
+
     #[tokio::test]
     async fn database_snapshots_download_as_their_own_object() {
         let fixture = RestoreFixture::new();
@@ -1582,6 +1774,32 @@ mod tests {
         state.database_snapshots.write().clear();
         state.run_queued_post_deploy_backup(app).await;
         assert!(state.backup_schedule_state(app).failure().is_none());
+    }
+
+    /// A marker that cannot be removed queues no further archives: one
+    /// archive ran for it, and the server remembers that.
+    #[tokio::test]
+    async fn a_queued_backup_marker_that_cannot_be_removed_runs_one_archive() {
+        let fixture = RestoreFixture::new();
+        unreachable_storage(&fixture);
+        let (state, app) = (&fixture.state, fixture.app.as_str());
+        // As a restart finds it, and no unlink can remove it.
+        std::fs::create_dir_all(state.post_deploy_backup_marker(app).join("busy")).unwrap();
+        state.run_queued_post_deploy_backup(app).await;
+        assert!(
+            state.backup_schedule_state(app).failure().is_some(),
+            "the queued backup must run once"
+        );
+        for _ in 0..2 {
+            if let Some(schedule) = state.database_snapshots.write().get_mut(app) {
+                schedule.full_failures = Default::default();
+            }
+            state.run_queued_post_deploy_backup(app).await;
+            assert!(
+                state.backup_schedule_state(app).failure().is_none(),
+                "a marker that cannot be removed must not run the backup again"
+            );
+        }
     }
 
     /// An app deleted and created again with the same name starts with a
@@ -1759,15 +1977,29 @@ mod tests {
             "operator retry must succeed after a backup"
         );
 
-        // The next tick runs both archives. The fixture refuses uploads, so
-        // each fails at its upload, and the lock is released all the same.
-        let server = fixture.serve(5);
+        // Its marker, as a restart would keep it.
+        state.record_post_deploy_backup_queued(app, true);
+        // The next tick runs one archive, which is both the due one and the
+        // queued one. The fixture refuses uploads, so it fails at its upload,
+        // and the lock is released all the same.
+        let server = fixture.serve(3);
         state.run_due_backups().await;
         let served = server.await.unwrap();
-        assert_eq!(served.len(), 5, "{served:?}");
-        for archive in [&served[..3], &served[3..]] {
-            assert!(archive.last().unwrap().starts_with("PUT "), "{served:?}");
-        }
+        assert_eq!(served.len(), 3);
+        assert!(
+            served[2].starts_with("PUT "),
+            "the archive must reach its upload"
+        );
+        // A second archive would have failed to connect once the fixture
+        // closed, after the first one's refused upload.
+        assert!(
+            state
+                .backup_schedule_state(app)
+                .failure()
+                .is_some_and(|failure| failure.message.contains("404")),
+            "only one archive may run for a due and a queued backup"
+        );
+        assert!(!state.post_deploy_backup_marker(app).exists());
         let schedule = state.backup_schedule_state(app);
         assert_eq!(
             schedule.failure().unwrap().reason,

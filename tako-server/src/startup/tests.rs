@@ -66,3 +66,38 @@ fn upgrade_reload_marker_is_consumed() {
     assert_eq!(owner.as_deref(), Some("controller-a"));
     assert!(!marker.exists());
 }
+
+/// A normal start never rolls back a restore while another server process
+/// (a hot standby serving the same apps) holds the drain activity lease,
+/// and none can start serving app data while a normal start recovers.
+#[test]
+fn a_normal_start_only_reports_restores_while_another_server_serves_the_data() {
+    use crate::operations::RecoveryMode;
+    let tmp = tempfile::tempdir().unwrap();
+    let store =
+        crate::state_store::SqliteStateStore::new(tmp.path().join("state.sqlite"), [7u8; 32]);
+    store.init().unwrap();
+
+    let standby = store.try_drain_activity(false).unwrap();
+    assert!(standby.is_some(), "a serving process holds a shared lease");
+    let (mode, lease) = startup_recovery_mode(tmp.path(), RecoveryMode::Primary);
+    assert_eq!(mode, RecoveryMode::Successor);
+    assert!(lease.is_none());
+    drop(standby);
+
+    let (mode, lease) = startup_recovery_mode(tmp.path(), RecoveryMode::Primary);
+    assert_eq!(mode, RecoveryMode::Primary);
+    assert!(lease.is_some());
+    assert!(
+        store.try_drain_activity(false).unwrap().is_none(),
+        "no server process starts serving while a normal start recovers"
+    );
+    drop(lease);
+    assert!(store.try_drain_activity(false).unwrap().is_some());
+
+    for other in [RecoveryMode::Successor, RecoveryMode::Standby] {
+        let (mode, lease) = startup_recovery_mode(tmp.path(), other);
+        assert_eq!(mode, other);
+        assert!(lease.is_none());
+    }
+}

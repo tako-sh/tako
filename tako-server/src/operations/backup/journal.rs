@@ -40,7 +40,10 @@ const INTENT_VERSION: u32 = 2;
 const GENERATION_FILE: &str = "restore-generation";
 const GENERATION_TMP_FILE: &str = "restore-generation.tmp";
 /// How long a normal start waits for a restore worker that outlived its
-/// server; it is killed when its server dies.
+/// server. On Linux it is killed when its server dies. One that still holds
+/// the lock after the wait (another OS) is left to finish in its directory:
+/// the start removes the lock file, so no later start rolls it back, and
+/// the record keeps the app stopped (see [`unresolved_restore`]).
 const ORPHAN_LOCK_WAIT: Duration = if cfg!(test) {
     Duration::from_millis(100)
 } else {
@@ -61,8 +64,14 @@ pub(super) enum IntentKind {
 pub(super) enum IntentState {
     /// Live data may be partly or wholly replaced and the restart is not
     /// validated. A finished restore removes the record instead of
-    /// changing its state, which needs no free disk space.
+    /// changing its state, which needs no free disk space. Left behind, the
+    /// live data is partly restored or in an unknown state.
     Swapping,
+    /// Given up after the original data was put back in full.
+    Original,
+    /// Given up after the swap completed: the live data is the restored
+    /// data in full.
+    Restored,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -178,7 +187,13 @@ pub(super) fn read_intent(dir: &Path) -> Result<Option<RestoreIntent>, String> {
 /// The record is the only thing that makes a rollback directory roll back:
 /// removing it, which needs no free disk space, is the point after which
 /// recovery never touches live data for this restore.
+///
+/// A directory that is gone was retired already: only a retired one is
+/// renamed for removal (see [`discard`]).
 pub(super) fn retire(dir: &Path) -> Result<(), String> {
+    if is_gone(dir) {
+        return Ok(());
+    }
     let path = dir.join(INTENT_FILE);
     match std::fs::remove_file(&path) {
         Ok(()) => {}
@@ -186,6 +201,10 @@ pub(super) fn retire(dir: &Path) -> Result<(), String> {
         Err(error) => return Err(format!("remove {}: {error}", path.display())),
     }
     sync_dir(dir)
+}
+
+fn is_gone(dir: &Path) -> bool {
+    std::fs::symlink_metadata(dir).is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
 }
 
 fn sync_dir(dir: &Path) -> Result<(), String> {
@@ -227,7 +246,8 @@ fn discard(dir: &Path) -> Result<(), String> {
 }
 
 /// Put back the originals the intent in `dir` describes. Repeating it after
-/// it stopped part way is safe. The caller owns the directory: its restore
+/// it stopped part way is safe, and so is repeating it after the directory
+/// was retired and removed. The caller owns the directory: its restore
 /// holds the lock, or recovery took it.
 fn undo(dir: &Path) -> Result<(), String> {
     match read_intent(dir)? {
@@ -244,6 +264,10 @@ fn undo(dir: &Path) -> Result<(), String> {
 /// Undo what the intent in `dir` describes and retire it. A failed removal
 /// of the directory afterwards leaves it for the next start to remove.
 pub(super) fn roll_back(dir: &Path) -> Result<(), String> {
+    // A restore worker that rolled back and removed the directory itself.
+    if is_gone(dir) {
+        return Ok(());
+    }
     undo(dir)?;
     retire(dir)?;
     if let Err(error) = discard(dir) {
@@ -326,17 +350,28 @@ impl RollbackDir {
     }
 
     /// The live data needs nothing more from this directory: the restore
-    /// was committed or never changed anything. If even retiring the record
-    /// fails, the directory is abandoned.
-    pub(super) fn finish(mut self) -> Result<(), String> {
+    /// was committed. If even retiring the record fails, the directory is
+    /// abandoned.
+    pub(super) fn finish(self) -> Result<(), String> {
+        self.finish_with(IntentState::Restored)
+    }
+
+    /// [`Self::finish`] for a restore that changed nothing, or whose changes
+    /// were put back.
+    pub(super) fn finish_unchanged(self) -> Result<(), String> {
+        self.finish_with(IntentState::Original)
+    }
+
+    fn finish_with(mut self, live: IntentState) -> Result<(), String> {
         self.ended = true;
         if !self.exists() {
             return Ok(());
         }
         if let Err(error) = retire(&self.path) {
-            let kept = self.abandon(&format!(
-                "could not record the restore as finished: {error}"
-            ));
+            let kept = self.abandon(
+                &format!("could not record the restore as finished: {error}"),
+                live,
+            );
             return Err(format!(
                 "could not record the restore as finished: {error}; it is left in {} and never rolled back",
                 kept.display()
@@ -349,8 +384,18 @@ impl RollbackDir {
     /// the error says where the originals are.
     pub(super) fn roll_back(mut self) -> Result<(), String> {
         self.ended = true;
-        if let Err(error) = undo(&self.path).and_then(|()| retire(&self.path)) {
-            let kept = self.abandon(&format!("rollback failed: {error}"));
+        // Its worker rolled back and retired it already, then was stopped
+        // while it removed the directory.
+        if !self.exists() {
+            return Ok(());
+        }
+        let undone = undo(&self.path);
+        if let Err(error) = undone.clone().and_then(|()| retire(&self.path)) {
+            let live = match undone {
+                Ok(()) => IntentState::Original,
+                Err(_) => IntentState::Swapping,
+            };
+            let kept = self.abandon(&format!("rollback failed: {error}"), live);
             return Err(format!(
                 "{error}; original data remains in {}",
                 kept.display()
@@ -366,34 +411,22 @@ impl RollbackDir {
     /// live stays live, the originals stay in the directory, and recovery
     /// only reports it. Returns where the directory is now.
     ///
+    /// `live` says what the live data is now; when the record cannot say
+    /// so, it keeps saying that the live data may be partly restored.
+    ///
     /// Renaming needs no free disk space. If it fails, removing the lock
     /// file also makes recovery leave the directory alone; if that fails
     /// too, starting a new server generation does, unless the disk refuses
     /// that write as well.
-    pub(super) fn abandon(&mut self, reason: &str) -> PathBuf {
+    pub(super) fn abandon(&mut self, reason: &str, live: IntentState) -> PathBuf {
         self.ended = true;
-        let abandoned = renamed(&self.path, ABANDONED_DIR_PREFIX);
-        let marked = match std::fs::rename(&self.path, &abandoned) {
-            Ok(()) => {
-                self.path = abandoned;
-                if let Some(parent) = self.path.parent() {
-                    let _ = sync_dir(parent);
-                }
-                Ok(())
-            }
-            Err(rename) => std::fs::remove_file(self.path.join(LOCK_FILE))
-                .map_err(|unlink| format!("rename: {rename}; remove lock: {unlink}"))
-                .and_then(|()| sync_dir(&self.path))
-                .or_else(|error| {
-                    // Rollback directories sit at <data dir>/apps/<name>/<environment>/.
-                    start_generation_in(self.path.ancestors().nth(4))
-                        .map_err(|generation| format!("{error}; {generation}"))
-                }),
-        };
+        record_live_data(&self.path, live);
+        let marked = mark_abandoned(&self.path).map(|path| self.path = path);
         match marked {
             Ok(()) => tracing::error!(
                 path = %self.path.display(),
-                "Gave up on a backup restore: {reason}. Whatever is live stays as it is and the original data remains in this directory; recovery never applies it. Check the app data, keep what you need from the directory, then remove it."
+                "Gave up on a backup restore: {reason}. {} The original data remains in this directory; recovery never applies it. See {UNFINISHED_RESTORE_DOCS}",
+                live_data_summary(&self.path)
             ),
             Err(error) => tracing::error!(
                 path = %self.path.display(),
@@ -413,13 +446,119 @@ impl RollbackDir {
 impl Drop for RollbackDir {
     fn drop(&mut self) {
         if !self.ended && self.exists() {
-            self.abandon("the restore stopped before it was committed or rolled back");
+            self.abandon(
+                "the restore stopped before it was committed or rolled back",
+                IntentState::Swapping,
+            );
         }
         // Explicitly: a child another thread forked holds a copy of the
         // descriptor until it execs, and closing ours alone would leave the
         // lock held until then. No worker of this restore is alive now.
         let _ = rustix::fs::flock(&self.lock, FlockOperation::Unlock);
     }
+}
+
+/// Where the docs say how to resolve a restore Tako gave up on.
+pub(super) const UNFINISHED_RESTORE_DOCS: &str =
+    "https://tako.sh/docs/backups#resolve-an-unfinished-restore";
+
+/// Record in the intent record of `dir` what the live data is now that the
+/// restore is given up. Without a record nothing changed live, or the
+/// restore was retired; a record that cannot be updated keeps saying the
+/// live data may be partly restored.
+fn record_live_data(dir: &Path, live: IntentState) {
+    if live == IntentState::Swapping {
+        return;
+    }
+    let recorded = match read_intent(dir) {
+        Ok(Some(mut intent)) => {
+            intent.state = live;
+            write_intent(dir, &intent).map_err(|error| error.to_string())
+        }
+        Ok(None) => Ok(()),
+        Err(error) => Err(error),
+    };
+    if let Err(error) = recorded {
+        tracing::warn!(
+            path = %dir.display(),
+            "Could not record what the live data is after giving up on a backup restore: {error}"
+        );
+    }
+}
+
+/// The live data an unfinished restore in `dir` left, as its record says.
+/// `None` when the live data is whole: the original or the restored data.
+fn partial_restore(dir: &Path) -> Option<String> {
+    match read_intent(dir) {
+        Ok(None) => None,
+        Ok(Some(intent)) if intent.state != IntentState::Swapping => None,
+        Ok(Some(_)) => Some("its record says the swap did not finish".into()),
+        Err(error) => Some(format!("its record cannot be read ({error})")),
+    }
+}
+
+fn live_data_summary(dir: &Path) -> &'static str {
+    if partial_restore(dir).is_some() {
+        return "The live data may be partly restored, so Tako does not start the app until the directory is resolved and removed.";
+    }
+    match read_intent(dir) {
+        Ok(Some(intent)) if intent.state == IntentState::Restored => {
+            "The live data is the restored data."
+        }
+        Ok(Some(_)) => "The live data is the original data.",
+        _ => "The live data is either the original or the restored data, in full.",
+    }
+}
+
+/// An unfinished restore beside `data_root` that leaves the live data
+/// partly restored or in an unknown state. Its app must not start until
+/// the operator resolves it and removes the directory.
+pub(super) fn unresolved_restore(data_root: &Path) -> Option<PathBuf> {
+    let parent = data_root.parent()?;
+    restore_dirs_in(parent)
+        .into_iter()
+        .filter(|dir| !has_prefix(dir, FINISHED_DIR_PREFIX))
+        .find(|dir| partial_restore(dir).is_some())
+}
+
+/// Why an app with the unresolved restore `dir` stays stopped.
+pub(super) fn unresolved_restore_message(dir: &Path) -> String {
+    format!(
+        "A backup restore of this app did not finish and may have left its data partly restored; the original data is in {}. Tako does not start the app until you resolve it and remove that directory: see {UNFINISHED_RESTORE_DOCS}",
+        dir.display()
+    )
+}
+
+/// Make sure no later start rolls back the restore in `dir`, without
+/// touching what it holds: rename it to an abandoned directory, or failing
+/// that remove its lock file, or failing that start a new server
+/// generation. Returns where the directory is now.
+fn mark_abandoned(dir: &Path) -> Result<PathBuf, String> {
+    let abandoned = renamed(dir, ABANDONED_DIR_PREFIX);
+    match std::fs::rename(dir, &abandoned) {
+        Ok(()) => {
+            if let Some(parent) = abandoned.parent() {
+                let _ = sync_dir(parent);
+            }
+            Ok(abandoned)
+        }
+        Err(rename) => remove_lock(dir)
+            .map_err(|unlink| format!("rename: {rename}; {unlink}"))
+            .or_else(|error| {
+                // Rollback directories sit at <data dir>/apps/<name>/<environment>/.
+                start_generation_in(dir.ancestors().nth(4))
+                    .map_err(|generation| format!("{error}; {generation}"))
+            })
+            .map(|()| dir.to_path_buf()),
+    }
+}
+
+/// Recovery never rolls back a directory without a lock file. Removing it
+/// needs no free disk space and leaves a process that holds the lock alone.
+fn remove_lock(dir: &Path) -> Result<(), String> {
+    std::fs::remove_file(dir.join(LOCK_FILE))
+        .map_err(|error| format!("remove lock: {error}"))
+        .and_then(|()| sync_dir(dir))
 }
 
 /// Mutating steps of a restore swap. Tests pass a hook that runs before
@@ -476,7 +615,7 @@ pub(super) fn refuse_unfinished_restores(data_root: &Path) -> Result<(), String>
             ));
         }
         return Err(format!(
-            "A previous restore of this app did not finish and left {}. Tako does not start another restore over it: check the app data, keep what you need from that directory, then remove it and retry.",
+            "A previous restore of this app did not finish and left {}. Tako does not start another restore over it: resolve it as described in {UNFINISHED_RESTORE_DOCS}, remove the directory, then retry.",
             dir.display()
         ));
     }
@@ -525,7 +664,10 @@ fn read_generation(data_dir: &Path) -> Result<Option<String>, String> {
 fn start_generation_in(data_dir: Option<&Path>) -> Result<(), String> {
     let generation = nanoid::nanoid!(16);
     set_generation(generation.clone());
-    let data_dir = data_dir.ok_or("no server data directory")?;
+    record_generation(data_dir.ok_or("no server data directory")?, &generation)
+}
+
+fn record_generation(data_dir: &Path, generation: &str) -> Result<(), String> {
     write_durably(
         data_dir,
         GENERATION_TMP_FILE,
@@ -539,13 +681,18 @@ fn start_generation_in(data_dir: Option<&Path>) -> Result<(), String> {
 /// data directory, which decides what startup recovery may do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RecoveryMode {
-    /// A normal start: no other server process serves this data directory.
-    /// Rolls back records of the previous generation whose lock is free.
+    /// A normal start while no other server process serves this data
+    /// directory (startup checks the drain activity lease every serving
+    /// process holds; otherwise it starts as a successor).
+    /// Rolls back records of the previous generation whose lock is free and
+    /// marks every other record abandoned, so that no later start rolls one
+    /// back even if this start cannot record its generation.
     Primary,
-    /// An upgrade reload or a native promotion child, which takes over from
-    /// a server that may still be running. Changes nothing and starts a new
-    /// generation, so records of the server it replaces are only reported
-    /// at later starts.
+    /// An upgrade reload, a native promotion child, an in-process standby
+    /// promotion, or a normal start beside another serving process: each
+    /// takes over from or runs beside a server that may still be running.
+    /// Changes nothing and starts a new generation, so records of the
+    /// server it replaces are only reported at later starts.
     Successor,
     /// A standby beside a running primary. Changes nothing, and its own
     /// restores are never rolled back automatically.
@@ -568,6 +715,12 @@ fn eligible_generation(
 /// every other unfinished restore, then start this process's generation.
 /// Run at server start, before any app or workflow store opens app data.
 pub(crate) fn recover_interrupted_restores(data_dir: &Path, mode: RecoveryMode) {
+    set_generation(recover_restores_in(data_dir, mode));
+}
+
+/// [`recover_interrupted_restores`], returning the generation this process
+/// adopts instead of setting it.
+fn recover_restores_in(data_dir: &Path, mode: RecoveryMode) -> String {
     let previous = read_generation(data_dir);
     if let Err(error) = &previous {
         tracing::error!(
@@ -579,26 +732,19 @@ pub(crate) fn recover_interrupted_restores(data_dir: &Path, mode: RecoveryMode) 
         mode == RecoveryMode::Primary,
         eligible_generation(mode, &previous).as_deref(),
     );
+    let generation = nanoid::nanoid!(16);
     match mode {
         RecoveryMode::Primary | RecoveryMode::Successor => {
-            if let Err(error) = start_generation_in(Some(data_dir)) {
+            if let Err(error) = record_generation(data_dir, &generation) {
                 tracing::error!(
-                    "{error}; restores this server runs are not rolled back automatically after a crash"
+                    "{error}. The file still names an earlier server process, so a restore this process runs and does not finish is never rolled back automatically: the next start reports it and keeps its app stopped. Restores of earlier processes are not affected: this start rolled back or marked abandoned every one it could."
                 );
             }
         }
         // Never recorded: a standby's restores are only ever reported.
-        RecoveryMode::Standby => set_generation(nanoid::nanoid!(16)),
+        RecoveryMode::Standby => {}
     }
-}
-
-/// Start a new generation when a standby takes over in its own process.
-pub(crate) fn start_restore_generation(data_dir: &Path) {
-    if let Err(error) = start_generation_in(Some(data_dir)) {
-        tracing::error!(
-            "{error}; restores this server runs are not rolled back automatically after a crash"
-        );
-    }
+    generation
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -617,7 +763,35 @@ pub(super) enum Recovery {
 
 fn recover_restore_dirs(data_dir: &Path, primary: bool, eligible: Option<&str>) {
     for dir in restore_dirs(data_dir) {
-        match recover_restore_dir(&dir, primary, eligible) {
+        let recovered = recover_restore_dir(&dir, primary, eligible);
+        // At a normal start no record stays where a later start could roll
+        // it back: the generation this start records may never reach the
+        // disk. A directory whose lock another process still holds is not
+        // renamed: that process may still write into it by its path.
+        let marked = match &recovered {
+            _ if !primary || !has_prefix(&dir, ROLLBACK_DIR_PREFIX) => None,
+            Ok(Recovery::InUse) => Some(remove_lock(&dir).map(|()| dir.clone())),
+            Ok(Recovery::Left(_)) | Err(_) if std::fs::symlink_metadata(&dir).is_ok() => {
+                Some(mark_abandoned(&dir))
+            }
+            _ => None,
+        };
+        let marked_path = marked
+            .as_ref()
+            .and_then(|marked| marked.as_ref().ok())
+            .cloned();
+        match marked {
+            Some(Ok(path)) if path != dir => tracing::info!(
+                path = %path.display(),
+                "Marked an unfinished backup restore abandoned; no later start rolls it back"
+            ),
+            Some(Err(error)) => tracing::error!(
+                path = %dir.display(),
+                "Could not mark an unfinished backup restore abandoned ({error}); a later server start may roll it back. Move this directory out of the app directory before restarting the server."
+            ),
+            _ => {}
+        }
+        match recovered {
             Ok(Recovery::InUse) if primary => tracing::error!(
                 path = %dir.display(),
                 "Another process holds the lock of a backup restore at a normal start; it is left in place and never rolled back automatically"
@@ -633,7 +807,8 @@ fn recover_restore_dirs(data_dir: &Path, primary: bool, eligible: Option<&str>) 
             ),
             Ok(Recovery::Left(reason)) => tracing::error!(
                 path = %dir.display(),
-                "A backup restore did not finish and is left in place: {reason}. The live app data may be the restored or a partly restored copy; the original data remains in this directory. Check the app data, keep what you need from the directory, then remove it."
+                "A backup restore did not finish and is left in place: {reason}. {} The original data remains in this directory. See {UNFINISHED_RESTORE_DOCS}",
+                live_data_summary(marked_path.as_deref().unwrap_or(&dir))
             ),
             Err(error) => tracing::error!(
                 path = %dir.display(),
@@ -679,8 +854,8 @@ pub(super) fn recover_restore_dir(
         match rustix::fs::flock(&lock, FlockOperation::NonBlockingLockExclusive) {
             Ok(()) => break,
             Err(rustix::io::Errno::WOULDBLOCK) if !primary => return Ok(Recovery::InUse),
-            // Never rolled back by a later start either: this start begins
-            // a new generation.
+            // The caller removes its lock file, so no later start rolls it
+            // back either.
             Err(rustix::io::Errno::WOULDBLOCK) if std::time::Instant::now() >= deadline => {
                 return Ok(Recovery::InUse);
             }
@@ -699,6 +874,11 @@ pub(super) fn recover_restore_dir(
     if !primary {
         return Ok(Recovery::Left(
             "found by a standby, upgrade reload, or promotion start, which never rolls back".into(),
+        ));
+    }
+    if intent.state != IntentState::Swapping {
+        return Ok(Recovery::Left(
+            "a server gave up on this restore and recorded what the live data is".into(),
         ));
     }
     if eligible != Some(intent.generation.as_str()) {
@@ -828,9 +1008,10 @@ impl DatabaseSwap {
         self.dir.roll_back()
     }
 
-    /// See [`RollbackDir::abandon`].
+    /// See [`RollbackDir::abandon`]. The swap completed, so the live
+    /// databases are the restored ones.
     pub(super) fn abandon(mut self, reason: &str) -> PathBuf {
-        self.dir.abandon(reason)
+        self.dir.abandon(reason, IntentState::Restored)
     }
 }
 
@@ -879,7 +1060,7 @@ pub(super) fn swap_databases_in_worker(
         lock_fd: dir.lock_fd(),
     };
     let not_intact = |dir: &mut RollbackDir, message: String| {
-        let kept = dir.abandon(&message);
+        let kept = dir.abandon(&message, IntentState::Swapping);
         SwapError {
             message: format!("{message}; original data remains in {}", kept.display()),
             originals_intact: false,
@@ -893,7 +1074,7 @@ pub(super) fn swap_databases_in_worker(
         }),
         // The worker put everything back itself.
         Err(error) if error.reported && error.originals_intact => {
-            if let Err(cleanup) = dir.finish() {
+            if let Err(cleanup) = dir.finish_unchanged() {
                 tracing::warn!("Refused restore left its rollback directory: {cleanup}");
             }
             Err(SwapError::intact(error.message))
@@ -1095,6 +1276,8 @@ mod tests {
         recover_as_next_start(temp.path());
         sweep_backup_work_dirs(temp.path());
         assert!(!unused_path.exists());
+        // Marked abandoned, so no later start guesses at it either.
+        let legacy = renamed(&legacy, ABANDONED_DIR_PREFIX);
         assert_eq!(std::fs::read(legacy.join("kept")).unwrap(), b"original");
         assert_eq!(std::fs::read(abandoned.join("kept")).unwrap(), b"original");
         assert!(running.path().exists());
@@ -1144,7 +1327,12 @@ mod tests {
     /// A rollback directory with a record of a restore that a crash
     /// interrupted, below `<temp>/apps/demo/production/`.
     fn interrupted(temp: &Path, generation: &str) -> (PathBuf, PathBuf) {
-        let data_root = temp.join("apps/demo/production/data");
+        interrupted_app(temp, "demo", generation)
+    }
+
+    /// [`interrupted`] for the app `name`.
+    fn interrupted_app(temp: &Path, name: &str, generation: &str) -> (PathBuf, PathBuf) {
+        let data_root = temp.join("apps").join(name).join("production/data");
         std::fs::create_dir_all(data_root.join("app")).unwrap();
         std::fs::write(data_root.join("app/marker"), b"restored").unwrap();
         let dir = RollbackDir::create(&data_root).unwrap();
@@ -1185,6 +1373,128 @@ mod tests {
             assert_eq!(marker(&data_root), b"restored");
             assert!(dir.exists());
         }
+    }
+
+    /// A normal start that leaves a record in place and then fails to
+    /// record its generation: the file still names the generation of the
+    /// record, yet no later normal start rolls it back over what the app
+    /// wrote since.
+    #[test]
+    fn a_failed_generation_write_never_makes_a_left_record_eligible_later() {
+        let marker = |root: &Path| std::fs::read(root.join("app/marker")).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path();
+        record_generation(data_dir, "gA").unwrap();
+        // Its lock is still held after the wait.
+        let (held_root, held) = interrupted_app(data_dir, "held", "gA");
+        let holder = std::fs::File::open(held.join(LOCK_FILE)).unwrap();
+        rustix::fs::flock(&holder, FlockOperation::NonBlockingLockExclusive).unwrap();
+        // Its rollback fails: the restored tree cannot be moved aside.
+        let (broken_root, broken) = interrupted_app(data_dir, "broken", "gA");
+        std::fs::create_dir_all(broken.join("restored/busy")).unwrap();
+        // Its lock cannot be opened.
+        let (unopened_root, unopened) = interrupted_app(data_dir, "unopened", "gA");
+        std::fs::remove_file(unopened.join(LOCK_FILE)).unwrap();
+        std::fs::create_dir(unopened.join(LOCK_FILE)).unwrap();
+        // The generation cannot be recorded.
+        std::fs::create_dir_all(data_dir.join(GENERATION_TMP_FILE).join("busy")).unwrap();
+
+        recover_restores_in(data_dir, RecoveryMode::Primary);
+        assert_eq!(read_generation(data_dir), Ok(Some("gA".into())));
+
+        // Whatever kept each record from rolling back is gone by the next
+        // normal start, and the generation file still says gA.
+        drop(holder);
+        std::fs::remove_dir_all(data_dir.join(GENERATION_TMP_FILE)).unwrap();
+        for app in ["held", "broken", "unopened"] {
+            let env_dir = data_dir.join("apps").join(app).join("production");
+            for dir in restore_dirs_in(&env_dir) {
+                let _ = std::fs::remove_dir_all(dir.join("restored"));
+                if dir.join(LOCK_FILE).is_dir() {
+                    std::fs::remove_dir(dir.join(LOCK_FILE)).unwrap();
+                    std::fs::write(dir.join(LOCK_FILE), b"").unwrap();
+                }
+            }
+        }
+        assert_eq!(read_generation(data_dir), Ok(Some("gA".into())));
+        recover_restores_in(data_dir, RecoveryMode::Primary);
+
+        for (root, dir) in [
+            (held_root, held),
+            (broken_root, broken),
+            (unopened_root, unopened),
+        ] {
+            assert!(
+                marker(&root) == b"restored",
+                "a record left at a normal start must never be rolled back later"
+            );
+            let left = restore_dirs_in(root.parent().unwrap());
+            assert!(
+                left.len() == 1 && read_intent(&left[0]).is_ok_and(|intent| intent.is_some()),
+                "the record must stay for the operator"
+            );
+            assert!(!dir.exists() || dir == left[0]);
+        }
+    }
+
+    /// A worker that rolled back its own swap and was killed while it
+    /// removed the directory: the server's rollback finds the restore
+    /// finished, and says the originals are in place.
+    #[test]
+    fn rolling_back_a_restore_its_worker_already_rolled_back_succeeds() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_root = temp.path().join("apps/demo/production/data");
+        std::fs::create_dir_all(&data_root).unwrap();
+        let dir = RollbackDir::create(&data_root).unwrap();
+        write_intent(dir.path(), &RestoreIntent::full(&data_root, true)).unwrap();
+        // The worker's own rollback, which also removes the directory.
+        roll_back(dir.path()).unwrap();
+        assert!(!dir.path().exists());
+        assert!(
+            dir.roll_back().is_ok(),
+            "the server's rollback must see the restore already rolled back"
+        );
+        assert!(restore_dirs(temp.path()).is_empty());
+    }
+
+    /// Giving up records what the live data is; recovery never rolls back
+    /// such a record, and only partly restored data keeps the app stopped.
+    #[test]
+    fn a_given_up_restore_records_what_the_live_data_is() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_root = temp.path().join("apps/demo/production/data");
+        std::fs::create_dir_all(&data_root).unwrap();
+        for (live, partial) in [
+            (IntentState::Swapping, true),
+            (IntentState::Original, false),
+            (IntentState::Restored, false),
+        ] {
+            let mut dir = RollbackDir::create(&data_root).unwrap();
+            write_intent(dir.path(), &RestoreIntent::full(&data_root, true)).unwrap();
+            let kept = dir.abandon("given up", live);
+            drop(dir);
+            let recorded = read_intent(&kept).unwrap().unwrap();
+            assert_eq!(recorded.state, live);
+            assert_eq!(unresolved_restore(&data_root).is_some(), partial);
+
+            // Even named as an interrupted restore of the eligible generation.
+            let interrupted = renamed(&kept, ROLLBACK_DIR_PREFIX);
+            std::fs::rename(&kept, &interrupted).unwrap();
+            std::fs::write(interrupted.join(LOCK_FILE), b"").unwrap();
+            let recovered = recover_restore_dir(&interrupted, true, Some(&recorded.generation));
+            if live == IntentState::Swapping {
+                assert!(matches!(recovered, Ok(Recovery::RolledBack)));
+                assert!(unresolved_restore(&data_root).is_none());
+            } else {
+                assert!(matches!(recovered, Ok(Recovery::Left(_))));
+                std::fs::remove_dir_all(&interrupted).unwrap();
+            }
+        }
+        // Dropped without an end: the record still says partly restored.
+        let dir = RollbackDir::create(&data_root).unwrap();
+        write_intent(dir.path(), &RestoreIntent::full(&data_root, true)).unwrap();
+        drop(dir);
+        assert!(unresolved_restore(&data_root).is_some());
     }
 
     #[test]

@@ -26,6 +26,7 @@ pub(super) fn spawn_standby_monitor(rt: &Runtime, config: StandbyPromotionConfig
         const FAILURE_THRESHOLD: u32 = 3;
         let mut consecutive_failures: u32 = 0;
         let mut promoted = false;
+        let mut recovered = false;
         let our_pid = std::process::id();
 
         loop {
@@ -64,9 +65,21 @@ pub(super) fn spawn_standby_monitor(rt: &Runtime, config: StandbyPromotionConfig
                         }
 
                         tracing::info!("Promoting standby to full mode");
-                        // Restores the dead primary left are only reported
-                        // from now on: this process serves their data.
-                        crate::operations::start_restore_generation(&config.data_dir);
+                        // Report the restores the dead primary left, and start
+                        // a generation: they are only reported from now on,
+                        // since this process serves their data.
+                        if !recovered {
+                            let data_dir = config.data_dir.clone();
+                            let _ = tokio::task::spawn_blocking(move || {
+                                crate::operations::recover_interrupted_restores(
+                                    &data_dir,
+                                    crate::operations::RecoveryMode::Successor,
+                                )
+                            })
+                            .await;
+                            config.state.stop_apps_with_unresolved_restores().await;
+                            recovered = true;
+                        }
 
                         let server = SocketServer::new(&config.socket_path);
                         match server.bind() {

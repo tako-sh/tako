@@ -500,9 +500,10 @@ impl RestoredData {
         self.dir.roll_back()
     }
 
-    /// See [`RollbackDir::abandon`].
+    /// See [`RollbackDir::abandon`]. The swap completed, so the live tree
+    /// is the restored one.
     pub(super) fn abandon(mut self, reason: &str) -> PathBuf {
-        self.dir.abandon(reason)
+        self.dir.abandon(reason, journal::IntentState::Restored)
     }
 
     #[cfg(test)]
@@ -582,10 +583,25 @@ pub(super) fn require_same_filesystem(rollback_dir: &Path, paths: &[&Path]) -> R
     Ok(())
 }
 
+/// The mount checks resolve the data directory, while a full restore
+/// renames the link itself away and a database restore opens it without
+/// following links: refuse a data directory that is a symlink.
+pub(super) fn refuse_symlinked_data_root(data_root: &Path) -> Result<(), String> {
+    match std::fs::symlink_metadata(data_root) {
+        Ok(meta) if meta.file_type().is_symlink() => Err(format!(
+            "Cannot restore in place: the app data directory {} is a symlink. A full restore would replace the link with a plain directory and move the app data off the link's target. Replace the link with the directory it points to, on the same filesystem as the Tako data directory, and retry.",
+            data_root.display()
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// A full restore renames the whole data tree, which would carry a mount
 /// inside it into the rollback directory and leave the app writing to a
-/// plain directory: refuse while anything is mounted at or below it.
+/// plain directory: refuse while anything is mounted at or below it, or
+/// while the data directory is a symlink.
 pub(super) fn refuse_mounts_in_data_tree(data_root: &Path) -> Result<(), String> {
+    refuse_symlinked_data_root(data_root)?;
     if std::fs::symlink_metadata(data_root).is_err() {
         return Ok(());
     }
@@ -636,7 +652,7 @@ fn restore_data_tree_with(
         paths.push(data_root);
     }
     if let Err(error) = require_same_filesystem(dir.path(), &paths) {
-        if let Err(cleanup) = dir.finish() {
+        if let Err(cleanup) = dir.finish_unchanged() {
             tracing::warn!("Refused restore left its rollback directory: {cleanup}");
         }
         return Err(SwapError::intact(error));
@@ -680,13 +696,16 @@ fn restore_data_tree_with(
         // the original moving back counts as kept.
         Err(error) => match full_rollback(&intent, dir.path(), false) {
             Ok(()) => {
-                if let Err(cleanup) = dir.finish() {
+                if let Err(cleanup) = dir.finish_unchanged() {
                     tracing::warn!("Restore rolled back but its rollback copy remains: {cleanup}");
                 }
                 Err(SwapError::intact(error))
             }
             Err(rollback) => {
-                let kept = dir.abandon(&format!("{error}; {rollback}"));
+                let kept = dir.abandon(
+                    &format!("{error}; {rollback}"),
+                    journal::IntentState::Swapping,
+                );
                 Err(SwapError {
                     message: format!(
                         "{error}; {rollback}; original data remains at {}",
@@ -914,6 +933,31 @@ mod tests {
         refuse_mounts_in_data_tree(&live).unwrap();
     }
 
+    /// A data directory that is a symlink to another place: a full restore
+    /// would rename the link away and put a plain directory in its place,
+    /// moving the app's data off the link's target. It refuses instead.
+    #[test]
+    fn a_full_restore_refuses_a_symlinked_data_directory() {
+        let temp = TempDir::new().unwrap();
+        let (live, extracted) = app_restore_fixture(temp.path());
+        let target = temp.path().join("volume/data");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::rename(&live, &target).unwrap();
+        std::os::unix::fs::symlink(&target, &live).unwrap();
+        let error = match restore_data_tree(&extracted, &live) {
+            Ok(_) => panic!("a full restore over a symlinked data directory must refuse"),
+            Err(error) => error,
+        };
+        assert!(error.originals_intact);
+        assert!(
+            error.message.contains("is a symlink"),
+            "the refusal must say the data directory is a symlink"
+        );
+        assert!(std::fs::symlink_metadata(&live).unwrap().is_symlink());
+        assert_eq!(marker(&target), "original");
+        assert!(dirs_named(&temp.path().join("apps/demo/production"), ".data-restore-").is_empty());
+    }
+
     /// Stop a full restore before each step, then run the startup recovery.
     #[test]
     fn recovery_after_a_crash_in_a_full_swap_restores_the_original_tree() {
@@ -1024,6 +1068,10 @@ mod tests {
                 .contains("A previous restore of this app did not finish"),
             "{}",
             error.message
+        );
+        assert!(
+            error.message.contains(journal::UNFINISHED_RESTORE_DOCS),
+            "the refusal must point to the steps that resolve it"
         );
         assert_eq!(marker(&live), "backup");
     }

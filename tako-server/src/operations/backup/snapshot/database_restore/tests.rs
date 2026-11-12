@@ -540,6 +540,25 @@ fn swap_refuses_unsafe_live_paths_before_changing_anything() {
     assert!(!outside.join("target").exists());
 }
 
+/// A symlinked data directory is refused with a message that says so,
+/// before anything changes.
+#[test]
+fn swap_refuses_a_symlinked_data_directory() {
+    let fixture = fixture();
+    let target = fixture.temp.path().join("volume");
+    std::fs::rename(&fixture.data, &target).unwrap();
+    std::os::unix::fs::symlink(&target, &fixture.data).unwrap();
+    let error = swap(&fixture, &fixture.databases).1.unwrap_err();
+    assert!(error.originals_intact);
+    assert!(
+        error.message.contains("is a symlink"),
+        "the refusal must say the data directory is a symlink"
+    );
+    std::fs::remove_file(&fixture.data).unwrap();
+    std::fs::rename(&target, &fixture.data).unwrap();
+    assert_live_state_is_original(&fixture);
+}
+
 #[test]
 fn the_server_swaps_in_a_worker_process_and_rolls_back_itself() {
     let fixture = fixture();
@@ -581,6 +600,31 @@ fn a_dead_restore_worker_is_rolled_back_without_another_worker() {
     );
     let error = swap_in_worker(&fixture).unwrap_err();
     assert!(error.originals_intact, "{}", error.message);
+    assert_live_state_is_original(&fixture);
+    assert!(all_restore_dirs(fixture.temp.path()).is_empty());
+}
+
+/// No path leaves a restore worker running once the server's call returns
+/// or unwinds: here no thread can be created to read the output of a
+/// worker that already runs.
+#[test]
+fn a_failure_between_starting_a_worker_and_waiting_leaves_none_running() {
+    use crate::operations::backup::worker::tests::{Fault, inject_faults, last_started};
+    let fixture = fixture();
+    inject_faults(fixture.temp.path(), &[Fault::ReaderFails]);
+    let result =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| swap_in_worker(&fixture)));
+    let pid = last_started() as libc::pid_t;
+    // A process that is gone and reaped no longer exists at all.
+    let alive = unsafe { libc::kill(pid, 0) } == 0;
+    if alive {
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+    }
+    assert!(!alive, "the worker must not outlive the call");
+    assert!(
+        matches!(&result, Ok(Err(error)) if error.originals_intact),
+        "the server must stop the worker and roll back what it did"
+    );
     assert_live_state_is_original(&fixture);
     assert!(all_restore_dirs(fixture.temp.path()).is_empty());
 }

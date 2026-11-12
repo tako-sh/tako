@@ -172,6 +172,15 @@ impl crate::ServerState {
                 Err(error) => PostDeployBackup::Failed(error),
             },
             Ok(None) => {
+                // Outside the schedule's lock and off the runtime. The queue
+                // removes the marker only after the snapshot it waits for and
+                // then a full archive finish.
+                let marker = self.post_deploy_backup_marker(app);
+                let name = app.to_string();
+                let _ = tokio::task::spawn_blocking(move || {
+                    record_post_deploy_marker(&name, &marker, true)
+                })
+                .await;
                 tracing::info!(app, "Post-deploy backup queued behind a database snapshot");
                 PostDeployBackup::Queued
             }
@@ -186,16 +195,16 @@ impl crate::ServerState {
     /// or an operator operation has the deploy lock, it stays queued for the
     /// next tick.
     pub(super) async fn run_queued_post_deploy_backup(&self, app: &str) {
-        let queued = std::mem::take(
-            &mut self
-                .database_snapshots
-                .write()
-                .entry(app.to_string())
-                .or_default()
-                .post_deploy_backup_queued,
-        );
+        let (queued, stale) = {
+            let mut states = self.database_snapshots.write();
+            let state = states.entry(app.to_string()).or_default();
+            (
+                std::mem::take(&mut state.post_deploy_backup_queued),
+                state.post_deploy_marker_stale,
+            )
+        };
         // Queued before a restart, which kept only the marker.
-        if !queued && !self.post_deploy_backup_marker(app).exists() {
+        if !queued && (stale || !self.post_deploy_backup_marker(app).exists()) {
             return;
         }
         let result = match self.acquire_backup_lock(app) {
@@ -220,7 +229,7 @@ impl crate::ServerState {
             }
         };
         if !matches!(result, Ok(None)) {
-            self.record_post_deploy_backup_queued(app, false);
+            self.clear_post_deploy_marker(app);
         }
         match result {
             Ok(Some(info)) => {
@@ -307,7 +316,19 @@ impl crate::ServerState {
                 continue;
             };
             match due {
-                Some(DueBackup::Full) => self.run_scheduled_full_backup(&app).await,
+                // An archive that ran is also the queued post-deploy one: it
+                // started after the deploy, and a full archive stays due
+                // until one is created.
+                Some(DueBackup::Full) => {
+                    if self.run_scheduled_full_backup(&app).await {
+                        self.database_snapshots
+                            .write()
+                            .entry(app.clone())
+                            .or_default()
+                            .post_deploy_backup_queued = false;
+                        self.clear_post_deploy_marker(&app);
+                    }
+                }
                 Some(DueBackup::Databases) => self.run_scheduled_database_snapshot(&app).await,
                 None => {}
             }
@@ -316,48 +337,69 @@ impl crate::ServerState {
     }
 
     /// A due full archive that does not get the deploy lock is still due on
-    /// the next tick; that is no failure and starts no backoff.
-    async fn run_scheduled_full_backup(&self, app: &str) {
+    /// the next tick; that is no failure and starts no backoff. Returns
+    /// whether the archive ran, successfully or not.
+    async fn run_scheduled_full_backup(&self, app: &str) -> bool {
         let result = match self.acquire_backup_lock(app) {
             Ok(backup) => {
                 self.full_backup_with_lock(app, backup, FullBackupStart::Scheduled)
                     .await
             }
-            Err(error) => Err(error),
+            Err(error) => {
+                tracing::warn!(app, "Scheduled backup failed: {error}");
+                return false;
+            }
         };
         match result {
-            Ok(Some(_)) => {}
-            Ok(None) => tracing::info!(
-                app,
-                "Skipped scheduled backup until the next tick: {DEPLOY_LOCK_BUSY}"
-            ),
-            Err(error) => tracing::warn!(app, "Scheduled backup failed: {error}"),
+            Ok(Some(_)) => true,
+            Ok(None) => {
+                tracing::info!(
+                    app,
+                    "Skipped scheduled backup until the next tick: {DEPLOY_LOCK_BUSY}"
+                );
+                false
+            }
+            Err(error) => {
+                tracing::warn!(app, "Scheduled backup failed: {error}");
+                true
+            }
         }
     }
 
     /// Present while a post-deploy archive is queued, so a restart keeps
     /// it. It sits in the app's directory, which deleting the app removes.
-    fn post_deploy_backup_marker(&self, app: &str) -> std::path::PathBuf {
+    pub(super) fn post_deploy_backup_marker(&self, app: &str) -> std::path::PathBuf {
         let root = crate::release::app_runtime_data_paths(&self.runtime.data_dir, app).root;
         root.with_file_name(POST_DEPLOY_BACKUP_MARKER)
     }
 
+    #[cfg(test)]
     pub(super) fn record_post_deploy_backup_queued(&self, app: &str, queued: bool) {
+        record_post_deploy_marker(app, &self.post_deploy_backup_marker(app), queued);
+    }
+
+    /// Remove the marker of a queued post-deploy archive that ran. One that
+    /// cannot be removed is remembered, so it does not run an archive at
+    /// every tick, and logged once.
+    fn clear_post_deploy_marker(&self, app: &str) {
         let marker = self.post_deploy_backup_marker(app);
-        let result = if queued {
-            std::fs::File::create(&marker).and_then(|file| file.sync_all())
-        } else {
-            match std::fs::remove_file(&marker) {
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                result => result,
-            }
+        let removed = match std::fs::remove_file(&marker) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            result => result,
         };
-        if let Err(error) = result {
-            tracing::warn!(
-                app,
-                path = %marker.display(),
-                "Failed to record the queued post-deploy backup; a restart may drop it: {error}"
-            );
+        let mut states = self.database_snapshots.write();
+        let state = states.entry(app.to_string()).or_default();
+        match removed {
+            Ok(()) => state.post_deploy_marker_stale = false,
+            Err(error) => {
+                if !std::mem::replace(&mut state.post_deploy_marker_stale, true) {
+                    tracing::warn!(
+                        app,
+                        path = %marker.display(),
+                        "Failed to remove the marker of a queued post-deploy backup that ran; it queues no more backups until the server restarts: {error}"
+                    );
+                }
+            }
         }
     }
 
@@ -416,6 +458,24 @@ impl crate::ServerState {
                 state.checked_at_unix_secs = Some(started);
             }
         }
+    }
+}
+
+fn record_post_deploy_marker(app: &str, marker: &std::path::Path, queued: bool) {
+    let result = if queued {
+        std::fs::File::create(marker).and_then(|file| file.sync_all())
+    } else {
+        match std::fs::remove_file(marker) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            result => result,
+        }
+    };
+    if let Err(error) = result {
+        tracing::warn!(
+            app,
+            path = %marker.display(),
+            "Failed to record the queued post-deploy backup; a restart may drop it: {error}"
+        );
     }
 }
 

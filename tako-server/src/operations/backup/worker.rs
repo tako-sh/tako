@@ -68,17 +68,27 @@ pub(super) fn run_worker_checked(
             Ok(())
         });
     }
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(not_started)?;
-    let readers = [
-        child.stdout.take().map(drain),
-        child.stderr.take().map(drain),
-    ];
-    let status = wait(&mut child, timeout);
+    let mut child = Reaped(
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(not_started)?,
+    );
+    #[cfg(test)]
+    tests::started(child.0.id());
+    let stdout = child.0.stdout.take().map(drain).transpose();
+    let stderr = child.0.stderr.take().map(drain).transpose();
+    let readers = match (stdout, stderr) {
+        (Ok(stdout), Ok(stderr)) => [stdout, stderr],
+        // Dropping the child stops the worker; a reader that did start
+        // ends at the end of its pipe.
+        (Err(error), _) | (_, Err(error)) => {
+            return Err(failed(format!("read snapshot worker output: {error}")));
+        }
+    };
+    let status = wait(&mut child.0, timeout);
     let [stdout, stderr] = readers.map(|reader| {
         reader
             .and_then(|reader| reader.join().ok())
@@ -107,8 +117,30 @@ pub(super) fn run_worker_checked(
     }
 }
 
-fn drain(mut pipe: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
-    std::thread::spawn(move || {
+/// A worker process that is killed and reaped when dropped, so that no
+/// early return or unwind leaves it running beside its server: the rollback
+/// directory it works in is abandoned or rolled back right after.
+struct Reaped(Child);
+
+impl Drop for Reaped {
+    fn drop(&mut self) {
+        if !matches!(self.0.try_wait(), Ok(Some(_))) {
+            let _ = self.0.kill();
+        }
+        let _ = self.0.wait();
+    }
+}
+
+/// Read `pipe` to its end on a thread of its own. Creating the thread fails
+/// under the same resource exhaustion that makes a fork fail.
+fn drain(
+    mut pipe: impl Read + Send + 'static,
+) -> std::io::Result<std::thread::JoinHandle<Vec<u8>>> {
+    #[cfg(test)]
+    if tests::reader_fails() {
+        return Err(std::io::Error::from_raw_os_error(libc::EAGAIN));
+    }
+    std::thread::Builder::new().spawn(move || {
         let mut bytes = Vec::new();
         let _ = pipe.read_to_end(&mut bytes);
         bytes
@@ -179,6 +211,27 @@ pub(super) mod tests {
         CrashAfterRun,
         /// The worker does its work, then never exits.
         HangAfterRun,
+        /// The worker starts and never exits, and no thread can be created
+        /// to read its output.
+        ReaderFails,
+    }
+
+    thread_local! {
+        static READER_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static STARTED: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    }
+
+    pub(super) fn reader_fails() -> bool {
+        READER_FAILS.with(|fails| fails.replace(false))
+    }
+
+    pub(super) fn started(pid: u32) {
+        STARTED.with(|started| started.set(pid));
+    }
+
+    /// The process id of the last worker this thread started.
+    pub(in crate::operations::backup) fn last_started() -> u32 {
+        STARTED.with(std::cell::Cell::get)
     }
 
     type Faults = Vec<(String, std::collections::VecDeque<Fault>)>;
@@ -230,6 +283,10 @@ pub(super) mod tests {
             }
             Some(Fault::HangAfterRun) => {
                 command.env(FAULT, "hang");
+            }
+            Some(Fault::ReaderFails) => {
+                command.env(FAULT, "hang");
+                READER_FAILS.with(|fails| fails.set(true));
             }
             _ => {}
         }
