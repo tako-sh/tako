@@ -187,7 +187,13 @@ pub(super) fn read_intent(dir: &Path) -> Result<Option<RestoreIntent>, String> {
 /// The record is the only thing that makes a rollback directory roll back:
 /// removing it, which needs no free disk space, is the point after which
 /// recovery never touches live data for this restore.
+///
+/// A directory that is gone was retired already: only a retired one is
+/// renamed for removal (see [`discard`]).
 pub(super) fn retire(dir: &Path) -> Result<(), String> {
+    if is_gone(dir) {
+        return Ok(());
+    }
     let path = dir.join(INTENT_FILE);
     match std::fs::remove_file(&path) {
         Ok(()) => {}
@@ -195,6 +201,10 @@ pub(super) fn retire(dir: &Path) -> Result<(), String> {
         Err(error) => return Err(format!("remove {}: {error}", path.display())),
     }
     sync_dir(dir)
+}
+
+fn is_gone(dir: &Path) -> bool {
+    std::fs::symlink_metadata(dir).is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
 }
 
 fn sync_dir(dir: &Path) -> Result<(), String> {
@@ -236,7 +246,8 @@ fn discard(dir: &Path) -> Result<(), String> {
 }
 
 /// Put back the originals the intent in `dir` describes. Repeating it after
-/// it stopped part way is safe. The caller owns the directory: its restore
+/// it stopped part way is safe, and so is repeating it after the directory
+/// was retired and removed. The caller owns the directory: its restore
 /// holds the lock, or recovery took it.
 fn undo(dir: &Path) -> Result<(), String> {
     match read_intent(dir)? {
@@ -253,6 +264,10 @@ fn undo(dir: &Path) -> Result<(), String> {
 /// Undo what the intent in `dir` describes and retire it. A failed removal
 /// of the directory afterwards leaves it for the next start to remove.
 pub(super) fn roll_back(dir: &Path) -> Result<(), String> {
+    // A restore worker that rolled back and removed the directory itself.
+    if is_gone(dir) {
+        return Ok(());
+    }
     undo(dir)?;
     retire(dir)?;
     if let Err(error) = discard(dir) {
@@ -369,6 +384,11 @@ impl RollbackDir {
     /// the error says where the originals are.
     pub(super) fn roll_back(mut self) -> Result<(), String> {
         self.ended = true;
+        // Its worker rolled back and retired it already, then was stopped
+        // while it removed the directory.
+        if !self.exists() {
+            return Ok(());
+        }
         let undone = undo(&self.path);
         if let Err(error) = undone.clone().and_then(|()| retire(&self.path)) {
             let live = match undone {
@@ -1415,6 +1435,26 @@ mod tests {
             );
             assert!(!dir.exists() || dir == left[0]);
         }
+    }
+
+    /// A worker that rolled back its own swap and was killed while it
+    /// removed the directory: the server's rollback finds the restore
+    /// finished, and says the originals are in place.
+    #[test]
+    fn rolling_back_a_restore_its_worker_already_rolled_back_succeeds() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_root = temp.path().join("apps/demo/production/data");
+        std::fs::create_dir_all(&data_root).unwrap();
+        let dir = RollbackDir::create(&data_root).unwrap();
+        write_intent(dir.path(), &RestoreIntent::full(&data_root, true)).unwrap();
+        // The worker's own rollback, which also removes the directory.
+        roll_back(dir.path()).unwrap();
+        assert!(!dir.path().exists());
+        assert!(
+            dir.roll_back().is_ok(),
+            "the server's rollback must see the restore already rolled back"
+        );
+        assert!(restore_dirs(temp.path()).is_empty());
     }
 
     /// Giving up records what the live data is; recovery never rolls back
