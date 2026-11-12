@@ -7,7 +7,7 @@ Presence tracks who is connected to a named space. Tako manages membership, meta
 
 Use [Stores](/stores/) to keep backend data and UI synchronized with optional cached offline reads. Presence describes current connections; Stores loads data from your existing database.
 
-Local subscriptions bypass authorization callbacks; verify private membership in a deployed test environment. Presence params partition membership, unlike ordinary channel params. Client metadata is untrusted; use the server-verified subject for identity.
+Local subscriptions bypass authorization callbacks; verify private membership in a deployed test environment. Presence params partition membership, as channel params partition streams. Client metadata is untrusted; use the server-verified subject for identity.
 
 ## Define A Space
 

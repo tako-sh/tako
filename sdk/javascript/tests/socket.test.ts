@@ -4,9 +4,11 @@ import type { Server } from "node:net";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Channel, setChannelSocketPublisher } from "../src/channels";
+import { defineChannel } from "../src/channels/define";
 import {
   APP_NAME_ENV,
   assertInternalSocketEnvConsistency,
+  BUILD_ENV,
   callInternal,
   closeInternalSocketPoolsForTests,
   installChannelSocketPublisherFromEnv,
@@ -18,6 +20,7 @@ import {
 function clearEnv(): void {
   delete process.env[INTERNAL_SOCKET_ENV];
   delete process.env[APP_NAME_ENV];
+  delete process.env[BUILD_ENV];
 }
 
 describe("internalSocketFromEnv", () => {
@@ -365,5 +368,75 @@ describe("installChannelSocketPublisherFromEnv", () => {
       type: "message",
       data: { text: "hi" },
     });
+  });
+
+  test("sends the stream params and publisher build with each publish", async () => {
+    const sock = join(dir, "chan.sock");
+    const commands: unknown[] = [];
+    server = await new Promise<Server>((resolve, reject) => {
+      const s = createServer((socket) => {
+        let buffered = "";
+        socket.on("data", (chunk: Buffer) => {
+          buffered += chunk.toString("utf8");
+          let nl = buffered.indexOf("\n");
+          while (nl !== -1) {
+            const command = JSON.parse(buffered.slice(0, nl)) as { channel: string };
+            buffered = buffered.slice(nl + 1);
+            commands.push(command);
+            socket.write(
+              `${JSON.stringify({ status: "ok", data: { id: "1", channel: command.channel, type: "m", data: 1 } })}\n`,
+            );
+            nl = buffered.indexOf("\n");
+          }
+        });
+      });
+      s.once("error", reject);
+      s.listen(sock, () => resolve(s));
+    });
+
+    process.env[INTERNAL_SOCKET_ENV] = sock;
+    process.env[APP_NAME_ENV] = "demo/production";
+    process.env[BUILD_ENV] = "v7";
+    expect(installChannelSocketPublisherFromEnv()).toBe(true);
+
+    const board = defineChannel("board", {
+      paramsSchema: (t) => t.Object({ base: t.String(), page: t.Optional(t.Integer()) }),
+      ephemeral: true,
+    });
+    await board({ base: "north", page: 2 }).publish({ type: "m", data: 1 });
+    await board({ base: "north", page: undefined }).publish({ type: "m", data: 1 });
+    delete process.env[BUILD_ENV];
+    await new Channel("plain").publish({ type: "m", data: 1 });
+
+    const lifecycle = {
+      ephemeral: true,
+      inactivityTtlMs: 0,
+      keepaliveIntervalMs: 25000,
+      maxConnectionLifetimeMs: 7200000,
+    };
+    expect(commands).toEqual([
+      {
+        command: "channel_publish",
+        app: "demo/production",
+        channel: "board",
+        params: { base: "north", page: 2 },
+        build: "v7",
+        payload: { type: "m", data: 1, lifecycle },
+      },
+      {
+        command: "channel_publish",
+        app: "demo/production",
+        channel: "board",
+        params: { base: "north" },
+        build: "v7",
+        payload: { type: "m", data: 1, lifecycle },
+      },
+      {
+        command: "channel_publish",
+        app: "demo/production",
+        channel: "plain",
+        payload: { type: "m", data: 1 },
+      },
+    ]);
   });
 });

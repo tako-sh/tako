@@ -154,9 +154,9 @@ these features. Keep names consistent with their definitions,
 regenerate types, and test both the producer and consumer. Check state-store
 requirements before scaling across multiple servers; local state is per server.
 
-Channel params do not isolate message streams. Presence membership and Store
-invalidations are scoped by their names and validated params; authorization must
-still check access to the requested room or tenant. Presence tracks connections,
+Channel streams, presence membership, and Store invalidations are scoped by
+their names and validated params; authorization must still check access to the
+requested room or tenant. Channel params are flat scalars. Presence tracks connections,
 so deduplicate trusted subjects when counting people across tabs. Its metadata
 is client-provided and must not establish identity or permissions.
 

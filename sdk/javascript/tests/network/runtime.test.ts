@@ -101,12 +101,12 @@ test("recipient rejects missing definitions and invalid params and owns channel 
   const registry = new ChannelRegistry();
   const definition = defineChannel("progress", {
     ephemeral: true,
-    paramsSchema: (t) => t.Object({ jobId: t.String() }),
+    paramsSchema: (t) => t.Object({ jobId: t.String(), step: t.Optional(t.Integer()) }),
   });
   registry.register("progress", definition.definition);
   const calls: unknown[] = [];
-  setChannelSocketPublisher(async (name, message) => {
-    calls.push({ name, message });
+  setChannelSocketPublisher(async (name, message, params) => {
+    calls.push({ name, message, params });
     return { id: "", ...message } as never;
   });
   const invoke = (name: string, params: unknown) =>
@@ -129,7 +129,14 @@ test("recipient rejects missing definitions and invalid params and owns channel 
   expect((await invoke("progress", {})).status).toBe(400);
   expect((await invoke("progress", { jobId: "j1" })).status).toBe(200);
   expect(calls).toHaveLength(1);
-  expect(calls[0]).toMatchObject({ name: "progress", message: { lifecycle: { ephemeral: true } } });
+  expect(calls[0]).toMatchObject({
+    name: "progress",
+    message: { lifecycle: { ephemeral: true } },
+    params: { jobId: "j1" },
+  });
+  // The network params select the same stream `progress(params).publish` does.
+  expect((await invoke("progress", { jobId: "j1", step: 2 })).status).toBe(200);
+  expect((calls[1] as { params: unknown }).params).toEqual({ jobId: "j1", step: 2 });
 });
 
 test("recipient workflow owns retries and acknowledges enqueue without waiting for execution", async () => {

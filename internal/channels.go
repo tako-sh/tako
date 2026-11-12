@@ -138,7 +138,10 @@ func RejectChannel() ChannelAuthDecision {
 // ChannelDefinition describes a channel registered with a [ChannelRegistry].
 type ChannelDefinition struct {
 	ChannelLifecycleConfig
-	// ParamsSchema is a JSON Schema for query params.
+	// ParamsSchema is a JSON Schema for the query params that bind a channel.
+	// Validated params select the channel stream, so declare flat string,
+	// integer, number, or boolean properties. Verify must still check that
+	// the caller may use the requested params.
 	ParamsSchema json.RawMessage
 	// Auth configures where credentials are read from. Nil means public.
 	Auth *ChannelAuthScheme
