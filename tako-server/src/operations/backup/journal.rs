@@ -13,7 +13,7 @@ use rustix::fs::FlockOperation;
 use serde::{Deserialize, Serialize};
 use tako_core::RestoredDatabases;
 
-use super::snapshot::{SwapError, database_rollback, swap_databases};
+use super::snapshot::{SwapError, database_rollback, full_rollback, swap_databases};
 
 /// Rollback directories sit beside the app data directory.
 pub(super) const ROLLBACK_DIR_PREFIX: &str = ".data-restore-prev-";
@@ -26,6 +26,9 @@ const INTENT_VERSION: u32 = 1;
 #[serde(rename_all = "snake_case")]
 pub(super) enum IntentKind {
     Databases,
+    /// The whole data tree; the original is kept as `data/` in the
+    /// rollback directory.
+    Full,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -61,6 +64,9 @@ pub(super) struct RestoreIntent {
     /// Directories below the data root the restore creates, parents first.
     #[serde(default)]
     pub(super) created_dirs: Vec<PathBuf>,
+    /// A full restore found a data tree to replace.
+    #[serde(default)]
+    pub(super) had_data: bool,
 }
 
 impl RestoreIntent {
@@ -76,6 +82,19 @@ impl RestoreIntent {
             data_root: data_root.to_path_buf(),
             databases,
             created_dirs,
+            had_data: false,
+        }
+    }
+
+    pub(super) fn full(data_root: &Path, had_data: bool) -> Self {
+        Self {
+            version: INTENT_VERSION,
+            kind: IntentKind::Full,
+            state: IntentState::Swapping,
+            data_root: data_root.to_path_buf(),
+            databases: Vec::new(),
+            created_dirs: Vec::new(),
+            had_data,
         }
     }
 }
@@ -159,6 +178,40 @@ impl RollbackDir {
     }
 }
 
+/// Mutating steps of a restore swap. Tests pass a hook that runs before
+/// each step and may stop the swap there, as if the process died.
+pub(super) struct Steps<'a> {
+    next: usize,
+    hook: Option<&'a mut dyn FnMut(usize) -> bool>,
+    stopped: bool,
+}
+
+impl<'a> Steps<'a> {
+    pub(super) fn new(hook: Option<&'a mut dyn FnMut(usize) -> bool>) -> Self {
+        Self {
+            next: 0,
+            hook,
+            stopped: false,
+        }
+    }
+
+    pub(super) fn step(&mut self) -> io::Result<()> {
+        let current = self.next;
+        self.next += 1;
+        if let Some(hook) = self.hook.as_mut()
+            && hook(current)
+        {
+            self.stopped = true;
+            return Err(io::Error::other("stopped"));
+        }
+        Ok(())
+    }
+
+    pub(super) fn stopped(&self) -> bool {
+        self.stopped
+    }
+}
+
 /// Undo what the intent in `dir` describes and remove `dir`, or only remove
 /// it when the restore was committed or never changed anything. The caller
 /// owns the directory: its restore holds the lock, or recovery took it.
@@ -170,6 +223,8 @@ pub(super) fn roll_back(dir: &Path) -> Result<(), String> {
         Some(intent) => {
             match intent.kind {
                 IntentKind::Databases => database_rollback(&intent, dir)?,
+                // Whatever is live is the restored tree this restore put there.
+                IntentKind::Full => full_rollback(&intent, dir, true)?,
             }
             false
         }

@@ -15,7 +15,7 @@ use super::{
     DATABASE_SNAPSHOT_ARCHIVE_ROOT, READ_FLAGS, TAKO_DATA_DIR, is_sqlite_database,
     is_transient_tako_sqlite_file, list_database_tree, open_regular,
 };
-use crate::operations::backup::journal::{self, IntentDatabase, RestoreIntent};
+use crate::operations::backup::journal::{self, IntentDatabase, RestoreIntent, Steps};
 
 const DATA_ROOTS: [&str; 2] = ["app", TAKO_DATA_DIR];
 /// Files SQLite pairs with a database. Left beside a replaced database they
@@ -243,7 +243,12 @@ fn swap_databases_until(
     dir: &Path,
     stop_at: Option<usize>,
 ) -> Result<RestoredDatabases, SwapError> {
-    let mut steps = Steps { next: 0, stop_at };
+    let mut stop = |step| Some(step) == stop_at;
+    let mut steps = Steps::new(
+        stop_at
+            .is_some()
+            .then_some(&mut stop as &mut dyn FnMut(usize) -> bool),
+    );
     match plan_and_swap(staged_root, databases, data_root, dir, &mut steps) {
         Ok(summary) => Ok(summary),
         Err(_) if steps.stopped() => Err(SwapError {
@@ -313,27 +318,6 @@ fn plan_and_swap(
             .map_err(|e| format!("restore {}: {e}", database.relative.display()))?;
     }
     Ok(summary)
-}
-
-/// Counts mutating steps for tests that stop a swap between two of them.
-struct Steps {
-    next: usize,
-    stop_at: Option<usize>,
-}
-
-impl Steps {
-    fn step(&mut self) -> io::Result<()> {
-        let current = self.next;
-        self.next += 1;
-        if self.stop_at == Some(current) {
-            return Err(io::Error::other("stopped"));
-        }
-        Ok(())
-    }
-
-    fn stopped(&self) -> bool {
-        self.stop_at.is_some_and(|stop| stop < self.next)
-    }
 }
 
 fn open_data_root(data_root: &Path) -> Result<File, String> {

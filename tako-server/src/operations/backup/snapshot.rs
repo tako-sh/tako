@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 mod database_restore;
 mod sqlite;
 
+use super::journal::{self, RestoreIntent, RollbackDir, Steps};
 pub(super) use database_restore::{
     SwapError, database_rollback, extract_database_snapshot, swap_databases,
 };
@@ -457,79 +458,153 @@ fn collect_snapshot_databases(
     Ok(())
 }
 
+/// A full restore: the restored tree is live and the original tree is kept
+/// in the rollback directory until [`RestoredData::commit`] or
+/// [`RestoredData::rollback`]; until then a crash is undone at the next
+/// server start.
 #[derive(Debug)]
 #[must_use = "commit the validated restore or roll it back after stopping the app"]
 pub(super) struct RestoredData {
-    data_root: PathBuf,
-    previous: PathBuf,
+    dir: RollbackDir,
 }
 
 impl RestoredData {
     pub(super) fn commit(self) -> Result<(), String> {
-        if self.previous.exists() {
-            std::fs::remove_dir_all(&self.previous).map_err(|error| {
-                format!("remove previous data {}: {error}", self.previous.display())
-            })?;
-        }
-        Ok(())
+        journal::commit(self.dir.path())
     }
 
     /// Call only after stopping all processes that may access the restored tree.
     pub(super) fn rollback(self) -> Result<(), String> {
-        let failed = self.previous.with_extension("failed");
-        std::fs::rename(&self.data_root, &failed)
-            .map_err(|error| format!("preserve failed restore at {}: {error}", failed.display()))?;
-        if self.previous.exists()
-            && let Err(error) = std::fs::rename(&self.previous, &self.data_root)
-        {
-            return Err(format!(
-                "recover original data from {}: {error}; restored data remains at {}",
-                self.previous.display(),
-                failed.display()
-            ));
-        }
-        let _ = std::fs::remove_dir_all(failed);
-        Ok(())
+        journal::roll_back(self.dir.path())
     }
+}
+
+/// Where a full restore keeps the original tree.
+fn kept_tree(dir: &Path) -> PathBuf {
+    dir.join("data")
+}
+
+/// Put the original tree of a full restore back. With `displace_live`, a
+/// tree at the data root is the restored one and moves into the rollback
+/// directory first; without it, the rollback fails rather than move a tree
+/// it did not put there.
+pub(super) fn full_rollback(
+    intent: &RestoreIntent,
+    dir: &Path,
+    displace_live: bool,
+) -> Result<(), String> {
+    let data_root = &intent.data_root;
+    let original = kept_tree(dir);
+    let exists = |path: &Path| match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("inspect {}: {error}", path.display())),
+    };
+    let kept = exists(&original)?;
+    if !kept && intent.had_data {
+        // The original tree never moved.
+        return Ok(());
+    }
+    if displace_live && exists(data_root)? {
+        let restored = dir.join("restored");
+        std::fs::rename(data_root, &restored).map_err(|error| {
+            format!("move restored data {} aside: {error}", data_root.display())
+        })?;
+    }
+    if kept {
+        std::fs::rename(&original, data_root).map_err(|error| {
+            format!(
+                "move original data back to {}: {error}",
+                data_root.display()
+            )
+        })?;
+    }
+    sync_dir(data_root.parent().unwrap_or(data_root))
+}
+
+fn sync_dir(path: &Path) -> Result<(), String> {
+    File::open(path)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|e| format!("sync {}: {e}", path.display()))
 }
 
 pub(super) fn restore_data_tree(
     extracted_dir: &Path,
     data_root: &Path,
-) -> Result<RestoredData, String> {
+) -> Result<RestoredData, SwapError> {
+    restore_data_tree_with(extracted_dir, data_root, Steps::new(None))
+}
+
+/// [`restore_data_tree`] with a test hook before each mutating step. A
+/// stopped swap returns without cleanup, as if the process died there.
+fn restore_data_tree_with(
+    extracted_dir: &Path,
+    data_root: &Path,
+    mut steps: Steps<'_>,
+) -> Result<RestoredData, SwapError> {
     if ["app", "tako"].iter().any(|name| {
         !std::fs::symlink_metadata(extracted_dir.join(name)).is_ok_and(|meta| meta.is_dir())
     }) {
-        return Err("Backup archive is missing app/ or tako/ data directories.".to_string());
+        return Err(SwapError::intact(
+            "Backup archive is missing app/ or tako/ data directories.".to_string(),
+        ));
     }
-    remove_transient_tako_sqlite_stores(extracted_dir)?;
+    remove_transient_tako_sqlite_stores(extracted_dir).map_err(SwapError::intact)?;
     let parent = data_root
         .parent()
-        .ok_or_else(|| format!("data root has no parent: {}", data_root.display()))?;
+        .ok_or_else(|| format!("data root has no parent: {}", data_root.display()))
+        .map_err(SwapError::intact)?;
     std::fs::create_dir_all(parent)
-        .map_err(|e| format!("create data parent {}: {e}", parent.display()))?;
-    let previous = parent.join(format!(".data-restore-prev-{}", nanoid::nanoid!(8)));
-    if data_root.exists() {
-        std::fs::rename(data_root, &previous).map_err(|e| {
-            format!(
-                "move existing data dir {} to {}: {e}",
-                data_root.display(),
-                previous.display()
-            )
-        })?;
-    }
-    match std::fs::rename(extracted_dir, data_root) {
-        Ok(()) => Ok(RestoredData {
-            data_root: data_root.to_path_buf(),
-            previous,
-        }),
-        Err(error) => {
-            if previous.exists() {
-                std::fs::rename(&previous, data_root).map_err(|rollback| format!(
-                    "restore failed: {error}; original data remains at {} because rollback failed: {rollback}", previous.display()))?;
-            }
-            Err(format!("restore data dir {}: {error}", data_root.display()))
+        .map_err(|e| SwapError::intact(format!("create data parent {}: {e}", parent.display())))?;
+    let dir = RollbackDir::create(data_root).map_err(SwapError::intact)?;
+    let had_data = std::fs::symlink_metadata(data_root).is_ok();
+    let intent = RestoreIntent::full(data_root, had_data);
+    let original = kept_tree(dir.path());
+
+    let result = (|| -> Result<(), String> {
+        steps
+            .step()
+            .and_then(|()| journal::write_intent(dir.path(), &intent))
+            .map_err(|e| format!("record restore intent in {}: {e}", dir.path().display()))?;
+        if had_data {
+            steps
+                .step()
+                .and_then(|()| std::fs::rename(data_root, &original))
+                .map_err(|e| {
+                    format!(
+                        "move existing data dir {} to {}: {e}",
+                        data_root.display(),
+                        original.display()
+                    )
+                })?;
         }
+        steps
+            .step()
+            .and_then(|()| std::fs::rename(extracted_dir, data_root))
+            .map_err(|e| format!("restore data dir {}: {e}", data_root.display()))?;
+        sync_dir(parent)
+    })();
+    match result {
+        Ok(()) => Ok(RestoredData { dir }),
+        Err(_) if steps.stopped() => Err(SwapError {
+            message: "stopped".into(),
+            originals_intact: false,
+        }),
+        // Something may have put a tree at the data root meanwhile; only
+        // the original moving back counts as kept.
+        Err(error) => match full_rollback(&intent, dir.path(), false) {
+            Ok(()) => {
+                let _ = std::fs::remove_dir_all(dir.path());
+                Err(SwapError::intact(error))
+            }
+            Err(rollback) => Err(SwapError {
+                message: format!(
+                    "{error}; {rollback}; original data remains at {}",
+                    original.display()
+                ),
+                originals_intact: false,
+            }),
+        },
     }
 }
 
@@ -601,7 +676,7 @@ mod tests {
             .expect("original data must survive until restart succeeds")
             .path();
         assert_eq!(
-            std::fs::read_to_string(previous.join("app/marker")).unwrap(),
+            std::fs::read_to_string(previous.join("data/app/marker")).unwrap(),
             "original"
         );
         assert_eq!(
@@ -614,6 +689,133 @@ mod tests {
             "original"
         );
         assert!(!previous.exists());
+    }
+
+    fn full_restore_fixture(temp: &Path) -> (PathBuf, PathBuf) {
+        let live = temp.join("data");
+        let extracted = temp.join("extracted");
+        for root in [&live, &extracted] {
+            std::fs::create_dir_all(root.join("app")).unwrap();
+            std::fs::create_dir_all(root.join("tako")).unwrap();
+        }
+        std::fs::write(live.join("app/marker"), "original").unwrap();
+        std::fs::write(extracted.join("app/marker"), "backup").unwrap();
+        (live, extracted)
+    }
+
+    fn rollback_dirs(temp: &Path) -> Vec<PathBuf> {
+        std::fs::read_dir(temp)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(".data-restore-prev-")
+            })
+            .collect()
+    }
+
+    fn restore_until(extracted: &Path, live: &Path, stop_at: usize) -> SwapError {
+        let mut stop = |step| step == stop_at;
+        restore_data_tree_with(extracted, live, Steps::new(Some(&mut stop))).unwrap_err()
+    }
+
+    /// A tree that appears at the data root between the two renames makes
+    /// both the restore and the move back fail: the originals are not in
+    /// place, and the error says where they are.
+    #[test]
+    fn a_failed_full_swap_reports_originals_it_could_not_move_back() {
+        let temp = TempDir::new().unwrap();
+        let (live, extracted) = full_restore_fixture(temp.path());
+        let mut intrude = |step| {
+            if step == 2 {
+                std::fs::create_dir_all(live.join("app")).unwrap();
+                std::fs::write(live.join("app/provisioned"), "").unwrap();
+            }
+            false
+        };
+        let error =
+            restore_data_tree_with(&extracted, &live, Steps::new(Some(&mut intrude))).unwrap_err();
+        assert!(!error.originals_intact, "{}", error.message);
+        let [dir] = rollback_dirs(temp.path()).try_into().unwrap();
+        let kept = dir.join("data");
+        assert!(
+            error
+                .message
+                .ends_with(&format!("original data remains at {}", kept.display())),
+            "{}",
+            error.message
+        );
+        assert_eq!(
+            std::fs::read_to_string(kept.join("app/marker")).unwrap(),
+            "original"
+        );
+        assert!(!live.join("app/marker").exists());
+    }
+
+    #[test]
+    fn a_failed_full_swap_moves_the_originals_back_when_it_can() {
+        let temp = TempDir::new().unwrap();
+        // A data root inside the extracted tree: moving a directory into
+        // its own subtree fails, and the original can move back.
+        let extracted = temp.path().join("extracted");
+        let live = extracted.join("data");
+        for root in [&extracted, &live] {
+            std::fs::create_dir_all(root.join("app")).unwrap();
+            std::fs::create_dir_all(root.join("tako")).unwrap();
+        }
+        std::fs::write(live.join("app/marker"), "original").unwrap();
+        let error = restore_data_tree(&extracted, &live).unwrap_err();
+        assert!(error.originals_intact, "{}", error.message);
+        assert!(
+            error.message.starts_with("restore data dir"),
+            "{}",
+            error.message
+        );
+        assert_eq!(
+            std::fs::read_to_string(live.join("app/marker")).unwrap(),
+            "original"
+        );
+        assert!(rollback_dirs(&extracted).is_empty());
+    }
+
+    /// Stop a full restore before each step, then run the startup recovery.
+    #[test]
+    fn recovery_after_a_crash_in_a_full_swap_restores_the_original_tree() {
+        for stop_at in 0..3 {
+            let temp = TempDir::new().unwrap();
+            let (live, extracted) = full_restore_fixture(temp.path());
+            assert_eq!(restore_until(&extracted, &live, stop_at).message, "stopped");
+            let [dir] = rollback_dirs(temp.path()).try_into().unwrap();
+            journal::recover_rollback_dir(&dir).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(live.join("app/marker")).unwrap(),
+                "original",
+                "step {stop_at}"
+            );
+            assert!(rollback_dirs(temp.path()).is_empty(), "step {stop_at}");
+        }
+        // After both renames: the unvalidated restored tree is replaced too.
+        let temp = TempDir::new().unwrap();
+        let (live, extracted) = full_restore_fixture(temp.path());
+        let swap = restore_data_tree(&extracted, &live).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(live.join("app/marker")).unwrap(),
+            "backup"
+        );
+        let [dir] = rollback_dirs(temp.path()).try_into().unwrap();
+        drop(swap);
+        assert_eq!(
+            journal::recover_rollback_dir(&dir).unwrap(),
+            journal::Recovery::RolledBack
+        );
+        assert_eq!(
+            std::fs::read_to_string(live.join("app/marker")).unwrap(),
+            "original"
+        );
+        assert!(rollback_dirs(temp.path()).is_empty());
     }
 
     #[tokio::test]
@@ -1007,7 +1209,9 @@ services:
         )
         .unwrap();
 
-        let error = restore_data_tree(&extracted, &data_root).unwrap_err();
+        let error = restore_data_tree(&extracted, &data_root)
+            .unwrap_err()
+            .message;
 
         assert!(
             error.contains("remove transient Tako sqlite file"),

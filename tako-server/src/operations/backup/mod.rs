@@ -551,13 +551,7 @@ impl crate::ServerState {
                 .map_err(|error| format!("Stop failed before restore: {error}"))?;
             let swapped = match staged {
                 StagedRestore::Full => restore_data_tree(&extract_dir, &data_root)
-                    .map(|swap| (RestoreSwap::Tree(swap), None))
-                    .map_err(|message| SwapError {
-                        message,
-                        // A failed swap moves the original tree back unless
-                        // that also failed, which leaves no data dir.
-                        originals_intact: data_root.exists(),
-                    }),
+                    .map(|swap| (RestoreSwap::Tree(swap), None)),
                 StagedRestore::Databases(databases) => swap_databases_in_worker(
                     &extract_dir.join(DATABASE_SNAPSHOT_ARCHIVE_ROOT),
                     &databases,
