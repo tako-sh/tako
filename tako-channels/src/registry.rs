@@ -8,6 +8,16 @@ use tokio::sync::OnceCell;
 type Definitions = HashMap<String, ChannelDefinitionMeta>;
 type RegistryCell = Arc<OnceCell<Definitions>>;
 
+/// What an already loaded registry says about one channel.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CachedDefinition {
+    /// No complete registry of this build is loaded: nothing is known.
+    NotLoaded,
+    /// The loaded registry of this build does not define the channel.
+    Absent,
+    Defined(ChannelDefinitionMeta),
+}
+
 /// Complete registries, including absent channels, cached by app and build.
 /// Keep both sides of a rolling deploy without retaining every historical build.
 #[derive(Default)]
@@ -71,15 +81,21 @@ impl ChannelRegistry {
 
     /// A definition from an already loaded registry of exactly this build.
     /// Never loads: publishers must not wait for, or wake, an app instance.
-    pub fn cached(&self, app: &str, build: &str, channel: &str) -> Option<ChannelDefinitionMeta> {
-        let cell = self
-            .by_app
-            .read()
-            .get(app)?
-            .iter()
-            .find(|(version, _)| version == build)
-            .map(|(_, cell)| cell.clone())?;
-        cell.get()?.get(channel).cloned()
+    /// Distinguishes a registry not loaded yet from one that lacks the channel.
+    pub fn cached(&self, app: &str, build: &str, channel: &str) -> CachedDefinition {
+        let cell = self.by_app.read().get(app).and_then(|builds| {
+            builds
+                .iter()
+                .find(|(version, _)| version == build)
+                .map(|(_, cell)| cell.clone())
+        });
+        match cell.as_ref().and_then(|cell| cell.get()) {
+            None => CachedDefinition::NotLoaded,
+            Some(definitions) => definitions
+                .get(channel)
+                .cloned()
+                .map_or(CachedDefinition::Absent, CachedDefinition::Defined),
+        }
     }
 
     pub fn invalidate(&self, app: &str) {
@@ -172,20 +188,35 @@ mod tests {
     #[tokio::test]
     async fn cached_definitions_are_exact_to_a_loaded_build() {
         let registry = ChannelRegistry::new();
-        assert!(registry.cached("app", "v1", "chat").is_none());
+        assert_eq!(
+            registry.cached("app", "v1", "chat"),
+            CachedDefinition::NotLoaded
+        );
         registry
             .get_or_load("app", "v1", "chat", || async { Ok(vec![meta("chat")]) })
             .await
             .unwrap();
         assert_eq!(
-            registry.cached("app", "v1", "chat").unwrap().channel,
-            "chat"
+            registry.cached("app", "v1", "chat"),
+            CachedDefinition::Defined(meta("chat"))
         );
-        assert!(registry.cached("app", "v1", "other").is_none());
-        assert!(registry.cached("app", "v2", "chat").is_none());
-        assert!(registry.cached("other", "v1", "chat").is_none());
+        assert_eq!(
+            registry.cached("app", "v1", "other"),
+            CachedDefinition::Absent
+        );
+        assert_eq!(
+            registry.cached("app", "v2", "chat"),
+            CachedDefinition::NotLoaded
+        );
+        assert_eq!(
+            registry.cached("other", "v1", "chat"),
+            CachedDefinition::NotLoaded
+        );
         registry.invalidate("app");
-        assert!(registry.cached("app", "v1", "chat").is_none());
+        assert_eq!(
+            registry.cached("app", "v1", "chat"),
+            CachedDefinition::NotLoaded
+        );
     }
 
     #[tokio::test]

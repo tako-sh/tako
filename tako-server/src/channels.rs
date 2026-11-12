@@ -113,19 +113,30 @@ pub(crate) async fn fetch_channel_registry(
 }
 
 /// Bind a server-side publish to its stream. When the publisher's build has a
-/// loaded channel registry, its params are checked like subscribe params, so a
-/// mistyped binding fails instead of starting a stream nobody reads. Publishing
-/// never loads the registry: that would wait on, or wake, an app instance.
+/// loaded channel registry, the channel must be defined there and its params
+/// are checked like subscribe params, so a mistyped binding fails instead of
+/// starting a stream nobody reads. Publishing never loads the registry: that
+/// would wait on, or wake, an app instance, so an unloaded registry only gets
+/// the shape check.
 pub(crate) fn trusted_publication(
     registry: &registry::ChannelRegistry,
     request: tako_workflows::ChannelPublishRequest<'_>,
 ) -> Result<TrustedPublication, ChannelError> {
     let publication = parse_trusted_publication(&request)?;
-    if let Some(definition) = request
-        .build
-        .and_then(|build| registry.cached(request.app, build, request.channel))
-    {
-        validate_publication(&definition, &publication, request.params)?;
+    let Some(build) = request.build else {
+        return Ok(publication);
+    };
+    match registry.cached(request.app, build, request.channel) {
+        registry::CachedDefinition::NotLoaded => {}
+        registry::CachedDefinition::Absent => {
+            return Err(ChannelError::BadRequest(format!(
+                "channel '{}' is not defined by build {build}",
+                request.channel
+            )));
+        }
+        registry::CachedDefinition::Defined(definition) => {
+            validate_publication(&definition, &publication, request.params)?;
+        }
     }
     Ok(publication)
 }
@@ -192,6 +203,27 @@ mod tests {
                 publish(params, Some("v1")),
                 Err(ChannelError::BadRequest(_))
             ));
+        }
+        // A loaded build that does not define the channel rejects it, so a
+        // close cannot leave a durable marker on a channel nobody defined.
+        for write in [
+            tako_workflows::ChannelWrite::Publish(serde_json::json!({"type": "msg", "data": 1})),
+            tako_workflows::ChannelWrite::Close { lifecycle: None },
+        ] {
+            let result = trusted_publication(
+                &registry,
+                tako_workflows::ChannelPublishRequest {
+                    app: "app/production",
+                    channel: "missing",
+                    params: &serde_json::Value::Null,
+                    build: Some("v1"),
+                    write,
+                },
+            );
+            assert!(
+                matches!(&result, Err(ChannelError::BadRequest(message)) if message.contains("'missing' is not defined")),
+                "{result:?}"
+            );
         }
         // Without a loaded registry for the publisher's build, the shape is
         // still checked but the schema is not.
