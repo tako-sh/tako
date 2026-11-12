@@ -328,6 +328,7 @@ impl crate::ServerState {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn database_snapshot_running(&self, app: &str) -> bool {
         self.database_snapshots
             .read()
