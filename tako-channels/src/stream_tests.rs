@@ -739,3 +739,96 @@ fn postgres_refuses_new_streams_beyond_the_app_limit_and_bounds_maintenance() {
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
         .unwrap();
 }
+
+fn client_for_migration(url: &str) -> postgres::Client {
+    postgres::Client::connect(url, postgres::NoTls).unwrap()
+}
+
+#[test]
+fn postgres_stream_counter_stays_exact_across_creation_release_and_concurrency() {
+    let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
+        return;
+    };
+    let schema = format!("channel_counter_{}", std::process::id());
+    let store = ChannelStore::open_postgres_with_schema(&url, &schema, "app").unwrap();
+    let other_app = ChannelStore::open_postgres_with_schema(&url, &schema, "other").unwrap();
+    let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    // The cap check reads the counter; it must always equal the rows.
+    let mut check = |expected: i64| {
+        let row = client
+            .query_one(
+                &format!(
+                    "SELECT (SELECT COUNT(*) FROM {schema}.channel_metadata WHERE app_id = 'app'),
+                        COALESCE((SELECT streams FROM {schema}.channel_stream_counts
+                                  WHERE app_id = 'app'), 0)"
+                ),
+                &[],
+            )
+            .unwrap();
+        let (rows, counted): (i64, i64) = (row.get(0), row.get(1));
+        assert_eq!((rows, counted), (expected, expected));
+    };
+    let lifecycle = auth(json!({"ok": true}));
+    store.sync_channel(room("a").key(), &lifecycle).unwrap();
+    store.append(room("b").key(), &payload(json!(1))).unwrap();
+    store.append("base", &payload(json!(2))).unwrap();
+    // Touching existing streams starts nothing.
+    store.sync_channel(room("a").key(), &lifecycle).unwrap();
+    store.append(room("b").key(), &payload(json!(3))).unwrap();
+    other_app.sync_channel(room("a").key(), &lifecycle).unwrap();
+    check(3);
+
+    // Two connections, as two servers, start streams at the same time.
+    let second = Arc::new(ChannelStore::open_postgres_with_schema(&url, &schema, "app").unwrap());
+    let first = Arc::new(store);
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let workers: Vec<_> = [(first.clone(), "x"), (second.clone(), "y")]
+        .into_iter()
+        .map(|(store, prefix)| {
+            let barrier = barrier.clone();
+            let lifecycle = lifecycle.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                for n in 0..40 {
+                    let stream = room(&format!("{prefix}{n}"));
+                    if n % 2 == 0 {
+                        store.sync_channel(stream.key(), &lifecycle).unwrap();
+                    } else {
+                        store.append(stream.key(), &payload(json!(n))).unwrap();
+                    }
+                }
+            })
+        })
+        .collect();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    check(83);
+
+    // Releasing idle streams counts down; only messages' streams remain.
+    first.prune_at(now() + 7_200_000 + 60_000 + 2_000);
+    check(0);
+    first.sync_channel(room("again").key(), &lifecycle).unwrap();
+    check(1);
+
+    // A store from before the counter gets it initialized from its rows.
+    client_for_migration(&url)
+        .batch_execute(&format!(
+            "DROP TABLE {schema}.channel_stream_counts;
+             DROP FUNCTION {schema}.channel_streams_started() CASCADE;
+             DROP FUNCTION {schema}.channel_streams_released() CASCADE;
+             DELETE FROM {schema}.channel_schema_migrations
+             WHERE version = (SELECT MAX(version) FROM {schema}.channel_schema_migrations);"
+        ))
+        .unwrap();
+    let migrated = ChannelStore::open_postgres_with_schema(&url, &schema, "app").unwrap();
+    check(1);
+    migrated
+        .sync_channel(room("after").key(), &lifecycle)
+        .unwrap();
+    check(2);
+    drop((first, second, other_app, migrated));
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .unwrap();
+}

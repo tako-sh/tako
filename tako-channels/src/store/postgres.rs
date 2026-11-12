@@ -413,30 +413,19 @@ impl PostgresChannelStore {
         if !crate::stream::counts_toward_stream_limit(channel) {
             return Ok(());
         }
-        let exists: bool = client
+        // Two primary-key reads: the triggers keep the app's count current.
+        let row = client
             .query_one(
                 &format!(
-                    "SELECT EXISTS(SELECT 1 FROM {}.channel_metadata WHERE app_id = $1 AND channel = $2)",
-                    self.schema
+                    "SELECT EXISTS(SELECT 1 FROM {schema}.channel_metadata WHERE app_id = $1 AND channel = $2),
+                        COALESCE((SELECT streams FROM {schema}.channel_stream_counts WHERE app_id = $1), 0)",
+                    schema = self.schema
                 ),
                 &[&self.app_id, &channel],
             )
-            .map_err(|e| ChannelError::Storage(e.to_string()))?
-            .get(0);
-        if exists {
-            return Ok(());
-        }
-        let streams: i64 = client
-            .query_one(
-                &format!(
-                    "SELECT COUNT(*) FROM {}.channel_metadata WHERE app_id = $1",
-                    self.schema
-                ),
-                &[&self.app_id],
-            )
-            .map_err(|e| ChannelError::Storage(e.to_string()))?
-            .get(0);
-        if streams >= super::MAX_STREAMS {
+            .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        let (exists, streams): (bool, i64) = (row.get(0), row.get(1));
+        if !exists && streams >= super::MAX_STREAMS {
             return Err(super::stream_limit_error(channel));
         }
         Ok(())
@@ -519,6 +508,41 @@ const POSTGRES_MIGRATIONS: &[&str] = &[
      CREATE INDEX IF NOT EXISTS idx_channel_metadata_idle
        ON {schema}.channel_metadata(app_id, (last_activity_unix_ms + max_connection_lifetime_ms));
      CREATE INDEX IF NOT EXISTS idx_presence_expires ON {schema}.presence(app_id, expires_at);",
+    // Each app's stream count, kept with the metadata rows by statement
+    // triggers, so the stream cap reads one row instead of counting them.
+    // Creating the triggers locks out metadata writes until this commits, so
+    // the initial count cannot miss a stream another server starts meanwhile.
+    // Unversioned stores rerun every migration, so this one is idempotent.
+    "CREATE TABLE IF NOT EXISTS {schema}.channel_stream_counts (
+         app_id TEXT PRIMARY KEY,
+         streams BIGINT NOT NULL
+     );
+     CREATE OR REPLACE FUNCTION {schema}.channel_streams_started() RETURNS trigger LANGUAGE plpgsql AS $$
+     BEGIN
+         INSERT INTO {schema}.channel_stream_counts AS counts (app_id, streams)
+         SELECT app_id, COUNT(*) FROM started GROUP BY app_id
+         ON CONFLICT (app_id) DO UPDATE SET streams = counts.streams + excluded.streams;
+         RETURN NULL;
+     END $$;
+     CREATE OR REPLACE FUNCTION {schema}.channel_streams_released() RETURNS trigger LANGUAGE plpgsql AS $$
+     BEGIN
+         UPDATE {schema}.channel_stream_counts AS counts
+         SET streams = counts.streams - released.streams
+         FROM (SELECT app_id, COUNT(*) AS streams FROM released GROUP BY app_id) AS released
+         WHERE counts.app_id = released.app_id;
+         RETURN NULL;
+     END $$;
+     DROP TRIGGER IF EXISTS channel_streams_started ON {schema}.channel_metadata;
+     CREATE TRIGGER channel_streams_started AFTER INSERT ON {schema}.channel_metadata
+         REFERENCING NEW TABLE AS started
+         FOR EACH STATEMENT EXECUTE FUNCTION {schema}.channel_streams_started();
+     DROP TRIGGER IF EXISTS channel_streams_released ON {schema}.channel_metadata;
+     CREATE TRIGGER channel_streams_released AFTER DELETE ON {schema}.channel_metadata
+         REFERENCING OLD TABLE AS released
+         FOR EACH STATEMENT EXECUTE FUNCTION {schema}.channel_streams_released();
+     DELETE FROM {schema}.channel_stream_counts;
+     INSERT INTO {schema}.channel_stream_counts (app_id, streams)
+     SELECT app_id, COUNT(*) FROM {schema}.channel_metadata GROUP BY app_id;",
 ];
 
 /// Connections without an explicit `connect_timeout` get a bounded one, so an
