@@ -358,11 +358,20 @@ async fn replication_and_ephemeral_fanout_stay_within_one_binding() {
         .unwrap()
         .unwrap();
     assert_eq!(delivered.event_id, sent.event_id);
-    assert!(
-        tokio::time::timeout(Duration::from_millis(20), live_b.recv())
-            .await
-            .is_err()
-    );
+    // Fanout is FIFO per stream: had `b` received `a`'s event, it would come
+    // before `b`'s own.
+    let own = origin
+        .publish_ephemeral(b.key(), &payload(json!("b live")))
+        .unwrap();
+    let ChannelPublication::Event(event) = publications.try_recv().unwrap() else {
+        panic!("expected an event")
+    };
+    assert_eq!(peer.ingest_remote(&event).unwrap(), RemoteIngest::Applied);
+    let delivered = tokio::time::timeout(Duration::from_secs(1), live_b.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(delivered.event_id, own.event_id);
 }
 
 async fn sse_body(
@@ -511,11 +520,13 @@ async fn websocket_publishes_and_frames_stay_within_the_connection_binding() {
                     .write_response_header(Box::new(response), false)
                     .await
                     .unwrap();
+                // From the start of an empty stream: a connection that has not
+                // resolved its head yet still replays what was sent before.
                 websocket::serve(
                     &mut session,
                     &store,
                     &ChannelStream::new("chat", &params),
-                    ReplayFrom::Head,
+                    ReplayFrom::Start,
                     auth(json!({"ok": true, "transport": "ws"})),
                     params,
                     Default::default(),
@@ -528,11 +539,6 @@ async fn websocket_publishes_and_frames_stay_within_the_connection_binding() {
                 .unwrap();
             sockets.push(socket);
         }
-        // Each connection has resolved its head once its stream is synced.
-        while store.raw_query_i64("SELECT COUNT(*) FROM channel_metadata", []) < 2 {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
         sockets[0]
             .send(Message::text(
                 json!({"type": "msg", "data": "from a"}).to_string(),
@@ -556,14 +562,20 @@ async fn websocket_publishes_and_frames_stay_within_the_connection_binding() {
         let frame = sockets[2].next().await.unwrap().unwrap();
         let message: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
         assert_eq!(message["data"], "from b");
-        assert!(
-            tokio::time::timeout(Duration::from_millis(50), sockets[0].next())
-                .await
-                .is_err()
-        );
+        // `b` was stored and fanned out before its echo: had `a`'s connection
+        // followed it, that frame would arrive before `a`'s next own message.
+        sockets[1]
+            .send(Message::text(
+                json!({"type": "msg", "data": "a again"}).to_string(),
+            ))
+            .await
+            .unwrap();
+        let frame = sockets[0].next().await.unwrap().unwrap();
+        let message: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+        assert_eq!(message["data"], "a again");
         assert_eq!(
             store.read_after(room("a").key(), None, 10).unwrap().len(),
-            1
+            2
         );
         assert_eq!(
             store.read_after(room("b").key(), None, 10).unwrap().len(),

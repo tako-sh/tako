@@ -139,6 +139,19 @@ async fn get_channel(addr: std::net::SocketAddr, channel: &str, query: &str) -> 
     client
 }
 
+/// Read a response's status line and headers, leaving the body unread.
+async fn response_head(client: &mut TcpStream) -> String {
+    let mut head = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !head.ends_with(b"\r\n\r\n") {
+            head.push(client.read_u8().await.unwrap());
+        }
+    })
+    .await
+    .unwrap();
+    String::from_utf8(head).unwrap()
+}
+
 async fn read_all(mut client: TcpStream) -> String {
     let mut response = Vec::new();
     tokio::time::timeout(Duration::from_secs(5), client.read_to_end(&mut response))
@@ -166,17 +179,13 @@ async fn sse_subscribers_receive_only_the_stream_their_params_select() {
     let invalid = read_all(get(addr, "room=one").await).await;
     assert!(invalid.starts_with("HTTP/1.1 400"), "{invalid}");
 
-    let one = get(addr, "room=1").await;
-    let two = get(addr, "room=2").await;
-    // Both subscriptions are authorized and have resolved their heads.
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while authorized.lock().len() < 2 {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    // The proxy writes the response head only after resolving where the
+    // reader starts, so once it arrives a publish cannot slip before it.
+    let (mut one, mut two) = (get(addr, "room=1").await, get(addr, "room=2").await);
+    let heads = [response_head(&mut one).await, response_head(&mut two).await];
+    for head in &heads {
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+    }
     let store = tako_channels::ChannelStore::open(&crate::channels::app_channels_db_path(
         temp.path(),
         "chat-app",

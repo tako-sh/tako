@@ -473,7 +473,9 @@ async fn sse_delivers_every_message_then_the_terminal_event_and_ends() {
                 (last, store.close(a.key()).unwrap())
             })
         };
-        let live = sse_body(&store, &a, ReplayFrom::Head, 60_000).await;
+        // Resume after `early`, the head when the writer starts: the reader
+        // gets the rest however late it resolves where to start.
+        let live = sse_body(&store, &a, ReplayFrom::After(cursor(&early)), 60_000).await;
         let (last, marker) = writer.await.unwrap();
         assert!(live.contains(&close_event(&marker)), "{live}");
         assert_eq!(
@@ -570,11 +572,9 @@ async fn websocket_delivers_every_message_then_the_stream_closed_frame() {
         let store = Arc::new(ChannelStore::open_in_memory().unwrap());
         let a = room("a");
         let early = store.append(a.key(), &payload(json!("early"))).unwrap();
-        let (mut live, server) = websocket(&store, store.clone(), &a, ReplayFrom::Head).await;
-        while store.raw_query_i64("SELECT COUNT(*) FROM channel_metadata", []) < 1 {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Resume after `early` (the head): no wait for the server to resolve it.
+        let (mut live, server) =
+            websocket(&store, store.clone(), &a, ReplayFrom::After(cursor(&early))).await;
         let last = store.append(a.key(), &payload(json!("last"))).unwrap();
         store.close(a.key()).unwrap();
         let frame = live.next().await.unwrap().unwrap();
