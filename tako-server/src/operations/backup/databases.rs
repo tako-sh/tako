@@ -33,8 +33,8 @@ pub(crate) struct DatabaseSnapshotState {
     pub(crate) checked_at_unix_secs: Option<i64>,
     /// Cleared when a database snapshot is uploaded.
     pub(crate) skip: Option<BackupSkip>,
-    /// Set from just before a database snapshot takes the backup lock until
-    /// just after it releases it.
+    /// Set exactly while a database snapshot holds the backup lock: both
+    /// change together under the write lock of the per-app state map.
     pub(crate) running: bool,
     /// Consecutive failed full archives of the app, retried with backoff.
     pub(crate) full_failures: super::scheduler::Backoff,
@@ -43,9 +43,10 @@ pub(crate) struct DatabaseSnapshotState {
     pub(crate) index_failures: super::scheduler::Backoff,
 }
 
-/// The backup lock, held by a database snapshot. Marks the snapshot running
-/// before taking the lock and clears the mark after releasing it, so while a
-/// snapshot holds the lock it is always marked.
+/// The backup lock, held by a database snapshot. Takes and releases the
+/// lock together with the running mark, so anyone who checks the lock and
+/// the mark under the state map's lock sees the snapshot exactly while it
+/// holds the backup lock.
 pub(super) struct DatabaseSnapshotLock<'a> {
     state: &'a crate::ServerState,
     app: &'a str,
@@ -54,8 +55,9 @@ pub(super) struct DatabaseSnapshotLock<'a> {
 
 impl Drop for DatabaseSnapshotLock<'_> {
     fn drop(&mut self) {
+        let mut states = self.state.database_snapshots.write();
         drop(self.guard.take());
-        self.state.set_database_snapshot_running(self.app, false);
+        states.entry(self.app.to_string()).or_default().running = false;
     }
 }
 
@@ -313,22 +315,15 @@ impl crate::ServerState {
         &'a self,
         app: &'a str,
     ) -> Option<DatabaseSnapshotLock<'a>> {
-        self.set_database_snapshot_running(app, true);
-        let mut lock = DatabaseSnapshotLock {
+        let lock = self.backup_operation_lock(app);
+        let mut states = self.database_snapshots.write();
+        let guard = lock.try_lock_owned().ok()?;
+        states.entry(app.to_string()).or_default().running = true;
+        Some(DatabaseSnapshotLock {
             state: self,
             app,
-            guard: None,
-        };
-        lock.guard = Some(self.backup_operation_lock(app).try_lock_owned().ok()?);
-        Some(lock)
-    }
-
-    fn set_database_snapshot_running(&self, app: &str, running: bool) {
-        self.database_snapshots
-            .write()
-            .entry(app.to_string())
-            .or_default()
-            .running = running;
+            guard: Some(guard),
+        })
     }
 
     pub(super) fn database_snapshot_running(&self, app: &str) -> bool {

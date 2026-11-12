@@ -715,13 +715,19 @@ impl crate::ServerState {
     ) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
         let lock = self.backup_operation_lock(app);
         let busy = || format!("A backup operation is already in progress for {app}.");
-        if let Ok(guard) = lock.clone().try_lock_owned() {
-            return Ok(guard);
-        }
+        // Under the state map's lock a database snapshot holds the backup
+        // lock exactly while it is marked running.
+        let snapshot_running = {
+            let states = self.database_snapshots.read();
+            if let Ok(guard) = lock.clone().try_lock_owned() {
+                return Ok(guard);
+            }
+            states.get(app).is_some_and(|state| state.running)
+        };
         let Some(limit) = wait_for_database_snapshot else {
             return Err(busy());
         };
-        if !self.database_snapshot_running(app) {
+        if !snapshot_running {
             return Err(busy());
         }
         tokio::time::timeout(limit, lock.lock_owned())
@@ -1434,6 +1440,35 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(1));
         assert!(state.lock_for_database_snapshot(app).is_none());
         assert!(!state.database_snapshot_running(app));
+        drop(full);
+    }
+
+    /// A waiter that finds the backup lock taken reads the running flag to
+    /// tell a database snapshot from a full backup or restore. The flag must
+    /// never be raised for a snapshot attempt that cannot take the lock.
+    #[test]
+    fn a_database_snapshot_is_marked_running_only_while_it_holds_the_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _entered = runtime.enter();
+        let state = test_state(temp.path());
+        let app = "demo/production";
+        let full = state.backup_operation_lock(app).try_lock_owned().unwrap();
+        let done = std::sync::atomic::AtomicBool::new(false);
+        let seen = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                for _ in 0..20_000 {
+                    assert!(state.lock_for_database_snapshot(app).is_none());
+                }
+                done.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+            let mut seen = false;
+            while !done.load(std::sync::atomic::Ordering::SeqCst) {
+                seen |= state.database_snapshot_running(app);
+            }
+            seen
+        });
+        assert!(!seen, "a waiter would wait behind a full backup or restore");
         drop(full);
     }
 
