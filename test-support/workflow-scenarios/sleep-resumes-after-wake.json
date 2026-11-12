@@ -1,0 +1,71 @@
+{
+  "description": "A sleep whose saved wake time has passed records the sleep step and lets the handler continue.",
+  "drive": "run",
+  "workflows": ["sleeps"],
+  "steps": [
+    {
+      "expect": {
+        "command": "claim_run",
+        "app": "scenario-app",
+        "worker_id": {
+          "$var": "process_worker",
+          "is": {
+            "$type": "string"
+          }
+        },
+        "names": ["sleeps"],
+        "lease_ms": {
+          "$var": "lease_ms",
+          "is": {
+            "$positive": true
+          }
+        }
+      },
+      "reply": {
+        "status": "ok",
+        "data": {
+          "id": "run-1",
+          "worker_id": "claim-1",
+          "name": "sleeps",
+          "payload": {},
+          "status": "running",
+          "attempts": 1,
+          "max_attempts": 3,
+          "run_at_ms": 1700000000000,
+          "step_state": {
+            "__sleep:nap": {
+              "wakeAt": 1700000000000
+            }
+          }
+        }
+      }
+    },
+    {
+      "expect": {
+        "command": "save_step",
+        "app": "scenario-app",
+        "id": "run-1",
+        "worker_id": "claim-1",
+        "step_name": "nap",
+        "result": true
+      },
+      "reply": {
+        "status": "ok",
+        "data": {}
+      }
+    },
+    {
+      "expect": {
+        "command": "complete_run",
+        "app": "scenario-app",
+        "id": "run-1",
+        "worker_id": "claim-1",
+        "result": "awake"
+      },
+      "reply": {
+        "status": "ok",
+        "data": {}
+      }
+    }
+  ]
+}

@@ -1,0 +1,71 @@
+{
+  "description": "A rejection whose message mentions a stale worker but carries no run_not_owned code is an ordinary error: the run is failed. The stored error text is the SDK's own and is not compared.",
+  "drive": "run",
+  "workflows": ["steps"],
+  "steps": [
+    {
+      "expect": {
+        "command": "claim_run",
+        "app": "scenario-app",
+        "worker_id": {
+          "$var": "process_worker",
+          "is": {
+            "$type": "string"
+          }
+        },
+        "names": ["steps"],
+        "lease_ms": {
+          "$var": "lease_ms",
+          "is": {
+            "$positive": true
+          }
+        }
+      },
+      "reply": {
+        "status": "ok",
+        "data": {
+          "id": "run-1",
+          "worker_id": "claim-1",
+          "name": "steps",
+          "payload": {},
+          "status": "running",
+          "attempts": 1,
+          "max_attempts": 1,
+          "run_at_ms": 1700000000000,
+          "step_state": {}
+        }
+      }
+    },
+    {
+      "expect": {
+        "command": "save_step",
+        "app": "scenario-app",
+        "id": "run-1",
+        "worker_id": "claim-1",
+        "step_name": "a",
+        "result": "a-done"
+      },
+      "reply": {
+        "status": "error",
+        "message": "save_step failed: stale worker: run is no longer owned by this worker"
+      }
+    },
+    {
+      "expect": {
+        "command": "fail_run",
+        "app": "scenario-app",
+        "id": "run-1",
+        "worker_id": "claim-1",
+        "error": {
+          "$type": "string"
+        },
+        "next_run_at_ms": null,
+        "finalize": true
+      },
+      "reply": {
+        "status": "ok",
+        "data": {}
+      }
+    }
+  ]
+}

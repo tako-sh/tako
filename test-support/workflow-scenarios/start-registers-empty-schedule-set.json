@@ -1,0 +1,18 @@
+{
+  "description": "With no scheduled workflow the worker still registers the empty set, which clears schedules an earlier release registered.",
+  "drive": "start",
+  "workflows": ["steps"],
+  "steps": [
+    {
+      "expect": {
+        "command": "register_schedules",
+        "app": "scenario-app",
+        "schedules": []
+      },
+      "reply": {
+        "status": "ok",
+        "data": {}
+      }
+    }
+  ]
+}
