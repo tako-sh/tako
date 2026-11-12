@@ -33,6 +33,25 @@ pub(crate) struct DatabaseSnapshotState {
     pub(crate) checked_at_unix_secs: Option<i64>,
     /// Cleared when a database snapshot is uploaded.
     pub(crate) skip: Option<BackupSkip>,
+    /// Set from just before a database snapshot takes the backup lock until
+    /// just after it releases it.
+    pub(crate) running: bool,
+}
+
+/// The backup lock, held by a database snapshot. Marks the snapshot running
+/// before taking the lock and clears the mark after releasing it, so while a
+/// snapshot holds the lock it is always marked.
+pub(super) struct DatabaseSnapshotLock<'a> {
+    state: &'a crate::ServerState,
+    app: &'a str,
+    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl Drop for DatabaseSnapshotLock<'_> {
+    fn drop(&mut self) {
+        drop(self.guard.take());
+        self.state.set_database_snapshot_running(self.app, false);
+    }
 }
 
 #[derive(Debug)]
@@ -168,8 +187,7 @@ impl crate::ServerState {
                 message: message.to_string(),
             }))
         };
-        let backup_lock = self.backup_operation_lock(app);
-        let Ok(_backup) = backup_lock.try_lock() else {
+        let Some(_backup) = self.lock_for_database_snapshot(app) else {
             return skip(
                 BackupSkipReason::BackupInProgress,
                 "Another backup or restore is in progress.",
@@ -304,6 +322,35 @@ impl crate::ServerState {
 
         let _ = tokio::fs::remove_dir_all(&work_dir).await;
         result
+    }
+
+    pub(super) fn lock_for_database_snapshot<'a>(
+        &'a self,
+        app: &'a str,
+    ) -> Option<DatabaseSnapshotLock<'a>> {
+        self.set_database_snapshot_running(app, true);
+        let mut lock = DatabaseSnapshotLock {
+            state: self,
+            app,
+            guard: None,
+        };
+        lock.guard = Some(self.backup_operation_lock(app).try_lock_owned().ok()?);
+        Some(lock)
+    }
+
+    fn set_database_snapshot_running(&self, app: &str, running: bool) {
+        self.database_snapshots
+            .write()
+            .entry(app.to_string())
+            .or_default()
+            .running = running;
+    }
+
+    pub(super) fn database_snapshot_running(&self, app: &str) -> bool {
+        self.database_snapshots
+            .read()
+            .get(app)
+            .is_some_and(|state| state.running)
     }
 
     /// Retention otherwise runs only after an upload. Unchanged databases can

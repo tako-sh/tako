@@ -9,6 +9,10 @@ use super::{latest_backup, now_unix_secs};
 /// Short enough that hourly database snapshots stay close to an hour apart.
 /// Due checks use the remote index, so a restart neither bursts nor resets.
 const SCHEDULER_TICK: Duration = Duration::from_secs(10 * 60);
+/// A post-deploy backup waits this long for an hourly database snapshot that
+/// holds the backup lock, typically during its upload. It stays well inside
+/// the CLI's deadline for finalizing a deploy.
+const POST_DEPLOY_DATABASE_SNAPSHOT_WAIT: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DueBackup {
@@ -49,7 +53,10 @@ impl crate::ServerState {
         app: &str,
     ) -> Option<Result<BackupInfo, String>> {
         match self.state_store.get_backup(app) {
-            Ok(Some(_)) => Some(self.backup_app_now(app).await),
+            Ok(Some(_)) => Some(
+                self.backup_app_now(app, Some(POST_DEPLOY_DATABASE_SNAPSHOT_WAIT))
+                    .await,
+            ),
             Ok(None) => None,
             Err(error) => Some(Err(format!("read backup config: {error}"))),
         }
@@ -102,7 +109,7 @@ impl crate::ServerState {
             };
             match due {
                 Some(DueBackup::Full) => {
-                    if let Err(error) = self.backup_app_now(&app).await {
+                    if let Err(error) = self.backup_app_now(&app, None).await {
                         tracing::warn!(app = %app, "Scheduled backup failed: {error}");
                     }
                 }

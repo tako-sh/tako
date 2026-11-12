@@ -37,7 +37,7 @@ pub(crate) use snapshot::{measure_database_tree, snapshot_data_tree, snapshot_da
 
 impl crate::ServerState {
     pub(crate) async fn backup_now(&self, app: &str) -> Response {
-        match self.backup_app_now(app).await {
+        match self.backup_app_now(app, None).await {
             Ok(info) => Response::ok(info),
             Err(error) => Response::error(error),
         }
@@ -74,8 +74,16 @@ impl crate::ServerState {
         }
     }
 
-    async fn backup_app_now(&self, app: &str) -> Result<BackupInfo, String> {
-        let _backup = self.acquire_backup_lock(app)?;
+    /// `wait_for_database_snapshot` bounds how long to wait when an hourly
+    /// database snapshot holds the backup lock; any other holder fails fast.
+    async fn backup_app_now(
+        &self,
+        app: &str,
+        wait_for_database_snapshot: Option<Duration>,
+    ) -> Result<BackupInfo, String> {
+        let _backup = self
+            .acquire_backup_lock(app, wait_for_database_snapshot)
+            .await?;
         let lock = self.get_deploy_lock(app).await;
         let _guard = lock.lock().await;
         if self.is_draining() {
@@ -331,7 +339,7 @@ impl crate::ServerState {
         app: &str,
         backup_id: &str,
     ) -> Result<BackupRestoreResponse, String> {
-        let _backup = self.acquire_backup_lock(app)?;
+        let _backup = self.acquire_backup_lock(app, None).await?;
         let lock = self.get_deploy_lock(app).await;
         let _guard = lock.lock().await;
         let backup = self
@@ -602,10 +610,34 @@ impl crate::ServerState {
             .clone()
     }
 
-    fn acquire_backup_lock(&self, app: &str) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
-        self.backup_operation_lock(app)
-            .try_lock_owned()
-            .map_err(|_| format!("A backup operation is already in progress for {app}."))
+    /// Take the app's backup lock without waiting, except, when
+    /// `wait_for_database_snapshot` is set, for up to that long while an
+    /// hourly database snapshot holds it. Waiters are served in order, so
+    /// the snapshot's release hands the lock to this caller.
+    async fn acquire_backup_lock(
+        &self,
+        app: &str,
+        wait_for_database_snapshot: Option<Duration>,
+    ) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
+        let lock = self.backup_operation_lock(app);
+        let busy = || format!("A backup operation is already in progress for {app}.");
+        if let Ok(guard) = lock.clone().try_lock_owned() {
+            return Ok(guard);
+        }
+        let Some(limit) = wait_for_database_snapshot else {
+            return Err(busy());
+        };
+        if !self.database_snapshot_running(app) {
+            return Err(busy());
+        }
+        tokio::time::timeout(limit, lock.lock_owned())
+            .await
+            .map_err(|_| {
+                format!(
+                    "A database snapshot of {app} was still running after {}s.",
+                    limit.as_secs()
+                )
+            })
     }
 }
 
@@ -1089,6 +1121,86 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(body.as_ref(), fixture.objects[&fixture.info.archive_key]);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn post_deploy_backup_waits_for_a_running_database_snapshot_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = test_state(temp.path());
+        let app = "demo/production";
+
+        let snapshot = state.lock_for_database_snapshot(app).unwrap();
+        assert!(state.database_snapshot_running(app));
+        let waiter = tokio::spawn({
+            let state = state.clone();
+            async move {
+                state
+                    .acquire_backup_lock(app, Some(Duration::from_secs(10)))
+                    .await
+                    .map(drop)
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!waiter.is_finished(), "must wait for the snapshot");
+        drop(snapshot);
+        assert!(!state.database_snapshot_running(app));
+        waiter.await.unwrap().unwrap();
+
+        // Without a wait, and past the bound, a snapshot still means busy.
+        let snapshot = state.lock_for_database_snapshot(app).unwrap();
+        assert_eq!(
+            state.acquire_backup_lock(app, None).await.unwrap_err(),
+            "A backup operation is already in progress for demo/production."
+        );
+        let error = state
+            .acquire_backup_lock(app, Some(Duration::from_millis(50)))
+            .await
+            .unwrap_err();
+        assert!(error.contains("database snapshot of demo/production was still running"));
+        drop(snapshot);
+
+        // A full backup or restore holding the lock fails fast as before, and
+        // a database snapshot skips instead of waiting for it.
+        let full = state.acquire_backup_lock(app, None).await.unwrap();
+        let started = std::time::Instant::now();
+        let error = state
+            .acquire_backup_lock(app, Some(Duration::from_secs(10)))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            "A backup operation is already in progress for demo/production."
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(state.lock_for_database_snapshot(app).is_none());
+        assert!(!state.database_snapshot_running(app));
+        drop(full);
+    }
+
+    #[tokio::test]
+    async fn database_snapshots_skip_a_running_deploy_without_waiting() {
+        let fixture = RestoreFixture::new();
+        // Only the index is read before the deploy lock check.
+        let server = fixture.serve(1);
+        let deploy = fixture.state.get_deploy_lock(&fixture.app).await;
+        let _deploying = deploy.lock().await;
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(10),
+            fixture.state.database_snapshot_now(&fixture.app),
+        )
+        .await
+        .expect("a database snapshot must not wait for a deploy")
+        .unwrap();
+        assert!(
+            matches!(
+                &outcome,
+                databases::DatabaseSnapshotOutcome::Skipped(skip)
+                    if skip.reason == tako_core::BackupSkipReason::DeployInProgress
+            ),
+            "{outcome:?}"
+        );
+        assert!(!fixture.state.database_snapshot_running(&fixture.app));
         server.await.unwrap();
     }
 }
