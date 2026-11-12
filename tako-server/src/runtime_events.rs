@@ -220,7 +220,12 @@ async fn replace_instance_if_needed(
     // with an independent reconciliation or orphan cleanup.
     let lock = state.get_deploy_lock(app_name).await;
     let _compose_guard = if app.config.read().compose.is_some() {
-        match try_lock_deploy_for_recovery(&app, &lock) {
+        match try_lock_deploy_for_background(
+            &app,
+            &lock,
+            BackgroundWork::AutomaticRecovery,
+            Instant::now(),
+        ) {
             Some(guard) => Some(guard),
             None => return,
         }
@@ -431,14 +436,15 @@ fn survey(app: &App) -> Survey {
 }
 
 /// Whether the reconcile may restore this app's instances. A running app,
-/// and an app in `Error` that health recovery is already repairing: a failed
-/// restore or rollback can leave live instances, the health path replaces
-/// them in any state but `Stopped`, and once it backs off it leaves the next
-/// replacement to the reconcile.
+/// and an app in `Error` that still has instances or is being repaired: a
+/// failed restore or rollback can leave live instances, the health path
+/// replaces them in any state but `Stopped`, and once it backs off it leaves
+/// the next replacement to the reconcile. An app in `Error` with neither was
+/// left stopped on purpose.
 fn reconciles(app: &App) -> bool {
     match app.state() {
         AppState::Running => true,
-        AppState::Error => app.has_recovery_history(),
+        AppState::Error => app.has_recovery_history() || !app.get_instances().is_empty(),
         AppState::Idle | AppState::Deploying | AppState::Stopped => false,
     }
 }
@@ -488,90 +494,116 @@ pub(crate) fn reconcile_instances(
         .collect()
 }
 
-/// How often an operator operation looks again while recovery holds the
-/// deploy lock.
-const OPERATOR_DEPLOY_LOCK_POLL: Duration = Duration::from_millis(50);
+/// How long an operator operation waits for background work to release the
+/// deploy lock: below the CLI's 5 s timeout for quick commands.
+const OPERATOR_DEPLOY_LOCK_WAIT: Duration =
+    Duration::from_millis(if cfg!(test) { 200 } else { 2000 });
+/// How long background work then leaves the lock to the operator's retry.
+const OPERATOR_PRIORITY_WINDOW: Duration = Duration::from_secs(60);
 
-/// The per-app deploy lock, held by automatic recovery. An operator deploy or
-/// secrets update that finds the lock held this way waits for it instead of
-/// failing; see `ServerState::lock_deploy_for_operator`.
-pub(crate) struct RecoveryDeployLock<'a> {
-    // Fields drop in order: the lock is released before the holder count
-    // drops, so the count covers the whole time the lock is held.
-    _guard: tokio::sync::MutexGuard<'a, ()>,
-    _holder: CountGuard<'a>,
+/// Work that takes an app's deploy lock on its own, not for an operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BackgroundWork {
+    AutomaticRecovery,
+    #[allow(dead_code)] // For scheduled backups; operator backups are operator work.
+    ScheduledBackup,
 }
 
-/// Increments a counter for as long as it lives.
-struct CountGuard<'a>(&'a std::sync::atomic::AtomicU32);
-
-impl<'a> CountGuard<'a> {
-    fn new(count: &'a std::sync::atomic::AtomicU32) -> Self {
-        count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Self(count)
+impl BackgroundWork {
+    fn busy_message(self, app_name: &str) -> String {
+        let (work, pauses) = match self {
+            Self::AutomaticRecovery => ("Automatic recovery", "Recovery"),
+            Self::ScheduledBackup => ("A scheduled backup", "Scheduled backups"),
+        };
+        format!(
+            "{work} of {app_name} is in progress; retry in a moment. \
+             {pauses} will pause to let the next attempt through."
+        )
     }
 }
 
-impl Drop for CountGuard<'_> {
+/// Who holds an app's deploy lock for background work, and until when
+/// background work leaves it to an operator operation it turned away.
+#[derive(Debug, Default)]
+pub(crate) struct DeployLockAccess {
+    background: Option<BackgroundWork>,
+    operator_priority_until: Option<Instant>,
+}
+
+/// The per-app deploy lock, held by background work.
+pub(crate) struct BackgroundDeployLock<'a> {
+    app: &'a App,
+    guard: Option<tokio::sync::MutexGuard<'a, ()>>,
+}
+
+impl Drop for BackgroundDeployLock<'_> {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        // Release and forget the holder at once, so an operator never takes
+        // another holder for background work.
+        let mut access = self.app.deploy_lock_access.lock();
+        self.guard.take();
+        access.background = None;
     }
 }
 
-/// Try the deploy lock for automatic recovery. Yields to an operator
-/// operation that is already waiting for it.
-pub(crate) fn try_lock_deploy_for_recovery<'a>(
+/// Try the deploy lock for background work. Never waits: `None` while the
+/// lock is held or an operator has priority, and the caller tries later.
+pub(crate) fn try_lock_deploy_for_background<'a>(
     app: &'a App,
     lock: &'a tokio::sync::Mutex<()>,
-) -> Option<RecoveryDeployLock<'a>> {
-    if app
-        .operators_awaiting_deploy_lock
-        .load(std::sync::atomic::Ordering::SeqCst)
-        != 0
+    work: BackgroundWork,
+    now: Instant,
+) -> Option<BackgroundDeployLock<'a>> {
+    let mut access = app.deploy_lock_access.lock();
+    if access
+        .operator_priority_until
+        .is_some_and(|until| now < until)
     {
         return None;
     }
-    // Counted before trying, so an operator that finds the lock busy never
-    // mistakes recovery for another operator operation.
-    let holder = CountGuard::new(&app.recovery_deploy_lock_holders);
     let guard = lock.try_lock().ok()?;
-    Some(RecoveryDeployLock {
-        _guard: guard,
-        _holder: holder,
+    access.background = Some(work);
+    Some(BackgroundDeployLock {
+        app,
+        guard: Some(guard),
     })
 }
 
 impl ServerState {
-    /// Take the deploy lock for an operator deploy or secrets update. When
-    /// another operator operation holds it this fails at once, as before.
-    /// When automatic recovery holds it (a Compose reconcile can take the
-    /// startup timeout), wait up to the app's startup timeout: a crash loop
-    /// must not turn away the deploy that fixes it.
+    /// Take the deploy lock for an operator operation, or fail at once when
+    /// another operator operation holds it. Background work holding it gets
+    /// a moment to finish; past that the operation fails with a message that
+    /// names the work. Either way background work leaves the lock to the
+    /// operator's retry for `OPERATOR_PRIORITY_WINDOW`.
     pub(crate) async fn lock_deploy_for_operator<'a>(
         &self,
         app_name: &str,
         lock: &'a tokio::sync::Mutex<()>,
-    ) -> Option<tokio::sync::MutexGuard<'a, ()>> {
-        if let Ok(guard) = lock.try_lock() {
-            return Some(guard);
-        }
-        let app = self.app_manager.get_app(app_name)?;
-        let _waiting = CountGuard::new(&app.operators_awaiting_deploy_lock);
-        let deadline = tokio::time::Instant::now() + app.config.read().startup_timeout;
-        loop {
+    ) -> Result<tokio::sync::MutexGuard<'a, ()>, String> {
+        let busy = || {
+            format!("Deploy already in progress for app '{app_name}'. Please wait and try again.")
+        };
+        let Some(app) = self.app_manager.get_app(app_name) else {
+            return lock.try_lock().map_err(|_| busy());
+        };
+        {
+            let mut access = app.deploy_lock_access.lock();
             if let Ok(guard) = lock.try_lock() {
-                return Some(guard);
+                access.operator_priority_until = None;
+                return Ok(guard);
             }
-            if app
-                .recovery_deploy_lock_holders
-                .load(std::sync::atomic::Ordering::SeqCst)
-                == 0
-                || tokio::time::Instant::now() >= deadline
-            {
-                return None;
-            }
-            tokio::time::sleep(OPERATOR_DEPLOY_LOCK_POLL).await;
+            access.background.ok_or_else(busy)?;
+            access.operator_priority_until = Some(Instant::now() + OPERATOR_PRIORITY_WINDOW);
         }
+        let acquired = tokio::time::timeout(OPERATOR_DEPLOY_LOCK_WAIT, lock.lock()).await;
+        let mut access = app.deploy_lock_access.lock();
+        let guard = acquired.map_err(|_| {
+            access
+                .background
+                .map_or_else(busy, |work| work.busy_message(app_name))
+        })?;
+        access.operator_priority_until = None;
+        Ok(guard)
     }
 }
 
@@ -615,9 +647,11 @@ impl ServerState {
 fn claim_instances<T>(
     app: &App,
     lock: &tokio::sync::Mutex<()>,
+    now: Instant,
     claim: impl FnOnce() -> T,
 ) -> Option<T> {
-    let mutation = try_lock_deploy_for_recovery(app, lock);
+    let mutation =
+        try_lock_deploy_for_background(app, lock, BackgroundWork::AutomaticRecovery, now);
     let claims_open = app.recovery_claims_open.lock();
     if mutation.is_none() && !*claims_open {
         return None;
@@ -662,7 +696,9 @@ async fn recover_app(state: &ServerState, app: &Arc<App>, now: Instant) {
     let lock = state.get_deploy_lock(&app_name).await;
 
     if app.config.read().compose.is_some() {
-        let Some(_mutation) = try_lock_deploy_for_recovery(app, &lock) else {
+        let Some(_mutation) =
+            try_lock_deploy_for_background(app, &lock, BackgroundWork::AutomaticRecovery, now)
+        else {
             return;
         };
         let Ok(_recovering) = app.recovery_gate.try_lock() else {
@@ -690,13 +726,13 @@ async fn recover_app(state: &ServerState, app: &Arc<App>, now: Instant) {
     let Ok(_recovering) = app.recovery_gate.try_lock() else {
         return;
     };
-    // A native start can take as long as the startup timeout, and deploys
-    // and secrets updates wait while recovery holds the deploy lock, so only
-    // claim each slot under it and start outside: a rollout that arrives
+    // A native start can take as long as the startup timeout, and operator
+    // operations do not wait that long for the deploy lock, so only claim
+    // each slot under it and start outside: a rollout that arrives
     // meanwhile finds the starting instance and retires it with the old ones.
     // The health path starts native replacements without that lock, so a
     // backup holding it must not hold recovery back either.
-    let Some(retired) = claim_instances(app, &lock, || retire_dead(app, &app_name)) else {
+    let Some(retired) = claim_instances(app, &lock, now, || retire_dead(app, &app_name)) else {
         return;
     };
     for instance in retired {
@@ -708,7 +744,7 @@ async fn recover_app(state: &ServerState, app: &Arc<App>, now: Instant) {
         if app.restart_backoff_remaining(now).is_some() {
             break;
         }
-        let claimed = claim_instances(app, &lock, || {
+        let claimed = claim_instances(app, &lock, now, || {
             if !reconciles(app)
                 || state
                     .drain_requested
