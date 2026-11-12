@@ -182,12 +182,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         workflows.set_channel_publisher(std::sync::Arc::new(
             move |request: tako_workflows::ChannelPublishRequest<'_>| {
                 let app = request.app;
-                let publication = dev_channels::trusted_publication(request)
-                    .map_err(|error| error.to_string())?;
+                let publication = dev_channels::trusted_publication(request)?;
                 channels
                     .publish(app, &publication)
                     .map(|msg| serde_json::to_value(msg).unwrap_or(serde_json::Value::Null))
-                    .map_err(|e| e.to_string())
+                    .map_err(tako_core::SocketError::from)
             },
         ));
     }

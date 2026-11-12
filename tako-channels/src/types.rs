@@ -308,10 +308,53 @@ pub enum ChannelError {
     StreamClosed,
     #[error("bad request: {0}")]
     BadRequest(String),
+    /// Publish params are malformed or fail the channel's params schema.
+    #[error("bad request: {0}")]
+    ParamsInvalid(String),
+    /// The publisher's loaded build does not define the channel.
+    #[error("bad request: channel '{channel}' is not defined by build {build}")]
+    Undeclared { channel: String, build: String },
     #[error("channel auth unavailable")]
     AuthUnavailable,
+    /// The app already keeps the most streams a store tracks.
+    #[error(
+        "storage error: channel stream limit reached: an app keeps at most {} streams; \
+         idle streams are released after their connection lifetime",
+        crate::store::MAX_STREAMS
+    )]
+    StreamLimit,
     #[error("storage error: {0}")]
     Storage(String),
+}
+
+impl ChannelError {
+    /// The internal-socket code a publish or close failing with this error
+    /// replies with. Failures an SDK has no reason to branch on have none.
+    pub fn socket_code(&self) -> Option<tako_core::ErrorCode> {
+        use tako_core::ErrorCode;
+        match self {
+            Self::StreamClosed => Some(ErrorCode::ChannelClosed),
+            Self::NotDefined | Self::Undeclared { .. } => Some(ErrorCode::ChannelUnknown),
+            Self::ParamsInvalid(_) => Some(ErrorCode::ChannelParamsInvalid),
+            Self::BadRequest(_) => Some(ErrorCode::InvalidRequest),
+            Self::StreamLimit | Self::AuthUnavailable => Some(ErrorCode::Unavailable),
+            Self::InvalidPath
+            | Self::Unsupported
+            | Self::Unauthorized
+            | Self::Forbidden
+            | Self::StaleCursor
+            | Self::Storage(_) => None,
+        }
+    }
+}
+
+impl From<ChannelError> for tako_core::SocketError {
+    fn from(error: ChannelError) -> Self {
+        Self {
+            code: error.socket_code(),
+            message: error.to_string(),
+        }
+    }
 }
 
 impl From<rusqlite::Error> for ChannelError {

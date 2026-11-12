@@ -301,7 +301,7 @@ fn parse_list_apps_response(response: Response) -> Result<Vec<String>, String> {
             names.dedup();
             Ok(names)
         }
-        Response::Error { message } => Err(format!("tako-server error (list): {}", message)),
+        Response::Error { message, .. } => Err(format!("tako-server error (list): {}", message)),
     }
 }
 
@@ -622,7 +622,7 @@ async fn delete_from_server(
 fn parse_delete_response(response: Response) -> Result<(), String> {
     match response {
         Response::Ok { .. } => Ok(()),
-        Response::Error { message } => Err(format!("tako-server error (delete): {}", message)),
+        Response::Error { message, .. } => Err(format!("tako-server error (delete): {}", message)),
     }
 }
 

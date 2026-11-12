@@ -352,7 +352,7 @@ fn parse_ok_unit_response(response_str: String) -> SshResult<()> {
         serde_json::from_str(&response_str).map_err(|e| SshError::CommandFailed(e.to_string()))?;
     match response {
         Response::Ok { .. } => Ok(()),
-        Response::Error { message } => Err(SshError::CommandFailed(message)),
+        Response::Error { message, .. } => Err(SshError::CommandFailed(message)),
     }
 }
 
@@ -363,7 +363,7 @@ fn parse_ok_data_response<T: serde::de::DeserializeOwned>(response_str: String) 
         Response::Ok { data } => {
             serde_json::from_value(data).map_err(|e| SshError::CommandFailed(e.to_string()))
         }
-        Response::Error { message } => Err(SshError::CommandFailed(message)),
+        Response::Error { message, .. } => Err(SshError::CommandFailed(message)),
     }
 }
 

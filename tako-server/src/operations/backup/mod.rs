@@ -1610,7 +1610,7 @@ mod tests {
         let response = update_secrets().await;
         // CodeQL[rust/cleartext-logging]: this backup fixture supplies no app secrets; assertions print test responses.
         assert!(
-            matches!(&response, Response::Error { message } if message.starts_with("A scheduled backup of")),
+            matches!(&response, Response::Error { message, .. } if message.starts_with("A scheduled backup of")),
             "{response:?}"
         );
         drop(held);

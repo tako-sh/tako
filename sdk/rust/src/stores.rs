@@ -69,7 +69,8 @@ pub enum StoreError {
     Timeout,
     Io(std::io::Error),
     Protocol,
-    Rejected,
+    /// The server refused the invalidation, with its reason when it sent one.
+    Rejected(Option<crate::ErrorCode>),
 }
 
 impl StoreError {
@@ -90,7 +91,7 @@ impl fmt::Display for StoreError {
             Self::Timeout => f.write_str("Store invalidation timed out"),
             Self::Io(error) => write!(f, "Store invalidation transport failed: {error}"),
             Self::Protocol => f.write_str("invalid Store invalidation response"),
-            Self::Rejected => f.write_str("Store invalidation was rejected"),
+            Self::Rejected(_) => f.write_str("Store invalidation was rejected"),
         }
     }
 }
@@ -495,7 +496,7 @@ fn parse_rpc_response(bytes: &[u8]) -> Result<(), StoreError> {
     let response: Value = serde_json::from_slice(bytes).map_err(|_| StoreError::Protocol)?;
     match response.get("status").and_then(Value::as_str) {
         Some("ok") => Ok(()),
-        Some("error") => Err(StoreError::Rejected),
+        Some("error") => Err(StoreError::Rejected(crate::error::reply_code(&response))),
         _ => Err(StoreError::Protocol),
     }
 }

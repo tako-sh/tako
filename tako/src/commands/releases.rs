@@ -378,14 +378,14 @@ fn parse_release_list_response(response: Response) -> Result<Vec<ReleaseInfo>, S
                 .map_err(|e| format!("invalid list_releases response: {}", e))?;
             Ok(parsed.releases)
         }
-        Response::Error { message } => Err(message),
+        Response::Error { message, .. } => Err(message),
     }
 }
 
 fn parse_ok_response(response: Response) -> Result<(), String> {
     match response {
         Response::Ok { .. } => Ok(()),
-        Response::Error { message } => Err(message),
+        Response::Error { message, .. } => Err(message),
     }
 }
 

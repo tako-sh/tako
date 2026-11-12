@@ -344,7 +344,7 @@ async fn status_reports_restarts_the_real_exit_and_the_next_attempt() {
         match state.handle_command(Command::Status { app: name }).await {
             Response::Ok { data } => data,
             // CodeQL[rust/cleartext-logging]: this isolated recovery fixture supplies no app secrets; assertions print test responses.
-            Response::Error { message } => panic!("{message}"),
+            Response::Error { message, .. } => panic!("{message}"),
         }
     };
     assert!(
@@ -764,7 +764,7 @@ async fn operators_get_through_automatic_recovery_without_waiting_for_it() {
         )
     };
     let error = |response: Response| match response {
-        Response::Error { message } => message,
+        Response::Error { message, .. } => message,
         // CodeQL[rust/cleartext-logging]: this recovery fixture supplies only a fabricated secret; update_secrets responses never echo secret values.
         Response::Ok { data } => panic!("expected an error, got {data}"),
     };
@@ -866,7 +866,7 @@ async fn operators_get_through_a_scheduled_backup_and_recovery_claims_slots_duri
     let held = scheduled(Instant::now()).await.unwrap();
     match update_secrets().await {
         // CodeQL[rust/cleartext-logging]: this recovery fixture supplies only a fabricated secret; update_secrets responses never echo secret values.
-        Response::Error { message } => assert_eq!(message, backing_up),
+        Response::Error { message, .. } => assert_eq!(message, backing_up),
         Response::Ok { .. } => panic!("the operator took a held deploy lock"),
     }
     assert!(priority().is_some());

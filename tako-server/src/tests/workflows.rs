@@ -459,7 +459,7 @@ async fn operator_workflow_commands_inspect_retry_and_cancel_runs() {
         match response {
             Response::Ok { data } => data,
             // CodeQL[rust/cleartext-logging]: this isolated workflow fixture supplies no app secrets; assertions print test responses.
-            Response::Error { message } => panic!("unexpected error: {message}"),
+            Response::Error { message, .. } => panic!("unexpected error: {message}"),
         }
     }
     fn error(response: Response) -> String {

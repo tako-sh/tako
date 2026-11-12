@@ -5,9 +5,8 @@ use std::{
     sync::{Arc, mpsc},
     time::{Duration, Instant},
 };
-use tako_channels::{
-    ChannelError, ChannelLifecycle, ChannelMessage, ChannelPublishPayload, TrustedPublication,
-};
+use tako_channels::{ChannelLifecycle, ChannelMessage, ChannelPublishPayload, TrustedPublication};
+use tako_core::{ErrorCode, SocketError};
 use tako_network::AppEnv;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use zeroize::Zeroizing;
@@ -21,7 +20,7 @@ struct Publication {
     lifecycle: Option<ChannelLifecycle>,
     postgres_url: Option<Zeroizing<String>>,
     deadline: Instant,
-    reply: mpsc::SyncSender<Result<ChannelMessage, String>>,
+    reply: mpsc::SyncSender<Result<ChannelMessage, SocketError>>,
     _bytes: OwnedSemaphorePermit,
 }
 
@@ -46,9 +45,9 @@ impl BlockingPublisher {
             .spawn(move || {
                 while let Ok(publication) = receiver.recv() {
                     if publication.deadline <= Instant::now() {
-                        let _ = publication.reply.send(Err(
-                            "native channel publication expired before dispatch".into(),
-                        ));
+                        let _ = publication.reply.send(Err(busy(
+                            "native channel publication expired before dispatch",
+                        )));
                         continue;
                     }
                     let remaining = publication
@@ -59,7 +58,7 @@ impl BlockingPublisher {
                             tokio::time::timeout(remaining, send(&*link, &publication)).await
                         })
                         .unwrap_or_else(|_| {
-                            Err("native channel publication acknowledgement timed out".into())
+                            Err(busy("native channel publication acknowledgement timed out"))
                         });
                     let _ = publication.reply.send(result);
                 }
@@ -76,7 +75,7 @@ impl BlockingPublisher {
         app: &str,
         publication: &TrustedPublication,
         postgres_url: Option<String>,
-    ) -> Result<serde_json::Value, String> {
+    ) -> Result<serde_json::Value, SocketError> {
         let deadline = Instant::now() + DEADLINE;
         let app = app_scope(app).map_err(|_| "invalid channel app scope")?;
         let postgres_url = postgres_url.map(Zeroizing::new);
@@ -86,18 +85,18 @@ impl BlockingPublisher {
                 .as_ref()
                 .is_some_and(|url| url.len() > 16 * 1024)
         {
-            return Err("native channel publication exceeds limits".into());
+            return Err(too_large());
         }
-        let encoded =
-            serde_json::to_vec(&publication.payload).map_err(|_| "invalid channel payload")?;
+        let encoded = serde_json::to_vec(&publication.payload)
+            .map_err(|_| SocketError::new(ErrorCode::InvalidRequest, "invalid channel payload"))?;
         if encoded.len() > MAX_PAYLOAD {
-            return Err("native channel publication exceeds limits".into());
+            return Err(too_large());
         }
         let bytes = self
             .budget
             .clone()
             .try_acquire_many_owned((encoded.len() + 20 * 1024) as u32)
-            .map_err(|_| "native channel publisher is busy")?;
+            .map_err(|_| busy("native channel publisher is busy"))?;
         let (reply, receive) = mpsc::sync_channel(1);
         self.sender
             .try_send(Publication {
@@ -110,15 +109,30 @@ impl BlockingPublisher {
                 reply,
                 _bytes: bytes,
             })
-            .map_err(|_| "native channel publisher is unavailable or busy")?;
+            .map_err(|_| busy("native channel publisher is unavailable or busy"))?;
         let message = receive
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .map_err(|_| "native channel publication acknowledgement timed out".to_string())??;
+            .map_err(|_| busy("native channel publication acknowledgement timed out"))??;
         serde_json::to_value(publication.stream.public(message))
             .map_err(|_| "invalid native channel acknowledgement".into())
     }
 }
-async fn send(link: &dyn BrokerLink, publication: &Publication) -> Result<ChannelMessage, String> {
+/// The publisher or broker cannot take the publication now; it may later.
+fn busy(message: &str) -> SocketError {
+    SocketError::new(ErrorCode::Unavailable, message)
+}
+
+fn too_large() -> SocketError {
+    SocketError::new(
+        ErrorCode::InvalidRequest,
+        "native channel publication exceeds limits",
+    )
+}
+
+async fn send(
+    link: &dyn BrokerLink,
+    publication: &Publication,
+) -> Result<ChannelMessage, SocketError> {
     link.register(
         publication.app.clone(),
         publication
@@ -127,7 +141,7 @@ async fn send(link: &dyn BrokerLink, publication: &Publication) -> Result<Channe
             .map(|url| url.to_owned()),
     )
     .await
-    .map_err(|_| "native channel registration rejected or unavailable")?;
+    .map_err(|_| busy("native channel registration rejected or unavailable"))?;
     // The lifecycle travels with the publish: the broker applies it only once
     // the stream accepts the message.
     link.publish(
@@ -141,13 +155,12 @@ async fn send(link: &dyn BrokerLink, publication: &Publication) -> Result<Channe
         publication.lifecycle.clone(),
     )
     .await
-    .map_err(|error| {
-        if crate::native_channels::is_stream_closed(&error) {
-            ChannelError::StreamClosed.to_string()
-        } else {
-            "native channel publication rejected or acknowledgement lost".into()
-        }
-    })
+    .map_err(
+        |error| match crate::native_channels::publish_refusal(&error) {
+            Some(refusal) => refusal.into(),
+            None => "native channel publication rejected or acknowledgement lost".into(),
+        },
+    )
 }
 
 #[cfg(test)]

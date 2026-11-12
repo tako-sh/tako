@@ -127,7 +127,7 @@ export class WorkflowsClient {
 
   /** Extend the lease for a running workflow run. */
   async heartbeat(id: RunId, workerId: string, leaseMs: number): Promise<void> {
-    await this.call({
+    await this.workerWrite({
       command: "heartbeat_run",
       app: this.app,
       id,
@@ -138,7 +138,7 @@ export class WorkflowsClient {
 
   /** Persist the memoized result for one durable step. */
   async saveStep(id: RunId, workerId: string, stepName: string, result: unknown): Promise<void> {
-    await this.call({
+    await this.workerWrite({
       command: "save_step",
       app: this.app,
       id,
@@ -150,7 +150,7 @@ export class WorkflowsClient {
 
   /** Mark a workflow run as succeeded. */
   async complete(id: RunId, workerId: string, result: unknown = null): Promise<void> {
-    await this.call({
+    await this.workerWrite({
       command: "complete_run",
       app: this.app,
       id,
@@ -170,7 +170,7 @@ export class WorkflowsClient {
 
   /** Mark a workflow run as cancelled. */
   async cancel(id: RunId, workerId: string, reason?: string | null): Promise<void> {
-    await this.call({
+    await this.workerWrite({
       command: "cancel_run",
       app: this.app,
       id,
@@ -187,7 +187,7 @@ export class WorkflowsClient {
     nextRunAt: Date | null,
     finalize: boolean,
   ): Promise<void> {
-    await this.call({
+    await this.workerWrite({
       command: "fail_run",
       app: this.app,
       id,
@@ -200,7 +200,7 @@ export class WorkflowsClient {
 
   /** Defer a workflow run until a time, or indefinitely when `wakeAt` is null. */
   async defer(id: RunId, workerId: string, wakeAt: Date | null): Promise<void> {
-    await this.call({
+    await this.workerWrite({
       command: "defer_run",
       app: this.app,
       id,
@@ -217,7 +217,7 @@ export class WorkflowsClient {
     eventName: string,
     timeoutAt: Date | null,
   ): Promise<void> {
-    await this.call({
+    await this.workerWrite({
       command: "wait_for_event",
       app: this.app,
       id,
@@ -233,7 +233,23 @@ export class WorkflowsClient {
   private call(cmd: unknown): Promise<unknown> {
     return callInternal(this.socketPath, cmd);
   }
+
+  /**
+   * A write that only the run's current claim may make. Only its
+   * `run_not_owned` rejection means ownership was lost: the same code on any
+   * other reply, or that text in any message, does not.
+   */
+  private async workerWrite(cmd: unknown): Promise<unknown> {
+    try {
+      return await this.call(cmd);
+    } catch (err) {
+      if (err instanceof TakoError && err.reason === "run_not_owned") ownershipLost.add(err);
+      throw err;
+    }
+  }
 }
+
+const ownershipLost = new WeakSet<TakoError>();
 
 /**
  * True when the server rejected a worker write because this claim no longer
@@ -243,9 +259,7 @@ export class WorkflowsClient {
  * @internal
  */
 export function isStaleOwnerError(err: unknown): boolean {
-  if (!(err instanceof TakoError) || err.code !== "TAKO_RPC_ERROR") return false;
-  const cause = (err as { cause?: unknown }).cause;
-  return cause instanceof Error && cause.message.includes("stale worker");
+  return err instanceof TakoError && ownershipLost.has(err);
 }
 
 interface RawRun {

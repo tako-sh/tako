@@ -35,7 +35,10 @@ drain test also supports `go test -race -run TestWorkerHonorsConcurrencyAndDrain
 
 Supply `EnqueueOpts{ID: &id}` to use a caller-defined run ID. Repeating the ID
 with the same workflow and payload reuses the retained run in any status;
-different inputs conflict. Omit `ID` to generate one. IDs are unique within
+different inputs conflict, and the error matches `ErrRunIDConflict` with
+`errors.Is`. Server rejections are `*ServerError` values whose `Code` the
+sentinels (`ErrRunNotOwned`, `ErrInvalidRequest`, `ErrUnavailable`, ...)
+match. Omit `ID` to generate one. IDs are unique within
 the app and environment, must contain 1–255 bytes with no NUL characters,
 and remain reserved until history is deleted. Finished history defaults to
 184 days; configure `[workflows].retention` or use `"forever"` to change it.

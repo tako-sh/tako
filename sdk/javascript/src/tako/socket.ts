@@ -25,13 +25,15 @@ export const INTERNAL_SOCKET_ENV = "TAKO_INTERNAL_SOCKET";
 export const APP_NAME_ENV = "TAKO_APP_NAME";
 export const BUILD_ENV = "TAKO_BUILD";
 
-export { TakoError, type TakoErrorCode } from "./error";
-import { TakoError, type TakoErrorCode } from "./error";
+export { TakoError, type TakoErrorCode, type TakoErrorReason } from "./error";
+import { TakoError, takoErrorReason, type TakoErrorCode } from "./error";
 
 interface RpcResponse {
   status: "ok" | "error";
   data?: unknown;
   message?: string;
+  /** Machine-readable reason, present only where an SDK may need to branch. */
+  code?: string;
 }
 
 const logger = createLogger("sdk.rpc");
@@ -171,9 +173,11 @@ export async function callInternal(socketPath: string, cmd: unknown): Promise<un
     typeof cmd === "object" && cmd !== null && "command" in cmd && cmd.command === "network_call";
   const resp = await internalSocketPool(socketPath, network).call(cmd);
   if (resp.status === "error") {
-    logger.error("rpc rejected", { code: "TAKO_RPC_ERROR", message: resp.message });
+    const reason = takoErrorReason(resp.code);
+    logger.error("rpc rejected", { code: "TAKO_RPC_ERROR", reason, message: resp.message });
     throw new TakoError("TAKO_RPC_ERROR", "Internal Server Error", {
       cause: resp.message ? new Error(resp.message) : undefined,
+      ...(reason !== undefined && { reason }),
     });
   }
   return resp.data ?? null;

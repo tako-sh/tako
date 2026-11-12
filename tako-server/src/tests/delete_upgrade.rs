@@ -107,7 +107,7 @@ async fn delete_command_rejects_invalid_app_name() {
         })
         .await;
 
-    let Response::Error { message } = response else {
+    let Response::Error { message, .. } = response else {
         panic!("expected invalid app name to be rejected");
     };
     // CodeQL[rust/cleartext-logging]: this invalid-name delete fixture supplies no secrets.
@@ -136,7 +136,7 @@ async fn upgrading_mode_blocks_mutating_commands() {
         })
         .await;
 
-    let Response::Error { message } = response else {
+    let Response::Error { message, .. } = response else {
         panic!("expected blocked mutating command while upgrading");
     };
     assert!(message.contains("Server is upgrading"));
@@ -326,7 +326,7 @@ async fn enter_and_exit_upgrading_commands_use_owner_lock() {
             owner: "controller-b".to_string(),
         })
         .await;
-    let Response::Error { message } = reject else {
+    let Response::Error { message, .. } = reject else {
         panic!("expected lock owner rejection");
     };
     assert!(message.contains("already upgrading"));

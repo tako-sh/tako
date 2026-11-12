@@ -52,7 +52,7 @@ async fn native_deploy_must_stop_previous_compose_even_without_http_instances() 
             force: false,
         })
         .await;
-    let Response::Error { message } = response else {
+    let Response::Error { message, .. } = response else {
         panic!("expected stack cleanup failure");
     };
     assert!(message.starts_with("Failed to stop the previous stack:"));
@@ -92,7 +92,7 @@ async fn deploy_rejects_invalid_app_name() {
         })
         .await;
 
-    let Response::Error { message } = response else {
+    let Response::Error { message, .. } = response else {
         panic!("expected invalid app name to be rejected");
     };
     // CodeQL[rust/cleartext-logging]: this isolated deploy fixture supplies no app secrets; assertions print test responses.
@@ -225,7 +225,7 @@ async fn failed_deploy_does_not_persist_ssl_credentials() {
         })
         .await;
 
-    let Response::Error { message } = response else {
+    let Response::Error { message, .. } = response else {
         panic!("expected invalid release to be rejected");
     };
     // CodeQL[rust/cleartext-logging]: this isolated deploy fixture supplies no app secrets; assertions print test responses.
@@ -267,7 +267,7 @@ async fn deploy_rejects_release_path_outside_managed_root() {
         })
         .await;
 
-    let Response::Error { message } = response else {
+    let Response::Error { message, .. } = response else {
         panic!("expected out-of-root deploy path to be rejected");
     };
     // CodeQL[rust/cleartext-logging]: this isolated deploy fixture supplies no app secrets; assertions print test responses.
@@ -316,7 +316,7 @@ async fn deploy_rejects_invalid_release_version() {
         })
         .await;
 
-    let Response::Error { message } = response else {
+    let Response::Error { message, .. } = response else {
         panic!("expected invalid release version to be rejected");
     };
     // CodeQL[rust/cleartext-logging]: this isolated deploy fixture supplies no app secrets; assertions print test responses.
@@ -372,7 +372,7 @@ async fn deploy_rejects_protocol_mismatch_before_registering_app() {
         })
         .await;
 
-    let Response::Error { message } = response else {
+    let Response::Error { message, .. } = response else {
         // CodeQL[rust/cleartext-logging]: this isolated deploy fixture supplies no app secrets; assertions print test responses.
         panic!("expected protocol mismatch, got: {response:?}");
     };

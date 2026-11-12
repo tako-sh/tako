@@ -241,7 +241,7 @@ async fn query_connected_app_status(
                     error = Some(format!("Failed to parse app status: {}", e));
                 }
             },
-            Ok(Response::Error { message }) => {
+            Ok(Response::Error { message, .. }) => {
                 if !message.contains("not found") {
                     error = Some(message);
                 }
@@ -347,7 +347,7 @@ pub(super) fn parse_list_apps_response(response: Response) -> Result<Vec<String>
             names.dedup();
             Ok(names)
         }
-        Response::Error { message } => Err(format!("tako-server error (list): {}", message)),
+        Response::Error { message, .. } => Err(format!("tako-server error (list): {}", message)),
     }
 }
 
@@ -358,7 +358,9 @@ fn parse_list_releases_response(response: Response) -> Result<Vec<ReleaseInfo>, 
                 .map_err(|e| format!("invalid list_releases response: {}", e))?;
             Ok(parsed.releases)
         }
-        Response::Error { message } => Err(format!("tako-server error (list_releases): {message}")),
+        Response::Error { message, .. } => {
+            Err(format!("tako-server error (list_releases): {message}"))
+        }
     }
 }
 

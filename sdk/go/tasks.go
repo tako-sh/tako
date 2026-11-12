@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"strings"
 	"time"
 )
 
@@ -187,21 +186,20 @@ func (c *Client) Claim(ctx context.Context, workerID string, names []string, lea
 // ownership identifier returned in Run.WorkerID; if the lease was reclaimed by another
 // worker, the call returns an error.
 func (c *Client) Heartbeat(ctx context.Context, id, workerID string, leaseMs uint64) error {
-	_, err := c.call(ctx, map[string]any{
+	return c.workerWrite(ctx, map[string]any{
 		"command":   "heartbeat_run",
 		"app":       c.app,
 		"id":        id,
 		"worker_id": workerID,
 		"lease_ms":  leaseMs,
 	})
-	return err
 }
 
 // SaveStep persists a single completed step result. Guarded by `workerId`
 // so a stale worker (past its lease) can't scribble into a different
 // worker's run. First-write-wins on (run_id, step_name).
 func (c *Client) SaveStep(ctx context.Context, id, workerID, stepName string, result any) error {
-	_, err := c.call(ctx, map[string]any{
+	return c.workerWrite(ctx, map[string]any{
 		"command":   "save_step",
 		"app":       c.app,
 		"id":        id,
@@ -209,20 +207,18 @@ func (c *Client) SaveStep(ctx context.Context, id, workerID, stepName string, re
 		"step_name": stepName,
 		"result":    result,
 	})
-	return err
 }
 
 // Complete marks the run succeeded and saves result (any JSON-encodable
 // value; nil saves null) as its retained outcome. Guarded by `workerId`.
 func (c *Client) Complete(ctx context.Context, id, workerID string, result any) error {
-	_, err := c.call(ctx, map[string]any{
+	return c.workerWrite(ctx, map[string]any{
 		"command":   "complete_run",
 		"result":    result,
 		"app":       c.app,
 		"id":        id,
 		"worker_id": workerID,
 	})
-	return err
 }
 
 // RunResult is the retained outcome of a workflow run.
@@ -279,8 +275,7 @@ func (c *Client) Cancel(ctx context.Context, id, workerID string, reason *string
 	if reason != nil {
 		body["reason"] = *reason
 	}
-	_, err := c.call(ctx, body)
-	return err
+	return c.workerWrite(ctx, body)
 }
 
 // Defer parks the run for later. nil wakeAt = parked indefinitely.
@@ -296,8 +291,7 @@ func (c *Client) Defer(ctx context.Context, id, workerID string, wakeAt *time.Ti
 	if wakeAt != nil {
 		body["wake_at_ms"] = wakeAt.UnixMilli()
 	}
-	_, err := c.call(ctx, body)
-	return err
+	return c.workerWrite(ctx, body)
 }
 
 // WaitForEvent parks the run on a named event. Resumes when a matching
@@ -317,8 +311,7 @@ func (c *Client) WaitForEvent(
 	if timeoutAt != nil {
 		body["timeout_at_ms"] = timeoutAt.UnixMilli()
 	}
-	_, err := c.call(ctx, body)
-	return err
+	return c.workerWrite(ctx, body)
 }
 
 // Signal delivers an event payload, waking every parked WaitForEvent with
@@ -370,8 +363,7 @@ func (c *Client) Fail(
 	} else {
 		body["next_run_at_ms"] = nil
 	}
-	_, err := c.call(ctx, body)
-	return err
+	return c.workerWrite(ctx, body)
 }
 
 func optsToWire(o EnqueueOpts) map[string]any {
@@ -392,6 +384,7 @@ type wireResponse struct {
 	Status  string          `json:"status"`
 	Data    json.RawMessage `json:"data,omitempty"`
 	Message string          `json:"message,omitempty"`
+	Code    string          `json:"code,omitempty"`
 }
 
 func (c *Client) call(ctx context.Context, cmd map[string]any) (json.RawMessage, error) {
@@ -430,20 +423,34 @@ func (c *Client) call(ctx context.Context, cmd map[string]any) (json.RawMessage,
 		if msg == "" {
 			msg = "rpc failed"
 		}
-		if strings.Contains(msg, "stale worker") {
-			return nil, &staleOwnerError{message: "tako: " + msg}
-		}
-		return nil, errors.New("tako: " + msg)
+		return nil, &ServerError{Code: resp.Code, Message: msg}
 	}
 	return resp.Data, nil
+}
+
+// workerWrite sends a write only the run's current claim may make. Only its
+// run_not_owned rejection means the claim lost the run: the same code on any
+// other reply, or that text in any message, does not.
+func (c *Client) workerWrite(ctx context.Context, cmd map[string]any) error {
+	_, err := c.call(ctx, cmd)
+	if errors.Is(err, ErrRunNotOwned) {
+		return &staleOwnerError{message: err.Error(), err: err}
+	}
+	return err
 }
 
 // staleOwnerError reports a worker write rejected because the claim no
 // longer owns the run: an operator cancelled it, or its lease expired and the
 // run was reclaimed. Retrying cannot succeed; the attempt must stop.
-type staleOwnerError struct{ message string }
+type staleOwnerError struct {
+	message string
+	// err is the server's rejection, when the server reported it.
+	err error
+}
 
 func (e *staleOwnerError) Error() string { return e.message }
+
+func (e *staleOwnerError) Unwrap() error { return e.err }
 
 func isStaleOwner(err error) bool {
 	var stale *staleOwnerError

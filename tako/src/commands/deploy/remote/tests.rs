@@ -30,9 +30,7 @@ fn parse_existing_routes_from_ok_response_keeps_empty_routes_and_ignores_malform
 
 #[test]
 fn parse_existing_routes_from_error_response_returns_message() {
-    let response = Response::Error {
-        message: "boom".to_string(),
-    };
+    let response = Response::error("boom".to_string());
     let err = parse_existing_routes_response(response).unwrap_err();
     assert!(err.contains("boom"));
 }

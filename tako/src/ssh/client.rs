@@ -213,7 +213,7 @@ impl SshClient {
     fn interpret_hello_response(resp: &Response) -> Result<(), String> {
         match resp {
             Response::Ok { .. } => Ok(()),
-            Response::Error { message } => {
+            Response::Error { message, .. } => {
                 if message.to_lowercase().contains("protocol version mismatch") {
                     return Err(format!("Remote tako-server protocol mismatch: {message}"));
                 }

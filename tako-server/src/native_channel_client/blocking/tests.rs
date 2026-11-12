@@ -91,7 +91,13 @@ fn closes_reach_the_broker_as_markers_and_closed_streams_reject_by_name() {
             None,
         )
         .unwrap_err();
-    assert_eq!(error, "channel stream is closed");
+    assert_eq!(
+        error,
+        tako_core::SocketError::new(
+            tako_core::ErrorCode::ChannelClosed,
+            "channel stream is closed"
+        )
+    );
 }
 #[test]
 fn failed_registration_never_dispatches_publication_and_redacts_credentials() {
@@ -109,8 +115,8 @@ fn failed_registration_never_dispatches_publication_and_redacts_credentials() {
             Some("postgres://secret".into()),
         )
         .unwrap_err();
-    assert!(error.contains("registration"));
-    assert!(!error.contains("secret"));
+    assert!(error.message.contains("registration"));
+    assert!(!error.message.contains("secret"));
     assert_eq!(*link.calls.lock(), vec!["register"]);
     assert_eq!(link.publishes.load(Ordering::SeqCst), 0);
 }

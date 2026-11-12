@@ -356,7 +356,7 @@ await chat({ roomId: "room1" }).publish({
 await chat({ roomId: "room1" }).close();
 ```
 
-`close()` appends a durable terminal marker: later publishes to that stream fail, closing twice returns the same marker, and the stream stays closed while `replayWindowMs` retains the marker. It throws on ephemeral channels and outside the server runtime (browser). Errors from tako-server surface as `TakoError`, like publish errors. With native multi-server replication, a publish from another server racing the close may be dropped, so publish and close a stream from one place. Close only after the last attempt that could publish: in a workflow, close on success and on final failure (for example, catch after `ctx.run` step retries, close, then `ctx.fail(error)` so run retries do not publish to the closed stream).
+`close()` appends a durable terminal marker: later publishes to that stream fail, closing twice returns the same marker, and the stream stays closed while `replayWindowMs` retains the marker. It throws on ephemeral channels and outside the server runtime (browser). Errors from tako-server surface as `TakoError`, like publish errors: a publish to a closed stream has `reason: "channel_closed"`, rejected params `"channel_params_invalid"`, and a channel the build does not define `"channel_unknown"`. With native multi-server replication, a publish from another server racing the close may be dropped, so publish and close a stream from one place. Close only after the last attempt that could publish: in a workflow, close on success and on final failure (for example, catch after `ctx.run` step retries, close, then `ctx.fail(error)` so run retries do not publish to the closed stream).
 
 #### Resumable streams (LLM replies)
 
@@ -663,6 +663,8 @@ schemas = ["../mail/tako-schema.json", "https://schemas.example.com/users/v1/tak
 
 Commit `tako-schema.lock`: it embeds hashed remote schemas and supports offline generation. Use `tako gen --update-schemas` to refresh; ordinary generation rereads local files and uses the remote lock. Migrate handwritten imports by listing producer schemas, removing the handwritten file, and rerunning generation. No `github:` shorthand or external JSON Schema references are supported. JSON data only; optional and nullable remain distinct. Native consumers get Go/Rust DTOs from the same schema; 64-bit integers must use decimal strings or explicit JavaScript-safe bounds. Unsupported native structural types fail instead of becoming unknown.
 
+Rejected calls throw `TakoError` with `code: "TAKO_RPC_ERROR"`; branch on `error.reason` (`"run_id_conflict"`, `"invalid_request"`, `"channel_unknown"`, `"channel_params_invalid"`, `"channel_closed"`, `"unavailable"`, or undefined when the server gave none), never on message text, which stays a generic `"Internal Server Error"`.
+
 Only addressable channel names appear in network exports; local names containing dots/slashes remain local. Raw channel `.definition` exports retain params and use an unknown message map when message metadata is erased. Private app calls authenticate through the app socket and signed cross-server proofs; generic network peers cannot invoke the dispatcher. Include `tako.d.ts` in the TS project. Verify producer/consumer generation, a real handler chain, and child workflow replay with stored results and idempotent effects. See [Network Primitives](https://tako.sh/docs/network-primitives).
 
 ## Workflows
@@ -715,7 +717,7 @@ await sendEmail.enqueue(payload, {
 });
 ```
 
-Omit `id` to generate a new run ID. A supplied ID reuses the retained run in any status when the workflow and payload match. A different workflow or payload conflicts. IDs are unique within the app and environment, must contain 1–255 bytes with no NUL characters, and remain reserved until history is deleted. Finished history is retained for 184 days by default; `[workflows].retention` can override it or use `"forever"`.
+Omit `id` to generate a new run ID. A supplied ID reuses the retained run in any status when the workflow and payload match. A different workflow or payload conflicts: `enqueue` throws a `TakoError` with `reason: "run_id_conflict"`. IDs are unique within the app and environment, must contain 1–255 bytes with no NUL characters, and remain reserved until history is deleted. Finished history is retained for 184 days by default; `[workflows].retention` can override it or use `"forever"`.
 
 No generated file is needed for workflow enqueue typing — the types flow from the workflow module itself.
 

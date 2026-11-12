@@ -996,8 +996,17 @@ pub enum Response {
     /// Command succeeded
     Ok { data: serde_json::Value },
 
-    /// Command failed
-    Error { message: String },
+    /// Command failed. `code` is present only when an SDK must be able to
+    /// branch on the failure; management errors carry free text alone.
+    Error {
+        message: String,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "crate::error_code::lenient_code"
+        )]
+        code: Option<crate::ErrorCode>,
+    },
 }
 
 impl Response {
@@ -1010,6 +1019,15 @@ impl Response {
     pub fn error(message: impl Into<String>) -> Self {
         Self::Error {
             message: message.into(),
+            code: None,
+        }
+    }
+
+    /// An error reply an SDK can branch on by `code`.
+    pub fn coded_error(code: crate::ErrorCode, message: impl Into<String>) -> Self {
+        Self::Error {
+            message: message.into(),
+            code: Some(code),
         }
     }
 
@@ -1030,7 +1048,24 @@ impl Response {
     pub fn error_message(&self) -> Option<&str> {
         match self {
             Self::Ok { .. } => None,
-            Self::Error { message } => Some(message),
+            Self::Error { message, .. } => Some(message),
+        }
+    }
+
+    /// Get the machine-readable code of an Error response, when it has one
+    pub fn error_code(&self) -> Option<crate::ErrorCode> {
+        match self {
+            Self::Ok { .. } => None,
+            Self::Error { code, .. } => *code,
+        }
+    }
+}
+
+impl From<crate::SocketError> for Response {
+    fn from(error: crate::SocketError) -> Self {
+        Self::Error {
+            message: error.message,
+            code: error.code,
         }
     }
 }

@@ -331,7 +331,10 @@ impl WorkflowManager {
             let route = network_call.read().clone();
             match route {
                 Some(route) => route(caller, target, invocation),
-                None => tako_core::Response::error("network primitives are unavailable"),
+                None => tako_core::Response::coded_error(
+                    tako_core::ErrorCode::Unavailable,
+                    "network primitives are unavailable",
+                ),
             }
         });
         *guard = Some(spawn_internal_socket(

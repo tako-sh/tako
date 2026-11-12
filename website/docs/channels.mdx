@@ -233,7 +233,7 @@ const published = await siteEvents.publish({
 
 `publish()` requires the Tako server runtime and returns the published `ChannelMessage`. It reaches only subscribers bound to the same params, so a parameterized channel publishes with `chat({ roomId }).publish(...)`. Browser code does not call it. An SSE browser only receives events, while a WebSocket browser sends `{ type, data }` through its connection.
 
-`close()` ends a durable stream for good: `await chat({ roomId }).close()`. Subscribers receive every earlier message and then the end of the stream, and later publishes to it fail. See [Stream A Reply That Survives A Refresh](#stream-a-reply-that-survives-a-refresh). Go has no server-side publish or close; Go apps can register a definition and serve its authorization, and can [publish to a JavaScript-owned network channel](/network-primitives/) but not close one.
+`close()` ends a durable stream for good: `await chat({ roomId }).close()`. Subscribers receive every earlier message and then the end of the stream, and later publishes to it fail with a `TakoError` whose `reason` is `"channel_closed"`. Params the channel's schema rejects fail with `reason: "channel_params_invalid"`, and a channel the deployed build does not define with `reason: "channel_unknown"`. See [Stream A Reply That Survives A Refresh](#stream-a-reply-that-survives-a-refresh). Go has no server-side publish or close; Go apps can register a definition and serve its authorization, and can [publish to a JavaScript-owned network channel](/network-primitives/) but not close one.
 
 ## Consume In The Browser
 

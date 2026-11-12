@@ -3,7 +3,7 @@ import { createServer } from "node:net";
 import type { Server, Socket } from "node:net";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { closeInternalSocketPoolsForTests } from "../../src/tako/socket";
+import { closeInternalSocketPoolsForTests, TakoError } from "../../src/tako/socket";
 import { isStaleOwnerError, WorkflowsClient } from "../../src/workflows/rpc-client";
 import type { Run } from "../../src/workflows/types";
 import type { RegisteredWorkflow, WorkflowHandler } from "../../src/workflows/worker";
@@ -19,6 +19,8 @@ class MockServer {
   readonly commands: string[] = [];
   /** Transient failures returned for the next calls of a command. */
   readonly failures = new Map<string, number>();
+  /** A canned reply for the next call of a command. */
+  readonly replies = new Map<string, unknown>();
 
   async start(dir: string): Promise<void> {
     this.path = join(dir, "srv.sock");
@@ -82,10 +84,19 @@ class MockServer {
 
   private dispatch(cmd: Record<string, unknown>): unknown {
     this.commands.push(String(cmd["command"]));
+    const reply = this.replies.get(String(cmd["command"]));
+    if (reply !== undefined) {
+      this.replies.delete(String(cmd["command"]));
+      return reply;
+    }
     if (!["claim_run", "enqueue_run", "get_run_result"].includes(String(cmd["command"]))) {
       const task = this.find(cmd["id"] as string);
       if (!task || task.status !== "running" || task.workerId !== cmd["worker_id"]) {
-        return { status: "error", message: "stale worker" };
+        return {
+          status: "error",
+          message: "stale worker: run is no longer owned by this worker",
+          code: "run_not_owned",
+        };
       }
     }
     const failures = this.failures.get(String(cmd["command"])) ?? 0;
@@ -380,6 +391,56 @@ describe("Worker", () => {
     expect(mock.find(id)?.status).toBe("cancelled");
     expect(mock.commands).not.toContain("fail_run");
     expect(mock.commands).not.toContain("complete_run");
+  });
+
+  test("an unrelated error mentioning stale worker does not abandon the run", async () => {
+    // The server's id-conflict message echoes the caller's run ID, so its
+    // text can contain anything. Only the run_not_owned code on a worker
+    // write means ownership was lost.
+    mock.replies.set("enqueue_run", {
+      status: "error",
+      message: "workflow run ID 'stale worker' already belongs to a different workflow or payload",
+      code: "run_id_conflict",
+    });
+    const worker = new Worker({
+      client,
+      workerId: "w1",
+      heartbeatIntervalMs: 0,
+      registry: registry({
+        parent: async () => {
+          await client.enqueue("child", { n: 2 }, { id: "stale worker" });
+          return "done";
+        },
+      }),
+    });
+
+    const id = mock.seed({ name: "parent", retries: 0 });
+    await worker.processOnce();
+    expect(mock.find(id)?.status).toBe("dead");
+    expect(mock.commands).toContain("fail_run");
+  });
+
+  test("a worker write rejected without the run_not_owned code is not lost ownership", async () => {
+    const id = mock.seed({ name: "job" });
+    mock.replies.set("heartbeat_run", { status: "error", message: "stale worker" });
+    const textOnly = await client.heartbeat(id, "w1", 1000).catch((err: unknown) => err);
+    expect(textOnly).toBeInstanceOf(TakoError);
+    expect((textOnly as TakoError).reason).toBeUndefined();
+    expect(isStaleOwnerError(textOnly)).toBe(false);
+
+    mock.replies.set("enqueue_run", {
+      status: "error",
+      message: "stale worker",
+      code: "run_not_owned",
+    });
+    // The code counts only on worker writes, not on any reply.
+    const enqueue = await client.enqueue("job", {}).catch((err: unknown) => err);
+    expect((enqueue as TakoError).reason).toBe("run_not_owned");
+    expect(isStaleOwnerError(enqueue)).toBe(false);
+
+    const stale = await client.heartbeat(id, "w1", 1000).catch((err: unknown) => err);
+    expect((stale as TakoError).reason).toBe("run_not_owned");
+    expect(isStaleOwnerError(stale)).toBe(true);
   });
 
   test("a transient failure of the final write is retried while the heartbeat runs", async () => {

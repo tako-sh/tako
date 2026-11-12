@@ -218,13 +218,14 @@ pub fn error_response(error: &ChannelError) -> (u16, serde_json::Value) {
         ChannelError::NotDefined => (404, "Channel not defined"),
         ChannelError::StaleCursor => (410, "Channel cursor is outside the replay window"),
         ChannelError::StreamClosed => (409, "Channel stream is closed"),
-        ChannelError::BadRequest(message) => {
+        ChannelError::BadRequest(message) | ChannelError::ParamsInvalid(message) => {
             return (400, serde_json::json!({ "error": message }));
         }
+        ChannelError::Undeclared { .. } => (404, "Channel not defined"),
         ChannelError::Unsupported => (400, "Channel transport is not enabled"),
         ChannelError::InvalidPath => (404, "Not found"),
         ChannelError::AuthUnavailable => (503, "Service Unavailable"),
-        ChannelError::Storage(_) => (500, "Internal Server Error"),
+        ChannelError::StreamLimit | ChannelError::Storage(_) => (500, "Internal Server Error"),
     };
     (status, serde_json::json!({ "error": message }))
 }

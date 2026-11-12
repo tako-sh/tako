@@ -85,6 +85,6 @@ where
     match response {
         Response::Ok { data } => serde_json::from_value(data)
             .map_err(|e| format!("invalid {response_name} response: {e}")),
-        Response::Error { message } => Err(message),
+        Response::Error { message, .. } => Err(message),
     }
 }

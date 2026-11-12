@@ -62,11 +62,19 @@ impl NativeProxy {
                 .workflows
                 .set_network_router(Arc::new(move |caller, target, invocation| {
                     let Some(router) = router.upgrade() else {
-                        return tako_core::Response::error("network router unavailable");
+                        return tako_core::Response::coded_error(
+                            tako_core::ErrorCode::Unavailable,
+                            "network router unavailable",
+                        );
                     };
                     let scope = match crate::native_channel_client::app_scope(target) {
                         Ok(scope) => scope,
-                        Err(_) => return tako_core::Response::error("invalid destination app"),
+                        Err(_) => {
+                            return tako_core::Response::coded_error(
+                                tako_core::ErrorCode::InvalidRequest,
+                                "invalid destination app",
+                            );
+                        }
                     };
                     let caller = match crate::native_channel_client::app_scope(caller) {
                         Ok(scope) => scope,
@@ -80,7 +88,8 @@ impl NativeProxy {
                         )
                     };
                     let Some(placement) = placement else {
-                        return tako_core::Response::error(
+                        return tako_core::Response::coded_error(
+                            tako_core::ErrorCode::Unavailable,
                             "destination app unavailable on this network",
                         );
                     };
@@ -95,7 +104,8 @@ impl NativeProxy {
                         {
                             Ok(call) => call,
                             Err(_) => {
-                                return tako_core::Response::error(
+                                return tako_core::Response::coded_error(
+                                    tako_core::ErrorCode::Unavailable,
                                     "network invocation signer unavailable",
                                 );
                             }

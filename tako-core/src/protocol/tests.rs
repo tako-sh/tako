@@ -664,6 +664,61 @@ fn test_response_error() {
     let response = Response::error("Something went wrong");
     assert!(!response.is_ok());
     assert_eq!(response.error_message(), Some("Something went wrong"));
+    assert_eq!(response.error_code(), None);
+}
+
+#[test]
+fn error_reply_omits_code_when_unclassified() {
+    let json = serde_json::to_value(Response::error("app not found")).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({"status": "error", "message": "app not found"})
+    );
+    let parsed: Response =
+        serde_json::from_value(serde_json::json!({"status": "error", "message": "x"})).unwrap();
+    assert!(matches!(parsed, Response::Error { code: None, .. }));
+}
+
+#[test]
+fn error_reply_carries_a_readable_code() {
+    let response = Response::coded_error(
+        crate::ErrorCode::RunNotOwned,
+        "heartbeat failed: stale worker: run is no longer owned by this worker",
+    );
+    let json = serde_json::to_value(&response).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "status": "error",
+            "message": "heartbeat failed: stale worker: run is no longer owned by this worker",
+            "code": "run_not_owned"
+        })
+    );
+    let parsed: Response = serde_json::from_value(json).unwrap();
+    assert_eq!(parsed.error_code(), Some(crate::ErrorCode::RunNotOwned));
+    assert_eq!(
+        Response::from(crate::SocketError::new(
+            crate::ErrorCode::ChannelClosed,
+            "closed"
+        ))
+        .error_code(),
+        Some(crate::ErrorCode::ChannelClosed)
+    );
+}
+
+#[test]
+fn error_reply_reads_an_unknown_code_as_unclassified() {
+    for code in [
+        serde_json::json!("from_a_newer_server"),
+        serde_json::Value::Null,
+    ] {
+        let parsed: Response = serde_json::from_value(
+            serde_json::json!({"status": "error", "message": "x", "code": code}),
+        )
+        .unwrap();
+        assert_eq!(parsed.error_code(), None);
+        assert_eq!(parsed.error_message(), Some("x"));
+    }
 }
 
 #[test]

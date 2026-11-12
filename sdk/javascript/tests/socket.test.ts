@@ -119,6 +119,37 @@ describe("callInternal error wrapping", () => {
     expect(err.cause).toBeDefined();
   });
 
+  test("exposes a known server code as the TakoError reason and ignores unknown codes", async () => {
+    const sock = join(dir, "coded.sock");
+    const replies = [
+      { status: "error", message: "workflow run ID 'a' already belongs", code: "run_id_conflict" },
+      { status: "error", message: "x", code: "from_a_newer_server" },
+      { status: "error", message: "y" },
+    ];
+    const server = await new Promise<Server>((resolve, reject) => {
+      const s = createServer((socket) => {
+        socket.on("data", () => {
+          socket.write(`${JSON.stringify(replies.shift())}\n`);
+        });
+      });
+      s.once("error", reject);
+      s.listen(sock, () => resolve(s));
+    });
+    try {
+      const reasons: unknown[] = [];
+      for (let i = 0; i < 3; i++) {
+        const err = await callInternal(sock, { command: "enqueue_run" }).catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(TakoError);
+        expect((err as TakoError).code).toBe("TAKO_RPC_ERROR");
+        expect((err as TakoError).message).toBe("Internal Server Error");
+        reasons.push((err as TakoError).reason);
+      }
+      expect(reasons).toEqual(["run_id_conflict", undefined, undefined]);
+    } finally {
+      server.close();
+    }
+  });
+
   test("maps a server error response to TakoError TAKO_RPC_ERROR without leaking the server message", async () => {
     const sock = join(dir, "srv.sock");
     const server = await new Promise<Server>((resolve, reject) => {

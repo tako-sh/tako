@@ -6,6 +6,7 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
+pub mod error;
 pub mod network;
 pub mod presence;
 #[cfg(feature = "axum")]
@@ -15,6 +16,7 @@ pub mod schema;
 pub mod stores;
 #[cfg(feature = "axum")]
 mod stores_http;
+pub use error::{ErrorCode, Rejected};
 pub use presence::{
     PresenceAuth, PresenceDefinition, PresenceGrant, PresenceMember, PresenceRegistry,
     PresenceSnapshot, PresenceVerifyInput,

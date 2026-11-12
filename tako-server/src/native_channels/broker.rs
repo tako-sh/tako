@@ -377,6 +377,7 @@ impl Broker {
                         Response::Published { message }
                     }
                     Err(tako_channels::ChannelError::StreamClosed) => Response::StreamClosed,
+                    Err(tako_channels::ChannelError::StreamLimit) => Response::StreamLimit,
                     Err(_) => Response::Rejected,
                 }
             }

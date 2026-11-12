@@ -34,10 +34,7 @@ fn stream_limit_error(channel: &str) -> ChannelError {
         limit = MAX_STREAMS,
         "channel stream limit reached; refusing to start a new stream"
     );
-    ChannelError::Storage(format!(
-        "channel stream limit reached: an app keeps at most {MAX_STREAMS} streams; \
-         idle streams are released after their connection lifetime"
-    ))
+    ChannelError::StreamLimit
 }
 use crate::mesh::{DeliveryState, notify_committed};
 use crate::{ChannelEvent, ChannelPublication, RemoteIngest};

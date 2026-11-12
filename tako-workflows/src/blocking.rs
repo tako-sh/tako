@@ -19,18 +19,21 @@ pub(crate) async fn run<T: Send + 'static>(
 
 pub(crate) async fn run_network<T: Send + 'static>(
     operation: impl FnOnce() -> T + Send + 'static,
-) -> Result<T, String> {
+) -> Result<T, tako_core::SocketError> {
     // A handler may recursively call another handler through this pool.
     // Waiting for a permit can deadlock every ancestor; reject overload now.
-    let permit = NETWORK_OPERATIONS
-        .try_acquire()
-        .map_err(|_| "Network call capacity exceeded".to_owned())?;
+    let permit = NETWORK_OPERATIONS.try_acquire().map_err(|_| {
+        tako_core::SocketError::new(
+            tako_core::ErrorCode::Unavailable,
+            "Network call capacity exceeded",
+        )
+    })?;
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         operation()
     })
     .await
-    .map_err(|error| error.to_string())
+    .map_err(|error| tako_core::SocketError::unclassified(error.to_string()))
 }
 
 async fn run_with<T: Send + 'static>(
@@ -94,7 +97,9 @@ mod tests {
     #[tokio::test]
     async fn network_overload_fails_without_blocking_recipient_storage() {
         let permits = NETWORK_OPERATIONS.acquire_many(64).await.unwrap();
-        assert!(run_network(|| 1).await.unwrap_err().contains("capacity"));
+        let refused = run_network(|| 1).await.unwrap_err();
+        assert!(refused.message.contains("capacity"));
+        assert_eq!(refused.code, Some(tako_core::ErrorCode::Unavailable));
         assert_eq!(run(|| 2).await.unwrap(), 2);
         drop(permits);
         assert_eq!(run_network(|| 3).await.unwrap(), 3);

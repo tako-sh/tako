@@ -28,6 +28,8 @@ type mockServer struct {
 	failures map[string]int
 	results  map[string]any
 	errors   map[string]string
+	// A canned reply for the next call of a command.
+	replies map[string]map[string]any
 }
 
 func startMockServer(t *testing.T) *mockServer {
@@ -130,11 +132,20 @@ func (s *mockServer) dispatch(cmd map[string]any) map[string]any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if command, _ := cmd["command"].(string); s.replies[command] != nil {
+		reply := s.replies[command]
+		delete(s.replies, command)
+		return reply
+	}
 	if cmd["command"] != "claim_run" && cmd["command"] != "register_schedules" && cmd["command"] != "enqueue_run" && cmd["command"] != "signal" && cmd["command"] != "get_run_result" {
 		id, _ := cmd["id"].(string)
 		task := s.tasks[id]
 		if task == nil || task.Status != "running" || task.WorkerID != cmd["worker_id"] {
-			return map[string]any{"status": "error", "message": "stale worker"}
+			return map[string]any{
+				"status":  "error",
+				"message": "stale worker: run is no longer owned by this worker",
+				"code":    "run_not_owned",
+			}
 		}
 	}
 	if command, _ := cmd["command"].(string); s.failures[command] > 0 {
@@ -623,5 +634,102 @@ func TestScheduleRegistrationCarriesTheRetryBudget(t *testing.T) {
 	}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("schedules: %v", got)
+	}
+}
+
+func (s *mockServer) reply(command string, reply map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.replies == nil {
+		s.replies = map[string]map[string]any{}
+	}
+	s.replies[command] = reply
+}
+
+// The server's id-conflict message echoes the caller's run ID, so its text
+// can contain anything. Only the run_not_owned code on a worker write means
+// ownership was lost.
+func TestUnrelatedErrorMentioningStaleWorkerDoesNotAbandonTheRun(t *testing.T) {
+	s := startMockServer(t)
+	client := &Client{socketPath: s.path, app: "test-app"}
+	id := s.seed("parent", 1)
+	s.reply("enqueue_run", map[string]any{
+		"status":  "error",
+		"message": "workflow run ID 'stale worker' already belongs to a different workflow or payload",
+		"code":    "run_id_conflict",
+	})
+	childID := "stale worker"
+	var enqueueErr error
+	handlers := map[string]workflowRegistration{"parent": {handler: func(ctx *WorkflowContext, _ json.RawMessage) error {
+		_, enqueueErr = client.Enqueue(ctx.ctx, "child", nil, EnqueueOpts{ID: &childID})
+		return enqueueErr
+	}}}
+	w := newWorker(context.Background(), client, handlers)
+	w.heartbeatMs = 60_000
+	task, err := client.Claim(context.Background(), w.workerID, []string{"parent"}, w.leaseMs)
+	if err != nil || task == nil {
+		t.Fatalf("claim: %v %v", task, err)
+	}
+	w.execute(task)
+
+	if !errors.Is(enqueueErr, ErrRunIDConflict) || errors.Is(enqueueErr, ErrRunNotOwned) {
+		t.Fatalf("enqueue error: %v", enqueueErr)
+	}
+	if got := s.find(id).Status; got != "dead" {
+		t.Fatalf("the run was abandoned instead of failed: %s", got)
+	}
+	if !contains(s.commandsAfterClaim(), "fail_run") {
+		t.Fatalf("no fail_run after the handler error: %v", s.commandsAfterClaim())
+	}
+}
+
+func TestOnlyACodedWorkerWriteRejectionIsLostOwnership(t *testing.T) {
+	s := startMockServer(t)
+	client := &Client{socketPath: s.path, app: "test-app"}
+	ctx := context.Background()
+
+	s.reply("heartbeat_run", map[string]any{"status": "error", "message": "stale worker"})
+	textOnly := client.Heartbeat(ctx, "r1", "w1", 1000)
+	var serverErr *ServerError
+	if textOnly == nil || isStaleOwner(textOnly) || errors.Is(textOnly, ErrRunNotOwned) ||
+		!errors.As(textOnly, &serverErr) || serverErr.Code != "" {
+		t.Fatalf("an uncoded rejection read as lost ownership: %#v", textOnly)
+	}
+
+	// The code counts only on worker writes, not on any reply.
+	s.reply("enqueue_run", map[string]any{"status": "error", "message": "x", "code": "run_not_owned"})
+	_, enqueueErr := client.Enqueue(ctx, "job", nil, EnqueueOpts{})
+	if !errors.Is(enqueueErr, ErrRunNotOwned) || isStaleOwner(enqueueErr) {
+		t.Fatalf("enqueue error: %#v", enqueueErr)
+	}
+
+	stale := client.Heartbeat(ctx, "r1", "w1", 1000)
+	if !isStaleOwner(stale) || !errors.Is(stale, ErrRunNotOwned) {
+		t.Fatalf("a run_not_owned worker write was not lost ownership: %#v", stale)
+	}
+}
+
+func TestServerErrorsMatchTheirSentinel(t *testing.T) {
+	for code, sentinel := range errorCodes {
+		err := fmt.Errorf("wrapped: %w", &ServerError{Code: code, Message: "m"})
+		if !errors.Is(err, sentinel) {
+			t.Fatalf("%s does not match its sentinel", code)
+		}
+		for other, otherSentinel := range errorCodes {
+			if other != code && errors.Is(err, otherSentinel) {
+				t.Fatalf("%s matches %s", code, other)
+			}
+		}
+	}
+	for _, code := range []string{"", "from_a_newer_server"} {
+		err := &ServerError{Code: code, Message: "m"}
+		for _, sentinel := range errorCodes {
+			if errors.Is(err, sentinel) {
+				t.Fatalf("code %q matched a sentinel", code)
+			}
+		}
+	}
+	if len(errorCodes) != 7 {
+		t.Fatalf("expected the 7 server codes, got %d", len(errorCodes))
 	}
 }

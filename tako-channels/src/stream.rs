@@ -111,7 +111,7 @@ impl ChannelStream {
             _ => false,
         };
         if !valid {
-            return Err(ChannelError::BadRequest(
+            return Err(ChannelError::ParamsInvalid(
                 "channel params must be an object of at most 16 KiB".into(),
             ));
         }
@@ -123,7 +123,7 @@ impl ChannelStream {
             .as_object()
             .and_then(|object| object.iter().find(|(_, value)| value.is_null()))
         {
-            return Err(ChannelError::BadRequest(format!(
+            return Err(ChannelError::ParamsInvalid(format!(
                 "channel param '{name}' is null; omit a param to leave it unset"
             )));
         }
@@ -133,7 +133,7 @@ impl ChannelStream {
             .iter()
             .find(|name| params.get(**name).is_some())
         {
-            return Err(ChannelError::BadRequest(format!(
+            return Err(ChannelError::ParamsInvalid(format!(
                 "channel params cannot use the reserved name '{name}'"
             )));
         }
@@ -276,7 +276,7 @@ mod tests {
         // number into null, and dropping it would select another stream.
         assert!(matches!(
             ChannelStream::for_publish("chat", &json!({"room": "a", "page": null})),
-            Err(ChannelError::BadRequest(message)) if message.contains("'page' is null")
+            Err(ChannelError::ParamsInvalid(message)) if message.contains("'page' is null")
         ));
         let large = json!({"room": "a".repeat(MAX_STREAM_PARAMS_BYTES)});
         assert!(ChannelStream::for_publish("chat", &large).is_err());
