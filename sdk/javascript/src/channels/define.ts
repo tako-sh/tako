@@ -166,8 +166,9 @@ function lifecycle(config: ChannelLifecycleConfig): ChannelLifecycleConfig {
   };
 }
 
-function encodeParams(params: Record<string, unknown>): string {
-  const query = new URLSearchParams(channelParamQuery(params)).toString();
+/** Binding checks params as subscribe and publish both will, so it fails once, here. */
+function encodeParams(params: Record<string, unknown>, schema: object): string {
+  const query = new URLSearchParams(channelParamQuery(params, schema)).toString();
   return query ? `?${query}` : "";
 }
 
@@ -175,7 +176,7 @@ function makeHandle<P, M, Transport extends ChannelLiveTransport>(
   definition: ChannelDefinition<P>,
   params: P,
 ): ChannelHandle<P, M, Transport> {
-  const query = encodeParams(params as Record<string, unknown>);
+  const query = encodeParams(params as Record<string, unknown>, definition.paramsSchema);
   const makeChannel = () =>
     new Channel(
       definition.channel,

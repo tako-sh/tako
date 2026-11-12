@@ -5,6 +5,12 @@
  * everything else stays a string). A server-side publish must name the same
  * stream, so it sends the values a subscriber's query would be coerced to.
  *
+ * A value that a JavaScript number cannot carry exactly would name one stream
+ * when subscribing and another when publishing, so binding rejects it: an
+ * `integer` param must be a safe integer (at most 2^53 - 1 in magnitude) and a
+ * `number` param must be finite. Large identifiers such as snowflake ids
+ * belong in string params.
+ *
  * `from` and `last_message_id` are reserved query names (the replay start and
  * the WebSocket replay cursor), so no channel param may use them.
  */
@@ -27,14 +33,26 @@ function invalidParam(key: string, reason: string): Error {
   );
 }
 
+function unsafeInteger(key: string, raw: string): Error {
+  return new TypeError(
+    `Channel param '${key}' is ${raw}, outside the safe integer range (at most ${Number.MAX_SAFE_INTEGER} in magnitude), so publish and subscribe could select different streams. Declare large identifiers such as snowflake ids as strings (t.String()).`,
+  );
+}
+
 /**
  * Serialize params into the query pairs subscribe and connect send.
- * `undefined` and `null` values are omitted.
+ * `undefined` and `null` values are omitted. With a schema, each value is
+ * checked as {@link channelStreamParams} checks it, so a binding fails the
+ * same way whether it subscribes or publishes.
  *
  * @throws {TypeError} If a value is an object, array, or another non-scalar,
- * or a key is a reserved name (`from`, `last_message_id`).
+ * an unsafe integer or non-finite number, or a key is a reserved name
+ * (`from`, `last_message_id`).
  */
-export function channelParamQuery(params: Record<string, unknown>): Array<[string, string]> {
+export function channelParamQuery(
+  params: Record<string, unknown>,
+  schema?: object,
+): Array<[string, string]> {
   const pairs: Array<[string, string]> = [];
   for (const [key, value] of Object.entries(params)) {
     if (value === undefined || value === null) continue;
@@ -44,11 +62,17 @@ export function channelParamQuery(params: Record<string, unknown>): Array<[strin
     } else if (typeof value === "number") {
       if (!Number.isFinite(value)) throw invalidParam(key, "is not a finite number");
       pairs.push([key, value.toString()]);
-    } else if (typeof value === "boolean" || typeof value === "bigint") {
+    } else if (typeof value === "bigint") {
+      if (!Number.isSafeInteger(Number(value))) throw unsafeInteger(key, value.toString());
+      pairs.push([key, value.toString()]);
+    } else if (typeof value === "boolean") {
       pairs.push([key, value.toString()]);
     } else {
       throw invalidParam(key, Array.isArray(value) ? "is an array" : `has type ${typeof value}`);
     }
+  }
+  if (schema !== undefined) {
+    for (const [key, raw] of pairs) coerce(schema, key, raw);
   }
   return pairs;
 }
@@ -67,10 +91,18 @@ function declaredType(schema: unknown, key: string): unknown {
 
 function coerce(schema: unknown, key: string, raw: string): ChannelParamValue {
   switch (declaredType(schema, key)) {
-    case "integer":
-      return INTEGER.test(raw) ? Number(raw) : raw;
-    case "number":
-      return NUMBER.test(raw) ? Number(raw) : raw;
+    case "integer": {
+      if (!INTEGER.test(raw)) return raw;
+      const value = Number(raw);
+      if (!Number.isSafeInteger(value)) throw unsafeInteger(key, raw);
+      return value;
+    }
+    case "number": {
+      if (!NUMBER.test(raw)) return raw;
+      const value = Number(raw);
+      if (!Number.isFinite(value)) throw invalidParam(key, `is ${raw}, not a finite number`);
+      return value;
+    }
     case "boolean":
       return raw === "true" ? true : raw === "false" ? false : raw;
     default:
@@ -85,7 +117,8 @@ function coerce(schema: unknown, key: string, raw: string): ChannelParamValue {
  * property type, so `{ page: 2 }` and `{ page: "2" }` name the same stream
  * when `page` is an integer. Without a schema, scalars are sent as given.
  *
- * @throws {TypeError} If a value is not a flat scalar.
+ * @throws {TypeError} If a value is not a flat scalar, an `integer` param is
+ * not a safe integer, or a `number` param is not finite.
  */
 export function channelStreamParams(
   params: Record<string, unknown>,
@@ -99,7 +132,6 @@ export function channelStreamParams(
     }
     const value = params[key];
     if (typeof value === "bigint") {
-      if (!Number.isSafeInteger(Number(value))) throw invalidParam(key, "is not a safe integer");
       bound[key] = Number(value);
     } else {
       bound[key] = value as ChannelParamValue;

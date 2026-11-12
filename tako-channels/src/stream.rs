@@ -52,7 +52,8 @@ pub(crate) fn params_scope(channel: &str, params: &Value) -> String {
 }
 
 /// Params as a subscriber's query string can express them: an object without
-/// null entries. Publishers may spell an absent param as null.
+/// null entries. Server-side publishers cannot send null params
+/// ([`ChannelStream::for_publish`] rejects them).
 pub(crate) fn bound_params(params: &Value) -> Value {
     match params {
         Value::Null => Value::Object(Default::default()),
@@ -77,8 +78,8 @@ pub struct ChannelStream {
 
 impl ChannelStream {
     /// Bind validated params. A binding without params is the channel's single
-    /// unscoped stream. Query strings cannot carry null, so a null param names
-    /// the same stream as an absent one. Presence spaces keep one transport
+    /// unscoped stream. Validated query params never carry null; a null here
+    /// names the same stream as an absent param. Presence spaces keep one transport
     /// stream: their membership is scoped separately.
     pub fn new(channel: &str, params: &Value) -> Self {
         let params = bound_params(params);
@@ -114,11 +115,23 @@ impl ChannelStream {
                 "channel params must be an object of at most 16 KiB".into(),
             ));
         }
+        // A query cannot carry null, so a subscriber never binds one. Treating
+        // it as absent would let a value JSON could not carry (an SDK's
+        // non-finite number serializes as null) publish to the stream without
+        // that param, possibly the channel's base stream.
+        if let Some((name, _)) = params
+            .as_object()
+            .and_then(|object| object.iter().find(|(_, value)| value.is_null()))
+        {
+            return Err(ChannelError::BadRequest(format!(
+                "channel param '{name}' is null; omit a param to leave it unset"
+            )));
+        }
         // Subscribers cannot send these as params, so no reader could bind
         // the stream a publish to them would start.
         if let Some(name) = RESERVED_PARAM_NAMES
             .iter()
-            .find(|name| params.get(**name).is_some_and(|value| !value.is_null()))
+            .find(|name| params.get(**name).is_some())
         {
             return Err(ChannelError::BadRequest(format!(
                 "channel params cannot use the reserved name '{name}'"
@@ -247,6 +260,12 @@ mod tests {
         for name in RESERVED_PARAM_NAMES {
             assert!(ChannelStream::for_publish("chat", &json!({ name: "start" })).is_err());
         }
+        // An explicit null is not an absent param: JSON turns a non-finite
+        // number into null, and dropping it would select another stream.
+        assert!(matches!(
+            ChannelStream::for_publish("chat", &json!({"room": "a", "page": null})),
+            Err(ChannelError::BadRequest(message)) if message.contains("'page' is null")
+        ));
         let large = json!({"room": "a".repeat(MAX_STREAM_PARAMS_BYTES)});
         assert!(ChannelStream::for_publish("chat", &large).is_err());
         assert_eq!(

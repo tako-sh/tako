@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { Channel, setChannelSocketPublisher } from "../../src/channels";
+import { Channel, setChannelSocketCloser, setChannelSocketPublisher } from "../../src/channels";
 import { defineChannel } from "../../src/channels/define";
 import { channelStreamParams } from "../../src/channels/params";
 
-afterEach(() => setChannelSocketPublisher(null));
+afterEach(() => {
+  setChannelSocketPublisher(null);
+  setChannelSocketCloser(null);
+});
 
 function subscribeQuery(handle: { subscribe: Channel["subscribe"] }): string {
   let url = "";
@@ -102,5 +105,77 @@ describe("channel params select one stream for publish and subscribe", () => {
     });
     expect(() => channelStreamParams({ n: Number.NaN })).toThrow("not a finite number");
     expect(await publishedParams(new Channel("raw", undefined, { page: 2 }))).toEqual({ page: 2 });
+  });
+});
+
+describe("params a JavaScript number cannot carry exactly are rejected on both sides", () => {
+  const job = defineChannel("job", {
+    paramsSchema: (t) => t.Object({ id: t.Integer(), ratio: t.Optional(t.Number()) }),
+  });
+  const schema = job.definition.paramsSchema;
+  // Subscribe query values tako-server parses as exact integers.
+  const unsafe = [
+    "9007199254740992", // 2^53: 2^53 + 1 rounds to it
+    "9007199254740993", // 2^53 + 1
+    "1234567890123456789", // snowflake id
+    "9223372036854775808", // 2^63, beyond i64
+    "-9007199254740992",
+    "1".repeat(400),
+  ];
+
+  test("safe integers at the bounds bind identically for subscribe and publish", async () => {
+    for (const raw of ["9007199254740991", "-9007199254740991", "0", "+7"]) {
+      for (const id of [raw, BigInt(raw), Number(raw)]) {
+        const handle = job({ id } as never);
+        const query = new URLSearchParams(subscribeQuery(handle)).get("id")!;
+        const published = (await publishedParams(handle)) as { id: number };
+        // What the server parses from the query is what publish sends.
+        expect(BigInt(published.id)).toBe(BigInt(query));
+      }
+    }
+  });
+
+  test("unsafe integers fail at bind time, subscribe, publish, and close", async () => {
+    let closed = false;
+    setChannelSocketPublisher(async (channel, message) => ({ id: "1", channel, ...message }));
+    setChannelSocketCloser(async (channel) => {
+      closed = true;
+      return { id: "1", channel, type: "tako.close", data: null };
+    });
+    for (const raw of unsafe) {
+      const inputs: unknown[] = [raw];
+      if (!raw.startsWith("1111")) inputs.push(BigInt(raw), Number(raw));
+      for (const id of inputs) {
+        expect(() => job({ id } as never)).toThrow("Declare large identifiers");
+        const untyped = new Channel("job", undefined, { id }, undefined, schema);
+        expect(() => untyped.subscribe({ baseUrl: "https://app.test" })).toThrow(
+          "outside the safe integer range",
+        );
+        await expect(untyped.publish({ type: "msg", data: null })).rejects.toThrow(
+          "outside the safe integer range",
+        );
+        await expect(untyped.close()).rejects.toThrow("outside the safe integer range");
+      }
+    }
+    expect(closed).toBe(false);
+    // Without a schema, a bigint has no exact number either.
+    expect(() => channelStreamParams({ id: 2n ** 63n })).toThrow("Declare large identifiers");
+  });
+
+  test("string params carry large identifiers exactly", async () => {
+    const order = defineChannel("order", { paramsSchema: (t) => t.Object({ id: t.String() }) });
+    const handle = order({ id: "1234567890123456789" });
+    expect(subscribeQuery(handle)).toBe("?id=1234567890123456789");
+    expect(await publishedParams(handle)).toEqual({ id: "1234567890123456789" });
+  });
+
+  test("out-of-range numerals never publish without their param", () => {
+    for (const ratio of ["1e400", "-1e400"]) {
+      expect(() => job({ id: 1, ratio } as never)).toThrow("not a finite number");
+      expect(() => channelStreamParams({ id: 1, ratio }, schema)).toThrow("not a finite number");
+    }
+    expect(() => channelStreamParams({ id: "9".repeat(400) }, schema)).toThrow(
+      "outside the safe integer range",
+    );
   });
 });

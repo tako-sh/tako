@@ -240,11 +240,7 @@ mod tests {
     #[test]
     fn publish_params_follow_the_subscribe_schema() {
         let chat = definition("chat");
-        for params in [
-            json!({"room": "a"}),
-            json!({"room": "a", "page": 2}),
-            json!({"room": "a", "page": null}),
-        ] {
+        for params in [json!({"room": "a"}), json!({"room": "a", "page": 2})] {
             validate_publish_params(&chat, &params).unwrap();
         }
         for params in [

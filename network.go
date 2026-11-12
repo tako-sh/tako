@@ -94,7 +94,8 @@ func Enqueue(ctx context.Context, address string, payload any, options NetworkEn
 // Publish delivers a message to a channel owned by an app on this private network.
 // params select the recipient channel's stream: only subscribers bound to the
 // same flat string, number, or boolean params receive the message. Nil params
-// select the unparameterized stream. It acknowledges publication; it does not
+// select the unparameterized stream; a nil value inside params is rejected, so
+// leave an unset param out. It acknowledges publication; it does not
 // wait for subscribers to process it.
 func Publish(ctx context.Context, address string, params any, messageType string, data any) (json.RawMessage, error) {
 	if params == nil {
