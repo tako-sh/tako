@@ -9,6 +9,7 @@
  * Env vars set by the server when spawning an instance or worker:
  *   TAKO_INTERNAL_SOCKET — path to the shared unix socket
  *   TAKO_APP_NAME        — app name used on every command payload
+ *   TAKO_BUILD           — build sent with channel publishes, when set
  */
 
 import { createConnection } from "node:net";
@@ -17,9 +18,11 @@ import { setChannelSocketPublisher } from "../channels";
 import { setNetworkCaller } from "../network";
 import { createLogger } from "../logger";
 import type { ChannelMessage, ChannelPublishInput } from "../types";
+import type { ChannelParamValue } from "../channels/params";
 
 export const INTERNAL_SOCKET_ENV = "TAKO_INTERNAL_SOCKET";
 export const APP_NAME_ENV = "TAKO_APP_NAME";
+export const BUILD_ENV = "TAKO_BUILD";
 
 export { TakoError, type TakoErrorCode } from "./error";
 import { TakoError, type TakoErrorCode } from "./error";
@@ -117,15 +120,26 @@ export function installChannelSocketPublisherFromEnv(): boolean {
       request,
     }),
   );
-  setChannelSocketPublisher(async <T>(channel: string, message: ChannelPublishInput<T>) => {
-    const result = await callInternal(socketPath, {
-      command: "channel_publish",
-      app,
-      channel,
-      payload: message,
-    });
-    return result as ChannelMessage<T>;
-  });
+  setChannelSocketPublisher(
+    async <T>(
+      channel: string,
+      message: ChannelPublishInput<T>,
+      params: Record<string, ChannelParamValue>,
+    ) => {
+      // Params select the stream; the build lets the server check them
+      // against the channel definition subscribers are validated with.
+      const build = process.env[BUILD_ENV] || undefined;
+      const result = await callInternal(socketPath, {
+        command: "channel_publish",
+        app,
+        channel,
+        ...(Object.keys(params).length > 0 && { params }),
+        ...(build !== undefined && { build }),
+        payload: message,
+      });
+      return result as ChannelMessage<T>;
+    },
+  );
   return true;
 }
 

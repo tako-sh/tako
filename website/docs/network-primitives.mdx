@@ -22,7 +22,7 @@ Calls inherit the caller's deployment environment. `mail.send-email` from `web/s
 
 Run both applications under the same `tako dev` daemon for local calls. App names must identify a single registered app; ambiguous development variants are rejected.
 
-Any app in the same network and environment can invoke a declared recipient primitive. Type exports select what a consumer knows about; they are not an access-control list. Channel subscription authorization still applies to subscribers. Network publication uses the recipient's channel definition and lifecycle, rather than browser authorization callbacks. Channel params are validated against that definition; they do not create separate rooms or streams.
+Any app in the same network and environment can invoke a declared recipient primitive. Type exports select what a consumer knows about; they are not an access-control list. Channel subscription authorization still applies to subscribers. Network publication uses the recipient's channel definition and lifecycle, rather than browser authorization callbacks. Channel params are validated against that definition and select the stream, exactly as `channel(params).publish(...)` does in the recipient: a network publish reaches only subscribers bound to the same params.
 
 Private network membership alone does not grant invocation access to laptops or arbitrary containers. The app socket authenticates the caller. Cross-server requests carry an agent-signed proof bound to the caller, target app, environment, destination server, and request body; expired or replayed proofs are rejected. Ordinary private HTTP access remains separate.
 
@@ -333,7 +333,7 @@ async fn publish_delivery() -> std::io::Result<()> {
 
 </CodeGroup>
 
-The Go and Rust publication examples use the imports from their enqueue examples. Rust's `enqueue_blocking` and `publish_blocking` methods use the same arguments without `.await`.
+For a parameterized channel, pass the params of the stream to publish to: `channel("web.progress", { jobId }).publish(...)` in JavaScript, or the params argument in Go and Rust. Params must be flat string, number, or boolean values, and they select the same stream a subscriber with those params reads. The Go and Rust publication examples use the imports from their enqueue examples. Rust's `enqueue_blocking` and `publish_blocking` methods use the same arguments without `.await`.
 
 ## Workflow results
 

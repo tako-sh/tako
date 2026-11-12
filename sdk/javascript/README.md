@@ -229,14 +229,15 @@ export default defineChannel("chat", {
     headerName: "authorization",
     async verify(input) {
       const userId = await getUserId(input.header);
-      return userId ? { subject: userId } : false;
+      if (!userId || !(await canJoinRoom(userId, input.params.roomId))) return false;
+      return { subject: userId };
     },
   },
 }).$messageTypes<ChatMessages>();
 ```
 
 - The first argument is the wire channel name. New scaffolded files use the file stem as the default name, but Tako does not rewrite existing channel files if you choose a different name.
-- Dynamic values are typed query params from `paramsSchema`. They do not partition replay or fanout: every authorized binding to `chat` receives the same messages, regardless of `roomId`. Do not use params for room or tenant isolation.
+- Dynamic values are typed params from `paramsSchema`, and they select the stream: `chat({ roomId: "a" })` and `chat({ roomId: "b" })` have separate messages, replay, and subscribers. Params do not grant access, so `verify` must check that the caller may use them. Params are flat string, number, or boolean values; keep context that must not split the stream, such as a client version, in headers or the credential.
 - `auth` is optional — omit or set `false` for public channels. Declarative auth receives `{ header?, cookie?, params, channel, operation }`.
 - Call `.$messageTypes<T>()` to type the per-message-type payloads. Set `transport: "ws"` to enable WebSocket client publishing; omit it for SSE subscriptions.
 - By default, every publish is stored in Tako's bounded channel replay log before delivery. Single-server production stores replay in local SQLite by deployed app id (`{name}/{env}`); local dev keeps replay in memory for the current daemon process. Multi-server channels use shared Postgres configured through the `postgres_url` credential. `replayWindowMs` defaults to 10 minutes and can be overridden per channel.
@@ -253,7 +254,8 @@ import status from "../channels/status";
 // Unparameterized channel
 await status.publish({ type: "ping", data: { at: Date.now() } });
 
-// Parameterized channel — bind params then publish
+// Parameterized channel — bind the stream's params, then publish.
+// Only subscribers bound to { roomId: "room1" } receive it.
 const room = chat({ roomId: "room1" });
 await room.publish({ type: "msg", data: { text: "hi", userId: "u-1" } });
 ```

@@ -311,7 +311,7 @@ export default defineChannel("chat", {
     async verify(input) {
       // input.params.roomId is typed; operation = "subscribe" | "publish" | "connect"
       const userId = await getUserId(input.header);
-      if (!userId) return false;
+      if (!userId || !(await canJoinRoom(userId, input.params.roomId))) return false;
       return { subject: userId };
     },
   },
@@ -324,7 +324,7 @@ export default defineChannel("chat", {
 ```
 
 - The first argument is the channel name. `defineChannel("chat")` maps to `/_tako/channels/chat`; generated files conventionally use the file stem as the initial name.
-- `paramsSchema` serializes to JSON Schema; tako-server validates query params before app auth. Params do not partition stored messages or fanout: all authorized `roomId` bindings above receive the same `chat` stream. Never use params as a room or tenant isolation boundary.
+- `paramsSchema` serializes to JSON Schema; tako-server validates query params before app auth. Params select the stream: `chat({ roomId: "a" })` and `chat({ roomId: "b" })` have separate messages, replay, and subscribers. Params do not grant access, so `verify` must check that the caller may use the requested params. Keep params flat (string, number, boolean); nested objects and arrays are rejected. Context that must not split the stream (client version, locale) belongs in headers or the credential, not params.
 - `.$messageTypes<M>()` is a type-level narrower that declares the message map — runtime no-op. Omit for channels with no typed messages.
 - `auth` is optional. Omit or set `false` for public channels.
 - `transport: "ws"` enables WebSocket; the default is receive-only SSE. WebSocket frames are stored and broadcast as sent. Handle application mutations in your app's HTTP endpoints.
@@ -342,7 +342,8 @@ Import the channel module. The export is a typed handle (unparameterized) or a c
 import status from "../channels/status";
 await status.publish({ type: "ping", data: { at: Date.now() } });
 
-// Channel with params: bind params, then publish
+// Channel with params: bind the params of the stream to publish to.
+// Only subscribers bound to the same params receive it.
 import chat from "../channels/chat";
 await chat({ roomId: "room1" }).publish({
   type: "msg",

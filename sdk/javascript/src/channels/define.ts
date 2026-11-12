@@ -1,5 +1,6 @@
 import { Type, type Static, type TSchema } from "@sinclair/typebox";
 import { Channel, definitionLifecycleConfig } from "../channels";
+import { assertFlatChannelParamsSchema, channelParamQuery } from "./params";
 import {
   CHANNEL_SYMBOL,
   isChannelDefinition,
@@ -159,21 +160,8 @@ function lifecycle(config: ChannelLifecycleConfig): ChannelLifecycleConfig {
 }
 
 function encodeParams(params: Record<string, unknown>): string {
-  const search = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) {
-    if (value === undefined || value === null) continue;
-    search.set(key, encodeQueryValue(value));
-  }
-  const query = search.toString();
+  const query = new URLSearchParams(channelParamQuery(params)).toString();
   return query ? `?${query}` : "";
-}
-
-function encodeQueryValue(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
-    return value.toString();
-  }
-  return JSON.stringify(value);
 }
 
 function makeHandle<P, M, Transport extends ChannelLiveTransport>(
@@ -187,6 +175,7 @@ function makeHandle<P, M, Transport extends ChannelLiveTransport>(
       definition.transport,
       params as Record<string, unknown>,
       definitionLifecycleConfig(definition),
+      definition.paramsSchema,
     );
   const handle = {
     get name() {
@@ -243,6 +232,11 @@ function attachMeta<P, Transport extends ChannelLiveTransport, T extends object>
  * controls subscribe/publish/connect authorization, and `transport: "ws"`
  * enables client publishing over WebSocket.
  *
+ * Params select the stream: `chat({ roomId: "a" })` and `chat({ roomId: "b" })`
+ * have separate messages, replay, and subscribers. Params are flat string,
+ * number, or boolean values. `auth.verify` must still check that the caller
+ * may use the requested params.
+ *
  * @example
  * ```ts
  * import { defineChannel } from "tako.sh";
@@ -251,7 +245,12 @@ function attachMeta<P, Transport extends ChannelLiveTransport, T extends object>
  *
  * export default defineChannel("chat", {
  *   paramsSchema: (t) => t.Object({ roomId: t.String() }),
+ *   auth: {
+ *     verify: ({ header, params }) => canJoinRoom(header, params.roomId),
+ *   },
  * }).$messageTypes<Messages>();
+ *
+ * await chat({ roomId: "a" }).publish({ type: "msg", data: { text: "hi" } });
  * ```
  */
 export function defineChannel<ParamsSchema extends TSchema>(
@@ -284,6 +283,10 @@ export function defineChannel(name: string, maybeConfig?: unknown): unknown {
     name,
   } as AnyChannelConfig;
   const schema = config.paramsSchema?.(Type) ?? Type.Object({});
+  // Store reads carry params as JSON; channel and presence params are query values.
+  if (!config.name.startsWith("tako.store:")) {
+    assertFlatChannelParamsSchema(config.name, schema);
+  }
   const auth: ChannelDefinition<unknown>["auth"] =
     config.auth === undefined || config.auth === false
       ? false

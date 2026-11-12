@@ -5,6 +5,11 @@
  * so Vite can bundle it for the client without pulling in server-only
  * modules.
  *
+ * `params` select the channel stream: `{ roomId: "a" }` and `{ roomId: "b" }`
+ * receive separate messages, and the server publishes to a room with
+ * `chat({ roomId }).publish(...)`. The channel's `auth.verify` must still
+ * check that the caller may use the requested params.
+ *
  * Subscribe via SSE (default):
  * @example
  * ```typescript
@@ -78,7 +83,10 @@ export interface ChannelConnection<T = unknown> {
 }
 
 interface BaseHookOptions<T> {
-  /** Typed channel params serialized into the channel query string. */
+  /**
+   * Flat channel params serialized into the query string. They select the
+   * stream; changing them reconnects to the other stream.
+   */
   params?: Record<string, unknown>;
   /**
    * Called for each incoming message. The latest handler is always used —

@@ -17,18 +17,22 @@ import {
 } from "./channels/meta";
 import { getChannelsConfig } from "./channels/configure";
 import { SseReader } from "./channels/sse-reader";
+import { channelParamQuery, channelStreamParams, type ChannelParamValue } from "./channels/params";
 
 export type { SseRecoveryReason, ChannelSubscribeOptions } from "./types";
 
 /**
  * Server-side publisher hook used by the Tako runtime to fan out channel
- * messages over the internal socket.
+ * messages over the internal socket. `params` select the stream and hold the
+ * values subscribers with the same params are bound to; `{}` selects the
+ * channel's unparameterized stream.
  *
  * Browser code should publish through WebSocket channels instead.
  */
 export type ChannelSocketPublisher = <T>(
   channel: string,
   message: ChannelPublishInput<T>,
+  params: Record<string, ChannelParamValue>,
 ) => Promise<ChannelMessage<T>>;
 
 let socketPublisher: ChannelSocketPublisher | null = null;
@@ -67,19 +71,10 @@ function channelBaseUrl(
   const url = normalizeBaseUrl(baseUrl);
   url.pathname = `${TAKO_CHANNELS_BASE_PATH}/${encodeURIComponent(channel)}`;
   url.search = "";
-  for (const [key, value] of Object.entries(params)) {
-    if (value === undefined || value === null) continue;
-    url.searchParams.set(key, encodeQueryValue(value));
+  for (const [key, value] of channelParamQuery(params)) {
+    url.searchParams.set(key, value);
   }
   return url;
-}
-
-function encodeQueryValue(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
-    return value.toString();
-  }
-  return JSON.stringify(value);
 }
 
 function withQuery(url: URL, key: string, value?: string | number): URL {
@@ -206,7 +201,12 @@ export class Channel {
   readonly name: string;
   /** Live transport enabled by the channel definition. Undefined means SSE. */
   readonly transport: ChannelDefinitionTransport | undefined;
-  /** Params serialized into subscribe/connect URLs. */
+  /**
+   * Params bound to this handle. They select the channel stream: subscribe
+   * and connect send them as query values, and `publish()` sends them so the
+   * message reaches subscribers with the same params. Values must be flat
+   * strings, numbers, or booleans; `undefined` and `null` are omitted.
+   */
   readonly params: Record<string, unknown>;
 
   /**
@@ -214,7 +214,10 @@ export class Channel {
    *
    * @param name - Exact channel name.
    * @param transport - Pass `"ws"` for WebSocket channels; omit for SSE.
-   * @param params - Query params bound to this channel.
+   * @param params - Params selecting the channel stream.
+   * @param lifecycle - Lifecycle sent with server-side publishes.
+   * @param paramsSchema - Params JSON Schema; publish coerces params by its
+   * declared property types, as tako-server coerces subscribe query values.
    * @defaultValue params = {}
    */
   constructor(
@@ -222,6 +225,7 @@ export class Channel {
     transport?: ChannelDefinitionTransport,
     params: Record<string, unknown> = {},
     private readonly lifecycle?: ChannelLifecycleConfig,
+    private readonly paramsSchema?: object,
   ) {
     this.name = name;
     this.transport = transport;
@@ -229,7 +233,8 @@ export class Channel {
   }
 
   /**
-   * Publish a typed message to current channel subscribers from server-side code.
+   * Publish a typed message from server-side code to the subscribers of the
+   * stream this handle's params select.
    *
    * Browser clients should use `connect().send(...)` on WebSocket channels.
    *
@@ -242,8 +247,9 @@ export class Channel {
     _options: ChannelPublishOptions = {},
   ): Promise<ChannelMessage<T>> {
     if (socketPublisher) {
+      const params = channelStreamParams(this.params, this.paramsSchema);
       const payload = this.lifecycle ? { ...message, lifecycle: this.lifecycle } : message;
-      return socketPublisher(this.name, payload);
+      return socketPublisher(this.name, payload, params);
     }
 
     throw new Error(
