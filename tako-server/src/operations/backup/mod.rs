@@ -16,6 +16,7 @@ mod databases;
 mod encryption;
 mod index;
 mod journal;
+mod mounts;
 mod s3;
 mod scheduler;
 mod snapshot;
@@ -462,6 +463,9 @@ impl crate::ServerState {
         let data_root = app_runtime_data_paths(&self.runtime.data_dir, app).root;
         // Before downloading anything; the swap checks again.
         refuse_unfinished_restores(&data_root)?;
+        if info.kind == BackupKind::Full {
+            snapshot::refuse_mounts_in_data_tree(&data_root)?;
+        }
 
         let app_ref = self
             .app_manager

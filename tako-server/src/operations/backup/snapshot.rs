@@ -12,6 +12,7 @@ mod database_restore;
 mod sqlite;
 
 use super::journal::{self, RestoreIntent, RollbackDir, Steps};
+use super::mounts;
 pub(super) use database_restore::{
     SwapError, database_rollback, extract_database_snapshot, swap_databases,
 };
@@ -549,26 +550,43 @@ fn sync_dir(path: &Path) -> Result<(), String> {
 }
 
 /// A restore moves files with rename and link, which cannot cross
-/// filesystems: refuse before changing anything unless every path is on the
-/// filesystem of the rollback directory. An app data directory mounted on
-/// its own filesystem cannot be restored in place.
+/// filesystems or mounts: refuse before changing anything unless every path
+/// is on the mount of the rollback directory. An app data directory mounted
+/// on its own (even a bind mount of the same filesystem) cannot be restored
+/// in place.
 pub(super) fn require_same_filesystem(rollback_dir: &Path, paths: &[&Path]) -> Result<(), String> {
-    let device = |path: &Path| {
-        fs::lstat(path)
-            .map(|stat| stat.st_dev)
-            .map_err(|e| format!("inspect {}: {e}", path.display()))
+    let identity = |path: &Path| {
+        mounts::identity_of(path).map_err(|e| format!("inspect {}: {e}", path.display()))
     };
-    let expected = device(rollback_dir)?;
+    let expected = identity(rollback_dir)?;
     for path in paths {
-        if device(path)? != expected {
+        if identity(path)? != expected {
             return Err(format!(
-                "Cannot restore in place: {} is on a different filesystem than {}. Restores move files with rename, so the app data directory must be on the same filesystem as the Tako data directory, not a separate mount.",
+                "Cannot restore in place: {} is on a different filesystem or mount than {}. Restores move files with rename, so the app data directory must be on the same filesystem as the Tako data directory, not a separate mount.",
                 path.display(),
                 rollback_dir.parent().unwrap_or(rollback_dir).display()
             ));
         }
     }
     Ok(())
+}
+
+/// A full restore renames the whole data tree, which would carry a mount
+/// inside it into the rollback directory and leave the app writing to a
+/// plain directory: refuse while anything is mounted at or below it.
+pub(super) fn refuse_mounts_in_data_tree(data_root: &Path) -> Result<(), String> {
+    if std::fs::symlink_metadata(data_root).is_err() {
+        return Ok(());
+    }
+    let mounts = mounts::mount_points_at_or_below(data_root)?;
+    match mounts.first() {
+        None => Ok(()),
+        Some(mount) => Err(format!(
+            "Cannot restore a full backup in place: {} is a mount point in the app data directory {}. A full restore replaces the whole directory and would move the mount with it. Unmount it and retry.",
+            mount.display(),
+            data_root.display()
+        )),
+    }
 }
 
 pub(super) fn restore_data_tree(
@@ -599,6 +617,7 @@ fn restore_data_tree_with(
         .map_err(SwapError::intact)?;
     std::fs::create_dir_all(parent)
         .map_err(|e| SwapError::intact(format!("create data parent {}: {e}", parent.display())))?;
+    refuse_mounts_in_data_tree(data_root).map_err(SwapError::intact)?;
     let mut dir = RollbackDir::create(data_root).map_err(SwapError::intact)?;
     let had_data = std::fs::symlink_metadata(data_root).is_ok();
     let mut paths = vec![extracted_dir];
@@ -860,6 +879,22 @@ mod tests {
             error.contains("/proc is on a different filesystem"),
             "{error}"
         );
+    }
+
+    /// A full restore would carry a mount inside the data tree away with
+    /// the rename; it refuses before changing anything.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_full_restore_refuses_a_data_tree_with_a_mount_inside() {
+        // `/proc` and others are mounted below `/`.
+        let error = refuse_mounts_in_data_tree(Path::new("/")).unwrap_err();
+        assert!(
+            error.contains("is a mount point in the app data directory /"),
+            "{error}"
+        );
+        let temp = TempDir::new().unwrap();
+        let (live, _) = full_restore_fixture(temp.path());
+        refuse_mounts_in_data_tree(&live).unwrap();
     }
 
     /// Stop a full restore before each step, then run the startup recovery.

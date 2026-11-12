@@ -222,7 +222,7 @@ fn discard(dir: &Path) -> Result<(), String> {
             sync_dir(parent)?;
         }
     }
-    std::fs::remove_dir_all(&finished)
+    super::mounts::remove_tree(&finished)
         .map_err(|error| format!("remove previous data {}: {error}", finished.display()))
 }
 
@@ -459,7 +459,7 @@ pub(super) fn refuse_unfinished_restores(data_root: &Path) -> Result<(), String>
     };
     for dir in restore_dirs_in(parent) {
         if has_prefix(&dir, FINISHED_DIR_PREFIX) {
-            if let Err(error) = std::fs::remove_dir_all(&dir) {
+            if let Err(error) = super::mounts::remove_tree(&dir) {
                 tracing::warn!(path = %dir.display(), "Failed to remove a finished restore: {error}");
             }
             continue;
@@ -650,7 +650,7 @@ pub(super) fn recover_restore_dir(
         if !primary {
             return Ok(Recovery::Deferred);
         }
-        std::fs::remove_dir_all(dir)
+        super::mounts::remove_tree(dir)
             .map_err(|error| format!("remove previous data {}: {error}", dir.display()))?;
         return Ok(Recovery::Cleaned);
     }
