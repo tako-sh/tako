@@ -463,6 +463,43 @@ Cron schedules are synchronized from the current workflow definitions when a wor
 
 Use finite `tako logs --env production --days 1 --json` to inspect app and worker output with an agent; an attached terminal can follow it with `--tail`. See [Operations](/operations/) for log inspection, [Development](/development/) for local runtime details, and [Deployment](/deployment/) for release behavior.
 
+## Inspect And Repair Runs
+
+`tako workflows` reads and changes the runs of a deployed environment. It is not available for `development`; read the `tako dev` log stream locally.
+
+Find runs that used up their retries:
+
+```bash
+tako workflows list --env production --status dead
+tako workflows list --env production --name send-email --limit 100
+```
+
+The list shows each run's attempts, when it finished or is next due, and the first line of its last error. Open one run to see where it stopped:
+
+```bash
+tako workflows show <run-id> --env production
+```
+
+`show` prints the payload, the saved steps oldest first with their completion time and result, any event waits, and the full stored error. The last saved step is the last checkpoint that succeeded; the error belongs to the code that runs after it. Large payloads and results are cut to a preview with their stored size, and only the 100 most recent steps are listed.
+
+Fix the cause first, for example by deploying a corrected handler or restoring a dependency, then retry:
+
+```bash
+tako workflows retry <run-id> --env production
+```
+
+Retry accepts `dead` and `cancelled` runs. The run becomes `pending`, due now, with a fresh retry budget. Saved steps are kept, so completed steps return their saved results and the handler continues after its last checkpoint. Retrying without fixing the cause spends the new budget the same way.
+
+Cancel work that is no longer wanted:
+
+```bash
+tako workflows cancel <run-id> --env production
+```
+
+Cancel accepts `pending` and `running` runs and removes their event waits. It asks for confirmation in a terminal; pass `--yes` in scripts. A pending run is cancelled immediately. A running handler is not interrupted: its worker loses the run, and the handler stops at its next checkpoint, such as the next step, sleep, or wait. Code between checkpoints keeps running until then, and side effects already started are not undone. The cancelled run is not reclaimed or retried unless you retry it.
+
+With several servers and no `postgres_url`, each server keeps its own runs. `list` merges them and labels each run with its server. Run IDs are independent per server; when two servers hold the same ID, pass `--server` to choose one. With `postgres_url`, every server shares the same runs, which are listed once and changed once. See the [CLI reference](/cli/#workflows) for every option and the JSON output.
+
 ## Practical Rules
 
 - Keep workflow payloads and step results JSON serializable.

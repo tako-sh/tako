@@ -10,10 +10,10 @@ use crate::commands::project_context;
 use crate::config::{ServersToml, TakoToml};
 use crate::output;
 
-mod client;
+pub(crate) mod client;
 mod display;
 mod download;
-mod target;
+pub(crate) mod target;
 
 use client::{send_typed_to_server, send_typed_to_servers};
 use display::{format_status_line, output_backup_line};

@@ -305,6 +305,32 @@ tako backups restore <backup-id> [--env <env>] [--server <server>] [-y|--yes]
 
 Backup commands default to `production`, require project context, and target the deployment id `{app}/{env}` over signed HTTP management. Multi-server download and restore require `--server`.
 
+## Workflows
+
+```bash
+tako workflows list [--env <env>] [--server <server>] [--status <status>] [--name <workflow>] [--limit <n>]
+tako workflows ls ...
+tako workflows show <run-id> [--env <env>] [--server <server>]
+tako workflows retry <run-id> [--env <env>] [--server <server>]
+tako workflows cancel <run-id> [--env <env>] [--server <server>] [-y|--yes]
+```
+
+Workflow commands inspect and repair the durable runs of a deployed environment. They default to `production`, require project context, and target the deployment id `{app}/{env}` on every mapped server, or only on `--server`. They are not available for `development`; use the `tako dev` logs locally.
+
+`list` shows the newest runs first: ID, workflow, status, attempts used of the retry budget, the next due time of a pending run or the finish time of a finished one, and the first line of the last error. `--status` accepts `pending`, `running`, `succeeded`, `cancelled`, or `dead`. `--name` selects one workflow. `--limit` accepts `1..200` and defaults to 50. `show` prints every run field, the payload and result, the 100 most recent saved steps oldest first, event waits, and the stored error. Servers cap large values; a capped value shows the start of its JSON text and its stored size.
+
+`retry` accepts a `dead` or `cancelled` run. The run becomes `pending`, due now, with a fresh retry budget; saved steps are kept, so it resumes after its last checkpoint. `cancel` accepts a `pending` or `running` run and asks for confirmation in an interactive terminal unless `--yes` is passed. A running handler is not interrupted: it stops at its next checkpoint (the next step, sleep, or wait) and cannot complete the run; side effects already started are not undone. Retry does not prompt. Both act on exactly one server.
+
+Without `postgres_url`, each server keeps its own runs, so results are labelled with their server; if two servers hold a run with the same ID, `show`, `retry`, and `cancel` fail and ask for `--server`. With `postgres_url`, every server shares one store: runs are listed once, without a server, and retry or cancel is sent once. A server that cannot be reached is reported as a warning while the others answer; the command fails only when no server answers, or when the run is not found on any server.
+
+Global `--json` prints one object. Every object has `ok`, `command: "workflows"`, `app`, `environment`, `store` (`"sqlite"` or `"postgres"`), and `errors`, an array of `{name, error}` for servers that did not answer.
+
+- `list` adds `runs` and `has_more`. Each run has `id`, `name`, `status`, `attempts`, `max_attempts`, `created_at_ms`, `run_at_ms` (null while waiting for a signal), `finished_at_ms`, `last_error` (capped at 1 KiB), `last_error_truncated`, and `server` (null with Postgres).
+- `show` adds `server` and `run`. `run` has the list fields plus `lease_until_ms`, `worker_id`, `payload`, `result` (null until the run succeeds), `steps` (`name`, `completed_at_ms`, `result`), `steps_total`, and `waits` (`step_name`, `event_name`, `expires_at_ms`). Each value is `{value, truncated, bytes, preview?}`; a truncated value has `value: null` and a `preview` of its JSON text.
+- `retry` and `cancel` add `server`, `id`, `previous_status`, and `status`.
+
+Failures print `{"ok": false, "error": {"message": ...}}`, as for every command.
+
 ## Local CLI Maintenance
 
 ```bash

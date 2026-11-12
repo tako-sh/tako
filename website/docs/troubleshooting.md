@@ -123,6 +123,19 @@ History mode with `--json` returns one object with a `logs` array. `--tail --jso
 
 Remote fetch failures are command failures, not empty log results.
 
+## Workflow Runs Fail Or Stall
+
+Logs show each attempt's output. To see where a run stopped, read its stored state:
+
+```bash
+tako workflows list --env production --status dead
+tako workflows show <run-id> --env production
+```
+
+`show` lists the saved steps and the stored error. The run failed after its last saved step. Fix the cause, then `tako workflows retry <run-id> --env production` resumes it with a fresh retry budget. A `pending` run with no due time is waiting for a signal; check its waits. A `running` run whose worker was lost is reclaimed 60 seconds after its last heartbeat.
+
+These commands work against deployed environments only. When servers keep separate workflow state, a server that cannot be reached is reported as a warning and its runs are missing from the list. See [Inspect and repair runs](/workflows/#inspect-and-repair-runs).
+
 ## Backups Fail
 
 Backups require a private S3-compatible storage resource and current storage credentials:
