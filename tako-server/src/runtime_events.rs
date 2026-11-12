@@ -483,9 +483,73 @@ pub(crate) fn reconcile_instances(
         .collect()
 }
 
+/// The per-app deploy lock, held by a backup. A backup does not change the
+/// instance set, so while it holds the lock (the snapshot can take minutes)
+/// native recovery may still claim instance slots. Dropping this closes that
+/// window before it releases the lock: whoever takes the lock next, such as a
+/// rollout taking its old-instance snapshot, sees every slot claimed meanwhile.
+pub(crate) struct BackupDeployLock {
+    app: Option<Arc<App>>,
+    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl Drop for BackupDeployLock {
+    fn drop(&mut self) {
+        if let Some(app) = &self.app {
+            *app.recovery_claims_open.lock() = false;
+        }
+        self.guard.take();
+    }
+}
+
+impl ServerState {
+    pub(crate) async fn lock_deploy_for_backup(&self, app_name: &str) -> BackupDeployLock {
+        let guard = self.get_deploy_lock(app_name).await.lock_owned().await;
+        let app = self.app_manager.get_app(app_name);
+        if let Some(app) = &app {
+            *app.recovery_claims_open.lock() = true;
+        }
+        BackupDeployLock {
+            app,
+            guard: Some(guard),
+        }
+    }
+}
+
+/// Run `claim`, which changes a native app's instance set, where recovery may
+/// do so: under the deploy lock, or inside a backup's claim window. `None`
+/// when neither is available; the next tick tries again. `claim` must not
+/// wait: it holds both locks.
+fn claim_instances<T>(
+    app: &App,
+    lock: &tokio::sync::Mutex<()>,
+    claim: impl FnOnce() -> T,
+) -> Option<T> {
+    let mutation = lock.try_lock();
+    let claims_open = app.recovery_claims_open.lock();
+    if mutation.is_err() && !*claims_open {
+        return None;
+    }
+    Some(claim())
+}
+
+/// Remove the app's dead instances and report each loss, exactly once.
+fn retire_dead(app: &App, app_name: &str) -> Vec<Arc<Instance>> {
+    let mut retired = Vec::new();
+    for instance in survey(app).dead {
+        let exit = instance.exit_report();
+        if app.remove_instance(&instance.id).is_some() {
+            app.record_instance_exit(exit);
+            crate::metrics::remove_instance_metrics(app_name, &instance.id);
+            retired.push(instance);
+        }
+    }
+    retired
+}
+
 /// One recovery pass for one app. Every gate is only tried: if a drain, stop,
-/// restore, deploy, scale, backup or health replacement is in the way, this
-/// pass does nothing and the next tick looks again.
+/// restore, deploy, scale, secrets update or health replacement is in the
+/// way, this pass does nothing and the next tick looks again.
 async fn recover_app(state: &ServerState, app: &Arc<App>, now: Instant) {
     let app_name = app.name();
     // Same gates, in the same order, as `replace_instance_if_needed`.
@@ -501,30 +565,20 @@ async fn recover_app(state: &ServerState, app: &Arc<App>, now: Instant) {
     if !reconciles(app) {
         return;
     }
-    // Deploy, scale, secrets, backup and idle eviction hold this lock while
-    // they change the instance set; never count or remove instances under them.
+    // Deploy, scale, secrets and idle eviction hold this lock while they
+    // change the instance set; never count or remove instances under them.
     let lock = state.get_deploy_lock(&app_name).await;
-    let Ok(mutation) = lock.try_lock() else {
-        return;
-    };
-    let Ok(_recovering) = app.recovery_gate.try_lock() else {
-        return;
-    };
-
-    // Whoever removes a dead instance reports its loss, exactly once.
-    let mut retired = Vec::new();
-    for instance in survey(app).dead {
-        let exit = instance.exit_report();
-        if app.remove_instance(&instance.id).is_some() {
-            app.record_instance_exit(exit);
-            crate::metrics::remove_instance_metrics(&app_name, &instance.id);
-            retired.push(instance);
-        }
-    }
 
     if app.config.read().compose.is_some() {
+        let Ok(_mutation) = lock.try_lock() else {
+            return;
+        };
+        let Ok(_recovering) = app.recovery_gate.try_lock() else {
+            return;
+        };
         // As for health events, a rollout owns every Compose container
         // mutation: keep the lock for the whole stack reconciliation.
+        let retired = retire_dead(app, &app_name);
         for instance in &retired {
             if let Err(e) = instance.kill().await {
                 tracing::error!(app = %app_name, instance = %instance.id, "Failed to kill instance: {}", e);
@@ -541,11 +595,18 @@ async fn recover_app(state: &ServerState, app: &Arc<App>, now: Instant) {
         return;
     }
 
+    let Ok(_recovering) = app.recovery_gate.try_lock() else {
+        return;
+    };
     // A native start can take as long as the startup timeout. Deploy and
-    // secrets updates reject themselves when this lock is busy, so only claim
-    // each slot under it and start outside: a rollout that arrives meanwhile
-    // finds the starting instance and retires it with the old ones.
-    drop(mutation);
+    // secrets updates reject themselves when the deploy lock is busy, so only
+    // claim each slot under it and start outside: a rollout that arrives
+    // meanwhile finds the starting instance and retires it with the old ones.
+    // The health path starts native replacements without that lock, so a
+    // backup holding it must not hold recovery back either.
+    let Some(retired) = claim_instances(app, &lock, || retire_dead(app, &app_name)) else {
+        return;
+    };
     for instance in retired {
         if let Err(e) = instance.kill().await {
             tracing::error!(app = %app_name, instance = %instance.id, "Failed to kill instance: {}", e);
@@ -555,20 +616,17 @@ async fn recover_app(state: &ServerState, app: &Arc<App>, now: Instant) {
         if app.restart_backoff_remaining(now).is_some() {
             break;
         }
-        let instance = {
-            let Ok(_mutation) = lock.try_lock() else {
-                break;
-            };
+        let claimed = claim_instances(app, &lock, || {
             if !reconciles(app)
                 || state
                     .drain_requested
                     .load(std::sync::atomic::Ordering::Acquire)
             {
-                break;
+                return None;
             }
             let survey = survey(app);
             if survey.present >= survey.target || survey.running >= survey.limit {
-                break;
+                return None;
             }
             tracing::info!(
                 app = %app_name,
@@ -576,7 +634,10 @@ async fn recover_app(state: &ServerState, app: &Arc<App>, now: Instant) {
                 min = survey.target,
                 "Starting an instance to restore the minimum"
             );
-            app.allocate_instance()
+            Some(app.allocate_instance())
+        });
+        let Some(instance) = claimed.flatten() else {
+            break;
         };
         if !start_replacement(state, &app_name, app, instance).await {
             break;

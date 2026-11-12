@@ -260,7 +260,7 @@ async fn reconcile_leaves_apps_alone_when_it_must_not_act() {
         .store(false, std::sync::atomic::Ordering::Release);
 
     // Stop, restore and start hold the lifecycle gate; a drain holds the spawn
-    // gate; deploy, scale, secrets and backups hold the per-app deploy lock.
+    // gate; deploy, scale and secrets hold the per-app deploy lock.
     {
         let _stopping = app.lifecycle_gate.write().await;
         tick(&state, now).await;
@@ -609,4 +609,62 @@ async fn an_app_in_error_with_live_instances_keeps_recovering_after_repeated_cra
     );
     assert!(status.next_restart_at_unix_secs.is_some());
     state.app_manager.stop_app(&app.name()).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_backup_holding_the_deploy_lock_does_not_hold_back_native_recovery() {
+    let dir = crate::isolation::fixture::TestDataDir::new().unwrap();
+    let state = test_state(dir.path());
+    let app = running_app(&state, dir.path(), "backed-up", 1, sh(READY));
+    let name = app.name();
+    let instance = healthy_instance(&app);
+
+    // A backup takes the deploy lock for a snapshot that can take minutes.
+    let backup = state.lock_deploy_for_backup(&name).await;
+    // Meanwhile the app crashes twice: once replaced at once, then backed off.
+    handle_health_event(&state, dead(&app, &instance)).await;
+    assert_eq!(live(&app), 1);
+    let replacement = app.get_instances().remove(0);
+    handle_health_event(&state, dead(&app, &replacement)).await;
+    assert!(app.get_instances().is_empty());
+
+    tick_after_backoff(&state).await;
+    assert_eq!(
+        live(&app),
+        1,
+        "recovery waited for the backup to release the deploy lock"
+    );
+    let started = app.get_instances().remove(0);
+
+    // Any other holder of the deploy lock still keeps recovery out.
+    drop(backup);
+    handle_health_event(&state, dead(&app, &started)).await;
+    {
+        let lock = state.get_deploy_lock(&name).await;
+        let _deploying = lock.lock().await;
+        tick_after_backoff(&state).await;
+        assert!(app.get_instances().is_empty(), "spawned under a deploy");
+    }
+
+    // A slot claimed during a backup is part of the instance set the next
+    // operation sees: a scale-down that follows the backup retires it.
+    let backup = state.lock_deploy_for_backup(&name).await;
+    tick_after_backoff(&state).await;
+    assert_eq!(live(&app), 1);
+    drop(backup);
+    let response = state
+        .handle_command(Command::Scale {
+            app: name.clone(),
+            instances: Some(0),
+            service: None,
+            reset: false,
+        })
+        .await;
+    assert!(response.is_ok(), "{response:?}");
+    assert_eq!(
+        app.get_instances().len(),
+        0,
+        "the scale-down missed an instance"
+    );
+    state.app_manager.stop_app(&name).await.unwrap();
 }
