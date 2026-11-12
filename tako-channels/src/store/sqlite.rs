@@ -305,13 +305,21 @@ impl SqliteChannelStore {
                 None => false,
                 Some((marker, closed_at)) => {
                     let reopened = match event.created_at_unix_ms {
-                        Some(created) => {
-                            marker_expired_at(&tx, &event.channel, closed_at, created)?
-                        }
+                        Some(created) => marker_expired_at(
+                            &tx,
+                            &event.channel,
+                            event.lifecycle.as_ref(),
+                            closed_at,
+                            created,
+                        )?,
                         // A peer that sends no creation time keeps close-wins.
                         None => false,
                     };
                     if reopened {
+                        // Deleting the closed history raises the stream's
+                        // replay floor past the marker (the delete trigger),
+                        // so a reader paging through it is reset instead of
+                        // continuing into the new life without the close.
                         tx.execute(
                             "DELETE FROM channel_messages WHERE channel = ?1 AND id <= ?2",
                             rusqlite::params![event.channel, marker],
@@ -565,18 +573,30 @@ fn retained_marker(
 /// Whether a close marker made at `closed_at` had expired by `at`, by the
 /// rules readers apply: the replay window (and store age cap) by message age,
 /// or inactivity counted from the close, the last activity every server saw.
-/// The margin keeps one server's slightly slow clock from turning a publish
-/// it made after reopening into a race.
+/// The rules are those of `lifecycle`, the one the event was made under, when
+/// it carries one, and the stream's stored ones otherwise. The margin keeps
+/// one server's slightly slow clock from turning a publish it made after
+/// reopening into a race; an event made before the close is a race however
+/// short the window.
 fn marker_expired_at(
     conn: &rusqlite::Connection,
     channel: &str,
+    lifecycle: Option<&ChannelLifecycle>,
     closed_at: i64,
     at: i64,
 ) -> Result<bool, ChannelError> {
-    let lifecycle =
-        stream_lifecycle(conn, channel)?.map(|(replay_window_ms, inactivity_ttl_ms, _)| {
-            (replay_window_ms, inactivity_ttl_ms, closed_at)
-        });
+    if at <= closed_at {
+        return Ok(false);
+    }
+    let lifecycle = match lifecycle {
+        Some(lifecycle) => Some((
+            lifecycle.replay_window_ms as i64,
+            lifecycle.inactivity_ttl_ms as i64,
+        )),
+        None => stream_lifecycle(conn, channel)?
+            .map(|(replay_window_ms, inactivity_ttl_ms, _)| (replay_window_ms, inactivity_ttl_ms)),
+    }
+    .map(|(replay_window_ms, inactivity_ttl_ms)| (replay_window_ms, inactivity_ttl_ms, closed_at));
     Ok(
         match age_cutoff(
             load_limits(conn)?,
