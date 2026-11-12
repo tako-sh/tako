@@ -289,14 +289,24 @@ fn is_sqlite_database(file: &File) -> io::Result<bool> {
     }
 }
 
+/// Files SQLite pairs with a database, named by appending these.
+pub(super) const SIDECAR_SUFFIXES: [&str; 3] = ["-wal", "-shm", "-journal"];
+
+/// The name of the database `name` would be a sidecar of. The one rule for
+/// capture and restore: a file is a sidecar only when that database exists
+/// beside it, so a database such as `audit-journal` without an `audit` is a
+/// database like any other.
+pub(super) fn sidecar_base(name: &OsStr) -> Option<&OsStr> {
+    SIDECAR_SUFFIXES
+        .iter()
+        .find_map(|suffix| name.as_bytes().strip_suffix(suffix.as_bytes()))
+        .map(OsStr::from_bytes)
+}
+
 fn is_sqlite_companion(parent: &File, name: &OsStr) -> io::Result<bool> {
-    let Some(base) = [b"-wal".as_slice(), b"-shm", b"-journal"]
-        .into_iter()
-        .find_map(|suffix| name.as_bytes().strip_suffix(suffix))
-    else {
+    let Some(base) = sidecar_base(name) else {
         return Ok(false);
     };
-    let base = OsStr::from_bytes(base);
     let stat = match fs::statat(parent, base, AtFlags::SYMLINK_NOFOLLOW) {
         Ok(stat) => stat,
         Err(rustix::io::Errno::NOENT) => return Ok(false),

@@ -11,24 +11,25 @@ use std::path::{Component, Path, PathBuf};
 use rustix::fs::{self, AtFlags, CWD, FileType, Mode, OFlags};
 use tako_core::RestoredDatabases;
 
+// Left beside a replaced database, its sidecars could roll newer or foreign
+// pages into it, so they move with the original.
 use super::{
-    DATABASE_SNAPSHOT_ARCHIVE_ROOT, READ_FLAGS, TAKO_DATA_DIR, is_sqlite_database,
-    is_transient_tako_sqlite_file, list_database_tree, open_regular,
+    DATABASE_SNAPSHOT_ARCHIVE_ROOT, READ_FLAGS, SIDECAR_SUFFIXES, TAKO_DATA_DIR,
+    is_sqlite_database, is_transient_tako_sqlite_file, list_database_tree, open_regular,
+    sidecar_base,
 };
 use crate::operations::backup::journal::{self, IntentDatabase, RestoreIntent, Steps};
 
 const DATA_ROOTS: [&str; 2] = ["app", TAKO_DATA_DIR];
-/// Files SQLite pairs with a database. Left beside a replaced database they
-/// could roll newer or foreign pages into it, so they move with the original.
-const SIDECAR_SUFFIXES: [&str; 3] = ["-wal", "-shm", "-journal"];
 
 /// Extract a decrypted database snapshot into the new directory `dest` and
 /// return the relative paths of its databases, e.g. `app/data.sqlite`.
 ///
 /// The archive is untrusted input: only `databases/app/` and
 /// `databases/tako/` with directories and SQLite files below them are
-/// accepted. Links, special files, absolute or `..` paths, sidecars,
-/// transient Tako stores, and duplicates are rejected, and no more than
+/// accepted. Links, special files, absolute or `..` paths, sidecars of
+/// another database in the archive, transient Tako stores, and duplicates
+/// are rejected, and no more than
 /// `budget` bytes are written.
 pub(in crate::operations::backup) fn extract_database_snapshot(
     archive_path: &Path,
@@ -124,7 +125,24 @@ pub(in crate::operations::backup) fn extract_database_snapshot(
         return Err(invalid("it contains no databases".into()));
     }
     databases.sort();
+    let set: BTreeSet<&Path> = databases.iter().map(PathBuf::as_path).collect();
+    for relative in &databases {
+        if let Some(base) = sidecar_of(relative, |path| set.contains(path)) {
+            return Err(invalid(format!(
+                "{} is a SQLite sidecar of {}",
+                relative.display(),
+                base.display()
+            )));
+        }
+    }
     Ok(databases)
+}
+
+/// The database `relative` is a sidecar of, when `is_database` says it
+/// exists. See [`sidecar_base`].
+fn sidecar_of(relative: &Path, is_database: impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    let base = relative.with_file_name(sidecar_base(relative.file_name()?)?);
+    is_database(&base).then_some(base)
 }
 
 /// The entry's path below `databases/`, which must stay inside `app/` or
@@ -159,21 +177,11 @@ fn snapshot_entry_path(path: &Path) -> Result<PathBuf, String> {
 }
 
 fn validate_database_path(relative: &Path) -> Result<(), String> {
-    let Some(name) = relative
-        .file_name()
-        .filter(|_| relative.components().count() >= 2)
-    else {
+    if relative.components().count() < 2 {
         return Err(format!(
             "file {} is not inside app/ or tako/",
             relative.display()
         ));
-    };
-    let name = name.as_encoded_bytes();
-    if SIDECAR_SUFFIXES
-        .iter()
-        .any(|suffix| name.ends_with(suffix.as_bytes()))
-    {
-        return Err(format!("{} is a SQLite sidecar file", relative.display()));
     }
     if is_transient_tako_sqlite_file(relative) {
         return Err(format!(
@@ -275,14 +283,31 @@ fn plan_and_swap(
 ) -> Result<RestoredDatabases, String> {
     let root = open_data_root(data_root)?;
     let in_snapshot: BTreeSet<&Path> = databases.iter().map(PathBuf::as_path).collect();
-    let untouched = list_database_tree(data_root)?
-        .into_iter()
+    let live = list_database_tree(data_root)?;
+    let live_set: BTreeSet<&Path> = live.iter().map(PathBuf::as_path).collect();
+    let untouched = live
+        .iter()
         .filter(|path| !in_snapshot.contains(path.as_path()))
         .map(|path| path.to_string_lossy().into_owned())
         .collect();
     let mut planned = Vec::new();
     let mut created_dirs: Vec<PathBuf> = Vec::new();
     for relative in databases {
+        // Never let a restored name pair with another live database: SQLite
+        // would treat one as the other's sidecar.
+        let paired = sidecar_of(relative, |path| live_set.contains(path)).or_else(|| {
+            SIDECAR_SUFFIXES
+                .iter()
+                .map(|suffix| PathBuf::from(with_suffix(relative.as_os_str(), suffix)))
+                .find(|sidecar| live_set.contains(sidecar.as_path()))
+        });
+        if let Some(paired) = paired {
+            return Err(format!(
+                "Cannot restore {}: {} is a live database, so SQLite would pair the two; move it away and retry",
+                relative.display(),
+                paired.display()
+            ));
+        }
         let target = check_target(&root, relative)
             .map_err(|e| format!("Cannot restore {}: {e}", relative.display()))?;
         for missing in target.missing_dirs {

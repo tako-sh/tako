@@ -163,8 +163,11 @@ fn extraction_rejects_malformed_and_malicious_archives() {
         ),
         (
             "sidecar",
-            vec![Entry::File(b"databases/app/data.sqlite-wal", &db)],
-            "SQLite sidecar",
+            vec![
+                Entry::File(b"databases/app/data.sqlite", &db),
+                Entry::File(b"databases/app/data.sqlite-wal", &db),
+            ],
+            "SQLite sidecar of app/data.sqlite",
         ),
         (
             "transient store",
@@ -537,4 +540,77 @@ fn the_server_swaps_and_rolls_back_in_a_worker_process() {
     assert_eq!(value(&fixture.data.join("app/data.sqlite")), "snapshot");
     swap.rollback().unwrap();
     assert_live_state_is_original(&fixture);
+}
+
+/// A file is a sidecar only when the database it is named after exists
+/// beside it. Capture and restore apply the same rule, so a database named
+/// like a sidecar round-trips.
+#[test]
+fn a_database_named_like_a_sidecar_round_trips() {
+    let temp = TempDir::new().unwrap();
+    let data = temp.path().join("data");
+    database(&data.join("app/audit-journal"), "audit snapshot");
+    database(&data.join("app/events-wal"), "events snapshot");
+    std::fs::create_dir_all(data.join("tako")).unwrap();
+    let archive = snapshot_archive(temp.path(), &data);
+    let extracted = temp.path().join("extracted");
+    let databases = extract_database_snapshot(&archive, &extracted, u64::MAX).unwrap();
+    assert_eq!(
+        databases,
+        [Path::new("app/audit-journal"), Path::new("app/events-wal")]
+    );
+
+    database(&data.join("app/audit-journal"), "audit live");
+    let dir = RollbackDir::create(&data).unwrap();
+    let summary =
+        swap_databases(&extracted.join("databases"), &databases, &data, dir.path()).unwrap();
+    assert_eq!(summary.replaced, ["app/audit-journal", "app/events-wal"]);
+    assert_eq!(value(&data.join("app/audit-journal")), "audit snapshot");
+    journal::commit(dir.path()).unwrap();
+}
+
+#[test]
+fn a_restore_that_would_turn_a_database_into_a_sidecar_is_refused() {
+    let db = sqlite_bytes();
+    // Both names in one archive: capture never produces it.
+    let temp = TempDir::new().unwrap();
+    let archive = temp.path().join("archive.tar.zst");
+    raw_archive(
+        &archive,
+        &[
+            Entry::Dir(b"databases/"),
+            Entry::Dir(b"databases/app/"),
+            Entry::Dir(b"databases/tako/"),
+            Entry::File(b"databases/app/audit", &db),
+            Entry::File(b"databases/app/audit-journal", &db),
+        ],
+    );
+    let error =
+        extract_database_snapshot(&archive, &temp.path().join("extracted"), u64::MAX).unwrap_err();
+    assert!(
+        error.contains("app/audit-journal is a SQLite sidecar of app/audit"),
+        "{error}"
+    );
+
+    // Live data where the restored name would pair with another database.
+    let temp = TempDir::new().unwrap();
+    let data = temp.path().join("data");
+    database(&data.join("app/audit-journal"), "snapshot");
+    std::fs::create_dir_all(data.join("tako")).unwrap();
+    let archive = snapshot_archive(temp.path(), &data);
+    let extracted = temp.path().join("extracted");
+    let databases = extract_database_snapshot(&archive, &extracted, u64::MAX).unwrap();
+    std::fs::remove_file(data.join("app/audit-journal")).unwrap();
+    database(&data.join("app/audit"), "live");
+    let dir = RollbackDir::create(&data).unwrap();
+    let error =
+        swap_databases(&extracted.join("databases"), &databases, &data, dir.path()).unwrap_err();
+    assert!(error.originals_intact);
+    assert!(
+        error.message.contains("app/audit is a live database"),
+        "{}",
+        error.message
+    );
+    assert!(!data.join("app/audit-journal").exists());
+    assert_eq!(value(&data.join("app/audit")), "live");
 }
