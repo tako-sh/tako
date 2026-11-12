@@ -9,7 +9,7 @@ use tako_core::{
 use super::databases::{
     DATABASE_SNAPSHOT_INTERVAL_SECS, DatabaseSnapshotOutcome, DatabaseSnapshotState,
 };
-use super::{latest_backup, now_unix_secs};
+use super::{DEPLOY_LOCK_BUSY, FullBackupStart, latest_backup, now_unix_secs};
 
 /// Short enough that hourly database snapshots stay close to an hour apart.
 /// Due checks use the remote index, so a restart neither bursts nor resets.
@@ -165,7 +165,7 @@ impl crate::ServerState {
             }
         }
         Some(match self.acquire_backup_lock_or_queue(app) {
-            Ok(Some(backup)) => match self.full_backup_with_lock(app, backup).await {
+            Ok(Some(backup)) => match self.operator_full_backup_with_lock(app, backup).await {
                 Ok(info) => PostDeployBackup::Created(Box::new(info)),
                 Err(error) => PostDeployBackup::Failed(error),
             },
@@ -179,8 +179,10 @@ impl crate::ServerState {
 
     /// Run a post-deploy full archive queued behind the database snapshot
     /// that just finished. Its wait is that snapshot, which its transfer
-    /// timeouts bound. If another operation took the lock first, give up
-    /// with a status-visible failure rather than wait again.
+    /// timeouts bound. If another backup operation took the lock first, give
+    /// up with a status-visible failure rather than wait again. If a deploy
+    /// or an operator operation has the deploy lock, it stays queued for the
+    /// next tick.
     pub(super) async fn run_queued_post_deploy_backup(&self, app: &str) {
         let queued = std::mem::take(
             &mut self
@@ -194,7 +196,10 @@ impl crate::ServerState {
             return;
         }
         let result = match self.acquire_backup_lock(app) {
-            Ok(backup) => self.full_backup_with_lock(app, backup).await,
+            Ok(backup) => {
+                self.full_backup_with_lock(app, backup, FullBackupStart::Scheduled)
+                    .await
+            }
             Err(error) => {
                 let message = format!(
                     "The post-deploy backup queued behind a database snapshot could not start: {error}"
@@ -212,7 +217,20 @@ impl crate::ServerState {
             }
         };
         match result {
-            Ok(info) => tracing::info!(app, backup = %info.id, "Created queued post-deploy backup"),
+            Ok(Some(info)) => {
+                tracing::info!(app, backup = %info.id, "Created queued post-deploy backup")
+            }
+            Ok(None) => {
+                self.database_snapshots
+                    .write()
+                    .entry(app.to_string())
+                    .or_default()
+                    .post_deploy_backup_queued = true;
+                tracing::info!(
+                    app,
+                    "Queued post-deploy backup waits for the next tick: {DEPLOY_LOCK_BUSY}"
+                );
+            }
             Err(error) => tracing::warn!(app, "Queued post-deploy backup failed: {error}"),
         }
     }
@@ -265,7 +283,7 @@ impl crate::ServerState {
                     let mut states = self.database_snapshots.write();
                     let state = states.entry(app.clone()).or_default();
                     state.index_failures.clear();
-                    due_backup(&index.backups, state, now)
+                    Some(due_backup(&index.backups, state, now))
                 }
                 Err(error) => {
                     // Without the index nothing is known to be due; never
@@ -279,15 +297,35 @@ impl crate::ServerState {
                     None
                 }
             };
+            let Some(due) = due else {
+                continue;
+            };
             match due {
-                Some(DueBackup::Full) => {
-                    if let Err(error) = self.backup_app_now(&app).await {
-                        tracing::warn!(app = %app, "Scheduled backup failed: {error}");
-                    }
-                }
+                Some(DueBackup::Full) => self.run_scheduled_full_backup(&app).await,
                 Some(DueBackup::Databases) => self.run_scheduled_database_snapshot(&app).await,
                 None => {}
             }
+            self.run_queued_post_deploy_backup(&app).await;
+        }
+    }
+
+    /// A due full archive that does not get the deploy lock is still due on
+    /// the next tick; that is no failure and starts no backoff.
+    async fn run_scheduled_full_backup(&self, app: &str) {
+        let result = match self.acquire_backup_lock(app) {
+            Ok(backup) => {
+                self.full_backup_with_lock(app, backup, FullBackupStart::Scheduled)
+                    .await
+            }
+            Err(error) => Err(error),
+        };
+        match result {
+            Ok(Some(_)) => {}
+            Ok(None) => tracing::info!(
+                app,
+                "Skipped scheduled backup until the next tick: {DEPLOY_LOCK_BUSY}"
+            ),
+            Err(error) => tracing::warn!(app, "Scheduled backup failed: {error}"),
         }
     }
 
@@ -303,7 +341,6 @@ impl crate::ServerState {
         let started = now_unix_secs();
         let outcome = self.database_snapshot_now(app).await;
         self.record_database_snapshot(app, started, outcome);
-        self.run_queued_post_deploy_backup(app).await;
     }
 
     fn record_database_snapshot(

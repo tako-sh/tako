@@ -505,7 +505,8 @@ const OPERATOR_PRIORITY_WINDOW: Duration = Duration::from_secs(60);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BackgroundWork {
     AutomaticRecovery,
-    #[allow(dead_code)] // For scheduled backups; operator backups are operator work.
+    /// Operator backups (`backups now`, the post-deploy archive in finalize)
+    /// are operator work.
     ScheduledBackup,
 }
 
@@ -538,12 +539,36 @@ pub(crate) struct BackgroundDeployLock<'a> {
 
 impl Drop for BackgroundDeployLock<'_> {
     fn drop(&mut self) {
-        // Release and forget the holder at once, so an operator never takes
-        // another holder for background work.
-        let mut access = self.app.deploy_lock_access.lock();
-        self.guard.take();
-        access.background = None;
+        release_for_background(self.app, &mut self.guard);
     }
+}
+
+/// Take a deploy lock guard for background work and record `work` as its
+/// holder, unless an operator has priority.
+fn take_for_background<G>(
+    app: &App,
+    work: BackgroundWork,
+    now: Instant,
+    try_lock: impl FnOnce() -> Option<G>,
+) -> Option<G> {
+    let mut access = app.deploy_lock_access.lock();
+    if access
+        .operator_priority_until
+        .is_some_and(|until| now < until)
+    {
+        return None;
+    }
+    let guard = try_lock()?;
+    access.background = Some(work);
+    Some(guard)
+}
+
+/// Release and forget the holder at once, so an operator never takes
+/// another holder for background work.
+fn release_for_background<G>(app: &App, guard: &mut Option<G>) {
+    let mut access = app.deploy_lock_access.lock();
+    guard.take();
+    access.background = None;
 }
 
 /// Try the deploy lock for background work. Never waits: `None` while the
@@ -554,15 +579,7 @@ pub(crate) fn try_lock_deploy_for_background<'a>(
     work: BackgroundWork,
     now: Instant,
 ) -> Option<BackgroundDeployLock<'a>> {
-    let mut access = app.deploy_lock_access.lock();
-    if access
-        .operator_priority_until
-        .is_some_and(|until| now < until)
-    {
-        return None;
-    }
-    let guard = lock.try_lock().ok()?;
-    access.background = Some(work);
+    let guard = take_for_background(app, work, now, || lock.try_lock().ok())?;
     Some(BackgroundDeployLock {
         app,
         guard: Some(guard),
@@ -615,28 +632,69 @@ impl ServerState {
 pub(crate) struct BackupDeployLock {
     app: Option<Arc<App>>,
     guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+    /// Taken by a scheduled backup, which is recorded as the holder.
+    background: bool,
+}
+
+impl BackupDeployLock {
+    fn open(
+        app: Option<Arc<App>>,
+        guard: tokio::sync::OwnedMutexGuard<()>,
+        background: bool,
+    ) -> Self {
+        if let Some(app) = &app {
+            *app.recovery_claims_open.lock() = true;
+        }
+        Self {
+            app,
+            guard: Some(guard),
+            background,
+        }
+    }
 }
 
 impl Drop for BackupDeployLock {
     fn drop(&mut self) {
-        if let Some(app) = &self.app {
-            *app.recovery_claims_open.lock() = false;
+        let Some(app) = &self.app else {
+            self.guard.take();
+            return;
+        };
+        *app.recovery_claims_open.lock() = false;
+        if self.background {
+            release_for_background(app, &mut self.guard);
+        } else {
+            self.guard.take();
         }
-        self.guard.take();
     }
 }
 
 impl ServerState {
+    /// For operator backups: waits for the lock.
     pub(crate) async fn lock_deploy_for_backup(&self, app_name: &str) -> BackupDeployLock {
         let guard = self.get_deploy_lock(app_name).await.lock_owned().await;
-        let app = self.app_manager.get_app(app_name);
-        if let Some(app) = &app {
-            *app.recovery_claims_open.lock() = true;
-        }
-        BackupDeployLock {
-            app,
-            guard: Some(guard),
-        }
+        BackupDeployLock::open(self.app_manager.get_app(app_name), guard, false)
+    }
+
+    /// For scheduled backups: never waits, and yields to operators like any
+    /// background work, see `try_lock_deploy_for_background`.
+    pub(crate) async fn try_lock_deploy_for_scheduled_backup(
+        &self,
+        app_name: &str,
+        now: Instant,
+    ) -> Option<BackupDeployLock> {
+        let lock = self.get_deploy_lock(app_name).await;
+        let Some(app) = self.app_manager.get_app(app_name) else {
+            // No operator operation waits on an app that is not loaded.
+            return Some(BackupDeployLock::open(
+                None,
+                lock.try_lock_owned().ok()?,
+                false,
+            ));
+        };
+        let guard = take_for_background(&app, BackgroundWork::ScheduledBackup, now, || {
+            lock.try_lock_owned().ok()
+        })?;
+        Some(BackupDeployLock::open(Some(app), guard, true))
     }
 }
 

@@ -828,6 +828,70 @@ async fn operators_get_through_automatic_recovery_without_waiting_for_it() {
 }
 
 #[tokio::test]
+async fn operators_get_through_a_scheduled_backup_and_recovery_claims_slots_during_it() {
+    let dir = crate::isolation::fixture::TestDataDir::new().unwrap();
+    let state = test_state(dir.path());
+    let app = running_app(&state, dir.path(), "scheduled", 1, sh(READY));
+    let name = app.name();
+    let scheduled = |now| state.try_lock_deploy_for_scheduled_backup(&name, now);
+    let priority = || app.deploy_lock_access.lock().operator_priority_until;
+    let update_secrets =
+        || state.update_secrets(&name, HashMap::from([("FIX".into(), "1".into())]));
+    let backing_up = format!(
+        "A scheduled backup of {name} is in progress; retry in a moment. \
+         Scheduled backups will pause to let the next attempt through."
+    );
+
+    // A snapshot that finishes within the short wait: the operator gets in.
+    let held = scheduled(Instant::now()).await.unwrap();
+    let (response, ()) = tokio::join!(update_secrets(), async {
+        tokio::time::sleep(OPERATOR_DEPLOY_LOCK_WAIT / 4).await;
+        drop(held);
+    });
+    // CodeQL[rust/cleartext-logging]: this isolated recovery fixture supplies no app secrets; assertions print test responses.
+    assert!(response.is_ok(), "{response:?}");
+    assert_eq!(priority(), None);
+
+    // A longer capture: the operator is told why, and scheduled backups
+    // leave the lock to the retry until the window ends.
+    let held = scheduled(Instant::now()).await.unwrap();
+    match update_secrets().await {
+        Response::Error { message } => assert_eq!(message, backing_up),
+        Response::Ok { .. } => panic!("the operator took a held deploy lock"),
+    }
+    assert!(priority().is_some());
+    drop(held);
+    assert!(app.deploy_lock_access.lock().background.is_none());
+    assert!(scheduled(Instant::now()).await.is_none());
+    let expired = Instant::now() + OPERATOR_PRIORITY_WINDOW + Duration::from_secs(1);
+    drop(
+        scheduled(expired)
+            .await
+            .expect("scheduled backups never resumed"),
+    );
+    let response = update_secrets().await;
+    // CodeQL[rust/cleartext-logging]: this isolated recovery fixture supplies no app secrets; assertions print test responses.
+    assert!(response.is_ok(), "{response:?}");
+    assert_eq!(priority(), None, "the retry did not clear the window");
+
+    // Native recovery claims slots while a scheduled backup holds the lock,
+    // and the window closes with the lock.
+    let held = scheduled(Instant::now()).await.unwrap();
+    tick(&state, Instant::now()).await;
+    assert_eq!(
+        live(&app),
+        1,
+        "recovery waited for the scheduled backup to release the deploy lock"
+    );
+    drop(held);
+    assert!(!*app.recovery_claims_open.lock());
+    assert!(app.deploy_lock_access.lock().background.is_none());
+    let lock = state.get_deploy_lock(&name).await;
+    drop(lock.try_lock().expect("the deploy lock leaked"));
+    state.app_manager.stop_app(&name).await.unwrap();
+}
+
+#[tokio::test]
 async fn an_idle_scale_to_zero_app_stops_reporting_old_restarts() {
     let dir = crate::isolation::fixture::TestDataDir::new().unwrap();
     let state = test_state(dir.path());

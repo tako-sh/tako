@@ -46,6 +46,9 @@ pub(crate) use snapshot::{measure_database_tree, snapshot_data_tree, snapshot_da
 /// A full archive holds the snapshot copy, the compressed archive, and its
 /// encrypted copy at once.
 const FULL_BACKUP_DISK_COPIES: u64 = 3;
+/// Why a scheduled backup did not take the deploy lock: a deploy holds it,
+/// or another operation does or was turned away and is about to retry.
+const DEPLOY_LOCK_BUSY: &str = "A deploy or another operation on the app is in progress.";
 /// How long workflow workers may finish their runs before a restore kills them.
 const WORKFLOW_STOP_TIMEOUT: Duration = if cfg!(test) {
     Duration::from_secs(1)
@@ -92,21 +95,38 @@ impl crate::ServerState {
         }
     }
 
-    /// Create a full archive unless another backup operation holds the lock.
+    /// Create a full archive for an operator unless another backup operation
+    /// holds the lock.
     async fn backup_app_now(&self, app: &str) -> Result<BackupInfo, String> {
         let backup = self.acquire_backup_lock(app)?;
-        self.full_backup_with_lock(app, backup).await
+        self.operator_full_backup_with_lock(app, backup).await
+    }
+
+    /// `backups now` and the post-deploy archive inside finalize are operator
+    /// operations: they wait for the deploy lock.
+    pub(super) async fn operator_full_backup_with_lock(
+        &self,
+        app: &str,
+        backup: tokio::sync::OwnedMutexGuard<()>,
+    ) -> Result<BackupInfo, String> {
+        self.full_backup_with_lock(app, backup, FullBackupStart::Operator)
+            .await?
+            .ok_or_else(|| DEPLOY_LOCK_BUSY.to_string())
     }
 
     /// Records the outcome for the scheduler's retry backoff and status.
+    /// `Ok(None)`: a scheduled archive did not take the deploy lock; nothing
+    /// ran, nothing is recorded, and the scheduler tries again on its next
+    /// tick. Operator archives wait for the lock instead.
     pub(super) async fn full_backup_with_lock(
         &self,
         app: &str,
         _backup: tokio::sync::OwnedMutexGuard<()>,
-    ) -> Result<BackupInfo, String> {
+        start: FullBackupStart,
+    ) -> Result<Option<BackupInfo>, String> {
         let result = match self.full_backup_disk_preflight(app).await {
             Ok(()) => self
-                .full_backup_locked(app)
+                .full_backup_locked(app, start)
                 .await
                 .map_err(|message| (BackupFailureReason::Failed, message)),
             Err(failure) => Err(failure),
@@ -114,9 +134,10 @@ impl crate::ServerState {
         let mut states = self.database_snapshots.write();
         let state = states.entry(app.to_string()).or_default();
         match result {
-            Ok(info) => {
+            Ok(None) => Ok(None),
+            Ok(Some(info)) => {
                 state.record_full_success();
-                Ok(info)
+                Ok(Some(info))
             }
             Err((reason, message)) => {
                 state.record_full_failure(now_unix_secs(), reason, message.clone());
@@ -146,8 +167,23 @@ impl crate::ServerState {
     }
 
     /// Call with the app's backup lock.
-    async fn full_backup_locked(&self, app: &str) -> Result<BackupInfo, String> {
-        let _guard = self.lock_deploy_for_backup(app).await;
+    async fn full_backup_locked(
+        &self,
+        app: &str,
+        start: FullBackupStart,
+    ) -> Result<Option<BackupInfo>, String> {
+        let _guard = match start {
+            FullBackupStart::Operator => self.lock_deploy_for_backup(app).await,
+            FullBackupStart::Scheduled => {
+                match self
+                    .try_lock_deploy_for_scheduled_backup(app, std::time::Instant::now())
+                    .await
+                {
+                    Some(guard) => guard,
+                    None => return Ok(None),
+                }
+            }
+        };
         if self.is_draining() {
             return Err("Server is draining".into());
         }
@@ -248,7 +284,7 @@ impl crate::ServerState {
         .await;
 
         let _ = tokio::fs::remove_dir_all(&work_dir).await;
-        result
+        result.map(Some)
     }
 
     /// Upload an encrypted archive and its manifest, then record it in the
@@ -737,6 +773,15 @@ impl crate::ServerState {
         state.post_deploy_backup_queued = true;
         Ok(None)
     }
+}
+
+/// Who started a full archive, which decides how it takes the deploy lock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FullBackupStart {
+    /// Waits for the deploy lock.
+    Operator,
+    /// Never waits, and yields the deploy lock to operator operations.
+    Scheduled,
 }
 
 fn full_backup_preflight(data_bytes: u64, available_bytes: u64) -> Result<(), String> {
@@ -1531,5 +1576,102 @@ mod tests {
         );
         assert!(!fixture.state.database_snapshot_running(&fixture.app));
         server.await.unwrap();
+    }
+
+    /// The deploy lock is free, no background holder is recorded, and native
+    /// recovery's claim window is closed.
+    async fn assert_deploy_lock_released(state: &crate::ServerState, app: &str) {
+        let lock = state.get_deploy_lock(app).await;
+        let held = lock.try_lock().expect("the deploy lock leaked");
+        // An operator that finds the lock held by anyone but background work
+        // is turned away at once, with the generic message.
+        let error = state
+            .lock_deploy_for_operator(app, &lock)
+            .await
+            .unwrap_err();
+        assert!(error.starts_with("Deploy already in progress"), "{error}");
+        drop(held);
+        let app_ref = state.app_manager.get_app(app).unwrap();
+        assert!(!*app_ref.recovery_claims_open.lock());
+    }
+
+    #[tokio::test]
+    async fn scheduled_backups_yield_the_deploy_lock_to_an_operator_and_run_on_a_later_tick() {
+        let fixture = RestoreFixture::new();
+        let (state, app) = (&fixture.state, fixture.app.as_str());
+        let index_key = backup_index_key(app, state);
+        let update_secrets = || state.update_secrets(app, std::collections::HashMap::new());
+
+        // An operator turned away by a scheduled backup opens its window.
+        let held = state
+            .try_lock_deploy_for_scheduled_backup(app, std::time::Instant::now())
+            .await
+            .unwrap();
+        let response = update_secrets().await;
+        // CodeQL[rust/cleartext-logging]: this backup fixture supplies no app secrets; assertions print test responses.
+        assert!(
+            matches!(&response, Response::Error { message } if message.starts_with("A scheduled backup of")),
+            "{response:?}"
+        );
+        drop(held);
+
+        // While it is open, the hourly snapshot skips without waiting.
+        let server = fixture.serve(1);
+        let outcome = state.database_snapshot_now(app).await.unwrap();
+        assert!(
+            matches!(
+                &outcome,
+                databases::DatabaseSnapshotOutcome::Skipped(skip)
+                    if skip.reason == tako_core::BackupSkipReason::DeployInProgress
+            ),
+            "{outcome:?}"
+        );
+        assert_eq!(server.await.unwrap(), [format!("GET {index_key}")]);
+
+        // So do a due full archive and a queued post-deploy archive: neither
+        // counts as a failure, and the queued one stays queued.
+        state
+            .database_snapshots
+            .write()
+            .entry(app.to_string())
+            .or_default()
+            .post_deploy_backup_queued = true;
+        let server = fixture.serve(1);
+        state.run_due_backups().await;
+        assert_eq!(server.await.unwrap(), [format!("GET {index_key}")]);
+        let schedule = state.backup_schedule_state(app);
+        assert!(schedule.failure().is_none(), "{:?}", schedule.failure());
+        assert!(schedule.post_deploy_backup_queued);
+        assert_deploy_lock_released(state, app).await;
+
+        // The operator's retry gets the lock and closes the window.
+        let response = update_secrets().await;
+        // CodeQL[rust/cleartext-logging]: this backup fixture supplies no app secrets; assertions print test responses.
+        assert!(response.is_ok(), "{response:?}");
+
+        // The next tick runs both archives. The fixture refuses uploads, so
+        // each fails at its upload, and the lock is released all the same.
+        let server = fixture.serve(5);
+        state.run_due_backups().await;
+        let served = server.await.unwrap();
+        assert_eq!(served.len(), 5, "{served:?}");
+        for archive in [&served[..3], &served[3..]] {
+            assert!(archive.last().unwrap().starts_with("PUT "), "{served:?}");
+        }
+        let schedule = state.backup_schedule_state(app);
+        assert_eq!(
+            schedule.failure().unwrap().reason,
+            BackupFailureReason::Failed
+        );
+        assert!(!schedule.post_deploy_backup_queued);
+        assert_deploy_lock_released(state, app).await;
+
+        // A database snapshot that fails after its capture leaks nothing either.
+        let server = fixture.serve(3);
+        let error = state.database_snapshot_now(app).await.unwrap_err();
+        assert!(error.contains("returned 404"), "{error}");
+        assert_eq!(server.await.unwrap().len(), 3);
+        assert!(!state.database_snapshot_running(app));
+        assert_deploy_lock_released(state, app).await;
     }
 }
