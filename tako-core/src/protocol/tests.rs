@@ -236,10 +236,14 @@ fn backup_info_serializes_encryption_metadata() {
             nonce_base64: "nonce".to_string(),
             tag_base64: "tag".to_string(),
         },
+        kind: BackupKind::Full,
+        database_digest: None,
     };
 
     let json = serde_json::to_string(&info).unwrap();
     assert!(json.contains(r#""algorithm":"aes-256-gcm""#));
+    assert!(json.contains(r#""kind":"full""#));
+    assert!(!json.contains("database_digest"));
     assert!(json.contains(r#""key_id":"backup-key-0123456789abcdef""#));
     let parsed: BackupInfo = serde_json::from_str(&json).unwrap();
     assert_eq!(
@@ -263,6 +267,45 @@ fn backup_info_requires_encryption_metadata() {
     }"#;
 
     assert!(serde_json::from_str::<BackupInfo>(json).is_err());
+}
+
+#[test]
+fn backup_info_without_kind_reads_as_full_archive() {
+    let json = r#"{
+        "id":"b1", "app":"demo", "environment":"production", "server":"la",
+        "created_at_unix_secs":1778220000, "size_bytes":123, "sha256_hex":"abc",
+        "archive_key":"a", "manifest_key":"m",
+        "encryption":{"algorithm":"aes-256-gcm","key_id":"k","nonce_base64":"n","tag_base64":"t"}
+    }"#;
+    let parsed: BackupInfo = serde_json::from_str(json).unwrap();
+    assert_eq!(parsed.kind, BackupKind::Full);
+    assert_eq!(parsed.database_digest, None);
+
+    let mut snapshot = parsed;
+    snapshot.kind = BackupKind::Databases;
+    snapshot.database_digest = Some("digest".into());
+    let json = serde_json::to_value(&snapshot).unwrap();
+    assert_eq!(json["kind"], "databases");
+    assert_eq!(json["database_digest"], "digest");
+}
+
+#[test]
+fn backup_status_reads_database_snapshot_fields_with_defaults() {
+    let status: BackupStatusResponse =
+        serde_json::from_str(r#"{"app":"demo/production","enabled":true}"#).unwrap();
+    assert_eq!(status.last_database_snapshot_at_unix_secs, None);
+    assert_eq!(status.last_database_snapshot_skip, None);
+
+    let status: BackupStatusResponse = serde_json::from_value(serde_json::json!({
+        "app": "demo/production", "enabled": true,
+        "last_database_snapshot_at_unix_secs": 10,
+        "last_database_snapshot_skip": {"at_unix_secs": 20, "reason": "too_large", "message": "too big"}
+    }))
+    .unwrap();
+    assert_eq!(status.last_database_snapshot_at_unix_secs, Some(10));
+    let skip = status.last_database_snapshot_skip.unwrap();
+    assert_eq!(skip.reason, BackupSkipReason::TooLarge);
+    assert_eq!(skip.at_unix_secs, 20);
 }
 
 #[test]

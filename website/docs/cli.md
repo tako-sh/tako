@@ -305,6 +305,8 @@ tako backups restore <backup-id> [--env <env>] [--server <server>] [-y|--yes]
 
 Backup commands default to `production`, require project context, and target the deployment id `{app}/{env}` over signed HTTP management. Multi-server download and restore require `--server`.
 
+`backups list` shows each entry's kind: `full` for an archive of the whole data tree, or `databases` for an hourly snapshot of only its SQLite databases. `--json` entries include `kind`. `backups status` reports the latest full backup, the latest database snapshot, and the reason the latest hourly database snapshot was skipped, if it was (`--json`: `last_backup`, `last_database_snapshot_at_unix_secs`, `last_database_snapshot_skip`). `download` and `restore` accept full backups only for now.
+
 ## Local CLI Maintenance
 
 ```bash
