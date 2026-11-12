@@ -166,7 +166,11 @@ pub(super) fn rpc_action(
         | Command::UpdateSecrets { app, .. }
         | Command::GetSecretsHash { app }
         | Command::EnqueueRun { app, .. }
-        | Command::Signal { app, .. } => Some(app),
+        | Command::Signal { app, .. }
+        | Command::ListWorkflowRuns { app, .. }
+        | Command::GetWorkflowRun { app, .. }
+        | Command::RetryWorkflowRun { app, .. }
+        | Command::CancelWorkflowRun { app, .. } => Some(app),
         Command::CheckDeploySpace { .. } => {
             return Ok(ManagementAction::Rpc {
                 scope: preflight_scope.cloned(),

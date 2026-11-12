@@ -16,6 +16,7 @@ class MockServer {
   private tasks: Run[] = [];
   private idCounter = 0;
   readonly results = new Map<string, unknown>();
+  readonly commands: string[] = [];
 
   async start(dir: string): Promise<void> {
     this.path = join(dir, "srv.sock");
@@ -50,6 +51,14 @@ class MockServer {
     return this.tasks.find((t) => t.id === id);
   }
 
+  /** What `tako workflows cancel` does to a running run: end it and fence its owner. */
+  operatorCancel(id: string): void {
+    const task = this.find(id)!;
+    task.status = "cancelled";
+    task.lastError = "cancelled by operator";
+    task.workerId = null;
+  }
+
   private handleConnection(socket: Socket): void {
     let buf = "";
     socket.on("data", (chunk: Buffer) => {
@@ -70,6 +79,7 @@ class MockServer {
   }
 
   private dispatch(cmd: Record<string, unknown>): unknown {
+    this.commands.push(String(cmd["command"]));
     if (!["claim_run", "enqueue_run", "get_run_result"].includes(String(cmd["command"]))) {
       const task = this.find(cmd["id"] as string);
       if (!task || task.status !== "running" || task.workerId !== cmd["worker_id"]) {
@@ -282,6 +292,75 @@ describe("Worker", () => {
     expect(mock.find(parent)?.status).toBe("succeeded");
     expect(mock.results.get(parent)).toEqual({ amount: 7 });
     expect(childCalls).toBe(1);
+  });
+
+  test("a run cancelled by an operator mid-step stops without retrying or failing", async () => {
+    const calls: string[] = [];
+    const worker = new Worker({
+      client,
+      workerId: "w1",
+      heartbeatIntervalMs: 0,
+      registry: registry({
+        job: async (_payload, ctx) => {
+          try {
+            await ctx.run(
+              "charge",
+              () => {
+                calls.push("charge");
+                mock.operatorCancel(ctx.runId);
+                return "receipt";
+              },
+              { retries: 3, backoff: { base: 1, max: 1 } },
+            );
+          } catch (err) {
+            // Handler code that swallows step errors still cannot continue.
+            calls.push("caught");
+            void err;
+          }
+          await ctx.run("ship", () => {
+            calls.push("ship");
+          });
+          return "done";
+        },
+      }),
+    });
+
+    const id = mock.seed({ name: "job" });
+    await worker.processOnce();
+    expect(calls).toEqual(["charge", "caught"]);
+    expect(mock.find(id)?.status).toBe("cancelled");
+    expect(mock.find(id)?.lastError).toBe("cancelled by operator");
+    const afterClaim = mock.commands.slice(mock.commands.indexOf("claim_run") + 1);
+    expect(afterClaim).toEqual(["save_step"]);
+  });
+
+  test("a lost lease stops the handler at its next checkpoint", async () => {
+    const calls: string[] = [];
+    const worker = new Worker({
+      client,
+      workerId: "w1",
+      heartbeatIntervalMs: 5,
+      registry: registry({
+        job: async (_payload, ctx) => {
+          await ctx.run("first", () => {
+            calls.push("first");
+          });
+          mock.operatorCancel(ctx.runId);
+          // A heartbeat reports the lost ownership before the next step.
+          await new Promise((r) => setTimeout(r, 40));
+          await ctx.run("second", () => {
+            calls.push("second");
+          });
+        },
+      }),
+    });
+
+    const id = mock.seed({ name: "job" });
+    await worker.processOnce();
+    expect(calls).toEqual(["first"]);
+    expect(mock.find(id)?.status).toBe("cancelled");
+    expect(mock.commands).not.toContain("fail_run");
+    expect(mock.commands).not.toContain("complete_run");
   });
 
   test("failing handler exhausts retries and dies", async () => {

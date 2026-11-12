@@ -21,7 +21,7 @@
 
 import type { Logger } from "../logger";
 import { expBackoffMs } from "./backoff";
-import type { WorkflowsClient } from "./rpc-client";
+import { isStaleOwnerError, type WorkflowsClient } from "./rpc-client";
 import type { RunId, StepState } from "./types";
 
 const INLINE_SLEEP_THRESHOLD_MS = 30_000;
@@ -108,13 +108,25 @@ export class WaitSignal {
   ) {}
 }
 
+/**
+ * Sentinel: this attempt no longer owns the run. An operator cancelled it or
+ * its lease was reclaimed. The worker stops without writing anything more.
+ */
+export class OwnershipLostSignal {}
+
+/** Ownership of the claimed run, shared by its step API and heartbeat. */
+export interface RunOwnership {
+  lost: boolean;
+}
+
 /** True for any control-flow sentinel — these must propagate untouched. */
 export function isControlSignal(err: unknown): boolean {
   return (
     err instanceof BailSignal ||
     err instanceof FailSignal ||
     err instanceof DeferSignal ||
-    err instanceof WaitSignal
+    err instanceof WaitSignal ||
+    err instanceof OwnershipLostSignal
   );
 }
 
@@ -130,7 +142,26 @@ export function createStepAPI(
   stepState: StepState,
   log: Logger,
   createContext: (stepName: string) => WorkflowStepContext,
+  ownership: RunOwnership = { lost: false },
 ): StepAPI {
+  // Every step is a checkpoint: once ownership is lost, no further step
+  // body runs, even when handler code caught the earlier rejection.
+  function ensureOwned(): void {
+    if (ownership.lost) throw new OwnershipLostSignal();
+  }
+
+  async function save(name: string, value: unknown): Promise<void> {
+    try {
+      await client.saveStep(runId, workerId, name, value);
+    } catch (err) {
+      if (isStaleOwnerError(err)) {
+        ownership.lost = true;
+        throw new OwnershipLostSignal();
+      }
+      throw err;
+    }
+  }
+
   // Names used by run/sleep/waitFor in this execution of the handler. They
   // share one namespace in the steps table, so a second use would silently
   // return the first use's saved result instead of doing its own work.
@@ -164,6 +195,7 @@ export function createStepAPI(
       fn: (step: WorkflowStepContext) => Promise<T> | T,
       opts?: StepRunOptions,
     ): Promise<T> {
+      ensureOwned();
       if (Object.prototype.hasOwnProperty.call(stepState, name)) {
         log.debug("Step cached", { step: name });
         return stepState[name] as T;
@@ -179,7 +211,7 @@ export function createStepAPI(
       for (let attempt = 1; attempt <= attempts; attempt++) {
         try {
           const result = await fn(context);
-          await client.saveStep(runId, workerId, name, result ?? null);
+          await save(name, result ?? null);
           stepState[name] = result as unknown;
           log.info("Step completed", { step: name, ms: Date.now() - startedAt });
           return result;
@@ -202,12 +234,13 @@ export function createStepAPI(
     },
 
     async sleep(name: string, durationMs: number): Promise<void> {
+      ensureOwned();
       const key = `__sleep:${name}`;
       const stored = stepState[key] as { wakeAt: number } | undefined;
       if (stored) {
         if (Date.now() >= stored.wakeAt) {
           if (!Object.prototype.hasOwnProperty.call(stepState, name)) {
-            await client.saveStep(runId, workerId, name, true);
+            await save(name, true);
             stepState[name] = true;
             log.info("Sleep completed", { step: name, ms: durationMs });
           } else {
@@ -219,12 +252,12 @@ export function createStepAPI(
       }
 
       const wakeAt = Date.now() + durationMs;
-      await client.saveStep(runId, workerId, key, { wakeAt });
+      await save(key, { wakeAt });
       stepState[key] = { wakeAt };
 
       if (durationMs < INLINE_SLEEP_THRESHOLD_MS) {
         await new Promise((r) => setTimeout(r, durationMs));
-        await client.saveStep(runId, workerId, name, true);
+        await save(name, true);
         stepState[name] = true;
         log.info("Sleep completed", { step: name, ms: durationMs });
         return;
@@ -233,6 +266,7 @@ export function createStepAPI(
     },
 
     async waitFor<T = unknown>(name: string, opts?: StepWaitOptions): Promise<T | null> {
+      ensureOwned();
       if (Object.prototype.hasOwnProperty.call(stepState, name)) {
         log.debug("Step cached", { step: name });
         return stepState[name] as T | null;

@@ -81,6 +81,10 @@ type deferSignal struct{ wakeAt *time.Time }
 
 func (d *deferSignal) Error() string { return "tako: defer signal" }
 
+// errOwnershipLost stops an attempt whose run is no longer owned by this
+// worker. Every step is a checkpoint that returns it once ownership is lost.
+var errOwnershipLost = &staleOwnerError{message: "tako: this worker no longer owns the run"}
+
 type waitSignal struct {
 	stepName  string
 	eventName string
@@ -99,6 +103,12 @@ type StepAPI struct {
 	// used holds the step names already taken in this execution.
 	used map[string]struct{}
 	mu   sync.Mutex
+	// lost is set once a write or heartbeat is rejected as stale.
+	lost *atomic.Bool
+}
+
+func (s *StepAPI) ownershipLost() bool {
+	return s.lost != nil && s.lost.Load()
 }
 
 // once reserves name for one step in this execution of the handler. Run,
@@ -108,6 +118,9 @@ type StepAPI struct {
 // the run immediately. A step that returns an error releases its name:
 // nothing was saved, and the handler may try the same step again.
 func (s *StepAPI) once(name string, step func() error) error {
+	if s.ownershipLost() {
+		return errOwnershipLost
+	}
 	s.mu.Lock()
 	if _, reused := s.used[name]; reused {
 		s.mu.Unlock()
@@ -209,6 +222,9 @@ func (s *StepAPI) run(name string, out any, fn func() (any, error), opts ...Step
 // and retry the same step without ending this execution.
 func (s *StepAPI) saveStep(name string, value any) error {
 	if err := s.client.SaveStep(s.ctx, s.runID, s.workerID, name, value); err != nil {
+		if isStaleOwner(err) && s.lost != nil {
+			s.lost.Store(true)
+		}
 		return err
 	}
 	s.mu.Lock()
@@ -223,7 +239,7 @@ func isControlSignal(err error) bool {
 	var ds *deferSignal
 	var ws *waitSignal
 	return errors.As(err, &bs) || errors.As(err, &fs) ||
-		errors.As(err, &ds) || errors.As(err, &ws)
+		errors.As(err, &ds) || errors.As(err, &ws) || isStaleOwner(err)
 }
 
 // Sleep durably waits for d. Short sleeps run inline; longer sleeps defer
@@ -510,9 +526,19 @@ func (w *worker) run() error {
 // finalize reports a run-finalization RPC failure. The run will re-execute
 // after lease expiry, so leave a forensic trail instead of failing silently.
 func (w *worker) finalize(op, runID string, err error) {
+	if isStaleOwner(err) {
+		stopped(runID)
+		return
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "tako-worker: %s failed for run %s: %v\n", op, runID, err)
 	}
+}
+
+// stopped reports an attempt that lost its run to an operator cancel or a
+// reclaim. Another owner or the operator decides the run's fate.
+func stopped(runID string) {
+	fmt.Fprintf(os.Stderr, "tako-worker: run %s stopped: this worker no longer owns it\n", runID)
 }
 
 func (w *worker) execute(task *Run) {
@@ -530,6 +556,11 @@ func (w *worker) execute(task *Run) {
 	if stepState == nil {
 		stepState = map[string]any{}
 	}
+	lost := &atomic.Bool{}
+	// Done fires when ownership is lost, so handlers can stop before their
+	// next checkpoint. RPCs keep the uncancelled context.
+	handlerCtx, cancelHandler := context.WithCancel(w.runCtx)
+	defer cancelHandler()
 	ctx := &WorkflowContext{
 		RunID:        task.ID,
 		WorkflowName: task.Name,
@@ -540,15 +571,24 @@ func (w *worker) execute(task *Run) {
 			runID:    task.ID,
 			workerID: task.WorkerID,
 			state:    stepState,
+			lost:     lost,
 		},
-		ctx: w.runCtx,
+		ctx: handlerCtx,
 	}
 
 	hbStop := make(chan struct{})
-	go w.heartbeatLoop(task.ID, task.WorkerID, hbStop)
+	go w.heartbeatLoop(task.ID, task.WorkerID, hbStop, func() {
+		lost.Store(true)
+		cancelHandler()
+	})
 	defer close(hbStop)
 
 	err := reg.handler(ctx, task.Payload)
+	// Never fail, retry, or complete a run this attempt no longer owns.
+	if lost.Load() || isStaleOwner(err) {
+		stopped(task.ID)
+		return
+	}
 	if err != nil {
 		var bs *bailSignal
 		var fs *failSignal
@@ -596,7 +636,7 @@ func (w *worker) execute(task *Run) {
 	w.finalize("complete", task.ID, w.client.Complete(w.runCtx, task.ID, task.WorkerID, result))
 }
 
-func (w *worker) heartbeatLoop(id, claimOwner string, stop <-chan struct{}) {
+func (w *worker) heartbeatLoop(id, claimOwner string, stop <-chan struct{}, onLost func()) {
 	ticker := time.NewTicker(time.Duration(w.heartbeatMs) * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -604,7 +644,10 @@ func (w *worker) heartbeatLoop(id, claimOwner string, stop <-chan struct{}) {
 		case <-stop:
 			return
 		case <-ticker.C:
-			_ = w.client.Heartbeat(w.runCtx, id, claimOwner, w.leaseMs)
+			if err := w.client.Heartbeat(w.runCtx, id, claimOwner, w.leaseMs); isStaleOwner(err) {
+				onLost()
+				return
+			}
 		}
 	}
 }

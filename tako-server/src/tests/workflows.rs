@@ -414,3 +414,163 @@ async fn update_secrets_restarts_workflows_even_without_http_instances() {
         Some(&"rotated".to_string())
     );
 }
+
+#[tokio::test]
+async fn operator_workflow_commands_inspect_retry_and_cancel_runs() {
+    let temp = TempDir::new().unwrap();
+    let app_id = "wf-ops/production";
+    let cert_manager = Arc::new(CertManager::new(CertManagerConfig {
+        cert_dir: temp.path().join("certs"),
+        ..Default::default()
+    }));
+    let state = ServerState::new(
+        temp.path().to_path_buf(),
+        cert_manager,
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    state.app_manager.register_app(AppConfig {
+        name: "wf-ops".to_string(),
+        environment: "production".to_string(),
+        version: "v1".to_string(),
+        ..Default::default()
+    });
+    let call = |command| state.handle_command(command);
+    let list = |limit| Command::ListWorkflowRuns {
+        app: app_id.into(),
+        status: None,
+        name: None,
+        limit,
+    };
+    let get = |id: &str| Command::GetWorkflowRun {
+        app: app_id.into(),
+        id: id.into(),
+    };
+    let retry = |id: &str| Command::RetryWorkflowRun {
+        app: app_id.into(),
+        id: id.into(),
+    };
+    let cancel = |id: &str| Command::CancelWorkflowRun {
+        app: app_id.into(),
+        id: id.into(),
+    };
+    fn data(response: Response) -> Value {
+        match response {
+            Response::Ok { data } => data,
+            Response::Error { message } => panic!("unexpected error: {message}"),
+        }
+    }
+    fn error(response: Response) -> String {
+        response.error_message().expect("expected an error").into()
+    }
+
+    for command in [list(None), get("r1"), retry("r1"), cancel("r1")] {
+        assert!(
+            crate::operations::command_is_read_only(&command)
+                == matches!(
+                    command,
+                    Command::ListWorkflowRuns { .. } | Command::GetWorkflowRun { .. }
+                )
+        );
+    }
+    assert_eq!(
+        error(
+            call(Command::GetWorkflowRun {
+                app: "ghost/production".into(),
+                id: "r1".into(),
+            })
+            .await
+        ),
+        "App not found: ghost/production"
+    );
+
+    // No workflow store on this server yet: empty, and nothing is created.
+    let empty = data(call(list(None)).await);
+    assert_eq!(empty["store"], "sqlite");
+    assert_eq!(empty["runs"], serde_json::json!([]));
+    assert!(data(call(get("r1")).await)["run"].is_null());
+    assert_eq!(error(call(retry("r1")).await), "Workflow run not found: r1");
+    assert!(!state.workflows.workflows_db_path(app_id).exists());
+
+    let db = tako_workflows::RunsDb::open(&state.workflows.workflows_db_path(app_id)).unwrap();
+    for id in ["r1", "r2"] {
+        let options = tako_core::EnqueueOpts {
+            id: Some(id.into()),
+            ..Default::default()
+        };
+        db.enqueue("work", &serde_json::json!({"n": id}), &options)
+            .unwrap();
+    }
+    let owner = db
+        .claim("worker", &["work".into()], 60_000)
+        .unwrap()
+        .unwrap();
+    assert_eq!(owner.id, "r1");
+
+    let listed: tako_core::ListWorkflowRunsResponse =
+        serde_json::from_value(data(call(list(Some(1))).await)).unwrap();
+    assert_eq!(listed.app, app_id);
+    assert_eq!(listed.runs.len(), 1);
+    assert!(listed.has_more);
+    assert_eq!(
+        error(call(list(Some(0))).await),
+        "Workflow run list limit must be between 1 and 200"
+    );
+    let shown: tako_core::GetWorkflowRunResponse =
+        serde_json::from_value(data(call(get("r1")).await)).unwrap();
+    let shown = shown.run.unwrap();
+    assert_eq!(shown.status, tako_core::WorkflowRunStatus::Running);
+    assert_eq!(shown.payload.value, serde_json::json!({"n": "r1"}));
+
+    let cancelled: tako_core::WorkflowRunTransition =
+        serde_json::from_value(data(call(cancel("r1")).await)).unwrap();
+    assert_eq!(
+        (cancelled.previous_status, cancelled.status),
+        (
+            tako_core::WorkflowRunStatus::Running,
+            tako_core::WorkflowRunStatus::Cancelled
+        )
+    );
+    assert!(
+        db.complete("r1", &owner.worker_id, &serde_json::Value::Null)
+            .is_err(),
+        "the cancelled attempt is fenced"
+    );
+    assert_eq!(
+        error(call(cancel("r1")).await),
+        "Workflow run r1 already finished as cancelled; only pending or running runs can be cancelled"
+    );
+    assert_eq!(
+        error(call(retry("r2")).await),
+        "Workflow run r2 is pending; only dead or cancelled runs can be retried"
+    );
+
+    // Upgrades pause repairs but not inspection.
+    data(
+        call(Command::EnterUpgrading {
+            owner: "ops".into(),
+        })
+        .await,
+    );
+    assert!(error(call(retry("r1")).await).contains("Server is upgrading"));
+    assert!(error(call(cancel("r2")).await).contains("Server is upgrading"));
+    data(call(get("r1")).await);
+    data(
+        call(Command::ExitUpgrading {
+            owner: "ops".into(),
+        })
+        .await,
+    );
+
+    let cancelled = data(call(cancel("r2")).await);
+    assert_eq!(cancelled["previous_status"], "pending");
+    let retried: tako_core::WorkflowRunTransition =
+        serde_json::from_value(data(call(retry("r1")).await)).unwrap();
+    assert_eq!(retried.status, tako_core::WorkflowRunStatus::Pending);
+    let again = db
+        .claim("worker", &["work".into()], 60_000)
+        .unwrap()
+        .unwrap();
+    assert_eq!((again.id.as_str(), again.attempts), ("r1", 1));
+}

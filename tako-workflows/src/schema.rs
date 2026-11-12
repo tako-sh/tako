@@ -31,6 +31,10 @@ CREATE INDEX IF NOT EXISTS idx_runs_lease
   ON runs(lease_until)
   WHERE status='running';
 
+-- Operator listings show the newest runs first.
+CREATE INDEX IF NOT EXISTS idx_runs_created
+  ON runs(created_at);
+
 -- Per-step memoization. One row per completed step within a run; the result
 -- column holds the JSON-encoded return value of the step body. CASCADE on
 -- run delete keeps things tidy.

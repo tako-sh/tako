@@ -426,3 +426,117 @@ func TestStepRunMemoizesAcrossRetries(t *testing.T) {
 		t.Fatalf("step b should have run at least twice, got %d", bRuns.Load())
 	}
 }
+
+// operatorCancel does what `tako workflows cancel` does to a running run:
+// it ends the run and fences the claim owner.
+func (s *mockServer) operatorCancel(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t := s.tasks[id]
+	t.Status = "cancelled"
+	t.WorkerID = ""
+}
+
+func (s *mockServer) commandsAfterClaim() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []string
+	claimed := false
+	for _, cmd := range s.received {
+		name, _ := cmd["command"].(string)
+		if claimed {
+			out = append(out, name)
+		}
+		if name == "claim_run" && !claimed {
+			claimed = true
+		}
+	}
+	return out
+}
+
+func TestOperatorCancelStopsRunWithoutRetryingOrFailing(t *testing.T) {
+	s := startMockServer(t)
+	client := &Client{socketPath: s.path, app: "test-app"}
+	id := s.seed("job", 3)
+	var steps []string
+	var mu sync.Mutex
+	record := func(name string) {
+		mu.Lock()
+		steps = append(steps, name)
+		mu.Unlock()
+	}
+	handlers := map[string]workflowRegistration{"job": {handler: func(ctx *WorkflowContext, _ json.RawMessage) error {
+		opts := StepRunOpts{Retries: 3}
+		opts.Backoff.Base = time.Millisecond
+		err := ctx.Step.Run("charge", nil, func() (any, error) {
+			record("charge")
+			s.operatorCancel(ctx.RunID)
+			return "receipt", nil
+		}, opts)
+		// Handler code that ignores the error still cannot continue.
+		_ = err
+		return ctx.Step.Run("ship", nil, func() (any, error) {
+			record("ship")
+			return nil, nil
+		})
+	}}}
+	w := newWorker(context.Background(), client, handlers)
+	w.heartbeatMs = 60_000
+	task, err := client.Claim(context.Background(), w.workerID, []string{"job"}, w.leaseMs)
+	if err != nil || task == nil {
+		t.Fatalf("claim: %v %v", task, err)
+	}
+	w.execute(task)
+
+	if fmt.Sprint(steps) != "[charge]" {
+		t.Fatalf("steps after cancel: %v", steps)
+	}
+	if got := s.find(id).Status; got != "cancelled" {
+		t.Fatalf("status: %s", got)
+	}
+	if got := fmt.Sprint(s.commandsAfterClaim()); got != "[save_step]" {
+		t.Fatalf("worker kept writing after losing the run: %s", got)
+	}
+}
+
+func TestLostLeaseStopsHandlerAtNextCheckpoint(t *testing.T) {
+	s := startMockServer(t)
+	client := &Client{socketPath: s.path, app: "test-app"}
+	id := s.seed("job", 3)
+	var second atomic.Bool
+	var cancelled atomic.Bool
+	handlers := map[string]workflowRegistration{"job": {handler: func(ctx *WorkflowContext, _ json.RawMessage) error {
+		s.operatorCancel(ctx.RunID)
+		select {
+		case <-ctx.Done():
+			cancelled.Store(true)
+		case <-time.After(2 * time.Second):
+		}
+		return ctx.Step.Run("second", nil, func() (any, error) {
+			second.Store(true)
+			return nil, nil
+		})
+	}}}
+	w := newWorker(context.Background(), client, handlers)
+	w.heartbeatMs = 5
+	task, err := client.Claim(context.Background(), w.workerID, []string{"job"}, w.leaseMs)
+	if err != nil || task == nil {
+		t.Fatalf("claim: %v %v", task, err)
+	}
+	w.execute(task)
+
+	if !cancelled.Load() {
+		t.Fatalf("context was not cancelled after the heartbeat lost ownership")
+	}
+	if second.Load() {
+		t.Fatalf("a step ran after ownership was lost")
+	}
+	if got := s.find(id).Status; got != "cancelled" {
+		t.Fatalf("status: %s", got)
+	}
+	for _, cmd := range s.commandsAfterClaim() {
+		if cmd != "heartbeat_run" {
+			t.Fatalf("unexpected write after losing the run: %s", cmd)
+		}
+	}
+}

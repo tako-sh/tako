@@ -227,6 +227,19 @@ export class WorkflowsClient {
   }
 }
 
+/**
+ * True when the server rejected a worker write because this claim no longer
+ * owns the run: an operator cancelled it, or its lease expired and the run
+ * was reclaimed. Retrying cannot succeed; the attempt must stop.
+ *
+ * @internal
+ */
+export function isStaleOwnerError(err: unknown): boolean {
+  if (!(err instanceof TakoError) || err.code !== "TAKO_RPC_ERROR") return false;
+  const cause = (err as { cause?: unknown }).cause;
+  return cause instanceof Error && cause.message.includes("stale worker");
+}
+
 interface RawRun {
   id: string;
   worker_id: string;

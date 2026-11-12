@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -426,7 +427,22 @@ func (c *Client) call(ctx context.Context, cmd map[string]any) (json.RawMessage,
 		if msg == "" {
 			msg = "rpc failed"
 		}
+		if strings.Contains(msg, "stale worker") {
+			return nil, &staleOwnerError{message: "tako: " + msg}
+		}
 		return nil, errors.New("tako: " + msg)
 	}
 	return resp.Data, nil
+}
+
+// staleOwnerError reports a worker write rejected because the claim no
+// longer owns the run: an operator cancelled it, or its lease expired and the
+// run was reclaimed. Retrying cannot succeed; the attempt must stop.
+type staleOwnerError struct{ message string }
+
+func (e *staleOwnerError) Error() string { return e.message }
+
+func isStaleOwner(err error) bool {
+	var stale *staleOwnerError
+	return errors.As(err, &stale)
 }

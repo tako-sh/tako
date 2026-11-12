@@ -6,8 +6,13 @@ use std::collections::HashMap;
 use std::path::Path;
 use tako_core::{EnqueueOpts, EnqueueRunResponse, RunPayload, ScheduleSpec};
 
+use super::operator::{
+    CancelledRun, OPERATOR_CANCEL_REASON, RunRecord, RunRow, StepRow, SummaryRow, WaitRow,
+    parse_status,
+};
 use super::{RunsDbError, ScheduleRow, clamp_lease_ms, now_ms};
 use crate::schema;
+use tako_core::WorkflowRunStatus;
 
 const DEFAULT_MAX_ATTEMPTS: u32 = 3;
 
@@ -536,6 +541,146 @@ impl SqliteRunsDb {
         Ok(exists != 0)
     }
 
+    pub(super) fn list_runs(
+        &self,
+        status: Option<&str>,
+        name: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<SummaryRow>, RunsDbError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, name, status, attempts, max_attempts, run_at, created_at, finished_at,
+                    last_error
+             FROM runs
+             WHERE (?1 IS NULL OR status = ?1) AND (?2 IS NULL OR name = ?2)
+             ORDER BY created_at DESC, id DESC
+             LIMIT ?3",
+        )?;
+        let rows = stmt.query_map((status, name, limit), summary_row)?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub(super) fn get_run(
+        &self,
+        id: &str,
+        step_limit: i64,
+    ) -> Result<Option<RunRecord>, RunsDbError> {
+        let mut conn = self.conn.lock();
+        // One snapshot, so the steps belong to the run state shown with them.
+        let tx = conn.transaction()?;
+        let run = tx
+            .query_row(
+                "SELECT id, name, status, attempts, max_attempts, run_at, created_at, finished_at,
+                        last_error, payload, result, lease_until, worker_id
+                 FROM runs WHERE id = ?1",
+                [id],
+                |row| {
+                    Ok(RunRow {
+                        summary: summary_row(row)?,
+                        payload: row.get(9)?,
+                        result: row.get(10)?,
+                        lease_until: row.get(11)?,
+                        worker_id: row.get(12)?,
+                    })
+                },
+            )
+            .optional()?;
+        let Some(run) = run else {
+            return Ok(None);
+        };
+        let steps = {
+            let mut stmt = tx.prepare_cached(
+                "SELECT name, result, completed_at FROM steps WHERE run_id = ?1
+                 ORDER BY completed_at DESC, name DESC LIMIT ?2",
+            )?;
+            let rows = stmt.query_map((id, step_limit), |row| {
+                Ok(StepRow {
+                    name: row.get(0)?,
+                    result: row.get(1)?,
+                    completed_at: row.get(2)?,
+                })
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        let steps_total: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM steps WHERE run_id = ?1",
+            [id],
+            |row| row.get(0),
+        )?;
+        let waits = {
+            let mut stmt = tx.prepare_cached(
+                "SELECT step_name, event_name, expires_at FROM event_waiters WHERE run_id = ?1
+                 ORDER BY step_name LIMIT ?2",
+            )?;
+            let rows = stmt.query_map((id, step_limit), |row| {
+                Ok(WaitRow {
+                    step_name: row.get(0)?,
+                    event_name: row.get(1)?,
+                    expires_at: row.get(2)?,
+                })
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        tx.commit()?;
+        Ok(Some(RunRecord {
+            run,
+            steps,
+            steps_total: steps_total as u64,
+            waits,
+        }))
+    }
+
+    pub(super) fn retry_run(&self, id: &str) -> Result<WorkflowRunStatus, RunsDbError> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let (status, _) = run_status(&tx, id)?;
+        if !matches!(
+            status,
+            WorkflowRunStatus::Dead | WorkflowRunStatus::Cancelled
+        ) {
+            return Err(RunsDbError::RunNotRetryable {
+                id: id.to_string(),
+                status,
+            });
+        }
+        tx.execute(
+            "UPDATE runs SET status='pending', attempts=0, run_at=?1, lease_until=NULL,
+                             worker_id=NULL, finished_at=NULL, result=NULL
+             WHERE id = ?2",
+            (now_ms(), id),
+        )?;
+        tx.execute("DELETE FROM event_waiters WHERE run_id = ?1", [id])?;
+        tx.commit()?;
+        Ok(status)
+    }
+
+    pub(super) fn cancel_run(&self, id: &str) -> Result<CancelledRun, RunsDbError> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let (status, worker_id) = run_status(&tx, id)?;
+        if !matches!(
+            status,
+            WorkflowRunStatus::Pending | WorkflowRunStatus::Running
+        ) {
+            return Err(RunsDbError::RunAlreadyFinished {
+                id: id.to_string(),
+                status,
+            });
+        }
+        tx.execute(
+            "UPDATE runs SET status='cancelled', last_error=?1, worker_id=NULL, lease_until=NULL,
+                             finished_at=?2
+             WHERE id = ?3",
+            (OPERATOR_CANCEL_REASON, now_ms(), id),
+        )?;
+        tx.execute("DELETE FROM event_waiters WHERE run_id = ?1", [id])?;
+        tx.commit()?;
+        Ok(CancelledRun {
+            previous_status: status,
+            worker_id: worker_id.filter(|_| status == WorkflowRunStatus::Running),
+        })
+    }
+
     pub(super) fn replace_schedules(&self, schedules: &[ScheduleSpec]) -> Result<(), RunsDbError> {
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
@@ -584,6 +729,35 @@ impl SqliteRunsDb {
         )?;
         Ok(())
     }
+}
+
+fn summary_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SummaryRow> {
+    Ok(SummaryRow {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        status: row.get(2)?,
+        attempts: row.get(3)?,
+        max_attempts: row.get(4)?,
+        run_at: row.get(5)?,
+        created_at: row.get(6)?,
+        finished_at: row.get(7)?,
+        last_error: row.get(8)?,
+    })
+}
+
+fn run_status(
+    conn: &Connection,
+    id: &str,
+) -> Result<(WorkflowRunStatus, Option<String>), RunsDbError> {
+    let row = conn
+        .query_row(
+            "SELECT status, worker_id FROM runs WHERE id = ?1",
+            [id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .optional()?;
+    let (status, worker_id) = row.ok_or_else(|| RunsDbError::RunNotFound { id: id.to_string() })?;
+    Ok((parse_status(&status)?, worker_id))
 }
 
 #[cfg(test)]

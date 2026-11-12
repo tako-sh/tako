@@ -85,6 +85,16 @@ workflow execution remains at least once.
 
 JavaScript `.run()` combines enqueue and result waiting. In a workflow, the SDK saves a child ID and call identity before enqueueing, repeats an uncertain enqueue with that ID, and checkpoints the terminal outcome. Pending children use ordinary `DeferRun`, releasing the parent's claim/concurrency slot without spending a retry. Result waits checkpoint their deadline across replay; a timeout does not cancel the child. Named `ctx.run` steps scope child-call order. IDs remain deduplicated only while child history is retained. Detached `.enqueue()` and direct handler `call()` do not gain automatic workflow checkpoints.
 
+## Workflow run operations
+
+Operators inspect and repair runs with four management commands: `ListWorkflowRuns {app,status?,name?,limit?}`, `GetWorkflowRun {app,id}`, `RetryWorkflowRun {app,id}`, and `CancelWorkflowRun {app,id}`. They are app-scoped like other application commands; list and get are read-only. The internal socket rejects them, so an app process cannot list or change runs, its own included. The worker's `CancelRun` is a different command: it carries the claim owner and ends the run from inside its handler.
+
+Each server answers from the app's store as it sees it: its own SQLite file, or the Postgres store shared by every server of the app. Replies name the store (`sqlite` or `postgres`) so clients can tell one server's runs from a shared set. A stopped app's runs stay readable.
+
+List returns the newest runs first, 50 by default and at most 200. Get returns every run field, the 100 most recent saved steps, and the run's event waits. Replies must fit one 1 MiB JSONL frame, so the server caps stored text: the payload and result at 32 KiB, each step result at 2 KiB, and errors at 8 KiB (1 KiB in lists). A capped JSON value carries `truncated: true`, its stored size, and a UTF-8-safe text preview instead of the value. A run parked until a signal reports no due time.
+
+Retry accepts only `dead` and `cancelled` runs. The run becomes `pending`, due now, with its attempts reset and its saved steps kept, so the handler resumes after its last checkpoint. Cancel accepts `pending` and `running` runs and removes their event waits. A running attempt loses its claim: its later heartbeats, checkpoints, and lifecycle writes are rejected with the same `stale worker` error as a reclaimed attempt's, and reclaim leaves the cancelled run alone. SDK workers treat that error as lost ownership. They stop the attempt at its next checkpoint without failing, retrying, or completing the run; side effects already started are not undone.
+
 ## Ephemeral channels
 
 Channel registry metadata, authorization responses, and internal publish lifecycle metadata carry optional `ephemeral: true`. Omission or false selects durable delivery. Ephemeral definitions omit `replayWindowMs`; supplying both is invalid. Durability is a definition setting and cannot be changed by client input or an authorization grant.

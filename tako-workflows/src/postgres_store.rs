@@ -3,9 +3,14 @@ use postgres::{Client, NoTls};
 use std::collections::HashMap;
 use tako_core::{EnqueueOpts, EnqueueRunResponse, RunPayload, ScheduleSpec};
 
+use super::enqueue::operator::{
+    CancelledRun, OPERATOR_CANCEL_REASON, RunRecord, RunRow, StepRow, SummaryRow, WaitRow,
+    parse_status,
+};
 use super::enqueue::{
     Reclaimed, RunsDbError, ScheduleRow, WORKER_LOST_ERROR, clamp_lease_ms, now_ms,
 };
+use tako_core::WorkflowRunStatus;
 
 const DEFAULT_MAX_ATTEMPTS: u32 = 3;
 
@@ -637,6 +642,203 @@ impl PostgresRunsDb {
         Ok(())
     }
 
+    pub(super) fn list_runs(
+        &self,
+        status: Option<&str>,
+        name: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<SummaryRow>, RunsDbError> {
+        let mut client = self.client.lock();
+        let rows = client.query(
+            &format!(
+                "SELECT id, name, status, attempts, max_attempts, run_at, created_at, finished_at,
+                        last_error
+                 FROM {}.runs
+                 WHERE app_id=$1 AND ($2::TEXT IS NULL OR status=$2)
+                   AND ($3::TEXT IS NULL OR name=$3)
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT $4",
+                self.schema
+            ),
+            &[&self.app_id, &status, &name, &(limit as i64)],
+        )?;
+        Ok(rows.iter().map(summary_row).collect())
+    }
+
+    pub(super) fn get_run(
+        &self,
+        id: &str,
+        step_limit: i64,
+    ) -> Result<Option<RunRecord>, RunsDbError> {
+        let mut client = self.client.lock();
+        // One snapshot, so the steps belong to the run state shown with them.
+        let mut tx = client
+            .build_transaction()
+            .isolation_level(postgres::IsolationLevel::RepeatableRead)
+            .read_only(true)
+            .start()?;
+        let Some(row) = tx.query_opt(
+            &format!(
+                "SELECT id, name, status, attempts, max_attempts, run_at, created_at, finished_at,
+                        last_error, payload, result, lease_until, worker_id
+                 FROM {}.runs WHERE app_id=$1 AND id=$2",
+                self.schema
+            ),
+            &[&self.app_id, &id],
+        )?
+        else {
+            tx.commit()?;
+            return Ok(None);
+        };
+        let run = RunRow {
+            summary: summary_row(&row),
+            payload: row.get(9),
+            result: row.get(10),
+            lease_until: row.get(11),
+            worker_id: row.get(12),
+        };
+        let steps = tx
+            .query(
+                &format!(
+                    "SELECT name, result, completed_at FROM {}.steps WHERE app_id=$1 AND run_id=$2
+                     ORDER BY completed_at DESC, name DESC LIMIT $3",
+                    self.schema
+                ),
+                &[&self.app_id, &id, &step_limit],
+            )?
+            .into_iter()
+            .map(|row| StepRow {
+                name: row.get(0),
+                result: row.get(1),
+                completed_at: row.get(2),
+            })
+            .collect();
+        let steps_total: i64 = tx
+            .query_one(
+                &format!(
+                    "SELECT COUNT(*) FROM {}.steps WHERE app_id=$1 AND run_id=$2",
+                    self.schema
+                ),
+                &[&self.app_id, &id],
+            )?
+            .get(0);
+        let waits = tx
+            .query(
+                &format!(
+                    "SELECT step_name, event_name, expires_at FROM {}.event_waiters
+                     WHERE app_id=$1 AND run_id=$2 ORDER BY step_name LIMIT $3",
+                    self.schema
+                ),
+                &[&self.app_id, &id, &step_limit],
+            )?
+            .into_iter()
+            .map(|row| WaitRow {
+                step_name: row.get(0),
+                event_name: row.get(1),
+                expires_at: row.get(2),
+            })
+            .collect();
+        tx.commit()?;
+        Ok(Some(RunRecord {
+            run,
+            steps,
+            steps_total: steps_total as u64,
+            waits,
+        }))
+    }
+
+    pub(super) fn retry_run(&self, id: &str) -> Result<WorkflowRunStatus, RunsDbError> {
+        let mut client = self.client.lock();
+        let mut tx = client.transaction()?;
+        let (status, _) = self.lock_run_status(&mut tx, id)?;
+        if !matches!(
+            status,
+            WorkflowRunStatus::Dead | WorkflowRunStatus::Cancelled
+        ) {
+            return Err(RunsDbError::RunNotRetryable {
+                id: id.to_string(),
+                status,
+            });
+        }
+        tx.execute(
+            &format!(
+                "UPDATE {}.runs SET status='pending', attempts=0, run_at=$3, lease_until=NULL,
+                                    worker_id=NULL, finished_at=NULL, result=NULL
+                 WHERE app_id=$1 AND id=$2",
+                self.schema
+            ),
+            &[&self.app_id, &id, &self.now()],
+        )?;
+        self.delete_waiters(&mut tx, id)?;
+        tx.commit()?;
+        Ok(status)
+    }
+
+    pub(super) fn cancel_run(&self, id: &str) -> Result<CancelledRun, RunsDbError> {
+        let mut client = self.client.lock();
+        let mut tx = client.transaction()?;
+        // The row lock orders this with checkpoints, which lock the run
+        // before checking ownership, and with guarded lifecycle updates,
+        // which re-check their owner after waiting for it.
+        let (status, worker_id) = self.lock_run_status(&mut tx, id)?;
+        if !matches!(
+            status,
+            WorkflowRunStatus::Pending | WorkflowRunStatus::Running
+        ) {
+            return Err(RunsDbError::RunAlreadyFinished {
+                id: id.to_string(),
+                status,
+            });
+        }
+        tx.execute(
+            &format!(
+                "UPDATE {}.runs SET status='cancelled', last_error=$3, worker_id=NULL,
+                                    lease_until=NULL, finished_at=$4
+                 WHERE app_id=$1 AND id=$2",
+                self.schema
+            ),
+            &[&self.app_id, &id, &OPERATOR_CANCEL_REASON, &self.now()],
+        )?;
+        self.delete_waiters(&mut tx, id)?;
+        tx.commit()?;
+        Ok(CancelledRun {
+            previous_status: status,
+            worker_id: worker_id.filter(|_| status == WorkflowRunStatus::Running),
+        })
+    }
+
+    fn lock_run_status(
+        &self,
+        tx: &mut postgres::Transaction<'_>,
+        id: &str,
+    ) -> Result<(WorkflowRunStatus, Option<String>), RunsDbError> {
+        let row = tx
+            .query_opt(
+                &format!(
+                    "SELECT status, worker_id FROM {}.runs WHERE app_id=$1 AND id=$2 FOR UPDATE",
+                    self.schema
+                ),
+                &[&self.app_id, &id],
+            )?
+            .ok_or_else(|| RunsDbError::RunNotFound { id: id.to_string() })?;
+        Ok((parse_status(row.get(0))?, row.get(1)))
+    }
+
+    fn delete_waiters(
+        &self,
+        tx: &mut postgres::Transaction<'_>,
+        id: &str,
+    ) -> Result<(), RunsDbError> {
+        tx.execute(
+            &format!(
+                "DELETE FROM {}.event_waiters WHERE app_id=$1 AND run_id=$2",
+                self.schema
+            ),
+            &[&self.app_id, &id],
+        )?;
+        Ok(())
+    }
+
     fn update_running(
         &self,
         set_clause: &str,
@@ -655,6 +857,20 @@ impl PostgresRunsDb {
             return Err(RunsDbError::StaleWorker);
         }
         Ok(())
+    }
+}
+
+fn summary_row(row: &postgres::Row) -> SummaryRow {
+    SummaryRow {
+        id: row.get(0),
+        name: row.get(1),
+        status: row.get(2),
+        attempts: row.get(3),
+        max_attempts: row.get(4),
+        run_at: row.get(5),
+        created_at: row.get(6),
+        finished_at: row.get(7),
+        last_error: row.get(8),
     }
 }
 
@@ -697,6 +913,9 @@ fn init_schema(client: &mut Client, schema: &str) -> Result<(), RunsDbError> {
            WHERE status IN ('succeeded', 'cancelled', 'dead');
          CREATE INDEX IF NOT EXISTS idx_runs_app_status_run_at
            ON {schema}.runs(app_id, status, run_at);
+         -- Operator listings show the newest runs first.
+         CREATE INDEX IF NOT EXISTS idx_runs_app_created
+           ON {schema}.runs(app_id, created_at);
          -- Only running runs can expire. Keep range lookups without indexing
          -- pending jobs or the much larger retained terminal history.
          CREATE INDEX IF NOT EXISTS idx_runs_app_running_lease
@@ -1077,6 +1296,91 @@ mod tests {
             1
         );
         drop(db);
+        gate.batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .unwrap();
+    }
+
+    /// An operator cancel and the running attempt's completion race on two
+    /// servers. Exactly one wins; the loser sees a specific refusal and the
+    /// stored status matches the winner.
+    #[test]
+    fn operator_cancel_and_a_late_completion_serialize_on_the_run() {
+        let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let schema = format!(
+            "cancel_race_{}",
+            nanoid::nanoid!(12, &['a', 'b', 'c', 'd', 'e', 'f'])
+        );
+        let worker_side = PostgresRunsDb::open(&url, &schema, "app").unwrap();
+        let operator_side = PostgresRunsDb::open(&url, &schema, "app").unwrap();
+        let id = worker_side
+            .enqueue("work", &serde_json::json!({}), &EnqueueOpts::default())
+            .unwrap()
+            .id;
+        let owner = worker_side
+            .claim("w", &["work".into()], 60_000)
+            .unwrap()
+            .unwrap()
+            .worker_id;
+        let pids: Vec<i32> = [&worker_side, &operator_side]
+            .iter()
+            .map(|db| {
+                db.client
+                    .lock()
+                    .query_one("SELECT pg_backend_pid()", &[])
+                    .unwrap()
+                    .get(0)
+            })
+            .collect();
+        let mut gate = Client::connect(&url, NoTls).unwrap();
+        let mut tx = gate.transaction().unwrap();
+        tx.query_one(
+            &format!("SELECT id FROM {schema}.runs WHERE app_id='app' AND id=$1 FOR UPDATE"),
+            &[&id],
+        )
+        .unwrap();
+        let complete = {
+            let id = id.clone();
+            std::thread::spawn(move || {
+                let result = worker_side.complete(&id, &owner, &serde_json::json!(1));
+                (worker_side, result)
+            })
+        };
+        let cancel = {
+            let id = id.clone();
+            std::thread::spawn(move || {
+                let result = operator_side.cancel_run(&id);
+                (operator_side, result)
+            })
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let blocked: i64 = tx.query_one(
+                "SELECT COUNT(*) FROM pg_stat_activity WHERE pid=ANY($1) AND cardinality(pg_blocking_pids(pid)) > 0",
+                &[&pids],
+            ).unwrap().get(0);
+            if blocked == 2 {
+                break;
+            }
+            assert!(Instant::now() < deadline, "writers never reached the gate");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        tx.commit().unwrap();
+        let (db, completed) = complete.join().unwrap();
+        let (_, cancelled) = cancel.join().unwrap();
+        let status = db.result("work", &id).unwrap().unwrap().status;
+        match (completed, cancelled) {
+            (Ok(()), Err(RunsDbError::RunAlreadyFinished { status: s, .. })) => {
+                assert_eq!(s, WorkflowRunStatus::Succeeded);
+                assert_eq!(status, "succeeded");
+            }
+            (Err(RunsDbError::StaleWorker), Ok(cancelled)) => {
+                assert_eq!(cancelled.previous_status, WorkflowRunStatus::Running);
+                assert_eq!(status, "cancelled");
+            }
+            other => panic!("both or neither won: {other:?}"),
+        }
         gate.batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
             .unwrap();
     }

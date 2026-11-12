@@ -13,12 +13,14 @@
 
 import { createLogger, type Logger } from "../logger";
 import { expBackoffMs } from "./backoff";
-import type { WorkflowsClient } from "./rpc-client";
+import { isStaleOwnerError, type WorkflowsClient } from "./rpc-client";
 import {
   BailSignal,
   createStepAPI,
   DeferSignal,
   FailSignal,
+  OwnershipLostSignal,
+  type RunOwnership,
   WaitSignal,
   type StepRunOptions,
   type StepWaitOptions,
@@ -308,6 +310,24 @@ export class Worker {
     }
 
     const stepState: StepState = { ...run.stepState };
+    const ownership: RunOwnership = { lost: false };
+    // Another owner or an operator now decides this run's fate. Write nothing.
+    const stop = (): void => {
+      runLog.warn("Workflow stopped: this worker no longer owns the run", {
+        attempt: run.attempts,
+      });
+    };
+    // A rejected lifecycle write means ownership was lost meanwhile.
+    const finish = async (write: () => Promise<void>): Promise<boolean> => {
+      try {
+        await write();
+        return true;
+      } catch (err) {
+        if (!isStaleOwnerError(err)) throw err;
+        stop();
+        return false;
+      }
+    };
     const createStepContext = (stepName: string): WorkflowStepContext => ({
       runId: run.id,
       workflowName: run.name,
@@ -322,6 +342,7 @@ export class Worker {
       stepState,
       runLog,
       createStepContext,
+      ownership,
     );
     const context: WorkflowContext = {
       runId: run.id,
@@ -343,7 +364,9 @@ export class Worker {
     let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
     if (this.heartbeatIntervalMs > 0) {
       heartbeatTimer = setInterval(() => {
-        this.client.heartbeat(run.id, claimOwner, this.leaseMs).catch(() => {});
+        this.client.heartbeat(run.id, claimOwner, this.leaseMs).catch((err) => {
+          if (isStaleOwnerError(err)) ownership.lost = true;
+        });
       }, this.heartbeatIntervalMs);
     }
 
@@ -352,33 +375,43 @@ export class Worker {
       const result = await withWorkflowExecution(this.client, run.id, claimOwner, stepState, () =>
         reg.handler(run.payload, context),
       );
-      await this.client.complete(run.id, claimOwner, result ?? null);
-      runLog.info("Workflow completed");
+      if (ownership.lost) return stop();
+      if (await finish(() => this.client.complete(run.id, claimOwner, result ?? null))) {
+        runLog.info("Workflow completed");
+      }
     } catch (err) {
+      // Not a failure of the handler: never fail or retry a run this
+      // attempt no longer owns.
+      if (err instanceof OwnershipLostSignal || isStaleOwnerError(err) || ownership.lost) {
+        return stop();
+      }
       if (err instanceof BailSignal) {
-        await this.client.cancel(run.id, claimOwner, err.reason ?? null);
-        runLog.info("Workflow cancelled", { reason: err.reason ?? null });
+        if (await finish(() => this.client.cancel(run.id, claimOwner, err.reason ?? null))) {
+          runLog.info("Workflow cancelled", { reason: err.reason ?? null });
+        }
         return;
       }
       if (err instanceof FailSignal) {
-        await this.client.fail(run.id, claimOwner, err.error.message, null, true);
-        runLog.error("Workflow failed", { error: err.error });
+        if (
+          await finish(() => this.client.fail(run.id, claimOwner, err.error.message, null, true))
+        ) {
+          runLog.error("Workflow failed", { error: err.error });
+        }
         return;
       }
       if (err instanceof DeferSignal) {
-        await this.client.defer(run.id, claimOwner, err.wakeAt);
-        runLog.debug("Workflow deferred", { wakeAt: err.wakeAt });
+        if (await finish(() => this.client.defer(run.id, claimOwner, err.wakeAt))) {
+          runLog.debug("Workflow deferred", { wakeAt: err.wakeAt });
+        }
         return;
       }
       if (err instanceof WaitSignal) {
-        await this.client.waitForEvent(
-          run.id,
-          claimOwner,
-          err.stepName,
-          err.eventName,
-          err.timeoutAt,
+        const waited = await finish(() =>
+          this.client.waitForEvent(run.id, claimOwner, err.stepName, err.eventName, err.timeoutAt),
         );
-        runLog.debug("Workflow waiting", { event: err.eventName, timeoutAt: err.timeoutAt });
+        if (waited) {
+          runLog.debug("Workflow waiting", { event: err.eventName, timeoutAt: err.timeoutAt });
+        }
         return;
       }
 
@@ -391,7 +424,11 @@ export class Worker {
       const nextRunAt = finalize
         ? null
         : new Date(Date.now() + expBackoffMs(run.attempts, base, max));
-      await this.client.fail(run.id, claimOwner, message, nextRunAt, finalize);
+      if (
+        !(await finish(() => this.client.fail(run.id, claimOwner, message, nextRunAt, finalize)))
+      ) {
+        return;
+      }
       const errField = err instanceof Error ? err : message;
       if (finalize) {
         runLog.error("Workflow failed", { attempt: run.attempts, error: errField });

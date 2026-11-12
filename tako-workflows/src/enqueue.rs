@@ -7,12 +7,18 @@
 //! Operations are synchronous; call from `tokio::task::spawn_blocking` when
 //! invoking from async contexts.
 
+pub(crate) mod operator;
 mod sqlite;
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use tako_core::{EnqueueOpts, EnqueueRunResponse, RunPayload, ScheduleSpec};
+use tako_core::{
+    EnqueueOpts, EnqueueRunResponse, RunPayload, ScheduleSpec, WORKFLOW_RUN_MAX_STEPS,
+    WorkflowRunDetail, WorkflowRunStatus, WorkflowRunSummary, WorkflowStoreKind,
+};
+
+pub use operator::{CancelledRun, OPERATOR_CANCEL_REASON};
 
 use super::postgres_store::PostgresRunsDb;
 use sqlite::SqliteRunsDb;
@@ -82,6 +88,20 @@ pub enum RunsDbError {
     /// reclaimed by another worker, or the run already terminated).
     #[error("stale worker: run is no longer owned by this worker")]
     StaleWorker,
+    #[error("Workflow run not found: {id}")]
+    RunNotFound { id: String },
+    #[error("Workflow run {id} is {status}; only dead or cancelled runs can be retried")]
+    RunNotRetryable {
+        id: String,
+        status: WorkflowRunStatus,
+    },
+    #[error(
+        "Workflow run {id} already finished as {status}; only pending or running runs can be cancelled"
+    )]
+    RunAlreadyFinished {
+        id: String,
+        status: WorkflowRunStatus,
+    },
 }
 
 pub struct RunsDb {
@@ -403,6 +423,67 @@ impl RunsDb {
         match &self.backend {
             RunsDbBackend::Sqlite(db) => db.has_runnable_work(),
             RunsDbBackend::Postgres(db) => db.has_runnable_work(),
+        }
+    }
+
+    pub fn store_kind(&self) -> WorkflowStoreKind {
+        match &self.backend {
+            RunsDbBackend::Sqlite(_) => WorkflowStoreKind::Sqlite,
+            RunsDbBackend::Postgres(_) => WorkflowStoreKind::Postgres,
+        }
+    }
+
+    /// Newest runs first, at most `limit`, and whether more match.
+    pub fn list_runs(
+        &self,
+        status: Option<WorkflowRunStatus>,
+        name: Option<&str>,
+        limit: u32,
+    ) -> Result<(Vec<WorkflowRunSummary>, bool), RunsDbError> {
+        let status = status.map(WorkflowRunStatus::as_str);
+        let fetch = limit.saturating_add(1);
+        let rows = match &self.backend {
+            RunsDbBackend::Sqlite(db) => db.list_runs(status, name, fetch),
+            RunsDbBackend::Postgres(db) => db.list_runs(status, name, fetch),
+        }?;
+        let has_more = rows.len() > limit as usize;
+        let runs = rows
+            .into_iter()
+            .take(limit as usize)
+            .map(operator::SummaryRow::into_summary)
+            .collect::<Result<_, _>>()?;
+        Ok((runs, has_more))
+    }
+
+    /// Every field of a run with its most recent steps, capped for a
+    /// management reply.
+    pub fn get_run(&self, id: &str) -> Result<Option<WorkflowRunDetail>, RunsDbError> {
+        let limit = WORKFLOW_RUN_MAX_STEPS as i64;
+        let record = match &self.backend {
+            RunsDbBackend::Sqlite(db) => db.get_run(id, limit),
+            RunsDbBackend::Postgres(db) => db.get_run(id, limit),
+        }?;
+        record.map(operator::RunRecord::into_detail).transpose()
+    }
+
+    /// Return a `dead` or `cancelled` run to `pending`, due now, with its
+    /// attempts reset. Saved steps stay, so it resumes after the last one.
+    /// Leftover event waits are dropped; the handler parks again if needed.
+    /// Returns the previous status.
+    pub fn retry_run(&self, id: &str) -> Result<WorkflowRunStatus, RunsDbError> {
+        match &self.backend {
+            RunsDbBackend::Sqlite(db) => db.retry_run(id),
+            RunsDbBackend::Postgres(db) => db.retry_run(id),
+        }
+    }
+
+    /// Cancel a `pending` or `running` run for an operator. A running
+    /// attempt loses ownership, so its later writes fail with `StaleWorker`
+    /// and reclaim, which only takes back running rows, leaves it alone.
+    pub fn cancel_run(&self, id: &str) -> Result<CancelledRun, RunsDbError> {
+        match &self.backend {
+            RunsDbBackend::Sqlite(db) => db.cancel_run(id),
+            RunsDbBackend::Postgres(db) => db.cancel_run(id),
         }
     }
 
