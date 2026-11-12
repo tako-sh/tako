@@ -29,10 +29,28 @@ type WorkflowContext struct {
 	// Step exposes checkpointed step helpers for this run.
 	Step *StepAPI
 	ctx  context.Context
+
+	resultMu sync.Mutex
+	result   json.RawMessage
 }
 
 // Done returns the context's cancellation channel.
 func (c *WorkflowContext) Done() <-chan struct{} { return c.ctx.Done() }
+
+// SetResult records value as the run's result. It is saved when the handler
+// returns nil and callers read it with Result. The last call wins; a run
+// that never calls SetResult completes with a null result. Values that do
+// not JSON-encode are rejected and leave any earlier result in place.
+func (c *WorkflowContext) SetResult(value any) error {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("tako: workflow result is not JSON-encodable: %w", err)
+	}
+	c.resultMu.Lock()
+	c.result = encoded
+	c.resultMu.Unlock()
+	return nil
+}
 
 // Bail returns a sentinel error. Returning it ends the run cleanly as
 // `cancelled` (no retries). To exit successfully early, just return nil
@@ -254,9 +272,19 @@ type workflowConfig struct {
 // WorkflowOption configures a registered workflow.
 type WorkflowOption func(*workflowConfig)
 
-// WithMaxAttempts sets the total run-level attempt budget.
+// WithMaxAttempts sets the total run-level attempt budget that Enqueue
+// stores on new runs of this workflow when EnqueueOpts.MaxAttempts is nil.
+// The worker always honors the budget stored on the run, so runs enqueued
+// by a process that did not register the workflow, and runs created by a
+// schedule, keep their own stored budget (the server default is 3).
 func WithMaxAttempts(n uint32) WorkflowOption {
 	return func(c *workflowConfig) { c.maxAttempts = n }
+}
+
+func registeredMaxAttempts(name string) uint32 {
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	return registry[name].config.maxAttempts
 }
 
 // WithSchedule registers a cron schedule for this workflow.
@@ -495,11 +523,10 @@ func (w *worker) execute(task *Run) {
 		case errors.As(err, &ws):
 			w.finalize("wait-for-event", task.ID, w.client.WaitForEvent(w.runCtx, task.ID, task.WorkerID, ws.stepName, ws.eventName, ws.timeoutAt))
 		default:
-			maxAttempts := reg.config.maxAttempts
-			if maxAttempts == 0 {
-				maxAttempts = task.MaxAttempts
-			}
-			finalize := task.Attempts >= maxAttempts
+			// The budget stored on the run is authoritative: it carries
+			// per-enqueue overrides and is what the server enforces when
+			// it reclaims a lost worker's run.
+			finalize := task.Attempts >= task.MaxAttempts
 			var next *time.Time
 			if !finalize {
 				base := reg.config.backoffBase
@@ -517,7 +544,10 @@ func (w *worker) execute(task *Run) {
 		}
 		return
 	}
-	w.finalize("complete", task.ID, w.client.Complete(w.runCtx, task.ID, task.WorkerID))
+	ctx.resultMu.Lock()
+	result := ctx.result
+	ctx.resultMu.Unlock()
+	w.finalize("complete", task.ID, w.client.Complete(w.runCtx, task.ID, task.WorkerID, result))
 }
 
 func (w *worker) heartbeatLoop(id, claimOwner string, stop <-chan struct{}) {

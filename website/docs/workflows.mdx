@@ -83,6 +83,8 @@ func main() {
 
 The Go `fulfillOrder` helper is app-owned. Install the Go worker module with `go get github.com/tako-sh/tako/sdk/go`, build a worker binary, and configure its command in `[workflows].run` when needed. `WithMaxAttempts(5)` counts all attempts; JavaScript `retries: 4` counts retries after the first attempt.
 
+Both SDKs store the attempt budget on the run when it is enqueued, and the worker honors the stored value. Go's `Enqueue` stores the `WithMaxAttempts` budget only in a process that registered the workflow; from another binary, pass `EnqueueOpts.MaxAttempts`. Runs created by a cron schedule get the default of three attempts.
+
 The payload type flows into `.enqueue(payload)`, so callers get normal TypeScript checking without a generated workflow registry. The workflow name must be unique within the app. Using the filename stem as the name keeps discovery and logs easy to follow.
 
 Useful definition options include:
@@ -176,9 +178,51 @@ Deleting a finished run's history also frees its ID. A later enqueue with that I
 
 JavaScript workflow handlers can return JSON data. Tako saves the result when it marks the run succeeded; an absent return becomes `null`. Use `await task.result(runId, { timeout: "30s" })` to retrieve it, or `await task.run(payload)` to enqueue and wait. Both imported `defineWorkflow` handles and `workflow("app.name")` network handles expose these methods. A wait timeout leaves the child running and its result retrievable by ID.
 
+Go handlers keep the `error` return value and set the result with `ctx.SetResult(value)`. The last call wins, a value that does not JSON-encode is rejected with an error, and a handler that never calls it completes with `null`. `workflow.Result(ctx, name, runID)` reads the current outcome once and returns `nil` for a missing run; poll `pending` and `running` runs with your own deadline:
+
+<CodeGroup>
+
+```ts JavaScript
+// src/workflows/generate-report.ts
+import { defineWorkflow } from "tako.sh";
+
+export default defineWorkflow("generate-report", {
+  handler: async (payload: { month: string }, ctx) => {
+    const url = await ctx.run("render", () => renderReport(payload.month));
+    return { url };
+  },
+});
+
+// Server-side caller: import generateReport from "./workflows/generate-report".
+const report = await generateReport.result(runId, { timeout: "30s" });
+```
+
+```go Go
+// Inside a registered Go workflow handler.
+var url string
+if err := ctx.Step.Run("render", &url, func() (any, error) {
+    return renderReport(payload.Month)
+}); err != nil {
+    return err
+}
+return ctx.SetResult(map[string]string{"url": url})
+
+// Server-side caller with access to the Tako internal socket.
+state, err := workflow.Result(ctx, "generate-report", runID)
+if err != nil { return err }
+if state != nil && state.Status == "succeeded" {
+    var report struct { URL string `json:"url"` }
+    err = json.Unmarshal(state.Result, &report)
+}
+```
+
+</CodeGroup>
+
+`renderReport` is app-owned in both examples.
+
 Within another JavaScript workflow, `.run()` checkpoints the child identity and terminal outcome. It defers the parent while the child is pending, releasing the worker slot without consuming a retry. Parent replay reuses the same child and cached result. Give calls stable `step` names, or preserve their call order within each named `ctx.run` scope. Use a stable enqueue ID for detached `.enqueue()` calls that can repeat. Retain child history long enough for parent retries: pruning a run also frees its ID.
 
-See [Network Primitives](/network-primitives/#workflow-results) for typed examples, timeout/failure behavior, and Go/Rust result readers. Automatic durable child calls and workflow handler return values currently belong to the JavaScript SDK; the Go worker completes successful handlers with a null result.
+See [Network Primitives](/network-primitives/#workflow-results) for typed examples, timeout/failure behavior, and Go/Rust result readers for JavaScript-owned workflows. Automatic durable child calls currently belong to the JavaScript SDK; the Go worker SDK has no `.run()` equivalent.
 
 ## Durable Steps With `ctx.run`
 

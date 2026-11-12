@@ -44,11 +44,18 @@ type EnqueueResult struct {
 	Deduplicated bool
 }
 
-// Enqueue dispatches a run of the named workflow.
+// Enqueue dispatches a run of the named workflow. When this process
+// registered the workflow with WithMaxAttempts and opts.MaxAttempts is nil,
+// the registered budget is stored on the run.
 func Enqueue(ctx context.Context, name string, payload any, opts EnqueueOpts) (*EnqueueResult, error) {
 	client, err := ClientFromEnv()
 	if err != nil {
 		return nil, err
+	}
+	if opts.MaxAttempts == nil {
+		if registered := registeredMaxAttempts(name); registered != 0 {
+			opts.MaxAttempts = &registered
+		}
 	}
 	return client.Enqueue(ctx, name, payload, opts)
 }
@@ -201,16 +208,59 @@ func (c *Client) SaveStep(ctx context.Context, id, workerID, stepName string, re
 	return err
 }
 
-// Complete marks the run succeeded. Guarded by `workerId`.
-func (c *Client) Complete(ctx context.Context, id, workerID string) error {
+// Complete marks the run succeeded and saves result (any JSON-encodable
+// value; nil saves null) as its retained outcome. Guarded by `workerId`.
+func (c *Client) Complete(ctx context.Context, id, workerID string, result any) error {
 	_, err := c.call(ctx, map[string]any{
 		"command":   "complete_run",
-		"result":    nil,
+		"result":    result,
 		"app":       c.app,
 		"id":        id,
 		"worker_id": workerID,
 	})
 	return err
+}
+
+// RunResult is the retained outcome of a workflow run.
+type RunResult struct {
+	// Status is pending, running, succeeded, cancelled, or dead.
+	Status string `json:"status"`
+	// Result is the JSON value the handler set; null until the run succeeds.
+	Result json.RawMessage `json:"result"`
+	// Error is the stored failure or cancellation reason, if any.
+	Error string `json:"error"`
+}
+
+// Result reads the current outcome of a run owned by the named workflow.
+// It returns nil when the run does not exist or is no longer retained.
+// It does not wait: poll pending and running runs with your own deadline.
+func (c *Client) Result(ctx context.Context, name, id string) (*RunResult, error) {
+	data, err := c.call(ctx, map[string]any{
+		"command": "get_run_result",
+		"app":     c.app,
+		"name":    name,
+		"id":      id,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 || string(data) == "null" {
+		return nil, nil
+	}
+	var state RunResult
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, fmt.Errorf("tako: parse run result: %w", err)
+	}
+	return &state, nil
+}
+
+// Result is a top-level convenience that uses the client from env.
+func Result(ctx context.Context, name, id string) (*RunResult, error) {
+	c, err := ClientFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	return c.Result(ctx, name, id)
 }
 
 // Cancel ends the run cleanly as `cancelled` (no retries). Guarded.

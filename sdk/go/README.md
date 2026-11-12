@@ -14,6 +14,16 @@ eventually return for graceful shutdown to finish.
 `TAKO_WORKER_IDLE_TIMEOUT_MS` applies only when there are no active handlers.
 The idle interval starts again when the last handler finishes.
 
+Handlers return an `error`. Call `ctx.SetResult(value)` to save a JSON-encodable
+result when the handler returns nil; the last call wins and a run without a
+result completes with null. `Result(ctx, name, id)` reads a run's current
+status, result, and error once, and returns nil when the run is missing.
+
+The worker honors the attempt budget stored on each run. `Enqueue` stores a
+`WithMaxAttempts` budget when the calling process registered the workflow and
+`EnqueueOpts.MaxAttempts` is nil. Runs enqueued by another binary or created by
+a schedule keep their own stored budget (three attempts by default).
+
 Run this module's tests from `sdk/go` with `go test ./...`. The concurrency and
 drain test also supports `go test -race -run TestWorkerHonorsConcurrencyAndDrains`.
 

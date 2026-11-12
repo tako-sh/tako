@@ -24,6 +24,8 @@ type mockServer struct {
 	idCount      int
 	received     []map[string]any
 	saveFailures map[string]int
+	results      map[string]any
+	errors       map[string]string
 }
 
 func startMockServer(t *testing.T) *mockServer {
@@ -126,7 +128,7 @@ func (s *mockServer) dispatch(cmd map[string]any) map[string]any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if cmd["command"] != "claim_run" && cmd["command"] != "register_schedules" && cmd["command"] != "enqueue_run" && cmd["command"] != "signal" {
+	if cmd["command"] != "claim_run" && cmd["command"] != "register_schedules" && cmd["command"] != "enqueue_run" && cmd["command"] != "signal" && cmd["command"] != "get_run_result" {
 		id, _ := cmd["id"].(string)
 		task := s.tasks[id]
 		if task == nil || task.Status != "running" || task.WorkerID != cmd["worker_id"] {
@@ -184,8 +186,26 @@ func (s *mockServer) dispatch(cmd map[string]any) map[string]any {
 		id, _ := cmd["id"].(string)
 		if t := s.tasks[id]; t != nil {
 			t.Status = "succeeded"
+			if s.results == nil {
+				s.results = map[string]any{}
+			}
+			s.results[id] = cmd["result"]
 		}
 		return map[string]any{"status": "ok", "data": map[string]any{}}
+	case "get_run_result":
+		id, _ := cmd["id"].(string)
+		t := s.tasks[id]
+		if t == nil || t.Name != cmd["name"] {
+			return map[string]any{"status": "ok", "data": nil}
+		}
+		var runErr any
+		if msg, ok := s.errors[id]; ok {
+			runErr = msg
+		}
+		return map[string]any{
+			"status": "ok",
+			"data":   map[string]any{"status": t.Status, "result": s.results[id], "error": runErr},
+		}
 	case "cancel_run":
 		id, _ := cmd["id"].(string)
 		if t := s.tasks[id]; t != nil {
@@ -211,6 +231,10 @@ func (s *mockServer) dispatch(cmd map[string]any) map[string]any {
 		id, _ := cmd["id"].(string)
 		finalize, _ := cmd["finalize"].(bool)
 		if t := s.tasks[id]; t != nil {
+			if s.errors == nil {
+				s.errors = map[string]string{}
+			}
+			s.errors[id], _ = cmd["error"].(string)
 			if finalize {
 				t.Status = "dead"
 			} else {
