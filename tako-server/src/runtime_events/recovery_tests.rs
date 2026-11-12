@@ -343,8 +343,7 @@ async fn status_reports_restarts_the_real_exit_and_the_next_attempt() {
     let status = |state: Arc<ServerState>, name: String| async move {
         match state.handle_command(Command::Status { app: name }).await {
             Response::Ok { data } => data,
-            // CodeQL[rust/cleartext-logging]: this isolated recovery fixture supplies no app secrets; assertions print test responses.
-            Response::Error { message, .. } => panic!("{message}"),
+            Response::Error { .. } => panic!("expected app status to succeed"),
         }
     };
     assert!(
@@ -436,13 +435,12 @@ async fn status_reports_restarts_the_real_exit_and_the_next_attempt() {
     assert_eq!(data["recovery"]["restart_count"], 3);
     assert_eq!(data["recovery"]["last_exit"]["reason"], "failed_to_start");
     assert_eq!(data["recovery"]["last_exit"]["exit_code"], 3);
-    // CodeQL[rust/cleartext-logging]: this isolated recovery fixture supplies no app secrets; assertions print test responses.
     assert!(
         data["last_error"]
             .as_str()
             .unwrap()
             .contains("failed to start"),
-        "{data}"
+        "status must report that the instance failed to start"
     );
 
     // Probe-dead with a live process: no exit status to report.
@@ -479,8 +477,10 @@ async fn operator_and_request_driven_starts_are_not_held_by_a_stale_backoff() {
             reset: false,
         })
         .await;
-    // CodeQL[rust/cleartext-logging]: this isolated recovery fixture supplies no app secrets; assertions print test responses.
-    assert!(response.is_ok(), "{response:?}");
+    assert!(
+        response.is_ok(),
+        "operator scale must succeed during backoff"
+    );
     assert_eq!(live(&app), 2);
     assert!(app.recovery_status().is_none());
     state.app_manager.stop_app(&app.name()).await.unwrap();
@@ -562,8 +562,7 @@ async fn successful_deploy_resets_the_backoff() {
     };
 
     let response = state.handle_command(deploy("v1", release("v1"))).await;
-    // CodeQL[rust/cleartext-logging]: this isolated recovery fixture supplies no app secrets; assertions print test responses.
-    assert!(response.is_ok(), "{response:?}");
+    assert!(response.is_ok(), "initial deploy must succeed");
     let app = state.app_manager.get_app(name).unwrap();
     let exit = app.get_instances()[0].exit_report();
     for _ in 0..6 {
@@ -585,8 +584,7 @@ async fn successful_deploy_resets_the_backoff() {
     // Deploy onto a stopped app so the test skips the rollout stability window.
     state.app_manager.stop_app(name).await.unwrap();
     let response = state.handle_command(deploy("v3", release("v3"))).await;
-    // CodeQL[rust/cleartext-logging]: this isolated recovery fixture supplies no app secrets; assertions print test responses.
-    assert!(response.is_ok(), "{response:?}");
+    assert!(response.is_ok(), "deploy onto a stopped app must succeed");
     assert!(app.recovery_status().is_none());
     assert_eq!(app.restart_backoff_remaining(Instant::now()), None);
     state.app_manager.stop_app(name).await.unwrap();
@@ -713,8 +711,7 @@ async fn a_backup_holding_the_deploy_lock_does_not_hold_back_native_recovery() {
             reset: false,
         })
         .await;
-    // CodeQL[rust/cleartext-logging]: this isolated recovery fixture supplies no app secrets; assertions print test responses.
-    assert!(response.is_ok(), "{response:?}");
+    assert!(response.is_ok(), "scale-down after a backup must succeed");
     assert_eq!(
         app.get_instances().len(),
         0,
@@ -765,8 +762,7 @@ async fn operators_get_through_automatic_recovery_without_waiting_for_it() {
     };
     let error = |response: Response| match response {
         Response::Error { message, .. } => message,
-        // CodeQL[rust/cleartext-logging]: this recovery fixture supplies only a fabricated secret; update_secrets responses never echo secret values.
-        Response::Ok { data } => panic!("expected an error, got {data}"),
+        Response::Ok { .. } => panic!("expected an operator lock error"),
     };
     let recovering = format!(
         "Automatic recovery of {name} is in progress; retry in a moment. \
@@ -778,9 +774,12 @@ async fn operators_get_through_automatic_recovery_without_waiting_for_it() {
     {
         let _deploying = lock.lock().await;
         let started = std::time::Instant::now();
-        assert_eq!(
-            error(update_secrets().await),
-            format!("Deploy already in progress for app '{name}'. Please wait and try again.")
+        assert!(
+            error(update_secrets().await)
+                == format!(
+                    "Deploy already in progress for app '{name}'. Please wait and try again."
+                ),
+            "operator must report that another deploy holds the lock"
         );
         assert!(started.elapsed() < OPERATOR_DEPLOY_LOCK_WAIT);
         assert_eq!(priority(), None);
@@ -792,8 +791,7 @@ async fn operators_get_through_automatic_recovery_without_waiting_for_it() {
         tokio::time::sleep(OPERATOR_DEPLOY_LOCK_WAIT / 4).await;
         drop(held);
     });
-    // CodeQL[rust/cleartext-logging]: this recovery fixture supplies only a fabricated secret; update_secrets responses never echo secret values.
-    assert!(response.is_ok(), "{response:?}");
+    assert!(response.is_ok(), "operator must outwait a short recovery");
     assert_eq!(app.config.read().secrets["FIX"], "1");
     assert_eq!(priority(), None);
 
@@ -802,7 +800,10 @@ async fn operators_get_through_automatic_recovery_without_waiting_for_it() {
     // why, and recovery yields the lock to the retry from then on.
     let held = recovery(Instant::now()).unwrap();
     for response in [update_secrets().await, run_release().await] {
-        assert_eq!(error(response), recovering);
+        assert!(
+            error(response) == recovering,
+            "operator must report automatic recovery contention"
+        );
     }
     assert!(priority().is_some());
     drop(held);
@@ -813,8 +814,10 @@ async fn operators_get_through_automatic_recovery_without_waiting_for_it() {
     );
     assert!(recovery(Instant::now()).is_none());
     let response = run_release().await;
-    // CodeQL[rust/cleartext-logging]: this recovery fixture supplies only a fabricated secret; update_secrets responses never echo secret values.
-    assert!(response.is_ok(), "{response:?}");
+    assert!(
+        response.is_ok(),
+        "operator retry must succeed after recovery"
+    );
     assert_eq!(priority(), None, "the retry did not clear the window");
 
     // An operator that gives up inside its wait leaves nothing held, and
@@ -857,16 +860,17 @@ async fn operators_get_through_a_scheduled_backup_and_recovery_claims_slots_duri
         tokio::time::sleep(OPERATOR_DEPLOY_LOCK_WAIT / 4).await;
         drop(held);
     });
-    // CodeQL[rust/cleartext-logging]: this recovery fixture supplies only a fabricated secret; update_secrets responses never echo secret values.
-    assert!(response.is_ok(), "{response:?}");
+    assert!(response.is_ok(), "operator must outwait a short backup");
     assert_eq!(priority(), None);
 
     // A longer capture: the operator is told why, and scheduled backups
     // leave the lock to the retry until the window ends.
     let held = scheduled(Instant::now()).await.unwrap();
     match update_secrets().await {
-        // CodeQL[rust/cleartext-logging]: this recovery fixture supplies only a fabricated secret; update_secrets responses never echo secret values.
-        Response::Error { message, .. } => assert_eq!(message, backing_up),
+        Response::Error { message, .. } => assert!(
+            message == backing_up,
+            "operator must report scheduled backup contention"
+        ),
         Response::Ok { .. } => panic!("the operator took a held deploy lock"),
     }
     assert!(priority().is_some());
@@ -880,8 +884,10 @@ async fn operators_get_through_a_scheduled_backup_and_recovery_claims_slots_duri
             .expect("scheduled backups never resumed"),
     );
     let response = update_secrets().await;
-    // CodeQL[rust/cleartext-logging]: this recovery fixture supplies only a fabricated secret; update_secrets responses never echo secret values.
-    assert!(response.is_ok(), "{response:?}");
+    assert!(
+        response.is_ok(),
+        "operator retry must succeed after a backup"
+    );
     assert_eq!(priority(), None, "the retry did not clear the window");
 
     // Native recovery claims slots while a scheduled backup holds the lock,

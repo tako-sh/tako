@@ -186,14 +186,16 @@ async fn closed_streams_replay_from_start_and_end_readers_as_in_production() {
         ("id=1".to_owned(), 0),
     ] {
         let response = request(&query, upgrade).await;
-        assert!(response.starts_with(b"HTTP/1.1 101"), "{query}");
-        assert!(response.ends_with(&close_frame), "{query}");
-        // Text frames start with 0x81, a byte no JSON payload or header contains.
-        assert_eq!(
-            response.iter().filter(|byte| **byte == 0x81).count(),
-            texts,
-            "{query}"
+        assert!(
+            response.starts_with(b"HTTP/1.1 101"),
+            "closed stream reader must upgrade to WebSocket"
         );
+        assert!(
+            response.ends_with(&close_frame),
+            "closed stream reader must end with the close frame"
+        );
+        // Text frames start with 0x81, a byte no JSON payload or header contains.
+        assert_eq!(response.iter().filter(|byte| **byte == 0x81).count(), texts);
     }
 }
 

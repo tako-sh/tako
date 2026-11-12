@@ -1717,10 +1717,9 @@ mod tests {
             .await
             .unwrap();
         let response = update_secrets().await;
-        // CodeQL[rust/cleartext-logging]: this backup fixture supplies no app secrets; assertions print test responses.
         assert!(
             matches!(&response, Response::Error { message, .. } if message.starts_with("A scheduled backup of")),
-            "{response:?}"
+            "operator must receive a scheduled backup contention error"
         );
         drop(held);
 
@@ -1755,8 +1754,10 @@ mod tests {
 
         // The operator's retry gets the lock and closes the window.
         let response = update_secrets().await;
-        // CodeQL[rust/cleartext-logging]: this backup fixture supplies no app secrets; assertions print test responses.
-        assert!(response.is_ok(), "{response:?}");
+        assert!(
+            response.is_ok(),
+            "operator retry must succeed after a backup"
+        );
 
         // The next tick runs both archives. The fixture refuses uploads, so
         // each fails at its upload, and the lock is released all the same.

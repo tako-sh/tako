@@ -65,8 +65,7 @@ async fn run_release_executes_command_in_release_dir() {
 
     let data = match response {
         Response::Ok { data } => data,
-        // CodeQL[rust/cleartext-logging]: release-command assertions use only empty secrets or fabricated fixture credentials.
-        Response::Error { message, .. } => panic!("expected ok, got: {message}"),
+        Response::Error { .. } => panic!("expected release command to succeed"),
     };
     assert_eq!(data.get("exit_code").and_then(|v| v.as_i64()), Some(0));
 

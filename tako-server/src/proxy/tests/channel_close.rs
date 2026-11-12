@@ -240,7 +240,7 @@ async fn closed_streams_end_sse_and_websocket_readers_with_the_terminal_signal()
         format!("id=1&from=start&last_message_id={}", second.id),
     ] {
         let frames = websocket_frames(&request(addr, &query, UPGRADE).await);
-        assert_eq!(frames, vec![(0x8, close.clone())], "{query}");
+        assert_eq!(frames, vec![(0x8, close.clone())]);
     }
 
     // Another binding of the channel stays open and publishable.
