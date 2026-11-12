@@ -385,7 +385,7 @@ impl StoreHandle {
     }
 
     #[cfg(unix)]
-    fn invalidate_at(
+    pub(crate) fn invalidate_at(
         &self,
         path: &str,
         app: &str,
@@ -424,7 +424,7 @@ impl StoreHandle {
     }
 
     #[cfg(not(unix))]
-    fn invalidate_at(
+    pub(crate) fn invalidate_at(
         &self,
         _path: &str,
         _app: &str,

@@ -56,6 +56,15 @@ impl Client {
         })
     }
 
+    /// A client for a given socket and caller app, without the runtime env.
+    #[cfg(test)]
+    pub(crate) fn at(socket: impl Into<PathBuf>, app: &str) -> Self {
+        Self {
+            socket: socket.into(),
+            app: app.into(),
+        }
+    }
+
     fn encode(&self, address: &str, request: Value) -> io::Result<Vec<u8>> {
         let mut bytes = serde_json::to_vec(
             &json!({"command":"network_call", "app":self.app, "address":address, "request":request}),

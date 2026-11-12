@@ -16,6 +16,8 @@ pub mod schema;
 pub mod stores;
 #[cfg(feature = "axum")]
 mod stores_http;
+#[cfg(all(test, unix))]
+mod wire_fixtures;
 pub use error::{ErrorCode, Rejected};
 pub use presence::{
     PresenceAuth, PresenceDefinition, PresenceGrant, PresenceMember, PresenceRegistry,
