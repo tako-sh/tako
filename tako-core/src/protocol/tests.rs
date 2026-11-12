@@ -334,25 +334,37 @@ fn backup_info_without_kind_reads_as_full_archive() {
     );
 }
 
+/// The download is saved in the current directory under this name, so it
+/// never comes from the storage index, which anyone with bucket write
+/// access can edit.
 #[test]
-fn backup_archive_file_name_follows_the_object_key() {
+fn backup_archive_file_name_is_built_from_the_validated_id_and_kind() {
     let mut info: BackupInfo = serde_json::from_value(serde_json::json!({
-        "id": "d1-abc", "app": "demo", "environment": "production", "server": "la",
+        "id": "d1800000000-abc_DEF-9", "app": "demo", "environment": "production", "server": "la",
         "created_at_unix_secs": 1, "size_bytes": 1, "sha256_hex": "",
-        "archive_key": "_tako/backups/demo/production/la/d1-abc.databases.tar.zst.enc",
+        "archive_key": "_tako/backups/demo/production/la/.envrc",
         "manifest_key": "m", "kind": "databases",
         "encryption": {"algorithm": "", "key_id": "", "nonce_base64": "", "tag_base64": ""}
     }))
     .unwrap();
-    assert_eq!(info.archive_file_name(), "d1-abc.databases.tar.zst.enc");
-    info.archive_key = "_tako/backups/demo/production/la/b1.tar.zst.enc".into();
-    assert_eq!(info.archive_file_name(), "b1.tar.zst.enc");
-    for key in ["", "prefix/", "prefix/.."] {
-        info.archive_key = key.into();
-        assert_eq!(info.archive_file_name(), "d1-abc.databases.tar.zst.enc");
-    }
+    assert_eq!(
+        info.archive_file_name().unwrap(),
+        "d1800000000-abc_DEF-9.databases.tar.zst.enc"
+    );
     info.kind = BackupKind::Full;
-    assert_eq!(info.archive_file_name(), "d1-abc.tar.zst.enc");
+    info.id = "b1800000000-abcdefgh".into();
+    assert_eq!(
+        info.archive_file_name().unwrap(),
+        "b1800000000-abcdefgh.tar.zst.enc"
+    );
+    for id in [
+        "", "Makefile", "b", "b-abc", "b1-", "b1abc", "b1-../x", "b1-a/b", "b1-a.b", "x1-abc",
+        // The kind letter must match the kind.
+        "d1-abc", "b1-abc\n",
+    ] {
+        info.id = id.into();
+        assert!(info.archive_file_name().is_err(), "{id:?}");
+    }
 }
 
 #[test]

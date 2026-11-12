@@ -1371,7 +1371,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            download.backup.archive_file_name(),
+            download.backup.archive_file_name().unwrap(),
             "d1800000000-abcdefgh.databases.tar.zst.enc"
         );
         let body = s3::backup_http_client(Duration::from_secs(5))

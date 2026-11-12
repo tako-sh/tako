@@ -794,15 +794,37 @@ pub struct BackupInfo {
 }
 
 impl BackupInfo {
-    /// File name of the encrypted archive object, for saving a download.
-    pub fn archive_file_name(&self) -> String {
-        match self.archive_key.rsplit('/').next() {
-            Some(name) if !name.is_empty() && name != "." && name != ".." => name.to_string(),
-            _ => match self.kind {
-                BackupKind::Full => format!("{}.tar.zst.enc", self.id),
-                BackupKind::Databases => format!("{}.databases.tar.zst.enc", self.id),
-            },
+    /// File name for saving a download of the encrypted archive. Built from
+    /// the id and kind, never from the storage object key: the index is
+    /// remote text that anyone with write access to the bucket can change.
+    /// Fails unless the id has the form Tako creates, `b<secs>-<nanoid>` for
+    /// a full archive or `d<secs>-<nanoid>` for a database snapshot.
+    pub fn archive_file_name(&self) -> Result<String, String> {
+        let prefix = match self.kind {
+            BackupKind::Full => 'b',
+            BackupKind::Databases => 'd',
+        };
+        let valid = self.id.strip_prefix(prefix).is_some_and(|rest| {
+            rest.split_once('-').is_some_and(|(secs, suffix)| {
+                !secs.is_empty()
+                    && secs.bytes().all(|byte| byte.is_ascii_digit())
+                    && !suffix.is_empty()
+                    && suffix
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+            })
+        });
+        if !valid {
+            return Err(format!(
+                "Backup id {:?} is not a valid {} backup id",
+                self.id,
+                self.kind.as_str()
+            ));
         }
+        Ok(match self.kind {
+            BackupKind::Full => format!("{}.tar.zst.enc", self.id),
+            BackupKind::Databases => format!("{}.databases.tar.zst.enc", self.id),
+        })
     }
 }
 
