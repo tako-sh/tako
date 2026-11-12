@@ -492,6 +492,7 @@ pub enum UpgradeMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 #[derive(Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum SourceIpMode {
     #[default]
     Auto,
@@ -502,6 +503,7 @@ pub enum SourceIpMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum SslProvider {
     #[serde(rename = "letsencrypt")]
     #[default]

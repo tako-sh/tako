@@ -93,6 +93,14 @@ fn bundled_docs_and_skills_are_discoverable_and_searchable() {
     assert!(topics.contains("docs/index: # Documentation"));
     assert!(topics.contains("docs/tako-toml: # tako.toml Reference"));
     assert!(topics.contains("skills/tako: # Working with Tako"));
+    assert!(topics.contains("schemas/tako-toml.json: tako.toml JSON Schema"));
+    let schema: serde_json::Value =
+        serde_json::from_str(docs::content("schemas/tako-toml.json").unwrap()).unwrap();
+    assert_eq!(schema["$id"], "https://tako.sh/schemas/tako-toml.json");
+    assert!(docs::resources().iter().any(|resource| {
+        resource.uri == "tako://schemas/tako-toml.json"
+            && resource.mime_type.as_deref() == Some("application/schema+json")
+    }));
     for topic in [
         "nextjs",
         "tanstack-start",

@@ -6061,6 +6061,7 @@ dependencies = [
  "ignore",
  "indicatif",
  "jsonc-parser",
+ "jsonschema",
  "libc",
  "nix",
  "notify",
@@ -6080,6 +6081,7 @@ dependencies = [
  "rmp-serde",
  "rusqlite",
  "russh",
+ "schemars",
  "security-framework",
  "serde",
  "serde_bytes",
@@ -6134,6 +6136,7 @@ name = "tako-core"
 version = "0.0.0"
 dependencies = [
  "hex",
+ "schemars",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -6147,6 +6150,7 @@ dependencies = [
  "hmac 0.13.0",
  "image",
  "libvips",
+ "schemars",
  "serde",
  "serde_json",
  "sha2 0.11.0",

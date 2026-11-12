@@ -358,6 +358,33 @@ fn validate_https_url(value: &str, field: &str) -> Result<()> {
     Ok(())
 }
 
+/// Top-level keys accepted in `tako.toml`.
+pub(super) const TOP_LEVEL_KEYS: &[&str] = &[
+    "name",
+    "schemas",
+    "runtime",
+    "container",
+    "image",
+    "compose",
+    "container_options",
+    "package_manager",
+    "preset",
+    "dev",
+    "start",
+    "app_root",
+    "main",
+    "assets",
+    "release",
+    "build",
+    "build_stages",
+    "workflows",
+    "images",
+    "vars",
+    "envs",
+    "storages",
+    "servers",
+];
+
 pub(super) fn validate_top_level_keys(raw: &toml::Value) -> Result<()> {
     let Some(table) = raw.as_table() else {
         return Err(ConfigError::Validation(
@@ -366,32 +393,7 @@ pub(super) fn validate_top_level_keys(raw: &toml::Value) -> Result<()> {
     };
 
     for key in table.keys() {
-        if !matches!(
-            key.as_str(),
-            "name"
-                | "schemas"
-                | "runtime"
-                | "container"
-                | "image"
-                | "compose"
-                | "container_options"
-                | "package_manager"
-                | "preset"
-                | "dev"
-                | "start"
-                | "app_root"
-                | "main"
-                | "assets"
-                | "release"
-                | "build"
-                | "build_stages"
-                | "workflows"
-                | "images"
-                | "vars"
-                | "envs"
-                | "storages"
-                | "servers"
-        ) {
+        if !TOP_LEVEL_KEYS.contains(&key.as_str()) {
             return Err(ConfigError::Validation(format!("Unknown key '{}'", key)));
         }
     }

@@ -3,14 +3,20 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct ContainerOptions {
+    /// Arguments that replace the image command.
     pub command: Vec<String>,
+    /// Program that replaces the image entrypoint.
     pub entrypoint: Option<String>,
+    /// Port the app listens on inside the container.
     pub port: u16,
     /// Use the Tako SDK bootstrap and authenticated health contract.
     pub sdk: bool,
+    /// HTTP health check path.
     pub health_path: String,
+    /// HTTP Host header sent with health checks. Only for plain images (`sdk = false`).
     pub health_host: Option<String>,
     /// Explicit secret names to deliver as environment variables for plain images.
     pub secret_env: Vec<String>,
@@ -22,6 +28,7 @@ pub struct ContainerOptions {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ContainerUser {
     pub uid: u32,
