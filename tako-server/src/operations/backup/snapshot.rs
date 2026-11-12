@@ -538,6 +538,29 @@ fn sync_dir(path: &Path) -> Result<(), String> {
         .map_err(|e| format!("sync {}: {e}", path.display()))
 }
 
+/// A restore moves files with rename and link, which cannot cross
+/// filesystems: refuse before changing anything unless every path is on the
+/// filesystem of the rollback directory. An app data directory mounted on
+/// its own filesystem cannot be restored in place.
+pub(super) fn require_same_filesystem(rollback_dir: &Path, paths: &[&Path]) -> Result<(), String> {
+    let device = |path: &Path| {
+        fs::lstat(path)
+            .map(|stat| stat.st_dev)
+            .map_err(|e| format!("inspect {}: {e}", path.display()))
+    };
+    let expected = device(rollback_dir)?;
+    for path in paths {
+        if device(path)? != expected {
+            return Err(format!(
+                "Cannot restore in place: {} is on a different filesystem than {}. Restores move files with rename, so the app data directory must be on the same filesystem as the Tako data directory, not a separate mount.",
+                path.display(),
+                rollback_dir.parent().unwrap_or(rollback_dir).display()
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn restore_data_tree(
     extracted_dir: &Path,
     data_root: &Path,
@@ -568,6 +591,14 @@ fn restore_data_tree_with(
         .map_err(|e| SwapError::intact(format!("create data parent {}: {e}", parent.display())))?;
     let dir = RollbackDir::create(data_root).map_err(SwapError::intact)?;
     let had_data = std::fs::symlink_metadata(data_root).is_ok();
+    let mut paths = vec![extracted_dir];
+    if had_data {
+        paths.push(data_root);
+    }
+    if let Err(error) = require_same_filesystem(dir.path(), &paths) {
+        let _ = std::fs::remove_dir_all(dir.path());
+        return Err(SwapError::intact(error));
+    }
     let intent = RestoreIntent::full(data_root, had_data);
     let original = kept_tree(dir.path());
 
@@ -789,6 +820,18 @@ mod tests {
             "original"
         );
         assert!(rollback_dirs(&extracted).is_empty());
+    }
+
+    #[test]
+    fn restores_refuse_paths_on_another_filesystem() {
+        let temp = TempDir::new().unwrap();
+        std::fs::create_dir(temp.path().join("same")).unwrap();
+        assert!(require_same_filesystem(temp.path(), &[&temp.path().join("same")]).is_ok());
+        let error = require_same_filesystem(temp.path(), &[Path::new("/proc")]).unwrap_err();
+        assert!(
+            error.contains("/proc is on a different filesystem"),
+            "{error}"
+        );
     }
 
     /// Stop a full restore before each step, then run the startup recovery.

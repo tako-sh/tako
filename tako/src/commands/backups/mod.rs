@@ -448,8 +448,17 @@ async fn download_backup(
         "backup_download_url",
     )
     .await?;
-    let output_path =
-        output_path.unwrap_or_else(|| PathBuf::from(download.backup.archive_file_name()));
+    if download.backup.id != backup_id {
+        return Err(format!(
+            "Server returned backup {} for requested backup {backup_id}",
+            download.backup.id
+        )
+        .into());
+    }
+    let output_path = match output_path {
+        Some(path) => path,
+        None => PathBuf::from(download.backup.archive_file_name()?),
+    };
 
     let bytes = output::with_spinner_async(
         "Downloading backup",

@@ -36,6 +36,8 @@ pub(crate) struct DatabaseSnapshotState {
     /// Set exactly while a database snapshot holds the backup lock: both
     /// change together under the write lock of the per-app state map.
     pub(crate) running: bool,
+    /// A post-deploy full archive waits for the running database snapshot.
+    pub(crate) post_deploy_backup_queued: bool,
     /// Consecutive failed full archives of the app, retried with backoff.
     pub(crate) full_failures: super::scheduler::Backoff,
     /// Consecutive failed reads of the remote index, which pause every
@@ -326,6 +328,7 @@ impl crate::ServerState {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn database_snapshot_running(&self, app: &str) -> bool {
         self.database_snapshots
             .read()

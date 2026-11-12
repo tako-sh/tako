@@ -62,12 +62,16 @@ A database snapshot finds databases by their SQLite file header and captures eac
 
 `tako backups status` reports the latest database snapshot and the reason the latest attempt was skipped.
 
+A full archive first checks free disk: it needs three times the size of the data tree plus 512 MiB for its temporary copies. When a scheduled full archive fails, for this or any other reason, it is retried after 1 hour, then 2 and 4 hours, then every 6 hours until one succeeds; hourly database snapshots keep running meanwhile. When the backup index in storage cannot be read, no scheduled backup runs for the app; the index is read again after 10 minutes, backing off to hourly. `tako backups status` shows the failure and the next attempt. The scheduler keeps this backoff in memory and waits 10 minutes after a server start before its first check.
+
 The recovery point is therefore about an hour for SQLite data and about a day, or the latest deploy, for every other file. When hourly snapshots are skipped for size or disk space, SQLite data falls back to the daily recovery point.
 
 Only one backup or restore can run per app at a time; a concurrent request returns
-a busy error. The post-deploy backup is the exception: it waits up to 5 minutes for
-a running database snapshot to finish, and otherwise reports the busy error in the
-deploy result without failing the deploy. A database snapshot never waits for a
+a busy error. The post-deploy backup is the exception: when a database snapshot is
+running, the deploy finishes without waiting and reports the backup as queued; the
+server runs it as soon as the snapshot finishes and shows a failure in
+`tako backups status`. Any other busy or failed post-deploy backup is reported in the
+deploy output without failing the deploy. A database snapshot never waits for a
 deploy; it holds the app's deployment lock only while it copies the databases
 locally, and scheduled remote transfers release that lock after the local snapshot is
 ready. Failed retention deletions remain queued for a later backup attempt; expired
@@ -91,7 +95,7 @@ tako backups now --env production --server la
 tako backups list --env production --server la --json
 ```
 
-`backups now` creates a full archive. `backups list` shows every entry, newest first, with its kind. In `--json` output each entry includes `id`, `kind` (`full` or `databases`), `created_at_unix_secs`, `size_bytes`, and the encryption metadata; database snapshots also list their `databases` as paths relative to the data directory, such as `app/data.sqlite` or `tako/workflows.sqlite`. `backups status --json` includes `last_backup` (the latest full archive), `next_backup_at_unix_secs`, `retention_days`, `last_database_snapshot_at_unix_secs`, and `last_database_snapshot_skip` with `at_unix_secs`, `reason` (`unchanged`, `no_databases`, `too_large`, `insufficient_disk`, `deploy_in_progress`, or `backup_in_progress`), and `message`.
+`backups now` creates a full archive. `backups list` shows every entry, newest first, with its kind. In `--json` output each entry includes `id`, `kind` (`full` or `databases`), `created_at_unix_secs`, `size_bytes`, and the encryption metadata; database snapshots also list their `databases` as paths relative to the data directory, such as `app/data.sqlite` or `tako/workflows.sqlite`. `backups status --json` includes `last_backup` (the latest full archive), `next_backup_at_unix_secs`, `retention_days`, `last_database_snapshot_at_unix_secs`, `last_database_snapshot_skip` with `at_unix_secs`, `reason` (`unchanged`, `no_databases`, `too_large`, `insufficient_disk`, `deploy_in_progress`, or `backup_in_progress`), and `message`, and `last_backup_failure` with `at_unix_secs`, `reason` (`failed`, `insufficient_disk`, or `index_unreadable`), `message`, and `retry_at_unix_secs` while full archives are failing or the index cannot be read.
 
 Use explicit environment and server names when selecting recovery data. Download an archive by the ID returned by the list:
 
@@ -99,7 +103,7 @@ Use explicit environment and server names when selecting recovery data. Download
 tako backups download <backup-id> --env production --server la
 ```
 
-Without `--output`, a full archive is saved as `<backup-id>.tar.zst.enc` and a database snapshot as `<backup-id>.databases.tar.zst.enc` in the current directory. Both are encrypted with the environment's backup key; once decrypted, each is a zstd-compressed tar archive:
+Without `--output`, a full archive is saved as `<backup-id>.tar.zst.enc` and a database snapshot as `<backup-id>.databases.tar.zst.enc` in the current directory. The name is built from the backup ID, never from the storage object key, and the download refuses an index entry whose ID is not one Tako creates. Both are encrypted with the environment's backup key; once decrypted, each is a zstd-compressed tar archive:
 
 | Kind        | Archive contents                                                                                                                                                                                   |
 | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -125,16 +129,32 @@ Restoring a **database snapshot** replaces only the SQLite databases it contains
 - Each database is replaced atomically. Its `-wal`, `-shm`, and `-journal` files are removed so they cannot bring newer data back.
 - Other files, and databases that are not in the snapshot, stay untouched. The summary and `--json` output (`databases.replaced`, `databases.created`, `databases.untouched`) list them.
 - A database whose path no longer exists is created, along with missing directories.
+- A file named like a sidecar, such as `audit-journal`, is a sidecar only when the database it is named after (`audit`) is beside it; otherwise it is a database like any other. Restore refuses a database whose name would pair it with another live database.
+- Restored databases get the modes app provisioning sets (`0660` under `data/app/`, `0600` under `data/tako/`), not the modes of the files they replace.
 - Restore refuses, before changing anything, a path that is now a symlink, passes through a symlink or a file, is a hard link, or holds a file that is not a SQLite database.
 - Restoring `tako/workflows.sqlite` rewinds workflow runs and their saved steps to the snapshot time. Runs enqueued later are gone, and runs that finished later are pending again and can run again.
 - The server needs free space for the downloaded object twice over, then for the extracted databases, plus 512 MiB, because the originals stay on disk until the app restarts.
 
-Tako blocks cold starts and health replacements while swapping data. It retains
-the previous data until restart succeeds. If the swap or restart fails, Tako stops
-the restored processes, puts the original data back, including SQLite sidecar
-files, and restarts the app on it. If that restart also fails, the app is left
-stopped for inspection. If cleanup or recovery itself fails, the error identifies
-retained data for manual recovery.
+Tako blocks cold starts and health replacements while swapping data. Before it
+touches any file it stops every workflow worker of the app, including workers of a
+replaced release that are still finishing runs (they get 2 minutes, then are
+killed), and closes the server's own handles on the workflow store; workflow run
+commands are refused until the restore finishes. Database files are inspected and
+swapped by a separate worker process. It retains the previous data beside the data
+directory until restart succeeds. If the swap or restart fails, Tako stops the
+restored processes, puts the original data back, including SQLite sidecar files,
+and restarts the app on it. If the original data could not be put back, the app is
+left stopped and the error names the directory that holds it. If the restart on
+the original data also fails, the app is left stopped for inspection.
+
+Each restore first writes a record of what it will change. If the server stops
+in the middle of a restore, the next server start puts the original data back
+before any app starts, logs it, and removes leftover backup and restore work
+directories. The recovery point of that restore is not applied; run it again.
+
+Restore moves files with rename, so the app data directory must be on the same
+filesystem as the Tako data directory. When `data/` or a directory below it is a
+separate mount, restore refuses before changing anything.
 
 ## Recover on a fresh server
 

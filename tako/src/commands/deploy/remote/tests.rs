@@ -214,3 +214,25 @@ async fn deploy_task_tree_defers_failed_start_state_until_cleanup_finishes() {
             .any(|line| line == "    Warm instance startup failed")
     );
 }
+
+#[test]
+fn post_deploy_backup_note_reports_queued_and_failed_backups_only() {
+    let note = |backup: serde_json::Value| {
+        post_deploy_backup_note(&serde_json::json!({ "status": "finalized", "backup": backup }))
+    };
+    assert_eq!(
+        note(serde_json::json!({ "status": "queued", "message": "snapshot running" })),
+        Some(PostDeployBackupNote::Queued)
+    );
+    assert_eq!(
+        note(serde_json::json!({ "status": "failed", "message": "upload timed out" })),
+        Some(PostDeployBackupNote::Failed("upload timed out".into()))
+    );
+    assert_eq!(
+        note(serde_json::json!({ "status": "created", "id": "b1" })),
+        None
+    );
+    assert_eq!(note(serde_json::json!({ "status": "disabled" })), None);
+    assert_eq!(post_deploy_backup_note(&serde_json::Value::Null), None);
+    assert_eq!(PostDeployBackupNote::Queued.detail(), "backup queued");
+}

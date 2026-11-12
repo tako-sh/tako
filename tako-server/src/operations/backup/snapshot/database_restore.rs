@@ -16,7 +16,7 @@ use tako_core::RestoredDatabases;
 use super::{
     DATABASE_SNAPSHOT_ARCHIVE_ROOT, READ_FLAGS, SIDECAR_SUFFIXES, TAKO_DATA_DIR,
     is_sqlite_database, is_transient_tako_sqlite_file, list_database_tree, open_regular,
-    sidecar_base,
+    require_same_filesystem, sidecar_base,
 };
 use crate::operations::backup::journal::{self, IntentDatabase, RestoreIntent, Steps};
 
@@ -333,6 +333,20 @@ fn plan_and_swap(
         }
     }
 
+    // Every live directory a database sits in (or the nearest existing
+    // ancestor of one the restore creates) and the staged copies, which
+    // this restore extracted into one directory.
+    let mut paths = vec![data_root.to_path_buf(), staged_root.to_path_buf()];
+    for database in &planned {
+        let live = data_root.join(&database.relative);
+        let mut parent = live.parent().unwrap_or(data_root).to_path_buf();
+        while !parent.exists() && parent != data_root {
+            parent.pop();
+        }
+        paths.push(parent);
+    }
+    require_same_filesystem(dir, &paths.iter().map(PathBuf::as_path).collect::<Vec<_>>())?;
+
     let intent = RestoreIntent::databases(data_root, planned, created_dirs);
     steps
         .step()
@@ -548,20 +562,29 @@ fn replace(
 
     let staged = staged_root.join(relative);
     let staged_file = std::fs::OpenOptions::new().read(true).open(&staged)?;
-    match &original {
-        Some(meta) => {
-            staged_file.set_permissions(std::fs::Permissions::from_mode(meta.mode() & 0o777))?;
-            // Restoring the owner needs privileges the service may lack;
-            // the app data provisioning on restart repairs it either way.
-            let _ = std::os::unix::fs::fchown(&staged_file, Some(meta.uid()), Some(meta.gid()));
-        }
-        None => staged_file.set_permissions(std::fs::Permissions::from_mode(0o600))?,
+    // The modes app data provisioning gives a database, never the live
+    // file's: the app controls those and could have made it world-writable.
+    staged_file.set_permissions(std::fs::Permissions::from_mode(restored_mode(relative)))?;
+    if let Some(meta) = &original {
+        // Restoring the owner needs privileges the service may lack;
+        // the app data provisioning on restart repairs it either way.
+        let _ = std::os::unix::fs::fchown(&staged_file, Some(meta.uid()), Some(meta.gid()));
     }
     staged_file.sync_all()?;
     steps.step()?;
     fs::renameat(CWD, &staged, &live, name)?;
     fs::fsync(&live)?;
     Ok(())
+}
+
+/// Group read/write below `app/`, which the app's group shares; service
+/// only below `tako/`. Matches `secure_data_tree` in app provisioning.
+fn restored_mode(relative: &Path) -> u32 {
+    if relative.starts_with(TAKO_DATA_DIR) {
+        0o600
+    } else {
+        0o660
+    }
 }
 
 /// Undo a database swap from its intent record and what the file system
