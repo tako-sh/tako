@@ -2,7 +2,7 @@ mod backup;
 pub(crate) use backup::{
     DatabaseSnapshotState, PostDeployBackup, RecoveryMode, measure_database_tree,
     recover_interrupted_restores, run_restore_worker, snapshot_data_tree, snapshot_database_tree,
-    start_restore_generation, sweep_backup_work_dirs,
+    sweep_backup_work_dirs,
 };
 mod compose;
 mod deploy;

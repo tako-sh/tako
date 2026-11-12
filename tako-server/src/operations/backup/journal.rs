@@ -557,13 +557,16 @@ fn record_generation(data_dir: &Path, generation: &str) -> Result<(), String> {
 /// data directory, which decides what startup recovery may do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RecoveryMode {
-    /// A normal start: no other server process serves this data directory.
+    /// A normal start while no other server process serves this data
+    /// directory (startup checks the drain activity lease every serving
+    /// process holds; otherwise it starts as a successor).
     /// Rolls back records of the previous generation whose lock is free and
     /// marks every other record abandoned, so that no later start rolls one
     /// back even if this start cannot record its generation.
     Primary,
-    /// An upgrade reload or a native promotion child, which takes over from
-    /// a server that may still be running. Changes nothing and starts a new
+    /// An upgrade reload, a native promotion child, an in-process standby
+    /// promotion, or a normal start beside another serving process: each
+    /// takes over from or runs beside a server that may still be running. Changes nothing and starts a new
     /// generation, so records of the server it replaces are only reported
     /// at later starts.
     Successor,
@@ -618,15 +621,6 @@ fn recover_restores_in(data_dir: &Path, mode: RecoveryMode) -> String {
         RecoveryMode::Standby => {}
     }
     generation
-}
-
-/// Start a new generation when a standby takes over in its own process.
-pub(crate) fn start_restore_generation(data_dir: &Path) {
-    if let Err(error) = start_generation_in(Some(data_dir)) {
-        tracing::error!(
-            "{error}; restores this server runs are not rolled back automatically after a crash"
-        );
-    }
 }
 
 #[derive(Debug, PartialEq, Eq)]

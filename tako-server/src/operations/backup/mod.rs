@@ -33,8 +33,7 @@ use journal::{
     DatabaseSwap, RESTORE_WORKER_TIMEOUT, refuse_unfinished_restores, swap_databases_off_runtime,
 };
 pub(crate) use journal::{
-    RecoveryMode, recover_interrupted_restores, run_restore_worker, start_restore_generation,
-    sweep_backup_work_dirs,
+    RecoveryMode, recover_interrupted_restores, run_restore_worker, sweep_backup_work_dirs,
 };
 use s3::{
     DOWNLOAD_URL_EXPIRES_SECONDS, S3_URL_EXPIRES_SECONDS, TRANSFER_TIMEOUT, backup_http_client,
