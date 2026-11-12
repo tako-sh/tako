@@ -69,6 +69,10 @@ pub struct Instance {
     pid: AtomicU32,
     /// Current state
     state: AtomicU8,
+    /// Set once the instance has been healthy; tells a crash from a failed start.
+    was_healthy: AtomicBool,
+    /// Exit status and wall-clock time of the process, where its exit was observed.
+    observed_exit: RwLock<Option<(std::process::ExitStatus, u64)>>,
     /// When the instance started
     started_at: RwLock<Option<Instant>>,
     /// Total requests handled
@@ -119,6 +123,8 @@ impl Instance {
             terminate_at: RwLock::new(None),
             pid: AtomicU32::new(0),
             state: AtomicU8::new(encode_instance_state(InstanceState::Starting)),
+            was_healthy: AtomicBool::new(false),
+            observed_exit: RwLock::new(None),
             started_at: RwLock::new(None),
             requests_total: AtomicU64::new(0),
             in_flight: AtomicU64::new(0),
@@ -135,9 +141,41 @@ impl Instance {
     /// Set raw lifecycle state. Use `App::set_instance_state` for transitions
     /// that can add or remove the instance from request routing.
     pub fn set_state(&self, state: InstanceState) -> InstanceState {
+        if state == InstanceState::Healthy {
+            self.was_healthy.store(true, Ordering::Release);
+        }
         let encoded = encode_instance_state(state);
         let previous = self.state.swap(encoded, Ordering::AcqRel);
         decode_instance_state(previous)
+    }
+
+    /// Describe the loss of this instance for status reporting. Call before
+    /// `kill`, which detaches Compose containers.
+    pub(crate) fn exit_report(&self) -> tako_core::InstanceExit {
+        let observed = *self.observed_exit.read();
+        // A Compose instance's process is its log follower, whose status says
+        // nothing about the container; `AppStatus.services` reports that.
+        let status = observed
+            .map(|(status, _)| status)
+            .filter(|_| self.compose.read().is_none());
+        let reason = if !self.was_healthy.load(Ordering::Acquire) {
+            tako_core::InstanceExitReason::FailedToStart
+        } else if observed.is_some() {
+            tako_core::InstanceExitReason::Crashed
+        } else {
+            tako_core::InstanceExitReason::Unhealthy
+        };
+        #[cfg(unix)]
+        let signal =
+            status.and_then(|status| std::os::unix::process::ExitStatusExt::signal(&status));
+        #[cfg(not(unix))]
+        let signal = None;
+        tako_core::InstanceExit {
+            reason,
+            exit_code: status.and_then(|status| status.code()),
+            signal,
+            at_unix_secs: (observed.map_or_else(now_unix_millis, |(_, at)| at) / 1000) as i64,
+        }
     }
 
     pub fn pid(&self) -> Option<u32> {
@@ -283,14 +321,25 @@ impl Instance {
         }
     }
 
+    /// Keep the first exit this server observed without having stopped the
+    /// process itself.
+    fn note_exit(&self, status: std::process::ExitStatus) {
+        self.observed_exit
+            .write()
+            .get_or_insert((status, now_unix_millis()));
+    }
+
     /// Check if process is still running
     pub async fn is_alive(&self) -> bool {
         let mut process = self.process.write();
         if let Some(ref mut child) = *process {
             match child.try_wait() {
-                Ok(Some(_)) => false, // Process exited
-                Ok(None) => true,     // Still running
-                Err(_) => false,      // Error checking
+                Ok(Some(status)) => {
+                    self.note_exit(status);
+                    false
+                }
+                Ok(None) => true, // Still running
+                Err(_) => false,  // Error checking
             }
         } else {
             false
@@ -342,8 +391,12 @@ impl Instance {
             let mut process = self.process.write();
             let mut terminate_at = self.terminate_at.write();
             if terminate_at.is_none() {
+                // A process that is already gone exited by itself; keep that status.
                 if let Some(child) = process.as_mut()
-                    && child.try_wait()?.is_none()
+                    && child
+                        .try_wait()?
+                        .map(|status| self.note_exit(status))
+                        .is_none()
                 {
                     #[cfg(unix)]
                     if let Some(pid) = child.id()

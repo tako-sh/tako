@@ -139,6 +139,9 @@ impl crate::ServerState {
         }
 
         crate::runtime_events::update_instance_count_metric(app_name, &app);
+        // The operator just set the instance count and saw it take effect;
+        // earlier crash history and its backoff no longer apply.
+        app.reset_recovery();
         if app.get_instances().is_empty() && effective_instances == 0 {
             app.set_state(AppState::Idle);
             self.cold_start.reset(app_name);

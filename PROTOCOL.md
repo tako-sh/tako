@@ -68,6 +68,8 @@ The server probes `GET /status` with `Host: <app>.tako` and an `X-Tako-Internal-
 
 The token is infrastructure-only. SDKs must not expose it to application code or public responses.
 
+`AppStatus.recovery` is present only while the server has replaced instances since the last deploy, scale, or stable minute. It carries `restart_count`, `last_exit` (`reason` of `crashed`, `unhealthy`, or `failed_to_start`; the observed `exit_code` or `signal` when the process exited by itself; `at_unix_secs`), and `next_restart_at_unix_secs` while replacement is backing off.
+
 ## Workflow claim ownership
 
 `ClaimRun.worker_id` identifies a worker process for concurrency accounting.

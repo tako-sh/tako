@@ -94,6 +94,7 @@ impl crate::ServerState {
                 match updater.update(&app, config, target).await {
                     Ok(result) if result.success => {
                         app.set_state(AppState::Running);
+                        app.reset_recovery();
                         return Response::ok(serde_json::json!({
                             "status": "updated",
                             "app": app_name,
