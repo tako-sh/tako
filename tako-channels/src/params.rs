@@ -222,6 +222,53 @@ mod tests {
     }
 
     #[test]
+    fn query_and_json_numbers_bind_the_same_stream() {
+        // A subscriber's query value is parsed as text; a publisher's arrives
+        // as a JSON number. Both must yield the same f64, or the two name
+        // different streams.
+        let schema = json!({"type": "object", "properties": {"x": {"type": "number"}}});
+        let mut cases: Vec<String> = [
+            "0.1",
+            "1e23",
+            "2.2250738585072011e-308",
+            "2.2250738585072014e-308",
+            "4.9406564584124654e-324",
+            "1.7976931348623157e308",
+            "0.30000000000000004",
+            "123456789.12345678",
+            "8.98846567431158e307",
+        ]
+        .map(String::from)
+        .to_vec();
+        // Deterministic pseudo-random 17 to 20 digit decimals over a wide
+        // exponent range: the inputs where fast float parsing rounds wrong.
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..20_000 {
+            let digits = 17 + (next() % 4) as usize;
+            let mantissa: String = (0..digits)
+                .map(|_| char::from(b'0' + (next() % 10) as u8))
+                .collect();
+            let exponent = (next() % 600) as i64 - 300;
+            cases.push(format!("{}.{}e{exponent}", &mantissa[..1], &mantissa[1..]));
+        }
+        for raw in cases {
+            let queried = validate_query(&schema, &format!("x={raw}")).unwrap();
+            let published = json!({ "x": serde_json::from_str::<Value>(&raw).unwrap() });
+            assert_eq!(
+                crate::ChannelStream::new("c", &queried),
+                crate::ChannelStream::new("c", &published),
+                "{raw}: query {queried} vs JSON {published}"
+            );
+        }
+    }
+
+    #[test]
     fn decodes_percent_and_plus_encoded_values() {
         let value = validate_query(&schema(), "roomId=room+one%2Ftwo").unwrap();
         assert_eq!(value["roomId"], "room one/two");
