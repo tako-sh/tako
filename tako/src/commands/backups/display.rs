@@ -144,6 +144,29 @@ pub(super) fn format_status_line(server_name: &str, status: &BackupStatusRespons
     format!("{server_name}: enabled, {last}, next {next}, {retention}, {databases}{skipped}")
 }
 
+/// Why scheduled backups on this server are failing, if they are.
+pub(super) fn format_status_failure(
+    server_name: &str,
+    status: &BackupStatusResponse,
+) -> Option<String> {
+    let failure = status.last_backup_failure.as_ref()?;
+    let retry = format_backup_time(failure.retry_at_unix_secs);
+    Some(match failure.reason {
+        tako_core::BackupFailureReason::IndexUnreadable => {
+            format!(
+                "{server_name}: {}; next attempt at {retry}",
+                failure.message
+            )
+        }
+        tako_core::BackupFailureReason::Failed
+        | tako_core::BackupFailureReason::InsufficientDisk => format!(
+            "{server_name}: full backup failed at {}: {}; next attempt at {retry}",
+            format_backup_time(failure.at_unix_secs),
+            failure.message
+        ),
+    })
+}
+
 fn local_offset() -> UtcOffset {
     *LOCAL_OFFSET.get_or_init(|| UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC))
 }
@@ -179,6 +202,7 @@ mod tests {
             next_backup_at_unix_secs: None,
             last_database_snapshot_at_unix_secs: None,
             last_database_snapshot_skip: None,
+            last_backup_failure: None,
         };
         assert_eq!(format_status_line("prod", &status), "prod: disabled");
     }
@@ -193,6 +217,7 @@ mod tests {
             next_backup_at_unix_secs: None,
             last_database_snapshot_at_unix_secs: None,
             last_database_snapshot_skip: None,
+            last_backup_failure: None,
         };
         let line = format_status_line("prod", &status);
         assert!(
@@ -213,6 +238,30 @@ mod tests {
                 "last database snapshot at {time}, database snapshot skipped at {time}: No database changed since the latest backup."
             )),
             "{line}"
+        );
+        assert_eq!(format_status_failure("prod", &status), None);
+
+        status.last_backup_failure = Some(tako_core::BackupFailure {
+            at_unix_secs: 0,
+            reason: tako_core::BackupFailureReason::InsufficientDisk,
+            message: "Not enough free disk space for a full backup.".to_string(),
+            retry_at_unix_secs: 0,
+        });
+        assert_eq!(
+            format_status_failure("prod", &status).unwrap(),
+            format!(
+                "prod: full backup failed at {time}: Not enough free disk space for a full backup.; next attempt at {time}"
+            )
+        );
+        status.last_backup_failure = Some(tako_core::BackupFailure {
+            at_unix_secs: 0,
+            reason: tako_core::BackupFailureReason::IndexUnreadable,
+            message: "Failed to read backup index: invalid JSON".to_string(),
+            retry_at_unix_secs: 0,
+        });
+        assert_eq!(
+            format_status_failure("prod", &status).unwrap(),
+            format!("prod: Failed to read backup index: invalid JSON; next attempt at {time}")
         );
     }
 

@@ -1,8 +1,9 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tako_core::{
-    BACKUP_INTERVAL_SECS, BackupDownloadUrlResponse, BackupInfo, BackupKind, BackupListResponse,
-    BackupRestoreResponse, BackupStatusResponse, Response,
+    BACKUP_INTERVAL_SECS, BackupDownloadUrlResponse, BackupFailure, BackupFailureReason,
+    BackupInfo, BackupKind, BackupListResponse, BackupRestoreResponse, BackupStatusResponse,
+    Response,
 };
 
 use crate::object_storage::{S3Method, presign_s3_url};
@@ -35,6 +36,9 @@ use snapshot::{
 };
 pub(crate) use snapshot::{measure_database_tree, snapshot_data_tree, snapshot_database_tree};
 
+/// A full archive holds the snapshot copy, the compressed archive, and its
+/// encrypted copy at once.
+const FULL_BACKUP_DISK_COPIES: u64 = 3;
 /// How long workflow workers may finish their runs before a restore kills them.
 const WORKFLOW_STOP_TIMEOUT: Duration = if cfg!(test) {
     Duration::from_secs(1)
@@ -83,6 +87,7 @@ impl crate::ServerState {
 
     /// `wait_for_database_snapshot` bounds how long to wait when an hourly
     /// database snapshot holds the backup lock; any other holder fails fast.
+    /// Records the outcome for the scheduler's retry backoff and status.
     async fn backup_app_now(
         &self,
         app: &str,
@@ -91,6 +96,49 @@ impl crate::ServerState {
         let _backup = self
             .acquire_backup_lock(app, wait_for_database_snapshot)
             .await?;
+        let result = match self.full_backup_disk_preflight(app).await {
+            Ok(()) => self
+                .full_backup_locked(app)
+                .await
+                .map_err(|message| (BackupFailureReason::Failed, message)),
+            Err(failure) => Err(failure),
+        };
+        let mut states = self.database_snapshots.write();
+        let state = states.entry(app.to_string()).or_default();
+        match result {
+            Ok(info) => {
+                state.record_full_success();
+                Ok(info)
+            }
+            Err((reason, message)) => {
+                state.record_full_failure(now_unix_secs(), reason, message.clone());
+                Err(message)
+            }
+        }
+    }
+
+    /// A full archive holds the snapshot copy, the compressed archive, and its
+    /// encrypted copy at once; each is at most the size of the data tree.
+    async fn full_backup_disk_preflight(
+        &self,
+        app: &str,
+    ) -> Result<(), (BackupFailureReason, String)> {
+        let data_dir = self.runtime.data_dir.clone();
+        let data_root = app_runtime_data_paths(std::path::Path::new(""), app).root;
+        let measured = tokio::task::spawn_blocking(move || {
+            let size = snapshot::measure_data_tree(&data_dir, &data_root)?;
+            Ok::<_, String>((size, super::release_artifacts::available_bytes(&data_dir)?))
+        })
+        .await
+        .map_err(|e| format!("backup size worker failed: {e}"))
+        .and_then(|result| result)
+        .map_err(|message| (BackupFailureReason::Failed, message))?;
+        full_backup_preflight(measured.0, measured.1)
+            .map_err(|message| (BackupFailureReason::InsufficientDisk, message))
+    }
+
+    /// Call with the app's backup lock.
+    async fn full_backup_locked(&self, app: &str) -> Result<BackupInfo, String> {
         let _guard = self.lock_deploy_for_backup(app).await;
         if self.is_draining() {
             return Err("Server is draining".into());
@@ -299,20 +347,43 @@ impl crate::ServerState {
                 next_backup_at_unix_secs: None,
                 last_database_snapshot_at_unix_secs: None,
                 last_database_snapshot_skip: None,
+                last_backup_failure: None,
             });
         };
-        let index = self.read_backup_index(&backup, app).await?;
-        let skip = self
-            .database_snapshots
-            .read()
-            .get(app)
-            .and_then(|state| state.skip.clone());
+        let now = now_unix_secs();
+        let schedule = self.backup_schedule_state(app);
+        let index = match self.read_backup_index(&backup, app).await {
+            Ok(index) => index,
+            Err(error) => {
+                // Report the index itself as the problem: nothing it lists
+                // can be shown, and no scheduled backup runs without it.
+                let retry_at_unix_secs = schedule
+                    .index_failures
+                    .failure()
+                    .map_or(now, |failure| failure.retry_at_unix_secs);
+                return Ok(BackupStatusResponse {
+                    app: app.to_string(),
+                    enabled: true,
+                    retention_days: Some(backup.retention_days),
+                    last_backup: None,
+                    next_backup_at_unix_secs: None,
+                    last_database_snapshot_at_unix_secs: None,
+                    last_database_snapshot_skip: schedule.skip.clone(),
+                    last_backup_failure: Some(BackupFailure {
+                        at_unix_secs: now,
+                        reason: BackupFailureReason::IndexUnreadable,
+                        message: format!("Failed to read backup index: {error}"),
+                        retry_at_unix_secs,
+                    }),
+                });
+            }
+        };
         Ok(enabled_backup_status(
             app,
             backup.retention_days,
             &index.backups,
-            skip,
-            now_unix_secs(),
+            &schedule,
+            now,
         ))
     }
 
@@ -675,15 +746,28 @@ impl crate::ServerState {
     }
 }
 
+fn full_backup_preflight(data_bytes: u64, available_bytes: u64) -> Result<(), String> {
+    let required = data_bytes
+        .saturating_mul(FULL_BACKUP_DISK_COPIES)
+        .saturating_add(DISK_RESERVE_BYTES);
+    if available_bytes < required {
+        return Err(format!(
+            "Not enough free disk space for a full backup: needs {required} bytes, {available_bytes} available."
+        ));
+    }
+    Ok(())
+}
+
 fn enabled_backup_status(
     app: &str,
     retention_days: u16,
     backups: &[BackupInfo],
-    last_database_snapshot_skip: Option<tako_core::BackupSkip>,
+    schedule: &DatabaseSnapshotState,
     now: i64,
 ) -> BackupStatusResponse {
     let latest_of = |kind| latest_backup(backups.iter().filter(|backup| backup.kind == kind));
     let last_backup = latest_of(BackupKind::Full).cloned();
+    let last_backup_failure = schedule.failure().cloned();
     let next_backup_at_unix_secs = last_backup
         .as_ref()
         .map(|backup| {
@@ -691,7 +775,13 @@ fn enabled_backup_status(
                 .created_at_unix_secs
                 .saturating_add(BACKUP_INTERVAL_SECS)
         })
-        .or(Some(now));
+        .or(Some(now))
+        .map(|due| {
+            // A failed attempt is retried no earlier than its backoff allows.
+            last_backup_failure
+                .as_ref()
+                .map_or(due, |failure| due.max(failure.retry_at_unix_secs))
+        });
     BackupStatusResponse {
         app: app.to_string(),
         enabled: true,
@@ -700,7 +790,8 @@ fn enabled_backup_status(
         next_backup_at_unix_secs,
         last_database_snapshot_at_unix_secs: latest_of(BackupKind::Databases)
             .map(|backup| backup.created_at_unix_secs),
-        last_database_snapshot_skip,
+        last_database_snapshot_skip: schedule.skip.clone(),
+        last_backup_failure,
     }
 }
 
@@ -818,8 +909,11 @@ mod tests {
             entry("b1", BackupKind::Full, 100),
             entry("d1", BackupKind::Databases, 200),
         ];
-        let status =
-            enabled_backup_status("demo/production", 30, &backups, Some(skip.clone()), 500);
+        let schedule = DatabaseSnapshotState {
+            skip: Some(skip.clone()),
+            ..Default::default()
+        };
+        let status = enabled_backup_status("demo/production", 30, &backups, &schedule, 500);
         assert_eq!(status.last_backup.unwrap().id, "b1");
         assert_eq!(
             status.next_backup_at_unix_secs,
@@ -828,9 +922,95 @@ mod tests {
         assert_eq!(status.last_database_snapshot_at_unix_secs, Some(300));
         assert_eq!(status.last_database_snapshot_skip, Some(skip));
 
-        let status = enabled_backup_status("demo/production", 30, &backups[..1], None, 500);
+        let status = enabled_backup_status(
+            "demo/production",
+            30,
+            &backups[..1],
+            &DatabaseSnapshotState::default(),
+            500,
+        );
         assert!(status.last_backup.is_none());
         assert_eq!(status.next_backup_at_unix_secs, Some(500));
+        assert!(status.last_backup_failure.is_none());
+
+        // A failing full archive reports why and when it is retried.
+        let mut schedule = DatabaseSnapshotState::default();
+        schedule.record_full_failure(450, BackupFailureReason::Failed, "upload timed out".into());
+        let status = enabled_backup_status("demo/production", 30, &backups[..1], &schedule, 500);
+        let failure = status.last_backup_failure.unwrap();
+        assert_eq!(failure.message, "upload timed out");
+        assert_eq!(
+            status.next_backup_at_unix_secs,
+            Some(failure.retry_at_unix_secs)
+        );
+    }
+
+    #[test]
+    fn full_backup_preflight_counts_three_copies_of_the_data() {
+        let mib = 1024 * 1024;
+        let needed = 3 * 100 * mib + DISK_RESERVE_BYTES;
+        assert!(full_backup_preflight(100 * mib, needed).is_ok());
+        let error = full_backup_preflight(100 * mib, needed - 1).unwrap_err();
+        assert!(
+            error.starts_with("Not enough free disk space for a full backup"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn measure_data_tree_counts_files_without_transient_stores() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("data");
+        std::fs::create_dir_all(data.join("app/nested")).unwrap();
+        std::fs::create_dir_all(data.join("tako")).unwrap();
+        std::fs::write(data.join("app/nested/a"), vec![0; 100]).unwrap();
+        std::fs::write(data.join("tako/workflows.sqlite"), vec![0; 20]).unwrap();
+        std::fs::write(data.join("tako/channels.sqlite"), vec![0; 1000]).unwrap();
+        std::os::unix::fs::symlink("/etc/hostname", data.join("app/link")).unwrap();
+        assert_eq!(
+            snapshot::measure_data_tree(temp.path(), std::path::Path::new("data")).unwrap(),
+            120
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_index_runs_no_backup_and_status_says_why() {
+        let mut fixture = RestoreFixture::new();
+        let index_key = backup_index_key(&fixture.app, &fixture.state);
+        fixture
+            .objects
+            .insert(index_key.clone(), b"{ not json".to_vec());
+        // Only the scheduler's index read: no snapshot, no upload.
+        let server = fixture.serve(1);
+        fixture.state.run_due_backups().await;
+        assert_eq!(server.await.unwrap(), [format!("GET {index_key}")]);
+        let schedule = fixture.state.backup_schedule_state(&fixture.app);
+        assert!(schedule.full_failures.failure().is_none());
+        assert_eq!(
+            schedule.failure().unwrap().reason,
+            BackupFailureReason::IndexUnreadable
+        );
+        // The next tick does not read the index again before the backoff.
+        fixture.state.run_due_backups().await;
+        assert_eq!(
+            fixture.state.backup_schedule_state(&fixture.app).failure(),
+            schedule.failure()
+        );
+
+        let server = fixture.serve(1);
+        let status = fixture
+            .state
+            .backup_status_inner(&fixture.app)
+            .await
+            .unwrap();
+        server.await.unwrap();
+        let failure = status.last_backup_failure.unwrap();
+        assert_eq!(failure.reason, BackupFailureReason::IndexUnreadable);
+        assert!(failure.message.starts_with("Failed to read backup index"));
+        assert_eq!(
+            failure.retry_at_unix_secs,
+            schedule.failure().unwrap().retry_at_unix_secs
+        );
     }
 
     #[test]

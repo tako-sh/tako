@@ -89,6 +89,44 @@ fn open_snapshot_root(anchor: &Path, relative: &Path) -> Result<File, String> {
     Ok(File::from(root))
 }
 
+/// Bytes of the regular files a [`snapshot_data_tree`] would copy. Only stats
+/// entries and never opens a regular file, so it is safe in the server.
+pub(crate) fn measure_data_tree(anchor: &Path, relative: &Path) -> Result<u64, String> {
+    fn walk(dir: &File, relative: &Path, total: &mut u64) -> io::Result<()> {
+        for entry in fs::Dir::read_from(dir)? {
+            let entry = entry?;
+            let name = OsStr::from_bytes(entry.file_name().to_bytes());
+            if name == "." || name == ".." {
+                continue;
+            }
+            let path = relative.join(name);
+            if is_transient_tako_sqlite_file(&path) {
+                continue;
+            }
+            let stat = match fs::statat(dir, name, AtFlags::SYMLINK_NOFOLLOW) {
+                Ok(stat) => stat,
+                Err(rustix::io::Errno::NOENT) => continue,
+                Err(error) => return Err(error.into()),
+            };
+            match FileType::from_raw_mode(stat.st_mode) {
+                FileType::Directory => {
+                    let child =
+                        fs::openat(dir, name, READ_FLAGS | OFlags::DIRECTORY, Mode::empty())?;
+                    walk(&File::from(child), &path, total)?;
+                }
+                FileType::RegularFile => *total = total.saturating_add(stat.st_size as u64),
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+    let root = open_snapshot_root(anchor, relative)?;
+    let mut total = 0_u64;
+    walk(&root, Path::new(""), &mut total)
+        .map_err(|e| format!("measure {}: {e}", anchor.join(relative).display()))?;
+    Ok(total)
+}
+
 /// Bytes of every SQLite database a [`snapshot_database_tree`] would capture,
 /// counting each main file and its `-wal`. Reads only file headers.
 pub(crate) fn measure_database_tree(anchor: &Path, relative: &Path) -> Result<u64, String> {

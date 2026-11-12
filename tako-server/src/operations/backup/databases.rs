@@ -36,6 +36,11 @@ pub(crate) struct DatabaseSnapshotState {
     /// Set from just before a database snapshot takes the backup lock until
     /// just after it releases it.
     pub(crate) running: bool,
+    /// Consecutive failed full archives of the app, retried with backoff.
+    pub(crate) full_failures: super::scheduler::Backoff,
+    /// Consecutive failed reads of the remote index, which pause every
+    /// scheduled backup of the app.
+    pub(crate) index_failures: super::scheduler::Backoff,
 }
 
 /// The backup lock, held by a database snapshot. Marks the snapshot running

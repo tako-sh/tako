@@ -18,7 +18,8 @@ pub(crate) mod target;
 
 use client::{send_typed_to_server, send_typed_to_servers};
 use display::{
-    format_status_line, output_backup_line, output_restored_databases, restore_confirm_description,
+    format_status_failure, format_status_line, output_backup_line, output_restored_databases,
+    restore_confirm_description,
 };
 use download::download_url_to_file;
 use target::{resolve_backup_target, resolve_single_server};
@@ -389,6 +390,9 @@ async fn backup_status(
             Ok(status) => {
                 any_success = true;
                 output::bullet(&format_status_line(&server_name, &status));
+                if let Some(failure) = format_status_failure(&server_name, &status) {
+                    output::warning(&failure);
+                }
             }
             Err(error) => output::warning(&format!(
                 "{}: failed to load backup status ({})",

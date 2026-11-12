@@ -865,6 +865,29 @@ pub struct BackupStatusResponse {
     /// The latest hourly database snapshot attempt that uploaded nothing.
     #[serde(default)]
     pub last_database_snapshot_skip: Option<BackupSkip>,
+    /// Why scheduled full archives are failing, until one succeeds.
+    #[serde(default)]
+    pub last_backup_failure: Option<BackupFailure>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BackupFailureReason {
+    /// Creating or uploading the full archive failed.
+    Failed,
+    /// Too little free disk for the archive's temporary copies.
+    InsufficientDisk,
+    /// The remote backup index could not be read; no scheduled backup runs.
+    IndexUnreadable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackupFailure {
+    pub at_unix_secs: i64,
+    pub reason: BackupFailureReason,
+    pub message: String,
+    /// When the scheduler tries again.
+    pub retry_at_unix_secs: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
