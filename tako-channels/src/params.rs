@@ -389,7 +389,7 @@ mod tests {
             let error = validate_query(&one_of, query).unwrap_err();
             assert!(
                 matches!(error, ParamsError::Invalid(_)),
-                "{query}: {error:?}"
+                "constraint-only schema must reject query {query:?}"
             );
         }
         assert!(matches!(
@@ -481,7 +481,7 @@ mod tests {
                     matches!(&error, ParamsError::InvalidSchema(message)
                         if message.contains(&format!("`{keyword}` inside `{combinator}`"))
                             && message.contains("top-level `properties`")),
-                    "{combinator}/{keyword}: got {error:?}"
+                    "a `{keyword}` inside `{combinator}` must be reported as a schema problem"
                 );
             }
         }
@@ -502,7 +502,7 @@ mod tests {
             let error = check_params_schema(&schema).unwrap_err();
             assert!(
                 matches!(&error, ParamsError::InvalidSchema(message) if message.contains(keyword)),
-                "{keyword}: got {error:?}"
+                "a top-level `{keyword}` problem must be reported"
             );
         }
     }

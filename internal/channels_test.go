@@ -267,11 +267,11 @@ func TestChannelRegistrationRejectsParamsSchemasThatAreNotOneFlatObject(t *testi
 	} {
 		want := strconv.Quote(tc.keyword) + " inside " + strconv.Quote(tc.combinator)
 		if problem := nonFlatParamsSchema(json.RawMessage(tc.schema)); !strings.Contains(problem, want) {
-			t.Fatalf("expected %s, got %q", want, problem)
+			t.Fatalf("a combinator declaring %s must be rejected naming it", tc.keyword)
 		}
 	}
 	if problem := nonFlatParamsSchema(json.RawMessage(`{"patternProperties":{"^u":{}}}`)); !strings.Contains(problem, "patternProperties") {
-		t.Fatalf("top-level patternProperties accepted: %q", problem)
+		t.Fatal("a top-level patternProperties must be rejected")
 	}
 	// Combinators inside a property are fine, and Stores keep their schema.
 	NewChannelRegistry().Register("room", ChannelDefinition{
@@ -297,7 +297,7 @@ func TestChannelRegistrationAcceptsTopLevelCombinatorsThatOnlyConstrainParams(t 
 		RegisterPresence("scoped", PresenceDefinition{ParamsSchema: schema})
 		// The constraint reaches tako-server unchanged, which enforces it.
 		if got := registry.Lookup("scoped").ParamsSchema; string(got) != string(schema) {
-			t.Fatalf("schema changed: %s", got)
+			t.Fatal("a constraint-only schema must be registered unchanged")
 		}
 	}
 }

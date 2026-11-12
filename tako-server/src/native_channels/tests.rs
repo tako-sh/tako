@@ -1881,7 +1881,7 @@ async fn an_unreachable_broker_fails_the_publish_without_caching_an_answer() {
             error.kind(),
             std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
         ),
-        "{error:?}"
+        "an unreachable broker must fail the publish as unreachable"
     );
     assert_eq!(client.cached_publish_lifecycle(), None);
 }

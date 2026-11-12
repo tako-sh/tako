@@ -1044,7 +1044,10 @@ fn skewed_origins_keep_creation_times_in_id_order_within_a_stream() {
         RemoteIngest::Applied
     );
     let stored = stamps(&peer, "feed");
-    assert!(stored.is_sorted(), "{stored:?}");
+    assert!(
+        stored.is_sorted(),
+        "creation times must not decrease with ids"
+    );
 
     // Six minutes on, every row is still inside the ten-minute window: a
     // reader sees all three and maintenance deletes none, with no holes.
