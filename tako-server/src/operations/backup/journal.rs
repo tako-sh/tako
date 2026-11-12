@@ -372,24 +372,7 @@ impl RollbackDir {
     /// that write as well.
     pub(super) fn abandon(&mut self, reason: &str) -> PathBuf {
         self.ended = true;
-        let abandoned = renamed(&self.path, ABANDONED_DIR_PREFIX);
-        let marked = match std::fs::rename(&self.path, &abandoned) {
-            Ok(()) => {
-                self.path = abandoned;
-                if let Some(parent) = self.path.parent() {
-                    let _ = sync_dir(parent);
-                }
-                Ok(())
-            }
-            Err(rename) => std::fs::remove_file(self.path.join(LOCK_FILE))
-                .map_err(|unlink| format!("rename: {rename}; remove lock: {unlink}"))
-                .and_then(|()| sync_dir(&self.path))
-                .or_else(|error| {
-                    // Rollback directories sit at <data dir>/apps/<name>/<environment>/.
-                    start_generation_in(self.path.ancestors().nth(4))
-                        .map_err(|generation| format!("{error}; {generation}"))
-                }),
-        };
+        let marked = mark_abandoned(&self.path).map(|path| self.path = path);
         match marked {
             Ok(()) => tracing::error!(
                 path = %self.path.display(),
@@ -420,6 +403,38 @@ impl Drop for RollbackDir {
         // lock held until then. No worker of this restore is alive now.
         let _ = rustix::fs::flock(&self.lock, FlockOperation::Unlock);
     }
+}
+
+/// Make sure no later start rolls back the restore in `dir`, without
+/// touching what it holds: rename it to an abandoned directory, or failing
+/// that remove its lock file, or failing that start a new server
+/// generation. Returns where the directory is now.
+fn mark_abandoned(dir: &Path) -> Result<PathBuf, String> {
+    let abandoned = renamed(dir, ABANDONED_DIR_PREFIX);
+    match std::fs::rename(dir, &abandoned) {
+        Ok(()) => {
+            if let Some(parent) = abandoned.parent() {
+                let _ = sync_dir(parent);
+            }
+            Ok(abandoned)
+        }
+        Err(rename) => remove_lock(dir)
+            .map_err(|unlink| format!("rename: {rename}; {unlink}"))
+            .or_else(|error| {
+                // Rollback directories sit at <data dir>/apps/<name>/<environment>/.
+                start_generation_in(dir.ancestors().nth(4))
+                    .map_err(|generation| format!("{error}; {generation}"))
+            })
+            .map(|()| dir.to_path_buf()),
+    }
+}
+
+/// Recovery never rolls back a directory without a lock file. Removing it
+/// needs no free disk space and leaves a process that holds the lock alone.
+fn remove_lock(dir: &Path) -> Result<(), String> {
+    std::fs::remove_file(dir.join(LOCK_FILE))
+        .map_err(|error| format!("remove lock: {error}"))
+        .and_then(|()| sync_dir(dir))
 }
 
 /// Mutating steps of a restore swap. Tests pass a hook that runs before
@@ -525,7 +540,10 @@ fn read_generation(data_dir: &Path) -> Result<Option<String>, String> {
 fn start_generation_in(data_dir: Option<&Path>) -> Result<(), String> {
     let generation = nanoid::nanoid!(16);
     set_generation(generation.clone());
-    let data_dir = data_dir.ok_or("no server data directory")?;
+    record_generation(data_dir.ok_or("no server data directory")?, &generation)
+}
+
+fn record_generation(data_dir: &Path, generation: &str) -> Result<(), String> {
     write_durably(
         data_dir,
         GENERATION_TMP_FILE,
@@ -540,7 +558,9 @@ fn start_generation_in(data_dir: Option<&Path>) -> Result<(), String> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RecoveryMode {
     /// A normal start: no other server process serves this data directory.
-    /// Rolls back records of the previous generation whose lock is free.
+    /// Rolls back records of the previous generation whose lock is free and
+    /// marks every other record abandoned, so that no later start rolls one
+    /// back even if this start cannot record its generation.
     Primary,
     /// An upgrade reload or a native promotion child, which takes over from
     /// a server that may still be running. Changes nothing and starts a new
@@ -568,6 +588,12 @@ fn eligible_generation(
 /// every other unfinished restore, then start this process's generation.
 /// Run at server start, before any app or workflow store opens app data.
 pub(crate) fn recover_interrupted_restores(data_dir: &Path, mode: RecoveryMode) {
+    set_generation(recover_restores_in(data_dir, mode));
+}
+
+/// [`recover_interrupted_restores`], returning the generation this process
+/// adopts instead of setting it.
+fn recover_restores_in(data_dir: &Path, mode: RecoveryMode) -> String {
     let previous = read_generation(data_dir);
     if let Err(error) = &previous {
         tracing::error!(
@@ -579,17 +605,19 @@ pub(crate) fn recover_interrupted_restores(data_dir: &Path, mode: RecoveryMode) 
         mode == RecoveryMode::Primary,
         eligible_generation(mode, &previous).as_deref(),
     );
+    let generation = nanoid::nanoid!(16);
     match mode {
         RecoveryMode::Primary | RecoveryMode::Successor => {
-            if let Err(error) = start_generation_in(Some(data_dir)) {
+            if let Err(error) = record_generation(data_dir, &generation) {
                 tracing::error!(
-                    "{error}; restores this server runs are not rolled back automatically after a crash"
+                    "{error}. The file still names an earlier server process, so a restore this process runs and does not finish is never rolled back automatically: the next start reports it and keeps its app stopped. Restores of earlier processes are not affected: this start rolled back or marked abandoned every one it could."
                 );
             }
         }
         // Never recorded: a standby's restores are only ever reported.
-        RecoveryMode::Standby => set_generation(nanoid::nanoid!(16)),
+        RecoveryMode::Standby => {}
     }
+    generation
 }
 
 /// Start a new generation when a standby takes over in its own process.
@@ -617,7 +645,31 @@ pub(super) enum Recovery {
 
 fn recover_restore_dirs(data_dir: &Path, primary: bool, eligible: Option<&str>) {
     for dir in restore_dirs(data_dir) {
-        match recover_restore_dir(&dir, primary, eligible) {
+        let recovered = recover_restore_dir(&dir, primary, eligible);
+        // At a normal start no record stays where a later start could roll
+        // it back: the generation this start records may never reach the
+        // disk. A directory whose lock another process still holds is not
+        // renamed: that process may still write into it by its path.
+        let marked = match &recovered {
+            _ if !primary || !has_prefix(&dir, ROLLBACK_DIR_PREFIX) => None,
+            Ok(Recovery::InUse) => Some(remove_lock(&dir).map(|()| dir.clone())),
+            Ok(Recovery::Left(_)) | Err(_) if std::fs::symlink_metadata(&dir).is_ok() => {
+                Some(mark_abandoned(&dir))
+            }
+            _ => None,
+        };
+        match marked {
+            Some(Ok(path)) if path != dir => tracing::info!(
+                path = %path.display(),
+                "Marked an unfinished backup restore abandoned; no later start rolls it back"
+            ),
+            Some(Err(error)) => tracing::error!(
+                path = %dir.display(),
+                "Could not mark an unfinished backup restore abandoned ({error}); a later server start may roll it back. Move this directory out of the app directory before restarting the server."
+            ),
+            _ => {}
+        }
+        match recovered {
             Ok(Recovery::InUse) if primary => tracing::error!(
                 path = %dir.display(),
                 "Another process holds the lock of a backup restore at a normal start; it is left in place and never rolled back automatically"
@@ -679,8 +731,8 @@ pub(super) fn recover_restore_dir(
         match rustix::fs::flock(&lock, FlockOperation::NonBlockingLockExclusive) {
             Ok(()) => break,
             Err(rustix::io::Errno::WOULDBLOCK) if !primary => return Ok(Recovery::InUse),
-            // Never rolled back by a later start either: this start begins
-            // a new generation.
+            // The caller removes its lock file, so no later start rolls it
+            // back either.
             Err(rustix::io::Errno::WOULDBLOCK) if std::time::Instant::now() >= deadline => {
                 return Ok(Recovery::InUse);
             }
@@ -1095,6 +1147,8 @@ mod tests {
         recover_as_next_start(temp.path());
         sweep_backup_work_dirs(temp.path());
         assert!(!unused_path.exists());
+        // Marked abandoned, so no later start guesses at it either.
+        let legacy = renamed(&legacy, ABANDONED_DIR_PREFIX);
         assert_eq!(std::fs::read(legacy.join("kept")).unwrap(), b"original");
         assert_eq!(std::fs::read(abandoned.join("kept")).unwrap(), b"original");
         assert!(running.path().exists());
@@ -1144,7 +1198,12 @@ mod tests {
     /// A rollback directory with a record of a restore that a crash
     /// interrupted, below `<temp>/apps/demo/production/`.
     fn interrupted(temp: &Path, generation: &str) -> (PathBuf, PathBuf) {
-        let data_root = temp.join("apps/demo/production/data");
+        interrupted_app(temp, "demo", generation)
+    }
+
+    /// [`interrupted`] for the app `name`.
+    fn interrupted_app(temp: &Path, name: &str, generation: &str) -> (PathBuf, PathBuf) {
+        let data_root = temp.join("apps").join(name).join("production/data");
         std::fs::create_dir_all(data_root.join("app")).unwrap();
         std::fs::write(data_root.join("app/marker"), b"restored").unwrap();
         let dir = RollbackDir::create(&data_root).unwrap();
@@ -1184,6 +1243,68 @@ mod tests {
             );
             assert_eq!(marker(&data_root), b"restored");
             assert!(dir.exists());
+        }
+    }
+
+    /// A normal start that leaves a record in place and then fails to
+    /// record its generation: the file still names the generation of the
+    /// record, yet no later normal start rolls it back over what the app
+    /// wrote since.
+    #[test]
+    fn a_failed_generation_write_never_makes_a_left_record_eligible_later() {
+        let marker = |root: &Path| std::fs::read(root.join("app/marker")).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path();
+        record_generation(data_dir, "gA").unwrap();
+        // Its lock is still held after the wait.
+        let (held_root, held) = interrupted_app(data_dir, "held", "gA");
+        let holder = std::fs::File::open(held.join(LOCK_FILE)).unwrap();
+        rustix::fs::flock(&holder, FlockOperation::NonBlockingLockExclusive).unwrap();
+        // Its rollback fails: the restored tree cannot be moved aside.
+        let (broken_root, broken) = interrupted_app(data_dir, "broken", "gA");
+        std::fs::create_dir_all(broken.join("restored/busy")).unwrap();
+        // Its lock cannot be opened.
+        let (unopened_root, unopened) = interrupted_app(data_dir, "unopened", "gA");
+        std::fs::remove_file(unopened.join(LOCK_FILE)).unwrap();
+        std::fs::create_dir(unopened.join(LOCK_FILE)).unwrap();
+        // The generation cannot be recorded.
+        std::fs::create_dir_all(data_dir.join(GENERATION_TMP_FILE).join("busy")).unwrap();
+
+        recover_restores_in(data_dir, RecoveryMode::Primary);
+        assert_eq!(read_generation(data_dir), Ok(Some("gA".into())));
+
+        // Whatever kept each record from rolling back is gone by the next
+        // normal start, and the generation file still says gA.
+        drop(holder);
+        std::fs::remove_dir_all(data_dir.join(GENERATION_TMP_FILE)).unwrap();
+        for app in ["held", "broken", "unopened"] {
+            let env_dir = data_dir.join("apps").join(app).join("production");
+            for dir in restore_dirs_in(&env_dir) {
+                let _ = std::fs::remove_dir_all(dir.join("restored"));
+                if dir.join(LOCK_FILE).is_dir() {
+                    std::fs::remove_dir(dir.join(LOCK_FILE)).unwrap();
+                    std::fs::write(dir.join(LOCK_FILE), b"").unwrap();
+                }
+            }
+        }
+        assert_eq!(read_generation(data_dir), Ok(Some("gA".into())));
+        recover_restores_in(data_dir, RecoveryMode::Primary);
+
+        for (root, dir) in [
+            (held_root, held),
+            (broken_root, broken),
+            (unopened_root, unopened),
+        ] {
+            assert!(
+                marker(&root) == b"restored",
+                "a record left at a normal start must never be rolled back later"
+            );
+            let left = restore_dirs_in(root.parent().unwrap());
+            assert!(
+                left.len() == 1 && read_intent(&left[0]).is_ok_and(|intent| intent.is_some()),
+                "the record must stay for the operator"
+            );
+            assert!(!dir.exists() || dir == left[0]);
         }
     }
 
