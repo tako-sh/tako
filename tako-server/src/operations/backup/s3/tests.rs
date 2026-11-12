@@ -145,15 +145,97 @@ fn accept(
     acceptor.accept(stream).unwrap()
 }
 
+/// Read one whole request, body included. Answering and closing while the
+/// client is still sending its body resets the connection, and the client
+/// then reports a transport error instead of the fixture's response.
 fn read_request(stream: &mut impl Read) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    while !bytes.windows(4).any(|value| value == b"\r\n\r\n") {
+    fn fill(stream: &mut impl Read, bytes: &mut Vec<u8>) {
         let mut chunk = [0; 4096];
         let size = stream.read(&mut chunk).unwrap();
-        assert_ne!(size, 0);
+        assert_ne!(size, 0, "request ended early");
         bytes.extend_from_slice(&chunk[..size]);
     }
+    /// The index just past the next CRLF at or after `from`.
+    fn line_end(stream: &mut impl Read, bytes: &mut Vec<u8>, from: usize) -> usize {
+        loop {
+            if let Some(offset) = bytes[from..].windows(2).position(|value| value == b"\r\n") {
+                return from + offset + 2;
+            }
+            fill(stream, bytes);
+        }
+    }
+
+    let mut bytes = Vec::new();
+    let head_end = loop {
+        if let Some(offset) = bytes.windows(4).position(|value| value == b"\r\n\r\n") {
+            break offset + 4;
+        }
+        fill(stream, &mut bytes);
+    };
+    let head = String::from_utf8_lossy(&bytes[..head_end]).to_ascii_lowercase();
+    let header = |name: &str| {
+        head.lines()
+            .find_map(|line| line.strip_prefix(name))
+            .map(|value| value.trim().to_string())
+    };
+    if let Some(length) = header("content-length:") {
+        let end = head_end + length.parse::<usize>().unwrap();
+        while bytes.len() < end {
+            fill(stream, &mut bytes);
+        }
+    } else if header("transfer-encoding:").is_some_and(|value| value.contains("chunked")) {
+        let mut cursor = head_end;
+        loop {
+            let size_end = line_end(stream, &mut bytes, cursor);
+            let size_line = String::from_utf8_lossy(&bytes[cursor..size_end - 2]).to_string();
+            let size = size_line.split(';').next().unwrap().trim();
+            let size = usize::from_str_radix(size, 16).unwrap();
+            if size == 0 {
+                // Trailers, if any, end with an empty line.
+                cursor = size_end;
+                loop {
+                    let end = line_end(stream, &mut bytes, cursor);
+                    let empty = end - cursor == 2;
+                    cursor = end;
+                    if empty {
+                        break;
+                    }
+                }
+                break;
+            }
+            cursor = size_end + size + 2;
+            while bytes.len() < cursor {
+                fill(stream, &mut bytes);
+            }
+        }
+    }
     bytes
+}
+
+#[test]
+fn the_fixture_reads_a_request_to_the_end_of_its_body() {
+    // One byte per read, so every boundary falls between reads.
+    struct Trickle<'a>(&'a [u8]);
+    impl Read for Trickle<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            let size = self.0.len().min(1).min(buffer.len());
+            buffer[..size].copy_from_slice(&self.0[..size]);
+            self.0 = &self.0[size..];
+            Ok(size)
+        }
+    }
+    for request in [
+        &b"GET /fixture/key HTTP/1.1\r\nHost: fixture\r\n\r\n"[..],
+        b"PUT /fixture/key HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello",
+        b"PUT /fixture/key HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n\
+          5\r\n0\r\n\r\n\r\nA;ext=1\r\n0123456789\r\n0\r\n\r\n",
+        b"PUT /fixture/key HTTP/1.1\r\ntransfer-encoding: chunked\r\n\r\n\
+          3\r\nabc\r\n0\r\nTrailer: value\r\n\r\n",
+    ] {
+        let mut stream = Trickle(request);
+        assert_eq!(read_request(&mut stream), request);
+        assert!(stream.0.is_empty());
+    }
 }
 
 fn storage_fixture(
