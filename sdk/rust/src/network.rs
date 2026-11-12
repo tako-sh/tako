@@ -194,7 +194,9 @@ fn decode(bytes: &[u8]) -> io::Result<Value> {
     }
     let response: Value = serde_json::from_slice(bytes)?;
     if response.get("status").and_then(Value::as_str) != Some("ok") {
-        return Err(io::Error::other("network primitive call failed"));
+        return Err(io::Error::other(crate::error::Rejected {
+            code: crate::error::reply_code(&response),
+        }));
     }
     Ok(response.get("data").cloned().unwrap_or(Value::Null))
 }
@@ -266,12 +268,17 @@ mod tests {
         assert_eq!(value["request"]["opts"], json!({}));
         assert!(decode(b"{\"status\":\"ok\",\"data\":{}}\n").is_ok());
         assert!(decode(b"{\"status\":\"ok\"}").is_err());
-        assert!(
-            decode(b"{\"status\":\"error\",\"message\":\"private backend detail\"}\n")
-                .unwrap_err()
-                .to_string()
-                .find("private")
-                .is_none()
+        let unclassified =
+            decode(b"{\"status\":\"error\",\"message\":\"private backend detail\"}\n").unwrap_err();
+        assert!(unclassified.to_string().find("private").is_none());
+        assert_eq!(crate::ErrorCode::of(&unclassified), None);
+        let closed =
+            decode(b"{\"status\":\"error\",\"message\":\"private\",\"code\":\"channel_closed\"}\n")
+                .unwrap_err();
+        assert_eq!(closed.to_string(), "network primitive call failed");
+        assert_eq!(
+            crate::ErrorCode::of(&closed),
+            Some(crate::ErrorCode::ChannelClosed)
         );
     }
 }

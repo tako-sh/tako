@@ -141,12 +141,16 @@ impl ServerState {
             workflows.set_channel_publisher(std::sync::Arc::new(
                 move |request: tako_workflows::ChannelPublishRequest<'_>| {
                     let app = request.app;
-                    let publication = crate::channels::trusted_publication(&registry, request)
-                        .map_err(|error| error.to_string())?;
+                    let publication = crate::channels::trusted_publication(&registry, request)?;
                     if let Some(publisher) = &native_publisher {
                         let postgres_url = state_store
                             .get_runtime_credentials(app)
-                            .map_err(|_| "channel credentials unavailable".to_string())?
+                            .map_err(|_| {
+                                tako_core::SocketError::new(
+                                    tako_core::ErrorCode::Unavailable,
+                                    "channel credentials unavailable",
+                                )
+                            })?
                             .get("postgres_url")
                             .cloned();
                         return publisher.publish(app, &publication, postgres_url);
@@ -179,7 +183,7 @@ impl ServerState {
                     store
                         .publish_trusted(&publication)
                         .map(|msg| serde_json::to_value(msg).unwrap_or(serde_json::Value::Null))
-                        .map_err(|e| e.to_string())
+                        .map_err(tako_core::SocketError::from)
                 },
             ));
         }
@@ -207,7 +211,10 @@ impl ServerState {
                         )
                         .await
                     else {
-                        return tako_core::Response::error("destination app unavailable");
+                        return tako_core::Response::coded_error(
+                            tako_core::ErrorCode::Unavailable,
+                            "destination app unavailable",
+                        );
                     };
                     crate::proxy::invoke_network_backend(backend, target, &invocation).await
                 })

@@ -6030,6 +6030,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "tako-core",
  "tako-sqlite",
  "tempfile",
  "thiserror 2.0.20",

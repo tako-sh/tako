@@ -121,6 +121,8 @@ pub(super) enum Response {
     },
     /// The publish targets a stream with a retained close marker.
     StreamClosed,
+    /// The publish would start a stream beyond the app's stream limit.
+    StreamLimit,
     Rejected,
 }
 
@@ -134,6 +136,25 @@ pub fn is_stream_closed(error: &io::Error) -> bool {
     error
         .get_ref()
         .is_some_and(|inner| inner.is::<StreamClosed>())
+}
+
+/// The broker refused a publish that would start a stream beyond the app's
+/// stream limit: the store is full for now, not unreachable.
+#[derive(Debug, thiserror::Error)]
+#[error("channel stream limit reached")]
+pub struct StreamLimit;
+
+/// The channel error a refused publish reports to its publisher, when the
+/// broker answered with a reason rather than failing.
+pub fn publish_refusal(error: &io::Error) -> Option<tako_channels::ChannelError> {
+    let inner = error.get_ref()?;
+    if inner.is::<StreamClosed>() {
+        Some(tako_channels::ChannelError::StreamClosed)
+    } else if inner.is::<StreamLimit>() {
+        Some(tako_channels::ChannelError::StreamLimit)
+    } else {
+        None
+    }
 }
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -190,6 +211,9 @@ impl Client {
             }
             if matches!(response, Response::StreamClosed) {
                 return Err(io::Error::other(StreamClosed));
+            }
+            if matches!(response, Response::StreamLimit) {
+                return Err(io::Error::other(StreamLimit));
             }
             Ok((stream, response))
         })

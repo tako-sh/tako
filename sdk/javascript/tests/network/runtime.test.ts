@@ -4,6 +4,7 @@ import { ChannelRegistry, setChannelSocketPublisher } from "../../src/channels";
 import { defineChannel } from "../../src/channels/define";
 import { handleNetworkInvocation } from "../../src/network-endpoint";
 import { closeInternalSocketPoolsForTests } from "../../src/tako/socket";
+import { TakoError } from "../../src/tako/error";
 
 afterEach(() => {
   setNetworkCaller(null);
@@ -125,8 +126,16 @@ test("recipient rejects missing definitions and invalid params and owns channel 
       }),
       registry,
     );
-  expect((await invoke("missing", {})).status).toBe(404);
-  expect((await invoke("progress", {})).status).toBe(400);
+  const missing = await invoke("missing", {});
+  expect(missing.status).toBe(404);
+  expect(await missing.json()).toEqual({
+    status: "error",
+    message: "Unknown channel",
+    code: "channel_unknown",
+  });
+  const invalid = await invoke("progress", {});
+  expect(invalid.status).toBe(400);
+  expect((await invalid.json()).code).toBe("channel_params_invalid");
   expect((await invoke("progress", { jobId: "j1" })).status).toBe(200);
   expect(calls).toHaveLength(1);
   expect(calls[0]).toMatchObject({
@@ -137,6 +146,15 @@ test("recipient rejects missing definitions and invalid params and owns channel 
   // The network params select the same stream `progress(params).publish` does.
   expect((await invoke("progress", { jobId: "j1", step: 2 })).status).toBe(200);
   expect((calls[1] as { params: unknown }).params).toEqual({ jobId: "j1", step: 2 });
+  // The recipient's own socket rejection keeps its code for the caller.
+  setChannelSocketPublisher(async () => {
+    throw new TakoError("TAKO_RPC_ERROR", "Internal Server Error", { reason: "channel_closed" });
+  });
+  expect(await (await invoke("progress", { jobId: "j1" })).json()).toEqual({
+    status: "error",
+    message: "Network invocation failed",
+    code: "channel_closed",
+  });
 });
 
 test("recipient workflow owns retries and acknowledges enqueue without waiting for execution", async () => {

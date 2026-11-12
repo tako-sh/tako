@@ -333,7 +333,7 @@ async fn sync_to_server(
         .await?
     {
         Response::Ok { .. } => Ok(()),
-        Response::Error { message } => {
+        Response::Error { message, .. } => {
             Err(format!("tako-server error (update-secrets): {message}").into())
         }
     }

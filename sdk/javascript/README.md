@@ -17,7 +17,7 @@ Package name: `tako.sh`
 - Built-in internal status endpoint (`GET /status` on `Host: <app>.tako`)
 - Built-in internal channel auth and registry endpoints on `Host: <app>.tako`
 
-The `tako.sh` package's named exports include the `tako` runtime object, definition helpers (`defineChannel`, `definePresence`, `defineStore`, `defineWorkflow`), the workflow `signal` function, `TakoError`, public image helpers, storage types, and types (`InferChannel`, `InferStore`, `InferWorkflowPayload`, `TakoErrorCode`, `EnqueueOptions`, `WorkflowOpts`). Browser-safe clients are exported from `tako.sh/client`; React hooks are exported from `tako.sh/react`. There is no `Tako` global — definitions are plain ES modules that you import where you use them.
+The `tako.sh` package's named exports include the `tako` runtime object, definition helpers (`defineChannel`, `definePresence`, `defineStore`, `defineWorkflow`), the workflow `signal` function, `TakoError`, public image helpers, storage types, and types (`InferChannel`, `InferStore`, `InferWorkflowPayload`, `TakoErrorCode`, `TakoErrorReason`, `EnqueueOptions`, `WorkflowOpts`). Browser-safe clients are exported from `tako.sh/client`; React hooks are exported from `tako.sh/react`. There is no `Tako` global — definitions are plain ES modules that you import where you use them.
 
 ## Install
 

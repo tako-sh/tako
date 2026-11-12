@@ -66,7 +66,7 @@ async fn run_release_executes_command_in_release_dir() {
     let data = match response {
         Response::Ok { data } => data,
         // CodeQL[rust/cleartext-logging]: release-command assertions use only empty secrets or fabricated fixture credentials.
-        Response::Error { message } => panic!("expected ok, got: {message}"),
+        Response::Error { message, .. } => panic!("expected ok, got: {message}"),
     };
     assert_eq!(data.get("exit_code").and_then(|v| v.as_i64()), Some(0));
 
@@ -123,7 +123,7 @@ async fn run_release_returns_error_on_nonzero_exit() {
         })
         .await;
 
-    let Response::Error { message } = response else {
+    let Response::Error { message, .. } = response else {
         // CodeQL[rust/cleartext-logging]: release-command assertions use only empty secrets or fabricated fixture credentials.
         panic!("expected error response, got: {response:?}");
     };
@@ -216,7 +216,7 @@ async fn run_release_rejects_protocol_mismatch_before_executing_command() {
         })
         .await;
 
-    let Response::Error { message } = response else {
+    let Response::Error { message, .. } = response else {
         // CodeQL[rust/cleartext-logging]: release-command assertions use only empty secrets or fabricated fixture credentials.
         panic!("expected protocol mismatch, got: {response:?}");
     };

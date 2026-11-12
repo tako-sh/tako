@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tako_core::{Command, Response};
+use tako_core::{Command, ErrorCode, Response, SocketError};
 use tako_socket::serve_jsonl_connection;
 use tokio::net::UnixListener;
 use tokio::sync::oneshot;
@@ -82,11 +82,12 @@ pub enum ChannelWrite {
 }
 
 /// Closure that appends a `ChannelPublishPayload` to an app's channel
-/// store. Returns the stored message as a JSON value on success, or an
-/// error string on failure. Abstracted this way so `tako-workflows`
-/// doesn't need a direct dep on `tako-channels`.
+/// store. Returns the stored message as a JSON value on success, or the
+/// error the socket replies with (its code tells a closed stream from bad
+/// params). Abstracted this way so `tako-workflows` doesn't need a direct
+/// dep on `tako-channels`.
 pub type ChannelPublishFn =
-    Arc<dyn Fn(ChannelPublishRequest<'_>) -> Result<serde_json::Value, String> + Send + Sync>;
+    Arc<dyn Fn(ChannelPublishRequest<'_>) -> Result<serde_json::Value, SocketError> + Send + Sync>;
 
 /// When set, every command's `app` must be authorized for the connecting
 /// process uid (from `SO_PEERCRED`). Used in production so one app cannot
@@ -335,10 +336,15 @@ async fn run(
                                         let result = if is_network {
                                             crate::blocking::run_network(operation).await
                                         } else {
-                                            crate::blocking::run(operation).await.map_err(|error| error.to_string())
+                                            crate::blocking::run(operation)
+                                                .await
+                                                .map_err(|error| SocketError::unclassified(error.to_string()))
                                         };
                                         match result {
                                             Ok(response) => response,
+                                            Err(SocketError { code: Some(code), message }) => {
+                                                Response::coded_error(code, message)
+                                            }
                                             Err(error) => {
                                                 tracing::error!(%error, "Internal storage operation failed");
                                                 Response::error("Internal storage operation failed".to_string())
@@ -346,7 +352,12 @@ async fn run(
                                         }
                                     }
                                 },
-                                |e| Response::error(format!("invalid request: {e}")),
+                                |e| {
+                                    Response::coded_error(
+                                        ErrorCode::InvalidRequest,
+                                        format!("invalid request: {e}"),
+                                    )
+                                },
                             )
                             .await;
                         });
@@ -410,7 +421,7 @@ fn write_channel(
     };
     match publish(request) {
         Ok(message) => Response::ok(message),
-        Err(e) => Response::error(format!("channel {operation} failed: {e}")),
+        Err(e) => e.context(format_args!("channel {operation} failed")).into(),
     }
 }
 
@@ -425,10 +436,13 @@ fn handle_command(
     let app = match command_app(&cmd) {
         Some(app) => app.to_string(),
         None => {
-            return Response::error(format!(
-                "command {:?} not accepted on the internal socket",
-                std::mem::discriminant(&cmd)
-            ));
+            return Response::coded_error(
+                ErrorCode::InvalidRequest,
+                format!(
+                    "command {:?} not accepted on the internal socket",
+                    std::mem::discriminant(&cmd)
+                ),
+            );
         }
     };
     if let Err(error) = authorize_peer(peer_auth, peer_uid, &app) {
@@ -440,7 +454,10 @@ fn handle_command(
     } = cmd
     {
         let Some(route) = network_call else {
-            return Response::error("network primitives are unavailable");
+            return Response::coded_error(
+                ErrorCode::Unavailable,
+                "network primitives are unavailable",
+            );
         };
         return match tako_core::network::resolve_address(&app, &address) {
             Ok((target, name)) => route(
@@ -448,7 +465,7 @@ fn handle_command(
                 &target,
                 tako_core::network::NetworkInvocation { name, request },
             ),
-            Err(error) => Response::error(error),
+            Err(error) => Response::coded_error(ErrorCode::InvalidRequest, error),
         };
     }
 
@@ -511,17 +528,23 @@ fn handle_command(
             ..
         } => {
             if !accepting_new_work.load(Ordering::SeqCst) {
-                return Response::error("workflow runtime is draining".to_string());
+                return Response::coded_error(
+                    ErrorCode::Unavailable,
+                    "workflow runtime is draining",
+                );
             }
             if let Err(reason) = (health_check)() {
-                return Response::error(format!("worker unhealthy: {reason}"));
+                return Response::coded_error(
+                    ErrorCode::Unavailable,
+                    format!("worker unhealthy: {reason}"),
+                );
             }
             match db.enqueue(&name, &payload, &opts) {
                 Ok(r) => {
                     (on_enqueue)();
                     Response::ok(r)
                 }
-                Err(e) => Response::error(format!("enqueue failed: {e}")),
+                Err(e) => e.into_socket_error("enqueue").into(),
             }
         }
         Command::RegisterSchedules { schedules, .. } => {
@@ -530,7 +553,7 @@ fn handle_command(
             }
             match register_schedules(&db, &schedules) {
                 Ok(()) => Response::ok(serde_json::json!({ "count": schedules.len() })),
-                Err(e) => Response::error(format!("register_schedules failed: {e}")),
+                Err(e) => e.into_socket_error("register_schedules").into(),
             }
         }
         Command::ClaimRun {
@@ -550,7 +573,7 @@ fn handle_command(
                     Response::ok(run)
                 }
                 Ok(None) => Response::ok(serde_json::Value::Null),
-                Err(e) => Response::error(format!("claim failed: {e}")),
+                Err(e) => e.into_socket_error("claim").into(),
             }
         }
         Command::HeartbeatRun {
@@ -560,7 +583,7 @@ fn handle_command(
             ..
         } => match db.heartbeat(&id, &worker_id, lease_ms) {
             Ok(()) => Response::ok(serde_json::json!({})),
-            Err(e) => Response::error(format!("heartbeat failed: {e}")),
+            Err(e) => e.into_socket_error("heartbeat").into(),
         },
         Command::SaveStep {
             id,
@@ -570,11 +593,11 @@ fn handle_command(
             ..
         } => match db.save_step(&id, &worker_id, &step_name, &result) {
             Ok(()) => Response::ok(serde_json::json!({})),
-            Err(e) => Response::error(format!("save_step failed: {e}")),
+            Err(e) => e.into_socket_error("save_step").into(),
         },
         Command::GetRunResult { name, id, .. } => match db.result(&name, &id) {
             Ok(result) => Response::ok(result),
-            Err(e) => Response::error(format!("result failed: {e}")),
+            Err(e) => e.into_socket_error("result").into(),
         },
         Command::CompleteRun {
             id,
@@ -586,7 +609,7 @@ fn handle_command(
                 limiter.release_claim(&worker_id);
                 Response::ok(serde_json::json!({}))
             }
-            Err(e) => Response::error(format!("complete failed: {e}")),
+            Err(e) => e.into_socket_error("complete").into(),
         },
         Command::CancelRun {
             id,
@@ -598,7 +621,7 @@ fn handle_command(
                 limiter.release_claim(&worker_id);
                 Response::ok(serde_json::json!({}))
             }
-            Err(e) => Response::error(format!("cancel failed: {e}")),
+            Err(e) => e.into_socket_error("cancel").into(),
         },
         Command::FailRun {
             id,
@@ -612,7 +635,7 @@ fn handle_command(
                 limiter.release_claim(&worker_id);
                 Response::ok(serde_json::json!({}))
             }
-            Err(e) => Response::error(format!("fail failed: {e}")),
+            Err(e) => e.into_socket_error("fail").into(),
         },
         Command::DeferRun {
             id,
@@ -624,7 +647,7 @@ fn handle_command(
                 limiter.release_claim(&worker_id);
                 Response::ok(serde_json::json!({}))
             }
-            Err(e) => Response::error(format!("defer failed: {e}")),
+            Err(e) => e.into_socket_error("defer").into(),
         },
         Command::WaitForEvent {
             id,
@@ -638,7 +661,7 @@ fn handle_command(
                 limiter.release_claim(&worker_id);
                 Response::ok(serde_json::json!({}))
             }
-            Err(e) => Response::error(format!("wait_for_event failed: {e}")),
+            Err(e) => e.into_socket_error("wait_for_event").into(),
         },
         Command::Signal {
             event_name,
@@ -651,7 +674,7 @@ fn handle_command(
                 }
                 Response::ok(serde_json::json!({ "woken": woken }))
             }
-            Err(e) => Response::error(format!("signal failed: {e}")),
+            Err(e) => e.into_socket_error("signal").into(),
         },
         _ => unreachable!("command_app already filtered"),
     }

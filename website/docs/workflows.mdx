@@ -170,7 +170,7 @@ func enqueueDelayedOrder(ctx context.Context) (*workflow.EnqueueResult, error) {
 
 Go's `EnqueueOpts` uses `ID`, `RunAt`, and `MaxAttempts` pointers. `MaxAttempts` counts the first attempt as well as retries. `Enqueue` returns an `EnqueueResult` with `ID` and `Deduplicated`.
 
-IDs are unique within the app and environment, across workflow names. Repeating an ID with a different workflow or payload produces a conflict. Concurrent enqueues with the same ID create one run. Existing runs keep their original schedule, retry budget, status, and completed steps; enqueue does not restart a succeeded, cancelled, or dead run.
+IDs are unique within the app and environment, across workflow names. Repeating an ID with a different workflow or payload produces a conflict: JavaScript throws a `TakoError` with `reason: "run_id_conflict"`, and Go returns an error matching `workflow.ErrRunIDConflict` with `errors.Is`. Concurrent enqueues with the same ID create one run. Existing runs keep their original schedule, retry budget, status, and completed steps; enqueue does not restart a succeeded, cancelled, or dead run.
 
 Deleting a finished run's history also frees its ID. A later enqueue with that ID creates a new run with no saved steps. Deduplication does not prevent a step's external side effect from repeating after a crash; pass a stable idempotency key to the external service as well.
 

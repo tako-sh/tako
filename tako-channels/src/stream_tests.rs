@@ -608,7 +608,8 @@ fn sqlite_refuses_new_streams_beyond_the_app_limit_without_breaking_existing_one
         [crate::store::MAX_STREAMS],
     );
 
-    let refused = |result: Result<_, ChannelError>| matches!(result, Err(ChannelError::Storage(message)) if message.contains("stream limit"));
+    let refused =
+        |result: Result<_, ChannelError>| matches!(result, Err(ChannelError::StreamLimit));
     // Neither a subscriber nor a publisher can start another parameterized stream.
     assert!(refused(store.sync_channel(room("new").key(), &lifecycle)));
     assert!(refused(
@@ -685,7 +686,8 @@ fn postgres_refuses_new_streams_beyond_the_app_limit_and_bounds_maintenance() {
             crate::store::MAX_STREAMS
         ))
         .unwrap();
-    let refused = |result: Result<_, ChannelError>| matches!(result, Err(ChannelError::Storage(message)) if message.contains("stream limit"));
+    let refused =
+        |result: Result<_, ChannelError>| matches!(result, Err(ChannelError::StreamLimit));
     assert!(refused(store.sync_channel(room("new").key(), &lifecycle)));
     assert!(refused(
         store

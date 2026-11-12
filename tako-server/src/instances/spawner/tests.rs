@@ -562,7 +562,7 @@ async fn publish_identity_from_instance_env_matches_the_proxy_registry_key() {
     publish(serde_json::json!({"room": "a"})).unwrap();
     assert!(matches!(
         publish(serde_json::json!({"rom": "a"})),
-        Err(crate::channels::ChannelError::BadRequest(_))
+        Err(crate::channels::ChannelError::ParamsInvalid(_))
     ));
 }
 

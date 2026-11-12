@@ -146,12 +146,14 @@ func callNetwork(ctx context.Context, address string, request any) (data json.Ra
 	var response struct {
 		Status string          `json:"status"`
 		Data   json.RawMessage `json:"data"`
+		Code   string          `json:"code"`
 	}
 	if err := json.Unmarshal(line, &response); err != nil {
 		return nil, err
 	}
 	if response.Status != "ok" {
-		return nil, errors.New("tako: network primitive call failed")
+		// The diagnostic may carry the recipient's internals; the code is safe.
+		return nil, &ServerError{Code: response.Code, Message: "network primitive call failed"}
 	}
 	return response.Data, nil
 }

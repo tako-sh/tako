@@ -316,6 +316,6 @@ async fn scale_server(
             );
             Ok(result)
         }
-        Response::Error { message } => Err(message.into()),
+        Response::Error { message, .. } => Err(message.into()),
     }
 }

@@ -104,6 +104,58 @@ pub enum RunsDbError {
     },
 }
 
+impl RunsDbError {
+    /// The internal-socket code a worker or enqueue command failing with this
+    /// error replies with. Operator-only failures (`RunNotFound`, ...) and
+    /// storage errors an SDK cannot act on have none.
+    pub fn socket_code(&self) -> Option<tako_core::ErrorCode> {
+        use tako_core::ErrorCode;
+        match self {
+            Self::StaleWorker => Some(ErrorCode::RunNotOwned),
+            Self::IdConflict { .. } => Some(ErrorCode::RunIdConflict),
+            Self::InvalidId => Some(ErrorCode::InvalidRequest),
+            Self::Sqlite(error) => matches!(
+                error.sqlite_error_code(),
+                Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+            )
+            .then_some(ErrorCode::Unavailable),
+            Self::Postgres(error) => postgres_unavailable(error).then_some(ErrorCode::Unavailable),
+            Self::Json(_)
+            | Self::Storage(_)
+            | Self::UnsupportedBackend(_)
+            | Self::RunNotFound { .. }
+            | Self::RunNotRetryable { .. }
+            | Self::RunAlreadyFinished { .. } => None,
+        }
+    }
+
+    /// Context in front of the message, keeping the code.
+    pub fn into_socket_error(self, operation: &str) -> tako_core::SocketError {
+        tako_core::SocketError {
+            code: self.socket_code(),
+            message: format!("{operation} failed: {self}"),
+        }
+    }
+}
+
+/// A lost connection or a server refusing connections, not a rejected query.
+fn postgres_unavailable(error: &postgres::Error) -> bool {
+    use postgres::error::SqlState;
+    if error.is_closed() {
+        return true;
+    }
+    error.code().is_some_and(|code| {
+        code.code().starts_with("08")
+            || [
+                SqlState::ADMIN_SHUTDOWN,
+                SqlState::CRASH_SHUTDOWN,
+                SqlState::CANNOT_CONNECT_NOW,
+                SqlState::TOO_MANY_CONNECTIONS,
+            ]
+            .contains(code)
+    })
+}
+
 pub struct RunsDb {
     backend: RunsDbBackend,
     pub(crate) monitoring: crate::monitoring::StoreMonitoring,

@@ -207,9 +207,9 @@ fn test_ssh_client_creation() {
 
 #[test]
 fn hello_response_interpretation_surfaces_invalid_command_message() {
-    let resp = Response::Error {
-        message: "Invalid command: unknown variant `hello`, expected one of ...".to_string(),
-    };
+    let resp = Response::error(
+        "Invalid command: unknown variant `hello`, expected one of ...".to_string(),
+    );
     let err = SshClient::interpret_hello_response(&resp).unwrap_err();
     assert!(err.contains("tako-server handshake failed"));
     assert!(err.contains("Invalid command"));

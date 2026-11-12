@@ -458,7 +458,7 @@ async fn operator_workflow_commands_inspect_retry_and_cancel_runs() {
     fn data(response: Response) -> Value {
         match response {
             Response::Ok { data } => data,
-            Response::Error { message } => panic!("unexpected error: {message}"),
+            Response::Error { message, .. } => panic!("unexpected error: {message}"),
         }
     }
     fn error(response: Response) -> String {

@@ -129,10 +129,10 @@ pub(crate) fn trusted_publication(
     match registry.cached(request.app, build, request.channel) {
         registry::CachedDefinition::NotLoaded => {}
         registry::CachedDefinition::Absent => {
-            return Err(ChannelError::BadRequest(format!(
-                "channel '{}' is not defined by build {build}",
-                request.channel
-            )));
+            return Err(ChannelError::Undeclared {
+                channel: request.channel.to_owned(),
+                build: build.to_owned(),
+            });
         }
         registry::CachedDefinition::Defined(definition) => {
             validate_publication(&definition, &publication, request.params)?;
@@ -158,6 +158,7 @@ pub(crate) fn parse_trusted_publication(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn trusted_publications_check_params_against_the_publishers_loaded_build() {
@@ -199,10 +200,12 @@ mod tests {
             ChannelStream::new("chat", &serde_json::json!({"room": "a"}))
         );
         for params in [serde_json::json!({"rom": "a"}), serde_json::Value::Null] {
-            assert!(matches!(
-                publish(params, Some("v1")),
-                Err(ChannelError::BadRequest(_))
-            ));
+            let rejected = publish(params, Some("v1")).unwrap_err();
+            assert!(matches!(rejected, ChannelError::ParamsInvalid(_)));
+            assert_eq!(
+                rejected.socket_code(),
+                Some(tako_core::ErrorCode::ChannelParamsInvalid)
+            );
         }
         // A loaded build that does not define the channel rejects it, so a
         // close cannot leave a durable marker on a channel nobody defined.
@@ -220,9 +223,16 @@ mod tests {
                     write,
                 },
             );
+            let error = result.unwrap_err();
             assert!(
-                matches!(&result, Err(ChannelError::BadRequest(message)) if message.contains("'missing' is not defined")),
-                "{result:?}"
+                error
+                    .to_string()
+                    .contains("'missing' is not defined by build v1"),
+                "{error:?}"
+            );
+            assert_eq!(
+                error.socket_code(),
+                Some(tako_core::ErrorCode::ChannelUnknown)
             );
         }
         // Without a loaded registry for the publisher's build, the shape is
@@ -273,15 +283,111 @@ mod tests {
             closed.stream,
             ChannelStream::new("chat", &serde_json::json!({"room": "a"}))
         );
-        for (channel, params) in [
-            ("chat", serde_json::json!({"rom": "a"})),
-            ("live", serde_json::json!({"room": "a"})),
+        assert!(matches!(
+            close("chat", serde_json::json!({"rom": "a"})),
+            Err(ChannelError::ParamsInvalid(_))
+        ));
+        assert!(matches!(
+            close("live", serde_json::json!({"room": "a"})),
+            Err(ChannelError::BadRequest(_))
+        ));
+    }
+
+    /// Publish and close errors reach the app's internal socket with the code
+    /// an SDK branches on, through the server's registry check and store.
+    #[tokio::test]
+    async fn internal_socket_channel_errors_carry_their_codes() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let registry = Arc::new(registry::ChannelRegistry::new());
+        let definition: ChannelDefinitionMeta = serde_json::from_value(serde_json::json!({
+            "channel": "chat",
+            "paramsSchema": {
+                "type": "object",
+                "properties": {"room": {"type": "string"}},
+                "required": ["room"],
+                "additionalProperties": false
+            },
+            "auth": false
+        }))
+        .unwrap();
+        registry
+            .get_or_load("app/production", "v1", "chat", || async {
+                Ok(vec![definition])
+            })
+            .await
+            .unwrap();
+        let store = Arc::new(ChannelStore::open_in_memory().unwrap());
+        // The same composition as the server's publisher: registry check,
+        // then the store, with channel errors converted to coded replies.
+        let publisher: tako_workflows::ChannelPublishFn = {
+            let registry = registry.clone();
+            let store = store.clone();
+            Arc::new(move |request| {
+                let publication = trusted_publication(&registry, request)?;
+                store
+                    .publish_trusted(&publication)
+                    .map(|message| serde_json::to_value(message).unwrap())
+                    .map_err(tako_core::SocketError::from)
+            })
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let socket = temp.path().join("internal.sock");
+        let handle = tako_workflows::enqueue_socket::spawn(
+            &socket,
+            Arc::new(|_| None),
+            Some(publisher),
+            None,
+            None,
+        )
+        .unwrap();
+        let stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+        let (read, mut write) = stream.into_split();
+        let mut read = BufReader::new(read);
+        let mut send = async |command: serde_json::Value| -> serde_json::Value {
+            write
+                .write_all(format!("{command}\n").as_bytes())
+                .await
+                .unwrap();
+            let mut line = String::new();
+            read.read_line(&mut line).await.unwrap();
+            serde_json::from_str(&line).unwrap()
+        };
+        let command = |kind: &str, channel: &str, params: serde_json::Value| {
+            let mut command = serde_json::json!({
+                "command": kind, "app": "app/production", "channel": channel,
+                "params": params, "build": "v1",
+            });
+            if kind == "channel_publish" {
+                command["payload"] = serde_json::json!({"type": "msg", "data": 1});
+            }
+            command
+        };
+        let room = serde_json::json!({"room": "a"});
+
+        let published = send(command("channel_publish", "chat", room.clone())).await;
+        assert_eq!(published["status"], "ok", "{published}");
+        let undeclared = send(command("channel_publish", "missing", room.clone())).await;
+        assert_eq!(undeclared["code"], "channel_unknown", "{undeclared}");
+        for params in [
+            serde_json::json!({"rom": "a"}),
+            serde_json::json!({"room": null}),
         ] {
-            assert!(matches!(
-                close(channel, params),
-                Err(ChannelError::BadRequest(_))
-            ));
+            let invalid = send(command("channel_publish", "chat", params)).await;
+            assert_eq!(invalid["code"], "channel_params_invalid", "{invalid}");
         }
+        assert_eq!(
+            send(command("channel_close", "chat", room.clone())).await["status"],
+            "ok"
+        );
+        let closed = send(command("channel_publish", "chat", room)).await;
+        assert_eq!(closed["status"], "error");
+        assert_eq!(closed["code"], "channel_closed", "{closed}");
+        assert_eq!(
+            closed["message"],
+            "channel publish failed: channel stream is closed"
+        );
+
+        handle.shutdown().await;
     }
 
     #[test]

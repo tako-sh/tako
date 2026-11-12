@@ -143,7 +143,7 @@ export type {
   WorkflowOpts,
   WorkflowStepContext,
 } from "./workflows";
-export { TakoError, type TakoErrorCode } from "./tako/error";
+export { TakoError, type TakoErrorCode, type TakoErrorReason } from "./tako/error";
 export {
   imageSrcSet,
   imageUrl,

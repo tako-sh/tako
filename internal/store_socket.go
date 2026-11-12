@@ -67,6 +67,7 @@ func publishStoreInvalidation(ctx context.Context, name string, params json.RawM
 	}
 	var response struct {
 		Status string `json:"status"`
+		Code   string `json:"code"`
 	}
 	if err := json.Unmarshal(line, &response); err != nil {
 		return errors.New("tako: invalid store invalidation response")
@@ -74,7 +75,7 @@ func publishStoreInvalidation(ctx context.Context, name string, params json.RawM
 	if response.Status != "ok" {
 		// The socket's private diagnostic may contain backend details. Keep the
 		// public error stable and safe for application error responses.
-		return errors.New("tako: store invalidation failed")
+		return &ServerError{Code: response.Code, Message: "store invalidation failed"}
 	}
 	return nil
 }

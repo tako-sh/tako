@@ -128,7 +128,7 @@ pub fn validate_publish_params(
     )
     .map_err(|error| match error {
         ParamsError::Invalid(message) => {
-            ChannelError::BadRequest(format!("invalid channel params: {message}"))
+            ChannelError::ParamsInvalid(format!("invalid channel params: {message}"))
         }
         ParamsError::InvalidSchema(message) => {
             ChannelError::Storage(format!("invalid channel schema: {message}"))
@@ -250,11 +250,54 @@ mod tests {
             assert!(
                 matches!(
                     validate_publish_params(&chat, &params),
-                    Err(ChannelError::BadRequest(message)) if message.starts_with("invalid channel params")
+                    Err(ChannelError::ParamsInvalid(message)) if message.starts_with("invalid channel params")
                 ),
                 "{params}"
             );
         }
         validate_publish_params(&definition("tako.store:messages"), &json!({"other": 1})).unwrap();
+    }
+
+    #[test]
+    fn publication_errors_carry_the_socket_code_an_sdk_branches_on() {
+        use tako_core::ErrorCode;
+        let payload = json!({"type": "msg", "data": 1});
+        let code = |result: Result<TrustedPublication, ChannelError>| {
+            tako_core::SocketError::from(result.unwrap_err()).code
+        };
+        for params in [
+            json!(["a"]),
+            json!({"room": null}),
+            json!({"from": "start"}),
+        ] {
+            assert_eq!(
+                code(TrustedPublication::parse("chat", &params, payload.clone())),
+                Some(ErrorCode::ChannelParamsInvalid),
+                "{params}"
+            );
+        }
+        assert_eq!(
+            code(
+                validate_publish_params(&definition("chat"), &json!({"rom": "a"}))
+                    .map(|()| unreachable!())
+            ),
+            Some(ErrorCode::ChannelParamsInvalid)
+        );
+        assert_eq!(
+            code(TrustedPublication::parse(
+                "chat",
+                &json!({}),
+                json!({"data": 1})
+            )),
+            Some(ErrorCode::InvalidRequest)
+        );
+        let closed = tako_core::SocketError::from(ChannelError::StreamClosed);
+        assert_eq!(closed.code, Some(ErrorCode::ChannelClosed));
+        assert_eq!(closed.message, "channel stream is closed");
+        assert_eq!(
+            ChannelError::StreamLimit.socket_code(),
+            Some(ErrorCode::Unavailable)
+        );
+        assert_eq!(ChannelError::Storage("disk".into()).socket_code(), None);
     }
 }

@@ -38,7 +38,7 @@ pub(super) fn parse_existing_routes_response(
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default()),
-        Response::Error { message } => Err(format!("tako-server error (routes): {}", message)),
+        Response::Error { message, .. } => Err(format!("tako-server error (routes): {}", message)),
     }
 }
 
@@ -160,7 +160,7 @@ where
 fn release_response_result(response: Response) -> Result<serde_json::Value, String> {
     match response {
         Response::Ok { data } => Ok(data),
-        Response::Error { message } => Err(message
+        Response::Error { message, .. } => Err(message
             .strip_prefix("Deploy failed: ")
             .unwrap_or(&message)
             .to_string()),

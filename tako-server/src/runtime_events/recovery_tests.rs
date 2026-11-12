@@ -343,7 +343,7 @@ async fn status_reports_restarts_the_real_exit_and_the_next_attempt() {
     let status = |state: Arc<ServerState>, name: String| async move {
         match state.handle_command(Command::Status { app: name }).await {
             Response::Ok { data } => data,
-            Response::Error { message } => panic!("{message}"),
+            Response::Error { message, .. } => panic!("{message}"),
         }
     };
     assert!(
@@ -758,7 +758,7 @@ async fn operators_get_through_automatic_recovery_without_waiting_for_it() {
         )
     };
     let error = |response: Response| match response {
-        Response::Error { message } => message,
+        Response::Error { message, .. } => message,
         Response::Ok { data } => panic!("expected an error, got {data}"),
     };
     let recovering = format!(

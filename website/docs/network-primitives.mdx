@@ -405,4 +405,58 @@ The recipient workflow owns its execution policy. The default is two retries aft
 
 Network delivery is attempted once. Use a stable enqueue `id` when retrying an uncertain response: the recipient reuses a retained run when its workflow and payload match. Channel publication has no run ID or subscriber acknowledgement; repeating publication can deliver another message. A calling workflow can place the send in a checkpointed step and use its own retry policy.
 
+### Handle rejections
+
+A rejected call keeps its reason, not the recipient's diagnostic, so callers can branch on it. The reasons are `run_id_conflict` (the enqueue `id` belongs to a different workflow or payload), `invalid_request`, `channel_unknown`, `channel_params_invalid`, `channel_closed`, and `unavailable` (the recipient is unreachable, draining, or overloaded; retry later). Other rejections carry no reason.
+
+<CodeGroup>
+
+```ts JavaScript
+import { TakoError, workflow } from "tako.sh";
+
+try {
+  await workflow("mail.send-email").enqueue({ to: "a@example.com" }, { id: "welcome:u1" });
+} catch (error) {
+  if (error instanceof TakoError && error.reason === "run_id_conflict") {
+    // The ID already names a different email; pick another ID.
+  } else {
+    throw error;
+  }
+}
+```
+
+```go Go
+import (
+    "context"
+    "errors"
+
+    "tako.sh"
+)
+
+func sendWelcomeOnce(ctx context.Context) error {
+    id := "welcome:u1"
+    _, err := tako.Enqueue(ctx, "mail.send-email", map[string]string{"to": "a@example.com"},
+        tako.NetworkEnqueueOptions{ID: &id})
+    if errors.Is(err, tako.ErrRunIDConflict) {
+        return nil // The ID already names a different email.
+    }
+    return err
+}
+```
+
+```rust Rust
+use tako::network::{Client, EnqueueOptions};
+use tako::ErrorCode;
+
+fn send_welcome_once(client: &Client) -> std::io::Result<()> {
+    let options = EnqueueOptions { id: Some("welcome:u1".into()), ..Default::default() };
+    match client.enqueue_blocking("mail.send-email", serde_json::json!({"to": "a@example.com"}), options) {
+        Err(error) if ErrorCode::of(&error) == Some(ErrorCode::RunIdConflict) => Ok(()),
+        result => result.map(|_| ()),
+    }
+}
+```
+
+</CodeGroup>
+
 To verify, generate types in both applications, typecheck the consumer, and start both with `tako dev`. Enqueue from a server-side handler and inspect the recipient's workflow logs. For a channel, subscribe to the recipient and publish from the caller. In deployment, use apps in the same environment and network; `/_tako/network` is rejected on public ingress.

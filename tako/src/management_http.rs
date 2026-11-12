@@ -579,7 +579,7 @@ where
                 "Invalid remote management {context} response: {error}"
             ))
         }),
-        Response::Error { message } => Err(ManagementError::Message(message)),
+        Response::Error { message, .. } => Err(ManagementError::Message(message)),
     }
 }
 
