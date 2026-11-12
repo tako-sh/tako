@@ -17,6 +17,8 @@ class MockServer {
   private idCounter = 0;
   readonly results = new Map<string, unknown>();
   readonly commands: string[] = [];
+  /** Transient failures returned for the next calls of a command. */
+  readonly failures = new Map<string, number>();
 
   async start(dir: string): Promise<void> {
     this.path = join(dir, "srv.sock");
@@ -85,6 +87,11 @@ class MockServer {
       if (!task || task.status !== "running" || task.workerId !== cmd["worker_id"]) {
         return { status: "error", message: "stale worker" };
       }
+    }
+    const failures = this.failures.get(String(cmd["command"])) ?? 0;
+    if (failures > 0) {
+      this.failures.set(String(cmd["command"]), failures - 1);
+      return { status: "error", message: "storage timeout" };
     }
     switch (cmd["command"]) {
       case "enqueue_run": {
@@ -361,6 +368,35 @@ describe("Worker", () => {
     expect(mock.find(id)?.status).toBe("cancelled");
     expect(mock.commands).not.toContain("fail_run");
     expect(mock.commands).not.toContain("complete_run");
+  });
+
+  test("a transient failure of the final write is retried while the heartbeat runs", async () => {
+    mock.failures.set("complete_run", 2);
+    mock.failures.set("fail_run", 2);
+    const worker = new Worker({
+      client,
+      workerId: "w1",
+      heartbeatIntervalMs: 20,
+      registry: registry({
+        ok: () => "done",
+        boom: () => {
+          throw new Error("boom");
+        },
+      }),
+    });
+
+    const ok = mock.seed({ name: "ok", retries: 0 });
+    await worker.processOnce();
+    const boom = mock.seed({ name: "boom", retries: 0 });
+    await worker.processOnce();
+    expect(mock.find(ok)?.status).toBe("succeeded");
+    expect(mock.results.get(ok)).toBe("done");
+    expect(mock.find(boom)?.status).toBe("dead");
+    expect(mock.find(boom)?.lastError).toBe("boom");
+    const first = mock.commands.indexOf("complete_run");
+    const last = mock.commands.lastIndexOf("complete_run");
+    expect(mock.commands.filter((c) => c === "complete_run")).toHaveLength(3);
+    expect(mock.commands.slice(first, last)).toContain("heartbeat_run");
   });
 
   test("failing handler exhausts retries and dies", async () => {

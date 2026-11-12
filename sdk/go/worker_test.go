@@ -24,8 +24,10 @@ type mockServer struct {
 	idCount      int
 	received     []map[string]any
 	saveFailures map[string]int
-	results      map[string]any
-	errors       map[string]string
+	// Transient failures returned for the next calls of a command.
+	failures map[string]int
+	results  map[string]any
+	errors   map[string]string
 }
 
 func startMockServer(t *testing.T) *mockServer {
@@ -134,6 +136,10 @@ func (s *mockServer) dispatch(cmd map[string]any) map[string]any {
 		if task == nil || task.Status != "running" || task.WorkerID != cmd["worker_id"] {
 			return map[string]any{"status": "error", "message": "stale worker"}
 		}
+	}
+	if command, _ := cmd["command"].(string); s.failures[command] > 0 {
+		s.failures[command]--
+		return map[string]any{"status": "error", "message": "storage timeout"}
 	}
 	switch cmd["command"] {
 	case "claim_run":
@@ -538,5 +544,48 @@ func TestLostLeaseStopsHandlerAtNextCheckpoint(t *testing.T) {
 		if cmd != "heartbeat_run" {
 			t.Fatalf("unexpected write after losing the run: %s", cmd)
 		}
+	}
+}
+
+// A transient failure of the final write must not leave the run to lease
+// reclaim, which would end a last attempt as dead.
+func TestTransientFinalWriteFailuresAreRetriedWhileTheHeartbeatRuns(t *testing.T) {
+	s := startMockServer(t)
+	s.failures = map[string]int{"complete_run": 2, "fail_run": 2}
+	client := &Client{socketPath: s.path, app: "test-app"}
+	handlers := map[string]workflowRegistration{
+		"ok":   {handler: func(*WorkflowContext, json.RawMessage) error { return nil }},
+		"boom": {handler: func(*WorkflowContext, json.RawMessage) error { return errors.New("boom") }},
+	}
+	w := newWorker(context.Background(), client, handlers)
+	w.heartbeatMs = 20
+	for _, run := range [][2]string{{"ok", "succeeded"}, {"boom", "dead"}} {
+		name, want := run[0], run[1]
+		id := s.seed(name, 1)
+		task, err := client.Claim(context.Background(), w.workerID, []string{name}, w.leaseMs)
+		if err != nil || task == nil {
+			t.Fatalf("claim: %v %v", task, err)
+		}
+		w.execute(task)
+		if got := s.find(id).Status; got != want {
+			t.Fatalf("%s: status %s, want %s", name, got, want)
+		}
+	}
+	if s.errors["t2"] != "boom" {
+		t.Fatalf("stored error: %v", s.errors)
+	}
+	var writes, heartbeats int
+	for _, cmd := range s.commandsAfterClaim() {
+		switch cmd {
+		case "complete_run":
+			writes++
+		case "heartbeat_run":
+			if writes > 0 && writes < 3 {
+				heartbeats++
+			}
+		}
+	}
+	if writes != 3 || heartbeats == 0 {
+		t.Fatalf("complete_run calls %d, heartbeats while retrying %d", writes, heartbeats)
 	}
 }

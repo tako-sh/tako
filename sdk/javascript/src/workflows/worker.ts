@@ -29,6 +29,9 @@ import {
 import type { Run, StepState } from "./types";
 import { withWorkflowExecution, withinWorkflowStep } from "./execution";
 
+/** Delays between retries of a run's final write after a transient failure. */
+const LIFECYCLE_RETRY_DELAYS_MS = [100, 250, 500, 1000];
+
 /**
  * Function that executes one workflow run.
  *
@@ -317,15 +320,30 @@ export class Worker {
         attempt: run.attempts,
       });
     };
-    // A rejected lifecycle write means ownership was lost meanwhile.
+    // Writes the run's outcome. A stale rejection means ownership was lost
+    // meanwhile. Other failures (socket error, storage timeout) are retried
+    // while the heartbeat keeps the lease: a run left running is reclaimed
+    // when its lease expires, and a lost last attempt ends the run as dead
+    // although its handler never failed.
     const finish = async (write: () => Promise<void>): Promise<boolean> => {
-      try {
-        await write();
-        return true;
-      } catch (err) {
-        if (!isStaleOwnerError(err)) throw err;
-        stop();
-        return false;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await write();
+          return true;
+        } catch (err) {
+          if (isStaleOwnerError(err) || ownership.lost) {
+            stop();
+            return false;
+          }
+          const delay = LIFECYCLE_RETRY_DELAYS_MS[attempt];
+          if (delay === undefined) {
+            // The run re-executes after its lease expires.
+            runLog.error("Workflow outcome could not be saved", { error: err });
+            return false;
+          }
+          runLog.warn("Workflow outcome could not be saved, retrying", { error: err });
+          await new Promise((r) => setTimeout(r, delay));
+        }
       }
     };
     const createStepContext = (stepName: string): WorkflowStepContext => ({

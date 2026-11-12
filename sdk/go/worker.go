@@ -437,6 +437,8 @@ type worker struct {
 	maxBackoff  time.Duration
 	idleTimeout time.Duration
 	lastClaimAt atomic.Int64
+
+	lifecycleRetryDelays []time.Duration
 }
 
 func newWorker(ctx context.Context, client *Client, handlers map[string]workflowRegistration) *worker {
@@ -457,6 +459,8 @@ func newWorker(ctx context.Context, client *Client, handlers map[string]workflow
 		baseBackoff: time.Second,
 		maxBackoff:  time.Hour,
 		idleTimeout: parseIdleTimeout(),
+
+		lifecycleRetryDelays: defaultLifecycleRetryDelays,
 	}
 	w.lastClaimAt.Store(time.Now().UnixMilli())
 	return w
@@ -523,14 +527,32 @@ func (w *worker) run() error {
 	}
 }
 
-// finalize reports a run-finalization RPC failure. The run will re-execute
-// after lease expiry, so leave a forensic trail instead of failing silently.
-func (w *worker) finalize(op, runID string, err error) {
-	if isStaleOwner(err) {
-		stopped(runID)
-		return
+// defaultLifecycleRetryDelays space retries of a run's final write after a
+// transient failure such as a socket error or a storage timeout.
+var defaultLifecycleRetryDelays = []time.Duration{
+	100 * time.Millisecond, 250 * time.Millisecond, 500 * time.Millisecond, time.Second,
+}
+
+// finalize writes a run's outcome, retrying transient failures while the
+// heartbeat keeps the lease. A run left running is reclaimed after its lease
+// expires, and a lost last attempt ends the run as dead although its handler
+// never failed. Retries stop once ownership is lost.
+func (w *worker) finalize(op, runID string, lost *atomic.Bool, write func() error) {
+	err := write()
+	for _, delay := range w.lifecycleRetryDelays {
+		if err == nil || isStaleOwner(err) || lost.Load() {
+			break
+		}
+		fmt.Fprintf(os.Stderr, "tako-worker: %s failed for run %s, retrying: %v\n", op, runID, err)
+		time.Sleep(delay)
+		err = write()
 	}
-	if err != nil {
+	switch {
+	case err == nil:
+	case isStaleOwner(err) || lost.Load():
+		stopped(runID)
+	default:
+		// The run re-executes after lease expiry; leave a forensic trail.
 		fmt.Fprintf(os.Stderr, "tako-worker: %s failed for run %s: %v\n", op, runID, err)
 	}
 }
@@ -543,12 +565,15 @@ func stopped(runID string) {
 
 func (w *worker) execute(task *Run) {
 	if task.WorkerID == "" {
-		w.finalize("claim", task.ID, errors.New("claim response is missing its ownership identifier"))
+		fmt.Fprintf(os.Stderr, "tako-worker: claim failed for run %s: claim response is missing its ownership identifier\n", task.ID)
 		return
 	}
+	lost := &atomic.Bool{}
 	reg, ok := w.handlers[task.Name]
 	if !ok {
-		w.finalize("fail", task.ID, w.client.Fail(w.runCtx, task.ID, task.WorkerID, fmt.Sprintf("no handler registered for %q", task.Name), nil, true))
+		w.finalize("fail", task.ID, lost, func() error {
+			return w.client.Fail(w.runCtx, task.ID, task.WorkerID, fmt.Sprintf("no handler registered for %q", task.Name), nil, true)
+		})
 		return
 	}
 
@@ -556,7 +581,6 @@ func (w *worker) execute(task *Run) {
 	if stepState == nil {
 		stepState = map[string]any{}
 	}
-	lost := &atomic.Bool{}
 	// Done fires when ownership is lost, so handlers can stop before their
 	// next checkpoint. RPCs keep the uncancelled context.
 	handlerCtx, cancelHandler := context.WithCancel(w.runCtx)
@@ -601,13 +625,21 @@ func (w *worker) execute(task *Run) {
 			if reason != "" {
 				rp = &reason
 			}
-			w.finalize("cancel", task.ID, w.client.Cancel(w.runCtx, task.ID, task.WorkerID, rp))
+			w.finalize("cancel", task.ID, lost, func() error {
+				return w.client.Cancel(w.runCtx, task.ID, task.WorkerID, rp)
+			})
 		case errors.As(err, &fs):
-			w.finalize("fail", task.ID, w.client.Fail(w.runCtx, task.ID, task.WorkerID, fs.err.Error(), nil, true))
+			w.finalize("fail", task.ID, lost, func() error {
+				return w.client.Fail(w.runCtx, task.ID, task.WorkerID, fs.err.Error(), nil, true)
+			})
 		case errors.As(err, &ds):
-			w.finalize("defer", task.ID, w.client.Defer(w.runCtx, task.ID, task.WorkerID, ds.wakeAt))
+			w.finalize("defer", task.ID, lost, func() error {
+				return w.client.Defer(w.runCtx, task.ID, task.WorkerID, ds.wakeAt)
+			})
 		case errors.As(err, &ws):
-			w.finalize("wait-for-event", task.ID, w.client.WaitForEvent(w.runCtx, task.ID, task.WorkerID, ws.stepName, ws.eventName, ws.timeoutAt))
+			w.finalize("wait-for-event", task.ID, lost, func() error {
+				return w.client.WaitForEvent(w.runCtx, task.ID, task.WorkerID, ws.stepName, ws.eventName, ws.timeoutAt)
+			})
 		default:
 			// The budget stored on the run is authoritative: it carries
 			// per-enqueue overrides and is what the server enforces when
@@ -626,14 +658,18 @@ func (w *worker) execute(task *Run) {
 				t := time.Now().Add(expBackoff(task.Attempts, base, max))
 				next = &t
 			}
-			w.finalize("fail", task.ID, w.client.Fail(w.runCtx, task.ID, task.WorkerID, err.Error(), next, finalize))
+			w.finalize("fail", task.ID, lost, func() error {
+				return w.client.Fail(w.runCtx, task.ID, task.WorkerID, err.Error(), next, finalize)
+			})
 		}
 		return
 	}
 	ctx.resultMu.Lock()
 	result := ctx.result
 	ctx.resultMu.Unlock()
-	w.finalize("complete", task.ID, w.client.Complete(w.runCtx, task.ID, task.WorkerID, result))
+	w.finalize("complete", task.ID, lost, func() error {
+		return w.client.Complete(w.runCtx, task.ID, task.WorkerID, result)
+	})
 }
 
 func (w *worker) heartbeatLoop(id, claimOwner string, stop <-chan struct{}, onLost func()) {
