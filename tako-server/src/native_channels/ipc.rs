@@ -230,28 +230,55 @@ impl Client {
             Some((false, at)) if at.elapsed() < PREVIOUS_BROKER_RECHECK => return Ok(false),
             _ => (),
         }
-        let supported = match self.request(Request::Features).await {
-            Ok((_, Response::Features { features })) => {
-                features.iter().any(|feature| feature == PUBLISH_LIFECYCLE)
+        let mut unanswered = false;
+        let supported = loop {
+            match self.request(Request::Features).await {
+                Ok((_, Response::Features { features })) => {
+                    break features.iter().any(|feature| feature == PUBLISH_LIFECYCLE);
+                }
+                Ok(_) => break false,
+                // The previous broker reads the whole frame, fails to parse it,
+                // and closes the connection without an answer. A current broker
+                // that is busy or stopping can drop it the same way, so only a
+                // second drop, on a fresh connection, means the previous one.
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::UnexpectedEof | io::ErrorKind::ConnectionReset
+                    ) =>
+                {
+                    if unanswered {
+                        break false;
+                    }
+                    unanswered = true;
+                }
+                Err(error) => return Err(error),
             }
-            Ok(_) => false,
-            // The previous broker reads the whole frame, fails to parse it, and
-            // closes the connection without an answer.
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::UnexpectedEof | io::ErrorKind::ConnectionReset
-                ) =>
-            {
-                false
-            }
-            Err(error) => return Err(error),
         };
         *self
             .publish_lifecycle
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some((supported, Instant::now()));
         Ok(supported)
+    }
+    /// Pretend the cached probe answer was observed `by` earlier.
+    #[cfg(test)]
+    pub(super) fn age_feature_probe(&self, by: Duration) {
+        if let Some((_, at)) = self
+            .publish_lifecycle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+        {
+            *at -= by;
+        }
+    }
+    #[cfg(test)]
+    pub(super) fn cached_publish_lifecycle(&self) -> Option<bool> {
+        self.publish_lifecycle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .map(|(supported, _)| supported)
     }
     async fn request(&self, request: Request) -> io::Result<(UnixStream, Response)> {
         tokio::time::timeout(IO_TIMEOUT, async {
