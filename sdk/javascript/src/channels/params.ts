@@ -164,15 +164,14 @@ const NON_FLAT_SCHEMA_KEYWORDS = [
  * uses a reserved name (`from`, `last_message_id`).
  */
 export function assertFlatChannelParamsSchema(channel: string, schema: object): void {
-  const record = schema as Record<string, unknown>;
-  const keyword = NON_FLAT_SCHEMA_KEYWORDS.find((name) => name in record);
+  const { type: schemaType, properties } = schema as { type?: unknown; properties?: unknown };
+  const keyword = NON_FLAT_SCHEMA_KEYWORDS.find((name) => name in schema);
   const problem =
     keyword !== undefined
       ? `uses '${keyword}'`
-      : record.type !== undefined && record.type !== "object"
-        ? `has type ${JSON.stringify(record.type)}`
-        : record.properties !== undefined &&
-            (typeof record.properties !== "object" || record.properties === null)
+      : schemaType !== undefined && schemaType !== "object"
+        ? `has type ${JSON.stringify(schemaType)}`
+        : properties !== undefined && (typeof properties !== "object" || properties === null)
           ? "has 'properties' that is not an object"
           : undefined;
   if (problem !== undefined) {
@@ -180,7 +179,6 @@ export function assertFlatChannelParamsSchema(channel: string, schema: object): 
       `Channel '${channel}' params schema ${problem}. Params must be declared under the top-level 'properties' of one object schema: use a single t.Object({...}), and combine object schemas with t.Composite([...]).`,
     );
   }
-  const properties = record.properties;
   if (!properties || typeof properties !== "object") return;
   for (const key of Object.keys(properties)) {
     if (RESERVED_CHANNEL_PARAM_NAMES.includes(key)) {
