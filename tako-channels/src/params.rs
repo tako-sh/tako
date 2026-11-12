@@ -72,25 +72,80 @@ pub fn validate_value(schema: &Value, params: &Value) -> Result<(), ParamsError>
         .map_err(|error| ParamsError::Invalid(error.to_string()))
 }
 
-/// Keywords that place properties somewhere other than the schema's top-level
-/// `properties`, where params are declared and coerced.
-const NON_FLAT_KEYWORDS: &[&str] = &[
-    "allOf",
-    "anyOf",
-    "oneOf",
-    "not",
-    "if",
-    "then",
-    "else",
+/// Top-level keywords that place properties somewhere other than the
+/// schema's top-level `properties`, where params are declared and coerced.
+const NON_FLAT_KEYWORDS: &[&str] = &["$ref", "$dynamicRef", "patternProperties"];
+
+/// Combinators whose subschemas apply to the whole params object. They may
+/// add constraints over the declared params (`required`, `const`, ...), but
+/// a param declared inside one would be neither coerced nor allowed.
+const ARRAY_COMBINATORS: &[&str] = &["allOf", "anyOf", "oneOf"];
+const SCHEMA_COMBINATORS: &[&str] = &["not", "if", "then", "else"];
+const MAP_COMBINATORS: &[&str] = &["dependentSchemas"];
+
+/// Keywords of a combinator subschema that declare params.
+const DECLARING_KEYWORDS: &[&str] = &[
+    "properties",
+    "patternProperties",
+    "additionalProperties",
     "$ref",
     "$dynamicRef",
-    "dependentSchemas",
-    "patternProperties",
 ];
 
+/// Whether a schema is usable as a channel or presence params schema. Run
+/// once per loaded registry so a bad definition is reported at deploy.
+pub fn check_params_schema(schema: &Value) -> Result<(), ParamsError> {
+    require_flat_object(schema)?;
+    jsonschema::draft202012::new(schema)
+        .map(|_| ())
+        .map_err(|error| ParamsError::InvalidSchema(error.to_string()))
+}
+
+/// The subschemas a schema's combinators apply to the same instance, each
+/// with the combinator that holds it.
+fn combinator_subschemas(schema: &Map<String, Value>) -> Vec<(&'static str, &Value)> {
+    let mut subschemas = Vec::new();
+    for keyword in ARRAY_COMBINATORS {
+        if let Some(Value::Array(items)) = schema.get(*keyword) {
+            subschemas.extend(items.iter().map(|item| (*keyword, item)));
+        }
+    }
+    for keyword in SCHEMA_COMBINATORS {
+        if let Some(subschema) = schema.get(*keyword) {
+            subschemas.push((*keyword, subschema));
+        }
+    }
+    for keyword in MAP_COMBINATORS {
+        if let Some(Value::Object(entries)) = schema.get(*keyword) {
+            subschemas.extend(entries.values().map(|subschema| (*keyword, subschema)));
+        }
+    }
+    subschemas
+}
+
+/// The keyword through which a combinator subschema, or one nested in it,
+/// declares params. `additionalProperties: false` only constrains.
+fn declaring_keyword(subschema: &Value) -> Option<&'static str> {
+    let subschema = subschema.as_object()?;
+    DECLARING_KEYWORDS
+        .iter()
+        .copied()
+        .find(|keyword| match subschema.get(*keyword) {
+            None | Some(Value::Bool(false)) => false,
+            Some(_) => true,
+        })
+        .or_else(|| {
+            combinator_subschemas(subschema)
+                .into_iter()
+                .find_map(|(_, nested)| declaring_keyword(nested))
+        })
+}
+
 /// A channel or presence params schema is one object schema with its params
-/// under top-level `properties`. Anything else could declare no param, so it
-/// is reported as a schema problem rather than as unknown params.
+/// under top-level `properties`. Top-level combinators may only constrain
+/// those params. Anything else could declare a param that is never coerced
+/// or allowed, so it is reported as a schema problem rather than as unknown
+/// params.
 fn require_flat_object(schema: &Value) -> Result<(), ParamsError> {
     let problem = match schema.as_object() {
         None => Some("is not a JSON object".to_owned()),
@@ -102,7 +157,15 @@ fn require_flat_object(schema: &Value) -> Result<(), ParamsError> {
             } else if schema.get("properties").is_some_and(|p| !p.is_object()) {
                 Some("has a `properties` that is not an object".to_owned())
             } else {
-                None
+                combinator_subschemas(schema)
+                    .into_iter()
+                    .find_map(|(combinator, subschema)| {
+                        declaring_keyword(subschema).map(|keyword| {
+                            format!(
+                                "declares params through `{keyword}` inside `{combinator}` (combinators may only add constraints such as `required` over the top-level `properties`)"
+                            )
+                        })
+                    })
             }
         }
     };
@@ -310,6 +373,138 @@ mod tests {
             validate_query(&flat, "kind=a").unwrap(),
             json!({"kind": "a"})
         );
+    }
+
+    #[test]
+    fn top_level_combinators_may_constrain_declared_params() {
+        let ids = json!({"userId": {"type": "string"}, "teamId": {"type": "string"}});
+        let one_of = json!({"type": "object", "properties": ids,
+            "oneOf": [{"required": ["userId"]}, {"required": ["teamId"]}]});
+        assert_eq!(
+            validate_query(&one_of, "userId=a").unwrap(),
+            json!({"userId": "a"})
+        );
+        validate_value(&one_of, &json!({"teamId": "b"})).unwrap();
+        for query in ["", "userId=a&teamId=b"] {
+            let error = validate_query(&one_of, query).unwrap_err();
+            assert!(
+                matches!(error, ParamsError::Invalid(_)),
+                "{query}: {error:?}"
+            );
+        }
+        assert!(matches!(
+            validate_value(&one_of, &json!({})),
+            Err(ParamsError::Invalid(_))
+        ));
+
+        let if_then = json!({"type": "object", "properties": ids,
+            "if": {"required": ["userId"]}, "then": {"required": ["teamId"]}});
+        validate_query(&if_then, "userId=a&teamId=b").unwrap();
+        validate_query(&if_then, "teamId=b").unwrap();
+        assert!(matches!(
+            validate_query(&if_then, "userId=a"),
+            Err(ParamsError::Invalid(_))
+        ));
+
+        let not = json!({"type": "object", "properties": ids, "not": {"required": ["teamId"]}});
+        validate_query(&not, "userId=a").unwrap();
+        assert!(matches!(
+            validate_query(&not, "teamId=b"),
+            Err(ParamsError::Invalid(_))
+        ));
+
+        let dependent = json!({"type": "object", "properties": ids,
+            "dependentSchemas": {"teamId": {"required": ["userId"]}},
+            "allOf": [{"anyOf": [{"required": ["userId"]}, {"required": ["teamId"]}]}],
+            "additionalProperties": false});
+        validate_query(&dependent, "userId=a&teamId=b").unwrap();
+        for query in ["teamId=b", ""] {
+            assert!(
+                matches!(
+                    validate_query(&dependent, query),
+                    Err(ParamsError::Invalid(_))
+                ),
+                "{query}"
+            );
+        }
+        for schema in [&one_of, &if_then, &not, &dependent] {
+            check_params_schema(schema).unwrap();
+        }
+    }
+
+    #[test]
+    fn combinators_that_declare_params_are_rejected_wherever_they_nest() {
+        let ids = json!({"userId": {"type": "string"}});
+        let declared = json!({"properties": {"teamId": {"type": "string"}}});
+        for (combinator, keyword, schema) in [
+            ("allOf", "properties", json!({"allOf": [declared.clone()]})),
+            (
+                "anyOf",
+                "properties",
+                json!({"anyOf": [{"allOf": [{"not": declared.clone()}]}]}),
+            ),
+            (
+                "oneOf",
+                "additionalProperties",
+                json!({"oneOf": [{"additionalProperties": true}]}),
+            ),
+            (
+                "if",
+                "additionalProperties",
+                json!({"if": {"additionalProperties": {"type": "string"}}}),
+            ),
+            (
+                "not",
+                "$ref",
+                json!({"not": {"$ref": "#/$defs/x"}, "$defs": {"x": {}}}),
+            ),
+            (
+                "dependentSchemas",
+                "patternProperties",
+                json!({"dependentSchemas": {"userId": {"patternProperties": {"^t": {}}}}}),
+            ),
+            (
+                "else",
+                "$dynamicRef",
+                json!({"else": {"$dynamicRef": "#x"}}),
+            ),
+        ] {
+            let mut schema = schema;
+            schema["type"] = json!("object");
+            schema["properties"] = ids.clone();
+            for error in [
+                validate_query(&schema, "userId=a").unwrap_err(),
+                validate_value(&schema, &json!({"userId": "a"})).unwrap_err(),
+                check_params_schema(&schema).unwrap_err(),
+            ] {
+                assert!(
+                    matches!(&error, ParamsError::InvalidSchema(message)
+                        if message.contains(&format!("`{keyword}` inside `{combinator}`"))
+                            && message.contains("top-level `properties`")),
+                    "{combinator}/{keyword}: got {error:?}"
+                );
+            }
+        }
+        // `additionalProperties: false` inside a combinator only constrains.
+        let closed = json!({"type": "object", "properties": ids,
+            "allOf": [{"additionalProperties": false}]});
+        check_params_schema(&closed).unwrap();
+        // Top-level references, pattern properties and other types stay rejected.
+        for (keyword, schema) in [
+            (
+                "patternProperties",
+                json!({"patternProperties": {"^u": {}}}),
+            ),
+            ("$dynamicRef", json!({"$dynamicRef": "#x"})),
+            ("type", json!({"type": ["object", "null"]})),
+            ("JSON object", json!(true)),
+        ] {
+            let error = check_params_schema(&schema).unwrap_err();
+            assert!(
+                matches!(&error, ParamsError::InvalidSchema(message) if message.contains(keyword)),
+                "{keyword}: got {error:?}"
+            );
+        }
     }
 
     #[test]
