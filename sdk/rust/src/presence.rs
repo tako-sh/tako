@@ -90,7 +90,8 @@ pub struct PresenceDefinition {
 impl Default for PresenceDefinition {
     fn default() -> Self {
         Self {
-            params_schema: json!({"type":"object"}),
+            // tako-server rejects params a presence schema does not declare.
+            params_schema: json!({"type":"object", "additionalProperties": false}),
             auth: None,
             verify: None,
             keepalive_interval_ms: 25_000,
@@ -105,6 +106,11 @@ impl PresenceDefinition {
         Self::default()
     }
 
+    /// JSON Schema for the flat query params that scope membership. Its
+    /// properties cannot be named `from` or `last_message_id`: Tako reserves
+    /// both on channel routes and never passes them as params. tako-server
+    /// rejects params the schema does not declare under `properties` unless it
+    /// sets `"additionalProperties": true`; the default schema takes none.
     pub fn params_schema(mut self, schema: Value) -> Self {
         self.params_schema = schema;
         self

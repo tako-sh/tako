@@ -5,13 +5,13 @@ description: "Define SSE and WebSocket channels with typed messages, authorizati
 
 Tako Channels are broadcast streams for live app events over SSE or WebSocket. Channels are durable by default: Tako stores each message before fanout and retains a bounded replay window. Set `ephemeral: true` for memory-only delivery on a single server.
 
-JavaScript and Go can register channel definitions. JavaScript additionally provides local server-side publication. JavaScript, Go, and Rust can [publish to a JavaScript-owned network channel](/network-primitives/). Rust currently has no general Channels registration API; its [Presence](/presence/) and [Stores](/stores/) registries are separate capabilities. Browser and React examples below use the JavaScript client with any supported backend definition.
+JavaScript and Go can register channel definitions. JavaScript additionally provides local server-side publication and can close a stream. JavaScript, Go, and Rust can [publish to a JavaScript-owned network channel](/network-primitives/). Rust currently has no general Channels registration API; its [Presence](/presence/) and [Stores](/stores/) registries are separate capabilities. Browser and React examples below use the JavaScript client with any supported backend definition.
 
-Local channel subscriptions bypass authorization callbacks. Test private access rules in a deployed test environment. Params do not isolate tenants or rooms; the stream-isolation rules below apply even when params validate.
+`tako dev` authorizes channel subscriptions and connections the same way production does: it wakes the app if needed, validates params against the app's definition, and runs the auth callback, so a denied client is rejected locally with the same status or WebSocket close code. Params select separate streams, but they are not access control: authorization must check that the caller may use the requested params.
 
 ## Choose Broadcast Semantics
 
-Channels are pub-sub, not work queues. Every authorized subscriber to a channel reads the same messages and, for durable channels, keeps an independent replay cursor. A message is not claimed, acknowledged, or removed when one subscriber receives it.
+Channels are pub-sub, not work queues. Every authorized subscriber to a channel stream reads the same messages and, for durable channels, keeps an independent replay cursor. A message is not claimed, acknowledged, or removed when one subscriber receives it.
 
 Use a channel for live dashboards, chat delivery, presence updates, notifications, and collaborative updates. Use a workflow when work should be claimed and executed with retries instead of broadcast to every subscriber.
 
@@ -103,7 +103,7 @@ tako.Channels.Register("live-progress", tako.ChannelDefinition{
 
 </CodeGroup>
 
-Ephemeral messages never enter the channel database or replay log. They reach only subscribers currently connected to the same Tako server process. Messages published without subscribers, during disconnects, or before a server restart are lost. Each active channel has a bounded 64-message buffer; slow subscribers skip events that have been evicted. The buffer is released when the last subscriber disconnects.
+Ephemeral messages never enter the channel database or replay log. They reach only subscribers currently connected to the same Tako server process. Messages published without subscribers, during disconnects, or before a server restart are lost. Each active stream has a bounded 64-message buffer; slow subscribers skip events that have been evicted. The buffer is released when the last subscriber disconnects.
 
 Ephemeral messages have `id: ""`; SSE frames omit the `id` field. Reconnects start with live events and do not resume from a replay cursor. Authorization, params, SSE/WebSocket transport, keepalives, and connection lifetime still apply. Setting `replayWindowMs` together with `ephemeral: true` is rejected; in Go, leave `ReplayWindowMs` at its zero value.
 
@@ -113,26 +113,31 @@ To verify, connect two clients and publish an event. Both should receive it. Dis
 
 ## Understand Channel Params
 
-JavaScript's `paramsSchema` is a TypeBox schema for typed query parameters. Go's `ParamsSchema` accepts JSON Schema as `json.RawMessage`. Tako validates the values before authorization and passes them to the verifier.
+JavaScript's `paramsSchema` is a TypeBox schema for typed params. Go's `ParamsSchema` accepts JSON Schema as `json.RawMessage`. Tako validates the values before authorization and passes them to the verifier.
 
-Params do **not** change the stored channel name or partition replay and fanout. Every authorized parameter binding for one wire channel receives the same stream. Use params only as connection context when every authorized binding may receive every event. Do not use `roomId`, `tenantId`, or similar params as an isolation boundary.
+Params select the stream. A channel stream is identified by the channel name and its validated params, so `chat({ roomId: "one" })` and `chat({ roomId: "two" })` have separate messages, replay history, cursors, and subscribers. A publish reaches only subscribers bound to the same params. A channel without a params schema, or bound with no params, has one stream.
 
-For example, a shared announcements stream can reject unsupported client versions without creating one stream per version:
+Params choose a stream; they do not grant access to it. Anyone who can send a request can name any params, so `auth.verify` must check that the caller may use the requested params, for example that the user belongs to the room:
 
 <CodeGroup>
 
 ```ts JavaScript
-export default defineChannel("announcements", {
-  paramsSchema: (t) =>
-    t.Object({
-      clientVersion: t.String({ minLength: 1 }),
-    }),
+// <app_root>/channels/chat.ts
+import { defineChannel } from "tako.sh";
+import { canJoinRoom, readSession } from "../lib/auth";
+
+type ChatMessages = { message: { text: string } };
+
+export default defineChannel("chat", {
+  paramsSchema: (t) => t.Object({ roomId: t.String({ minLength: 1 }) }),
   auth: {
-    verify({ params }) {
-      return supportsAnnouncements(params.clientVersion);
+    async verify({ header, params }) {
+      const session = await readSession(header);
+      if (!session || !(await canJoinRoom(session.userId, params.roomId))) return false;
+      return { subject: session.userId };
     },
   },
-});
+}).$messageTypes<ChatMessages>();
 ```
 
 ```go Go
@@ -141,20 +146,25 @@ import (
     "tako.sh"
 )
 
-func registerAnnouncements() {
-    tako.Channels.Register("announcements", tako.ChannelDefinition{
+func registerChat() {
+    tako.Channels.Register("chat", tako.ChannelDefinition{
         ParamsSchema: json.RawMessage(`{
             "type":"object",
-            "properties":{"clientVersion":{"type":"string","minLength":1}},
-            "required":["clientVersion"]
+            "properties":{"roomId":{"type":"string","minLength":1}},
+            "required":["roomId"],
+            "additionalProperties":false
         }`),
         Auth: &tako.ChannelAuthScheme{HeaderName: "authorization"},
         Verify: func(input tako.VerifyInput) tako.ChannelAuthDecision {
-            var params struct { ClientVersion string `json:"clientVersion"` }
-            if json.Unmarshal(input.Params, &params) != nil || !supportsAnnouncements(params.ClientVersion) {
+            var params struct { RoomID string `json:"roomId"` }
+            if json.Unmarshal(input.Params, &params) != nil {
                 return tako.RejectChannel()
             }
-            return tako.AllowChannel(tako.ChannelGrant{})
+            userID, ok := readSession(input.Header)
+            if !ok || !canJoinRoom(userID, params.RoomID) {
+                return tako.RejectChannel()
+            }
+            return tako.AllowChannel(tako.ChannelGrant{Subject: userID})
         },
     })
 }
@@ -162,19 +172,32 @@ func registerAnnouncements() {
 
 </CodeGroup>
 
-`supportsAnnouncements` is an app-owned compatibility check. The Go registration uses the default SSE transport.
+`readSession` and `canJoinRoom` are app-owned. The Go registration uses the default SSE transport.
 
-Omit the params schema for an unparameterized channel. In JavaScript, parameterized exports are callable; unparameterized exports are already bound handles:
+In JavaScript, parameterized exports are callable and unparameterized exports are already bound handles. Publish and subscribe with the same params to use the same stream:
 
 ```ts
-import announcements from "../channels/announcements";
+import chat from "../channels/chat";
 import siteEvents from "../channels/site-events";
 
-const currentAnnouncements = announcements({ clientVersion: "2.4.0" });
-const subscription = currentAnnouncements.subscribe();
+await chat({ roomId: "one" }).publish({ type: "message", data: { text: "hello" } });
 
 await siteEvents.publish({ type: "presence", data: { online: 42 } });
 ```
+
+Params are flat string, number, or boolean values. Browsers send them as query values, and Tako converts each one by the type the schema declares for that property: `integer`, `number`, and `boolean` properties become numbers or booleans, and every other value stays a string. Key order does not matter, `undefined` and `null` values are omitted, and `1` and `1.0` name the same stream. A JavaScript handle from `defineChannel` publishes with the same conversion: for an `integer` param `page`, both `{ page: 2 }` and `{ page: "2" }` publish to the stream a subscriber with `?page=2` reads. The JavaScript SDK rejects nested objects and arrays when a channel is defined or bound; in Go, declare only scalar property types in `ParamsSchema`.
+
+A JavaScript number cannot carry every integer exactly, and a value that rounds would select one stream when subscribing and another when publishing. So an `integer` param must be a safe integer (at most 2^53 - 1 in magnitude, including `bigint` values) and a `number` param must be finite; the JavaScript SDK throws when such a handle is bound, subscribes, connects, publishes, or closes. Declare large identifiers, such as snowflake ids or 64-bit database keys, as string params. The server rejects a publish or close whose params contain an explicit `null`; leave a param out to leave it unset.
+
+When the server knows the publishing build's definition, it rejects a publish whose params do not match the schema instead of starting a stream nobody reads.
+
+Only declared params exist. A param the schema does not list under `properties` is rejected with `400` (before authorization, so it never starts a stream), unless the schema explicitly sets `additionalProperties: true`. A channel without a params schema accepts no params. The JavaScript, Go, and Rust definitions emit `additionalProperties: false` for you; set `additionalProperties: true` only when every extra param should select its own stream.
+
+`from` and `last_message_id` are reserved query names on channel routes (where a reader starts and the WebSocket replay cursor), so no param can use them. JavaScript's `defineChannel` and Go's `Channels.Register` reject a params schema that declares either name, and the server rejects publish or close params that name them.
+
+Keep connection context that must not split the stream out of params. A client version, locale, or feature flag passed as a param would give each value its own stream. Send such context in a header or the auth credential instead, and read it in `auth.verify`.
+
+Each distinct params binding is a separate stream with its own retention. Durable messages expire after `replayWindowMs` as usual. Once a stream retains no messages and has been idle for longer than its `maxConnectionLifetimeMs` plus one minute, Tako releases its bookkeeping, so streams for many short-lived params do not accumulate. A released stream starts again at the store's current position; cursors from its earlier life reset like expired history. An app keeps at most 100,000 streams; beyond that, starting a new parameterized stream fails with a logged error, while existing streams and channels without params keep working.
 
 ## Authorize And Choose A Transport
 
@@ -193,11 +216,11 @@ The `transport` option chooses the live transport:
 | Server-to-browser updates  | Omit `transport`; the channel uses receive-only SSE | `subscribe()`          |
 | Browser-to-server messages | Set `transport: "ws"`                               | `connect()` / `send()` |
 
-WebSocket client frames are `{ type, data }`; the proxy stores and broadcasts them as sent. Channels do not run application callbacks for incoming messages.
+WebSocket client frames are `{ type, data }`; the proxy stores and broadcasts them as sent to the stream selected by that connection's params. Channels do not run application callbacks for incoming messages. Once the server [closed the stream](#stream-a-reply-that-survives-a-refresh), a client frame is not stored: the connection ends with close code `4200`, and `connect().send()` and `useChannel`'s `send` throw after that close.
 
 ## Publish From The Server
 
-The JavaScript SDK provides server-side publishing. Import the channel definition, bind any params, and publish a typed event:
+The JavaScript SDK provides server-side publishing. Import the channel definition, bind the params of the stream to publish to, and publish a typed event:
 
 ```ts
 import siteEvents from "../channels/site-events";
@@ -208,7 +231,9 @@ const published = await siteEvents.publish({
 });
 ```
 
-`publish()` requires the Tako server runtime and returns the published `ChannelMessage`. Browser code does not call it. An SSE browser only receives events, while a WebSocket browser sends `{ type, data }` through its connection.
+`publish()` requires the Tako server runtime and returns the published `ChannelMessage`. It reaches only subscribers bound to the same params, so a parameterized channel publishes with `chat({ roomId }).publish(...)`. Browser code does not call it. An SSE browser only receives events, while a WebSocket browser sends `{ type, data }` through its connection.
+
+`close()` ends a durable stream for good: `await chat({ roomId }).close()`. Subscribers receive every earlier message and then the end of the stream, and later publishes to it fail. See [Stream A Reply That Survives A Refresh](#stream-a-reply-that-survives-a-refresh). Go has no server-side publish or close; Go apps can register a definition and serve its authorization, and can [publish to a JavaScript-owned network channel](/network-primitives/) but not close one.
 
 ## Consume In The Browser
 
@@ -229,11 +254,11 @@ const connection = events.connect({ authorization: token });
 For an SSE channel, omit the transport and call `subscribe()`:
 
 ```ts
-const updates = new Channel("announcements", undefined, { clientVersion: "2.4.0" });
-const subscription = updates.subscribe({ authorization: token });
+const room = new Channel("chat", undefined, { roomId: "one" });
+const subscription = room.subscribe({ authorization: token });
 ```
 
-React apps can use `useChannel` from `tako.sh/react`. SSE is the default; set `transport: "ws"` to receive a `send` function:
+React apps can use `useChannel` from `tako.sh/react`. SSE is the default; set `transport: "ws"` to receive a `send` function. Pass `params`, such as `params: { roomId }`, to select a stream; changing them reconnects to the other stream:
 
 ```tsx
 import { useChannel } from "tako.sh/react";
@@ -265,9 +290,13 @@ Local replay uses SQLite WAL with `synchronous=NORMAL`: committed messages survi
 
 - SSE resumes with `Last-Event-ID`; `subscribe({ lastEventId })` sets an initial cursor. The built-in fetch-based reader reconnects after routine disconnects and carries its latest message ID forward. `close()` or an abort `signal` stops it. HTTP `401`, `403`, and `404` are terminal and reach `onError`.
 - WebSocket resumes with `last_message_id`; `connect({ lastMessageId })` sets it. `useChannel` tracks the latest ID and reconnects with bounded backoff and jitter. A lower-level `connect()` call returns one socket, so non-React code owns WebSocket reconnection.
-- With no cursor, Tako starts at the latest retained message and then follows live traffic. A fresh subscription does not recover all missed events.
+- With no cursor, Tako starts at the latest retained message and then follows live traffic. A fresh subscription does not recover all missed events. Pass `from: "start"` to `subscribe()`, `connect()`, or `useChannel` to replay every message the stream still retains first; the SDK sends the query pair `from=start`. An explicit cursor wins over `from`, and reconnects resume by cursor rather than from the start again. If retention already dropped the beginning, the reader gets what is retained, without a reset. Ephemeral streams retain nothing, so `from: "start"` reads live messages only.
 
 An expired SSE cursor produces HTTP `410 Gone`. A running SSE stream can also send the internal `tako.reset` control event. The built-in reader consumes either signal, clears its cursor, and reconnects without exposing a reset as an application message. The React hook handles WebSocket close code `4410` with reason `replay-too-old` the same way.
+
+A reader that asked for `from: "start"` reconnects from the start after such a reset: it has no cursor left, so it re-reads the whole retained stream, which is the right recovery for a reader that wants the full stream. `onRecovery("history-expired")` (and `onResync`) then means: discard local state built from earlier messages, because the stream replays from its start. Message ids can change across a reset (a replay reset on SQLite issues new ones), so do not match replayed messages to earlier ones by id. `useChannel` keeps its `messages` buffer across the reset; call `clear()` in `onResync` so the replayed messages do not follow the old ones.
+
+A closed stream ends with a terminal signal after its last message: the SSE control event `tako.close` (with the marker's ID) followed by the end of the response, or WebSocket close code `4200` with reason `stream-closed`. The signal is final. The built-in SSE reader, `subscribe()` with a custom `eventSourceFactory` (it calls the EventSource's `close()`, so the browser does not reconnect), and `useChannel` stop without reconnecting and call `onClose` once; `useChannel` reports `closed: true` and `status: "closed"`. `connect()` calls `onClose` on code `4200`; its caller must not reconnect. `tako.close` never reaches `onMessage` or the `messages` buffer. `tako.reset`, close code `4410`, a `1000` `connection expired` close, and an SSE response that ends without `tako.close` stay reconnectable.
 
 Routine reconnects and expired history do not populate `useChannel.error` or invoke the built-in SSE subscription's `onError`. The hook reports `status: "connecting"` until the connection opens again. Optional `onRecovery(reason)` receives `"reconnecting"` or `"history-expired"` outside the message stream. Authorization failures and malformed application messages still need error handling.
 
@@ -306,8 +335,8 @@ For a non-React SSE client, use `onRecovery` to start the same reload:
 import { Channel } from "tako.sh/client";
 
 export function subscribeUpdates(reloadState: () => Promise<void>) {
-  const updates = new Channel("announcements", undefined, { clientVersion: "2.4.0" });
-  return updates.subscribe({
+  const room = new Channel("chat", undefined, { roomId: "one" });
+  return room.subscribe({
     onRecovery: async (reason) => {
       if (reason === "history-expired") await reloadState();
     },
@@ -317,7 +346,7 @@ export function subscribeUpdates(reloadState: () => Promise<void>) {
 
 Both callbacks are optional and can be async. Reconnection does not await them. The built-in SSE reader and `useChannel` catch and log callback failures without stopping recovery. Handle reload failures in your application's data UI. `useChannel` keeps its existing message buffer until `clear()`, unmount, or a change of connection identity; treat the reloaded snapshot as authoritative rather than assuming the buffer contains complete history.
 
-If you supply a custom `eventSourceFactory`, that factory owns transport errors, cursor reset, and recovery callbacks. If you use a raw WebSocket through `connect()`, handle close code `4410`, drop the expired cursor, reload state, and open another connection yourself. Custom transports do not acquire the built-in reader's recovery behavior.
+If you supply a custom `eventSourceFactory`, that factory owns transport errors, cursor reset, and recovery callbacks; `subscribe()` only closes it on `tako.close`. If you use a raw WebSocket through `connect()`, handle close code `4410`, drop the expired cursor, reload state, and open another connection yourself; on code `4200`, stop. Custom transports do not acquire the built-in reader's recovery behavior. A client written without the JavaScript SDK follows the same contract: add `from=start` to the route's query to read from the start, resume with `Last-Event-ID` or `last_message_id`, and treat `tako.close` and close code `4200` as final.
 
 [Stores](/stores/#recover-current-data) implement snapshot reloads for backend data, so they do not need a custom channel resync callback.
 
@@ -361,6 +390,123 @@ await siteEvents.publish({
 
 For canonical writes, use a normal authenticated app endpoint to commit the record, then publish the resulting channel event from server-side code. Treat browser-sent WebSocket frames as transient live signals. The app database remains the source of truth; channel replay only closes short delivery gaps.
 
+## Stream A Reply That Survives A Refresh
+
+A long-running reply, such as LLM output, can stream through a channel so that a page refresh resumes it. A workflow appends the text to a stream for one reply and closes the stream when it finishes. The browser reads that stream from its start, rebuilds the text, and stops at the end. The proxy serves readers from Tako's replay store, so once a subscription is authorized the app and its worker can go back to sleep while clients keep reading. Authorizing a new subscription, or reauthorizing after `maxConnectionLifetimeMs`, still calls the app's `auth.verify`.
+
+This pattern needs server-side `publish()` and `close()`, which only the JavaScript SDK provides. A Go app can register the same definition, but it cannot produce or close the stream.
+
+Define a channel with one stream per reply. Authorization must check that the caller may read that reply:
+
+```ts
+// <app_root>/channels/reply.ts
+import { defineChannel } from "tako.sh";
+import { canReadReply, readSession } from "../lib/auth";
+
+// `content` is the whole text so far, so a replayed or repeated message never duplicates text.
+type ReplyMessages = {
+  progress: { content: string };
+  done: { content: string };
+};
+
+export default defineChannel("reply", {
+  paramsSchema: (t) => t.Object({ replyId: t.String({ minLength: 1 }) }),
+  // Keep finished replies re-readable for an hour.
+  replayWindowMs: 60 * 60 * 1000,
+  auth: {
+    async verify({ header, params }) {
+      const session = await readSession(header);
+      if (!session || !(await canReadReply(session.userId, params.replyId))) return false;
+      return { subject: session.userId };
+    },
+  },
+}).$messageTypes<ReplyMessages>();
+```
+
+The workflow publishes chunks, saves the finished text to the app database, and closes the stream on success and on failure, so readers are never left waiting:
+
+```ts
+// <app_root>/workflows/write-reply.ts
+import { defineWorkflow } from "tako.sh";
+import reply from "../channels/reply";
+import { db } from "../lib/db";
+import { streamCompletion } from "../lib/llm";
+
+export default defineWorkflow<{ replyId: string; prompt: string }>("write-reply", {
+  handler: async ({ replyId, prompt }, ctx) => {
+    const stream = reply({ replyId });
+    try {
+      const content = await ctx.run(
+        "generate",
+        async () => {
+          let content = "";
+          let flushedAt = Date.now();
+          for await (const token of streamCompletion(prompt)) {
+            content += token;
+            // Each publish is a durable write: send a chunk every 250 ms, not every token.
+            if (Date.now() - flushedAt >= 250) {
+              await stream.publish({ type: "progress", data: { content } });
+              flushedAt = Date.now();
+            }
+          }
+          await stream.publish({ type: "done", data: { content } });
+          return content;
+        },
+        { retries: 2 },
+      );
+      await ctx.run("save", () => db.replies.complete(replyId, content), { retries: 3 });
+    } catch (error) {
+      await ctx.run("mark-failed", () => db.replies.fail(replyId));
+      await stream.close();
+      // A retried run could not publish to the closed stream, so the failure is final.
+      ctx.fail(error instanceof Error ? error : String(error));
+    }
+    await stream.close();
+  },
+});
+```
+
+`db`, `canReadReply`, `readSession`, and `streamCompletion` are app-owned. The request that starts a reply creates its database row with status `"streaming"`, then enqueues the run with the reply ID as the run ID, so a repeated request does not start a second run: `await writeReply.enqueue({ replyId, prompt }, { id: replyId })`.
+
+The component reads from the start, shows the latest `content`, and stops at `closed`:
+
+```tsx
+import { useChannel } from "tako.sh/react";
+
+type Reply = { id: string; status: "streaming" | "complete" | "failed"; content: string };
+
+export function ReplyText({ reply, token }: { reply: Reply; token: string }) {
+  // The app database is canonical: only stream replies it has not finished.
+  if (reply.status === "complete") return <p>{reply.content}</p>;
+  if (reply.status === "failed") return <p>The reply could not be finished.</p>;
+  return <LiveReply replyId={reply.id} token={token} />;
+}
+
+function LiveReply({ replyId, token }: { replyId: string; token: string }) {
+  const { messages, closed, error } = useChannel<{ content: string }>("reply", {
+    params: { replyId },
+    authorization: token,
+    from: "start",
+  });
+  const last = messages.at(-1);
+
+  if (error) return <p>The reply is unavailable.</p>;
+  if (closed && last?.type !== "done") return <p>The reply could not be finished.</p>;
+  return <p aria-busy={!closed}>{last?.data.content ?? "Thinking…"}</p>;
+}
+```
+
+After a refresh, `from: "start"` replays the retained messages. If the stream is still open, the hook then follows live messages and resumes by cursor across reconnects; if the workflow already closed it, the hook replays and reports `closed` without reconnecting.
+
+Keep these limits in mind:
+
+- **Each publish is a durable write.** It is inserted into the replay store and fanned out before the next one. Batch tokens into chunks by time or size.
+- **Retention bounds re-reading.** A closed stream stays closed, and its messages stay readable, for as long as `replayWindowMs` retains them. After that, a new subscriber with `from: "start"` gets nothing and, because the marker is gone too, keeps waiting. That is why the component above renders finished replies from the app database, as described in [Keep Canonical History In Your App Database](#keep-canonical-history-in-your-app-database), and subscribes only while the database says the reply is streaming. Choose a replay window longer than your longest reply.
+- **Make repeats harmless.** A step can run again after a failure or a worker restart, and a reader can see a message twice across a replay. Because every message carries the cumulative `content`, a repeated or restarted step replaces the visible text rather than appending duplicates, and expired early chunks lose nothing. If chunks must be deltas, give each a sequence number and let the client keep one entry per number.
+- **Close only when nothing follows.** Publishing to a closed stream fails, so close after the last attempt that could publish. Step retries above run inside `ctx.run`, and `ctx.fail` stops run-level retries after the stream is closed. Closing twice is safe, so a replayed `close()` succeeds.
+- **Ephemeral channels cannot be closed.** `close()` on an ephemeral channel throws, and it throws in the browser.
+- **Publish and close from one place.** A close is ordered after the publishes the same server made before it. With native multi-server replication, a publish from another server that races the close may be dropped on servers that already have the marker, so every server ends at the close with nothing after it. Shared Postgres orders publishes and closes in one store and never drops one. Peers keep a replicated stream, and its close, for the same `replayWindowMs` as the server it came from.
+
 ## Verify
 
-Connect two authorized clients and confirm both receive the same published event. Test a denied client in a deployed environment and reconnect with a retained replay cursor. Then reconnect after expiry and confirm the SDK resumes, the application reloads authoritative state, and no reset message reaches business handlers. Test an async reload failure and stop a reconnecting subscription with `close()`. On multiple servers, publish through one and subscribe through another using the configured native or shared Postgres transport. A successful local connection does not verify production authorization or cross-server fanout.
+Connect two authorized clients and confirm both receive the same published event. Confirm that a denied client is rejected, and reconnect with a retained replay cursor. Then reconnect after expiry and confirm the SDK resumes, the application reloads authoritative state, and no reset message reaches business handlers. Test an async reload failure and stop a reconnecting subscription with `close()`. For a closed stream, subscribe with `from: "start"` and confirm that every message arrives, then `closed`, with no reconnect, and that a publish after `close()` fails. On multiple servers, publish through one and subscribe through another using the configured native or shared Postgres transport. Local development keeps replay in memory on one daemon, so a successful local connection does not verify durable storage or cross-server fanout.

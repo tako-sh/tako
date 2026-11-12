@@ -437,6 +437,7 @@ describe("handleTakoEndpoint", () => {
             type: "object",
             properties: { roomId: { type: "string" } },
             required: ["roomId"],
+            additionalProperties: false,
           },
           auth: { headerName: "authorization", cookieName: "session" },
           transport: "ws",
@@ -447,7 +448,7 @@ describe("handleTakoEndpoint", () => {
         },
         {
           channel: "status",
-          paramsSchema: { type: "object", properties: {} },
+          paramsSchema: { type: "object", properties: {}, additionalProperties: false },
           auth: false,
           replayWindowMs: 600_000,
           inactivityTtlMs: 0,

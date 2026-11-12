@@ -59,7 +59,9 @@ export async function handleNetworkInvocation(
         entry.definition.transport,
         params as Record<string, unknown>,
         definitionLifecycleConfig(entry.definition),
+        entry.definition.paramsSchema,
       );
+      // Params select the recipient stream, as `channel(params).publish` does.
       const data = await channel.publish({ type: message.type, data: message.data });
       return reply({ status: "ok", data });
     }

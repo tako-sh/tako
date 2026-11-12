@@ -6,28 +6,28 @@
       "type": "framework",
       "description": "Build, run, deploy, and debug Tako applications. Use for projects with tako.toml, tako.sh imports, the Tako Go or Rust SDK, or tasks involving Tako local HTTPS, deployments, logs, routing, typed HTTP contracts, secrets, storage, channels, presence, stores, and workflows.",
       "url": "https://tako.sh/.well-known/agent-skills/tako/SKILL.md",
-      "sha256": "c30a785e3c7d68ccd06984ed01e3c4da8124fd3c86c4223b10553ac4d2b337d8"
+      "sha256": "b57be8cb237c8757ee0fe5aa0a2196126ba5d5fd48f2012af6a9570e056af226"
     },
     {
       "name": "tako-sdk-go",
       "type": "framework",
       "description": "tako.sh Go SDK: ListenAndServe for http.Handler, Listener for custom servers, typed secrets via tako generate, authenticated presence and live Stores with cached offline reads.",
       "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-go/SKILL.md",
-      "sha256": "84a57931bddc27471c3e78788fa5a586ca44744accfdeb703b391f4b73c2f664"
+      "sha256": "a41d425665e4781486666949615eb10e9c654c851ea2c93cfb21bab91048f792"
     },
     {
       "name": "tako-sdk-js",
       "type": "framework",
       "description": "tako.sh SDK: fetch handler interface, tako runtime object, generated tako.d.ts type augmentation, defineChannel/definePresence/defineStore/defineWorkflow, replay recovery, live data and offline reads, Vite and Next.js adapters.",
       "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-js/SKILL.md",
-      "sha256": "fcba69d5a4b50428e55a7629ce977844409c363998f6c99f973b5c3a01e62350"
+      "sha256": "f2ffc6b483abc4bf7ca37cfe83a16a6aa7efa7e8d9d374236c419027750664d2"
     },
     {
       "name": "tako-sdk-rust",
       "type": "framework",
       "description": "tako.sh Rust SDK: bootstrap secrets, listener binding, and Axum serving with Tako internal status handling, authenticated presence, and live Stores with cached offline reads.",
       "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-rust/SKILL.md",
-      "sha256": "13c802eb4ad64b26b22047ba4d538f3ee80831eea798f69382f7887686a06130"
+      "sha256": "cd567a6d4ddc1dcddccce01fc29d5aa1fae5624c36b9eba210505c00505363b5"
     }
   ]
 }

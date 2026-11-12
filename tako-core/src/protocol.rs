@@ -397,11 +397,35 @@ pub enum Command {
     /// Server-side channel publish. Used by app/workflow code inside a
     /// Tako-managed process — goes straight to the channel store instead
     /// of round-tripping through the HTTPS proxy. `payload` mirrors the
-    /// `ChannelPublishPayload` wire shape (`{ type, data }`).
+    /// `ChannelPublishPayload` wire shape (`{ type, data }`). `channel` and
+    /// `params` together select the stream; omitted params select the
+    /// channel's unparameterized stream. `build` is the publisher's
+    /// `TAKO_BUILD`: the server checks `params` against that build's channel
+    /// definition when it has loaded it.
     ChannelPublish {
         app: String,
         channel: String,
+        #[serde(default)]
+        params: serde_json::Value,
+        #[serde(default)]
+        build: Option<String>,
         payload: serde_json::Value,
+    },
+    /// Server-side close of a channel stream: appends a durable terminal
+    /// marker after which the stream accepts no publishes. `channel`, `params`
+    /// and `build` select and check the stream as for `ChannelPublish`.
+    /// `lifecycle` is the channel definition's lifecycle, the shape a publish
+    /// payload's `lifecycle` has; ephemeral streams cannot be closed. Closing
+    /// a closed stream succeeds.
+    ChannelClose {
+        app: String,
+        channel: String,
+        #[serde(default)]
+        params: serde_json::Value,
+        #[serde(default)]
+        build: Option<String>,
+        #[serde(default)]
+        lifecycle: Option<serde_json::Value>,
     },
     /// Authenticated app-to-app call. `app` is the caller, never the destination.
     NetworkCall {

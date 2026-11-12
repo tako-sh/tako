@@ -9,6 +9,11 @@ async fn public_presence_has_a_distinct_namespace_and_ws_transport() {
     assert_eq!(metadata[0]["channel"], "tako.presence:chat");
     assert_eq!(metadata[0]["auth"], false);
     assert_eq!(metadata[0]["transport"], "ws");
+    // Without a schema the space takes no params: tako-server rejects undeclared ones.
+    assert_eq!(
+        metadata[0]["paramsSchema"],
+        json!({"type": "object", "additionalProperties": false})
+    );
     let result = registry.authorize(input("chat", None, None)).await.unwrap();
     assert!(result.ok);
     assert_eq!(result.subject, None);

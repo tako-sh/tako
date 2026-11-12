@@ -3,10 +3,12 @@ import { createServer } from "node:net";
 import type { Server } from "node:net";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { Channel, setChannelSocketPublisher } from "../src/channels";
+import { Channel, setChannelSocketCloser, setChannelSocketPublisher } from "../src/channels";
+import { defineChannel } from "../src/channels/define";
 import {
   APP_NAME_ENV,
   assertInternalSocketEnvConsistency,
+  BUILD_ENV,
   callInternal,
   closeInternalSocketPoolsForTests,
   installChannelSocketPublisherFromEnv,
@@ -18,6 +20,7 @@ import {
 function clearEnv(): void {
   delete process.env[INTERNAL_SOCKET_ENV];
   delete process.env[APP_NAME_ENV];
+  delete process.env[BUILD_ENV];
 }
 
 describe("internalSocketFromEnv", () => {
@@ -300,6 +303,7 @@ describe("installChannelSocketPublisherFromEnv", () => {
     closeInternalSocketPoolsForTests();
     clearEnv();
     setChannelSocketPublisher(null);
+    setChannelSocketCloser(null);
     dir = await mkdtemp(join("/tmp", "tako-chan-sock-"));
   });
 
@@ -307,6 +311,7 @@ describe("installChannelSocketPublisherFromEnv", () => {
     closeInternalSocketPoolsForTests();
     clearEnv();
     setChannelSocketPublisher(null);
+    setChannelSocketCloser(null);
     if (server) {
       server.close();
       server = null;
@@ -365,5 +370,143 @@ describe("installChannelSocketPublisherFromEnv", () => {
       type: "message",
       data: { text: "hi" },
     });
+  });
+
+  test("sends the stream params and publisher build with each publish", async () => {
+    const sock = join(dir, "chan.sock");
+    const commands: unknown[] = [];
+    server = await new Promise<Server>((resolve, reject) => {
+      const s = createServer((socket) => {
+        let buffered = "";
+        socket.on("data", (chunk: Buffer) => {
+          buffered += chunk.toString("utf8");
+          let nl = buffered.indexOf("\n");
+          while (nl !== -1) {
+            const command = JSON.parse(buffered.slice(0, nl)) as { channel: string };
+            buffered = buffered.slice(nl + 1);
+            commands.push(command);
+            socket.write(
+              `${JSON.stringify({ status: "ok", data: { id: "1", channel: command.channel, type: "m", data: 1 } })}\n`,
+            );
+            nl = buffered.indexOf("\n");
+          }
+        });
+      });
+      s.once("error", reject);
+      s.listen(sock, () => resolve(s));
+    });
+
+    process.env[INTERNAL_SOCKET_ENV] = sock;
+    process.env[APP_NAME_ENV] = "demo/production";
+    process.env[BUILD_ENV] = "v7";
+    expect(installChannelSocketPublisherFromEnv()).toBe(true);
+
+    const board = defineChannel("board", {
+      paramsSchema: (t) => t.Object({ base: t.String(), page: t.Optional(t.Integer()) }),
+      ephemeral: true,
+    });
+    await board({ base: "north", page: 2 }).publish({ type: "m", data: 1 });
+    await board({ base: "north", page: undefined }).publish({ type: "m", data: 1 });
+    delete process.env[BUILD_ENV];
+    await new Channel("plain").publish({ type: "m", data: 1 });
+
+    const lifecycle = {
+      ephemeral: true,
+      inactivityTtlMs: 0,
+      keepaliveIntervalMs: 25000,
+      maxConnectionLifetimeMs: 7200000,
+    };
+    expect(commands).toEqual([
+      {
+        command: "channel_publish",
+        app: "demo/production",
+        channel: "board",
+        params: { base: "north", page: 2 },
+        build: "v7",
+        payload: { type: "m", data: 1, lifecycle },
+      },
+      {
+        command: "channel_publish",
+        app: "demo/production",
+        channel: "board",
+        params: { base: "north" },
+        build: "v7",
+        payload: { type: "m", data: 1, lifecycle },
+      },
+      {
+        command: "channel_publish",
+        app: "demo/production",
+        channel: "plain",
+        payload: { type: "m", data: 1 },
+      },
+    ]);
+  });
+
+  test("closes a stream with its params, build, and lifecycle and surfaces rejections", async () => {
+    const sock = join(dir, "chan.sock");
+    const commands: unknown[] = [];
+    server = await new Promise<Server>((resolve, reject) => {
+      const s = createServer((socket) => {
+        let buffered = "";
+        socket.on("data", (chunk: Buffer) => {
+          buffered += chunk.toString("utf8");
+          let nl = buffered.indexOf("\n");
+          while (nl !== -1) {
+            const command = JSON.parse(buffered.slice(0, nl)) as { channel: string };
+            buffered = buffered.slice(nl + 1);
+            commands.push(command);
+            const reply =
+              command.channel === "reply"
+                ? {
+                    status: "ok",
+                    data: { id: "c1", channel: "reply", type: "tako.close", data: null },
+                  }
+                : {
+                    status: "error",
+                    message:
+                      "channel close failed: bad request: only channel streams can be closed",
+                  };
+            socket.write(`${JSON.stringify(reply)}\n`);
+            nl = buffered.indexOf("\n");
+          }
+        });
+      });
+      s.once("error", reject);
+      s.listen(sock, () => resolve(s));
+    });
+
+    process.env[INTERNAL_SOCKET_ENV] = sock;
+    process.env[APP_NAME_ENV] = "demo/production";
+    process.env[BUILD_ENV] = "v7";
+    expect(installChannelSocketPublisherFromEnv()).toBe(true);
+
+    const reply = defineChannel("reply", {
+      paramsSchema: (t) => t.Object({ requestId: t.String(), page: t.Optional(t.Integer()) }),
+      replayWindowMs: 60_000,
+    });
+    const marker = await reply({ requestId: "r1", page: "2" as unknown as number }).close();
+    expect(marker).toEqual({ id: "c1", channel: "reply", type: "tako.close", data: null });
+    delete process.env[BUILD_ENV];
+    const rejected = await new Channel("other").close().catch((error: unknown) => error);
+    expect(rejected).toBeInstanceOf(TakoError);
+    expect((rejected as TakoError).code).toBe("TAKO_RPC_ERROR");
+    expect(((rejected as TakoError).cause as Error).message).toContain("only channel streams");
+
+    expect(commands).toEqual([
+      {
+        command: "channel_close",
+        app: "demo/production",
+        channel: "reply",
+        params: { requestId: "r1", page: 2 },
+        build: "v7",
+        lifecycle: {
+          replayWindowMs: 60_000,
+          inactivityTtlMs: 0,
+          keepaliveIntervalMs: 25000,
+          maxConnectionLifetimeMs: 7200000,
+        },
+      },
+      { command: "channel_close", app: "demo/production", channel: "other" },
+    ]);
   });
 });

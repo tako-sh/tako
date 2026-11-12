@@ -5,7 +5,9 @@ use std::{
     sync::{Arc, mpsc},
     time::{Duration, Instant},
 };
-use tako_channels::{ChannelAuthResponse, ChannelLifecycle, ChannelPublishPayload};
+use tako_channels::{
+    ChannelError, ChannelLifecycle, ChannelMessage, ChannelPublishPayload, TrustedPublication,
+};
 use tako_network::AppEnv;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use zeroize::Zeroizing;
@@ -19,7 +21,7 @@ struct Publication {
     lifecycle: Option<ChannelLifecycle>,
     postgres_url: Option<Zeroizing<String>>,
     deadline: Instant,
-    reply: mpsc::SyncSender<Result<serde_json::Value, String>>,
+    reply: mpsc::SyncSender<Result<ChannelMessage, String>>,
     _bytes: OwnedSemaphorePermit,
 }
 
@@ -67,16 +69,18 @@ impl BlockingPublisher {
             budget: Arc::new(Semaphore::new(8 * MAX_PAYLOAD)),
         })
     }
+    /// Publish a trusted publication. The acknowledgement names the public
+    /// channel, never the stream key the broker stores it under.
     pub(crate) fn publish(
         &self,
         app: &str,
-        channel: &str,
-        payload: serde_json::Value,
+        publication: &TrustedPublication,
         postgres_url: Option<String>,
     ) -> Result<serde_json::Value, String> {
         let deadline = Instant::now() + DEADLINE;
         let app = app_scope(app).map_err(|_| "invalid channel app scope")?;
         let postgres_url = postgres_url.map(Zeroizing::new);
+        let channel = publication.stream.key().to_owned();
         if channel.len() > 1024
             || postgres_url
                 .as_ref()
@@ -84,7 +88,8 @@ impl BlockingPublisher {
         {
             return Err("native channel publication exceeds limits".into());
         }
-        let encoded = serde_json::to_vec(&payload).map_err(|_| "invalid channel payload")?;
+        let encoded =
+            serde_json::to_vec(&publication.payload).map_err(|_| "invalid channel payload")?;
         if encoded.len() > MAX_PAYLOAD {
             return Err("native channel publication exceeds limits".into());
         }
@@ -93,37 +98,27 @@ impl BlockingPublisher {
             .clone()
             .try_acquire_many_owned((encoded.len() + 20 * 1024) as u32)
             .map_err(|_| "native channel publisher is busy")?;
-        let channel = tako_channels::live_store::publication_channel(channel, &payload)
-            .map_err(|_| "invalid channel publication")?;
-        let lifecycle = payload
-            .get("lifecycle")
-            .cloned()
-            .map(serde_json::from_value::<ChannelLifecycle>)
-            .transpose()
-            .map_err(|_| "invalid channel lifecycle")?;
-        let payload = serde_json::from_value(payload).map_err(|_| "invalid channel payload")?;
         let (reply, receive) = mpsc::sync_channel(1);
         self.sender
             .try_send(Publication {
                 app,
                 channel,
-                payload,
-                lifecycle,
+                payload: publication.payload.clone(),
+                lifecycle: publication.lifecycle.clone(),
                 postgres_url,
                 deadline,
                 reply,
                 _bytes: bytes,
             })
             .map_err(|_| "native channel publisher is unavailable or busy")?;
-        receive
+        let message = receive
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .map_err(|_| "native channel publication acknowledgement timed out".to_string())?
+            .map_err(|_| "native channel publication acknowledgement timed out".to_string())??;
+        serde_json::to_value(publication.stream.public(message))
+            .map_err(|_| "invalid native channel acknowledgement".into())
     }
 }
-async fn send(
-    link: &dyn BrokerLink,
-    publication: &Publication,
-) -> Result<serde_json::Value, String> {
+async fn send(link: &dyn BrokerLink, publication: &Publication) -> Result<ChannelMessage, String> {
     link.register(
         publication.app.clone(),
         publication
@@ -133,37 +128,26 @@ async fn send(
     )
     .await
     .map_err(|_| "native channel registration rejected or unavailable")?;
-    if let Some(lifecycle) = &publication.lifecycle {
-        link.sync(
-            publication.app.clone(),
-            publication.channel.clone(),
-            ChannelAuthResponse {
-                ok: true,
-                subject: None,
-                transport: None,
-                ephemeral: lifecycle.ephemeral,
-                replay_window_ms: lifecycle.replay_window_ms,
-                inactivity_ttl_ms: lifecycle.inactivity_ttl_ms,
-                keepalive_interval_ms: lifecycle.keepalive_interval_ms,
-                max_connection_lifetime_ms: lifecycle.max_connection_lifetime_ms,
-            },
-        )
-        .await
-        .map_err(|_| "native channel lifecycle sync rejected or unavailable")?;
-    }
-    let message = link
-        .publish(
-            publication.app.clone(),
-            publication.channel.clone(),
-            publication.payload.clone(),
-            publication
-                .lifecycle
-                .as_ref()
-                .is_some_and(|lifecycle| lifecycle.ephemeral),
-        )
-        .await
-        .map_err(|_| "native channel publication rejected or acknowledgement lost")?;
-    serde_json::to_value(message).map_err(|_| "invalid native channel acknowledgement".into())
+    // The lifecycle travels with the publish: the broker applies it only once
+    // the stream accepts the message.
+    link.publish(
+        publication.app.clone(),
+        publication.channel.clone(),
+        publication.payload.clone(),
+        publication
+            .lifecycle
+            .as_ref()
+            .is_some_and(|lifecycle| lifecycle.ephemeral),
+        publication.lifecycle.clone(),
+    )
+    .await
+    .map_err(|error| {
+        if crate::native_channels::is_stream_closed(&error) {
+            ChannelError::StreamClosed.to_string()
+        } else {
+            "native channel publication rejected or acknowledgement lost".into()
+        }
+    })
 }
 
 #[cfg(test)]

@@ -1149,3 +1149,95 @@ test.each([
     }
   },
 );
+
+describe("useChannel closed streams", () => {
+  test("SSE from the start replays, reports closed once, and never reconnects", () => {
+    const sources: MockEventSource[] = [];
+    const onClose: string[] = [];
+    const received: unknown[] = [];
+    const { result } = renderHook(() =>
+      useChannel<string>("reply", {
+        params: { requestId: "r1" },
+        from: "start",
+        baseUrl: "http://test",
+        eventSourceFactory: (url: string) => {
+          const source = new MockEventSource(url);
+          sources.push(source);
+          return source;
+        },
+        onMessage: (msg) => received.push(msg.data),
+        onClose: () => onClose.push("closed"),
+      }),
+    );
+    expect(sources[0]!.url).toBe("http://test/_tako/channels/reply?requestId=r1&from=start");
+
+    act(() => {
+      sources[0]!.emitOpen();
+      sources[0]!.emitMessage({ id: "1", channel: "reply", type: "chunk", data: "Hel" });
+      sources[0]!.emitMessage({ id: "2", channel: "reply", type: "chunk", data: "lo" });
+      sources[0]!.dispatchEvent(new MessageEvent("tako.close", { data: "{}", lastEventId: "3" }));
+    });
+
+    expect(result.current.messages.map((msg) => msg.data)).toEqual(["Hel", "lo"]);
+    expect(received).toEqual(["Hel", "lo"]);
+    expect(result.current.closed).toBe(true);
+    expect(result.current.status).toBe("closed");
+    expect(result.current.error).toBeNull();
+    expect(sources[0]!.closed).toBe(true);
+    expect(onClose).toEqual(["closed"]);
+    expect(sources).toHaveLength(1);
+
+    act(() => {
+      sources[0]!.emitError();
+    });
+    expect(result.current.status).toBe("closed");
+  });
+
+  test("WebSocket from the start resumes by cursor, then stops at 4200", async () => {
+    const sockets: MockWebSocket[] = [];
+    let closes = 0;
+    const { result } = renderHook(() =>
+      useChannel<string>("reply", {
+        transport: "ws",
+        params: { requestId: "r1" },
+        from: "start",
+        baseUrl: "http://test",
+        webSocketFactory: (url: string) => {
+          const socket = new MockWebSocket(url);
+          sockets.push(socket);
+          return socket;
+        },
+        onClose: () => closes++,
+      }),
+    );
+    expect(sockets[0]!.url).toBe("ws://test/_tako/channels/reply?requestId=r1&from=start");
+
+    act(() => {
+      sockets[0]!.emitOpen();
+      sockets[0]!.emitMessage({ id: "m1", channel: "reply", type: "chunk", data: "Hel" });
+      sockets[0]!.emitClose(1006);
+    });
+    expect(result.current.closed).toBe(false);
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 1500));
+    });
+    expect(sockets).toHaveLength(2);
+    expect(sockets[1]!.url).toBe("ws://test/_tako/channels/reply?requestId=r1&last_message_id=m1");
+
+    act(() => {
+      sockets[1]!.emitOpen();
+      sockets[1]!.emitMessage({ id: "m2", channel: "reply", type: "chunk", data: "lo" });
+      sockets[1]!.emitClose(4200);
+    });
+    expect(result.current.messages.map((msg) => msg.data)).toEqual(["Hel", "lo"]);
+    expect(result.current.status).toBe("closed");
+    expect(result.current.closed).toBe(true);
+    expect(closes).toBe(1);
+    expect(() => result.current.send?.({ type: "late" })).toThrow("stream is closed");
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 1500));
+    });
+    expect(sockets).toHaveLength(2);
+  });
+});

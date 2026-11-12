@@ -43,7 +43,8 @@ pub(crate) fn classify(command: &Command) -> CommandClass<'_> {
         | Command::DeferRun { .. }
         | Command::WaitForEvent { .. }
         | Command::NetworkCall { .. }
-        | Command::ChannelPublish { .. } => CommandClass::InternalWorker,
+        | Command::ChannelPublish { .. }
+        | Command::ChannelClose { .. } => CommandClass::InternalWorker,
         Command::PrepareRelease { app, .. }
         | Command::PrepareReleaseUpload { app, .. }
         | Command::PrepareDeploy { app, .. }
@@ -318,7 +319,8 @@ pub(crate) fn authorize_command(
         | Command::DeferRun { .. }
         | Command::WaitForEvent { .. }
         | Command::NetworkCall { .. }
-        | Command::ChannelPublish { .. } => {
+        | Command::ChannelPublish { .. }
+        | Command::ChannelClose { .. } => {
             return Err(Denial(
                 "Command is not an application management operation.",
             ));

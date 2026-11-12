@@ -77,6 +77,10 @@ impl Client {
         serde_json::from_value(self.send_blocking(&bytes)?).map_err(io::Error::other)
     }
 
+    /// Publish to a channel owned by an app on this private network. `params`
+    /// select the recipient channel's stream: only subscribers bound to the
+    /// same flat string, number, or boolean params receive the message; `{}`
+    /// selects the unparameterized stream.
     pub fn publish_blocking(
         &self,
         address: &str,
@@ -124,6 +128,7 @@ impl Client {
         serde_json::from_value(self.send(&bytes).await?).map_err(io::Error::other)
     }
 
+    /// Async form of [`Client::publish_blocking`].
     #[cfg(all(unix, feature = "tokio"))]
     pub async fn publish(
         &self,

@@ -27,6 +27,7 @@ fn remote_gap_invalidates_replay_for_later_connections_and_other_open_handles() 
         channel: "events".into(),
         payload: payload("one"),
         ephemeral: false,
+        lifecycle: None,
     };
     first.ingest_remote(&event).unwrap();
     let before_gap = first.replay_cursor("events", None).unwrap();
@@ -118,7 +119,8 @@ fn replay_cursor_fences_database_stream_epoch_and_future() {
     for (store, stream, value) in [
         (&b, "events", cursor(&message)),
         (&a, "other", cursor(&message)),
-        (&a, "events", ReplayCursor::postgres(1)),
+        (&a, "events", ReplayCursor::unscoped(1)),
+        (&a, "events", ReplayCursor::postgres("events", 1)),
         (
             &a,
             "events",
@@ -130,10 +132,7 @@ fn replay_cursor_fences_database_stream_epoch_and_future() {
         (
             &a,
             "events",
-            ReplayCursor {
-                scope: Some(([0; 16], cursor(&message).scope.unwrap().1)),
-                ..cursor(&message)
-            },
+            ReplayCursor::sqlite([0; 16], "events", cursor(&message).position),
         ),
     ] {
         assert!(matches!(

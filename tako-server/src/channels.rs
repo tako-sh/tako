@@ -112,9 +112,177 @@ pub(crate) async fn fetch_channel_registry(
     }
 }
 
+/// Bind a server-side publish to its stream. When the publisher's build has a
+/// loaded channel registry, the channel must be defined there and its params
+/// are checked like subscribe params, so a mistyped binding fails instead of
+/// starting a stream nobody reads. Publishing never loads the registry: that
+/// would wait on, or wake, an app instance, so an unloaded registry only gets
+/// the shape check.
+pub(crate) fn trusted_publication(
+    registry: &registry::ChannelRegistry,
+    request: tako_workflows::ChannelPublishRequest<'_>,
+) -> Result<TrustedPublication, ChannelError> {
+    let publication = parse_trusted_publication(&request)?;
+    let Some(build) = request.build else {
+        return Ok(publication);
+    };
+    match registry.cached(request.app, build, request.channel) {
+        registry::CachedDefinition::NotLoaded => {}
+        registry::CachedDefinition::Absent => {
+            return Err(ChannelError::BadRequest(format!(
+                "channel '{}' is not defined by build {build}",
+                request.channel
+            )));
+        }
+        registry::CachedDefinition::Defined(definition) => {
+            validate_publication(&definition, &publication, request.params)?;
+        }
+    }
+    Ok(publication)
+}
+
+/// A publish appends its payload; a close appends the stream's terminal marker.
+pub(crate) fn parse_trusted_publication(
+    request: &tako_workflows::ChannelPublishRequest<'_>,
+) -> Result<TrustedPublication, ChannelError> {
+    match &request.write {
+        tako_workflows::ChannelWrite::Publish(payload) => {
+            TrustedPublication::parse(request.channel, request.params, payload.clone())
+        }
+        tako_workflows::ChannelWrite::Close { lifecycle } => {
+            TrustedPublication::close(request.channel, request.params, lifecycle.clone())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn trusted_publications_check_params_against_the_publishers_loaded_build() {
+        let registry = registry::ChannelRegistry::new();
+        let definition: ChannelDefinitionMeta = serde_json::from_value(serde_json::json!({
+            "channel": "chat",
+            "paramsSchema": {
+                "type": "object",
+                "properties": {"room": {"type": "string"}},
+                "required": ["room"],
+                "additionalProperties": false
+            },
+            "auth": false
+        }))
+        .unwrap();
+        registry
+            .get_or_load("app/production", "v1", "chat", || async {
+                Ok(vec![definition])
+            })
+            .await
+            .unwrap();
+        let publish = |params: serde_json::Value, build: Option<&str>| {
+            trusted_publication(
+                &registry,
+                tako_workflows::ChannelPublishRequest {
+                    app: "app/production",
+                    channel: "chat",
+                    params: &params,
+                    build,
+                    write: tako_workflows::ChannelWrite::Publish(
+                        serde_json::json!({"type": "msg", "data": 1}),
+                    ),
+                },
+            )
+        };
+        let bound = publish(serde_json::json!({"room": "a"}), Some("v1")).unwrap();
+        assert_eq!(
+            bound.stream,
+            ChannelStream::new("chat", &serde_json::json!({"room": "a"}))
+        );
+        for params in [serde_json::json!({"rom": "a"}), serde_json::Value::Null] {
+            assert!(matches!(
+                publish(params, Some("v1")),
+                Err(ChannelError::BadRequest(_))
+            ));
+        }
+        // A loaded build that does not define the channel rejects it, so a
+        // close cannot leave a durable marker on a channel nobody defined.
+        for write in [
+            tako_workflows::ChannelWrite::Publish(serde_json::json!({"type": "msg", "data": 1})),
+            tako_workflows::ChannelWrite::Close { lifecycle: None },
+        ] {
+            let result = trusted_publication(
+                &registry,
+                tako_workflows::ChannelPublishRequest {
+                    app: "app/production",
+                    channel: "missing",
+                    params: &serde_json::Value::Null,
+                    build: Some("v1"),
+                    write,
+                },
+            );
+            assert!(
+                matches!(&result, Err(ChannelError::BadRequest(message)) if message.contains("'missing' is not defined")),
+                "{result:?}"
+            );
+        }
+        // Without a loaded registry for the publisher's build, the shape is
+        // still checked but the schema is not.
+        assert!(publish(serde_json::json!({"rom": "a"}), Some("v2")).is_ok());
+        assert!(publish(serde_json::json!({"rom": "a"}), None).is_ok());
+        assert!(publish(serde_json::json!(["a"]), None).is_err());
+    }
+
+    #[tokio::test]
+    async fn trusted_closes_are_checked_like_publishes_and_only_on_durable_channels() {
+        let registry = registry::ChannelRegistry::new();
+        let definition = |channel: &str, ephemeral: bool| -> ChannelDefinitionMeta {
+            serde_json::from_value(serde_json::json!({
+                "channel": channel,
+                "paramsSchema": {
+                    "type": "object",
+                    "properties": {"room": {"type": "string"}},
+                    "required": ["room"],
+                    "additionalProperties": false
+                },
+                "auth": false,
+                "ephemeral": ephemeral
+            }))
+            .unwrap()
+        };
+        registry
+            .get_or_load("app/production", "v1", "chat", || async {
+                Ok(vec![definition("chat", false), definition("live", true)])
+            })
+            .await
+            .unwrap();
+        let close = |channel: &str, params: serde_json::Value| {
+            trusted_publication(
+                &registry,
+                tako_workflows::ChannelPublishRequest {
+                    app: "app/production",
+                    channel,
+                    params: &params,
+                    build: Some("v1"),
+                    write: tako_workflows::ChannelWrite::Close { lifecycle: None },
+                },
+            )
+        };
+        let closed = close("chat", serde_json::json!({"room": "a"})).unwrap();
+        assert!(closed.is_close());
+        assert_eq!(
+            closed.stream,
+            ChannelStream::new("chat", &serde_json::json!({"room": "a"}))
+        );
+        for (channel, params) in [
+            ("chat", serde_json::json!({"rom": "a"})),
+            ("live", serde_json::json!({"room": "a"})),
+        ] {
+            assert!(matches!(
+                close(channel, params),
+                Err(ChannelError::BadRequest(_))
+            ));
+        }
+    }
 
     #[test]
     fn channel_db_path_is_scoped_by_deployment_environment() {

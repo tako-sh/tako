@@ -249,7 +249,7 @@ The same React and browser APIs work with JavaScript, Go, and Rust backends.
 
 ## Development And Production Storage
 
-`tako dev` discovers and watches JavaScript store definitions under `<app_root>/stores/`, restarts the app when they change, and refreshes generated metadata. Store reads and subscriptions enforce the same params validation and authorization as production. This is stricter than the existing permissive local channel and presence subscriptions.
+`tako dev` discovers and watches JavaScript store definitions under `<app_root>/stores/`, restarts the app when they change, and refreshes generated metadata. Store reads and subscriptions enforce the same params validation and authorization as production. Channel and presence subscriptions are authorized the same way.
 
 The dev daemon keeps notification state in memory. Single-server production uses Tako-managed SQLite by default. Native brokers replicate bounded notification history and fan out invalidations to trusted server peers. Legacy multi-server deployments require shared `postgres_url`. Native multi-server notifications can use SQLite without that credential; an explicitly configured Postgres backend remains in use. Configure it explicitly for legacy multi-server Go and Rust apps using inline registrations. After a replay gap, the SDK reloads the authorized snapshot. Your database remains the source of truth; this notification storage does not replace it.
 

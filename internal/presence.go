@@ -6,7 +6,8 @@ const presenceChannelPrefix = "tako.presence:"
 
 // PresenceDefinition configures membership in a named presence space.
 // ParamsSchema scopes membership by validated params; Auth and Verify guard
-// access to that scope before its members are returned.
+// access to that scope before its members are returned. Its properties
+// cannot be named "from" or "last_message_id" (reserved on channel routes).
 type PresenceDefinition struct {
 	ParamsSchema json.RawMessage
 	Auth         *ChannelAuthScheme

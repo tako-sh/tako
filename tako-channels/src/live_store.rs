@@ -1,8 +1,8 @@
 //! Read-only Store subscriptions built on the channel transport.
 
 use crate::{
-    ChannelAuthResponse, ChannelAuthScheme, ChannelDefinitionMeta, ChannelError,
-    ChannelHeaderValue, ChannelOperation, ChannelPublishPayload, ChannelStore,
+    ChannelAuthResponse, ChannelDefinitionMeta, ChannelError, ChannelOperation,
+    ChannelPublishPayload, ChannelStore,
 };
 use bytes::Bytes;
 use percent_encoding::percent_decode_str;
@@ -124,28 +124,9 @@ pub fn parse_store_route(path: &str) -> std::result::Result<Option<String>, Chan
 /// The registry and verifier use the base name; storage uses this opaque,
 /// bounded key. Numeric query coercion may produce 1.0 where an SDK sends 1.
 pub fn store_scope(channel: &str, params: &Value) -> String {
-    fn normalize(value: &mut Value) {
-        match value {
-            Value::Object(object) => object.values_mut().for_each(normalize),
-            Value::Array(values) => values.iter_mut().for_each(normalize),
-            Value::Number(number) if number.is_f64() => {
-                let value = number.as_f64().expect("JSON numbers are finite");
-                if value.fract() == 0.0 {
-                    if value >= i64::MIN as f64 && value < i64::MAX as f64 {
-                        *number = (value as i64).into();
-                    } else if value >= 0.0 && value < u64::MAX as f64 {
-                        *number = (value as u64).into();
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    let mut params = params.clone();
-    normalize(&mut params);
     format!(
         "{STORE_CHANNEL_PREFIX}{}",
-        crate::presence_scope(channel, &params)
+        crate::stream::params_scope(channel, params)
     )
 }
 
@@ -292,7 +273,6 @@ pub async fn load_store(
 }
 
 /// Local dev uses the same metadata, typed params, and authorization as production.
-/// Ordinary dev channels retain their existing permissive behavior.
 pub async fn authorize_store(
     endpoint: &str,
     internal_host: &str,
@@ -316,31 +296,13 @@ pub async fn authorize_store(
         .find(|definition| definition.channel == channel)
         .ok_or(ChannelError::NotDefined)?;
     let params = validate_store_query(&definition.params_schema, query)?;
-    let (header, cookie) = match &definition.auth {
-        ChannelAuthScheme::Public => (None, None),
-        ChannelAuthScheme::Required {
-            header_name,
-            cookie_name,
-        } => {
-            let header = header_name
-                .as_ref()
-                .and_then(|name| headers.get(&name.to_ascii_lowercase()))
-                .map(|raw| ChannelHeaderValue::parse(raw));
-            let cookie = cookie_name.as_ref().and_then(|name| {
-                headers.get("cookie")?.split(';').find_map(|pair| {
-                    let (key, value) = pair.trim().split_once('=')?;
-                    (key == name).then(|| value.to_owned())
-                })
-            });
-            if (header_name.is_some() || cookie_name.is_some())
-                && header.is_none()
-                && cookie.is_none()
-            {
-                return Err(ChannelError::Unauthorized);
-            }
-            (header, cookie)
-        }
-    };
+    let (header, cookie) = crate::authorize::extract_credentials(headers, &definition.auth);
+    if crate::authorize::auth_scheme_requires_declared_credentials(&definition.auth)
+        && header.is_none()
+        && cookie.is_none()
+    {
+        return Err(ChannelError::Unauthorized);
+    }
     let auth = crate::authorize_channel_request(
         endpoint,
         internal_host,

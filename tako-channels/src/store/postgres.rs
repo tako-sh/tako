@@ -1,15 +1,28 @@
 use ::postgres::{Client, NoTls};
 use parking_lot::Mutex;
 
-use crate::{ChannelAuthResponse, ChannelError, ChannelMessage, ChannelPublishPayload};
+use crate::{
+    CLOSE_MESSAGE_TYPE, ChannelAuthResponse, ChannelError, ChannelLifecycle, ChannelMessage,
+    ChannelPublishPayload,
+};
 
-use super::{channel_message_from_row, now_unix_ms, resolve_replay_cursor};
+use super::{IDLE_STREAM_GRACE_MS, channel_message_from_row, now_unix_ms, resolve_replay_cursor};
+
+/// Newest allocated message id. A stream is born caught up with the store, so a
+/// cursor issued before earlier bookkeeping was released is stale.
+const BORN_AT_SQL: &str = "COALESCE(pg_sequence_last_value(
+    pg_get_serial_sequence('{schema}.channel_messages', 'id')::regclass), 0)";
 
 pub(super) struct PostgresChannelStore {
     pub(super) client: Mutex<Client>,
     pub(super) schema: String,
     pub(super) app_id: String,
+    /// The last stream age maintenance visited; the next tick continues after it.
+    prune_cursor: Mutex<String>,
 }
+
+/// Streams one maintenance tick visits for age pruning, and releases at most.
+const MAINTENANCE_BATCH: i64 = 1_000;
 
 impl PostgresChannelStore {
     pub(super) fn open_reader(url: &str, schema: &str, app_id: &str) -> Result<Self, ChannelError> {
@@ -25,6 +38,7 @@ impl PostgresChannelStore {
             client: Mutex::new(client),
             schema: schema.into(),
             app_id: app_id.into(),
+            prune_cursor: Mutex::default(),
         })
     }
 
@@ -36,14 +50,20 @@ impl PostgresChannelStore {
             client: Mutex::new(client),
             schema: schema.to_string(),
             app_id: app_id.to_string(),
+            prune_cursor: Mutex::default(),
         })
     }
 
+    /// Append one message, or close the stream when `payload` is the close
+    /// marker. Returns whether a row was appended: closing a closed stream
+    /// returns its marker instead. `lifecycle` is applied to the stream only
+    /// once the close check passed, so a rejected publish changes nothing.
     pub(super) fn append(
         &self,
         channel: &str,
         payload: &ChannelPublishPayload,
-    ) -> Result<ChannelMessage, ChannelError> {
+        lifecycle: Option<&ChannelLifecycle>,
+    ) -> Result<(ChannelMessage, bool), ChannelError> {
         let data_json = serde_json::to_string(&payload.data)
             .map_err(|e| ChannelError::BadRequest(format!("serialize payload: {e}")))?;
         let mut client = self.client.lock();
@@ -58,20 +78,37 @@ impl PostgresChannelStore {
             &[&format!("{}:{}", self.schema, self.app_id)],
         )
         .map_err(|e| ChannelError::Storage(e.to_string()))?;
-        tx.execute(&format!(
-            "INSERT INTO {}.channel_metadata (app_id, channel, replay_window_ms, inactivity_ttl_ms, keepalive_interval_ms, max_connection_lifetime_ms, last_activity_unix_ms)
-             VALUES ($1, $2, 600000, 0, 25000, 7200000, $3) ON CONFLICT(app_id, channel) DO NOTHING", self.schema
-        ), &[&self.app_id, &channel, &now_unix_ms()]).map_err(|e| ChannelError::Storage(e.to_string()))?;
-        tx.execute(
-            &format!(
-                "UPDATE {}.channel_metadata
-                 SET last_activity_unix_ms = $3
-                 WHERE app_id = $1 AND channel = $2",
-                self.schema
-            ),
-            &[&self.app_id, &channel, &now_unix_ms()],
-        )
-        .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        // The app lock orders this check before every other server's append.
+        if let Some(marker) = self.first_close_marker(&mut tx, channel)? {
+            if payload.r#type == CLOSE_MESSAGE_TYPE {
+                tx.commit()
+                    .map_err(|e| ChannelError::Storage(e.to_string()))?;
+                return Ok((marker, false));
+            }
+            return Err(ChannelError::StreamClosed);
+        }
+        self.admit_stream(&mut tx, channel)?;
+        let now = now_unix_ms();
+        match lifecycle {
+            Some(lifecycle) => self.upsert_stream(&mut tx, channel, lifecycle, now)?,
+            None => {
+                let defaults = ChannelLifecycle::default();
+                tx.execute(&format!(
+                    "INSERT INTO {schema}.channel_metadata (app_id, channel, replay_window_ms, inactivity_ttl_ms, keepalive_interval_ms, max_connection_lifetime_ms, last_activity_unix_ms, latest_message_id, highest_deleted_message_id)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, {born}, {born})
+                     ON CONFLICT(app_id, channel) DO UPDATE SET last_activity_unix_ms = excluded.last_activity_unix_ms",
+                    schema = self.schema, born = self.born_at(),
+                ), &[
+                    &self.app_id,
+                    &channel,
+                    &(defaults.replay_window_ms as i64),
+                    &(defaults.inactivity_ttl_ms as i64),
+                    &(defaults.keepalive_interval_ms as i64),
+                    &(defaults.max_connection_lifetime_ms as i64),
+                    &now,
+                ]).map_err(|e| ChannelError::Storage(e.to_string()))?;
+            }
+        }
         let row = tx
             .query_one(
                 &format!(
@@ -89,13 +126,46 @@ impl PostgresChannelStore {
         tx.commit()
             .map_err(|e| ChannelError::Storage(e.to_string()))?;
 
-        Ok(ChannelMessage {
-            id: id.to_string(),
-            event_id: None,
-            channel: channel.to_string(),
-            r#type: payload.r#type.clone(),
-            data: payload.data.clone(),
-        })
+        Ok((
+            ChannelMessage {
+                id: id.to_string(),
+                event_id: None,
+                channel: channel.to_string(),
+                r#type: payload.r#type.clone(),
+                data: payload.data.clone(),
+            },
+            true,
+        ))
+    }
+
+    fn first_close_marker(
+        &self,
+        client: &mut impl ::postgres::GenericClient,
+        channel: &str,
+    ) -> Result<Option<ChannelMessage>, ChannelError> {
+        client
+            .query_opt(
+                &format!(
+                    "SELECT id, channel, type, data_json
+                     FROM {}.channel_messages
+                     WHERE app_id = $1 AND channel = $2 AND type = '{CLOSE_MESSAGE_TYPE}'
+                     ORDER BY id ASC
+                     LIMIT 1",
+                    self.schema
+                ),
+                &[&self.app_id, &channel],
+            )
+            .map_err(|e| ChannelError::Storage(e.to_string()))?
+            .map(|row| channel_message_from_row((row.get(0), row.get(1), row.get(2), row.get(3))))
+            .transpose()
+    }
+
+    /// The stream's retained terminal marker, as every server sees it.
+    pub(super) fn close_marker(
+        &self,
+        channel: &str,
+    ) -> Result<Option<ChannelMessage>, ChannelError> {
+        self.first_close_marker(&mut *self.client.lock(), channel)
     }
 
     pub(super) fn read_after(
@@ -174,37 +244,21 @@ impl PostgresChannelStore {
                 &[&self.app_id, &now],
             )
             .map_err(|e| ChannelError::Storage(e.to_string()))?;
-        client
-            .execute(
-                &format!(
-                    "INSERT INTO {}.channel_metadata (
-                        app_id,
-                        channel,
-                        replay_window_ms,
-                        inactivity_ttl_ms,
-                        keepalive_interval_ms,
-                        max_connection_lifetime_ms,
-                        last_activity_unix_ms
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-                    ON CONFLICT(app_id, channel) DO UPDATE SET
-                        replay_window_ms = excluded.replay_window_ms,
-                        inactivity_ttl_ms = excluded.inactivity_ttl_ms,
-                        keepalive_interval_ms = excluded.keepalive_interval_ms,
-                        max_connection_lifetime_ms = excluded.max_connection_lifetime_ms,
-                        last_activity_unix_ms = excluded.last_activity_unix_ms",
-                    self.schema
-                ),
-                &[
-                    &self.app_id,
-                    &channel,
-                    &(auth.replay_window_ms as i64),
-                    &(auth.inactivity_ttl_ms as i64),
-                    &(auth.keepalive_interval_ms as i64),
-                    &(auth.max_connection_lifetime_ms as i64),
-                    &now,
-                ],
-            )
-            .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        // Without the publish lock, concurrent subscribers on several servers
+        // can overshoot the limit by the streams they start at once.
+        self.admit_stream(&mut *client, channel)?;
+        self.upsert_stream(
+            &mut *client,
+            channel,
+            &ChannelLifecycle {
+                ephemeral: false,
+                replay_window_ms: auth.replay_window_ms,
+                inactivity_ttl_ms: auth.inactivity_ttl_ms,
+                keepalive_interval_ms: auth.keepalive_interval_ms,
+                max_connection_lifetime_ms: auth.max_connection_lifetime_ms,
+            },
+            now,
+        )?;
 
         Ok(())
     }
@@ -220,8 +274,14 @@ impl PostgresChannelStore {
             .map_err(|e| ChannelError::Storage(e.to_string()))
     }
 
+    /// One maintenance tick. Its work is bounded: age pruning visits at most
+    /// [`MAINTENANCE_BATCH`] streams, continuing after the last one next tick,
+    /// and at most that many idle streams are released. Cursors outside the
+    /// replay window are refused by the deleted-message floor, so pruning a
+    /// stream a few ticks late never serves expired history to a resumed reader.
     pub(super) fn prune(&self, now: i64) -> Result<(), ChannelError> {
         let mut client = self.client.lock();
+        let mut cursor = self.prune_cursor.lock();
         let mut tx = client
             .transaction()
             .map_err(|e| ChannelError::Storage(e.to_string()))?;
@@ -238,12 +298,25 @@ impl PostgresChannelStore {
             &[&self.app_id, &now],
         )
         .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        let batch: Vec<String> = tx
+            .query(
+                &format!(
+                    "SELECT channel FROM {}.channel_metadata
+                     WHERE app_id = $1 AND channel > $2 ORDER BY channel LIMIT $3",
+                    self.schema
+                ),
+                &[&self.app_id, &*cursor, &MAINTENANCE_BATCH],
+            )
+            .map_err(|e| ChannelError::Storage(e.to_string()))?
+            .into_iter()
+            .map(|row| row.get(0))
+            .collect();
         tx.execute(
             &format!(
                 "WITH deleted AS (
                     DELETE FROM {schema}.channel_messages AS messages
                     USING {schema}.channel_metadata AS metadata
-                    WHERE messages.app_id = $1
+                    WHERE messages.app_id = $1 AND messages.channel = ANY($3)
                       AND metadata.app_id = messages.app_id AND metadata.channel = messages.channel
                       AND ((metadata.replay_window_ms > 0 AND messages.created_at_unix_ms < ($2 - metadata.replay_window_ms))
                         OR (metadata.inactivity_ttl_ms > 0 AND metadata.last_activity_unix_ms < ($2 - metadata.inactivity_ttl_ms)))
@@ -256,13 +329,140 @@ impl PostgresChannelStore {
                  FROM floors WHERE metadata.app_id = floors.app_id AND metadata.channel = floors.channel",
                 schema = self.schema,
             ),
-            &[&self.app_id, &now],
+            &[&self.app_id, &now, &batch],
+        )
+        .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        // Release the bookkeeping of streams that retain no messages and can
+        // have no subscriber: every connection syncs its stream when it starts
+        // and ends within the stream's connection lifetime, on any server.
+        tx.execute(
+            &release_idle_sql(&self.schema),
+            &[
+                &self.app_id,
+                &(now - IDLE_STREAM_GRACE_MS),
+                &MAINTENANCE_BATCH,
+            ],
         )
         .map_err(|e| ChannelError::Storage(e.to_string()))?;
         tx.commit()
             .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        *cursor = if (batch.len() as i64) < MAINTENANCE_BATCH {
+            String::new()
+        } else {
+            batch.last().cloned().unwrap_or_default()
+        };
         Ok(())
     }
+
+    /// Start or update a stream's bookkeeping with `lifecycle` and record
+    /// activity. The stored connection lifetime only grows: idle cleanup must
+    /// outwait the longest connection any grant allowed on this stream.
+    fn upsert_stream(
+        &self,
+        client: &mut impl ::postgres::GenericClient,
+        channel: &str,
+        lifecycle: &ChannelLifecycle,
+        now: i64,
+    ) -> Result<(), ChannelError> {
+        client
+            .execute(
+                &format!(
+                    "INSERT INTO {schema}.channel_metadata AS metadata (
+                        app_id,
+                        channel,
+                        replay_window_ms,
+                        inactivity_ttl_ms,
+                        keepalive_interval_ms,
+                        max_connection_lifetime_ms,
+                        last_activity_unix_ms,
+                        latest_message_id,
+                        highest_deleted_message_id
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, {born}, {born})
+                    ON CONFLICT(app_id, channel) DO UPDATE SET
+                        replay_window_ms = excluded.replay_window_ms,
+                        inactivity_ttl_ms = excluded.inactivity_ttl_ms,
+                        keepalive_interval_ms = excluded.keepalive_interval_ms,
+                        max_connection_lifetime_ms = GREATEST(
+                            metadata.max_connection_lifetime_ms,
+                            excluded.max_connection_lifetime_ms),
+                        last_activity_unix_ms = excluded.last_activity_unix_ms",
+                    schema = self.schema,
+                    born = self.born_at(),
+                ),
+                &[
+                    &self.app_id,
+                    &channel,
+                    &(lifecycle.replay_window_ms as i64),
+                    &(lifecycle.inactivity_ttl_ms as i64),
+                    &(lifecycle.keepalive_interval_ms as i64),
+                    &(lifecycle.max_connection_lifetime_ms as i64),
+                    &now,
+                ],
+            )
+            .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Refuse to start a parameterized stream beyond [`super::MAX_STREAMS`].
+    /// Existing streams and unparameterized channel names always pass.
+    fn admit_stream(
+        &self,
+        client: &mut impl ::postgres::GenericClient,
+        channel: &str,
+    ) -> Result<(), ChannelError> {
+        if !crate::stream::counts_toward_stream_limit(channel) {
+            return Ok(());
+        }
+        let exists: bool = client
+            .query_one(
+                &format!(
+                    "SELECT EXISTS(SELECT 1 FROM {}.channel_metadata WHERE app_id = $1 AND channel = $2)",
+                    self.schema
+                ),
+                &[&self.app_id, &channel],
+            )
+            .map_err(|e| ChannelError::Storage(e.to_string()))?
+            .get(0);
+        if exists {
+            return Ok(());
+        }
+        let streams: i64 = client
+            .query_one(
+                &format!(
+                    "SELECT COUNT(*) FROM {}.channel_metadata WHERE app_id = $1",
+                    self.schema
+                ),
+                &[&self.app_id],
+            )
+            .map_err(|e| ChannelError::Storage(e.to_string()))?
+            .get(0);
+        if streams >= super::MAX_STREAMS {
+            return Err(super::stream_limit_error(channel));
+        }
+        Ok(())
+    }
+
+    fn born_at(&self) -> String {
+        BORN_AT_SQL.replace("{schema}", &self.schema)
+    }
+}
+
+/// Streams that retain nothing, longest idle first, through
+/// `idx_channel_metadata_idle`; `$2` is the activity cutoff before the grace.
+fn release_idle_sql(schema: &str) -> String {
+    format!(
+        "DELETE FROM {schema}.channel_metadata
+         WHERE app_id = $1 AND channel IN (
+             SELECT channel FROM {schema}.channel_metadata AS metadata
+             WHERE metadata.app_id = $1
+               AND metadata.last_activity_unix_ms + metadata.max_connection_lifetime_ms < $2
+               AND NOT EXISTS (
+                   SELECT 1 FROM {schema}.channel_messages AS messages
+                   WHERE messages.app_id = metadata.app_id
+                     AND messages.channel = metadata.channel)
+             ORDER BY metadata.last_activity_unix_ms + metadata.max_connection_lifetime_ms
+             LIMIT $3)"
+    )
 }
 
 // Append migrations here; their position is the stored version. Never edit an
@@ -310,6 +510,15 @@ const POSTGRES_MIGRATIONS: &[&str] = &[
      WHERE highest_deleted_message_id IS NULL;
      ALTER TABLE {schema}.channel_metadata ALTER COLUMN highest_deleted_message_id SET DEFAULT 0;
      ALTER TABLE {schema}.channel_metadata ALTER COLUMN highest_deleted_message_id SET NOT NULL;",
+    "CREATE INDEX IF NOT EXISTS idx_channel_messages_close
+       ON {schema}.channel_messages(app_id, channel, id) WHERE type = 'tako.close';",
+    // Maintenance seeks instead of scanning: age pruning per stream, idle
+    // release by its release time, presence expiry by time.
+    "CREATE INDEX IF NOT EXISTS idx_channel_messages_app_channel_created
+       ON {schema}.channel_messages(app_id, channel, created_at_unix_ms);
+     CREATE INDEX IF NOT EXISTS idx_channel_metadata_idle
+       ON {schema}.channel_metadata(app_id, (last_activity_unix_ms + max_connection_lifetime_ms));
+     CREATE INDEX IF NOT EXISTS idx_presence_expires ON {schema}.presence(app_id, expires_at);",
 ];
 
 /// Connections without an explicit `connect_timeout` get a bounded one, so an
@@ -471,12 +680,55 @@ mod integration_tests {
                     r#type: "event".into(),
                     data: serde_json::json!(channel),
                 },
+                None,
             )
             .unwrap()
+            .0
     }
 
     fn id(message: &ChannelMessage) -> i64 {
         message.id.parse().unwrap()
+    }
+
+    #[test]
+    fn postgres_maintenance_scans_can_seek_their_indexes() {
+        let mut database = Database::new();
+        let _store = database.open("app");
+        let schema = database.schema.clone();
+        // Tiny test tables favor sequential scans; forbid them to see whether
+        // an index serves each maintenance query.
+        database
+            .client
+            .batch_execute("SET enable_seqscan = off")
+            .unwrap();
+        let mut plan = |sql: &str, params: &[&(dyn ::postgres::types::ToSql + Sync)]| {
+            database
+                .client
+                .query(&format!("EXPLAIN {sql}"), params)
+                .unwrap()
+                .into_iter()
+                .map(|row| row.get::<_, String>(0))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let idle = plan(&release_idle_sql(&schema), &[&"app", &0i64, &1_000i64]);
+        assert!(idle.contains("idx_channel_metadata_idle"), "{idle}");
+        let age = plan(
+            &format!(
+                "SELECT id FROM {schema}.channel_messages
+                 WHERE app_id = $1 AND channel = ANY($2) AND created_at_unix_ms < $3"
+            ),
+            &[&"app", &vec!["a".to_string()], &0i64],
+        );
+        assert!(
+            age.contains("idx_channel_messages_app_channel_created"),
+            "{age}"
+        );
+        let presence = plan(
+            &format!("DELETE FROM {schema}.presence WHERE app_id = $1 AND expires_at <= $2"),
+            &[&"app", &0i64],
+        );
+        assert!(presence.contains("idx_presence_expires"), "{presence}");
     }
 
     #[test]
@@ -539,9 +791,10 @@ mod integration_tests {
             store.read_after("a", Some(id(&unseen)), 1).unwrap(),
             vec![head.clone()]
         );
+        // Inactive for longer than its TTL, but not for a whole connection lifetime.
         store.client.lock().execute(
-            &format!("UPDATE {}.channel_metadata SET inactivity_ttl_ms = 1, last_activity_unix_ms = 0 WHERE app_id = 'one' AND channel = 'a'", db.schema),
-            &[],
+            &format!("UPDATE {}.channel_metadata SET inactivity_ttl_ms = 1, last_activity_unix_ms = $1 WHERE app_id = 'one' AND channel = 'a'", db.schema),
+            &[&(now_unix_ms() - 10_000)],
         ).unwrap();
         store.prune(now_unix_ms()).unwrap();
         assert!(
@@ -635,15 +888,22 @@ mod integration_tests {
                     Err(ChannelError::StaleCursor)
                 ));
             }
+            // A stream is born caught up with the store: only the position
+            // just before its first message resumes it.
             let fresh = append(&store, "fresh");
+            let born = id(&fresh) - 1;
             assert_eq!(
-                store.read_after("fresh", Some(0), 10).unwrap(),
+                store.read_after("fresh", Some(born), 10).unwrap(),
                 vec![fresh.clone()]
             );
+            assert!(matches!(
+                store.read_after("fresh", Some(born - 1), 10),
+                Err(ChannelError::StaleCursor)
+            ));
             drop(store);
             let reopened = db.open("one");
             assert_eq!(
-                reopened.read_after("fresh", Some(0), 10).unwrap(),
+                reopened.read_after("fresh", Some(born), 10).unwrap(),
                 vec![fresh]
             );
             assert_eq!(

@@ -79,7 +79,8 @@ pub(super) fn blocked_while_draining(command: &Command) -> bool {
         | Command::DeferRun { .. }
         | Command::WaitForEvent { .. }
         | Command::NetworkCall { .. }
-        | Command::ChannelPublish { .. } => false,
+        | Command::ChannelPublish { .. }
+        | Command::ChannelClose { .. } => false,
     }
 }
 

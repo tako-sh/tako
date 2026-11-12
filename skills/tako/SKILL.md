@@ -161,9 +161,16 @@ these features. Keep names consistent with their definitions,
 regenerate types, and test both the producer and consumer. Check state-store
 requirements before scaling across multiple servers; local state is per server.
 
-Channel params do not isolate message streams. Presence membership and Store
-invalidations are scoped by their names and validated params; authorization must
-still check access to the requested room or tenant. Presence tracks connections,
+Channel streams, presence membership, and Store invalidations are scoped by
+their names and validated params; authorization must still check access to the
+requested room or tenant. Channel params are flat scalars and cannot be named
+`from` or `last_message_id` (reserved on channel routes). Channel and presence
+requests reject params the schema does not declare, so a definition without a
+params schema takes none. JavaScript server code
+can `close()` a durable stream; readers subscribing with `from: "start"` replay
+its retained messages, then stop for good at the close. Use this for output that
+must survive a refresh, such as LLM replies, and keep the finished result in the
+app database because replay retention is bounded. Presence tracks connections,
 so deduplicate trusted subjects when counting people across tabs. Its metadata
 is client-provided and must not establish identity or permissions.
 
@@ -180,9 +187,9 @@ read or validation failures must not trigger a backend fallback. Multi-server
 workflows still require Postgres unless intentionally local. Test expired history
 and the resulting authoritative-state reload.
 
-Local channel and Presence connections bypass auth callbacks. Verify their
-private access rules in a deployed test environment. Store reads and
-subscriptions enforce validation and authorization in both dev and production.
+Channel, Presence, and Store requests enforce params validation and the app's
+authorization in both dev and production, so private access rules can be
+tested locally with `tako dev`.
 
 Stores are live, authorized reads over an existing database, with explicit
 invalidation after committed writes. They do not automatically track SQL or

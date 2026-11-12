@@ -9,7 +9,9 @@ use std::{
     },
     path::{Path, PathBuf},
 };
-use tako_channels::{ChannelAuthResponse, ChannelMessage, ChannelPublishPayload, PresenceMember};
+use tako_channels::{
+    ChannelAuthResponse, ChannelLifecycle, ChannelMessage, ChannelPublishPayload, PresenceMember,
+};
 use tako_network::AppEnv;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite},
@@ -37,6 +39,10 @@ pub(super) enum Request {
         channel: String,
         payload: ChannelPublishPayload,
         ephemeral: bool,
+        /// The definition's lifecycle, applied with the append so a publish
+        /// rejected by a closed stream does not touch it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lifecycle: Option<ChannelLifecycle>,
     },
     SyncChannel {
         app: AppEnv,
@@ -113,7 +119,21 @@ pub(super) enum Response {
     Presence {
         members: Vec<PresenceMember>,
     },
+    /// The publish targets a stream with a retained close marker.
+    StreamClosed,
     Rejected,
+}
+
+/// The broker refused a publish because its stream is closed: a final answer,
+/// not an unavailable broker.
+#[derive(Debug, thiserror::Error)]
+#[error("channel stream is closed")]
+pub struct StreamClosed;
+
+pub fn is_stream_closed(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<StreamClosed>())
 }
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -168,6 +188,9 @@ impl Client {
             if matches!(response, Response::Rejected) {
                 return Err(error("channel broker rejected request"));
             }
+            if matches!(response, Response::StreamClosed) {
+                return Err(io::Error::other(StreamClosed));
+            }
             Ok((stream, response))
         })
         .await?
@@ -196,6 +219,7 @@ impl Client {
         channel: String,
         payload: ChannelPublishPayload,
         ephemeral: bool,
+        lifecycle: Option<ChannelLifecycle>,
     ) -> io::Result<ChannelMessage> {
         match self
             .request(Request::Publish {
@@ -203,6 +227,7 @@ impl Client {
                 channel,
                 payload,
                 ephemeral,
+                lifecycle,
             })
             .await?
             .1

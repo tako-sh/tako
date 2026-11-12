@@ -16,6 +16,11 @@ export interface SseReaderOptions {
   onOpen?: () => void;
   onError?: (error: Error) => void;
   onRecovery?: (reason: SseRecoveryReason) => void;
+  /**
+   * Called once on the server's `tako.close` event, after every earlier
+   * message. The reader then stops for good; it never reconnects.
+   */
+  onClose?: () => void;
   signal?: AbortSignal;
   backoffBaseMs?: number;
   backoffMaxMs?: number;
@@ -56,6 +61,8 @@ class SseResponseError extends Error {
 
 export class SseReader {
   lastEventId: string | undefined;
+  /** True once the server closed the stream with `tako.close`. */
+  streamClosed = false;
 
   readonly #url: string;
   readonly #opts: SseReaderOptions;
@@ -194,9 +201,14 @@ export class SseReader {
           this.dispatchEvent(new Event("open"));
         },
         onmessage: (message) => {
+          if (this.streamClosed) return;
           if (message.event === "tako.reset") {
             clearCursor();
             throw new SseResponseError(410);
+          }
+          if (message.event === "tako.close") {
+            this.#handleClose(message);
+            return;
           }
           this.#handleMessage(message);
         },
@@ -256,6 +268,20 @@ export class SseReader {
     if (message.event !== "") parsed.type = message.event;
     this.#opts.onMessage(parsed);
     this.dispatchEvent(new MessageEvent("message", { data: message.data }));
+  }
+
+  #handleClose(message: EventSourceMessage): void {
+    // The terminal marker is final: stop before the response ends so the
+    // reader never reconnects, then report the end once.
+    if (message.id !== "") this.lastEventId = message.id;
+    this.streamClosed = true;
+    this.close();
+    try {
+      this.#opts.onClose?.();
+    } catch (error) {
+      console.error("SseReader onClose handler threw:", error);
+    }
+    this.dispatchEvent(new Event("tako.close"));
   }
 
   #resolveConnectionWaiters(): void {
