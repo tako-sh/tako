@@ -89,7 +89,7 @@ pub fn tick_once(db: &RunsDb, now_ms: i64) -> Result<u64, RunsDbError> {
         let opts = EnqueueOpts {
             id: Some(id),
             run_at_ms: Some(bucket_ms),
-            max_attempts: None,
+            max_attempts: row.max_attempts,
         };
         db.enqueue(&row.name, &serde_json::json!({}), &opts)?;
         set_last_run_at(db, &row.name, bucket_ms)?;
@@ -319,10 +319,12 @@ mod tests {
                 ScheduleSpec {
                     name: "a".into(),
                     cron: "0 */5 * * * *".into(),
+                    max_attempts: None,
                 },
                 ScheduleSpec {
                     name: "b".into(),
                     cron: "0 0 * * * *".into(),
+                    max_attempts: None,
                 },
             ],
         )
@@ -338,6 +340,7 @@ mod tests {
         let s = ScheduleSpec {
             name: "a".into(),
             cron: "0 */5 * * * *".into(),
+            max_attempts: None,
         };
         register_schedules(&db, std::slice::from_ref(&s)).unwrap();
         register_schedules(&db, std::slice::from_ref(&s)).unwrap();
@@ -353,10 +356,12 @@ mod tests {
                 ScheduleSpec {
                     name: "keep".into(),
                     cron: "0 */5 * * * *".into(),
+                    max_attempts: None,
                 },
                 ScheduleSpec {
                     name: "drop".into(),
                     cron: "0 0 * * * *".into(),
+                    max_attempts: None,
                 },
             ],
         )
@@ -366,6 +371,7 @@ mod tests {
             &[ScheduleSpec {
                 name: "keep".into(),
                 cron: "0 */5 * * * *".into(),
+                max_attempts: None,
             }],
         )
         .unwrap();
@@ -382,6 +388,7 @@ mod tests {
             &[ScheduleSpec {
                 name: "a".into(),
                 cron: "not a cron".into(),
+                max_attempts: None,
             }],
         )
         .unwrap_err();
@@ -396,6 +403,7 @@ mod tests {
             &[ScheduleSpec {
                 name: "every-sec".into(),
                 cron: "* * * * * *".into(),
+                max_attempts: None,
             }],
         )
         .unwrap();
@@ -414,6 +422,7 @@ mod tests {
             &[ScheduleSpec {
                 name: "min".into(),
                 cron: "0 * * * * *".into(), // every minute boundary
+                max_attempts: None,
             }],
         )
         .unwrap();

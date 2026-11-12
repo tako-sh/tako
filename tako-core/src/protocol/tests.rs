@@ -910,3 +910,25 @@ fn workflow_run_operator_responses_roundtrip() {
         );
     }
 }
+
+#[test]
+fn register_schedules_carries_an_optional_retry_budget() {
+    let command: Command = serde_json::from_value(serde_json::json!({
+        "command": "register_schedules",
+        "app": "a",
+        "schedules": [
+            {"name": "nightly", "cron": "0 0 * * *", "max_attempts": 5},
+            {"name": "hourly", "cron": "0 * * * *"},
+        ],
+    }))
+    .unwrap();
+    let Command::RegisterSchedules { schedules, .. } = command else {
+        panic!("not register_schedules");
+    };
+    assert_eq!(schedules[0].max_attempts, Some(5));
+    assert_eq!(schedules[1].max_attempts, None);
+    assert_eq!(
+        serde_json::to_value(&schedules[1]).unwrap(),
+        serde_json::json!({"name": "hourly", "cron": "0 * * * *"})
+    );
+}

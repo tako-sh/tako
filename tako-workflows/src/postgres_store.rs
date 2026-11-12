@@ -600,12 +600,19 @@ impl PostgresRunsDb {
         for schedule in schedules {
             tx.execute(
                 &format!(
-                    "INSERT INTO {}.schedules (app_id, name, cron, last_run_at)
-                     VALUES ($1, $2, $3, $4)
-                     ON CONFLICT(app_id, name) DO UPDATE SET cron=excluded.cron",
+                    "INSERT INTO {}.schedules (app_id, name, cron, last_run_at, max_attempts)
+                     VALUES ($1, $2, $3, $4, $5)
+                     ON CONFLICT(app_id, name)
+                     DO UPDATE SET cron=excluded.cron, max_attempts=excluded.max_attempts",
                     self.schema
                 ),
-                &[&self.app_id, &schedule.name, &schedule.cron, &now],
+                &[
+                    &self.app_id,
+                    &schedule.name,
+                    &schedule.cron,
+                    &now,
+                    &schedule.max_attempts.map(i64::from),
+                ],
             )?;
         }
         tx.commit()?;
@@ -616,7 +623,7 @@ impl PostgresRunsDb {
         let mut client = self.client.lock();
         let rows = client.query(
             &format!(
-                "SELECT name, cron, last_run_at FROM {}.schedules WHERE app_id=$1",
+                "SELECT name, cron, last_run_at, max_attempts FROM {}.schedules WHERE app_id=$1",
                 self.schema
             ),
             &[&self.app_id],
@@ -627,6 +634,9 @@ impl PostgresRunsDb {
                 name: row.get(0),
                 cron: row.get(1),
                 last_run_at: row.get(2),
+                max_attempts: row
+                    .get::<_, Option<i64>>(3)
+                    .map(|budget| budget.clamp(0, u32::MAX as i64) as u32),
             })
             .collect())
     }
@@ -937,8 +947,10 @@ fn init_schema(client: &mut Client, schema: &str) -> Result<(), RunsDbError> {
              name TEXT NOT NULL,
              cron TEXT NOT NULL,
              last_run_at BIGINT,
+             max_attempts BIGINT,
              PRIMARY KEY(app_id, name)
          );
+         ALTER TABLE {schema}.schedules ADD COLUMN IF NOT EXISTS max_attempts BIGINT;
 
          CREATE TABLE IF NOT EXISTS {schema}.event_waiters (
              app_id TEXT NOT NULL,

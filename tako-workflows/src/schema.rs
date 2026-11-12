@@ -48,9 +48,10 @@ CREATE TABLE IF NOT EXISTS steps (
 );
 
 CREATE TABLE IF NOT EXISTS schedules (
-  name         TEXT PRIMARY KEY,
-  cron         TEXT NOT NULL,
-  last_run_at  INTEGER
+  name          TEXT PRIMARY KEY,
+  cron          TEXT NOT NULL,
+  last_run_at   INTEGER,
+  max_attempts  INTEGER                        -- null = server default
 );
 
 -- Parked runs waiting on an event. When `workflowsEngine.signal(name, payload)`
@@ -84,6 +85,16 @@ pub(crate) fn init(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     }
     if !columns.iter().any(|column| column == "result") {
         conn.execute_batch("ALTER TABLE runs ADD COLUMN result TEXT")?;
+    }
+    let schedule_columns = conn
+        .prepare("PRAGMA table_info(schedules)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if !schedule_columns
+        .iter()
+        .any(|column| column == "max_attempts")
+    {
+        conn.execute_batch("ALTER TABLE schedules ADD COLUMN max_attempts INTEGER")?;
     }
     // Existing terminal runs get a full grace period after upgrade. Their
     // actual completion time was not recorded by the previous schema.

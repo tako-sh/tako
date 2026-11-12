@@ -85,6 +85,10 @@ workflow execution remains at least once.
 
 JavaScript `.run()` combines enqueue and result waiting. In a workflow, the SDK saves a child ID and call identity before enqueueing, repeats an uncertain enqueue with that ID, and checkpoints the terminal outcome. Pending children use ordinary `DeferRun`, releasing the parent's claim/concurrency slot without spending a retry. Result waits checkpoint their deadline across replay; a timeout does not cancel the child. Named `ctx.run` steps scope child-call order. IDs remain deduplicated only while child history is retained. Detached `.enqueue()` and direct handler `call()` do not gain automatic workflow checkpoints.
 
+## Workflow schedules
+
+A starting worker sends `RegisterSchedules {app,schedules}`, which replaces the app's schedule set. Each `ScheduleSpec` is `{name,cron,max_attempts?}`. `max_attempts` is the workflow's attempt budget, counting the first attempt: JavaScript sends `retries + 1` and Go sends `WithMaxAttempts`. The store keeps it with the schedule, and every run the schedule creates gets it. Omitted, scheduled runs get the default of three attempts.
+
 ## Workflow run operations
 
 Operators inspect and repair runs with four management commands: `ListWorkflowRuns {app,status?,name?,limit?}`, `GetWorkflowRun {app,id}`, `RetryWorkflowRun {app,id}`, and `CancelWorkflowRun {app,id}`. They are app-scoped like other application commands; list and get are read-only. The internal socket rejects them, so an app process cannot list or change runs, its own included. The worker's `CancelRun` is a different command: it carries the claim owner and ends the run from inside its handler.

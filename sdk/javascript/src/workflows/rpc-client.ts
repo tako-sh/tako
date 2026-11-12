@@ -17,6 +17,14 @@ import type { Run, RunId, RunStatus, StepState } from "./types";
 import type { WorkflowResultState } from "./result";
 
 /** Result returned after enqueueing a workflow run. */
+/** One cron schedule as `register_schedules` sends it. */
+export interface ScheduleSpec {
+  name: string;
+  cron: string;
+  /** Attempt budget of the runs this schedule creates. Omit for the server default. */
+  max_attempts?: number;
+}
+
 export interface EnqueueResult {
   /** Workflow run id. */
   id: RunId;
@@ -100,7 +108,7 @@ export class WorkflowsClient {
   // --- Worker-only: registration + run lifecycle ---
 
   /** Register cron schedules for discovered workflows. */
-  async registerSchedules(schedules: Array<{ name: string; cron: string }>): Promise<void> {
+  async registerSchedules(schedules: ScheduleSpec[]): Promise<void> {
     await this.call({ command: "register_schedules", app: this.app, schedules });
   }
 

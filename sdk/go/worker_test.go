@@ -589,3 +589,39 @@ func TestTransientFinalWriteFailuresAreRetriedWhileTheHeartbeatRuns(t *testing.T
 		t.Fatalf("complete_run calls %d, heartbeats while retrying %d", writes, heartbeats)
 	}
 }
+
+func TestScheduleRegistrationCarriesTheRetryBudget(t *testing.T) {
+	resetRegistry()
+	s := startMockServer(t)
+	t.Setenv("TAKO_INTERNAL_SOCKET", s.path)
+	t.Setenv("TAKO_APP_NAME", "test-app")
+	noop := func(*WorkflowContext, json.RawMessage) error { return nil }
+	RegisterWorkflow("nightly", noop, WithSchedule("0 0 * * *"), WithMaxAttempts(5))
+	RegisterWorkflow("hourly", noop, WithSchedule("0 * * * *"))
+
+	// Schedules are registered before the claim loop starts.
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if err := RunWorker(ctx); err != nil {
+		t.Fatalf("run worker: %v", err)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.received) == 0 || s.received[0]["command"] != "register_schedules" {
+		t.Fatalf("commands: %v", s.received)
+	}
+	got := map[string]any{}
+	for _, raw := range s.received[0]["schedules"].([]any) {
+		schedule := raw.(map[string]any)
+		got[schedule["name"].(string)] = schedule
+	}
+	want := map[string]any{
+		"nightly": map[string]any{"name": "nightly", "cron": "0 0 * * *", "max_attempts": float64(5)},
+		// Without WithMaxAttempts the server default budget applies.
+		"hourly": map[string]any{"name": "hourly", "cron": "0 * * * *"},
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("schedules: %v", got)
+	}
+}

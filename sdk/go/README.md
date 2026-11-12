@@ -26,8 +26,9 @@ result. Put an index or id in names used in loops.
 
 The worker honors the attempt budget stored on each run. `Enqueue` stores a
 `WithMaxAttempts` budget when the calling process registered the workflow and
-`EnqueueOpts.MaxAttempts` is nil. Runs enqueued by another binary or created by
-a schedule keep their own stored budget (three attempts by default).
+`EnqueueOpts.MaxAttempts` is nil. Runs enqueued by another binary keep their
+own stored budget (three attempts by default). `WithSchedule` registers the
+`WithMaxAttempts` budget with the schedule, so scheduled runs get it too.
 
 Run this module's tests from `sdk/go` with `go test ./...`. The concurrency and
 drain test also supports `go test -race -run TestWorkerHonorsConcurrencyAndDrains`.

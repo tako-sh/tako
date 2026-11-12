@@ -445,6 +445,10 @@ pub struct ScheduleSpec {
     /// Cron expression. 6-field format (sec min hour day month dayofweek) per
     /// the `cron` crate, or 5-field (the worker SDK normalizes).
     pub cron: String,
+    /// The workflow's attempt budget (inclusive of the first) for the runs
+    /// this schedule creates. Defaults to 3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_attempts: Option<u32>,
 }
 
 /// Options for `Command::EnqueueRun`.

@@ -83,7 +83,7 @@ func main() {
 
 The Go `fulfillOrder` helper is app-owned. Install the Go worker module with `go get github.com/tako-sh/tako/sdk/go`, build a worker binary, and configure its command in `[workflows].run` when needed. `WithMaxAttempts(5)` counts all attempts; JavaScript `retries: 4` counts retries after the first attempt.
 
-Both SDKs store the attempt budget on the run when it is enqueued, and the worker honors the stored value. Go's `Enqueue` stores the `WithMaxAttempts` budget only in a process that registered the workflow; from another binary, pass `EnqueueOpts.MaxAttempts`. Runs created by a cron schedule get the default of three attempts.
+Both SDKs store the attempt budget on the run when it is enqueued, and the worker honors the stored value. Go's `Enqueue` stores the `WithMaxAttempts` budget only in a process that registered the workflow; from another binary, pass `EnqueueOpts.MaxAttempts`. Runs created by a cron schedule get the workflow's own budget, `retries` or `WithMaxAttempts`, which the worker registers with the schedule when it starts.
 
 The payload type flows into `.enqueue(payload)`, so callers get normal TypeScript checking without a generated workflow registry. The workflow name must be unique within the app. Using the filename stem as the name keeps discovery and logs easy to follow.
 
@@ -457,7 +457,7 @@ Tako validates the multi-server storage choice before build and deploy work begi
 
 `tako dev` discovers JavaScript and TypeScript workflows under `<app_root>/workflows/`. The dev daemon owns the durable state and starts a separate scale-to-zero worker when work becomes runnable. Worker output appears in the same log stream as the app. Workflow definition changes refresh the runtime, and a fresh worker picks up the new code on subsequent work.
 
-Cron schedules are synchronized from the current workflow definitions when a worker starts. Removing a schedule removes its registered cron entry on the next worker startup.
+Cron schedules are synchronized from the current workflow definitions when a worker starts, together with each workflow's retry setting. Removing a schedule removes its registered cron entry on the next worker startup.
 
 `tako deploy` validates the storage model, packages workflow definitions with the app, and installs the workflow runtime for the release. A new release replaces the previous worker runtime after in-flight work drains. Removing the workflows directory in a later release retires the old workflow runtime. Durable runs remain scoped to the app and environment across releases.
 

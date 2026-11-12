@@ -129,6 +129,9 @@ type ScheduleSpec struct {
 	Name string `json:"name"`
 	// Cron is a 5-field cron expression.
 	Cron string `json:"cron"`
+	// MaxAttempts is the attempt budget of the runs this schedule creates.
+	// Zero uses the server default.
+	MaxAttempts uint32 `json:"max_attempts,omitempty"`
 }
 
 // Run is the server-returned run payload from ClaimRun.

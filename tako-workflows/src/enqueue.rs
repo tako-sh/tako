@@ -540,6 +540,8 @@ pub(crate) struct ScheduleRow {
     pub(crate) name: String,
     pub(crate) cron: String,
     pub(crate) last_run_at: Option<i64>,
+    /// The registering workflow's budget; `None` uses the server default.
+    pub(crate) max_attempts: Option<u32>,
 }
 
 pub(crate) fn now_ms() -> i64 {

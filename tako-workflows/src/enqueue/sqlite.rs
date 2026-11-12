@@ -699,9 +699,11 @@ impl SqliteRunsDb {
         let now_ms = chrono::Utc::now().timestamp_millis();
         for s in schedules {
             tx.execute(
-                "INSERT INTO schedules (name, cron, last_run_at) VALUES (?1, ?2, ?3)
-                 ON CONFLICT(name) DO UPDATE SET cron = excluded.cron",
-                (s.name.as_str(), s.cron.as_str(), now_ms),
+                "INSERT INTO schedules (name, cron, last_run_at, max_attempts)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(name) DO UPDATE
+                 SET cron = excluded.cron, max_attempts = excluded.max_attempts",
+                (s.name.as_str(), s.cron.as_str(), now_ms, s.max_attempts),
             )?;
         }
         tx.commit()?;
@@ -710,12 +712,14 @@ impl SqliteRunsDb {
 
     pub(super) fn list_schedules(&self) -> Result<Vec<ScheduleRow>, RunsDbError> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare("SELECT name, cron, last_run_at FROM schedules")?;
+        let mut stmt =
+            conn.prepare("SELECT name, cron, last_run_at, max_attempts FROM schedules")?;
         let rows = stmt.query_map((), |row| {
             Ok(ScheduleRow {
                 name: row.get(0)?,
                 cron: row.get(1)?,
                 last_run_at: row.get::<_, Option<i64>>(2)?,
+                max_attempts: row.get::<_, Option<u32>>(3)?,
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)

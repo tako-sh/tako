@@ -335,10 +335,11 @@ type workflowConfig struct {
 type WorkflowOption func(*workflowConfig)
 
 // WithMaxAttempts sets the total run-level attempt budget that Enqueue
-// stores on new runs of this workflow when EnqueueOpts.MaxAttempts is nil.
-// The worker always honors the budget stored on the run, so runs enqueued
-// by a process that did not register the workflow, and runs created by a
-// schedule, keep their own stored budget (the server default is 3).
+// stores on new runs of this workflow when EnqueueOpts.MaxAttempts is nil,
+// and that runs created by its schedule get. The worker always honors the
+// budget stored on the run, so runs enqueued by a process that did not
+// register the workflow keep their own stored budget (the server default
+// is 3).
 func WithMaxAttempts(n uint32) WorkflowOption {
 	return func(c *workflowConfig) { c.maxAttempts = n }
 }
@@ -410,7 +411,11 @@ func RunWorker(ctx context.Context) error {
 	var schedules []ScheduleSpec
 	for name, reg := range handlers {
 		if reg.config.schedule != "" {
-			schedules = append(schedules, ScheduleSpec{Name: name, Cron: reg.config.schedule})
+			schedules = append(schedules, ScheduleSpec{
+				Name:        name,
+				Cron:        reg.config.schedule,
+				MaxAttempts: reg.config.maxAttempts,
+			})
 		}
 	}
 	if len(schedules) > 0 {
