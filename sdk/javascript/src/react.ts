@@ -121,9 +121,18 @@ interface BaseHookOptions<T> {
    * you do not need to memoize it.
    */
   onMessage?: MessageHandler<T>;
-  /** Reports automatic recovery outside the message stream. */
+  /**
+   * Reports automatic recovery outside the message stream. With
+   * `from: "start"`, `"history-expired"` means the stream replays from its
+   * start: discard state built from earlier messages (for example call
+   * `clear()`), since message ids can change across the reset.
+   */
   onRecovery?: (reason: SseRecoveryReason) => void;
-  /** Reload application state when the replay history has expired. */
+  /**
+   * Reload application state when the replay history has expired. `messages`
+   * keeps what arrived before; with `from: "start"` call `clear()` here, or
+   * the replayed messages follow the old ones.
+   */
   onResync?: () => void;
   /**
    * Called once when the server closed the stream. The latest handler is

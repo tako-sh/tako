@@ -160,12 +160,20 @@ export interface ChannelSubscribeOptions {
   lastEventId?: string;
   /**
    * `"start"` replays every retained message before live ones. Reconnects
-   * resume from the last received message, not from the start again.
+   * resume from the last received message, not from the start again, except
+   * after a reset (`onRecovery("history-expired")`): the cursor is gone, so
+   * the stream replays from its start once more.
    */
   from?: ChannelReadFrom;
   /** Inject a custom SSE implementation (e.g. for tests). */
   eventSourceFactory?: (url: string, init?: EventSourceFactoryInit) => unknown;
-  /** Recovery runs outside the channel's application messages. */
+  /**
+   * Recovery runs outside the channel's application messages.
+   * `"history-expired"` means the server reset this reader's history: with
+   * `from: "start"`, discard local state built from earlier messages, because
+   * the stream replays from its start, and message ids from before the reset
+   * may not match the replayed ones.
+   */
   onRecovery?: (reason: SseRecoveryReason) => void;
   onError?: (error: Error) => void;
   /**
@@ -188,7 +196,11 @@ export interface ChannelConnectOptions {
   authorization?: string;
   /** Last seen message id — replays missed frames before live traffic. Wins over `from`. */
   lastMessageId?: string;
-  /** `"start"` replays every retained message before live ones. */
+  /**
+   * `"start"` replays every retained message before live ones. A reconnect
+   * after close code 4410 (history expired) with `from: "start"` replays the
+   * stream from its start again; message ids can change across the reset.
+   */
   from?: ChannelReadFrom;
   /**
    * Called once when the server closed the stream (close code 4200), after

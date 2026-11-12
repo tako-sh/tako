@@ -400,7 +400,9 @@ HTTP `410` and internal `tako.reset` events clear the cursor and start a fresh
 subscription. Neither signal becomes a business message. `onRecovery(reason)`
 receives `"reconnecting"` or `"history-expired"`; `onError` is for terminal
 failures, including HTTP 401, 403, and 404. `close()` or an abort `signal` stops
-retries.
+retries. With `from: "start"`, `"history-expired"` means discard local state:
+the stream replays from its start, and message ids can change across the reset
+(with `useChannel`, call `clear()` in `onResync`).
 
 `useChannel` handles SSE recovery and WebSocket close code 4410. It reports
 `status: "connecting"` with no routine recovery error, then returns to `"open"`.
