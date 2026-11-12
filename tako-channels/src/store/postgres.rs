@@ -16,7 +16,12 @@ pub(super) struct PostgresChannelStore {
     pub(super) client: Mutex<Client>,
     pub(super) schema: String,
     pub(super) app_id: String,
+    /// The last stream age maintenance visited; the next tick continues after it.
+    prune_cursor: Mutex<String>,
 }
+
+/// Streams one maintenance tick visits for age pruning, and releases at most.
+const MAINTENANCE_BATCH: i64 = 1_000;
 
 impl PostgresChannelStore {
     pub(super) fn open_reader(url: &str, schema: &str, app_id: &str) -> Result<Self, ChannelError> {
@@ -32,6 +37,7 @@ impl PostgresChannelStore {
             client: Mutex::new(client),
             schema: schema.into(),
             app_id: app_id.into(),
+            prune_cursor: Mutex::default(),
         })
     }
 
@@ -43,6 +49,7 @@ impl PostgresChannelStore {
             client: Mutex::new(client),
             schema: schema.to_string(),
             app_id: app_id.to_string(),
+            prune_cursor: Mutex::default(),
         })
     }
 
@@ -77,6 +84,7 @@ impl PostgresChannelStore {
             }
             return Err(ChannelError::StreamClosed);
         }
+        self.admit_stream(&mut tx, channel)?;
         tx.execute(&format!(
             "INSERT INTO {schema}.channel_metadata (app_id, channel, replay_window_ms, inactivity_ttl_ms, keepalive_interval_ms, max_connection_lifetime_ms, last_activity_unix_ms, latest_message_id, highest_deleted_message_id)
              VALUES ($1, $2, 600000, 0, 25000, 7200000, $3, {born}, {born}) ON CONFLICT(app_id, channel) DO NOTHING",
@@ -227,6 +235,9 @@ impl PostgresChannelStore {
                 &[&self.app_id, &now],
             )
             .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        // Without the publish lock, concurrent subscribers on several servers
+        // can overshoot the limit by the streams they start at once.
+        self.admit_stream(&mut *client, channel)?;
         client
             .execute(
                 // The stored connection lifetime only grows: idle cleanup must
@@ -280,8 +291,14 @@ impl PostgresChannelStore {
             .map_err(|e| ChannelError::Storage(e.to_string()))
     }
 
+    /// One maintenance tick. Its work is bounded: age pruning visits at most
+    /// [`MAINTENANCE_BATCH`] streams, continuing after the last one next tick,
+    /// and at most that many idle streams are released. Cursors outside the
+    /// replay window are refused by the deleted-message floor, so pruning a
+    /// stream a few ticks late never serves expired history to a resumed reader.
     pub(super) fn prune(&self, now: i64) -> Result<(), ChannelError> {
         let mut client = self.client.lock();
+        let mut cursor = self.prune_cursor.lock();
         let mut tx = client
             .transaction()
             .map_err(|e| ChannelError::Storage(e.to_string()))?;
@@ -298,12 +315,25 @@ impl PostgresChannelStore {
             &[&self.app_id, &now],
         )
         .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        let batch: Vec<String> = tx
+            .query(
+                &format!(
+                    "SELECT channel FROM {}.channel_metadata
+                     WHERE app_id = $1 AND channel > $2 ORDER BY channel LIMIT $3",
+                    self.schema
+                ),
+                &[&self.app_id, &*cursor, &MAINTENANCE_BATCH],
+            )
+            .map_err(|e| ChannelError::Storage(e.to_string()))?
+            .into_iter()
+            .map(|row| row.get(0))
+            .collect();
         tx.execute(
             &format!(
                 "WITH deleted AS (
                     DELETE FROM {schema}.channel_messages AS messages
                     USING {schema}.channel_metadata AS metadata
-                    WHERE messages.app_id = $1
+                    WHERE messages.app_id = $1 AND messages.channel = ANY($3)
                       AND metadata.app_id = messages.app_id AND metadata.channel = messages.channel
                       AND ((metadata.replay_window_ms > 0 AND messages.created_at_unix_ms < ($2 - metadata.replay_window_ms))
                         OR (metadata.inactivity_ttl_ms > 0 AND metadata.last_activity_unix_ms < ($2 - metadata.inactivity_ttl_ms)))
@@ -316,35 +346,91 @@ impl PostgresChannelStore {
                  FROM floors WHERE metadata.app_id = floors.app_id AND metadata.channel = floors.channel",
                 schema = self.schema,
             ),
-            &[&self.app_id, &now],
+            &[&self.app_id, &now, &batch],
         )
         .map_err(|e| ChannelError::Storage(e.to_string()))?;
         // Release the bookkeeping of streams that retain no messages and can
         // have no subscriber: every connection syncs its stream when it starts
         // and ends within the stream's connection lifetime, on any server.
         tx.execute(
-            &format!(
-                "DELETE FROM {schema}.channel_metadata AS metadata
-                 WHERE metadata.app_id = $1
-                   AND metadata.last_activity_unix_ms
-                       < $2 - metadata.max_connection_lifetime_ms - $3
-                   AND NOT EXISTS (
-                       SELECT 1 FROM {schema}.channel_messages AS messages
-                       WHERE messages.app_id = metadata.app_id
-                         AND messages.channel = metadata.channel)",
-                schema = self.schema,
-            ),
-            &[&self.app_id, &now, &IDLE_STREAM_GRACE_MS],
+            &release_idle_sql(&self.schema),
+            &[
+                &self.app_id,
+                &(now - IDLE_STREAM_GRACE_MS),
+                &MAINTENANCE_BATCH,
+            ],
         )
         .map_err(|e| ChannelError::Storage(e.to_string()))?;
         tx.commit()
             .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        *cursor = if (batch.len() as i64) < MAINTENANCE_BATCH {
+            String::new()
+        } else {
+            batch.last().cloned().unwrap_or_default()
+        };
+        Ok(())
+    }
+
+    /// Refuse to start a parameterized stream beyond [`super::MAX_STREAMS`].
+    /// Existing streams and unparameterized channel names always pass.
+    fn admit_stream(
+        &self,
+        client: &mut impl ::postgres::GenericClient,
+        channel: &str,
+    ) -> Result<(), ChannelError> {
+        if !crate::stream::counts_toward_stream_limit(channel) {
+            return Ok(());
+        }
+        let exists: bool = client
+            .query_one(
+                &format!(
+                    "SELECT EXISTS(SELECT 1 FROM {}.channel_metadata WHERE app_id = $1 AND channel = $2)",
+                    self.schema
+                ),
+                &[&self.app_id, &channel],
+            )
+            .map_err(|e| ChannelError::Storage(e.to_string()))?
+            .get(0);
+        if exists {
+            return Ok(());
+        }
+        let streams: i64 = client
+            .query_one(
+                &format!(
+                    "SELECT COUNT(*) FROM {}.channel_metadata WHERE app_id = $1",
+                    self.schema
+                ),
+                &[&self.app_id],
+            )
+            .map_err(|e| ChannelError::Storage(e.to_string()))?
+            .get(0);
+        if streams >= super::MAX_STREAMS {
+            return Err(super::stream_limit_error(channel));
+        }
         Ok(())
     }
 
     fn born_at(&self) -> String {
         BORN_AT_SQL.replace("{schema}", &self.schema)
     }
+}
+
+/// Streams that retain nothing, longest idle first, through
+/// `idx_channel_metadata_idle`; `$2` is the activity cutoff before the grace.
+fn release_idle_sql(schema: &str) -> String {
+    format!(
+        "DELETE FROM {schema}.channel_metadata
+         WHERE app_id = $1 AND channel IN (
+             SELECT channel FROM {schema}.channel_metadata AS metadata
+             WHERE metadata.app_id = $1
+               AND metadata.last_activity_unix_ms + metadata.max_connection_lifetime_ms < $2
+               AND NOT EXISTS (
+                   SELECT 1 FROM {schema}.channel_messages AS messages
+                   WHERE messages.app_id = metadata.app_id
+                     AND messages.channel = metadata.channel)
+             ORDER BY metadata.last_activity_unix_ms + metadata.max_connection_lifetime_ms
+             LIMIT $3)"
+    )
 }
 
 // Append migrations here; their position is the stored version. Never edit an
@@ -394,6 +480,13 @@ const POSTGRES_MIGRATIONS: &[&str] = &[
      ALTER TABLE {schema}.channel_metadata ALTER COLUMN highest_deleted_message_id SET NOT NULL;",
     "CREATE INDEX IF NOT EXISTS idx_channel_messages_close
        ON {schema}.channel_messages(app_id, channel, id) WHERE type = 'tako.close';",
+    // Maintenance seeks instead of scanning: age pruning per stream, idle
+    // release by its release time, presence expiry by time.
+    "CREATE INDEX IF NOT EXISTS idx_channel_messages_app_channel_created
+       ON {schema}.channel_messages(app_id, channel, created_at_unix_ms);
+     CREATE INDEX IF NOT EXISTS idx_channel_metadata_idle
+       ON {schema}.channel_metadata(app_id, (last_activity_unix_ms + max_connection_lifetime_ms));
+     CREATE INDEX IF NOT EXISTS idx_presence_expires ON {schema}.presence(app_id, expires_at);",
 ];
 
 /// Connections without an explicit `connect_timeout` get a bounded one, so an
@@ -562,6 +655,47 @@ mod integration_tests {
 
     fn id(message: &ChannelMessage) -> i64 {
         message.id.parse().unwrap()
+    }
+
+    #[test]
+    fn postgres_maintenance_scans_can_seek_their_indexes() {
+        let mut database = Database::new();
+        let _store = database.open("app");
+        let schema = database.schema.clone();
+        // Tiny test tables favor sequential scans; forbid them to see whether
+        // an index serves each maintenance query.
+        database
+            .client
+            .batch_execute("SET enable_seqscan = off")
+            .unwrap();
+        let mut plan = |sql: &str, params: &[&(dyn ::postgres::types::ToSql + Sync)]| {
+            database
+                .client
+                .query(&format!("EXPLAIN {sql}"), params)
+                .unwrap()
+                .into_iter()
+                .map(|row| row.get::<_, String>(0))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let idle = plan(&release_idle_sql(&schema), &[&"app", &0i64, &1_000i64]);
+        assert!(idle.contains("idx_channel_metadata_idle"), "{idle}");
+        let age = plan(
+            &format!(
+                "SELECT id FROM {schema}.channel_messages
+                 WHERE app_id = $1 AND channel = ANY($2) AND created_at_unix_ms < $3"
+            ),
+            &[&"app", &vec!["a".to_string()], &0i64],
+        );
+        assert!(
+            age.contains("idx_channel_messages_app_channel_created"),
+            "{age}"
+        );
+        let presence = plan(
+            &format!("DELETE FROM {schema}.presence WHERE app_id = $1 AND expires_at <= $2"),
+            &[&"app", &0i64],
+        );
+        assert!(presence.contains("idx_presence_expires"), "{presence}");
     }
 
     #[test]

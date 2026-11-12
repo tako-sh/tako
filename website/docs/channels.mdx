@@ -191,11 +191,13 @@ A JavaScript number cannot carry every integer exactly, and a value that rounds 
 
 When the server knows the publishing build's definition, it rejects a publish whose params do not match the schema instead of starting a stream nobody reads.
 
+Only declared params exist. A param the schema does not list under `properties` is rejected with `400` (before authorization, so it never starts a stream), unless the schema explicitly sets `additionalProperties: true`. A channel without a params schema accepts no params. The JavaScript, Go, and Rust definitions emit `additionalProperties: false` for you; set `additionalProperties: true` only when every extra param should select its own stream.
+
 `from` and `last_message_id` are reserved query names on channel routes (where a reader starts and the WebSocket replay cursor), so no param can use them. JavaScript's `defineChannel` and Go's `Channels.Register` reject a params schema that declares either name, and the server rejects publish or close params that name them.
 
 Keep connection context that must not split the stream out of params. A client version, locale, or feature flag passed as a param would give each value its own stream. Send such context in a header or the auth credential instead, and read it in `auth.verify`.
 
-Each distinct params binding is a separate stream with its own retention. Durable messages expire after `replayWindowMs` as usual. Once a stream retains no messages and has been idle for longer than its `maxConnectionLifetimeMs` plus one minute, Tako releases its bookkeeping, so streams for many short-lived params do not accumulate. A released stream starts again at the store's current position; cursors from its earlier life reset like expired history.
+Each distinct params binding is a separate stream with its own retention. Durable messages expire after `replayWindowMs` as usual. Once a stream retains no messages and has been idle for longer than its `maxConnectionLifetimeMs` plus one minute, Tako releases its bookkeeping, so streams for many short-lived params do not accumulate. A released stream starts again at the store's current position; cursors from its earlier life reset like expired history. An app keeps at most 100,000 streams; beyond that, starting a new parameterized stream fails with a logged error, while existing streams and channels without params keep working.
 
 ## Authorize And Choose A Transport
 

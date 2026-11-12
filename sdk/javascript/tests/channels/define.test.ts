@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { Value } from "@sinclair/typebox/value";
 import { setChannelSocketPublisher } from "../../src/channels";
 import {
   CHANNEL_SYMBOL,
@@ -181,4 +182,23 @@ test("ephemeral publishes carry the flag without a replay window", async () => {
   } finally {
     setChannelSocketPublisher(null);
   }
+});
+
+describe("defineChannel params schemas declare every param", () => {
+  test("channel and presence schemas reject undeclared params unless they opt in", () => {
+    expect(defineChannel("status").definition.paramsSchema).toMatchObject({
+      additionalProperties: false,
+    });
+    const room = defineChannel("room", { paramsSchema: (t) => t.Object({ id: t.String() }) });
+    expect(room.definition.paramsSchema).toMatchObject({ additionalProperties: false });
+    expect(Value.Check(room.definition.paramsSchema, { id: "a", junk: "1" })).toBe(false);
+    const open = defineChannel("open", {
+      paramsSchema: (t) => t.Object({ id: t.String() }, { additionalProperties: true }),
+    });
+    expect(open.definition.paramsSchema).toMatchObject({ additionalProperties: true });
+    // Store scopes carry JSON params and keep their schema as declared.
+    expect(defineChannel("tako.store:notes").definition.paramsSchema).not.toHaveProperty(
+      "additionalProperties",
+    );
+  });
 });

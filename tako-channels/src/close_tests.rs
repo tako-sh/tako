@@ -384,7 +384,8 @@ fn only_trusted_durable_channel_streams_can_be_closed() {
 
     // A loaded definition rejects closing an ephemeral channel.
     let definition: ChannelDefinitionMeta = serde_json::from_value(json!({
-        "channel": "chat", "paramsSchema": {"type": "object"}, "auth": false, "ephemeral": true
+        "channel": "chat", "paramsSchema": {"type": "object", "properties": {"room": {"type": "string"}}},
+        "auth": false, "ephemeral": true
     }))
     .unwrap();
     assert!(validate_publication(&definition, &close, &json!({"room": "a"})).is_err());

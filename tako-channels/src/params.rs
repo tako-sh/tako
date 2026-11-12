@@ -23,6 +23,7 @@ pub fn validate_query(schema: &Value, query: &str) -> Result<Value, ParamsError>
         }
     }
 
+    reject_undeclared(schema, &obj)?;
     let value = Value::Object(obj);
     let validator = jsonschema::draft202012::new(schema)
         .map_err(|error| ParamsError::InvalidSchema(error.to_string()))?;
@@ -59,11 +60,34 @@ pub fn channel_params_query(query: Option<&str>) -> String {
 /// Validate already typed params, such as those of a server-side publish,
 /// against the same schema that query params are checked with.
 pub fn validate_value(schema: &Value, params: &Value) -> Result<(), ParamsError> {
+    if let Some(params) = params.as_object() {
+        reject_undeclared(schema, params)?;
+    }
     let validator = jsonschema::draft202012::new(schema)
         .map_err(|error| ParamsError::InvalidSchema(error.to_string()))?;
     validator
         .validate(params)
         .map_err(|error| ParamsError::Invalid(error.to_string()))
+}
+
+/// Params select streams, so each value of a param the schema does not
+/// declare would start a new one. Only a schema that explicitly sets
+/// `additionalProperties: true` accepts params outside its `properties`,
+/// whatever JSON Schema's own default; a schema without properties accepts none.
+fn reject_undeclared(schema: &Value, params: &Map<String, Value>) -> Result<(), ParamsError> {
+    if schema.get("additionalProperties") == Some(&Value::Bool(true)) {
+        return Ok(());
+    }
+    let declared = schema.get("properties").and_then(Value::as_object);
+    match params
+        .keys()
+        .find(|key| !declared.is_some_and(|declared| declared.contains_key(*key)))
+    {
+        Some(key) => Err(ParamsError::Invalid(format!(
+            "unknown param '{key}': the channel's params schema does not declare it"
+        ))),
+        None => Ok(()),
+    }
 }
 
 fn decode_query_component(value: &str, label: &str) -> Result<String, ParamsError> {
@@ -160,6 +184,41 @@ mod tests {
             let error = validate_value(&schema(), &params).unwrap_err();
             assert!(matches!(error, ParamsError::Invalid(_)), "got {error:?}");
         }
+    }
+
+    #[test]
+    fn undeclared_params_are_rejected_unless_the_schema_allows_them() {
+        // Each distinct value of an undeclared param would start a stream.
+        for schema in [
+            schema(),
+            json!({"type": "object", "properties": {"roomId": {"type": "string"}}}),
+        ] {
+            let error = validate_query(&schema, "roomId=a&junk=1").unwrap_err();
+            assert!(
+                matches!(&error, ParamsError::Invalid(message) if message.contains("'junk'")),
+                "got {error:?}"
+            );
+            let error = validate_value(&schema, &json!({"roomId": "a", "junk": 1})).unwrap_err();
+            assert!(matches!(error, ParamsError::Invalid(_)), "got {error:?}");
+        }
+        // A channel without a params schema accepts no params.
+        for schema in [
+            json!({"type": "object"}),
+            json!({"type": "object", "properties": {}}),
+        ] {
+            assert_eq!(validate_query(&schema, "").unwrap(), json!({}));
+            assert!(validate_query(&schema, "junk=1").is_err());
+            assert!(validate_value(&schema, &json!({"junk": 1})).is_err());
+        }
+        let open = json!({"type": "object", "additionalProperties": true});
+        assert_eq!(validate_query(&open, "any=1").unwrap(), json!({"any": "1"}));
+        validate_value(&open, &json!({"any": 1})).unwrap();
+        // Reserved names are not params and keep working.
+        let query = channel_params_query(Some("roomId=a&from=start&last_message_id=x"));
+        assert_eq!(
+            validate_query(&schema(), &query).unwrap(),
+            json!({"roomId": "a"})
+        );
     }
 
     #[test]

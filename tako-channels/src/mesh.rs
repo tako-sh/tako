@@ -42,6 +42,9 @@ pub enum ChannelPublication {
 pub enum RemoteIngest {
     Applied,
     Duplicate,
+    /// Acknowledged in sequence but not stored: the app is at its stream
+    /// limit, or the stream was already closed. Nothing to deliver.
+    Dropped,
 }
 
 pub(crate) type StreamChanges = HashMap<String, watch::Sender<Option<i64>>>;

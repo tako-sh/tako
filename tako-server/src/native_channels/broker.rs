@@ -501,6 +501,10 @@ impl Broker {
                         if reset.has_changed().unwrap_or(true) {
                             self.notify(&app, Notification::Gap);
                         }
+                        // Acknowledged in sequence, but no message to deliver.
+                        if result == RemoteIngest::Dropped {
+                            return Ok(());
+                        }
                         if event.ephemeral {
                             Notification::Committed {
                                 ephemeral: true,

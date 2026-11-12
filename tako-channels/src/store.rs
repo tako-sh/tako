@@ -19,6 +19,26 @@ const CHANNELS_DB_FILENAME: &str = "channels.sqlite";
 /// A connection may outlive its lifetime by the time its last frames take.
 const IDLE_STREAM_GRACE_MS: i64 = 60_000;
 pub const POSTGRES_CHANNELS_SCHEMA: &str = "tako_channels";
+/// Most streams one app keeps bookkeeping for. Each distinct params binding is
+/// a stream, so without a bound a client choosing new values could grow the
+/// metadata maintenance scans without limit. It matches the default total
+/// replay budget (`SqliteReplayLimits::max_messages`): every stream holding a
+/// message fits, and the rest is headroom for streams with subscribers only.
+pub(crate) const MAX_STREAMS: i64 = 100_000;
+
+/// A new stream refused by [`MAX_STREAMS`]. Logged here, where every path
+/// that starts a stream (subscribe, publish, mesh ingest) meets it.
+fn stream_limit_error(channel: &str) -> ChannelError {
+    tracing::warn!(
+        stream = channel,
+        limit = MAX_STREAMS,
+        "channel stream limit reached; refusing to start a new stream"
+    );
+    ChannelError::Storage(format!(
+        "channel stream limit reached: an app keeps at most {MAX_STREAMS} streams; \
+         idle streams are released after their connection lifetime"
+    ))
+}
 use crate::mesh::{DeliveryState, notify_committed};
 use crate::{ChannelEvent, ChannelPublication, RemoteIngest};
 
@@ -517,7 +537,9 @@ impl ChannelStore {
         self.delivery.publications.subscribe()
     }
 
-    /// Ingest authenticated, app-scoped events in FIFO order per origin. Never republishes.
+    /// Ingest authenticated, app-scoped events in FIFO order per origin. Never
+    /// republishes. An event its stream cannot take is acknowledged and
+    /// dropped ([`RemoteIngest::Dropped`]), so it does not read as a gap.
     pub fn ingest_remote(&self, event: &ChannelEvent) -> Result<RemoteIngest, ChannelError> {
         self.ensure_writable()?;
         let _publication = self.delivery.publish.lock();
@@ -526,11 +548,14 @@ impl ChannelStore {
                 "PostgreSQL delivery accepts wake hints, not remote events".into(),
             ));
         };
-        let Some(message) = store.ingest_remote(event, || self.signal_gap(None))? else {
-            return Ok(RemoteIngest::Duplicate);
-        };
-        self.deliver(&message, event.ephemeral);
-        Ok(RemoteIngest::Applied)
+        match store.ingest_remote(event, || self.signal_gap(None))? {
+            sqlite::Ingested::Duplicate => Ok(RemoteIngest::Duplicate),
+            sqlite::Ingested::Dropped => Ok(RemoteIngest::Dropped),
+            sqlite::Ingested::Applied(message) => {
+                self.deliver(&message, event.ephemeral);
+                Ok(RemoteIngest::Applied)
+            }
+        }
     }
 
     /// Wake a stream after a PostgreSQL peer commit without inserting another row.

@@ -141,7 +141,9 @@ type ChannelDefinition struct {
 	ChannelLifecycleConfig
 	// ParamsSchema is a JSON Schema for the query params that bind a channel.
 	// Validated params select the channel stream, so declare flat string,
-	// integer, number, or boolean properties. "from" and "last_message_id"
+	// integer, number, or boolean properties. tako-server rejects a param the
+	// schema does not list under "properties" unless it sets
+	// "additionalProperties": true; nil means the channel takes no params. "from" and "last_message_id"
 	// are reserved query names, so [ChannelRegistry.Register] panics if a
 	// property uses one. Verify must still check that the caller may use the
 	// requested params.
@@ -241,7 +243,14 @@ func (r *ChannelRegistry) Register(name string, definition ChannelDefinition) {
 		}
 	}
 	if definition.ParamsSchema == nil {
-		definition.ParamsSchema = json.RawMessage(`{"type":"object"}`)
+		// Params select channel and presence streams, so tako-server rejects
+		// params a schema does not declare; without a schema there are none.
+		// Store params are JSON validated as given.
+		if strings.HasPrefix(name, storeChannelPrefix) {
+			definition.ParamsSchema = json.RawMessage(`{"type":"object"}`)
+		} else {
+			definition.ParamsSchema = json.RawMessage(`{"type":"object","additionalProperties":false}`)
+		}
 	}
 	if definition.Auth != nil && definition.Auth.HeaderName == "" && definition.Auth.CookieName == "" {
 		definition.Auth.HeaderName = "authorization"

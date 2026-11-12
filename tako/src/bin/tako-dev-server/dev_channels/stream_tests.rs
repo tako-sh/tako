@@ -196,3 +196,28 @@ async fn closed_streams_replay_from_start_and_end_readers_as_in_production() {
         );
     }
 }
+
+#[tokio::test]
+async fn undeclared_params_are_rejected_as_in_production() {
+    let (app_port, authorized) = test_app::fake_app(
+        json!([{
+            "channel": "open",
+            "paramsSchema": {"type": "object", "properties": {"room": {"type": "integer"}}},
+            "auth": false,
+            "maxConnectionLifetimeMs": 500,
+        }]),
+        |_| (200, json!({"ok": true, "maxConnectionLifetimeMs": 500})),
+    )
+    .await;
+    let dev_store = DevChannelStore::new();
+    let (endpoint, _) = test_app::dev_proxy(app_port, &dev_store).await;
+    let subscribe =
+        |query: &str| reqwest::get(format!("http://{endpoint}/_tako/channels/open?{query}"));
+    for query in ["room=1&junk=a", "junk=a"] {
+        let response = subscribe(query).await.unwrap();
+        assert_eq!(response.status(), 400, "{query}");
+        assert!(response.text().await.unwrap().contains("unknown param"));
+    }
+    assert!(authorized.lock().unwrap().is_empty());
+    assert_eq!(subscribe("room=1&from=start").await.unwrap().status(), 200);
+}

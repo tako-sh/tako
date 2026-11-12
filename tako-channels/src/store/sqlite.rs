@@ -29,6 +29,15 @@ fn close_marker_sql() -> String {
 
 type StoredRow = (i64, String, String, String, Option<String>);
 
+/// What a remote event did to this store.
+pub(super) enum Ingested {
+    /// Already applied, or this store's own event.
+    Duplicate,
+    /// Acknowledged without a message: its stream could not take it.
+    Dropped,
+    Applied(ChannelMessage),
+}
+
 fn stored_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredRow> {
     Ok((
         row.get(0)?,
@@ -70,6 +79,8 @@ fn close_marker(
 }
 
 const INCREMENTAL_VACUUM_PAGES: i64 = 128;
+/// Streams one maintenance tick visits for age pruning, and releases at most.
+const MAINTENANCE_BATCH: usize = 1_000;
 const WAL_TRUNCATE_DELETED_ROWS_THRESHOLD: usize = 1024;
 
 fn storage_err(e: impl std::fmt::Display) -> ChannelError {
@@ -123,6 +134,8 @@ impl SqliteReplayLimits {
 pub(super) struct SqliteChannelStore {
     pub(crate) conn: Mutex<rusqlite::Connection>,
     epoch: [u8; 16],
+    /// The last stream age maintenance visited; the next tick continues after it.
+    prune_cursor: Mutex<String>,
 }
 
 impl SqliteChannelStore {
@@ -140,6 +153,7 @@ impl SqliteChannelStore {
         Ok(Self {
             epoch,
             conn: Mutex::new(conn),
+            prune_cursor: Mutex::default(),
         })
     }
 
@@ -149,6 +163,7 @@ impl SqliteChannelStore {
         Ok(Self {
             epoch,
             conn: Mutex::new(conn),
+            prune_cursor: Mutex::default(),
         })
     }
 
@@ -170,6 +185,7 @@ impl SqliteChannelStore {
                 .try_into()
                 .map_err(|_| storage_err("invalid channel epoch"))?,
             conn: Mutex::new(conn),
+            prune_cursor: Mutex::default(),
         })
     }
 
@@ -229,7 +245,7 @@ impl SqliteChannelStore {
         &self,
         event: &ChannelEvent,
         signal_gap: impl FnOnce(),
-    ) -> Result<Option<ChannelMessage>, ChannelError> {
+    ) -> Result<Ingested, ChannelError> {
         if event.id.sequence == 0
             || event.id.sequence > i64::MAX as u64
             || event.id.origin.is_empty()
@@ -245,7 +261,7 @@ impl SqliteChannelStore {
             ));
         }
         if event.id.origin == URL_SAFE_NO_PAD.encode(self.epoch) {
-            return Ok(None);
+            return Ok(Ingested::Duplicate);
         }
         let mut conn = self.conn.lock();
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -259,13 +275,20 @@ impl SqliteChannelStore {
             .unwrap_or(0);
         let sequence = event.id.sequence as i64;
         if sequence <= previous {
-            return Ok(None);
+            return Ok(Ingested::Duplicate);
         }
         let gap = sequence > previous + 1;
         if gap {
             rotate_replay_epoch(&tx)?;
         }
-        let message = append_event(&tx, replay_epoch(&tx)?, event)?;
+        // A dropped event still advances its origin's sequence: it was
+        // delivered, so the next one is no gap that would reset every reader.
+        let message = if !event.ephemeral && stream_limit_reached(&tx, &event.channel)? {
+            super::stream_limit_error(&event.channel);
+            None
+        } else {
+            Some(append_event(&tx, replay_epoch(&tx)?, event)?)
+        };
         tx.execute(
             "INSERT INTO channel_remote_origins(origin, sequence) VALUES (?1, ?2)
             ON CONFLICT(origin) DO UPDATE SET sequence = excluded.sequence",
@@ -276,7 +299,7 @@ impl SqliteChannelStore {
             signal_gap();
         }
         tx.commit()?;
-        Ok(Some(message))
+        Ok(message.map_or(Ingested::Dropped, Ingested::Applied))
     }
 
     pub(super) fn read_after(
@@ -403,12 +426,22 @@ impl SqliteChannelStore {
         Ok(heads)
     }
 
+    /// One maintenance tick. Its work is bounded: age pruning visits at most
+    /// [`MAINTENANCE_BATCH`] streams, continuing after the last one next tick,
+    /// and at most that many idle streams are released. Readers compute the
+    /// expired floor themselves, so a stream pruned a few ticks late never
+    /// serves expired rows; publishes enforce the count and byte budgets.
     pub(super) fn prune(&self, now: i64) -> Result<(), ChannelError> {
         let mut conn = self.conn.lock();
+        let mut cursor = self.prune_cursor.lock();
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute("DELETE FROM presence WHERE expires_at <= ?1", [now])?;
-        let deleted = prune_replay(&tx, load_limits(&tx)?, now)?;
+        let limits = load_limits(&tx)?;
+        let (mut deleted, next) = prune_age_batch(&tx, limits, now, &cursor, MAINTENANCE_BATCH)?;
+        deleted += enforce_store_budget(&tx, limits)?;
+        release_idle_streams(&tx, now, MAINTENANCE_BATCH)?;
         tx.commit()?;
+        *cursor = next;
         if deleted > 0 {
             run_cleanup_maintenance(&conn, deleted);
         }
@@ -571,6 +604,9 @@ fn ensure_stream(
     lifecycle: [i64; 4],
     now: i64,
 ) -> Result<bool, ChannelError> {
+    if stream_limit_reached(conn, channel)? {
+        return Err(super::stream_limit_error(channel));
+    }
     let born = conn.execute(
         "INSERT INTO channel_metadata (
             channel,
@@ -607,19 +643,61 @@ fn ensure_stream(
 /// Release the bookkeeping of streams that retain no messages and can have no
 /// subscriber. Every connection syncs its stream when it starts and ends within
 /// the stream's connection lifetime, so activity older than that lifetime
-/// proves nobody is connected, in this process or any other.
-fn release_idle_streams(conn: &rusqlite::Connection, now: i64) -> Result<(), ChannelError> {
-    const IDLE: &str = "SELECT channel FROM channel_metadata WHERE message_count = 0
-        AND last_activity_unix_ms < ?1 - max_connection_lifetime_ms - ?2";
-    conn.execute(
-        &format!("DELETE FROM channel_replay_floor WHERE channel IN ({IDLE})"),
-        [now, IDLE_STREAM_GRACE_MS],
-    )?;
-    conn.execute(
-        &format!("DELETE FROM channel_metadata WHERE channel IN ({IDLE})"),
-        [now, IDLE_STREAM_GRACE_MS],
-    )?;
+/// proves nobody is connected, in this process or any other. Releases at most
+/// `limit` streams, the longest idle first, through the partial idle index.
+fn release_idle_streams(
+    conn: &rusqlite::Connection,
+    now: i64,
+    limit: usize,
+) -> Result<(), ChannelError> {
+    let idle = {
+        let mut statement = conn.prepare_cached(RELEASE_IDLE_SQL)?;
+        statement
+            .query_map(
+                rusqlite::params![now - IDLE_STREAM_GRACE_MS, limit as i64],
+                |row| row.get::<_, String>(0),
+            )?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    for channel in idle {
+        conn.execute(
+            "DELETE FROM channel_replay_floor WHERE channel = ?1",
+            [&channel],
+        )?;
+        conn.execute(
+            "DELETE FROM channel_metadata WHERE channel = ?1",
+            [&channel],
+        )?;
+    }
     Ok(())
+}
+
+/// Streams that retain nothing, longest idle first. The expression matches
+/// `idx_channel_metadata_idle`, so only released candidates are visited.
+const RELEASE_IDLE_SQL: &str = "SELECT channel FROM channel_metadata
+    WHERE message_count = 0 AND last_activity_unix_ms + max_connection_lifetime_ms < ?1
+    ORDER BY last_activity_unix_ms + max_connection_lifetime_ms LIMIT ?2";
+
+/// Streams with retained messages after a maintenance cursor, in key order,
+/// through the partial `idx_channel_metadata_retained` index.
+const RETAINED_STREAMS_SQL: &str =
+    "SELECT channel, replay_window_ms, inactivity_ttl_ms, last_activity_unix_ms
+     FROM channel_metadata WHERE message_count > 0 AND channel > ?1 ORDER BY channel LIMIT ?2";
+
+/// Whether starting `channel` would exceed the app's stream limit. Existing
+/// streams and unparameterized channel names are never refused, so the limit
+/// cannot break a stream that already works.
+fn stream_limit_reached(conn: &rusqlite::Connection, channel: &str) -> Result<bool, ChannelError> {
+    if !crate::stream::counts_toward_stream_limit(channel) {
+        return Ok(false);
+    }
+    let (exists, streams): (bool, i64) = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM channel_metadata WHERE channel = ?1),
+            (SELECT stream_count FROM channel_store_state WHERE singleton = 1)",
+        [channel],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    Ok(!exists && streams >= super::MAX_STREAMS)
 }
 
 fn load_limits(conn: &rusqlite::Connection) -> Result<SqliteReplayLimits, ChannelError> {
@@ -667,20 +745,22 @@ fn validate_cursor(
     Ok(())
 }
 
-/// Delete expired rows stream by stream through the (channel, created_at)
-/// index. Every message has a metadata row: publishing upserts it first.
-fn prune_age(
+/// Delete expired rows of up to `limit` streams after `cursor`, stream by
+/// stream through the (channel, created_at) index. Returns the deleted row
+/// count and the cursor of the next batch: empty once the last stream was
+/// visited, so the next batch starts over. Every message has a metadata row:
+/// publishing upserts it first.
+fn prune_age_batch(
     conn: &rusqlite::Connection,
     limits: SqliteReplayLimits,
     now: i64,
-) -> Result<usize, ChannelError> {
+    cursor: &str,
+    limit: usize,
+) -> Result<(usize, String), ChannelError> {
     let lifecycles = {
-        let mut statement = conn.prepare_cached(
-            "SELECT channel, replay_window_ms, inactivity_ttl_ms, last_activity_unix_ms
-             FROM channel_metadata WHERE message_count > 0",
-        )?;
+        let mut statement = conn.prepare_cached(RETAINED_STREAMS_SQL)?;
         statement
-            .query_map([], |row| {
+            .query_map(rusqlite::params![cursor, limit as i64], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, i64>(1)?,
@@ -689,6 +769,14 @@ fn prune_age(
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?
+    };
+    let next = if lifecycles.len() < limit {
+        String::new()
+    } else {
+        lifecycles
+            .last()
+            .map(|(channel, ..)| channel.clone())
+            .unwrap_or_default()
     };
     let mut deleted = 0;
     for (channel, replay_window_ms, inactivity_ttl_ms, last_activity_unix_ms) in lifecycles {
@@ -705,7 +793,7 @@ fn prune_age(
             )?,
         };
     }
-    Ok(deleted)
+    Ok((deleted, next))
 }
 
 /// Retire the oldest rows of one stream until its counters fit the budget. The
@@ -774,12 +862,23 @@ fn enforce_store_budget(
     }
 }
 
+/// Full maintenance when a store opens, after which limits may have changed:
+/// every stream is pruned and every idle stream released.
 fn prune_replay(
     conn: &rusqlite::Connection,
     limits: SqliteReplayLimits,
     now: i64,
 ) -> Result<usize, ChannelError> {
-    let mut deleted = prune_age(conn, limits, now)?;
+    let mut deleted = 0;
+    let mut cursor = String::new();
+    loop {
+        let (removed, next) = prune_age_batch(conn, limits, now, &cursor, MAINTENANCE_BATCH)?;
+        deleted += removed;
+        if next.is_empty() {
+            break;
+        }
+        cursor = next;
+    }
     let over_budget = {
         let mut statement = conn.prepare_cached(
             "SELECT channel FROM channel_metadata WHERE message_count > ?1 OR message_bytes > ?2",
@@ -798,7 +897,7 @@ fn prune_replay(
         deleted += enforce_stream_budget(conn, limits, &channel)?;
     }
     deleted += enforce_store_budget(conn, limits)?;
-    release_idle_streams(conn, now)?;
+    release_idle_streams(conn, now, usize::MAX >> 1)?;
     Ok(deleted)
 }
 
@@ -942,8 +1041,28 @@ fn ensure_budget_counters(conn: &rusqlite::Connection) -> Result<(), ChannelErro
             ensure_column(conn, table, column, "INTEGER NOT NULL DEFAULT 0")?;
         }
     }
+    ensure_column(
+        conn,
+        "channel_store_state",
+        "stream_count",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
     conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_channel_messages_channel_created
+        "CREATE INDEX IF NOT EXISTS idx_channel_metadata_retained
+            ON channel_metadata(channel) WHERE message_count > 0;
+         CREATE INDEX IF NOT EXISTS idx_channel_metadata_idle
+            ON channel_metadata(last_activity_unix_ms + max_connection_lifetime_ms)
+            WHERE message_count = 0;
+         CREATE INDEX IF NOT EXISTS idx_presence_expires ON presence(expires_at);
+         UPDATE channel_store_state SET stream_count = (SELECT COUNT(*) FROM channel_metadata)
+            WHERE singleton = 1;
+         CREATE TRIGGER IF NOT EXISTS channel_stream_counted AFTER INSERT ON channel_metadata BEGIN
+            UPDATE channel_store_state SET stream_count = stream_count + 1 WHERE singleton = 1;
+         END;
+         CREATE TRIGGER IF NOT EXISTS channel_stream_uncounted AFTER DELETE ON channel_metadata BEGIN
+            UPDATE channel_store_state SET stream_count = stream_count - 1 WHERE singleton = 1;
+         END;
+         CREATE INDEX IF NOT EXISTS idx_channel_messages_channel_created
             ON channel_messages(channel, created_at_unix_ms);
          UPDATE channel_metadata SET
             message_count = (SELECT COUNT(*) FROM channel_messages m WHERE m.channel = channel_metadata.channel),
@@ -1018,6 +1137,33 @@ mod tests {
             )
             .unwrap();
         assert!(detail.contains("channel=? AND id>?"), "{detail}");
+    }
+
+    fn plan(conn: &rusqlite::Connection, sql: &str, params: impl rusqlite::Params) -> String {
+        let mut statement = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        statement
+            .query_map(params, |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .join("; ")
+    }
+
+    #[test]
+    fn maintenance_scans_seek_their_partial_indexes() {
+        let store = SqliteChannelStore::open_in_memory().unwrap();
+        let conn = store.conn.lock();
+        let idle = plan(&conn, RELEASE_IDLE_SQL, rusqlite::params![0, 1_000]);
+        assert!(idle.contains("idx_channel_metadata_idle"), "{idle}");
+        assert!(!idle.contains("TEMP B-TREE"), "{idle}");
+        let retained = plan(&conn, RETAINED_STREAMS_SQL, rusqlite::params!["", 1_000]);
+        assert!(
+            retained.contains("idx_channel_metadata_retained"),
+            "{retained}"
+        );
+        assert!(!retained.contains("TEMP B-TREE"), "{retained}");
+        let presence = plan(&conn, "DELETE FROM presence WHERE expires_at <= ?1", [0]);
+        assert!(presence.contains("idx_presence_expires"), "{presence}");
     }
 
     #[test]

@@ -167,6 +167,18 @@ impl ChannelStream {
     }
 }
 
+/// Whether a stream key was derived from params (a channel stream or a Store
+/// scope) and so counts toward the app's stream limit. Unparameterized channel
+/// names are bounded by the app's definitions and never refused.
+pub(crate) fn counts_toward_stream_limit(key: &str) -> bool {
+    reserved_stream_name(key)
+        || key
+            .strip_prefix(crate::live_store::STORE_CHANNEL_PREFIX)
+            .is_some_and(|scope| {
+                scope.len() == 64 && scope.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+}
+
 /// Stream keys are an internal namespace: no route or publisher may name one.
 pub fn reserved_stream_name(channel: &str) -> bool {
     channel.starts_with(STREAM_CHANNEL_PREFIX)

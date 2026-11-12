@@ -157,7 +157,9 @@ requirements before scaling across multiple servers; local state is per server.
 Channel streams, presence membership, and Store invalidations are scoped by
 their names and validated params; authorization must still check access to the
 requested room or tenant. Channel params are flat scalars and cannot be named
-`from` or `last_message_id` (reserved on channel routes). JavaScript server code
+`from` or `last_message_id` (reserved on channel routes). Channel and presence
+requests reject params the schema does not declare, so a definition without a
+params schema takes none. JavaScript server code
 can `close()` a durable stream; readers subscribing with `from: "start"` replay
 its retained messages, then stop for good at the close. Use this for output that
 must survive a refresh, such as LLM replies, and keep the finished result in the

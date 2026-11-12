@@ -294,11 +294,19 @@ export function defineChannel(name: string, maybeConfig?: unknown): unknown {
     ...(maybeConfig as object | undefined),
     name,
   } as AnyChannelConfig;
-  const schema = config.paramsSchema?.(Type) ?? Type.Object({});
+  const declared = config.paramsSchema?.(Type) ?? Type.Object({});
   // Store reads carry params as JSON; channel and presence params are query values.
-  if (!config.name.startsWith("tako.store:")) {
-    assertFlatChannelParamsSchema(config.name, schema);
+  const isStore = config.name.startsWith("tako.store:");
+  if (!isStore) {
+    assertFlatChannelParamsSchema(config.name, declared);
   }
+  // Params select streams, so tako-server rejects params a channel does not
+  // declare unless its schema sets `additionalProperties: true`. Say so in
+  // the schema too, so SDK-side checks agree.
+  const schema: TSchema =
+    isStore || "additionalProperties" in declared
+      ? declared
+      : { ...declared, additionalProperties: false };
   const auth: ChannelDefinition<unknown>["auth"] =
     config.auth === undefined || config.auth === false
       ? false

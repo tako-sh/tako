@@ -34,6 +34,15 @@ async fn chat_app() -> (u16, Arc<parking_lot::Mutex<Vec<Value>>>) {
                             "additionalProperties": false
                         },
                         "auth": false
+                    }, {
+                        // Silent on additionalProperties: undeclared params are
+                        // still not params.
+                        "channel": "open",
+                        "paramsSchema": {
+                            "type": "object",
+                            "properties": {"room": {"type": "integer"}}
+                        },
+                        "auth": false
                     }]),
                     "/channels/authorize" => {
                         seen.lock()
@@ -113,11 +122,15 @@ async fn serve(proxy: Arc<TakoProxy>) -> std::net::SocketAddr {
 }
 
 async fn get(addr: std::net::SocketAddr, query: &str) -> TcpStream {
+    get_channel(addr, "chat", query).await
+}
+
+async fn get_channel(addr: std::net::SocketAddr, channel: &str, query: &str) -> TcpStream {
     let mut client = TcpStream::connect(addr).await.unwrap();
     client
         .write_all(
             format!(
-                "GET /_tako/channels/chat?{query} HTTP/1.1\r\nHost: chat.example\r\nConnection: close\r\n\r\n"
+                "GET /_tako/channels/{channel}?{query} HTTP/1.1\r\nHost: chat.example\r\nConnection: close\r\n\r\n"
             )
             .as_bytes(),
         )
@@ -245,4 +258,48 @@ async fn sse_cursors_from_one_binding_reset_on_another() {
             "{query}: {response}"
         );
     }
+}
+
+#[tokio::test]
+async fn undeclared_params_are_rejected_before_they_start_a_stream() {
+    let temp = TempDir::new().unwrap();
+    let (app_port, authorized) = chat_app().await;
+    let proxy = proxy_for_chat(temp.path(), app_port);
+    let addr = serve(proxy).await;
+
+    for (channel, query) in [
+        ("open", "room=1&junk=a"),
+        ("open", "junk=a"),
+        ("chat", "room=1&x=1"),
+    ] {
+        let response = read_all(get_channel(addr, channel, query).await).await;
+        assert!(
+            response.starts_with("HTTP/1.1 400"),
+            "{channel}?{query}: {response}"
+        );
+        assert!(response.contains("unknown param"), "{response}");
+    }
+    assert!(
+        authorized.lock().is_empty(),
+        "rejected before authorization"
+    );
+    let streams = || {
+        rusqlite::Connection::open(crate::channels::app_channels_db_path(
+            temp.path(),
+            "chat-app",
+        ))
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM channel_metadata WHERE channel LIKE 'tako.stream:%'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(streams(), 0, "no stream bookkeeping for rejected params");
+
+    // Reserved names are not params: `from` still selects where a reader starts.
+    let response = read_all(get_channel(addr, "open", "room=1&from=start").await).await;
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert_eq!(streams(), 1);
 }

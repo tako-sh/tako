@@ -580,3 +580,129 @@ async fn websocket_publishes_and_frames_stay_within_the_connection_binding() {
     .await
     .unwrap();
 }
+
+#[test]
+fn sqlite_refuses_new_streams_beyond_the_app_limit_without_breaking_existing_ones() {
+    let store = ChannelStore::open_in_memory_without_maintenance();
+    let lifecycle = auth(json!({"ok": true}));
+    let existing = room("existing");
+    store.sync_channel(existing.key(), &lifecycle).unwrap();
+    store.sync_channel("base", &lifecycle).unwrap();
+    // The trigger-maintained counter tracks every stream row.
+    let streams = || store.raw_query_i64("SELECT stream_count FROM channel_store_state", []);
+    assert_eq!(streams(), 2);
+    store.raw_execute(
+        "UPDATE channel_store_state SET stream_count = ?1",
+        [crate::store::MAX_STREAMS],
+    );
+
+    let refused = |result: Result<_, ChannelError>| matches!(result, Err(ChannelError::Storage(message)) if message.contains("stream limit"));
+    // Neither a subscriber nor a publisher can start another parameterized stream.
+    assert!(refused(store.sync_channel(room("new").key(), &lifecycle)));
+    assert!(refused(
+        store
+            .append(room("new").key(), &payload(json!(1)))
+            .map(|_| ())
+    ));
+    assert!(refused(
+        store
+            .sync_channel(
+                &crate::live_store::store_scope("tako.store:notes", &json!({"id": 1})),
+                &lifecycle
+            )
+            .map(|_| ())
+    ));
+    // Streams that exist, and unparameterized channels, keep working.
+    store.sync_channel(existing.key(), &lifecycle).unwrap();
+    store.append(existing.key(), &payload(json!(2))).unwrap();
+    store.append("base", &payload(json!(3))).unwrap();
+    store.sync_channel("other-base", &lifecycle).unwrap();
+    assert_eq!(store.read_after(existing.key(), None, 10).unwrap().len(), 1);
+}
+
+#[test]
+fn sqlite_maintenance_work_per_tick_is_bounded() {
+    let store = ChannelStore::open_in_memory_without_maintenance();
+    let lifecycle = auth(json!({
+        "ok": true, "replayWindowMs": 1_000, "maxConnectionLifetimeMs": 1_000
+    }));
+    for n in 0..1_500 {
+        let stream = room(&n.to_string());
+        store.sync_channel(stream.key(), &lifecycle).unwrap();
+        store.append(stream.key(), &payload(json!(n))).unwrap();
+    }
+    let rows = |table: &str| store.raw_query_i64(&format!("SELECT COUNT(*) FROM {table}"), []);
+    let later = now() + 2_000;
+    // One tick prunes the first 1,000 streams; the next continues after them.
+    store.prune_at(later);
+    assert_eq!(rows("channel_messages"), 500);
+    store.prune_at(later);
+    assert_eq!(rows("channel_messages"), 0);
+    // Idle release is bounded the same way.
+    let idle = now() + 1_000 + 60_000 + 2_000;
+    store.prune_at(idle);
+    assert_eq!(rows("channel_metadata"), 500);
+    store.prune_at(idle);
+    assert_eq!(rows("channel_metadata"), 0);
+    assert_eq!(
+        store.raw_query_i64("SELECT stream_count FROM channel_store_state", []),
+        0
+    );
+}
+
+#[test]
+fn postgres_refuses_new_streams_beyond_the_app_limit_and_bounds_maintenance() {
+    let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
+        return;
+    };
+    let schema = format!("channel_limit_{}", std::process::id());
+    let store = ChannelStore::open_postgres_with_schema(&url, &schema, "app").unwrap();
+    let other_app = ChannelStore::open_postgres_with_schema(&url, &schema, "other").unwrap();
+    let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let lifecycle = auth(json!({"ok": true}));
+    let existing = room("existing");
+    store.sync_channel(existing.key(), &lifecycle).unwrap();
+    client
+        .batch_execute(&format!(
+            "INSERT INTO {schema}.channel_metadata (app_id, channel, replay_window_ms,
+                inactivity_ttl_ms, keepalive_interval_ms, max_connection_lifetime_ms,
+                last_activity_unix_ms)
+             SELECT 'app', 'tako.stream:filler' || n, 600000, 0, 25000, 7200000, {}
+             FROM generate_series(2, {}) AS n",
+            now(),
+            crate::store::MAX_STREAMS
+        ))
+        .unwrap();
+    let refused = |result: Result<_, ChannelError>| matches!(result, Err(ChannelError::Storage(message)) if message.contains("stream limit"));
+    assert!(refused(store.sync_channel(room("new").key(), &lifecycle)));
+    assert!(refused(
+        store
+            .append(room("new").key(), &payload(json!(1)))
+            .map(|_| ())
+    ));
+    store.sync_channel(existing.key(), &lifecycle).unwrap();
+    store.append(existing.key(), &payload(json!(2))).unwrap();
+    store.append("base", &payload(json!(3))).unwrap();
+    // The limit is per app.
+    other_app
+        .sync_channel(room("new").key(), &lifecycle)
+        .unwrap();
+
+    // Every filler stream is idle: one tick releases at most 1,000 of them.
+    let count = |client: &mut postgres::Client| -> i64 {
+        client
+            .query_one(
+                &format!("SELECT COUNT(*) FROM {schema}.channel_metadata WHERE app_id = 'app'"),
+                &[],
+            )
+            .unwrap()
+            .get(0)
+    };
+    let before = count(&mut client);
+    store.prune_at(now() + 7_200_000 + 60_000 + 2_000);
+    assert_eq!(before - count(&mut client), 1_000);
+    drop((store, other_app));
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .unwrap();
+}

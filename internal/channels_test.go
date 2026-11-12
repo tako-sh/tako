@@ -102,6 +102,22 @@ func TestRegistryMetadataSerializesPublicAuthAsFalse(t *testing.T) {
 	}
 }
 
+func TestRegistryDefaultSchemaAcceptsNoParams(t *testing.T) {
+	t.Parallel()
+
+	r := NewChannelRegistry()
+	r.Register("status", ChannelDefinition{})
+	b, err := json.Marshal(r.Metadata())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Params select streams: tako-server rejects undeclared ones, and the
+	// default schema says so.
+	if !contains(string(b), `"paramsSchema":{"type":"object","additionalProperties":false}`) {
+		t.Fatalf("expected a schema without params in %s", b)
+	}
+}
+
 func TestAuthorizeInheritsDefinitionLifecycleForSubjectOnlyGrant(t *testing.T) {
 	t.Parallel()
 	r := NewChannelRegistry()
