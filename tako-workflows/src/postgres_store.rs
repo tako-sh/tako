@@ -94,17 +94,22 @@ impl PostgresRunsDb {
         let lease_until = now.saturating_add(clamp_lease_ms(lease_ms));
         let mut client = self.client.lock();
         let mut tx = client.transaction()?;
+        // The candidate is a CTE so it is chosen once. As a subquery in FROM
+        // the planner may rescan it per row of `runs`; each rescan skips the
+        // row this statement just claimed and locks the next one, so a single
+        // claim would take several runs.
         let row = tx.query_opt(
             &format!(
-                "UPDATE {}.runs r
-                 SET status='running', worker_id=$2, lease_until=$3, attempts=attempts+1
-                 FROM (
+                "WITH candidate AS (
                     SELECT id FROM {}.runs
                     WHERE app_id=$1 AND status='pending' AND run_at <= $4 AND name = ANY($5)
                     ORDER BY run_at
                     LIMIT 1
                     FOR UPDATE SKIP LOCKED
-                 ) candidate
+                 )
+                 UPDATE {}.runs r
+                 SET status='running', worker_id=$2, lease_until=$3, attempts=attempts+1
+                 FROM candidate
                  WHERE r.app_id=$1 AND r.id=candidate.id
                  RETURNING r.id, r.name, r.payload, r.status, r.attempts, r.max_attempts, r.run_at",
                 self.schema, self.schema
@@ -731,6 +736,41 @@ fn validate_identifier(identifier: &str) -> Result<(), RunsDbError> {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn claim_takes_exactly_one_of_several_due_runs() {
+        let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let schema = format!(
+            "claim_one_{}",
+            nanoid::nanoid!(12, &['a', 'b', 'c', 'd', 'e', 'f'])
+        );
+        let db = PostgresRunsDb::open(&url, &schema, "app").unwrap();
+        for _ in 0..3 {
+            db.enqueue("work", &serde_json::json!({}), &EnqueueOpts::default())
+                .unwrap();
+        }
+        // A fresh, never-analyzed table is where the planner is most likely to
+        // re-evaluate a candidate subquery once per scanned row.
+        for remaining in [2, 1, 0] {
+            let run = db
+                .claim("worker", &["work".into()], 60_000)
+                .unwrap()
+                .unwrap();
+            assert_eq!(run.attempts, 1);
+            assert_eq!(db.pending_count().unwrap(), remaining);
+        }
+        assert!(
+            db.claim("worker", &["work".into()], 60_000)
+                .unwrap()
+                .is_none()
+        );
+        db.client
+            .lock()
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .unwrap();
+    }
 
     #[test]
     fn concurrent_reclaimers_and_signals_consume_state_once() {
