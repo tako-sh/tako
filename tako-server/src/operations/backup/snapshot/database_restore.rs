@@ -16,7 +16,7 @@ use tako_core::RestoredDatabases;
 use super::{
     DATABASE_SNAPSHOT_ARCHIVE_ROOT, READ_FLAGS, SIDECAR_SUFFIXES, TAKO_DATA_DIR,
     is_sqlite_database, is_transient_tako_sqlite_file, list_database_tree, open_regular,
-    sidecar_base,
+    require_same_filesystem, sidecar_base,
 };
 use crate::operations::backup::journal::{self, IntentDatabase, RestoreIntent, Steps};
 
@@ -332,6 +332,20 @@ fn plan_and_swap(
             summary.created.push(path);
         }
     }
+
+    // Every live directory a database sits in (or the nearest existing
+    // ancestor of one the restore creates) and the staged copies, which
+    // this restore extracted into one directory.
+    let mut paths = vec![data_root.to_path_buf(), staged_root.to_path_buf()];
+    for database in &planned {
+        let live = data_root.join(&database.relative);
+        let mut parent = live.parent().unwrap_or(data_root).to_path_buf();
+        while !parent.exists() && parent != data_root {
+            parent.pop();
+        }
+        paths.push(parent);
+    }
+    require_same_filesystem(dir, &paths.iter().map(PathBuf::as_path).collect::<Vec<_>>())?;
 
     let intent = RestoreIntent::databases(data_root, planned, created_dirs);
     steps

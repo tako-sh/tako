@@ -614,3 +614,35 @@ fn a_restore_that_would_turn_a_database_into_a_sidecar_is_refused() {
     assert!(!data.join("app/audit-journal").exists());
     assert_eq!(value(&data.join("app/audit")), "live");
 }
+
+/// A restore moves files with rename and link, which cannot cross
+/// filesystems. It refuses up front instead of failing part way.
+#[test]
+fn a_restore_across_filesystems_is_refused_before_changing_anything() {
+    let shm = Path::new("/dev/shm");
+    let other = match std::fs::metadata(shm) {
+        Ok(meta) if meta.dev() != std::fs::metadata(std::env::temp_dir()).unwrap().dev() => {
+            TempDir::new_in(shm).unwrap()
+        }
+        _ => return,
+    };
+    let fixture = fixture();
+    let before = tree_state(&fixture.data);
+    let staged = other.path().join("databases");
+    let status = std::process::Command::new("cp")
+        .arg("-a")
+        .arg(&fixture.staged)
+        .arg(&staged)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let dir = RollbackDir::create(&fixture.data).unwrap();
+    let error = swap_databases(&staged, &fixture.databases, &fixture.data, dir.path()).unwrap_err();
+    assert!(error.originals_intact);
+    assert!(
+        error.message.contains("is on a different filesystem"),
+        "{}",
+        error.message
+    );
+    assert_eq!(tree_state(&fixture.data), before);
+}
