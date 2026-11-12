@@ -114,6 +114,10 @@ func (c *Client) Enqueue(ctx context.Context, name string, payload any, opts Enq
 
 // RegisterSchedules sends the list of cron schedules to the server.
 func (c *Client) RegisterSchedules(ctx context.Context, schedules []ScheduleSpec) error {
+	if schedules == nil {
+		// The server requires a list: an empty one removes every schedule.
+		schedules = []ScheduleSpec{}
+	}
 	_, err := c.call(ctx, map[string]any{
 		"command":   "register_schedules",
 		"app":       c.app,
