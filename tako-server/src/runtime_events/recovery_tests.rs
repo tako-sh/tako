@@ -320,13 +320,24 @@ async fn reconcile_never_exceeds_the_instance_limit() {
 async fn status_reports_restarts_the_real_exit_and_the_next_attempt() {
     let dir = crate::isolation::fixture::TestDataDir::new().unwrap();
     let state = test_state(dir.path());
-    // Becomes ready, then dies with a recognizable exit code.
+    // Becomes ready, then dies with a recognizable exit code once the test
+    // releases it. A process that exits in the instant it reports ready can
+    // lose the race with its own start and fail that start instead.
+    let gate = dir.path().join("exit-gate");
+    std::fs::create_dir_all(&gate).unwrap();
+    let held = format!(
+        "cat <&3 >/dev/null; echo 43210 >&4; while [ ! -e {}/$$ ]; do sleep 0.01; done",
+        gate.display()
+    );
+    let release = |pid: Option<u32>| {
+        std::fs::write(gate.join(pid.unwrap().to_string()), b"").unwrap();
+    };
     let app = running_app(
         &state,
         dir.path(),
         "status",
         1,
-        sh("cat <&3 >/dev/null; echo 43210 >&4; exit 7"),
+        sh(&format!("{held}; exit 7")),
     );
     let name = app.name();
     let status = |state: Arc<ServerState>, name: String| async move {
@@ -344,12 +355,17 @@ async fn status_reports_restarts_the_real_exit_and_the_next_attempt() {
     );
 
     state.app_manager.start_app(&name).await.unwrap();
+    release(app.get_instances()[0].pid());
     // Run the real checker so the exit is observed where production observes it.
+    // Nothing listens on the reported port, so failed probes must never count
+    // here: only the process exit may report an instance dead.
     let (events, mut dead_events) = mpsc::channel(16);
     let checker = HealthChecker::new(
         HealthConfig {
             check_interval: Duration::from_millis(10),
             startup_check_interval: Duration::from_millis(10),
+            unhealthy_threshold: u32::MAX,
+            dead_threshold: u32::MAX,
             ..Default::default()
         },
         events,
@@ -383,6 +399,7 @@ async fn status_reports_restarts_the_real_exit_and_the_next_attempt() {
     assert_eq!(data["last_error"], "Instance marked dead");
 
     // The replacement dies the same way. Now Tako waits, and says until when.
+    release(app.get_instances()[0].pid());
     handle_health_event(&state, next_dead().await).await;
     monitor.abort();
     let data = status(state.clone(), name.clone()).await;
@@ -393,9 +410,10 @@ async fn status_reports_restarts_the_real_exit_and_the_next_attempt() {
     assert!((before..=before + 30).contains(&next), "{next} vs {before}");
 
     // Killed by a signal: reported as a signal, not an exit code.
-    app.config.write().command = sh("cat <&3 >/dev/null; echo 43210 >&4; kill -KILL $$");
+    app.config.write().command = sh(&format!("{held}; kill -KILL $$"));
     tick_after_backoff(&state).await;
     let instance = app.get_instances().remove(0);
+    release(instance.pid());
     tokio::time::timeout(Duration::from_secs(10), async {
         while instance.is_alive().await {
             tokio::time::sleep(Duration::from_millis(5)).await;
