@@ -408,7 +408,9 @@ func RunWorker(ctx context.Context) error {
 		return err
 	}
 
-	var schedules []ScheduleSpec
+	// Registration replaces the app's whole schedule set, so the set is sent
+	// even when empty: that clears schedules a previous release registered.
+	schedules := []ScheduleSpec{}
 	for name, reg := range handlers {
 		if reg.config.schedule != "" {
 			schedules = append(schedules, ScheduleSpec{
@@ -418,10 +420,8 @@ func RunWorker(ctx context.Context) error {
 			})
 		}
 	}
-	if len(schedules) > 0 {
-		if err := client.RegisterSchedules(ctx, schedules); err != nil {
-			return fmt.Errorf("register schedules: %w", err)
-		}
+	if err := client.RegisterSchedules(ctx, schedules); err != nil {
+		return fmt.Errorf("register schedules: %w", err)
 	}
 
 	w := newWorker(ctx, client, handlers)

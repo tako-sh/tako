@@ -637,6 +637,33 @@ func TestScheduleRegistrationCarriesTheRetryBudget(t *testing.T) {
 	}
 }
 
+// Registration replaces the server's whole schedule set, so a release whose
+// workflows have no schedules must still send an empty set to clear the old
+// ones.
+func TestRunWorkerRegistersAnEmptyScheduleSet(t *testing.T) {
+	resetRegistry()
+	s := startMockServer(t)
+	t.Setenv("TAKO_INTERNAL_SOCKET", s.path)
+	t.Setenv("TAKO_APP_NAME", "test-app")
+	RegisterWorkflow("manual", func(*WorkflowContext, json.RawMessage) error { return nil })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if err := RunWorker(ctx); err != nil {
+		t.Fatalf("run worker: %v", err)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.received) == 0 || s.received[0]["command"] != "register_schedules" {
+		t.Fatalf("commands: %v", s.received)
+	}
+	schedules, ok := s.received[0]["schedules"].([]any)
+	if !ok || len(schedules) != 0 {
+		t.Fatalf("schedules: %#v", s.received[0]["schedules"])
+	}
+}
+
 func (s *mockServer) reply(command string, reply map[string]any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
