@@ -829,13 +829,40 @@ impl DatabaseSwap {
     }
 }
 
+/// A database swap only checks, links, and renames files; a worker still
+/// running after this long is stuck and is stopped and rolled back.
+pub(super) const RESTORE_WORKER_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+/// [`swap_databases_in_worker`] on the blocking pool, so a slow worker never
+/// holds up a runtime thread.
+pub(super) async fn swap_databases_off_runtime(
+    staged_root: PathBuf,
+    databases: Vec<PathBuf>,
+    data_root: PathBuf,
+    timeout: Duration,
+) -> Result<DatabaseSwap, SwapError> {
+    tokio::task::spawn_blocking(move || {
+        swap_databases_in_worker(&staged_root, &databases, &data_root, timeout)
+    })
+    .await
+    // A panic dropped the rollback directory, which abandoned it.
+    .unwrap_or_else(|error| {
+        Err(SwapError {
+            message: format!("restore worker task failed: {error}"),
+            originals_intact: false,
+        })
+    })
+}
+
 /// Swap the staged databases into the live tree in a worker process. Its
 /// checks open the live databases, and closing a descriptor to a SQLite
-/// file drops every POSIX lock the closing process holds on it.
+/// file drops every POSIX lock the closing process holds on it. A worker
+/// that runs past `timeout` is killed and its swap rolled back.
 pub(super) fn swap_databases_in_worker(
     staged_root: &Path,
     databases: &[PathBuf],
     data_root: &Path,
+    timeout: Duration,
 ) -> Result<DatabaseSwap, SwapError> {
     let mut dir = RollbackDir::create(data_root).map_err(SwapError::intact)?;
     let request = RestoreRequest::SwapDatabases {
@@ -852,7 +879,7 @@ pub(super) fn swap_databases_in_worker(
             originals_intact: false,
         }
     };
-    match run_restore_request(&request) {
+    match run_restore_request(&request, Some(timeout)) {
         Ok(reply) => Ok(DatabaseSwap {
             dir,
             summary: reply.summary.unwrap_or_default(),
@@ -923,7 +950,10 @@ pub(super) struct RequestError {
     pub(super) started: bool,
 }
 
-fn run_restore_request(request: &RestoreRequest) -> Result<RestoreReply, RequestError> {
+fn run_restore_request(
+    request: &RestoreRequest,
+    timeout: Option<Duration>,
+) -> Result<RestoreReply, RequestError> {
     let crashed = |message: String| RequestError {
         message,
         originals_intact: false,
@@ -931,12 +961,14 @@ fn run_restore_request(request: &RestoreRequest) -> Result<RestoreReply, Request
         started: true,
     };
     let request = serde_json::to_string(request).map_err(|e| crashed(e.to_string()))?;
-    let stdout =
-        super::worker::run_worker_checked(&["--restore-worker".as_ref(), request.as_ref()])
-            .map_err(|error| RequestError {
-                started: error.started,
-                ..crashed(error.message)
-            })?;
+    let stdout = super::worker::run_worker_checked(
+        &["--restore-worker".as_ref(), request.as_ref()],
+        timeout,
+    )
+    .map_err(|error| RequestError {
+        started: error.started,
+        ..crashed(error.message)
+    })?;
     let reply: RestoreReply = serde_json::from_slice(&stdout)
         .map_err(|e| crashed(format!("restore worker sent an invalid reply: {e}")))?;
     match reply.error {

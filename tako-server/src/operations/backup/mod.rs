@@ -29,7 +29,9 @@ use encryption::{
     find_backup_key, validate_backup_key,
 };
 use index::{backup_index_key, backup_object_prefix, latest_backup};
-use journal::{DatabaseSwap, refuse_unfinished_restores, swap_databases_in_worker};
+use journal::{
+    DatabaseSwap, RESTORE_WORKER_TIMEOUT, refuse_unfinished_restores, swap_databases_off_runtime,
+};
 pub(crate) use journal::{
     RecoveryMode, recover_interrupted_restores, run_restore_worker, start_restore_generation,
     sweep_backup_work_dirs,
@@ -599,11 +601,13 @@ impl crate::ServerState {
             let swapped = match staged {
                 StagedRestore::Full => restore_data_tree(&extract_dir, &data_root)
                     .map(|swap| (RestoreSwap::Tree(swap), None)),
-                StagedRestore::Databases(databases) => swap_databases_in_worker(
-                    &extract_dir.join(DATABASE_SNAPSHOT_ARCHIVE_ROOT),
-                    &databases,
-                    &data_root,
+                StagedRestore::Databases(databases) => swap_databases_off_runtime(
+                    extract_dir.join(DATABASE_SNAPSHOT_ARCHIVE_ROOT),
+                    databases,
+                    data_root.clone(),
+                    RESTORE_WORKER_TIMEOUT,
                 )
+                .await
                 .map(|swap| {
                     let summary = swap.summary().clone();
                     (RestoreSwap::Databases(swap), Some(summary))

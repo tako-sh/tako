@@ -3,7 +3,9 @@
 //! to a live workflow database here would release the server's own locks.
 
 use std::ffi::OsStr;
-use std::process::{Command, Stdio};
+use std::io::Read;
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
 
 /// A worker that did not finish successfully.
 #[derive(Debug)]
@@ -15,11 +17,16 @@ pub(super) struct WorkerError {
 
 /// Run `tako-server <args>` and return its stdout.
 pub(super) fn run_worker(args: &[&OsStr]) -> Result<Vec<u8>, String> {
-    run_worker_checked(args).map_err(|error| error.message)
+    run_worker_checked(args, None).map_err(|error| error.message)
 }
 
 /// [`run_worker`], telling a worker that never started from one that failed.
-pub(super) fn run_worker_checked(args: &[&OsStr]) -> Result<Vec<u8>, WorkerError> {
+/// A worker still running after `timeout` is killed and counts as failed.
+/// Blocks the calling thread until the worker is gone.
+pub(super) fn run_worker_checked(
+    args: &[&OsStr],
+    timeout: Option<Duration>,
+) -> Result<Vec<u8>, WorkerError> {
     let not_started = |error: std::io::Error| WorkerError {
         message: format!("start snapshot worker: {error}"),
         started: false,
@@ -29,26 +36,71 @@ pub(super) fn run_worker_checked(args: &[&OsStr]) -> Result<Vec<u8>, WorkerError
         started: true,
     };
     let (mut command, stdout_file) = command(args).map_err(not_started)?;
-    let child = command
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(not_started)?;
-    let output = child
-        .wait_with_output()
-        .map_err(|e| failed(format!("wait for snapshot worker: {e}")))?;
-    if !output.status.success() {
+    let readers = [
+        child.stdout.take().map(drain),
+        child.stderr.take().map(drain),
+    ];
+    let status = wait(&mut child, timeout);
+    let [stdout, stderr] = readers.map(|reader| {
+        reader
+            .and_then(|reader| reader.join().ok())
+            .unwrap_or_default()
+    });
+    let status = match status {
+        Ok(Some(status)) => status,
+        Ok(None) => {
+            return Err(failed(format!(
+                "snapshot worker did not finish within {} seconds and was stopped",
+                timeout.unwrap_or_default().as_secs()
+            )));
+        }
+        Err(error) => return Err(failed(format!("wait for snapshot worker: {error}"))),
+    };
+    if !status.success() {
         return Err(failed(format!(
-            "snapshot worker failed ({}): {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
+            "snapshot worker failed ({status}): {}",
+            String::from_utf8_lossy(&stderr).trim()
         )));
     }
     match stdout_file {
         Some(file) => std::fs::read(file.path())
             .map_err(|e| failed(format!("read snapshot worker output: {e}"))),
-        None => Ok(output.stdout),
+        None => Ok(stdout),
+    }
+}
+
+fn drain(mut pipe: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = pipe.read_to_end(&mut bytes);
+        bytes
+    })
+}
+
+/// The worker's exit status, or `None` once it ran past `timeout` and was
+/// killed. Returns only after the process is gone.
+fn wait(child: &mut Child, timeout: Option<Duration>) -> std::io::Result<Option<ExitStatus>> {
+    let Some(timeout) = timeout else {
+        return child.wait().map(Some);
+    };
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        if Instant::now() >= deadline {
+            // Even if the kill fails the wait below returns once it exits.
+            let _ = child.kill();
+            child.wait()?;
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -86,28 +138,36 @@ pub(super) mod tests {
     const OUT: &str = "TAKO_TEST_BACKUP_WORKER_OUT";
     const FAULT: &str = "TAKO_TEST_BACKUP_WORKER_FAULT";
 
-    /// What goes wrong with a worker this thread starts next.
+    /// What goes wrong with a worker.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(in crate::operations::backup) enum Fault {
         /// The process cannot be started, as when fork fails.
         SpawnFails,
         /// The worker does its work, then dies before it replies.
         CrashAfterRun,
+        /// The worker does its work, then never exits.
+        HangAfterRun,
     }
 
-    thread_local! {
-        static FAULTS: std::cell::RefCell<std::collections::VecDeque<Option<Fault>>> =
-            const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
+    type Faults = Vec<(String, std::collections::VecDeque<Fault>)>;
+    static FAULTS: std::sync::Mutex<Faults> = std::sync::Mutex::new(Vec::new());
+
+    /// Apply `faults`, in order, to the next workers whose arguments
+    /// mention `key` (a test's own temporary directory).
+    pub(in crate::operations::backup) fn inject_faults(key: &std::path::Path, faults: &[Fault]) {
+        FAULTS.lock().unwrap().push((
+            key.to_string_lossy().into_owned(),
+            faults.iter().copied().collect(),
+        ));
     }
 
-    /// Apply `faults` to the next workers this thread starts, in order;
-    /// `None` starts one normally.
-    pub(in crate::operations::backup) fn inject_faults(faults: &[Option<Fault>]) {
-        FAULTS.with(|queue| queue.borrow_mut().extend(faults.iter().copied()));
-    }
-
-    fn next_fault() -> Option<Fault> {
-        FAULTS.with(|queue| queue.borrow_mut().pop_front().flatten())
+    fn next_fault(args: &[&OsStr]) -> Option<Fault> {
+        let args: Vec<_> = args.iter().map(|arg| arg.to_string_lossy()).collect();
+        let mut faults = FAULTS.lock().unwrap();
+        let (_, queue) = faults
+            .iter_mut()
+            .find(|(key, _)| args.iter().any(|arg| arg.contains(key.as_str())))?;
+        queue.pop_front()
     }
 
     /// The test binary has no `tako-server` flags: run this module's
@@ -116,7 +176,7 @@ pub(super) mod tests {
     pub(super) fn test_worker_command(
         args: &[&OsStr],
     ) -> std::io::Result<(std::process::Command, tempfile::NamedTempFile)> {
-        let fault = next_fault();
+        let fault = next_fault(args);
         if fault == Some(Fault::SpawnFails) {
             return Err(std::io::Error::from_raw_os_error(libc::EAGAIN));
         }
@@ -132,8 +192,14 @@ pub(super) mod tests {
             ])
             .env(ARGS, encoded.join(","))
             .env(OUT, out.path());
-        if fault == Some(Fault::CrashAfterRun) {
-            command.env(FAULT, "crash");
+        match fault {
+            Some(Fault::CrashAfterRun) => {
+                command.env(FAULT, "crash");
+            }
+            Some(Fault::HangAfterRun) => {
+                command.env(FAULT, "hang");
+            }
+            _ => {}
         }
         Ok((command, out))
     }
@@ -175,8 +241,10 @@ pub(super) mod tests {
             .map(|arg| OsStr::from_bytes(&hex::decode(arg).unwrap()).to_os_string())
             .collect();
         let result = handle(&args);
-        if std::env::var_os(FAULT).is_some_and(|fault| fault == "crash") {
-            std::process::exit(101);
+        match std::env::var_os(FAULT).as_deref().and_then(OsStr::to_str) {
+            Some("crash") => std::process::exit(101),
+            Some("hang") => std::thread::sleep(std::time::Duration::from_secs(3600)),
+            _ => {}
         }
         match result {
             Ok(stdout) => std::fs::write(std::env::var_os(OUT).unwrap(), stdout).unwrap(),
