@@ -226,13 +226,6 @@ fn discard(dir: &Path) -> Result<(), String> {
         .map_err(|error| format!("remove previous data {}: {error}", finished.display()))
 }
 
-/// Retire and remove a rollback directory whose live data needs nothing
-/// more: the restore was committed, rolled back, or never changed anything.
-pub(super) fn finish(dir: &Path) -> Result<(), String> {
-    retire(dir)?;
-    discard(dir)
-}
-
 /// Put back the originals the intent in `dir` describes. Repeating it after
 /// it stopped part way is safe. The caller owns the directory: its restore
 /// holds the lock, or recovery took it.
@@ -262,7 +255,8 @@ pub(super) fn roll_back(dir: &Path) -> Result<(), String> {
 /// Mark the restore in `dir` committed, then remove the originals.
 #[cfg(test)]
 pub(super) fn commit(dir: &Path) -> Result<(), String> {
-    finish(dir)
+    retire(dir)?;
+    discard(dir)
 }
 
 /// A new rollback directory beside a data root, locked by this process
@@ -276,7 +270,7 @@ pub(super) fn commit(dir: &Path) -> Result<(), String> {
 #[derive(Debug)]
 pub(super) struct RollbackDir {
     path: PathBuf,
-    _lock: File,
+    lock: File,
     ended: bool,
 }
 
@@ -310,13 +304,21 @@ impl RollbackDir {
             .map_err(|e| format!("sync {}: {e}", parent.display()))?;
         Ok(Self {
             path,
-            _lock: lock,
+            lock,
             ended: false,
         })
     }
 
     pub(super) fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// The locked descriptor, which a restore worker inherits: a flock
+    /// belongs to the open file description, so the worker holds the lock
+    /// for as long as it lives, even if this process dies first.
+    fn lock_fd(&self) -> std::os::fd::RawFd {
+        use std::os::fd::AsRawFd;
+        self.lock.as_raw_fd()
     }
 
     fn exists(&self) -> bool {
@@ -410,10 +412,13 @@ impl RollbackDir {
 
 impl Drop for RollbackDir {
     fn drop(&mut self) {
-        // Before the lock is released with the fields.
         if !self.ended && self.exists() {
             self.abandon("the restore stopped before it was committed or rolled back");
         }
+        // Explicitly: a child another thread forked holds a copy of the
+        // descriptor until it execs, and closing ours alone would leave the
+        // lock held until then. No worker of this restore is alive now.
+        let _ = rustix::fs::flock(&self.lock, FlockOperation::Unlock);
     }
 }
 
@@ -871,6 +876,7 @@ pub(super) fn swap_databases_in_worker(
         data_root: data_root.to_path_buf(),
         dir: dir.path().to_path_buf(),
         generation: current_generation(),
+        lock_fd: dir.lock_fd(),
     };
     let not_intact = |dir: &mut RollbackDir, message: String| {
         let kept = dir.abandon(&message);
@@ -879,7 +885,7 @@ pub(super) fn swap_databases_in_worker(
             originals_intact: false,
         }
     };
-    match run_restore_request(&request, Some(timeout)) {
+    match run_restore_request(&request, Some(timeout), Some(dir.lock_fd())) {
         Ok(reply) => Ok(DatabaseSwap {
             dir,
             summary: reply.summary.unwrap_or_default(),
@@ -927,6 +933,8 @@ pub(super) enum RestoreRequest {
         dir: PathBuf,
         /// Written into the intent record: the server's, not the worker's.
         generation: String,
+        /// The inherited descriptor holding the lock of `dir`.
+        lock_fd: i32,
     },
 }
 
@@ -953,6 +961,7 @@ pub(super) struct RequestError {
 fn run_restore_request(
     request: &RestoreRequest,
     timeout: Option<Duration>,
+    inherit: Option<std::os::fd::RawFd>,
 ) -> Result<RestoreReply, RequestError> {
     let crashed = |message: String| RequestError {
         message,
@@ -964,6 +973,7 @@ fn run_restore_request(
     let stdout = super::worker::run_worker_checked(
         &["--restore-worker".as_ref(), request.as_ref()],
         timeout,
+        inherit,
     )
     .map_err(|error| RequestError {
         started: error.started,
@@ -982,6 +992,37 @@ fn run_restore_request(
     }
 }
 
+/// Check that descriptor `fd` of this process holds the lock of `dir`.
+fn check_lock(dir: &Path, fd: i32) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let lock = std::fs::metadata(dir.join(LOCK_FILE))
+        .map_err(|e| format!("inspect restore lock in {}: {e}", dir.display()))?;
+    // SAFETY: fstat and flock only use the descriptor number; one that is
+    // not open fails with EBADF.
+    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(fd, &mut stat) } != 0 {
+        return Err(format!(
+            "restore lock descriptor {fd}: {}",
+            io::Error::last_os_error()
+        ));
+    }
+    if stat.st_dev as u64 != lock.dev() || stat.st_ino as u64 != lock.ino() {
+        return Err(format!(
+            "descriptor {fd} is not the restore lock of {}",
+            dir.display()
+        ));
+    }
+    // Locking again through the description that holds the lock succeeds;
+    // through any other it would block.
+    if unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err(format!(
+            "the restore worker does not hold the restore lock of {}",
+            dir.display()
+        ));
+    }
+    Ok(())
+}
+
 /// Entry point of `tako-server --restore-worker <request>`: run one restore
 /// step and return the JSON reply for stdout.
 pub(crate) fn run_restore_worker(request: &str) -> Result<String, String> {
@@ -998,9 +1039,15 @@ pub(crate) fn run_restore_worker(request: &str) -> Result<String, String> {
             data_root,
             dir,
             generation,
+            lock_fd,
         } => {
             set_generation(generation);
-            match swap_databases(&staged_root, &databases, &data_root, &dir) {
+            // Never change data unless this process holds the lock, so no
+            // recovery can run beside it.
+            let swapped = check_lock(&dir, lock_fd)
+                .map_err(SwapError::intact)
+                .and_then(|()| swap_databases(&staged_root, &databases, &data_root, &dir));
+            match swapped {
                 Ok(summary) => reply.summary = Some(summary),
                 Err(error) => {
                     reply.error = Some(error.message);
@@ -1071,6 +1118,27 @@ mod tests {
         assert!(error.contains("names data outside its app"), "{error}");
         assert!(roll_back(dir.path()).is_err());
         assert!(dir.path().exists());
+    }
+
+    /// A restore worker only changes data while it holds the restore lock
+    /// through the descriptor it inherited from the server.
+    #[test]
+    fn a_restore_worker_checks_that_it_holds_the_lock() {
+        use std::os::fd::AsRawFd;
+        let temp = tempfile::tempdir().unwrap();
+        let data_root = temp.path().join("apps/demo/production/data");
+        std::fs::create_dir_all(&data_root).unwrap();
+        let dir = RollbackDir::create(&data_root).unwrap();
+        check_lock(dir.path(), dir.lock_fd()).unwrap();
+        let other = std::fs::File::open(dir.path().join(LOCK_FILE)).unwrap();
+        let error = check_lock(dir.path(), other.as_raw_fd()).unwrap_err();
+        assert!(error.contains("does not hold the restore lock"), "{error}");
+        let unrelated = std::fs::File::open(temp.path()).unwrap();
+        let error = check_lock(dir.path(), unrelated.as_raw_fd()).unwrap_err();
+        assert!(error.contains("is not the restore lock"), "{error}");
+        let error = check_lock(dir.path(), 1_000_000).unwrap_err();
+        assert!(error.contains("Bad file descriptor"), "{error}");
+        dir.finish().unwrap();
     }
 
     /// A rollback directory with a record of a restore that a crash

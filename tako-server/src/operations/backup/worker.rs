@@ -4,6 +4,8 @@
 
 use std::ffi::OsStr;
 use std::io::Read;
+use std::os::fd::RawFd;
+use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
@@ -17,15 +19,19 @@ pub(super) struct WorkerError {
 
 /// Run `tako-server <args>` and return its stdout.
 pub(super) fn run_worker(args: &[&OsStr]) -> Result<Vec<u8>, String> {
-    run_worker_checked(args, None).map_err(|error| error.message)
+    run_worker_checked(args, None, None).map_err(|error| error.message)
 }
 
 /// [`run_worker`], telling a worker that never started from one that failed.
 /// A worker still running after `timeout` is killed and counts as failed.
-/// Blocks the calling thread until the worker is gone.
+/// The worker inherits the descriptor `inherit` (a lock it must hold while
+/// it works), and on Linux it is killed when this thread's process dies.
+/// Blocks the calling thread until the worker is gone, which the kill on
+/// death depends on: it fires when the thread that started the worker ends.
 pub(super) fn run_worker_checked(
     args: &[&OsStr],
     timeout: Option<Duration>,
+    inherit: Option<RawFd>,
 ) -> Result<Vec<u8>, WorkerError> {
     let not_started = |error: std::io::Error| WorkerError {
         message: format!("start snapshot worker: {error}"),
@@ -36,6 +42,32 @@ pub(super) fn run_worker_checked(
         started: true,
     };
     let (mut command, stdout_file) = command(args).map_err(not_started)?;
+    let parent = std::process::id();
+    // SAFETY: runs between fork and exec, and only makes system calls that
+    // are async-signal-safe; it allocates nothing.
+    unsafe {
+        command.pre_exec(move || {
+            #[cfg(target_os = "linux")]
+            {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // The server died before the kill on death was armed.
+                if libc::getppid() as u32 != parent {
+                    return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
+                }
+            }
+            #[cfg(not(target_os = "linux"))]
+            let _ = parent;
+            if let Some(fd) = inherit {
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        });
+    }
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
