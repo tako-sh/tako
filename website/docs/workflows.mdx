@@ -228,6 +228,31 @@ See [Network Primitives](/network-primitives/#workflow-results) for typed exampl
 
 `ctx.run(name, fn)` saves the function's result. When the workflow is claimed again, a completed step with the same name returns its saved result instead of calling `fn` again. Keep step names stable for the lifetime of a workflow run, and keep returned values JSON serializable.
 
+Step names must also be unique within a run. `ctx.run`, `ctx.sleep`, and `ctx.waitFor` (Go: `ctx.Step.Run`, `Sleep`, and `WaitFor`) share one namespace of saved steps, so give repeated work an index or ID in its name:
+
+<CodeGroup>
+
+```ts JavaScript
+for (const item of order.items) {
+  await ctx.run(`reserve:${item.sku}`, () => inventory.reserve(item));
+}
+```
+
+```go Go
+// Inside a registered Go workflow handler.
+for _, item := range order.Items {
+    if err := ctx.Step.Run("reserve:"+item.SKU, nil, func() (any, error) {
+        return nil, inventory.Reserve(item)
+    }); err != nil {
+        return err
+    }
+}
+```
+
+</CodeGroup>
+
+Using a name a second time in one execution of the handler does not return the first result: the call fails and the run becomes `dead` immediately, with an error that names the step. This is a programming error that another attempt cannot fix, so it does not spend the retry budget. A step completed by an earlier attempt still replays its saved result once per execution. A step whose body threw saved nothing, so the handler may catch the error and call the same name again.
+
 The durability boundary is the saved result, not the side effect itself. If a worker stops after `fn` completes but before Tako saves the result, that step runs again on the next claim. Step bodies therefore have an at-least-once execution contract. Use provider idempotency keys, upserts, conditional writes, or another domain-specific guard for side effects.
 
 Steps can retry independently before an error reaches the run-level retry policy:
@@ -362,6 +387,7 @@ func approveOrder(ctx context.Context, orderID, userID string) (uint64, error) {
 | Throw a regular error             | Retry while attempts remain, then become `dead`.       |
 | `ctx.bail(reason?)`               | `cancelled` immediately, with no retry.                |
 | `ctx.fail(error)`                 | `dead` immediately, with no retry.                     |
+| Reuse a step name in one run      | `dead` immediately, with no retry.                     |
 | Long `ctx.sleep` or `ctx.waitFor` | Return to `pending` without spending the retry budget. |
 
 Run retries use exponential backoff with 20% jitter. The default delay starts at one second and is capped at one hour. `retries: 4` means four retries after the first attempt, for five total attempts.
@@ -435,7 +461,7 @@ Use finite `tako logs --env production --days 1 --json` to inspect app and worke
 ## Practical Rules
 
 - Keep workflow payloads and step results JSON serializable.
-- Give every step a stable name. Changing a name creates a different checkpoint for existing runs.
+- Give every step a stable name that is unique within the run. Changing a name creates a different checkpoint for existing runs; reusing one in the same execution fails the run.
 - Make side-effecting step bodies idempotent. `ctx.run` is durable but still at least once at the save boundary.
 - Supply `id` to deduplicate enqueues for the same business operation while its run history is retained.
 - Use `ctx.bail` for expected cancellation and `ctx.fail` for permanent failure.

@@ -19,6 +19,11 @@ result when the handler returns nil; the last call wins and a run without a
 result completes with null. `Result(ctx, name, id)` reads a run's current
 status, result, and error once, and returns nil when the run is missing.
 
+Step names must be unique within a run. `ctx.Step.Run`, `Sleep`, and `WaitFor`
+share one namespace; using a name twice in one execution of a handler returns
+an error that marks the run `dead` immediately instead of returning the first
+result. Put an index or id in names used in loops.
+
 The worker honors the attempt budget stored on each run. `Enqueue` stores a
 `WithMaxAttempts` budget when the calling process registered the workflow and
 `EnqueueOpts.MaxAttempts` is nil. Runs enqueued by another binary or created by

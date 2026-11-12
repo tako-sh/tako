@@ -13,14 +13,14 @@
       "type": "framework",
       "description": "tako.sh Go SDK: ListenAndServe for http.Handler, Listener for custom servers, typed secrets via tako generate, authenticated presence and live Stores with cached offline reads.",
       "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-go/SKILL.md",
-      "sha256": "2f0c30bc07836e2f9272b5cfedaddf0280bb708afbf04261cb93fca73519bce4"
+      "sha256": "84a57931bddc27471c3e78788fa5a586ca44744accfdeb703b391f4b73c2f664"
     },
     {
       "name": "tako-sdk-js",
       "type": "framework",
       "description": "tako.sh SDK: fetch handler interface, tako runtime object, generated tako.d.ts type augmentation, defineChannel/definePresence/defineStore/defineWorkflow, replay recovery, live data and offline reads, Vite and Next.js adapters.",
       "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-js/SKILL.md",
-      "sha256": "78e49d96840f821e39a1499d402931ac70b38ae94b6fd2b62b8712dcae92da85"
+      "sha256": "011fbb75fa0a1d3793b927076ef03ffbc15c204a928879220bcfcf254aa14881"
     },
     {
       "name": "tako-sdk-rust",

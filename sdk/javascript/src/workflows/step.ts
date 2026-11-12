@@ -131,7 +131,34 @@ export function createStepAPI(
   log: Logger,
   createContext: (stepName: string) => WorkflowStepContext,
 ): StepAPI {
-  return {
+  // Names used by run/sleep/waitFor in this execution of the handler. They
+  // share one namespace in the steps table, so a second use would silently
+  // return the first use's saved result instead of doing its own work.
+  const used = new Set<string>();
+
+  // A reused name is a programming error that no retry can fix, so it fails
+  // the run immediately. A step that throws releases its name: nothing was
+  // saved, and the handler may catch the error and try the same step again.
+  async function once<T>(name: string, step: () => Promise<T>): Promise<T> {
+    if (used.has(name)) {
+      throw new FailSignal(
+        new Error(
+          `Step name ${JSON.stringify(name)} was used more than once in this run. ` +
+            `Step names must be unique within a run; add an index or id to the name, ` +
+            `for example ${JSON.stringify(`${name}:1`)}.`,
+        ),
+      );
+    }
+    used.add(name);
+    try {
+      return await step();
+    } catch (err) {
+      used.delete(name);
+      throw err;
+    }
+  }
+
+  const steps: StepAPI = {
     async run<T>(
       name: string,
       fn: (step: WorkflowStepContext) => Promise<T> | T,
@@ -213,5 +240,12 @@ export function createStepAPI(
       const timeoutAt = opts?.timeout != null ? new Date(Date.now() + opts.timeout) : null;
       throw new WaitSignal(name, name, timeoutAt);
     },
+  };
+
+  return {
+    run: (name, fn, opts) => once(name, () => steps.run(name, fn, opts)),
+    sleep: (name, durationMs) => once(name, () => steps.sleep(name, durationMs)),
+    waitFor: <T = unknown>(name: string, opts?: StepWaitOptions) =>
+      once(name, () => steps.waitFor<T>(name, opts)),
   };
 }

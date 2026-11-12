@@ -480,6 +480,31 @@ describe("Worker", () => {
     expect(runs.b).toBe(2);
   });
 
+  test("a reused step name kills the run without spending its retries", async () => {
+    const processed: string[] = [];
+    const worker = new Worker({
+      client,
+      workerId: "w1",
+      registry: registry({
+        batch: async (payload, ctx) => {
+          for (const item of (payload as { items: string[] }).items) {
+            await ctx.run("process", () => {
+              processed.push(item);
+              return item;
+            });
+          }
+        },
+      }),
+    });
+
+    const id = mock.seed({ name: "batch", payload: { items: ["a", "b", "c"] }, retries: 4 });
+    await worker.processOnce();
+    expect(processed).toEqual(["a"]);
+    expect(mock.find(id)).toMatchObject({ status: "dead", attempts: 1 });
+    expect(mock.find(id)?.lastError).toContain('Step name "process" was used more than once');
+    expect(await worker.processOnce()).toBe(false);
+  });
+
   test("runLoop processes runs concurrently up to concurrency limit", async () => {
     const total = 5;
     let peak = 0;

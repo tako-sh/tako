@@ -96,7 +96,38 @@ type StepAPI struct {
 	runID    string
 	workerID string
 	state    map[string]any
-	mu       sync.Mutex
+	// used holds the step names already taken in this execution.
+	used map[string]struct{}
+	mu   sync.Mutex
+}
+
+// once reserves name for one step in this execution of the handler. Run,
+// Sleep, and WaitFor share one namespace of saved steps, so a second use
+// would silently return the first use's saved result instead of doing its
+// own work. Reuse is a programming error that no retry can fix, so it fails
+// the run immediately. A step that returns an error releases its name:
+// nothing was saved, and the handler may try the same step again.
+func (s *StepAPI) once(name string, step func() error) error {
+	s.mu.Lock()
+	if _, reused := s.used[name]; reused {
+		s.mu.Unlock()
+		return &failSignal{err: fmt.Errorf(
+			"step name %q was used more than once in this run; step names must be unique within a run, so add an index or id to the name (for example %q)",
+			name, name+":1")}
+	}
+	if s.used == nil {
+		s.used = map[string]struct{}{}
+	}
+	s.used[name] = struct{}{}
+	s.mu.Unlock()
+
+	err := step()
+	if err != nil {
+		s.mu.Lock()
+		delete(s.used, name)
+		s.mu.Unlock()
+	}
+	return err
 }
 
 // StepRunOpts configures a single step.Run invocation.
@@ -121,7 +152,14 @@ const inlineSleepThreshold = 30 * time.Second
 //
 // At-least-once: fn may run more than once on crashes — make it
 // idempotent (Stripe idempotency keys, upsert not insert, etc.).
+//
+// Step names must be unique within a run. Using a name twice in one
+// execution, across Run, Sleep, and WaitFor, fails the run.
 func (s *StepAPI) Run(name string, out any, fn func() (any, error), opts ...StepRunOpts) error {
+	return s.once(name, func() error { return s.run(name, out, fn, opts...) })
+}
+
+func (s *StepAPI) run(name string, out any, fn func() (any, error), opts ...StepRunOpts) error {
 	s.mu.Lock()
 	if cached, ok := s.state[name]; ok {
 		s.mu.Unlock()
@@ -191,6 +229,10 @@ func isControlSignal(err error) bool {
 // Sleep durably waits for d. Short sleeps run inline; longer sleeps defer
 // the run via the server so the worker process can release.
 func (s *StepAPI) Sleep(name string, d time.Duration) error {
+	return s.once(name, func() error { return s.sleep(name, d) })
+}
+
+func (s *StepAPI) sleep(name string, d time.Duration) error {
 	key := "__sleep:" + name
 	s.mu.Lock()
 	if stored, ok := s.state[key]; ok {
@@ -232,6 +274,10 @@ func (s *StepAPI) Sleep(name string, d time.Duration) error {
 // of 0 means "no timeout" (parked indefinitely until matching signal). On
 // resume, out (a *T) is populated with the signal's payload.
 func (s *StepAPI) WaitFor(name string, out any, timeout time.Duration) error {
+	return s.once(name, func() error { return s.waitFor(name, out, timeout) })
+}
+
+func (s *StepAPI) waitFor(name string, out any, timeout time.Duration) error {
 	s.mu.Lock()
 	cached, ok := s.state[name]
 	s.mu.Unlock()

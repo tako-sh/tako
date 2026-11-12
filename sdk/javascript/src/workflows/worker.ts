@@ -54,6 +54,8 @@ export interface WorkflowContext {
    * Execute and memoize a durable step.
    *
    * On retry, completed steps return their stored result without calling `fn`.
+   * Step names must be unique within a run, across `run`, `sleep`, and
+   * `waitFor`. Using a name twice in one execution fails the run.
    */
   run<T>(
     name: string,

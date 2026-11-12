@@ -716,6 +716,8 @@ The handler's second argument is the workflow context. Use `ctx` in examples.
 | `ctx.workflowName`            | The name of the current workflow                                          |
 | `ctx.attempt`                 | The current run attempt number (1-indexed; bumps on each run-level retry) |
 
+Step names must be unique within a run: `ctx.run`, `ctx.sleep`, and `ctx.waitFor` share one namespace. In loops, put an index or id in the name (``ctx.run(`reserve:${item.sku}`, ...)``). Using a name twice in one execution of the handler fails the run as `dead` immediately with an error naming the step; it never returns the first result. A step replayed from an earlier attempt still returns its saved result once per execution.
+
 `ctx.run` options:
 
 - `retries?: number` — in-step retry attempts (default 0)
