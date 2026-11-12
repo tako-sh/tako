@@ -388,9 +388,12 @@ func approveOrder(ctx context.Context, orderID, userID string) (uint64, error) {
 | `ctx.bail(reason?)`               | `cancelled` immediately, with no retry.                |
 | `ctx.fail(error)`                 | `dead` immediately, with no retry.                     |
 | Reuse a step name in one run      | `dead` immediately, with no retry.                     |
+| Worker lost during the attempt    | Retry while attempts remain, then become `dead`.       |
 | Long `ctx.sleep` or `ctx.waitFor` | Return to `pending` without spending the retry budget. |
 
 Run retries use exponential backoff with 20% jitter. The default delay starts at one second and is capped at one hour. `retries: 4` means four retries after the first attempt, for five total attempts.
+
+A worker that is killed mid-run (out of memory, `SIGKILL`, a host crash) or stops renewing its lease cannot report a failure. Tako reclaims the run when its lease expires, 60 seconds after the last heartbeat. The lost attempt counts against the retry budget: with attempts left, the run returns to `pending` immediately and resumes from its saved steps; on its last attempt it becomes `dead` with the error `worker lost; retry budget exhausted`. A handler that reliably kills its worker therefore stops after its budget instead of restarting forever.
 
 Go handlers return `nil` for success, an ordinary error for retry, `ctx.Bail(reason)` for cancellation, or `ctx.Fail(err)` for permanent failure. Return errors from `ctx.Step` operations so the worker can park or retry the run.
 

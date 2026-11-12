@@ -311,21 +311,34 @@ impl RunsDb {
         }
     }
 
+    /// Take back every run whose lease expired and return how many there
+    /// were. A run with attempts left goes back to `pending`. A run that was
+    /// on its last attempt becomes `dead` with [`WORKER_LOST_ERROR`]: its
+    /// worker died before the SDK could finalize it, and requeueing would
+    /// let a run that kills its worker be reclaimed forever. Deferring and
+    /// waiting hand their attempt back, so they never count toward this.
     pub fn reclaim_expired(&self) -> Result<u64, RunsDbError> {
-        match &self.backend {
-            RunsDbBackend::Sqlite(db) => db.reclaim_expired(),
-            RunsDbBackend::Postgres(db) => db.reclaim_expired(),
-        }
+        Ok(self.reclaim()?.count)
     }
 
     /// Atomically reclaim expired leases and return the list of
     /// `worker_id`s whose runs were reclaimed, one entry per reclaimed
-    /// row (so callers can decrement per-worker in-flight counters).
+    /// row (so callers can decrement per-worker in-flight counters). The
+    /// list covers requeued and dead runs alike; see [`Self::reclaim_expired`].
     pub fn reclaim_expired_with_workers(&self) -> Result<Vec<String>, RunsDbError> {
-        match &self.backend {
-            RunsDbBackend::Sqlite(db) => db.reclaim_expired_with_workers(),
-            RunsDbBackend::Postgres(db) => db.reclaim_expired_with_workers(),
+        Ok(self.reclaim()?.workers)
+    }
+
+    fn reclaim(&self) -> Result<Reclaimed, RunsDbError> {
+        let reclaimed = match &self.backend {
+            RunsDbBackend::Sqlite(db) => db.reclaim_expired(),
+            RunsDbBackend::Postgres(db) => db.reclaim_expired(),
+        }?;
+        // No worker is left to report these runs, so the server does.
+        for run_id in &reclaimed.dead {
+            tracing::warn!(%run_id, "Workflow run lost its worker on its last attempt; marked dead");
         }
+        Ok(reclaimed)
     }
 
     /// Snapshot of `worker_id -> in-flight count` over currently-running
@@ -412,6 +425,37 @@ impl RunsDb {
             RunsDbBackend::Sqlite(db) => db.set_schedule_last_run_at(name, ts),
             RunsDbBackend::Postgres(db) => db.set_schedule_last_run_at(name, ts),
         }
+    }
+}
+
+/// Stored as the error of a run that reclaim ends; see [`RunsDb::reclaim_expired`].
+pub const WORKER_LOST_ERROR: &str = "worker lost; retry budget exhausted";
+
+/// Expired leases taken back by one reclaim pass.
+#[derive(Debug, Default)]
+pub(crate) struct Reclaimed {
+    /// Every reclaimed run, requeued or dead.
+    pub(crate) count: u64,
+    /// Claim owner of each reclaimed run that still recorded one.
+    pub(crate) workers: Vec<String>,
+    /// IDs of the reclaimed runs that had no attempts left.
+    pub(crate) dead: Vec<String>,
+}
+
+impl Reclaimed {
+    /// Build from `(run id, claim owner, budget exhausted)` rows.
+    pub(crate) fn from_rows(rows: Vec<(String, Option<String>, bool)>) -> Self {
+        let mut reclaimed = Self {
+            count: rows.len() as u64,
+            ..Self::default()
+        };
+        for (id, worker, exhausted) in rows {
+            reclaimed.workers.extend(worker);
+            if exhausted {
+                reclaimed.dead.push(id);
+            }
+        }
+        reclaimed
     }
 }
 

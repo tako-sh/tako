@@ -3,7 +3,9 @@ use postgres::{Client, NoTls};
 use std::collections::HashMap;
 use tako_core::{EnqueueOpts, EnqueueRunResponse, RunPayload, ScheduleSpec};
 
-use super::enqueue::{RunsDbError, ScheduleRow, clamp_lease_ms, now_ms};
+use super::enqueue::{
+    Reclaimed, RunsDbError, ScheduleRow, WORKER_LOST_ERROR, clamp_lease_ms, now_ms,
+};
 
 const DEFAULT_MAX_ATTEMPTS: u32 = 3;
 
@@ -356,43 +358,38 @@ impl PostgresRunsDb {
         )
     }
 
-    pub(super) fn reclaim_expired(&self) -> Result<u64, RunsDbError> {
-        let mut client = self.client.lock();
-        let rows = client.execute(
-            &format!(
-                "UPDATE {}.runs SET status='pending', worker_id=NULL, lease_until=NULL
-                 WHERE app_id=$1 AND status='running' AND lease_until IS NOT NULL AND lease_until < $2",
-                self.schema
-            ),
-            &[&self.app_id, &now_ms()],
-        )?;
-        Ok(rows)
-    }
-
-    pub(super) fn reclaim_expired_with_workers(&self) -> Result<Vec<String>, RunsDbError> {
+    pub(super) fn reclaim_expired(&self) -> Result<Reclaimed, RunsDbError> {
         let mut client = self.client.lock();
         // Return exactly the owners whose rows this statement reclaims.
         // Row locks prevent a heartbeat or another reclaimer from changing
         // ownership between selection and accounting.
-        let workers = client
+        //
+        // The lost worker spent the attempt that claim counted. A run with
+        // none left ends here; requeueing it would repeat the loss forever.
+        let expired = client
             .query(
                 &format!(
                     "WITH expired AS (
-                    SELECT id, worker_id FROM {schema}.runs
+                    SELECT id, worker_id, attempts >= max_attempts AS exhausted
+                    FROM {schema}.runs
                     WHERE app_id=$1 AND status='running' AND lease_until < $2
                     FOR UPDATE
                  )
-                 UPDATE {schema}.runs r SET status='pending', worker_id=NULL, lease_until=NULL
+                 UPDATE {schema}.runs r SET
+                    status=CASE WHEN expired.exhausted THEN 'dead' ELSE 'pending' END,
+                    last_error=CASE WHEN expired.exhausted THEN $3 ELSE r.last_error END,
+                    finished_at=CASE WHEN expired.exhausted THEN $2 ELSE r.finished_at END,
+                    worker_id=NULL, lease_until=NULL
                  FROM expired WHERE r.app_id=$1 AND r.id=expired.id
-                 RETURNING expired.worker_id",
+                 RETURNING expired.id, expired.worker_id, expired.exhausted",
                     schema = self.schema
                 ),
-                &[&self.app_id, &now_ms()],
+                &[&self.app_id, &now_ms(), &WORKER_LOST_ERROR],
             )?
             .into_iter()
-            .filter_map(|row| row.get::<_, Option<String>>(0))
+            .map(|row| (row.get(0), row.get(1), row.get(2)))
             .collect();
-        Ok(workers)
+        Ok(Reclaimed::from_rows(expired))
     }
 
     pub(super) fn in_flight_by_worker(&self) -> Result<HashMap<String, u32>, RunsDbError> {
@@ -826,7 +823,7 @@ mod tests {
                         if signal {
                             db.signal("event", &serde_json::json!(42)).unwrap()
                         } else {
-                            db.reclaim_expired_with_workers().unwrap().len() as u64
+                            db.reclaim_expired().unwrap().workers.len() as u64
                         }
                     })
                 })

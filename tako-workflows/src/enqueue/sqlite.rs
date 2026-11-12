@@ -391,36 +391,40 @@ impl SqliteRunsDb {
         Ok(())
     }
 
-    pub(super) fn reclaim_expired(&self) -> Result<u64, RunsDbError> {
-        let conn = self.conn.lock();
-        let changes = conn.execute(
-            "UPDATE runs SET status='pending', worker_id=NULL, lease_until=NULL
-             WHERE status='running' AND lease_until IS NOT NULL AND lease_until < ?1",
-            (now_ms(),),
-        )?;
-        Ok(changes as u64)
-    }
-
-    pub(super) fn reclaim_expired_with_workers(&self) -> Result<Vec<String>, RunsDbError> {
+    pub(super) fn reclaim_expired(&self) -> Result<super::Reclaimed, RunsDbError> {
         let mut conn = self.conn.lock();
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let now = now_ms();
-        let workers = {
+        let expired = {
             let mut stmt = tx.prepare(
-                "SELECT worker_id FROM runs
-                 WHERE status='running' AND lease_until IS NOT NULL
-                   AND lease_until < ?1 AND worker_id IS NOT NULL",
+                "SELECT id, worker_id, attempts >= max_attempts FROM runs
+                 WHERE status='running' AND lease_until IS NOT NULL AND lease_until < ?1",
             )?;
-            let rows = stmt.query_map((now,), |row| row.get(0))?;
-            rows.collect::<Result<Vec<String>, _>>()?
+            let rows = stmt.query_map((now,), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, bool>(2)?,
+                ))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
         };
+        // The lost worker spent the attempt that claim counted. A run with
+        // none left ends here; requeueing it would repeat the loss forever.
+        tx.execute(
+            "UPDATE runs SET status='dead', last_error=?2, worker_id=NULL, lease_until=NULL,
+                             finished_at=?1
+             WHERE status='running' AND lease_until IS NOT NULL AND lease_until < ?1
+               AND attempts >= max_attempts",
+            (now, super::WORKER_LOST_ERROR),
+        )?;
         tx.execute(
             "UPDATE runs SET status='pending', worker_id=NULL, lease_until=NULL
              WHERE status='running' AND lease_until IS NOT NULL AND lease_until < ?1",
             (now,),
         )?;
         tx.commit()?;
-        Ok(workers)
+        Ok(super::Reclaimed::from_rows(expired))
     }
 
     pub(super) fn in_flight_by_worker(&self) -> Result<HashMap<String, u32>, RunsDbError> {
