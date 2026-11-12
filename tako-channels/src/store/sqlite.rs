@@ -33,8 +33,10 @@ type StoredRow = (i64, String, String, String, Option<String>);
 pub(super) enum Ingested {
     /// Already applied, or this store's own event.
     Duplicate,
-    /// Acknowledged without a message: its stream could not take it.
+    /// Acknowledged without a message: its stream is closed.
     Dropped,
+    /// Acknowledged without a message: it would start a stream beyond the limit.
+    StreamLimit,
     Applied(ChannelMessage),
 }
 
@@ -224,6 +226,7 @@ impl SqliteChannelStore {
             payload: payload.clone(),
             ephemeral,
             lifecycle: None,
+            created_at_unix_ms: (!ephemeral).then(now_unix_ms),
         };
         let message = append_event(&tx, replay_epoch(&tx)?, &event, lifecycle)?;
         let event = ChannelEvent {
@@ -287,21 +290,43 @@ impl SqliteChannelStore {
         if gap {
             rotate_replay_epoch(&tx)?;
         }
+        // Close wins on every node. A close is ordered after its origin's own
+        // publishes, which arrive first; a publish from another server that
+        // raced it is dropped instead of landing after the marker, and a
+        // second marker changes nothing. An event made once the marker had
+        // expired is no race: its server had reopened the stream, so this
+        // copy reopens too, whether or not it has pruned the marker yet.
+        let closed = if event.ephemeral {
+            false
+        } else {
+            match retained_marker(&tx, &event.channel)? {
+                None => false,
+                Some((marker, closed_at)) => {
+                    let reopened = match event.created_at_unix_ms {
+                        Some(created) => {
+                            marker_expired_at(&tx, &event.channel, closed_at, created)?
+                        }
+                        // A peer that sends no creation time keeps close-wins.
+                        None => false,
+                    };
+                    if reopened {
+                        tx.execute(
+                            "DELETE FROM channel_messages WHERE channel = ?1 AND id <= ?2",
+                            rusqlite::params![event.channel, marker],
+                        )?;
+                    }
+                    !reopened
+                }
+            }
+        };
         // A dropped event still advances its origin's sequence: it was
         // delivered, so the next one is no gap that would reset every reader.
-        let message = if !event.ephemeral
-            && close_marker(&tx, replay_epoch(&tx)?, &event.channel, 0)?.is_some()
-        {
-            // Close wins on every node. A close is ordered after its origin's
-            // own publishes, which arrive first; a publish from another
-            // server that raced it is dropped instead of landing after the
-            // marker, and a second marker changes nothing.
-            None
+        let ingested = if closed {
+            Ingested::Dropped
         } else if !event.ephemeral && stream_limit_reached(&tx, &event.channel)? {
-            super::stream_limit_error(&event.channel);
-            None
+            Ingested::StreamLimit
         } else {
-            Some(append_event(
+            Ingested::Applied(append_event(
                 &tx,
                 replay_epoch(&tx)?,
                 event,
@@ -318,7 +343,7 @@ impl SqliteChannelStore {
             signal_gap();
         }
         tx.commit()?;
-        Ok(message.map_or(Ingested::Dropped, Ingested::Applied))
+        Ok(ingested)
     }
 
     pub(super) fn read_after(
@@ -513,6 +538,56 @@ fn expired_floor(
     )
 }
 
+/// Clock difference between servers that the mesh tolerates when it compares
+/// one server's event time with another's close marker.
+const MESH_CLOCK_SKEW_MS: i64 = 2_000;
+
+/// Id and origin creation time of a stream's first retained close marker,
+/// through the partial marker index.
+fn retained_marker(
+    conn: &rusqlite::Connection,
+    channel: &str,
+) -> Result<Option<(i64, i64)>, ChannelError> {
+    Ok(conn
+        .query_row(
+            &format!(
+                "SELECT id, created_at_unix_ms FROM channel_messages
+                 WHERE channel = ?1 AND type = '{CLOSE_MESSAGE_TYPE}' ORDER BY id LIMIT 1"
+            ),
+            [channel],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?)
+}
+
+/// Whether a close marker made at `closed_at` had expired by `at`, by the
+/// rules readers apply: the replay window (and store age cap) by message age,
+/// or inactivity counted from the close, the last activity every server saw.
+/// The margin keeps one server's slightly slow clock from turning a publish
+/// it made after reopening into a race.
+fn marker_expired_at(
+    conn: &rusqlite::Connection,
+    channel: &str,
+    closed_at: i64,
+    at: i64,
+) -> Result<bool, ChannelError> {
+    let lifecycle =
+        stream_lifecycle(conn, channel)?.map(|(replay_window_ms, inactivity_ttl_ms, _)| {
+            (replay_window_ms, inactivity_ttl_ms, closed_at)
+        });
+    Ok(
+        match age_cutoff(
+            load_limits(conn)?,
+            lifecycle,
+            at.saturating_add(MESH_CLOCK_SKEW_MS),
+        ) {
+            None => false,
+            Some(AgeCutoff::Everything) => true,
+            Some(AgeCutoff::Before(created)) => closed_at < created,
+        },
+    )
+}
+
 fn replay_epoch(conn: &rusqlite::Connection) -> Result<[u8; 16], ChannelError> {
     let bytes: Vec<u8> = conn.query_row(
         "SELECT epoch FROM channel_replay_state WHERE singleton = 1",
@@ -564,8 +639,11 @@ fn append_event(
     }
     let now = now_unix_ms();
     touch_stream(tx, &event.channel, lifecycle.map(lifecycle_columns), now)?;
+    // A replicated row keeps its origin's creation time, so it ages out on
+    // every node at once.
+    let created = event.created_at_unix_ms.unwrap_or(now);
     tx.execute("INSERT INTO channel_messages (channel, type, data_json, created_at_unix_ms) VALUES (?1, ?2, ?3, ?4)",
-        rusqlite::params![event.channel, event.payload.r#type, data_json, now])?;
+        rusqlite::params![event.channel, event.payload.r#type, data_json, created])?;
     let id = tx.last_insert_rowid();
     tx.execute(
         "INSERT INTO channel_message_events(message_id, event_json) VALUES (?1, ?2)",

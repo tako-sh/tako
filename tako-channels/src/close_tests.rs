@@ -841,3 +841,96 @@ fn mesh_peers_keep_a_stream_as_long_as_its_origin_does() {
     origin.append(synced.key(), &payload(json!(3))).unwrap();
     assert_eq!(next().lifecycle.unwrap().replay_window_ms, day);
 }
+
+#[test]
+fn mesh_peers_reopen_a_stream_once_its_marker_expired_where_the_publish_was_made() {
+    let temp = tempfile::tempdir().unwrap();
+    let a = ChannelStore::open(&temp.path().join("a.sqlite")).unwrap();
+    let b = ChannelStore::open(&temp.path().join("b.sqlite")).unwrap();
+    let mut from_a = a.publications();
+    let mut next = || {
+        let ChannelPublication::Event(event) = from_a.try_recv().unwrap() else {
+            panic!("expected an event")
+        };
+        event
+    };
+    let window = 60_000;
+    let lifecycle = json!({"replayWindowMs": window});
+    let publish = |data: i64| {
+        TrustedPublication::parse(
+            "chat",
+            &json!({"room": "again"}),
+            json!({"type": "msg", "data": data, "lifecycle": lifecycle}),
+        )
+        .unwrap()
+    };
+    let key = publish(1).stream.key().to_owned();
+    a.publish_trusted(&publish(1)).unwrap();
+    let close =
+        TrustedPublication::close("chat", &json!({"room": "again"}), Some(lifecycle.clone()))
+            .unwrap();
+    a.publish_trusted(&close).unwrap();
+    let (message, marker) = (next(), next());
+    for event in [&message, &marker] {
+        assert_eq!(b.ingest_remote(event).unwrap(), RemoteIngest::Applied);
+    }
+    // Peers keep the origin's creation time, so every copy of the marker
+    // expires at the same logical moment however their pruning is scheduled.
+    let created = |store: &ChannelStore, kind: &str| {
+        store.raw_query_i64(
+            "SELECT created_at_unix_ms FROM channel_messages WHERE channel = ?1 AND type = ?2",
+            [key.as_str(), kind],
+        )
+    };
+    let closed_at = marker.created_at_unix_ms.unwrap();
+    assert_eq!(created(&a, CLOSE_MESSAGE_TYPE), closed_at);
+    assert_eq!(created(&b, CLOSE_MESSAGE_TYPE), closed_at);
+
+    // A publish from a third server made while the marker was live raced
+    // the close and is still dropped.
+    let third = |sequence: u64, created_at_unix_ms: i64| ChannelEvent {
+        id: ChannelEventId {
+            origin: "third".into(),
+            sequence,
+        },
+        channel: key.clone(),
+        payload: payload(json!("third")),
+        ephemeral: false,
+        lifecycle: None,
+        created_at_unix_ms: Some(created_at_unix_ms),
+    };
+    assert_eq!(
+        b.ingest_remote(&third(1, closed_at + 1_000)).unwrap(),
+        RemoteIngest::Dropped
+    );
+    assert!(b.close_marker(&key).unwrap().is_some());
+
+    // The close happened a window ago: the origin's maintenance retires the
+    // marker and the stream reopens there, while B has not pruned yet.
+    for store in [&a, &b] {
+        store.raw_execute(
+            "UPDATE channel_messages SET created_at_unix_ms = created_at_unix_ms - ?1
+             WHERE channel = ?2",
+            rusqlite::params![window + 1, key],
+        );
+    }
+    a.prune_at(now());
+    assert!(a.read_after(&key, None, 10).unwrap().is_empty());
+    a.publish_trusted(&publish(2)).unwrap();
+    assert_eq!(b.ingest_remote(&next()).unwrap(), RemoteIngest::Applied);
+
+    // B applies it as the origin did: the closed history is gone and readers
+    // there see a fresh, open stream, the same one A has.
+    let contents = |store: &ChannelStore| -> Vec<(String, Value)> {
+        store
+            .read_after(&key, None, 10)
+            .unwrap()
+            .into_iter()
+            .map(|message| (message.r#type, message.data))
+            .collect()
+    };
+    assert_eq!(contents(&a), [("msg".to_owned(), json!(2))]);
+    assert_eq!(contents(&b), contents(&a));
+    assert!(b.close_marker(&key).unwrap().is_none());
+    b.append(&key, &payload(json!(3))).unwrap();
+}

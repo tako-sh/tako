@@ -160,12 +160,59 @@ impl PostgresChannelStore {
             .transpose()
     }
 
-    /// The stream's retained terminal marker, as every server sees it.
+    /// The stream's first terminal marker that readers can still see. An
+    /// expired one still closes the stream to publishes until it is deleted.
     pub(super) fn close_marker(
         &self,
         channel: &str,
     ) -> Result<Option<ChannelMessage>, ChannelError> {
-        self.first_close_marker(&mut *self.client.lock(), channel)
+        let mut client = self.client.lock();
+        let mut tx = client
+            .build_transaction()
+            .isolation_level(::postgres::IsolationLevel::RepeatableRead)
+            .start()
+            .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        let floor = self.expired_floor(&mut tx, channel, now_unix_ms())?;
+        let marker = self
+            .first_close_marker(&mut tx, channel)?
+            .filter(|marker| marker.id.parse::<i64>().is_ok_and(|id| id > floor));
+        tx.commit()
+            .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        Ok(marker)
+    }
+
+    /// Highest position of a stream that has expired, including rows
+    /// maintenance has not deleted yet: by inactivity every row, otherwise rows
+    /// older than the replay window. Readers apply it, so what they see never
+    /// depends on when the round-robin pruning reaches the stream.
+    fn expired_floor(
+        &self,
+        client: &mut impl ::postgres::GenericClient,
+        channel: &str,
+        now: i64,
+    ) -> Result<i64, ChannelError> {
+        Ok(client
+            .query_opt(
+                &format!(
+                    "SELECT CASE
+                        WHEN metadata.inactivity_ttl_ms > 0
+                          AND metadata.last_activity_unix_ms < $3 - metadata.inactivity_ttl_ms
+                        THEN (SELECT MAX(id) FROM {schema}.channel_messages
+                              WHERE app_id = $1 AND channel = $2)
+                        WHEN metadata.replay_window_ms > 0
+                        THEN (SELECT MAX(id) FROM {schema}.channel_messages
+                              WHERE app_id = $1 AND channel = $2
+                                AND created_at_unix_ms < $3 - metadata.replay_window_ms)
+                     END
+                     FROM {schema}.channel_metadata AS metadata
+                     WHERE metadata.app_id = $1 AND metadata.channel = $2",
+                    schema = self.schema
+                ),
+                &[&self.app_id, &channel, &now],
+            )
+            .map_err(|e| ChannelError::Storage(e.to_string()))?
+            .and_then(|row| row.get::<_, Option<i64>>(0))
+            .unwrap_or(0))
     }
 
     pub(super) fn read_after(
@@ -180,13 +227,16 @@ impl PostgresChannelStore {
             .isolation_level(::postgres::IsolationLevel::RepeatableRead)
             .start()
             .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        // Reads never prune; the computed floor hides rows still waiting for it.
+        let expired = self.expired_floor(&mut tx, channel, now_unix_ms())?;
         if after.is_some() {
             let bounds = tx.query_one(&format!(
                 "SELECT COALESCE((SELECT highest_deleted_message_id FROM {}.channel_metadata WHERE app_id = $1 AND channel = $2), 0),
                         (SELECT NULLIF(latest_message_id, 0) FROM {}.channel_metadata WHERE app_id = $1 AND channel = $2)", self.schema, self.schema
             ), &[&self.app_id, &channel]).map_err(|e| ChannelError::Storage(e.to_string()))?;
-            resolve_replay_cursor(after, bounds.get(0), bounds.get(1))?;
+            resolve_replay_cursor(after, bounds.get::<_, i64>(0).max(expired), bounds.get(1))?;
         }
+        let after = Some(after.unwrap_or(0).max(expired));
         let rows = tx
             .query(
                 &format!(
@@ -221,11 +271,19 @@ impl PostgresChannelStore {
         requested: Option<i64>,
     ) -> Result<Option<i64>, ChannelError> {
         let mut client = self.client.lock();
-        let row = client.query_one(&format!(
+        let mut tx = client
+            .build_transaction()
+            .isolation_level(::postgres::IsolationLevel::RepeatableRead)
+            .start()
+            .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        let expired = self.expired_floor(&mut tx, channel, now_unix_ms())?;
+        let row = tx.query_one(&format!(
             "SELECT COALESCE((SELECT highest_deleted_message_id FROM {}.channel_metadata WHERE app_id = $1 AND channel = $2), 0),
                         (SELECT NULLIF(latest_message_id, 0) FROM {}.channel_metadata WHERE app_id = $1 AND channel = $2)", self.schema, self.schema
         ), &[&self.app_id, &channel]).map_err(|e| ChannelError::Storage(e.to_string()))?;
-        resolve_replay_cursor(requested, row.get(0), row.get(1))
+        tx.commit()
+            .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        resolve_replay_cursor(requested, row.get::<_, i64>(0).max(expired), row.get(1))
     }
 
     pub(super) fn sync_channel(
@@ -277,8 +335,9 @@ impl PostgresChannelStore {
     /// One maintenance tick. Its work is bounded: age pruning visits at most
     /// [`MAINTENANCE_BATCH`] streams, continuing after the last one next tick,
     /// and at most that many idle streams are released. Cursors outside the
-    /// replay window are refused by the deleted-message floor, so pruning a
-    /// stream a few ticks late never serves expired history to a resumed reader.
+    /// replay window are refused, and expired rows hidden, by the floor readers
+    /// compute (`expired_floor`), so pruning a stream a few ticks late never
+    /// serves expired history to a `from=start` or resumed reader.
     pub(super) fn prune(&self, now: i64) -> Result<(), ChannelError> {
         let mut client = self.client.lock();
         let mut cursor = self.prune_cursor.lock();
@@ -413,30 +472,19 @@ impl PostgresChannelStore {
         if !crate::stream::counts_toward_stream_limit(channel) {
             return Ok(());
         }
-        let exists: bool = client
+        // Two primary-key reads: the triggers keep the app's count current.
+        let row = client
             .query_one(
                 &format!(
-                    "SELECT EXISTS(SELECT 1 FROM {}.channel_metadata WHERE app_id = $1 AND channel = $2)",
-                    self.schema
+                    "SELECT EXISTS(SELECT 1 FROM {schema}.channel_metadata WHERE app_id = $1 AND channel = $2),
+                        COALESCE((SELECT streams FROM {schema}.channel_stream_counts WHERE app_id = $1), 0)",
+                    schema = self.schema
                 ),
                 &[&self.app_id, &channel],
             )
-            .map_err(|e| ChannelError::Storage(e.to_string()))?
-            .get(0);
-        if exists {
-            return Ok(());
-        }
-        let streams: i64 = client
-            .query_one(
-                &format!(
-                    "SELECT COUNT(*) FROM {}.channel_metadata WHERE app_id = $1",
-                    self.schema
-                ),
-                &[&self.app_id],
-            )
-            .map_err(|e| ChannelError::Storage(e.to_string()))?
-            .get(0);
-        if streams >= super::MAX_STREAMS {
+            .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        let (exists, streams): (bool, i64) = (row.get(0), row.get(1));
+        if !exists && streams >= super::MAX_STREAMS {
             return Err(super::stream_limit_error(channel));
         }
         Ok(())
@@ -519,6 +567,41 @@ const POSTGRES_MIGRATIONS: &[&str] = &[
      CREATE INDEX IF NOT EXISTS idx_channel_metadata_idle
        ON {schema}.channel_metadata(app_id, (last_activity_unix_ms + max_connection_lifetime_ms));
      CREATE INDEX IF NOT EXISTS idx_presence_expires ON {schema}.presence(app_id, expires_at);",
+    // Each app's stream count, kept with the metadata rows by statement
+    // triggers, so the stream cap reads one row instead of counting them.
+    // Creating the triggers locks out metadata writes until this commits, so
+    // the initial count cannot miss a stream another server starts meanwhile.
+    // Unversioned stores rerun every migration, so this one is idempotent.
+    "CREATE TABLE IF NOT EXISTS {schema}.channel_stream_counts (
+         app_id TEXT PRIMARY KEY,
+         streams BIGINT NOT NULL
+     );
+     CREATE OR REPLACE FUNCTION {schema}.channel_streams_started() RETURNS trigger LANGUAGE plpgsql AS $$
+     BEGIN
+         INSERT INTO {schema}.channel_stream_counts AS counts (app_id, streams)
+         SELECT app_id, COUNT(*) FROM started GROUP BY app_id
+         ON CONFLICT (app_id) DO UPDATE SET streams = counts.streams + excluded.streams;
+         RETURN NULL;
+     END $$;
+     CREATE OR REPLACE FUNCTION {schema}.channel_streams_released() RETURNS trigger LANGUAGE plpgsql AS $$
+     BEGIN
+         UPDATE {schema}.channel_stream_counts AS counts
+         SET streams = counts.streams - released.streams
+         FROM (SELECT app_id, COUNT(*) AS streams FROM released GROUP BY app_id) AS released
+         WHERE counts.app_id = released.app_id;
+         RETURN NULL;
+     END $$;
+     DROP TRIGGER IF EXISTS channel_streams_started ON {schema}.channel_metadata;
+     CREATE TRIGGER channel_streams_started AFTER INSERT ON {schema}.channel_metadata
+         REFERENCING NEW TABLE AS started
+         FOR EACH STATEMENT EXECUTE FUNCTION {schema}.channel_streams_started();
+     DROP TRIGGER IF EXISTS channel_streams_released ON {schema}.channel_metadata;
+     CREATE TRIGGER channel_streams_released AFTER DELETE ON {schema}.channel_metadata
+         REFERENCING OLD TABLE AS released
+         FOR EACH STATEMENT EXECUTE FUNCTION {schema}.channel_streams_released();
+     DELETE FROM {schema}.channel_stream_counts;
+     INSERT INTO {schema}.channel_stream_counts (app_id, streams)
+     SELECT app_id, COUNT(*) FROM {schema}.channel_metadata GROUP BY app_id;",
 ];
 
 /// Connections without an explicit `connect_timeout` get a bounded one, so an
@@ -762,10 +845,13 @@ mod integration_tests {
             store.read_after("a", Some(id(&consumed)), 1).unwrap(),
             vec![next.clone()]
         );
-        assert_eq!(
-            other.read_after("a", None, 10).unwrap(),
-            vec![other_app.clone()]
-        );
+        // The other app's expired row awaits its own maintenance; readers
+        // already treat it as gone.
+        assert_eq!(other.read_after("a", None, 10).unwrap(), vec![]);
+        assert!(matches!(
+            other.read_after("a", Some(id(&other_app) - 1), 10),
+            Err(ChannelError::StaleCursor)
+        ));
         other.prune(now_unix_ms()).unwrap();
         assert_eq!(
             store.read_after("a", Some(id(&consumed)), 1).unwrap(),

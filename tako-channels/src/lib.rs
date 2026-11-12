@@ -34,7 +34,7 @@ pub use routing::{
     parse_ws_last_message_id,
 };
 pub use store::{
-    ChannelStore, ChannelStoreConfig, POSTGRES_CHANNELS_SCHEMA, SqliteReplayLimits,
+    ChannelStore, ChannelStoreConfig, MAX_STREAMS, POSTGRES_CHANNELS_SCHEMA, SqliteReplayLimits,
     channels_db_path,
 };
 pub use types::{

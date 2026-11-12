@@ -140,14 +140,45 @@ export function channelStreamParams(
   return bound;
 }
 
+/** Keywords that place properties outside the schema's top-level `properties`. */
+const NON_FLAT_SCHEMA_KEYWORDS = [
+  "allOf",
+  "anyOf",
+  "oneOf",
+  "not",
+  "if",
+  "then",
+  "else",
+  "$ref",
+  "$dynamicRef",
+  "dependentSchemas",
+  "patternProperties",
+];
+
 /**
  * Reject params schemas whose properties cannot travel as query values.
  *
- * @throws {TypeError} If a declared property type is `object` or `array`, or
- * a property uses a reserved name (`from`, `last_message_id`).
+ * @throws {TypeError} If the schema is not one object schema with its params
+ * under top-level `properties` (for example `t.Intersect`, `t.Union`, or
+ * `t.Ref`), a declared property type is `object` or `array`, or a property
+ * uses a reserved name (`from`, `last_message_id`).
  */
 export function assertFlatChannelParamsSchema(channel: string, schema: object): void {
-  const properties = (schema as { properties?: unknown }).properties;
+  const { type: schemaType, properties } = schema as { type?: unknown; properties?: unknown };
+  const keyword = NON_FLAT_SCHEMA_KEYWORDS.find((name) => name in schema);
+  const problem =
+    keyword !== undefined
+      ? `uses '${keyword}'`
+      : schemaType !== undefined && schemaType !== "object"
+        ? `has type ${JSON.stringify(schemaType)}`
+        : properties !== undefined && (typeof properties !== "object" || properties === null)
+          ? "has 'properties' that is not an object"
+          : undefined;
+  if (problem !== undefined) {
+    throw new TypeError(
+      `Channel '${channel}' params schema ${problem}. Params must be declared under the top-level 'properties' of one object schema: use a single t.Object({...}), and combine object schemas with t.Composite([...]).`,
+    );
+  }
   if (!properties || typeof properties !== "object") return;
   for (const key of Object.keys(properties)) {
     if (RESERVED_CHANNEL_PARAM_NAMES.includes(key)) {

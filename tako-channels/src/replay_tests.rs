@@ -28,6 +28,7 @@ fn remote_gap_invalidates_replay_for_later_connections_and_other_open_handles() 
         payload: payload("one"),
         ephemeral: false,
         lifecycle: None,
+        created_at_unix_ms: None,
     };
     first.ingest_remote(&event).unwrap();
     let before_gap = first.replay_cursor("events", None).unwrap();

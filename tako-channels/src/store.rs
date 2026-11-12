@@ -24,7 +24,7 @@ pub const POSTGRES_CHANNELS_SCHEMA: &str = "tako_channels";
 /// metadata maintenance scans without limit. It matches the default total
 /// replay budget (`SqliteReplayLimits::max_messages`): every stream holding a
 /// message fits, and the rest is headroom for streams with subscribers only.
-pub(crate) const MAX_STREAMS: i64 = 100_000;
+pub const MAX_STREAMS: i64 = 100_000;
 
 /// A new stream refused by [`MAX_STREAMS`]. Logged here, where every path
 /// that starts a stream (subscribe, publish, mesh ingest) meets it.
@@ -562,6 +562,7 @@ impl ChannelStore {
         match store.ingest_remote(event, || self.signal_gap(None))? {
             sqlite::Ingested::Duplicate => Ok(RemoteIngest::Duplicate),
             sqlite::Ingested::Dropped => Ok(RemoteIngest::Dropped),
+            sqlite::Ingested::StreamLimit => Ok(RemoteIngest::StreamLimit),
             sqlite::Ingested::Applied(message) => {
                 self.deliver(&message, event.ephemeral);
                 Ok(RemoteIngest::Applied)
@@ -756,6 +757,7 @@ mod ordering_tests {
                 },
                 ephemeral: false,
                 lifecycle: None,
+                created_at_unix_ms: None,
             })
         });
         // The held watch borrow pauses signal_gap while it owns the reset map.

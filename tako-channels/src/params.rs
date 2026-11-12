@@ -23,6 +23,7 @@ pub fn validate_query(schema: &Value, query: &str) -> Result<Value, ParamsError>
         }
     }
 
+    require_flat_object(schema)?;
     reject_undeclared(schema, &obj)?;
     let value = Value::Object(obj);
     let validator = jsonschema::draft202012::new(schema)
@@ -60,6 +61,7 @@ pub fn channel_params_query(query: Option<&str>) -> String {
 /// Validate already typed params, such as those of a server-side publish,
 /// against the same schema that query params are checked with.
 pub fn validate_value(schema: &Value, params: &Value) -> Result<(), ParamsError> {
+    require_flat_object(schema)?;
     if let Some(params) = params.as_object() {
         reject_undeclared(schema, params)?;
     }
@@ -68,6 +70,48 @@ pub fn validate_value(schema: &Value, params: &Value) -> Result<(), ParamsError>
     validator
         .validate(params)
         .map_err(|error| ParamsError::Invalid(error.to_string()))
+}
+
+/// Keywords that place properties somewhere other than the schema's top-level
+/// `properties`, where params are declared and coerced.
+const NON_FLAT_KEYWORDS: &[&str] = &[
+    "allOf",
+    "anyOf",
+    "oneOf",
+    "not",
+    "if",
+    "then",
+    "else",
+    "$ref",
+    "$dynamicRef",
+    "dependentSchemas",
+    "patternProperties",
+];
+
+/// A channel or presence params schema is one object schema with its params
+/// under top-level `properties`. Anything else could declare no param, so it
+/// is reported as a schema problem rather than as unknown params.
+fn require_flat_object(schema: &Value) -> Result<(), ParamsError> {
+    let problem = match schema.as_object() {
+        None => Some("is not a JSON object".to_owned()),
+        Some(schema) => {
+            if let Some(keyword) = NON_FLAT_KEYWORDS.iter().find(|k| schema.contains_key(**k)) {
+                Some(format!("uses `{keyword}`"))
+            } else if schema.get("type").is_some_and(|t| t != "object") {
+                Some(format!("has `type` {}", schema["type"]))
+            } else if schema.get("properties").is_some_and(|p| !p.is_object()) {
+                Some("has a `properties` that is not an object".to_owned())
+            } else {
+                None
+            }
+        }
+    };
+    match problem {
+        Some(problem) => Err(ParamsError::InvalidSchema(format!(
+            "a channel params schema must be one object schema with its params under top-level `properties`, but this one {problem}"
+        ))),
+        None => Ok(()),
+    }
 }
 
 /// Params select streams, so each value of a param the schema does not
@@ -218,6 +262,53 @@ mod tests {
         assert_eq!(
             validate_query(&schema(), &query).unwrap(),
             json!({"roomId": "a"})
+        );
+    }
+
+    #[test]
+    fn params_schemas_must_be_one_flat_object_schema() {
+        // Combinators and references hide properties from the top level, so no
+        // param could be declared; say what is wrong instead of "unknown param".
+        let room = json!({"type": "object", "properties": {"roomId": {"type": "string"}}});
+        for (keyword, schema) in [
+            (
+                "allOf",
+                json!({"allOf": [room.clone()], "additionalProperties": false}),
+            ),
+            (
+                "anyOf",
+                json!({"anyOf": [room.clone()], "additionalProperties": false}),
+            ),
+            ("oneOf", json!({"oneOf": [room.clone()]})),
+            (
+                "$ref",
+                json!({"$ref": "#/$defs/room", "$defs": {"room": room.clone()}}),
+            ),
+            (
+                "allOf",
+                json!({"allOf": [room.clone()], "additionalProperties": true}),
+            ),
+            ("type", json!({"type": "string"})),
+        ] {
+            for error in [
+                validate_query(&schema, "roomId=a").unwrap_err(),
+                validate_query(&schema, "").unwrap_err(),
+                validate_value(&schema, &json!({"roomId": "a"})).unwrap_err(),
+            ] {
+                assert!(
+                    matches!(&error, ParamsError::InvalidSchema(message)
+                        if message.contains("top-level `properties`") && message.contains(keyword)),
+                    "{keyword}: got {error:?}"
+                );
+            }
+        }
+        // Combinators inside a property's own schema are fine.
+        let flat = json!({"type": "object", "properties": {
+            "kind": {"anyOf": [{"const": "a"}, {"const": "b"}]}
+        }});
+        assert_eq!(
+            validate_query(&flat, "kind=a").unwrap(),
+            json!({"kind": "a"})
         );
     }
 

@@ -81,7 +81,9 @@ pub(crate) async fn fetch_channel_registry(
 ) -> Result<Vec<ChannelDefinitionMeta>, ChannelError> {
     let endpoint = instance.endpoint().ok_or(ChannelError::AuthUnavailable)?;
     let internal_host = internal_app_host_for_app_id(app_name);
+    // The request carries the internal token: never follow a redirect with it.
     let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_secs(2))
         .timeout(std::time::Duration::from_secs(5))
         .build()

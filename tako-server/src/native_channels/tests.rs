@@ -562,6 +562,7 @@ async fn unknown_remote_app_never_creates_database() {
                     payload: payload(1),
                     ephemeral: false,
                     lifecycle: None,
+                    created_at_unix_ms: None,
                 }),
             },
         )
@@ -757,6 +758,7 @@ async fn postgres_wake_seam_never_reinserts_or_echoes_and_commit_dispatches_only
                     payload: payload(1),
                     ephemeral: false,
                     lifecycle: None,
+                    created_at_unix_ms: None,
                 }),
             },
         )
@@ -1569,4 +1571,218 @@ async fn unresponsive_backend_registration_ends_at_the_deadline_without_stalling
     ));
     publish(&mut broker, 1).await;
     server.await.unwrap();
+}
+
+/// The request kinds a broker from the previous release understands. Like the
+/// real one, it drops the connection without an answer on any other frame.
+#[derive(serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum PreviousRequest {
+    Register {
+        #[allow(dead_code)]
+        app: AppEnv,
+        #[allow(dead_code)]
+        postgres_url: Option<String>,
+    },
+    Publish {
+        #[allow(dead_code)]
+        app: AppEnv,
+        channel: String,
+        payload: ChannelPublishPayload,
+        #[allow(dead_code)]
+        ephemeral: bool,
+    },
+    SyncChannel {
+        #[allow(dead_code)]
+        app: AppEnv,
+        #[allow(dead_code)]
+        channel: String,
+        auth: serde_json::Value,
+    },
+}
+/// A broker stub on a real socket. `previous` selects the frame set of the
+/// previous release; otherwise it parses the current one. Each answered frame
+/// is recorded, unparsable ones as `dropped`.
+async fn broker_stub(
+    previous: bool,
+) -> (
+    tempfile::TempDir,
+    Client,
+    Arc<parking_lot::Mutex<Vec<String>>>,
+) {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("channels.sock");
+    let listener = tokio::net::UnixListener::bind(&path).unwrap();
+    let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let log = seen.clone();
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let budget = Budget::new(MAX_FRAME);
+            let answer = |channel: String, payload: ChannelPublishPayload| Response::Published {
+                message: ChannelMessage {
+                    id: "1".into(),
+                    event_id: None,
+                    channel,
+                    r#type: payload.r#type,
+                    data: payload.data,
+                },
+            };
+            let response = if previous {
+                match wire::read::<_, PreviousRequest>(&mut stream, &budget).await {
+                    Ok(request) => match request.value {
+                        PreviousRequest::Register { .. } => {
+                            log.lock().push("register".into());
+                            Response::Ok
+                        }
+                        PreviousRequest::SyncChannel { auth, .. } => {
+                            log.lock().push(format!("sync {}", auth["replayWindowMs"]));
+                            Response::Ok
+                        }
+                        PreviousRequest::Publish {
+                            channel, payload, ..
+                        } => {
+                            log.lock().push("publish".into());
+                            answer(channel, payload)
+                        }
+                    },
+                    Err(_) => {
+                        log.lock().push("dropped".into());
+                        continue;
+                    }
+                }
+            } else {
+                match wire::read::<_, Request>(&mut stream, &budget).await {
+                    Ok(request) => match request.value {
+                        Request::Features => {
+                            log.lock().push("features".into());
+                            Response::Features {
+                                features: vec![ipc::PUBLISH_LIFECYCLE.into()],
+                            }
+                        }
+                        Request::SyncChannel { .. } => {
+                            log.lock().push("sync".into());
+                            Response::Ok
+                        }
+                        Request::Publish {
+                            channel,
+                            payload,
+                            lifecycle,
+                            ..
+                        } => {
+                            log.lock().push(match lifecycle {
+                                Some(lifecycle) => {
+                                    format!("publish {}", lifecycle.replay_window_ms)
+                                }
+                                None => "publish".into(),
+                            });
+                            answer(channel, payload)
+                        }
+                        _ => Response::Rejected,
+                    },
+                    Err(_) => {
+                        log.lock().push("dropped".into());
+                        continue;
+                    }
+                }
+            };
+            let _ = wire::write(&mut stream, &response).await;
+        }
+    });
+    (temp, Client::new(path), seen)
+}
+fn long_lifecycle() -> tako_channels::ChannelLifecycle {
+    serde_json::from_value(serde_json::json!({ "replayWindowMs": 86_400_000 })).unwrap()
+}
+
+#[tokio::test]
+async fn a_lifecycle_publish_falls_back_to_sync_then_publish_on_a_previous_broker() {
+    let (_temp, client, seen) = broker_stub(true).await;
+    for n in 0..2 {
+        let message = client
+            .publish(
+                app(),
+                "events".into(),
+                payload(n),
+                false,
+                Some(long_lifecycle()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(message.data, serde_json::json!(n));
+    }
+    // The probe is answered once; afterwards each publish syncs the lifecycle
+    // first, as publishers did before the lifecycle travelled with the append.
+    assert_eq!(
+        *seen.lock(),
+        vec![
+            "dropped",
+            "sync 86400000",
+            "publish",
+            "sync 86400000",
+            "publish"
+        ]
+    );
+    // Publishes without a lifecycle never need the probe.
+    let (_temp, client, seen) = broker_stub(true).await;
+    client
+        .publish(app(), "events".into(), payload(1), false, None)
+        .await
+        .unwrap();
+    assert_eq!(*seen.lock(), vec!["publish"]);
+}
+
+#[tokio::test]
+async fn a_lifecycle_publish_travels_with_the_append_on_a_current_broker() {
+    let (_temp, client, seen) = broker_stub(false).await;
+    for n in 0..2 {
+        client
+            .publish(
+                app(),
+                "events".into(),
+                payload(n),
+                false,
+                Some(long_lifecycle()),
+            )
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        *seen.lock(),
+        vec!["features", "publish 86400000", "publish 86400000"]
+    );
+}
+
+#[tokio::test]
+async fn the_broker_answers_the_feature_probe_without_queueing_a_command() {
+    let (commands, _receiver) = mpsc::channel(1);
+    let (mut client, server) = tokio::io::duplex(8192);
+    let task = tokio::spawn(ipc::serve(
+        server,
+        commands,
+        Budget::new(MAX_FRAME),
+        Budget::new(8 * MAX_FRAME),
+    ));
+    wire::write(&mut client, &Request::Features).await.unwrap();
+    let response: Response = wire::read(&mut client, &Budget::new(MAX_FRAME))
+        .await
+        .unwrap()
+        .value;
+    assert!(matches!(
+        response,
+        Response::Features { features } if features == vec![ipc::PUBLISH_LIFECYCLE.to_owned()]
+    ));
+    task.await.unwrap().unwrap();
+}
+
+#[test]
+fn stream_limit_drops_are_reported_at_most_once_a_minute_with_their_count() {
+    let mut warning = broker::StreamLimitWarning::default();
+    let start = tokio::time::Instant::now();
+    assert_eq!(warning.dropped(start), Some(1));
+    for second in 1..60 {
+        assert_eq!(warning.dropped(start + Duration::from_secs(second)), None);
+    }
+    assert_eq!(warning.dropped(start + Duration::from_secs(60)), Some(60));
+    assert_eq!(warning.dropped(start + Duration::from_secs(61)), None);
 }
