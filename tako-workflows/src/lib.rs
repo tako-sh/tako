@@ -35,7 +35,7 @@ pub use enqueue_socket::{
 pub use in_flight::InFlightLimiter;
 #[allow(unused_imports)]
 pub use manager::{
-    WorkflowManager, WorkflowManagerError, internal_socket_path, worker_spec_for_bun,
+    ClosedStore, WorkflowManager, WorkflowManagerError, internal_socket_path, worker_spec_for_bun,
     worker_spec_for_command,
 };
 #[allow(unused_imports)]

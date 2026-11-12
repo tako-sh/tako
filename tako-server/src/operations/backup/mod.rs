@@ -35,6 +35,13 @@ use snapshot::{
 };
 pub(crate) use snapshot::{measure_database_tree, snapshot_data_tree, snapshot_database_tree};
 
+/// How long workflow workers may finish their runs before a restore kills them.
+const WORKFLOW_STOP_TIMEOUT: Duration = if cfg!(test) {
+    Duration::from_secs(1)
+} else {
+    Duration::from_secs(120)
+};
+
 impl crate::ServerState {
     pub(crate) async fn backup_now(&self, app: &str) -> Response {
         match self.backup_app_now(app, None).await {
@@ -449,9 +456,29 @@ impl crate::ServerState {
             };
             let _lifecycle = app_ref.lifecycle_gate.write().await;
             self.cold_start.mark_failed(app, "restoring_backup");
-            // Workflow workers and the workflow store hold tako/workflows.sqlite;
-            // both restore kinds may replace it.
-            self.workflows.stop(app, Duration::from_secs(120)).await;
+            // Workflow workers, including those of a replaced release still
+            // finishing runs, and the workflow store hold
+            // tako/workflows.sqlite; both restore kinds may replace it.
+            let closed = match self.workflows.close_store(app, WORKFLOW_STOP_TIMEOUT).await {
+                Ok(closed) => closed,
+                Err(error) => {
+                    let message = format!("Stop workflows before restore: {error}");
+                    return Err(match restart().await {
+                        Ok(()) => {
+                            self.finish_restart(app, &app_ref, &config);
+                            format!("{message}; original data kept and app restarted")
+                        }
+                        Err(restart) => {
+                            self.leave_stopped(
+                                app,
+                                &app_ref,
+                                format!("{message}; original data kept, but restart failed: {restart}"),
+                            )
+                            .await
+                        }
+                    });
+                }
+            };
             self.app_manager
                 .stop_app_locked(&app_ref)
                 .await
@@ -475,6 +502,7 @@ impl crate::ServerState {
                     (RestoreSwap::Databases(swap), Some(summary))
                 }),
             };
+            drop(closed);
             let (swap, databases) = match swapped {
                 Ok(swapped) => swapped,
                 // Never start the app on partially restored data.
@@ -501,13 +529,20 @@ impl crate::ServerState {
             };
 
             if let Err(error) = restart().await {
-                self.workflows.stop(app, Duration::from_secs(120)).await;
                 // Never swap files underneath a process whose stop failed.
+                let closed = self
+                    .workflows
+                    .close_store(app, WORKFLOW_STOP_TIMEOUT)
+                    .await
+                    .map_err(|stop| {
+                        format!("{error}; could not stop restored workflows: {stop}; original data retained for recovery")
+                    })?;
                 self.app_manager.stop_app_locked(&app_ref).await.map_err(|stop| {
                     format!("{error}; could not stop restored app: {stop}; original data retained for recovery")
                 })?;
                 swap.rollback()
                     .map_err(|rollback| format!("{error}; {rollback}; app left stopped"))?;
+                drop(closed);
                 return Err(match restart().await {
                     Ok(()) => {
                         self.finish_restart(app, &app_ref, &config);
@@ -580,7 +615,7 @@ impl crate::ServerState {
         app_ref: &std::sync::Arc<crate::instances::App>,
         error: String,
     ) -> String {
-        self.workflows.stop(app, Duration::from_secs(120)).await;
+        self.workflows.stop(app, WORKFLOW_STOP_TIMEOUT).await;
         match self.app_manager.stop_app_locked(app_ref).await {
             Ok(()) => format!("{error}; app left stopped"),
             Err(stop) => format!("{error}; could not stop app: {stop}"),
@@ -1017,6 +1052,62 @@ mod tests {
                 .unwrap()
                 .next()
                 .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_stops_a_retired_workflow_runtime_before_swapping() {
+        let fixture = RestoreFixture::new();
+        let workflows = &fixture.state.workflows;
+        let ready = fixture.temp.path().join("worker-ready");
+        let spec = |command: &str| tako_workflows::WorkerSpec {
+            app: fixture.app.clone(),
+            workers: 0,
+            concurrency: 1,
+            idle_timeout_ms: 0,
+            command: vec!["/bin/sh".into(), "-c".into(), command.into()],
+            cwd: fixture.temp.path().into(),
+            env: Default::default(),
+            secrets: Default::default(),
+            storages: Default::default(),
+            log_sink: None,
+            isolation: None,
+            lanes: Vec::new(),
+        };
+        // A release whose worker ignores SIGTERM while it finishes a run.
+        let stubborn = format!("trap '' TERM; touch {}; exec sleep 60", ready.display());
+        workflows
+            .ensure(&fixture.app, None, |_| spec(&stubborn))
+            .await
+            .unwrap();
+        let retired = workflows.supervisor_for(&fixture.app).unwrap();
+        retired.wake().unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !ready.exists() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        workflows
+            .ensure(&fixture.app, None, |_| spec("exec sleep 60"))
+            .await
+            .unwrap();
+
+        let server = fixture.serve(2);
+        fixture
+            .state
+            .restore_backup_inner(&fixture.app, &fixture.info.id)
+            .await
+            .unwrap();
+        server.await.unwrap();
+        assert!(
+            !retired.is_running(),
+            "the replaced release's worker outlived the restore"
+        );
+        assert_eq!(
+            sqlite_value(&fixture.data.join("tako/workflows.sqlite")),
+            "snapshot runs"
         );
     }
 

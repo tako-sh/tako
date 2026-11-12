@@ -9,10 +9,10 @@
 //! Single integration surface for `operations.rs` to call from
 //! deploy / stop / delete handlers, plus shutdown_all on server shutdown.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use parking_lot::RwLock;
@@ -99,7 +99,66 @@ pub struct WorkflowManager {
     /// can't each start their own supervisor + cron ticker and then have
     /// one silently overwrite the other (leaking the loser's children).
     ensure_gate: tokio::sync::Mutex<()>,
-    retired: parking_lot::Mutex<Vec<(Arc<WorkerSupervisor>, tokio::task::JoinHandle<()>)>>,
+    retired: parking_lot::Mutex<Vec<RetiredRuntime>>,
+    store_gate: Arc<parking_lot::Mutex<StoreGate>>,
+}
+
+/// A runtime a deploy replaced. Its workers finish their runs in the
+/// background; `task` ends, and releases its store, once they have exited.
+struct RetiredRuntime {
+    app: String,
+    supervisor: Arc<WorkerSupervisor>,
+    db: Weak<RunsDb>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+/// Stores that must stay closed, and the stores operator commands opened.
+#[derive(Default)]
+struct StoreGate {
+    closed: HashSet<String>,
+    operator_stores: HashMap<String, usize>,
+}
+
+/// While a handle on a closed store remains after its runtimes stop, such as
+/// one an in-flight socket call or operator command holds, [`WorkflowManager::close_store`]
+/// waits up to this long for it.
+const STORE_RELEASE_TIMEOUT: Duration = if cfg!(test) {
+    Duration::from_millis(500)
+} else {
+    Duration::from_secs(10)
+};
+
+/// Keeps an app's workflow store closed until dropped: no runtime of the app
+/// runs and operator commands are refused. [`WorkflowManager::ensure`] still
+/// opens the store, so a restart can bring workflows back while it is held.
+#[must_use = "the store reopens for operator commands when this is dropped"]
+pub struct ClosedStore {
+    gate: Arc<parking_lot::Mutex<StoreGate>>,
+    app: String,
+}
+
+impl Drop for ClosedStore {
+    fn drop(&mut self) {
+        self.gate.lock().closed.remove(&self.app);
+    }
+}
+
+/// Counts an operator command's handle on an app's store.
+struct OperatorLease {
+    gate: Arc<parking_lot::Mutex<StoreGate>>,
+    app: String,
+}
+
+impl Drop for OperatorLease {
+    fn drop(&mut self) {
+        let mut gate = self.gate.lock();
+        if let Some(count) = gate.operator_stores.get_mut(&self.app) {
+            *count -= 1;
+            if *count == 0 {
+                gate.operator_stores.remove(&self.app);
+            }
+        }
+    }
 }
 
 type PostgresUrlResolver = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
@@ -135,6 +194,7 @@ pub enum WorkflowManagerError {
 struct OperatorStore {
     db: Arc<RunsDb>,
     handlers: Option<AppHandlers>,
+    _lease: OperatorLease,
 }
 
 impl WorkflowManager {
@@ -149,8 +209,8 @@ impl WorkflowManager {
             }
             entry.supervisor.begin_drain();
         }
-        for (supervisor, _) in self.retired.lock().iter() {
-            supervisor.begin_drain();
+        for retired in self.retired.lock().iter() {
+            retired.supervisor.begin_drain();
         }
     }
 
@@ -163,11 +223,11 @@ impl WorkflowManager {
             status.background_tasks +=
                 usize::from(entry.dispatcher.as_ref().is_some_and(|d| !d.is_finished()));
         }
-        self.retired.lock().retain(|(supervisor, task)| {
-            let workers = supervisor.remaining_children();
+        self.retired.lock().retain(|retired| {
+            let workers = retired.supervisor.remaining_children();
             status.workers += workers;
-            status.background_tasks += usize::from(!task.is_finished());
-            workers > 0 || !task.is_finished()
+            status.background_tasks += usize::from(!retired.task.is_finished());
+            workers > 0 || !retired.task.is_finished()
         });
         status
     }
@@ -180,7 +240,7 @@ impl WorkflowManager {
         for supervisor in apps
             .values()
             .map(|entry| &entry.supervisor)
-            .chain(retired.iter().map(|(supervisor, _)| supervisor))
+            .chain(retired.iter().map(|retired| &retired.supervisor))
         {
             let (signalled, errors) = supervisor.force_stop();
             result.0 += signalled;
@@ -200,6 +260,7 @@ impl WorkflowManager {
             network_call: Arc::new(RwLock::new(None)),
             ensure_gate: tokio::sync::Mutex::new(()),
             retired: parking_lot::Mutex::new(Vec::new()),
+            store_gate: Arc::default(),
         }
     }
 
@@ -388,12 +449,18 @@ impl WorkflowManager {
                 dispatcher.request_shutdown();
             }
             let supervisor = old_entry.supervisor.clone();
+            let db = Arc::downgrade(&old_entry.handlers.db);
             let task = tokio::spawn(old_entry.drain_existing_work());
             let mut retired = self.retired.lock();
-            retired.retain(|(supervisor, task)| {
-                !task.is_finished() || supervisor.remaining_children() > 0
+            retired.retain(|retired| {
+                !retired.task.is_finished() || retired.supervisor.remaining_children() > 0
             });
-            retired.push((supervisor, task));
+            retired.push(RetiredRuntime {
+                app: app.to_string(),
+                supervisor,
+                db,
+                task,
+            });
         }
         Ok(())
     }
@@ -403,6 +470,69 @@ impl WorkflowManager {
         let entry = self.apps.write().remove(app);
         if let Some(entry) = entry {
             entry.shutdown(drain_timeout).await;
+        }
+    }
+
+    /// Stop every workflow runtime of `app`, including runtimes a deploy
+    /// replaced whose workers are still finishing runs, and wait until this
+    /// process holds no handle on the app's store. Workers still running
+    /// after `drain_timeout` are killed. Operator commands are refused until
+    /// the returned guard is dropped. Fails when a handle outlives the stop,
+    /// so callers never replace store files underneath an open connection.
+    pub async fn close_store(
+        &self,
+        app: &str,
+        drain_timeout: Duration,
+    ) -> Result<ClosedStore, WorkflowManagerError> {
+        self.store_gate.lock().closed.insert(app.to_string());
+        let closed = ClosedStore {
+            gate: self.store_gate.clone(),
+            app: app.to_string(),
+        };
+        let mut handles: Vec<Weak<RunsDb>> = self
+            .apps
+            .read()
+            .get(app)
+            .map(|entry| Arc::downgrade(&entry.handlers.db))
+            .into_iter()
+            .collect();
+        self.stop(app, drain_timeout).await;
+        let retired: Vec<RetiredRuntime> = {
+            let mut all = self.retired.lock();
+            let (ours, others) = std::mem::take(&mut *all)
+                .into_iter()
+                .partition(|retired| retired.app == app);
+            *all = others;
+            ours
+        };
+        for retired in retired {
+            handles.push(retired.db);
+            retired.supervisor.shutdown(drain_timeout).await;
+            // The drain task ends once its workers are gone, releasing the store.
+            let _ = retired.task.await;
+        }
+        let deadline = tokio::time::Instant::now() + STORE_RELEASE_TIMEOUT;
+        loop {
+            let open = handles
+                .iter()
+                .filter(|handle| handle.strong_count() > 0)
+                .count()
+                + self
+                    .store_gate
+                    .lock()
+                    .operator_stores
+                    .get(app)
+                    .copied()
+                    .unwrap_or(0);
+            if open == 0 {
+                return Ok(closed);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(WorkflowManagerError::InvalidRequest(format!(
+                    "The workflow store of {app} is still open after its workers stopped"
+                )));
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     }
 
@@ -463,10 +593,24 @@ impl WorkflowManager {
     /// so stopped apps stay inspectable. `None` when this server has no
     /// SQLite store for the app; opening one would create an empty file.
     fn operator_store(&self, app: &str) -> Result<Option<OperatorStore>, WorkflowManagerError> {
+        let lease = {
+            let mut gate = self.store_gate.lock();
+            if gate.closed.contains(app) {
+                return Err(WorkflowManagerError::InvalidRequest(format!(
+                    "The workflow store of {app} is closed while a backup is restored; try again when the restore finishes"
+                )));
+            }
+            *gate.operator_stores.entry(app.to_string()).or_default() += 1;
+            OperatorLease {
+                gate: self.store_gate.clone(),
+                app: app.to_string(),
+            }
+        };
         if let Some(handlers) = self.apps.read().get(app).map(AppWorkflow::handlers) {
             return Ok(Some(OperatorStore {
                 db: handlers.db.clone(),
                 handlers: Some(handlers),
+                _lease: lease,
             }));
         }
         let config = self.workflow_store_config(app);
@@ -478,6 +622,7 @@ impl WorkflowManager {
         Ok(Some(OperatorStore {
             db: Arc::new(RunsDb::open_config(config)?),
             handlers: None,
+            _lease: lease,
         }))
     }
 
@@ -826,6 +971,113 @@ mod tests {
         assert!(!old.is_running());
     }
 
+    /// A deploy that replaces a runtime leaves its workers finishing runs
+    /// against the store. Stopping the app leaves them alone; closing the
+    /// store for a restore must not.
+    #[tokio::test]
+    async fn close_store_stops_retired_workers_and_releases_every_store_handle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let m = Arc::new(WorkflowManager::new(tmp.path()));
+        let stubborn = |db| {
+            let mut spec = dummy_spec(tmp.path().into(), db);
+            spec.command = vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "trap '' TERM; touch ready; exec sleep 60".into(),
+            ];
+            spec
+        };
+        let start_retired = || async {
+            m.ensure("a", None, stubborn).await.unwrap();
+            let old = m.supervisor_for("a").unwrap();
+            old.wake().unwrap();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while !tmp.path().join("ready").exists() {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap();
+            std::fs::remove_file(tmp.path().join("ready")).unwrap();
+            m.ensure("a", None, |db| dummy_spec(tmp.path().into(), db))
+                .await
+                .unwrap();
+            let store = Arc::downgrade(&m.retired.lock().last().unwrap().db.upgrade().unwrap());
+            (old, store)
+        };
+
+        let (old, _) = start_retired().await;
+        m.stop("a", Duration::from_millis(100)).await;
+        assert!(old.is_running(), "stop leaves a retired worker running");
+        old.force_stop();
+        m.retired.lock().clear();
+
+        let (old, retired_store) = start_retired().await;
+        let current_store = Arc::downgrade(&m.apps.read()["a"].handlers.db);
+        let closed = tokio::time::timeout(
+            Duration::from_secs(5),
+            m.close_store("a", Duration::from_millis(100)),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(!old.is_running());
+        assert!(!m.has("a"));
+        assert!(m.retired.lock().is_empty());
+        assert_eq!(retired_store.strong_count(), 0);
+        assert_eq!(current_store.strong_count(), 0);
+        let error = m.list_runs("a", None, None, None).await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("is closed while a backup is restored")
+        );
+
+        // A restart may bring the runtime back while the store is closed.
+        m.ensure("a", None, |db| dummy_spec(tmp.path().into(), db))
+            .await
+            .unwrap();
+        drop(closed);
+        assert!(m.list_runs("a", None, None, None).await.is_ok());
+        m.delete("a", Duration::from_secs(1)).await;
+    }
+
+    #[tokio::test]
+    async fn close_store_waits_for_operator_commands_and_fails_on_a_lingering_handle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let m = WorkflowManager::new(tmp.path());
+        m.ensure("a", None, |db| dummy_spec(tmp.path().into(), db))
+            .await
+            .unwrap();
+        let lingering = m.apps.read()["a"].handlers.db.clone();
+        let lease = m.operator_store("a").unwrap().unwrap();
+        drop(lingering);
+        let close = m.close_store("a", Duration::from_millis(100));
+        tokio::pin!(close);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), &mut close)
+                .await
+                .is_err(),
+            "an operator command still holds the store"
+        );
+        drop(lease);
+        let closed = close.await.unwrap();
+        drop(closed);
+
+        m.ensure("a", None, |db| dummy_spec(tmp.path().into(), db))
+            .await
+            .unwrap();
+        let _lingering = m.apps.read()["a"].handlers.db.clone();
+        let error = m
+            .close_store("a", Duration::from_millis(100))
+            .await
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("is still open"), "{error}");
+        // The failed close reopens the store for operator commands.
+        assert!(m.operator_store("a").is_ok());
+    }
+
     #[tokio::test]
     async fn operator_commands_use_the_active_runtime_or_the_stored_runs() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1012,8 +1264,8 @@ mod tests {
 
         start().await.unwrap();
         start().await.unwrap();
-        let (_, replaced) = m.retired.lock().pop().unwrap();
-        replaced.await.unwrap();
+        let replaced = m.retired.lock().pop().unwrap();
+        replaced.task.await.unwrap();
 
         m.retire(&app).await;
         tokio::time::timeout(Duration::from_secs(2), async {
