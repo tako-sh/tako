@@ -15,7 +15,7 @@ installStdioBridge("app");
 installErrorHooks("app");
 installConsoleBridge("app");
 initBootstrapFromFd(readBootstrapData);
-const { run, host, port, setDraining, longLivedResponses } = createEntrypoint();
+const { run, host, port, setDraining } = createEntrypoint();
 
 void run(async (handleRequest) => {
   const { actualPort, close, closeAllConnections } = await startNodeServer(
@@ -27,7 +27,6 @@ void run(async (handleRequest) => {
     "SIGTERM",
     createGracefulShutdown({
       setDraining,
-      responses: longLivedResponses,
       stopServer: close,
       forceClose: closeAllConnections,
     }),

@@ -25,7 +25,7 @@ pub(super) fn generate_internal_token() -> String {
 }
 
 // One atomic holds both in-flight counts so a drain reads a consistent pair:
-// the total in the high half, the long-lived (upgraded or streaming) subset in
+// the total in the high half, the long-lived (protocol-upgraded) subset in
 // the low half. Concurrent requests are bounded far below 2^32.
 const IN_FLIGHT_ONE: u64 = 1 << 32;
 const LONG_LIVED_ONE: u64 = 1;
@@ -285,7 +285,8 @@ impl Instance {
         self.in_flight.fetch_add(IN_FLIGHT_ONE, Ordering::Relaxed);
     }
 
-    /// Reclassify one started request as an upgraded or streaming connection.
+    /// Reclassify one started request as an upgraded connection (the app
+    /// answered `101 Switching Protocols`, for example a WebSocket).
     /// It stays in `in_flight` but no longer holds an instance drain.
     pub fn request_became_long_lived(&self) {
         self.in_flight.fetch_add(LONG_LIVED_ONE, Ordering::Relaxed);

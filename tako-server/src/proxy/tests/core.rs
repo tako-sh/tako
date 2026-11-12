@@ -92,28 +92,41 @@ async fn proxy_context_keeps_long_lived_instance_counts_balanced() {
         )
     };
 
-    // Late classification: an SSE or 101 response after the request started.
-    let mut late = proxy.new_ctx();
-    late.backend = lb.get_backend("test-app");
-    late.mark_backend_request_started();
+    // An Upgrade header alone (server-wide classification) does not release
+    // the instance drain; only the 101 response does, once.
+    let mut upgraded = proxy.new_ctx();
+    upgraded.mark_long_lived();
+    upgraded.backend = lb.get_backend("test-app");
+    upgraded.mark_backend_request_started();
     assert_eq!(counts(), (1, 1, 0));
-    late.mark_long_lived();
-    late.mark_long_lived();
+    upgraded.mark_upgraded();
+    upgraded.mark_upgraded();
     assert_eq!(counts(), (1, 0, 1));
-    late.finish_backend_request();
+    upgraded.finish_backend_request();
+    assert_eq!(counts(), (0, 0, 0));
+    upgraded.finish_backend_request();
     assert_eq!(counts(), (0, 0, 0));
 
-    // Early classification: an Upgrade request before a backend is chosen,
-    // confirmed again by the 101 response, then retried after a drain refusal.
+    // Retried after a refused attempt: counted short until its own 101.
     let mut early = proxy.new_ctx();
     early.mark_long_lived();
     early.backend = lb.get_backend("test-app");
     early.mark_backend_request_started();
-    assert_eq!(counts(), (1, 0, 1));
     early.finish_backend_request();
     assert_eq!(counts(), (0, 0, 0));
     early.mark_backend_request_started();
-    early.mark_long_lived();
+    assert_eq!(counts(), (1, 1, 0));
+    early.mark_upgraded();
+    assert_eq!(counts(), (1, 0, 1));
+
+    // Classified before any backend request started (no double count).
+    let mut before = proxy.new_ctx();
+    before.backend = lb.get_backend("test-app");
+    before.mark_upgraded();
+    assert_eq!(counts(), (1, 0, 1));
+    before.mark_backend_request_started();
+    assert_eq!(counts(), (2, 0, 2));
+    drop(before);
     assert_eq!(counts(), (1, 0, 1));
 
     // A short request alongside; dropping contexts releases their counts.
@@ -227,7 +240,7 @@ fn request_context_skips_metric_timers_when_metrics_are_disabled() {
         native_remote: None,
         backend: None,
         backend_request_started: false,
-        long_lived: false,
+        upgraded: false,
         backend_long_lived: false,
         is_https: false,
         matched_route_path: None,

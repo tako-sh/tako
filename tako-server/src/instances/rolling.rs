@@ -39,10 +39,12 @@ const DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// Wait until `instance` serves no ordinary short requests, or `drain_timeout`
 /// passes. Returns whether the short requests finished in time.
 ///
-/// Upgraded and streaming connections (WebSocket, SSE) are not waited for:
-/// they do not end on their own, so waiting would only hold the drain for the
-/// whole timeout and still end in a reset. Stopping the instance sends SIGTERM,
-/// which is the app's cue to close them cleanly within the stop grace period.
+/// Upgraded connections (the app answered `101 Switching Protocols`, such as
+/// WebSockets) are not waited for: they do not end on their own, so waiting
+/// would only hold the drain for the whole timeout and still end in a reset.
+/// Stopping the instance closes them; clients reconnect to a replacement.
+/// Everything else, event streams included, is waited for: many streams are
+/// finite (token streaming) and must not be cut short by a deploy.
 pub(crate) async fn wait_for_short_requests(instance: &Instance, drain_timeout: Duration) -> bool {
     let deadline = tokio::time::Instant::now() + drain_timeout;
     while instance.short_in_flight() > 0 {
@@ -606,8 +608,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn drain_does_not_wait_for_long_lived_connections() {
-        let app = create_test_app("long-lived-drain-app");
+    async fn drain_does_not_wait_for_upgraded_connections() {
+        let app = create_test_app("upgraded-drain-app");
         let instance = app.allocate_instance();
         app.set_instance_state(&instance, InstanceState::Healthy);
         for _ in 0..2 {
@@ -622,7 +624,7 @@ mod tests {
             updater.drain_and_stop(&app, &instance),
         )
         .await
-        .expect("drain must not wait for long-lived connections")
+        .expect("drain must not wait for upgraded connections")
         .expect("drain and stop");
 
         assert!(started.elapsed() < Duration::from_secs(1));
@@ -632,10 +634,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn drain_waits_for_short_requests_until_they_finish() {
+    async fn drain_waits_for_ordinary_requests_and_event_streams() {
         let app = create_test_app("short-drain-app");
         let instance = app.allocate_instance();
         app.set_instance_state(&instance, InstanceState::Healthy);
+        // An open event stream is an ordinary request here: the proxy marks a
+        // request long-lived only on a 101 response.
         instance.request_started();
         instance.request_started();
         instance.request_became_long_lived();

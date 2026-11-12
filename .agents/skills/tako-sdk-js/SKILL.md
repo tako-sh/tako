@@ -51,7 +51,7 @@ export default {
 };
 ```
 
-On deploy or scale-down, Tako stops an old instance once its ordinary requests finish; open streams do not delay it. On `SIGTERM` the SDK ends open `text/event-stream` responses cleanly, so `EventSource` clients reconnect to the new instance; other streaming responses get up to 8 seconds to finish before the process exits. The fetch handler cannot accept WebSocket upgrades; use [channels](#channels) for browser WebSockets, which `tako-server` serves and deploys do not close.
+On deploy or scale-down, Tako waits up to 30 seconds for an old instance's in-flight requests, `text/event-stream` responses included, before stopping it. On `SIGTERM` the SDK stops accepting connections and lets in-flight requests and streams finish for up to 8 seconds, then closes the rest abruptly, so clients see an error and retry instead of accepting a cut-off stream as complete. The fetch handler cannot accept WebSocket upgrades. For long-lived subscriptions use [channels](#channels): `tako-server` serves them, so deploys do not close them.
 
 ## Package Exports
 

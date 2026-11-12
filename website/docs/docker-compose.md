@@ -64,11 +64,11 @@ Named volumes survive deployment, stop/start, rollback, and application deletion
 
 Tako prepares and pins all images before changing running containers. It compares each service's image configuration and filesystem, plus its resolved Compose configuration, dependency conditions, referenced secrets, and mounted file contents and executable permissions. Build attestations and release directory names do not trigger replacements. Unchanged services keep their container IDs, network endpoints, and volumes. Updating a Bun web app therefore leaves unchanged Redis running.
 
-| Service | Default update order |
-| --- | --- |
+| Service                                                   | Default update order                                                     |
+| --------------------------------------------------------- | ------------------------------------------------------------------------ |
 | Selected HTTP service without writable persistent volumes | Start replacement, verify readiness, switch traffic, drain old container |
-| Selected HTTP service with writable persistent volumes | Stop old container before starting its replacement |
-| Workers and other services | Stop old container before starting its replacement |
+| Selected HTTP service with writable persistent volumes    | Stop old container before starting its replacement                       |
+| Workers and other services                                | Stop old container before starting its replacement                       |
 
 Override the order for a service using standard Compose settings:
 
@@ -87,7 +87,7 @@ Use `start-first` only when old and new containers can safely overlap, including
 
 If readiness fails, Tako removes the new containers and restarts any predecessors it stopped. Healthy unchanged containers remain running. Failed recovery is reported as an application error. The active release, routes, replica overrides, and encrypted credentials commit together. On a server restart, Tako reconciles that committed release, adopts matching containers, and removes abandoned generations. A normal Tako server shutdown leaves production Compose containers running for adoption on startup.
 
-Start-first updates protect traffic through Tako's HTTP ingress. Updates to databases or other dependencies can still cause downtime, and migrations must remain compatible with the versions that overlap. Internal clients using Docker DNS can see a candidate before Tako admits it to public HTTP routing. Existing requests drain for up to 30 seconds; WebSockets and server-sent event streams do not hold the drain and are closed when the old container stops, so clients need reconnect handling.
+Start-first updates protect traffic through Tako's HTTP ingress. Updates to databases or other dependencies can still cause downtime, and migrations must remain compatible with the versions that overlap. Internal clients using Docker DNS can see a candidate before Tako admits it to public HTTP routing. Existing requests and server-sent event streams drain for up to 30 seconds; upgraded WebSocket connections do not hold the drain and are closed when the old container stops, so clients need reconnect handling.
 
 ## Scale individual services
 

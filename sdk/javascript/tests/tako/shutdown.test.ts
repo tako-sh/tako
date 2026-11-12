@@ -1,21 +1,32 @@
 import { expect, test } from "bun:test";
 import { terminalClose } from "../../src/react/reconnect";
 import { startNodeServer } from "../../src/tako/node-http";
-import { createGracefulShutdown, createLongLivedResponses } from "../../src/tako/shutdown";
+import { createGracefulShutdown } from "../../src/tako/shutdown";
 
 const encoder = new TextEncoder();
 
-/** An SSE response that only ends when cancelled, like a live event feed. */
-function openEventStream(onCancel: () => void): Response {
+/**
+ * An SSE response that sends one event at once and the rest only when
+ * `finish` runs, like a token stream still generating an answer. Without
+ * `finish` it never ends, like a live event feed.
+ */
+function eventStream(): { response: Response; finish: () => void } {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
   const body = new ReadableStream<Uint8Array>({
-    start(controller) {
-      controller.enqueue(encoder.encode("data: hello\n\n"));
-    },
-    cancel() {
-      onCancel();
+    start(streamController) {
+      controller = streamController;
+      controller.enqueue(encoder.encode("data: first\n\n"));
     },
   });
-  return new Response(body, { headers: { "content-type": "text/event-stream; charset=utf-8" } });
+  return {
+    response: new Response(body, {
+      headers: { "content-type": "text/event-stream; charset=utf-8" },
+    }),
+    finish: () => {
+      controller.enqueue(encoder.encode("data: last\n\n"));
+      controller.close();
+    },
+  };
 }
 
 async function readFirstChunk(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<string> {
@@ -23,10 +34,14 @@ async function readFirstChunk(reader: ReadableStreamDefaultReader<Uint8Array>): 
   return new TextDecoder().decode(value);
 }
 
-async function readToEnd(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> {
+/** Read the rest of the stream: resolves with the text on a clean end, rejects on an abrupt one. */
+async function readToEnd(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<string> {
+  const decoder = new TextDecoder();
+  let text = "";
   for (;;) {
-    const { done } = await reader.read();
-    if (done) return;
+    const { done, value } = await reader.read();
+    if (done) return text;
+    text += decoder.decode(value, { stream: true });
   }
 }
 
@@ -37,129 +52,135 @@ function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
   ]);
 }
 
-test("only event-stream responses are tracked", () => {
-  const responses = createLongLivedResponses();
-  const plain = new Response("ok");
-  expect(responses.track(plain)).toBe(plain);
-  const empty = new Response(null, { headers: { "content-type": "text/event-stream" } });
-  expect(responses.track(empty)).toBe(empty);
-  expect(responses.size).toBe(0);
+/** Settles `promise` as "done", "error" or "pending" after `ms`. */
+async function settledWithin(promise: Promise<unknown>, ms: number): Promise<string> {
+  return Promise.race([
+    promise.then(
+      () => "done",
+      () => "error",
+    ),
+    Bun.sleep(ms).then(() => "pending"),
+  ]);
+}
 
-  const sse = responses.track(openEventStream(() => {}));
-  expect(sse.headers.get("content-type")).toBe("text/event-stream; charset=utf-8");
-  expect(responses.size).toBe(1);
-});
+interface Harness {
+  url: string;
+  stopServer: () => void | Promise<void>;
+  forceClose: () => void;
+  cleanup: () => void | Promise<void>;
+}
 
-test("a stream that ends on its own stops being tracked", async () => {
-  const responses = createLongLivedResponses();
-  const tracked = responses.track(
-    new Response("data: done\n\n", { headers: { "content-type": "text/event-stream" } }),
-  );
-  expect(await tracked.text()).toBe("data: done\n\n");
-  expect(responses.size).toBe(0);
-  expect(responses.closeAll()).toBe(0);
-});
+const servers: Record<
+  string,
+  (fetch: (request: Request) => Promise<Response>) => Promise<Harness>
+> = {
+  bun: async (fetch) => {
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch });
+    return {
+      url: `http://127.0.0.1:${server.port}`,
+      stopServer: () => server.stop(),
+      forceClose: () => void server.stop(true),
+      cleanup: () => server.stop(true),
+    };
+  },
+  node: async (fetch) => {
+    const { actualPort, close, closeAllConnections } = await startNodeServer("127.0.0.1", 0, fetch);
+    return {
+      url: `http://127.0.0.1:${actualPort}`,
+      stopServer: close,
+      forceClose: closeAllConnections,
+      cleanup: closeAllConnections,
+    };
+  },
+};
 
-test("closeAll ends open streams cleanly and releases the app source", async () => {
-  const responses = createLongLivedResponses();
-  let cancelled = 0;
-  const reader = responses.track(openEventStream(() => cancelled++)).body!.getReader();
-  expect(await readFirstChunk(reader)).toBe("data: hello\n\n");
-
-  expect(responses.closeAll()).toBe(1);
-  await within(readToEnd(reader), 1_000, "stream end");
-  expect(cancelled).toBe(1);
-  expect(responses.size).toBe(0);
-
-  // A stream that starts after shutdown began ends immediately.
-  const late = responses.track(openEventStream(() => cancelled++));
-  expect(await late.text()).toBe("");
-  expect(cancelled).toBe(2);
-});
-
-test("bun server SIGTERM path ends SSE cleanly and lets short requests finish", async () => {
-  const responses = createLongLivedResponses();
-  let releaseSlow!: () => void;
-  const slowGate = new Promise<void>((resolve) => (releaseSlow = resolve));
-  const server = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    fetch: async (request) => {
+for (const [runtime, start] of Object.entries(servers)) {
+  test(`${runtime}: SIGTERM lets an event stream and a slow request finish before the deadline`, async () => {
+    const streams: Array<() => void> = [];
+    let releaseSlow!: () => void;
+    const slowGate = new Promise<void>((resolve) => (releaseSlow = resolve));
+    const harness = await start(async (request) => {
       if (new URL(request.url).pathname === "/slow") {
         await slowGate;
         return new Response("slow done");
       }
-      return responses.track(openEventStream(() => {}));
-    },
-  });
-  const exits: number[] = [];
-  let drained = false;
-  const shutdown = createGracefulShutdown({
-    setDraining: () => (drained = true),
-    responses,
-    stopServer: () => server.stop(),
-    forceClose: () => void server.stop(true),
-    exit: (code) => exits.push(code),
-  });
+      const { response, finish } = eventStream();
+      streams.push(finish);
+      return response;
+    });
+    const exits: number[] = [];
+    let forced = 0;
+    let draining = 0;
+    const shutdown = createGracefulShutdown({
+      setDraining: () => draining++,
+      stopServer: harness.stopServer,
+      forceClose: () => {
+        forced++;
+        harness.forceClose();
+      },
+      exitDeadlineMs: 5_000,
+      exit: (code) => exits.push(code),
+    });
 
-  try {
-    const events = await fetch(`http://127.0.0.1:${server.port}/events`);
-    const reader = events.body!.getReader();
-    expect(await readFirstChunk(reader)).toBe("data: hello\n\n");
-    const slow = fetch(`http://127.0.0.1:${server.port}/slow`);
-    await Bun.sleep(20);
+    try {
+      const events = await fetch(`${harness.url}/events`);
+      const reader = events.body!.getReader();
+      expect(await readFirstChunk(reader)).toBe("data: first\n\n");
+      const slow = fetch(`${harness.url}/slow`);
+      await Bun.sleep(20);
 
-    shutdown();
-    shutdown();
-    expect(drained).toBe(true);
-    await within(readToEnd(reader), 2_000, "SSE end");
+      shutdown();
+      shutdown();
+      expect(draining).toBe(1);
 
-    releaseSlow();
-    expect(await (await within(slow, 2_000, "slow request")).text()).toBe("slow done");
-    expect(exits).toEqual([]);
-  } finally {
-    releaseSlow();
-    await server.stop(true);
-  }
-});
+      // The stream is not ended for the app: it stays open until the app finishes it.
+      const rest = readToEnd(reader);
+      expect(await settledWithin(rest, 200)).toBe("pending");
 
-test("node server SIGTERM path ends SSE cleanly and the server closes promptly", async () => {
-  const responses = createLongLivedResponses();
-  const { actualPort, close, closeAllConnections } = await startNodeServer(
-    "127.0.0.1",
-    0,
-    async () => responses.track(openEventStream(() => {})),
-  );
-  let stopped = false;
-  const shutdown = createGracefulShutdown({
-    setDraining: () => {},
-    responses,
-    stopServer: () => close().then(() => void (stopped = true)),
-    forceClose: closeAllConnections,
-    exit: () => {},
+      streams[0]!();
+      expect(await within(rest, 2_000, "stream end")).toBe("data: last\n\n");
+      releaseSlow();
+      expect(await (await within(slow, 2_000, "slow request")).text()).toBe("slow done");
+      expect(forced).toBe(0);
+      expect(exits).toEqual([]);
+    } finally {
+      releaseSlow();
+      await harness.cleanup();
+    }
   });
 
-  try {
-    const events = await fetch(`http://127.0.0.1:${actualPort}/events`);
-    const reader = events.body!.getReader();
-    expect(await readFirstChunk(reader)).toBe("data: hello\n\n");
+  test(`${runtime}: SIGTERM force-closes a stream still open at the deadline, never cleanly`, async () => {
+    const harness = await start(async () => eventStream().response);
+    const exits: number[] = [];
+    const shutdown = createGracefulShutdown({
+      setDraining: () => {},
+      stopServer: harness.stopServer,
+      forceClose: harness.forceClose,
+      exitDeadlineMs: 300,
+      exit: (code) => exits.push(code),
+    });
 
-    shutdown();
-    await within(readToEnd(reader), 2_000, "SSE end");
-    const started = Date.now();
-    while (!stopped && Date.now() - started < 2_000) await Bun.sleep(10);
-    expect(stopped).toBe(true);
-  } finally {
-    closeAllConnections();
-  }
-});
+    try {
+      const events = await fetch(`${harness.url}/events`);
+      const reader = events.body!.getReader();
+      expect(await readFirstChunk(reader)).toBe("data: first\n\n");
 
-test("shutdown force-closes and exits at the deadline when connections stay open", async () => {
+      shutdown();
+      const rest = readToEnd(reader);
+      expect(await settledWithin(rest, 150)).toBe("pending");
+      expect(await settledWithin(rest, 2_000)).toBe("error");
+      expect(exits).toEqual([0]);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+}
+
+test("shutdown force-closes and exits at the deadline when the server does not stop", async () => {
   const exits: number[] = [];
   let forced = 0;
   const shutdown = createGracefulShutdown({
     setDraining: () => {},
-    responses: createLongLivedResponses(),
     stopServer: () => new Promise<void>(() => {}),
     forceClose: () => forced++,
     exitDeadlineMs: 20,

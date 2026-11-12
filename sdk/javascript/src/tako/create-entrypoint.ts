@@ -17,7 +17,6 @@ import { bootstrapChannels } from "../channels/bootstrap";
 import type { ChannelRegistry } from "../channels";
 import type { StoreRegistry } from "../stores/registry";
 import { initServerRuntime } from "./init";
-import { createLongLivedResponses } from "./shutdown";
 import type { FetchFunction, ReadyableFetchHandler, TakoStatus } from "../types";
 
 /** Exported for tests and for runtime entrypoints that want the default impl. */
@@ -78,8 +77,6 @@ export function createEntrypoint() {
   function setDraining(): void {
     currentStatus = "draining";
   }
-
-  const longLivedResponses = createLongLivedResponses();
 
   async function run(
     startServer: (
@@ -163,7 +160,7 @@ export function createEntrypoint() {
       }
 
       try {
-        return longLivedResponses.track(normalizeFetchResponse(await userFetch(request, env)));
+        return normalizeFetchResponse(await userFetch(request, env));
       } catch (err) {
         console.error("Error in user fetch handler:", err);
         return new Response(JSON.stringify({ error: "Internal Server Error" }), {
@@ -180,5 +177,5 @@ export function createEntrypoint() {
     }
   }
 
-  return { run, host, port, setDraining, longLivedResponses };
+  return { run, host, port, setDraining };
 }

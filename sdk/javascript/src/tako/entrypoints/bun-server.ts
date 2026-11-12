@@ -18,7 +18,7 @@ installErrorHooks("app");
 installConsoleBridge("app");
 initBootstrapFromFd(readBootstrapData);
 
-const { run, host, port, setDraining, longLivedResponses } = createEntrypoint();
+const { run, host, port, setDraining } = createEntrypoint();
 
 if (import.meta.main) {
   let server: ReturnType<typeof Bun.serve> | undefined;
@@ -32,7 +32,6 @@ if (import.meta.main) {
     "SIGTERM",
     createGracefulShutdown({
       setDraining,
-      responses: longLivedResponses,
       stopServer: () => server?.stop(),
       forceClose: () => void server?.stop(true),
     }),
