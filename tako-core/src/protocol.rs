@@ -205,7 +205,7 @@ pub enum Command {
     /// Create a short-lived download URL for a backup archive.
     BackupDownloadUrl { app: String, backup_id: String },
 
-    /// Restore app data from a backup archive on this server.
+    /// Restore a full backup, or the SQLite databases of a database snapshot, on this server.
     RestoreBackup { app: String, backup_id: String },
 
     /// Update the desired minimum number of instances for an app.
@@ -574,6 +574,23 @@ pub struct BackupInfo {
     /// unchanged database snapshots. Absent on older entries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub database_digest: Option<String>,
+    /// Paths, relative to the app data directory, of the SQLite databases a
+    /// database snapshot contains. Empty for full archives.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub databases: Vec<String>,
+}
+
+impl BackupInfo {
+    /// File name of the encrypted archive object, for saving a download.
+    pub fn archive_file_name(&self) -> String {
+        match self.archive_key.rsplit('/').next() {
+            Some(name) if !name.is_empty() && name != "." && name != ".." => name.to_string(),
+            _ => match self.kind {
+                BackupKind::Full => format!("{}.tar.zst.enc", self.id),
+                BackupKind::Databases => format!("{}.databases.tar.zst.enc", self.id),
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -642,6 +659,25 @@ pub struct BackupDownloadUrlResponse {
     pub backup: BackupInfo,
     pub url: String,
     pub expires_in_seconds: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackupRestoreResponse {
+    pub backup: BackupInfo,
+    /// What a database snapshot restore changed. Absent for full archives.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub databases: Option<RestoredDatabases>,
+}
+
+/// Paths relative to the app data directory.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RestoredDatabases {
+    /// Live databases replaced by their snapshot copies.
+    pub replaced: Vec<String>,
+    /// Snapshot databases that did not exist live and were created.
+    pub created: Vec<String>,
+    /// Live databases the snapshot does not contain, left as they were.
+    pub untouched: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -14,7 +14,11 @@ pub(super) const TRANSFER_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 pub(super) const METADATA_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(super) fn backup_http_client(timeout: Duration) -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
+    let builder = reqwest::Client::builder();
+    // Storage fixtures in tests serve a self-signed certificate.
+    #[cfg(test)]
+    let builder = builder.danger_accept_invalid_certs(true);
+    builder
         .connect_timeout(Duration::from_secs(10))
         .read_timeout(Duration::from_secs(60))
         .timeout(timeout)
@@ -24,7 +28,7 @@ pub(super) fn backup_http_client(timeout: Duration) -> Result<reqwest::Client, S
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 
 pub(super) async fn upload_file(
     client: &reqwest::Client,

@@ -238,6 +238,7 @@ fn backup_info_serializes_encryption_metadata() {
         },
         kind: BackupKind::Full,
         database_digest: None,
+        databases: Vec::new(),
     };
 
     let json = serde_json::to_string(&info).unwrap();
@@ -287,6 +288,65 @@ fn backup_info_without_kind_reads_as_full_archive() {
     let json = serde_json::to_value(&snapshot).unwrap();
     assert_eq!(json["kind"], "databases");
     assert_eq!(json["database_digest"], "digest");
+    assert!(json.get("databases").is_none());
+
+    snapshot.databases = vec!["app/data.sqlite".into(), "tako/workflows.sqlite".into()];
+    let json = serde_json::to_value(&snapshot).unwrap();
+    assert_eq!(
+        json["databases"],
+        serde_json::json!(["app/data.sqlite", "tako/workflows.sqlite"])
+    );
+}
+
+#[test]
+fn backup_archive_file_name_follows_the_object_key() {
+    let mut info: BackupInfo = serde_json::from_value(serde_json::json!({
+        "id": "d1-abc", "app": "demo", "environment": "production", "server": "la",
+        "created_at_unix_secs": 1, "size_bytes": 1, "sha256_hex": "",
+        "archive_key": "_tako/backups/demo/production/la/d1-abc.databases.tar.zst.enc",
+        "manifest_key": "m", "kind": "databases",
+        "encryption": {"algorithm": "", "key_id": "", "nonce_base64": "", "tag_base64": ""}
+    }))
+    .unwrap();
+    assert_eq!(info.archive_file_name(), "d1-abc.databases.tar.zst.enc");
+    info.archive_key = "_tako/backups/demo/production/la/b1.tar.zst.enc".into();
+    assert_eq!(info.archive_file_name(), "b1.tar.zst.enc");
+    for key in ["", "prefix/", "prefix/.."] {
+        info.archive_key = key.into();
+        assert_eq!(info.archive_file_name(), "d1-abc.databases.tar.zst.enc");
+    }
+    info.kind = BackupKind::Full;
+    assert_eq!(info.archive_file_name(), "d1-abc.tar.zst.enc");
+}
+
+#[test]
+fn backup_restore_response_reports_database_changes_only_for_snapshots() {
+    let backup: BackupInfo = serde_json::from_value(serde_json::json!({
+        "id": "b1", "app": "demo", "environment": "production", "server": "la",
+        "created_at_unix_secs": 1, "size_bytes": 1, "sha256_hex": "",
+        "archive_key": "a", "manifest_key": "m",
+        "encryption": {"algorithm": "", "key_id": "", "nonce_base64": "", "tag_base64": ""}
+    }))
+    .unwrap();
+    let full = BackupRestoreResponse {
+        backup: backup.clone(),
+        databases: None,
+    };
+    let json = serde_json::to_value(&full).unwrap();
+    assert!(json.get("databases").is_none());
+    assert_eq!(json["backup"]["id"], "b1");
+
+    let restored = BackupRestoreResponse {
+        backup,
+        databases: Some(RestoredDatabases {
+            replaced: vec!["app/data.sqlite".into()],
+            created: vec!["app/new.sqlite".into()],
+            untouched: vec!["app/other.sqlite".into()],
+        }),
+    };
+    let parsed: BackupRestoreResponse =
+        serde_json::from_value(serde_json::to_value(&restored).unwrap()).unwrap();
+    assert_eq!(parsed, restored);
 }
 
 #[test]

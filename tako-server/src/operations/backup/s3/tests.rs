@@ -13,13 +13,55 @@ fn old_index() -> BackupIndex {
     })).unwrap()
 }
 
-fn storage_fixture(
-    statuses: Vec<u16>,
-) -> (
-    tako_core::StorageBinding,
-    reqwest::Client,
-    tokio::task::JoinHandle<()>,
-) {
+/// Serve `requests` GET requests from `objects`, keyed by object key; any
+/// other key is 404. Returns the storage endpoint.
+pub(in crate::operations::backup) fn object_fixture(
+    objects: std::collections::HashMap<String, Vec<u8>>,
+    requests: usize,
+) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+    let (listener, endpoint, acceptor) = tls_listener();
+    let fixture = tokio::task::spawn_blocking(move || {
+        let mut served = Vec::new();
+        for _ in 0..requests {
+            let mut stream = accept(&listener, &acceptor);
+            let request = read_request(&mut stream);
+            let line = String::from_utf8_lossy(&request)
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            let mut parts = line.split(' ');
+            let method = parts.next().unwrap_or_default();
+            let path = parts.next().unwrap_or_default();
+            let key = path
+                .split('?')
+                .next()
+                .unwrap_or_default()
+                .trim_start_matches("/fixture/");
+            served.push(format!("{method} {key}"));
+            match objects.get(key).filter(|_| method == "GET") {
+                Some(body) => {
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .unwrap();
+                    stream.write_all(body).unwrap();
+                }
+                None => write!(
+                    stream,
+                    "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .unwrap(),
+            }
+        }
+        served
+    });
+    (endpoint, fixture)
+}
+
+fn tls_listener() -> (std::net::TcpListener, String, openssl::ssl::SslAcceptor) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let endpoint = format!("https://{}", listener.local_addr().unwrap());
@@ -35,38 +77,60 @@ fn storage_fixture(
                 .unwrap(),
         )
         .unwrap();
-    let acceptor = acceptor.build();
-    let fixture = tokio::task::spawn_blocking(move || {
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        for status in statuses {
-            let stream = loop {
-                match listener.accept() {
-                    Ok((stream, _)) => break stream,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        assert!(
-                            std::time::Instant::now() < deadline,
-                            "storage fixture timed out"
-                        );
-                        std::thread::sleep(Duration::from_millis(5));
-                    }
-                    Err(error) => panic!("accept: {error}"),
-                }
-            };
-            stream.set_nonblocking(false).unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            stream
-                .set_write_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            let mut stream = acceptor.accept(stream).unwrap();
-            let mut bytes = Vec::new();
-            while !bytes.windows(4).any(|value| value == b"\r\n\r\n") {
-                let mut chunk = [0; 4096];
-                let size = stream.read(&mut chunk).unwrap();
-                assert_ne!(size, 0);
-                bytes.extend_from_slice(&chunk[..size]);
+    (listener, endpoint, acceptor.build())
+}
+
+fn accept(
+    listener: &std::net::TcpListener,
+    acceptor: &openssl::ssl::SslAcceptor,
+) -> openssl::ssl::SslStream<std::net::TcpStream> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let stream = loop {
+        match listener.accept() {
+            Ok((stream, _)) => break stream,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "storage fixture timed out"
+                );
+                std::thread::sleep(Duration::from_millis(5));
             }
+            Err(error) => panic!("accept: {error}"),
+        }
+    };
+    stream.set_nonblocking(false).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    stream
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    acceptor.accept(stream).unwrap()
+}
+
+fn read_request(stream: &mut impl Read) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    while !bytes.windows(4).any(|value| value == b"\r\n\r\n") {
+        let mut chunk = [0; 4096];
+        let size = stream.read(&mut chunk).unwrap();
+        assert_ne!(size, 0);
+        bytes.extend_from_slice(&chunk[..size]);
+    }
+    bytes
+}
+
+fn storage_fixture(
+    statuses: Vec<u16>,
+) -> (
+    tako_core::StorageBinding,
+    reqwest::Client,
+    tokio::task::JoinHandle<()>,
+) {
+    let (listener, endpoint, acceptor) = tls_listener();
+    let fixture = tokio::task::spawn_blocking(move || {
+        for status in statuses {
+            let mut stream = accept(&listener, &acceptor);
+            let bytes = read_request(&mut stream);
             assert!(bytes.starts_with(b"DELETE "));
             write!(
                 stream,

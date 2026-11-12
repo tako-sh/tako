@@ -8,7 +8,12 @@ use std::path::{Path, PathBuf};
 use rustix::fs::{self, AtFlags, FileType, Mode, OFlags};
 use sha2::{Digest, Sha256};
 
+mod database_restore;
 mod sqlite;
+
+pub(super) use database_restore::{
+    DatabaseSwap, SwapError, extract_database_snapshot, swap_databases,
+};
 
 const TAKO_DATA_DIR: &str = "tako";
 const CHANNELS_DB_FILENAME: &str = "channels.sqlite";
@@ -88,12 +93,48 @@ fn open_snapshot_root(anchor: &Path, relative: &Path) -> Result<File, String> {
 /// counting each main file and its `-wal`. Reads only file headers.
 pub(crate) fn measure_database_tree(anchor: &Path, relative: &Path) -> Result<u64, String> {
     let root = open_snapshot_root(anchor, relative)?;
-    measure_database_dir(&root, Path::new(""))
-        .map_err(|e| format!("measure {}: {e}", anchor.join(relative).display()))
+    let mut total = 0_u64;
+    visit_database_dir(&root, Path::new(""), &mut |_, parent, name, file| {
+        let mut wal = name.to_os_string();
+        wal.push("-wal");
+        let wal_len = match fs::statat(parent, wal.as_os_str(), AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(stat) => stat.st_size as u64,
+            Err(rustix::io::Errno::NOENT) => 0,
+            Err(error) => return Err(error.into()),
+        };
+        total = total
+            .saturating_add(file.metadata()?.len())
+            .saturating_add(wal_len);
+        Ok(())
+    })
+    .map_err(|e| format!("measure {}: {e}", anchor.join(relative).display()))?;
+    Ok(total)
 }
 
-fn measure_database_dir(parent: &File, relative: &Path) -> io::Result<u64> {
-    let mut total = 0_u64;
+/// Relative paths of the SQLite databases a [`snapshot_database_tree`] would
+/// capture. Opens every database file: never call it while this process
+/// holds SQLite locks on one of them.
+pub(super) fn list_database_tree(anchor: &Path) -> Result<Vec<PathBuf>, String> {
+    let root = open_snapshot_root(anchor, Path::new(""))?;
+    let mut databases = Vec::new();
+    visit_database_dir(&root, Path::new(""), &mut |path, _, _, _| {
+        databases.push(path.to_path_buf());
+        Ok(())
+    })
+    .map_err(|e| format!("scan databases in {}: {e}", anchor.display()))?;
+    databases.sort();
+    Ok(databases)
+}
+
+type DatabaseVisitor<'a> = dyn FnMut(&Path, &File, &OsStr, &File) -> io::Result<()> + 'a;
+
+/// Call `visit` with the relative path, parent directory, name, and open file
+/// of every SQLite database below `parent`, with the snapshot's exclusions.
+fn visit_database_dir(
+    parent: &File,
+    relative: &Path,
+    visit: &mut DatabaseVisitor<'_>,
+) -> io::Result<()> {
     for entry in fs::Dir::read_from(parent)? {
         let entry = entry?;
         let name = OsStr::from_bytes(entry.file_name().to_bytes());
@@ -113,28 +154,18 @@ fn measure_database_dir(parent: &File, relative: &Path) -> io::Result<u64> {
         match FileType::from_raw_mode(stat.st_mode) {
             FileType::Directory => {
                 let dir = fs::openat(parent, name, READ_FLAGS | OFlags::DIRECTORY, Mode::empty())?;
-                total = total.saturating_add(measure_database_dir(&File::from(dir), &path)?);
+                visit_database_dir(&File::from(dir), &path, visit)?;
             }
             FileType::RegularFile => {
                 let file = open_regular(parent, name)?;
                 if is_sqlite_database(&file)? {
-                    let mut wal = OsStr::new(name).to_os_string();
-                    wal.push("-wal");
-                    let wal_len =
-                        match fs::statat(parent, wal.as_os_str(), AtFlags::SYMLINK_NOFOLLOW) {
-                            Ok(stat) => stat.st_size as u64,
-                            Err(rustix::io::Errno::NOENT) => 0,
-                            Err(error) => return Err(error.into()),
-                        };
-                    total = total
-                        .saturating_add(file.metadata()?.len())
-                        .saturating_add(wal_len);
+                    visit(&path, parent, name, &file)?;
                 }
             }
             _ => {}
         }
     }
-    Ok(total)
+    Ok(())
 }
 
 fn copy_snapshot_dir(
@@ -306,7 +337,8 @@ fn create_archive(snapshot_dir: &Path, archive_path: &Path, root: &Path) -> Resu
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct DatabaseDigest {
     pub(super) hex: String,
-    pub(super) databases: usize,
+    /// Relative paths of the digested databases, in path order.
+    pub(super) databases: Vec<PathBuf>,
 }
 
 /// Keyed digest of the SQLite databases in a private snapshot directory:
@@ -360,7 +392,7 @@ pub(super) fn database_digest(snapshot_dir: &Path, key: &[u8]) -> Result<Databas
     let digest = signer.sign_to_vec().map_err(|e| format!("digest: {e}"))?;
     Ok(DatabaseDigest {
         hex: hex::encode(digest),
-        databases: databases.len(),
+        databases,
     })
 }
 

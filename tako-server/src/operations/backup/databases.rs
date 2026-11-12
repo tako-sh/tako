@@ -24,8 +24,8 @@ pub(super) const MAX_DATABASE_SNAPSHOT_BYTES: u64 = 512 * 1024 * 1024;
 /// At peak a snapshot holds the compacted databases, the compressed archive,
 /// and its encrypted copy; each is at most the measured database size.
 const DISK_COPIES: u64 = 3;
-/// Free space a database snapshot must leave for the apps themselves.
-const DISK_RESERVE_BYTES: u64 = 512 * 1024 * 1024;
+/// Free space a database snapshot or its restore must leave for the apps.
+pub(super) const DISK_RESERVE_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct DatabaseSnapshotState {
@@ -45,6 +45,8 @@ pub(super) enum DatabaseSnapshotOutcome {
 pub(super) enum Produced {
     Archive {
         database_digest: String,
+        /// Relative paths of the databases in the archive.
+        databases: Vec<String>,
         sha256_hex: String,
         encryption: tako_core::BackupEncryptionInfo,
     },
@@ -100,7 +102,7 @@ pub(super) fn produce_database_snapshot(
     let snapshot_dir = work_dir.join("snapshot");
     capture(&snapshot_dir)?;
     let digest = database_digest(&snapshot_dir, &database_digest_key(key)?)?;
-    if digest.databases == 0 {
+    if digest.databases.is_empty() {
         return Ok(Produced::Skipped(
             BackupSkipReason::NoDatabases,
             "No SQLite databases found in the app data directory.".into(),
@@ -118,6 +120,11 @@ pub(super) fn produce_database_snapshot(
     let encryption = encrypt_backup_file(&archive_path, &encrypted_path, key)?;
     Ok(Produced::Archive {
         database_digest: digest.hex,
+        databases: digest
+            .databases
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect(),
         sha256_hex: sha256_file_hex(&encrypted_path)?,
         encryption,
     })
@@ -249,16 +256,17 @@ impl crate::ServerState {
             // not keep stop/delete/deploy waiting on this lifecycle lock.
             drop(guard);
 
-            let (database_digest, sha256_hex, encryption) = match produced {
+            let (database_digest, databases, sha256_hex, encryption) = match produced {
                 Produced::Skipped(reason, message) => {
                     self.expire_backups(&backup, app, index).await;
                     return skip(reason, &message);
                 }
                 Produced::Archive {
                     database_digest,
+                    databases,
                     sha256_hex,
                     encryption,
-                } => (database_digest, sha256_hex, encryption),
+                } => (database_digest, databases, sha256_hex, encryption),
             };
             let encrypted_path = encrypted_archive_path(&work_dir);
             let size_bytes = tokio::fs::metadata(&encrypted_path)
@@ -286,6 +294,7 @@ impl crate::ServerState {
                 encryption,
                 kind: BackupKind::Databases,
                 database_digest: Some(database_digest),
+                databases,
             };
             self.publish_backup(&backup, app, &info, &encrypted_path)
                 .await?;
@@ -367,6 +376,7 @@ mod tests {
     fn entry(produced: &Produced, kind: BackupKind) -> BackupInfo {
         let Produced::Archive {
             database_digest,
+            databases,
             encryption,
             ..
         } = produced
@@ -386,6 +396,7 @@ mod tests {
             encryption: encryption.clone(),
             kind,
             database_digest: Some(database_digest.clone()),
+            databases: databases.clone(),
         }
     }
 
@@ -407,9 +418,18 @@ mod tests {
         assert!(matches!(produced, Produced::Archive { .. }));
 
         let plain = work.path().join("decrypted.tar.zst");
-        let Produced::Archive { encryption, .. } = &produced else {
+        let Produced::Archive {
+            encryption,
+            databases,
+            ..
+        } = &produced
+        else {
             unreachable!()
         };
+        assert_eq!(
+            databases,
+            &["app/nested/app.sqlite", "tako/workflows.sqlite"]
+        );
         super::super::decrypt_backup_file(
             &encrypted_archive_path(work.path()),
             &plain,
@@ -490,7 +510,13 @@ mod tests {
         let full = temp.path().join("full");
         super::super::snapshot_data_tree(&data, Path::new(""), &full).unwrap();
         let digest = database_digest(&full, &database_digest_key(&key()).unwrap()).unwrap();
-        assert_eq!(digest.databases, 2);
+        assert_eq!(
+            digest.databases,
+            [
+                Path::new("app/nested/app.sqlite"),
+                Path::new("tako/workflows.sqlite")
+            ]
+        );
 
         let (_work, produced) = produce(&data, None);
         let mut previous = entry(&produced, BackupKind::Full);

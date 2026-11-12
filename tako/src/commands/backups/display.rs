@@ -1,6 +1,6 @@
 use std::sync::OnceLock;
 
-use tako_core::{BackupInfo, BackupStatusResponse};
+use tako_core::{BackupInfo, BackupKind, BackupStatusResponse, RestoredDatabases};
 use time::{OffsetDateTime, UtcOffset};
 
 use crate::output;
@@ -19,6 +19,88 @@ fn format_backup_line(backup: &BackupInfo) -> String {
         backup.kind.as_str(),
         output::format_size(backup.size_bytes)
     )
+}
+
+const WORKFLOWS_DATABASE: &str = "tako/workflows.sqlite";
+
+/// What restoring `backup` replaces. `None` when the kind is unknown.
+pub(super) fn restore_confirm_description(backup: Option<&BackupInfo>) -> String {
+    let Some(backup) = backup else {
+        return "This stops the app, then replaces its data directory from a full backup, or only the SQLite databases in a database snapshot.".to_string();
+    };
+    match backup.kind {
+        BackupKind::Full => "This stops the app and replaces its data directory.".to_string(),
+        BackupKind::Databases if backup.databases.is_empty() => "This stops the app and replaces the SQLite databases in this snapshot. Other files and databases stay untouched. If the snapshot includes workflow state, workflow runs rewind to the snapshot time.".to_string(),
+        BackupKind::Databases => {
+            let mut description = format!(
+                "This stops the app and replaces the {} in this snapshot. Other files and databases stay untouched.",
+                count_databases(backup.databases.len())
+            );
+            if backup.databases.iter().any(|path| path == WORKFLOWS_DATABASE) {
+                description.push_str(" Workflow runs rewind to the snapshot time.");
+            }
+            description
+        }
+    }
+}
+
+pub(super) fn output_restored_databases(
+    app_name: &str,
+    backup: &BackupInfo,
+    databases: &RestoredDatabases,
+) {
+    for line in format_restored_databases(app_name, backup, databases) {
+        match line {
+            RestoreLine::Summary(text) => output::info(&text),
+            RestoreLine::Database(text) => output::bullet(&text),
+            RestoreLine::Note(text) => output::muted(&text),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RestoreLine {
+    Summary(String),
+    Database(String),
+    Note(String),
+}
+
+fn format_restored_databases(
+    app_name: &str,
+    backup: &BackupInfo,
+    databases: &RestoredDatabases,
+) -> Vec<RestoreLine> {
+    let mut lines = vec![RestoreLine::Summary(format!(
+        "Restored {} of {} from {} ({})",
+        count_databases(databases.replaced.len() + databases.created.len()),
+        output::strong(app_name),
+        output::strong(&backup.id),
+        output::format_size(backup.size_bytes)
+    ))];
+    for path in &databases.replaced {
+        lines.push(RestoreLine::Database(if path == WORKFLOWS_DATABASE {
+            format!("{path} (workflow runs rewound)")
+        } else {
+            path.clone()
+        }));
+    }
+    for path in &databases.created {
+        lines.push(RestoreLine::Database(format!("{path} (created)")));
+    }
+    if !databases.untouched.is_empty() {
+        lines.push(RestoreLine::Note(format!(
+            "Untouched, not in the snapshot: {}",
+            databases.untouched.join(", ")
+        )));
+    }
+    lines
+}
+
+fn count_databases(count: usize) -> String {
+    match count {
+        1 => "1 SQLite database".to_string(),
+        count => format!("{count} SQLite databases"),
+    }
 }
 
 pub(super) fn format_status_line(server_name: &str, status: &BackupStatusResponse) -> String {
@@ -131,6 +213,72 @@ mod tests {
                 "last database snapshot at {time}, database snapshot skipped at {time}: No database changed since the latest backup."
             )),
             "{line}"
+        );
+    }
+
+    fn snapshot(databases: &[&str]) -> BackupInfo {
+        serde_json::from_value(serde_json::json!({
+            "id": "d1", "app": "demo", "environment": "production", "server": "la",
+            "created_at_unix_secs": 0, "size_bytes": 2048, "sha256_hex": "",
+            "archive_key": "", "manifest_key": "", "kind": "databases", "databases": databases,
+            "encryption": {"algorithm": "", "key_id": "", "nonce_base64": "", "tag_base64": ""}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn restore_confirmation_describes_what_each_kind_replaces() {
+        let mut full = snapshot(&[]);
+        full.kind = BackupKind::Full;
+        assert_eq!(
+            restore_confirm_description(Some(&full)),
+            "This stops the app and replaces its data directory."
+        );
+        assert_eq!(
+            restore_confirm_description(Some(&snapshot(&["app/data.sqlite"]))),
+            "This stops the app and replaces the 1 SQLite database in this snapshot. Other files and databases stay untouched."
+        );
+        assert_eq!(
+            restore_confirm_description(Some(&snapshot(&[
+                "app/data.sqlite",
+                "tako/workflows.sqlite"
+            ]))),
+            "This stops the app and replaces the 2 SQLite databases in this snapshot. Other files and databases stay untouched. Workflow runs rewind to the snapshot time."
+        );
+        assert!(restore_confirm_description(Some(&snapshot(&[]))).ends_with(
+            "If the snapshot includes workflow state, workflow runs rewind to the snapshot time."
+        ));
+        assert!(restore_confirm_description(None).contains("only the SQLite databases"));
+    }
+
+    #[test]
+    fn restored_databases_list_changes_and_untouched_databases() {
+        let lines = format_restored_databases(
+            "demo",
+            &snapshot(&[]),
+            &RestoredDatabases {
+                replaced: vec!["app/data.sqlite".into(), "tako/workflows.sqlite".into()],
+                created: vec!["app/new.sqlite".into()],
+                untouched: vec!["app/a.sqlite".into(), "app/b.sqlite".into()],
+            },
+        );
+        let RestoreLine::Summary(summary) = &lines[0] else {
+            panic!("{lines:?}");
+        };
+        assert!(
+            summary.starts_with("Restored 3 SQLite databases of "),
+            "{summary}"
+        );
+        assert_eq!(
+            &lines[1..],
+            [
+                RestoreLine::Database("app/data.sqlite".into()),
+                RestoreLine::Database("tako/workflows.sqlite (workflow runs rewound)".into()),
+                RestoreLine::Database("app/new.sqlite (created)".into()),
+                RestoreLine::Note(
+                    "Untouched, not in the snapshot: app/a.sqlite, app/b.sqlite".into()
+                ),
+            ]
         );
     }
 
