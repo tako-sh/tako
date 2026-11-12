@@ -91,9 +91,7 @@ impl TakoToml {
         };
 
         // Parse [vars] section (global) and [vars.*] sections (per-environment)
-        if let Some(vars) = raw.get("vars")
-            && let Some(table) = vars.as_table()
-        {
+        if let Some(table) = parse_optional_table(&raw, "vars")? {
             for (key, value) in table {
                 if let Some(nested_table) = value.as_table() {
                     // Nested table - per-environment vars [vars.production], etc.
@@ -116,9 +114,7 @@ impl TakoToml {
         }
 
         // Parse [envs.*] sections
-        if let Some(envs) = raw.get("envs")
-            && let Some(table) = envs.as_table()
-        {
+        if let Some(table) = parse_optional_table(&raw, "envs")? {
             for (env_name, env_value) in table {
                 let env_config: EnvConfig = toml::from_str(&toml::to_string(env_value)?)?;
                 if env_config.network.is_some()
@@ -134,9 +130,7 @@ impl TakoToml {
         }
 
         // Parse [servers.*] sections.
-        if let Some(servers) = raw.get("servers")
-            && let Some(table) = servers.as_table()
-        {
+        if let Some(table) = parse_optional_table(&raw, "servers")? {
             for (key, value) in table {
                 let server_config = parse_server_config(value)?;
                 config.servers.per_server.insert(key.clone(), server_config);
@@ -144,8 +138,23 @@ impl TakoToml {
         }
 
         config.validate()?;
+        #[cfg(test)]
+        super::json_schema::assert_accepts(content);
         Ok(config)
     }
+}
+
+fn parse_optional_table<'a>(
+    raw: &'a toml::Value,
+    key: &str,
+) -> Result<Option<&'a toml::value::Table>> {
+    let Some(value) = raw.get(key) else {
+        return Ok(None);
+    };
+    value
+        .as_table()
+        .map(Some)
+        .ok_or_else(|| ConfigError::Validation(format!("'{key}' must be a table")))
 }
 
 fn parse_var_value(value: &toml::Value, path: &str) -> Result<String> {

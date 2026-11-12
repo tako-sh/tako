@@ -17,6 +17,14 @@ import type { Run, RunId, RunStatus, StepState } from "./types";
 import type { WorkflowResultState } from "./result";
 
 /** Result returned after enqueueing a workflow run. */
+/** One cron schedule as `register_schedules` sends it. */
+export interface ScheduleSpec {
+  name: string;
+  cron: string;
+  /** Attempt budget of the runs this schedule creates. Omit for the server default. */
+  max_attempts?: number;
+}
+
 export interface EnqueueResult {
   /** Workflow run id. */
   id: RunId;
@@ -100,7 +108,7 @@ export class WorkflowsClient {
   // --- Worker-only: registration + run lifecycle ---
 
   /** Register cron schedules for discovered workflows. */
-  async registerSchedules(schedules: Array<{ name: string; cron: string }>): Promise<void> {
+  async registerSchedules(schedules: ScheduleSpec[]): Promise<void> {
     await this.call({ command: "register_schedules", app: this.app, schedules });
   }
 
@@ -225,6 +233,19 @@ export class WorkflowsClient {
   private call(cmd: unknown): Promise<unknown> {
     return callInternal(this.socketPath, cmd);
   }
+}
+
+/**
+ * True when the server rejected a worker write because this claim no longer
+ * owns the run: an operator cancelled it, or its lease expired and the run
+ * was reclaimed. Retrying cannot succeed; the attempt must stop.
+ *
+ * @internal
+ */
+export function isStaleOwnerError(err: unknown): boolean {
+  if (!(err instanceof TakoError) || err.code !== "TAKO_RPC_ERROR") return false;
+  const cause = (err as { cause?: unknown }).cause;
+  return cause instanceof Error && cause.message.includes("stale worker");
 }
 
 interface RawRun {

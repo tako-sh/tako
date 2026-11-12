@@ -12,14 +12,9 @@ impl crate::ServerState {
         tracing::info!(app = app_name, "Updating secrets");
 
         let lock = self.get_deploy_lock(app_name).await;
-        let _guard = match lock.try_lock() {
+        let _guard = match self.lock_deploy_for_operator(app_name, &lock).await {
             Ok(guard) => guard,
-            Err(_) => {
-                return Response::error(format!(
-                    "Deploy already in progress for app '{}'. Please wait and try again.",
-                    app_name
-                ));
-            }
+            Err(message) => return Response::error(message),
         };
 
         if let Some(app) = self.app_manager.get_app(app_name) {
@@ -94,6 +89,7 @@ impl crate::ServerState {
                 match updater.update(&app, config, target).await {
                     Ok(result) if result.success => {
                         app.set_state(AppState::Running);
+                        app.reset_recovery();
                         return Response::ok(serde_json::json!({
                             "status": "updated",
                             "app": app_name,

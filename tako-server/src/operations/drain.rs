@@ -45,7 +45,8 @@ pub(super) fn blocked_while_draining(command: &Command) -> bool {
         | Command::EnqueueRun { .. }
         | Command::RegisterSchedules { .. }
         | Command::ClaimRun { .. }
-        | Command::Signal { .. } => true,
+        | Command::Signal { .. }
+        | Command::RetryWorkflowRun { .. } => true,
         Command::Hello { .. }
         | Command::ServerInfo
         | Command::DrainServer { .. }
@@ -66,6 +67,9 @@ pub(super) fn blocked_while_draining(command: &Command) -> bool {
         | Command::EnterUpgrading { .. }
         | Command::ExitUpgrading { .. }
         | Command::InjectChallengeToken { .. }
+        | Command::ListWorkflowRuns { .. }
+        | Command::GetWorkflowRun { .. }
+        | Command::CancelWorkflowRun { .. }
         | Command::HeartbeatRun { .. }
         | Command::SaveStep { .. }
         | Command::GetRunResult { .. }

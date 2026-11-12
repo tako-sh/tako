@@ -12,6 +12,9 @@ use crate::{
 pub const SERVICE_NAMESPACE: &str = "tako-native-services-v1";
 pub const MAX_LEASE_SECONDS: u64 = 30;
 pub const RENEW_SECONDS: u64 = 10;
+/// How far ahead of a verifier's clock a signed timestamp may be. Servers on
+/// one network keep time independently, so a fresh signature can look early.
+pub const CLOCK_SKEW_SECONDS: u64 = 5;
 pub const MAX_SERVICES: usize = 256;
 pub const MAX_LEASE_BYTES: usize = 64 * 1024;
 pub const SERVICE_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS tako_service_leases (server_id TEXT PRIMARY KEY NOT NULL, payload TEXT NOT NULL DEFAULT '');";
@@ -95,6 +98,10 @@ impl ServiceLease {
     }
 
     /// `member` must come from the current enforced effective-members projection.
+    ///
+    /// `issued_at` may lead `now` by `CLOCK_SKEW_SECONDS`, or a publisher whose
+    /// clock runs ahead would lose its placements after every renewal. Expiry
+    /// stays strict, so the result always satisfies `expires_at > now`.
     pub fn verify_member(
         &self,
         network: &NetworkId,
@@ -107,7 +114,7 @@ impl ServiceLease {
             || member.device_id != self.server_id
             || !matches!(member.kind, MemberKind::Server(_))
             || !member.permissions.server_admin
-            || self.issued_at > now
+            || self.issued_at > now.saturating_add(CLOCK_SKEW_SECONDS)
             || self.expires_at <= now
         {
             return Err(invalid(

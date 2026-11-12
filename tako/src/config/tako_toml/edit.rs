@@ -1,5 +1,5 @@
 use super::schema::StorageResourceConfig;
-use super::schema::TakoToml;
+use super::schema::{TAKO_TOML_SCHEMA_DIRECTIVE, TakoToml};
 use crate::config::error::{ConfigError, Result};
 use std::fs;
 use std::path::Path;
@@ -21,7 +21,7 @@ impl TakoToml {
         env: &str,
     ) -> Result<()> {
         let path = path.as_ref();
-        let mut doc = load_or_create_toml_document(path)?;
+        let (mut doc, schema_directive) = load_or_create_toml_document(path)?;
         let root = doc
             .as_table_mut()
             .ok_or_else(|| ConfigError::Validation("tako.toml must be a TOML table".to_string()))?;
@@ -90,14 +90,7 @@ impl TakoToml {
             }
         }
 
-        let rendered = toml::to_string_pretty(&doc)
-            .map_err(|e| ConfigError::Validation(format!("Failed to render tako.toml: {}", e)))?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| ConfigError::FileWrite(parent.to_path_buf(), e))?;
-        }
-        fs::write(path, rendered).map_err(|e| ConfigError::FileWrite(path.to_path_buf(), e))?;
-        Ok(())
+        write_toml_document(path, &doc, schema_directive.as_deref())
     }
 
     pub fn upsert_storage_binding_in_file<P: AsRef<Path>>(
@@ -108,7 +101,7 @@ impl TakoToml {
         resource: Option<&StorageResourceConfig>,
     ) -> Result<()> {
         let path = path.as_ref();
-        let mut doc = load_or_create_toml_document(path)?;
+        let (mut doc, schema_directive) = load_or_create_toml_document(path)?;
         let root = doc
             .as_table_mut()
             .ok_or_else(|| ConfigError::Validation("tako.toml must be a TOML table".to_string()))?;
@@ -160,27 +153,51 @@ impl TakoToml {
             toml::Value::String(resource_name.to_string()),
         );
 
-        let rendered = toml::to_string_pretty(&doc)
-            .map_err(|e| ConfigError::Validation(format!("Failed to render tako.toml: {}", e)))?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| ConfigError::FileWrite(parent.to_path_buf(), e))?;
-        }
-        fs::write(path, rendered).map_err(|e| ConfigError::FileWrite(path.to_path_buf(), e))?;
-        Ok(())
+        write_toml_document(path, &doc, schema_directive.as_deref())
     }
 }
 
-fn load_or_create_toml_document(path: &Path) -> Result<toml::Value> {
+/// Load `tako.toml` as a TOML value, with the `#:schema` directive to keep
+/// when rewriting it. New files get the published schema directive.
+fn load_or_create_toml_document(path: &Path) -> Result<(toml::Value, Option<String>)> {
+    let empty = || toml::Value::Table(toml::map::Map::new());
     if !path.exists() {
-        return Ok(toml::Value::Table(toml::map::Map::new()));
+        return Ok((empty(), Some(TAKO_TOML_SCHEMA_DIRECTIVE.to_string())));
     }
 
     let content =
         fs::read_to_string(path).map_err(|e| ConfigError::FileRead(path.to_path_buf(), e))?;
+    let directive = schema_directive(&content).map(str::to_string);
     if content.trim().is_empty() {
-        return Ok(toml::Value::Table(toml::map::Map::new()));
+        return Ok((empty(), directive));
     }
 
-    toml::from_str::<toml::Value>(&content).map_err(ConfigError::TomlParse)
+    let doc = toml::from_str::<toml::Value>(&content).map_err(ConfigError::TomlParse)?;
+    Ok((doc, directive))
+}
+
+/// The `#:schema` directive among the comments that lead the file, if any.
+fn schema_directive(content: &str) -> Option<&str> {
+    content
+        .lines()
+        .map(str::trim)
+        .take_while(|line| line.is_empty() || line.starts_with('#'))
+        .find(|line| line.starts_with("#:schema"))
+}
+
+fn write_toml_document(
+    path: &Path,
+    doc: &toml::Value,
+    schema_directive: Option<&str>,
+) -> Result<()> {
+    let mut rendered = toml::to_string_pretty(doc)
+        .map_err(|e| ConfigError::Validation(format!("Failed to render tako.toml: {}", e)))?;
+    if let Some(directive) = schema_directive {
+        rendered = format!("{directive}\n{rendered}");
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| ConfigError::FileWrite(parent.to_path_buf(), e))?;
+    }
+    fs::write(path, rendered).map_err(|e| ConfigError::FileWrite(path.to_path_buf(), e))?;
+    Ok(())
 }

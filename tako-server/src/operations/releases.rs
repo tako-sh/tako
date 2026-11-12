@@ -152,16 +152,11 @@ impl crate::ServerState {
         // Acquire the per-app deploy lock so the release command runs inside
         // the same logical deploy transaction. A concurrent deploy or release
         // attempt for the same app sees the existing "already in progress"
-        // error.
+        // error; automatic recovery gets a moment to step aside.
         let lock = self.get_deploy_lock(app_name).await;
-        let _guard = match lock.try_lock() {
+        let _guard = match self.lock_deploy_for_operator(app_name, &lock).await {
             Ok(guard) => guard,
-            Err(_) => {
-                return Response::error(format!(
-                    "Deploy already in progress for app '{}'. Please wait and try again.",
-                    app_name
-                ));
-            }
+            Err(message) => return Response::error(message),
         };
 
         let env_vars = match env_vars_from_release_dir(&release_path) {
@@ -272,15 +267,15 @@ impl crate::ServerState {
             };
 
             let manifest_path = release_root.join("app.json");
-            let (commit_message, git_dirty, description) =
-                read_release_manifest_metadata(&manifest_path);
+            let metadata = read_release_manifest_metadata(&manifest_path);
             releases.push(ReleaseInfo {
                 current: current_version.as_deref() == Some(version.as_str()),
                 deployed_at_unix_secs: directory_modified_unix_secs(&release_root),
                 version,
-                commit_message,
-                description,
-                git_dirty,
+                commit_message: metadata.commit_message,
+                description: metadata.description,
+                git_dirty: metadata.git_dirty,
+                sdk: metadata.sdk,
             });
         }
 

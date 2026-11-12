@@ -43,6 +43,8 @@ describe("tako init --ci", () => {
     expect(exitCode).toBe(0);
     const toml = await readFile(join(tempDir, "tako.toml"), "utf-8");
     expect(toml).toContain('name = "test-app"');
+    expect(toml.split("\n")[0]).toBe("#:schema https://tako.sh/schemas/tako-toml.json");
+    expect(toml.match(/^#:schema /gm)).toHaveLength(1);
   });
 
   test("detects bun runtime from bun.lock", async () => {

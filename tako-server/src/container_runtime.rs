@@ -635,6 +635,40 @@ mod tests {
     }
 
     #[test]
+    fn workflow_containers_receive_the_same_data_mount_and_translated_path() {
+        let env = HashMap::from([(
+            TAKO_APP_DATA_DIR_ENV.into(),
+            "/srv/tako/apps/demo/production/data/app".into(),
+        )]);
+        let options = ContainerOptions::default();
+        let args = build_container_workflow_run_args(
+            "tako/demo:v1",
+            &env,
+            "token",
+            &HashMap::new(),
+            &HashMap::new(),
+            &["./worker".to_string()],
+            Path::new("/opt/tako/internal.sock"),
+            &options,
+        )
+        .unwrap();
+        assert!(args.windows(2).any(|w| {
+            w[0] == "--mount"
+                && w[1] == "type=bind,src=/srv/tako/apps/demo/production/data/app,dst=/tako/data"
+        }));
+        assert!(args.contains(&TAKO_APP_DATA_DIR_ENV.to_string()));
+        let runtime = build_container_run_env(
+            &env,
+            "token",
+            &HashMap::new(),
+            &HashMap::new(),
+            DEFAULT_CONTAINER_PORT,
+            &options,
+        );
+        assert_eq!(runtime[TAKO_APP_DATA_DIR_ENV], "/tako/data");
+    }
+
+    #[test]
     fn plain_images_receive_only_selected_secrets_without_sdk_token() {
         let env = HashMap::new();
         let secrets = HashMap::from([

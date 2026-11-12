@@ -1,0 +1,623 @@
+{
+  "$comment": "Generated from the Tako CLI's tako.toml parser types. Do not edit by hand.",
+  "$defs": {
+    "BackupConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "storage": {
+          "description": "Private S3-compatible storage resource used for app data backups.",
+          "type": "string"
+        }
+      },
+      "required": ["storage"],
+      "type": "object"
+    },
+    "BuildConfig": {
+      "additionalProperties": false,
+      "description": "Build configuration from [build].",
+      "properties": {
+        "cwd": {
+          "description": "Working directory for build commands, relative to the project root.",
+          "type": "string"
+        },
+        "exclude": {
+          "default": [],
+          "description": "File globs to exclude from the deploy artifact.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "include": {
+          "default": [],
+          "description": "Additional file globs to include in the deploy artifact.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "install": {
+          "description": "Optional pre-build install command (e.g. \"bun install\").",
+          "type": "string"
+        },
+        "run": {
+          "description": "Build command (e.g. \"vinxi build\", \"bun run build\").",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "BuildStage": {
+      "additionalProperties": false,
+      "description": "Custom build stage from [[build_stages]].",
+      "properties": {
+        "cwd": {
+          "description": "Optional working directory relative to tako.toml location.\nAllows \"..\" for monorepo traversal (guarded against escaping workspace root).",
+          "type": "string"
+        },
+        "exclude": {
+          "default": [],
+          "description": "File globs to exclude from the deploy artifact.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "install": {
+          "description": "Optional preparatory command run before `run`.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Optional display label.",
+          "type": "string"
+        },
+        "run": {
+          "description": "Required stage command.",
+          "type": "string"
+        }
+      },
+      "required": ["run"],
+      "type": "object"
+    },
+    "ComposeConfig": {
+      "additionalProperties": false,
+      "description": "One Compose project on one server, with one HTTP service exposed by Tako.",
+      "properties": {
+        "file": {
+          "description": "Compose file, relative to the app directory and inside it.",
+          "type": "string"
+        },
+        "health_host": {
+          "description": "HTTP Host header sent with health checks.",
+          "type": "string"
+        },
+        "health_path": {
+          "default": "/",
+          "description": "HTTP health check path.",
+          "type": "string"
+        },
+        "port": {
+          "description": "Port the service listens on inside its container.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "service": {
+          "description": "Compose service that receives HTTP traffic.",
+          "type": "string"
+        }
+      },
+      "required": ["file", "service", "port"],
+      "type": "object"
+    },
+    "ContainerOptions": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "default": [],
+          "description": "Arguments that replace the image command.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "data_dir": {
+          "default": "/tako/data",
+          "description": "The app's persistent data directory inside the container.",
+          "type": "string"
+        },
+        "entrypoint": {
+          "description": "Program that replaces the image entrypoint.",
+          "type": "string"
+        },
+        "health_host": {
+          "description": "HTTP Host header sent with health checks. Only for plain images (`sdk = false`).",
+          "type": "string"
+        },
+        "health_path": {
+          "default": "/status",
+          "description": "HTTP health check path.",
+          "type": "string"
+        },
+        "port": {
+          "default": 3000,
+          "description": "Port the app listens on inside the container.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sdk": {
+          "default": true,
+          "description": "Use the Tako SDK bootstrap and authenticated health contract.",
+          "type": "boolean"
+        },
+        "secret_env": {
+          "default": [],
+          "description": "Explicit secret names to deliver as environment variables for plain images.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "user": {
+          "$ref": "#/$defs/ContainerUser",
+          "description": "Map this container identity to the service user's host identity.\nUseful for images whose USER is non-root, without chowning shared data."
+        }
+      },
+      "type": "object"
+    },
+    "ContainerUser": {
+      "additionalProperties": false,
+      "properties": {
+        "gid": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "uid": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": ["uid", "gid"],
+      "type": "object"
+    },
+    "EnvConfig": {
+      "additionalProperties": false,
+      "description": "Deploy environment from `[envs.<name>]`. Use either `route` or `routes`, not both. Put environment variables in `[vars.<name>]`.",
+      "not": {
+        "required": ["route", "routes"]
+      },
+      "properties": {
+        "backup": {
+          "$ref": "#/$defs/BackupConfig",
+          "description": "Autopilot backup target for this environment."
+        },
+        "idle_timeout": {
+          "default": 300,
+          "description": "Idle timeout in seconds (300 = 5 minutes).",
+          "format": "uint32",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "network": {
+          "description": "Native network, identified by its stable 32-character hexadecimal ID\n(see `tako network list`). Local aliases are not portable project configuration.",
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "release": {
+          "description": "Per-environment release command override. An empty string explicitly\nclears the top-level `release` command for this environment.",
+          "type": "string"
+        },
+        "route": {
+          "description": "Route: an exact host, wildcard host, or either with a path, such as\n`app.example.com`, `*.example.com`, or `example.com/api/*`.\nMutually exclusive with `routes`.",
+          "type": "string"
+        },
+        "routes": {
+          "description": "Multiple routes. Mutually exclusive with `route`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "servers": {
+          "description": "Deployment targets. In a native network these are enrolled names or device IDs.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "source_ip": {
+          "$ref": "#/$defs/SourceIpMode",
+          "description": "Client source-IP mode for requests to this environment."
+        },
+        "ssl": {
+          "$ref": "#/$defs/SslProvider",
+          "default": "letsencrypt",
+          "description": "Certificate provider for public route HTTPS."
+        },
+        "storages": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Storage bindings assigned to this environment.\n\nKey = app binding name exposed as `tako.storages.<key>`.\nValue = backing storage resource name from `[storages.<value>]`, or\nthe built-in `local` resource.",
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "ImagesConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "formats": {
+          "default": ["webp"],
+          "description": "Allowed output formats.",
+          "items": {
+            "$ref": "#/$defs/OutputFormat"
+          },
+          "type": "array"
+        },
+        "local_patterns": {
+          "description": "Local image path patterns, such as `/images/**`. Defaults to `[\"/**\"]`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "qualities": {
+          "default": [75],
+          "description": "Allowed output qualities, from 1 to 100.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "remote_patterns": {
+          "default": [],
+          "description": "Remote image URL patterns. Remote images are denied unless they match.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "sizes": {
+          "default": [320, 640, 960, 1200, 1920],
+          "description": "Allowed output widths in pixels.",
+          "items": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "OutputFormat": {
+      "enum": ["avif", "webp"],
+      "type": "string"
+    },
+    "ServerWorkflows": {
+      "additionalProperties": {
+        "$ref": "#/$defs/WorkflowWorkerConfig"
+      },
+      "description": "Per-server workflow overrides. Other keys are named worker groups. `retention` belongs in the app's `[workflows]` section.",
+      "properties": {
+        "concurrency": {
+          "description": "Max parallel task slots per worker. Parsed, but does not yet control production supervision.",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "workers": {
+          "description": "Number of always-on worker processes. `0` means scale-to-zero. Parsed, but does not yet control production supervision.",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$"
+      },
+      "type": "object"
+    },
+    "SourceIpMode": {
+      "enum": ["auto", "direct", "cloudflare-proxy", "trusted-proxy"],
+      "type": "string"
+    },
+    "SslProvider": {
+      "enum": ["letsencrypt", "cloudflare"],
+      "type": "string"
+    },
+    "StorageProvider": {
+      "enum": ["local", "s3"],
+      "type": "string"
+    },
+    "StorageResourceConfig": {
+      "additionalProperties": false,
+      "description": "S3-compatible storage resource from [storages.*]. Credentials are stored\nencrypted in `.tako/secrets.json`, not here.",
+      "properties": {
+        "bucket": {
+          "description": "Bucket name. Required for `s3`.",
+          "type": "string"
+        },
+        "endpoint": {
+          "description": "HTTPS endpoint URL. Required for `s3`.",
+          "type": "string"
+        },
+        "force_path_style": {
+          "default": false,
+          "description": "Use path-style bucket URLs instead of virtual-hosted bucket URLs.",
+          "type": "boolean"
+        },
+        "provider": {
+          "$ref": "#/$defs/StorageProvider",
+          "default": "s3",
+          "description": "Storage provider. Only `s3` can be declared; `local` is built in."
+        },
+        "public_base_url": {
+          "description": "Public HTTPS base URL for objects. Backup storage must not set it.",
+          "type": "string"
+        },
+        "region": {
+          "description": "Region, such as `auto`. Required for `s3`.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "VarValue": {
+      "description": "Converted to a process-env string. TOML datetimes are also accepted.",
+      "type": ["string", "number", "boolean"]
+    },
+    "WorkflowWorkerConfig": {
+      "additionalProperties": false,
+      "description": "Workflow worker group from `[workflows.<group>]` or `[servers.<server>.workflows.<group>]`.",
+      "properties": {
+        "concurrency": {
+          "description": "Max parallel task slots per worker.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "run": {
+          "description": "Command that runs this workflow worker group, for runtimes that need\none. Container releases translate it to an entrypoint override, while\nnative releases run it directly.",
+          "items": {
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "workers": {
+          "description": "Number of always-on worker processes. `0` means scale-to-zero.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "Workflows": {
+      "additionalProperties": {
+        "$ref": "#/$defs/WorkflowWorkerConfig"
+      },
+      "description": "Workflow settings. Other keys are named worker groups, selected by `worker: \"name\"` in workflow definitions.",
+      "properties": {
+        "concurrency": {
+          "description": "Max parallel task slots per worker. Parsed, but does not yet control production supervision.",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "retention": {
+          "default": "184d",
+          "description": "When finished workflow runs and their saved steps become eligible for cleanup: a positive whole number followed by `s`, `m`, `h`, or `d`, such as `\"30d\"`, or `\"forever\"`. Defaults to `\"184d\"`.",
+          "examples": ["184d", "30d", "1h", "forever"],
+          "pattern": "^(forever|\\+?[0-9]+[smhd])$",
+          "type": "string"
+        },
+        "workers": {
+          "description": "Number of always-on worker processes. `0` means scale-to-zero. Parsed, but does not yet control production supervision.",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$"
+      },
+      "type": "object"
+    }
+  },
+  "$id": "https://tako.sh/schemas/tako-toml.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Tako app configuration. Reference: https://tako.sh/docs/tako-toml. This schema can be looser than the CLI's validation; `tako` remains the authority.",
+  "properties": {
+    "app_root": {
+      "default": "src",
+      "description": "JS channels, presence, stores, and workflows root, relative to `tako.toml`. Defaults to `src`; use `.` for root-level files.",
+      "type": "string"
+    },
+    "assets": {
+      "description": "Additional asset directories merged into deployed `public/`, relative to the project root.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "build": {
+      "$ref": "#/$defs/BuildConfig",
+      "description": "Simple build. Cannot be combined with `[[build_stages]]` when `run`, `include`, or `exclude` is set."
+    },
+    "build_stages": {
+      "description": "Multi-stage build, run in order. Mutually exclusive with `[build].run`.",
+      "items": {
+        "$ref": "#/$defs/BuildStage"
+      },
+      "type": "array"
+    },
+    "compose": {
+      "$ref": "#/$defs/ComposeConfig",
+      "description": "Docker Compose release: one Compose project on one server, with one HTTP service exposed by Tako."
+    },
+    "container": {
+      "description": "Container file path for container releases, relative to `tako.toml`. `container`, `image`, and `[compose]` are mutually exclusive.",
+      "type": "string"
+    },
+    "container_options": {
+      "$ref": "#/$defs/ContainerOptions",
+      "description": "Container release options. Require `container` or `image`."
+    },
+    "dev": {
+      "description": "Custom `tako dev` command, such as `[\"vite\", \"dev\"]`. Overrides preset and runtime defaults unless a CLI command is passed.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "envs": {
+      "additionalProperties": {
+        "allOf": [
+          {
+            "$ref": "#/$defs/EnvConfig"
+          },
+          {
+            "anyOf": [
+              {
+                "required": ["route"]
+              },
+              {
+                "required": ["routes"]
+              }
+            ]
+          }
+        ]
+      },
+      "description": "Environments. Deploy environments must define `route` or `routes`. `development` is reserved for `tako dev`.",
+      "properties": {
+        "development": {
+          "$ref": "#/$defs/EnvConfig",
+          "description": "Local development with `tako dev`. Routes are optional and default to `<name>.test`."
+        }
+      },
+      "type": "object"
+    },
+    "image": {
+      "description": "Prebuilt container image reference, such as `registry/name:tag`. `container`, `image`, and `[compose]` are mutually exclusive.",
+      "type": "string"
+    },
+    "images": {
+      "$ref": "#/$defs/ImagesConfig",
+      "description": "Public image optimizer allowlists. Each array replaces its default and must be non-empty."
+    },
+    "main": {
+      "description": "Runtime entrypoint override. May be a file path or module specifier.",
+      "pattern": "\\S",
+      "type": "string"
+    },
+    "name": {
+      "description": "Stable app identity. Lowercase letters, numbers, and hyphens; starts with a lowercase letter, ends with a letter or number, at most 63 characters. If omitted, Tako derives the name from the config file's directory. Renaming creates a separate deployed app.",
+      "pattern": "^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$",
+      "type": "string"
+    },
+    "package_manager": {
+      "description": "JS package manager override: `bun`, `npm`, `pnpm`, or `yarn`. Detected from `package.json` or lockfiles when omitted.",
+      "examples": ["bun", "npm", "pnpm", "yarn"],
+      "type": "string"
+    },
+    "preset": {
+      "description": "Runtime-local preset alias such as `vite`, `tanstack-start`, or `nextjs`. Provides `main` and `assets` defaults.",
+      "examples": ["vite", "tanstack-start", "nextjs"],
+      "pattern": "^[^:/]*\\S[^:/]*$",
+      "type": "string"
+    },
+    "release": {
+      "description": "One-shot command run on the leader server before the rolling update, such as `bun run db:migrate`. Can be overridden per environment.",
+      "type": "string"
+    },
+    "runtime": {
+      "description": "Runtime adapter, optionally pinned with `@version`, such as `bun@1.2.3`, `node`, or `go`.",
+      "examples": ["bun", "node", "go", "bun@1.2.3"],
+      "pattern": "^\\s*(bun|node|go)\\s*(@[\\s\\S]*)?$",
+      "type": "string"
+    },
+    "schemas": {
+      "default": [],
+      "description": "External `tako-schema.json` files or HTTP(S) URLs. File paths are relative to `tako.toml`. `tako gen` compiles them into native types.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "servers": {
+      "additionalProperties": {
+        "additionalProperties": false,
+        "properties": {
+          "workflows": {
+            "$ref": "#/$defs/ServerWorkflows"
+          }
+        },
+        "type": "object"
+      },
+      "description": "Per-server overrides from `[servers.<server>]`. Server names follow the app-name rules.",
+      "propertyNames": {
+        "pattern": "^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$"
+      },
+      "type": "object"
+    },
+    "start": {
+      "description": "Native deploy start command for prebuilt artifacts. An exact `{main}` argument is replaced with the resolved entrypoint.",
+      "items": {
+        "pattern": "\\S",
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "storages": {
+      "additionalProperties": {
+        "$ref": "#/$defs/StorageResourceConfig"
+      },
+      "description": "S3-compatible storage resources, bound to environments with `[envs.<env>].storages`. `local` is built in and cannot be declared.",
+      "propertyNames": {
+        "not": {
+          "const": "local"
+        },
+        "pattern": "^[a-z0-9_-]+$"
+      },
+      "type": "object"
+    },
+    "vars": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/VarValue"
+          },
+          {
+            "additionalProperties": {
+              "$ref": "#/$defs/VarValue"
+            },
+            "description": "Variables for one environment, merged on top of `[vars]`.",
+            "type": "object"
+          }
+        ]
+      },
+      "description": "Environment variables for every environment. A nested table `[vars.<env>]` overrides them for one environment.",
+      "type": "object"
+    },
+    "workflows": {
+      "$ref": "#/$defs/Workflows"
+    }
+  },
+  "title": "tako.toml",
+  "type": "object"
+}

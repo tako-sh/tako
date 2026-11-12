@@ -130,6 +130,46 @@ fn init_template_includes_reference_link_and_option_examples() {
 }
 
 #[test]
+fn init_template_starts_with_the_schema_directive_and_parses() {
+    let assets = vec!["public".to_string()];
+    for params in [
+        TemplateParams {
+            app_name: "demo-app",
+            app_root: Some("app"),
+            main: Some("server/index.mjs"),
+            production_route: "demo-app.example.com",
+            runtime: Some("bun"),
+            runtime_version: Some("1.2.3"),
+            package_manager: Some("pnpm"),
+            preset_ref: Some("tanstack-start"),
+            assets: &assets,
+            excludes: &[],
+        },
+        TemplateParams {
+            app_name: "demo-go",
+            app_root: None,
+            main: None,
+            production_route: "demo-go.example.com",
+            runtime: Some("go"),
+            runtime_version: None,
+            package_manager: None,
+            preset_ref: None,
+            assets: &[],
+            excludes: &[],
+        },
+    ] {
+        let rendered = generate_template(&params);
+        assert_eq!(
+            rendered.lines().next(),
+            Some(crate::config::TAKO_TOML_SCHEMA_DIRECTIVE)
+        );
+        assert_eq!(rendered.matches("#:schema").count(), 1);
+        // Parsing in tests also validates against the tako.toml JSON Schema.
+        crate::config::TakoToml::parse(&rendered).unwrap();
+    }
+}
+
+#[test]
 fn infer_default_main_entrypoint_prefers_existing_file() {
     let temp = TempDir::new().unwrap();
     std::fs::create_dir_all(temp.path().join("server")).unwrap();

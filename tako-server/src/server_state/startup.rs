@@ -233,6 +233,7 @@ impl ServerState {
             channel_registry,
             deploy_locks: AsyncRwLock::new(HashMap::new()),
             backup_locks: SyncRwLock::new(HashMap::new()),
+            database_snapshots: SyncRwLock::new(HashMap::new()),
             prepared_deploy_ssl: AsyncRwLock::new(HashMap::new()),
             cold_start,
             state_store,

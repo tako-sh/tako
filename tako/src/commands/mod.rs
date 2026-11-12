@@ -24,3 +24,4 @@ pub mod server;
 pub mod status;
 pub mod storage;
 pub mod upgrade;
+pub mod workflows;

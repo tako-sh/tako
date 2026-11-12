@@ -197,10 +197,32 @@ fn private_resolved_remote_addrs_are_rejected() {
 }
 
 #[test]
+fn special_purpose_resolved_remote_addrs_are_rejected() {
+    let public_addr = SocketAddr::from((Ipv4Addr::new(93, 184, 216, 34), 443));
+    for ip in [
+        "192.0.0.8",
+        "198.18.0.1",
+        "203.0.113.7",
+        "240.0.0.1",
+        "::ffff:10.0.0.1",
+        "64:ff9b::a00:1",
+        "2002:a00:1::1",
+        "2001:db8::1",
+        "100::1",
+    ] {
+        let addr = SocketAddr::new(ip.parse().unwrap(), 443);
+        // One refused answer poisons the whole resolution.
+        let err = validate_remote_resolved_addrs(&[public_addr, addr]).unwrap_err();
+        assert_eq!(err, ImageError::InvalidSource, "{ip}");
+    }
+}
+
+#[test]
 fn public_resolved_remote_addrs_are_allowed() {
     let public_addr = SocketAddr::from((Ipv4Addr::new(93, 184, 216, 34), 80));
+    let public_v6: SocketAddr = "[2606:4700:4700::1111]:80".parse().unwrap();
 
-    validate_remote_resolved_addrs(&[public_addr]).expect("public address");
+    validate_remote_resolved_addrs(&[public_addr, public_v6]).expect("public address");
 }
 
 #[test]

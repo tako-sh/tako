@@ -67,7 +67,11 @@ pub(crate) fn classify(command: &Command) -> CommandClass<'_> {
         | Command::UpdateSecrets { app, .. }
         | Command::GetSecretsHash { app }
         | Command::EnqueueRun { app, .. }
-        | Command::Signal { app, .. } => CommandClass::Application { app },
+        | Command::Signal { app, .. }
+        | Command::ListWorkflowRuns { app, .. }
+        | Command::GetWorkflowRun { app, .. }
+        | Command::RetryWorkflowRun { app, .. }
+        | Command::CancelWorkflowRun { app, .. } => CommandClass::Application { app },
     }
 }
 
@@ -289,7 +293,11 @@ pub(crate) fn authorize_command(
         | Command::UpdateSecrets { .. }
         | Command::GetSecretsHash { .. }
         | Command::EnqueueRun { .. }
-        | Command::Signal { .. } => {}
+        | Command::Signal { .. }
+        | Command::ListWorkflowRuns { .. }
+        | Command::GetWorkflowRun { .. }
+        | Command::RetryWorkflowRun { .. }
+        | Command::CancelWorkflowRun { .. } => {}
         Command::Hello { .. }
         | Command::ServerInfo
         | Command::DrainServer { .. }
@@ -533,6 +541,7 @@ mod tests {
             object.entry("payload").or_insert(json!({}));
             object.entry("name").or_insert(json!("job"));
             object.entry("event_name").or_insert(json!("event"));
+            object.entry("id").or_insert(json!("run-1"));
             serde_json::from_value(value).unwrap()
         }
 
@@ -570,6 +579,10 @@ mod tests {
         "get_secrets_hash",
         "enqueue_run",
         "signal",
+        "list_workflow_runs",
+        "get_workflow_run",
+        "retry_workflow_run",
+        "cancel_workflow_run",
     ];
 
     #[test]

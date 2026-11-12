@@ -12,14 +12,27 @@ use tokio::process::Command as TokioCommand;
 
 pub(crate) const TAKO_APP_DATA_DIR_ENV: &str = "TAKO_DATA_DIR";
 
-#[derive(Debug, serde::Deserialize)]
-struct ReleaseManifestMetadata {
+/// Descriptive `app.json` fields reported with a release. None of them
+/// affects how the release runs.
+#[derive(Debug, Default, PartialEq, Eq, serde::Deserialize)]
+pub(crate) struct ReleaseManifestMetadata {
     #[serde(default)]
-    commit_message: Option<String>,
+    pub commit_message: Option<String>,
     #[serde(default)]
-    description: Option<String>,
+    pub description: Option<String>,
     #[serde(default)]
-    git_dirty: Option<bool>,
+    pub git_dirty: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_release_sdk")]
+    pub sdk: Option<tako_core::ReleaseSdk>,
+}
+
+/// An unreadable `sdk` entry is reported as unknown instead of hiding the
+/// rest of the release's metadata.
+fn deserialize_release_sdk<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<tako_core::ReleaseSdk>, D::Error> {
+    let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).ok())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -234,16 +247,11 @@ pub(crate) fn apply_release_runtime_to_config(
     Ok(())
 }
 
-pub(crate) fn read_release_manifest_metadata(
-    path: &Path,
-) -> (Option<String>, Option<bool>, Option<String>) {
-    let Ok(raw) = std::fs::read_to_string(path) else {
-        return (None, None, None);
-    };
-    let Ok(parsed) = serde_json::from_str::<ReleaseManifestMetadata>(&raw) else {
-        return (None, None, None);
-    };
-    (parsed.commit_message, parsed.git_dirty, parsed.description)
+pub(crate) fn read_release_manifest_metadata(path: &Path) -> ReleaseManifestMetadata {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
 }
 
 pub(crate) fn directory_modified_unix_secs(path: &Path) -> Option<i64> {

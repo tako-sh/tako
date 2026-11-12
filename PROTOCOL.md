@@ -6,6 +6,8 @@ The protocol version is `0`. Breaking changes are allowed until protocol v1. Cha
 
 Tako has one active protocol version. The CLI, server, and every deploy artifact must declare that exact version; compatibility does not negotiate version ranges or capability sets. Deploy artifacts record it as `protocol_version` in `app.json`.
 
+Deploy artifacts may also record the Tako SDK the app is built against as `sdk` in `app.json`: `{ "language", "name", "version" }`, where `language` is `javascript`, `go`, or `rust`. The CLI reads it from the app's dependency files at deploy time: the installed or locked `tako.sh` package, the `tako.sh` requirement in `go.mod` (`(devel)` when a `replace` points at a local directory, or the replacement module and version), or the `tako` crate in `Cargo.lock`. It is omitted when no SDK is found, including prebuilt images, Compose projects, and containers with `container_options.sdk = false`. The server reports it in `list_releases` and never gates on it.
+
 Normal deploys check the CLI/server protocol before parallel deployment starts. After upload, the server checks the artifact again before preparing dependencies, running a release command, synchronizing workflows, or starting app processes. `--force` bypasses only these version gates so an operator can attempt an incompatible deploy; normal validation and readiness checks still apply.
 
 `PrepareRelease` carries the current deployment's secrets for preparation, including Compose interpolation on a first deploy. Preparation does not replace persisted app secrets; activation persists them after preparation succeeds.
@@ -58,7 +60,7 @@ Tako-managed processes also receive `TAKO_APP_NAME` and `TAKO_INTERNAL_SOCKET`. 
 
 Container processes receive the same bootstrap envelope through `TAKO_BOOTSTRAP_DATA`. HTTP containers bind `HOST=0.0.0.0` and `PORT=3000`; they do not use file descriptors 3 and 4. Container workflow processes receive the internal socket mount and the same app identity contract.
 
-Container release artifacts carry `container_options`, including the container port, persistent data mount, optional numeric user mapping, and SDK mode. The host app data directory is mounted at the configured container path and `TAKO_DATA_DIR` is translated to that path. Plain containers (`sdk = false`) receive no bootstrap token and use an ordinary HTTP health probe. Only explicitly selected secrets become environment variables. SDK containers retain the authenticated `/status` contract during both startup and steady-state health checks.
+Container release artifacts carry `container_options`, including the container port, persistent data mount, optional numeric user mapping, and SDK mode. The host app data directory is mounted at the configured container path and `TAKO_DATA_DIR` is translated to that path, for HTTP containers and container workflow processes alike. Plain containers (`sdk = false`) receive no bootstrap token and use an ordinary HTTP health probe. Only explicitly selected secrets become environment variables. SDK containers retain the authenticated `/status` contract during both startup and steady-state health checks.
 
 Compose releases carry `release_kind = "compose"` and the shared `ComposeConfig`. They represent one project on one server and use plain HTTP ingress health checks. The server prepares immutable service images without persisting interpolated secrets. Project identity is derived from the persistent app data path, independent of release version. Production creates immutable service generations with stable network aliases and resources; fingerprints compare resolved configuration and image IDs. Unchanged containers are adopted. The selected stateless HTTP service defaults to start-first replacement with readiness and draining; writable persistent volumes and other services default to stop-first. `deploy.update_config.order` and `monitor` control per-service updates. A pending marker precedes mutations; active release, routes, and encrypted credentials commit atomically. Recovery reconciles the committed release and cleans abandoned generations. HTTP instance cleanup owns only its container, while explicit app stop owns the project. Named volumes survive stop and deletion and remain outside Tako app-data backups. Referenced release files are protected from pruning. `AppStatus.services` reports original service names, state, health, and exit codes; `services_error` reports query failures.
 
@@ -67,6 +69,8 @@ Compose releases carry `release_kind = "compose"` and the shared `ComposeConfig`
 The server probes `GET /status` with `Host: <app>.tako` and an `X-Tako-Internal-Token` header. Tako SDK adapters own this internal endpoint. A healthy response must be successful and echo the token header so an unrelated public `/status` route cannot satisfy the probe.
 
 The token is infrastructure-only. SDKs must not expose it to application code or public responses.
+
+`AppStatus.recovery` is present only while the server has replaced instances since the last deploy, scale, or stable minute. It carries `restart_count`, `last_exit` (`reason` of `crashed`, `unhealthy`, or `failed_to_start`; the observed `exit_code` or `signal` when the process exited by itself; `at_unix_secs`), and `next_restart_at_unix_secs` while replacement is backing off.
 
 ## Workflow claim ownership
 
@@ -84,6 +88,20 @@ workflow execution remains at least once.
 `CompleteRun` carries a JSON `result` (null for no return value). The store atomically commits it with the succeeded status, guarded by the current claim owner. SQLite and Postgres persist it in `runs.result` and remove it with retained run history. `GetRunResult {app,name,id}` is an authenticated runtime-socket command; a mismatched workflow name is a missing run, and the app/environment scope is enforced by the same peer authentication as enqueue. It is not a management command.
 
 JavaScript `.run()` combines enqueue and result waiting. In a workflow, the SDK saves a child ID and call identity before enqueueing, repeats an uncertain enqueue with that ID, and checkpoints the terminal outcome. Pending children use ordinary `DeferRun`, releasing the parent's claim/concurrency slot without spending a retry. Result waits checkpoint their deadline across replay; a timeout does not cancel the child. Named `ctx.run` steps scope child-call order. IDs remain deduplicated only while child history is retained. Detached `.enqueue()` and direct handler `call()` do not gain automatic workflow checkpoints.
+
+## Workflow schedules
+
+A starting worker sends `RegisterSchedules {app,schedules}`, which replaces the app's schedule set. Each `ScheduleSpec` is `{name,cron,max_attempts?}`. `max_attempts` is the workflow's attempt budget, counting the first attempt: JavaScript sends `retries + 1` and Go sends `WithMaxAttempts`. The store keeps it with the schedule, and every run the schedule creates gets it. Omitted, scheduled runs get the default of three attempts.
+
+## Workflow run operations
+
+Operators inspect and repair runs with four management commands: `ListWorkflowRuns {app,status?,name?,limit?}`, `GetWorkflowRun {app,id}`, `RetryWorkflowRun {app,id}`, and `CancelWorkflowRun {app,id}`. They are app-scoped like other application commands; list and get are read-only. The internal socket rejects them, so an app process cannot list or change runs, its own included. The worker's `CancelRun` is a different command: it carries the claim owner and ends the run from inside its handler.
+
+Each server answers from the app's store as it sees it: its own SQLite file, or the Postgres store shared by every server of the app. Replies name the store (`sqlite` or `postgres`) so clients can tell one server's runs from a shared set. A stopped app's runs stay readable.
+
+List returns the newest runs first, 50 by default and at most 200. Get returns every run field, the 100 most recent saved steps, and the run's event waits. Replies must fit one 1 MiB JSONL frame, so the server caps stored text: the payload and result at 32 KiB, each step result at 2 KiB, and errors at 8 KiB (1 KiB in lists). Workflow, step and event names and claim owners are cut to 256 bytes. A reply serializes to at most 768 KiB: a list stops early and sets `has_more`, and a run drops its oldest steps. A capped JSON value carries `truncated: true`, its stored size, and a UTF-8-safe text preview instead of the value. A run parked until a signal reports no due time.
+
+Retry accepts only `dead` and `cancelled` runs. The run becomes `pending`, due now, with its attempts reset and its saved steps kept, so the handler resumes after its last checkpoint. Cancel accepts `pending` and `running` runs and removes their event waits. A running attempt loses its claim: its later heartbeats, checkpoints, and lifecycle writes are rejected with the same `stale worker` error as a reclaimed attempt's, and reclaim leaves the cancelled run alone. SDK workers treat that error as lost ownership. They stop the attempt at its next checkpoint without failing, retrying, or completing the run; side effects already started are not undone.
 
 ## Ephemeral channels
 

@@ -25,7 +25,7 @@ Use `tako <command> --help` or the connected MCP tool's schema for the exact arg
 
 App-scoped commands that honor `-c`: `agents`, `mcp`, `init`, `dev`, `run`, `logs`, `deploy`, `releases`, `backups`, `delete`, `secrets`, `credentials`, `storages`, `generate`, and project-context `scale`.
 
-For finite commands, `--json` prints one final object. Commands without a specialized schema use `{"ok":true,"command":"<command>"}`. Failures print `{"ok":false,"error":{"message":"..."}}` on stdout and the human-readable error on stderr. Specialized objects: `status` includes `servers`; `doctor` includes paths, CA, dev server, apps, and proxy checks; `servers list`, `secrets list`, `credentials list`, `dev list`, `backups list`/`status`, and `releases list` include their collections. Streaming exceptions keep stdout as JSONL until interrupted: `tako logs --tail --json` emits one log record per line, and `tako dev --json` emits a ready object, then log and event records, with no logo or TUI. `tako run` is also an exception: child stdout stays untouched and no JSON result object is appended.
+For finite commands, `--json` prints one final object. Commands without a specialized schema use `{"ok":true,"command":"<command>"}`. Failures print `{"ok":false,"error":{"message":"..."}}` on stdout and the human-readable error on stderr. Specialized objects: `status` includes `servers`; `doctor` includes paths, CA, dev server, apps, and proxy checks; `servers list`, `secrets list`, `credentials list`, `dev list`, `backups list`/`status`, and `releases list` include their collections; `backups download` and `backups restore` include the backup entry and what they wrote. Streaming exceptions keep stdout as JSONL until interrupted: `tako logs --tail --json` emits one log record per line, and `tako dev --json` emits a ready object, then log and event records, with no logo or TUI. `tako run` is also an exception: child stdout stays untouched and no JSON result object is appended.
 
 Installed CLIs send an anonymous event per command so we can count unique users and see which commands run. Set `TAKO_TELEMETRY=0` to opt out. See [Usage stats](#usage-stats).
 
@@ -201,7 +201,7 @@ tako releases ls [--env <env>]
 tako releases rollback <release-id> [--env <env>] [-y|--yes]
 ```
 
-Release descriptions default to the commit subject for clean checkouts, `Uncommitted changes based on: <commit subject>` for dirty checkouts, or `Local source snapshot` without Git history. Set `tako deploy --description "Fix reconnect handling"` to override the description. The dirty status remains visible with a custom description. `releases list --json` includes `description`, `commit_message`, and `git_dirty` for each release.
+Release descriptions default to the commit subject for clean checkouts, `Uncommitted changes based on: <commit subject>` for dirty checkouts, or `Local source snapshot` without Git history. Set `tako deploy --description "Fix reconnect handling"` to override the description. The dirty status remains visible with a custom description. `releases list --json` includes `description`, `commit_message`, `git_dirty`, and `sdk` for each release. `sdk` is `{ "language", "name", "version" }` for the Tako SDK detected at deploy time, or `null` when the release has none.
 
 Lists release/build history or rolls an environment back to a previous release. Rollback uses the standard rolling-update flow and reports partial server failures individually.
 
@@ -246,7 +246,7 @@ tako servers uninstall [name] [-y|--yes]
 
 Without a host, an interactive terminal prompts for `admin@host`. An omitted SSH user defaults to `root`. Public HTTP and HTTPS ports default to `80` and `443`. `--ssh-key` selects a private key for bootstrap and saves its absolute path locally for SSH maintenance (reload, upgrade, uninstall). This selection stays on the workstation; normal HTTPS management uses the enrolled device identity. External VPN providers and the old `--vpn`, `--install`, `--no-test`, and server `--description` options are removed. See [Servers](/servers/#choose-the-vpn-provider) to replace an old setup.
 
-`status` prints a deployment snapshot grouped by server, with compact server summary, routes, and app rows.
+`status` prints a deployment snapshot grouped by server, with compact server summary, routes, and app rows. An app whose instances the server had to replace shows a `Restarts` row with the restart count, the last exit (crashed, unhealthy, or failed to start, with its exit code or signal), and when the next restart is due while restarts are backing off. `--json` reports the same under `recovery` in each app status.
 
 Use the `alias/server-name` shown by `servers list` for maintenance commands. `servers reload` performs a zero-downtime service reload by default. Its `--force` flag performs a full restart. `servers upgrade` checks the candidate protocol against the CLI and every active app before reload, checks again after readiness, and restores and restarts the previous binary if the upgrade fails. `servers upgrade --force` attempts an incompatible upgrade but keeps readiness and rollback checks enabled. `servers uninstall` publishes a revocation of native membership and delegated approvals before removing the remote service, binaries, data, and sockets. Revocation failure stops uninstall before deletion; cleanup failure after revocation reports uninstall as incomplete. Offline peers enforce the revocation when they reconnect. `--dry-run` performs neither revocation nor deletion. `servers remove` revokes network membership and delegated approvals without deleting app data.
 
@@ -304,6 +304,34 @@ tako backups restore <backup-id> [--env <env>] [--server <server>] [-y|--yes]
 ```
 
 Backup commands default to `production`, require project context, and target the deployment id `{app}/{env}` over signed HTTP management. Multi-server download and restore require `--server`.
+
+`backups list` shows each entry's kind: `full` for an archive of the whole data tree, or `databases` for an hourly snapshot of only its SQLite databases. `--json` entries include `kind` and, for a database snapshot, its `databases`. `backups status` reports the latest full backup, the latest database snapshot, and the reason the latest hourly database snapshot was skipped, if it was (`--json`: `last_backup`, `last_database_snapshot_at_unix_secs`, `last_database_snapshot_skip`). `download` saves the encrypted archive object, by default as `<backup-id>.tar.zst.enc` for a full backup or `<backup-id>.databases.tar.zst.enc` for a database snapshot; `--json` prints `backup`, `path`, and `size_bytes`. `restore` of a full backup replaces the data directory; restore of a database snapshot replaces only the SQLite databases it contains, removes their `-wal`, `-shm`, and `-journal` files, and leaves other files untouched. The confirmation names what the selected kind replaces, including the workflow-state rewind when the snapshot contains `tako/workflows.sqlite`. `restore --json` prints `backup` and, for a database snapshot, `databases` with the `replaced`, `created`, and `untouched` paths.
+
+## Workflows
+
+```bash
+tako workflows list [--env <env>] [--server <server>] [--status <status>] [--name <workflow>] [--limit <n>]
+tako workflows ls ...
+tako workflows show <run-id> [--env <env>] [--server <server>]
+tako workflows retry <run-id> [--env <env>] [--server <server>]
+tako workflows cancel <run-id> [--env <env>] [--server <server>] [-y|--yes]
+```
+
+Workflow commands inspect and repair the durable runs of a deployed environment. They default to `production`, require project context, and target the deployment id `{app}/{env}` on every mapped server, or only on `--server`. They are not available for `development`; use the `tako dev` logs locally.
+
+`list` shows the newest runs first: ID, workflow, status, attempts used of the retry budget, the next due time of a pending run or the finish time of a finished one, and the first line of the last error. `--status` accepts `pending`, `running`, `succeeded`, `cancelled`, or `dead`. `--name` selects one workflow. `--limit` accepts `1..200` and defaults to 50. `show` prints every run field, the payload and result, up to the 100 most recent saved steps oldest first, event waits, and the stored error. Servers cap large values; a capped value shows the start of its JSON text and its stored size.
+
+`retry` accepts a `dead` or `cancelled` run. The run becomes `pending`, due now, with a fresh retry budget; saved steps are kept, so it resumes after its last checkpoint. `cancel` accepts a `pending` or `running` run and asks for confirmation in an interactive terminal unless `--yes` is passed. A running handler is not interrupted: it stops at its next checkpoint (the next step, sleep, or wait) and cannot complete the run; side effects already started are not undone. Retry does not prompt. Both act on exactly one server.
+
+Without `postgres_url`, each server keeps its own runs, so results are labelled with their server; if two servers hold a run with the same ID, `show`, `retry`, and `cancel` fail and ask for `--server`. With `postgres_url`, every server shares one store: runs are listed once, without a server, and retry or cancel is sent once. A server that cannot be reached is reported as a warning while the others answer; the command fails only when no server answers, or when the run is not found on any server.
+
+Global `--json` prints one object. Every object has `ok`, `command: "workflows"`, `app`, `environment`, `store` (`"sqlite"` or `"postgres"`), and `errors`, an array of `{name, error}` for servers that did not answer.
+
+- `list` adds `runs` and `has_more`. Each run has `id`, `name`, `status`, `attempts`, `max_attempts`, `created_at_ms`, `run_at_ms` (null while waiting for a signal), `finished_at_ms`, `last_error` (capped at 1 KiB), `last_error_truncated`, and `server` (null with Postgres).
+- `show` adds `server` and `run`. `run` has the list fields plus `lease_until_ms`, `worker_id`, `payload`, `result` (null until the run succeeds), `steps` (`name`, `completed_at_ms`, `result`), `steps_total`, and `waits` (`step_name`, `event_name`, `expires_at_ms`). Each value is `{value, truncated, bytes, preview?}`; a truncated value has `value: null` and a `preview` of its JSON text.
+- `retry` and `cancel` add `server`, `id`, `previous_status`, and `status`.
+
+Failures print `{"ok": false, "error": {"message": ...}}`, as for every command.
 
 ## Local CLI Maintenance
 

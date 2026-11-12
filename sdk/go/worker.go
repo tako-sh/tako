@@ -29,10 +29,28 @@ type WorkflowContext struct {
 	// Step exposes checkpointed step helpers for this run.
 	Step *StepAPI
 	ctx  context.Context
+
+	resultMu sync.Mutex
+	result   json.RawMessage
 }
 
 // Done returns the context's cancellation channel.
 func (c *WorkflowContext) Done() <-chan struct{} { return c.ctx.Done() }
+
+// SetResult records value as the run's result. It is saved when the handler
+// returns nil and callers read it with Result. The last call wins; a run
+// that never calls SetResult completes with a null result. Values that do
+// not JSON-encode are rejected and leave any earlier result in place.
+func (c *WorkflowContext) SetResult(value any) error {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("tako: workflow result is not JSON-encodable: %w", err)
+	}
+	c.resultMu.Lock()
+	c.result = encoded
+	c.resultMu.Unlock()
+	return nil
+}
 
 // Bail returns a sentinel error. Returning it ends the run cleanly as
 // `cancelled` (no retries). To exit successfully early, just return nil
@@ -63,6 +81,10 @@ type deferSignal struct{ wakeAt *time.Time }
 
 func (d *deferSignal) Error() string { return "tako: defer signal" }
 
+// errOwnershipLost stops an attempt whose run is no longer owned by this
+// worker. Every step is a checkpoint that returns it once ownership is lost.
+var errOwnershipLost = &staleOwnerError{message: "tako: this worker no longer owns the run"}
+
 type waitSignal struct {
 	stepName  string
 	eventName string
@@ -78,7 +100,47 @@ type StepAPI struct {
 	runID    string
 	workerID string
 	state    map[string]any
-	mu       sync.Mutex
+	// used holds the step names already taken in this execution.
+	used map[string]struct{}
+	mu   sync.Mutex
+	// lost is set once a write or heartbeat is rejected as stale.
+	lost *atomic.Bool
+}
+
+func (s *StepAPI) ownershipLost() bool {
+	return s.lost != nil && s.lost.Load()
+}
+
+// once reserves name for one step in this execution of the handler. Run,
+// Sleep, and WaitFor share one namespace of saved steps, so a second use
+// would silently return the first use's saved result instead of doing its
+// own work. Reuse is a programming error that no retry can fix, so it fails
+// the run immediately. A step that returns an error releases its name:
+// nothing was saved, and the handler may try the same step again.
+func (s *StepAPI) once(name string, step func() error) error {
+	if s.ownershipLost() {
+		return errOwnershipLost
+	}
+	s.mu.Lock()
+	if _, reused := s.used[name]; reused {
+		s.mu.Unlock()
+		return &failSignal{err: fmt.Errorf(
+			"step name %q was used more than once in this run; step names must be unique within a run, so add an index or id to the name (for example %q)",
+			name, name+":1")}
+	}
+	if s.used == nil {
+		s.used = map[string]struct{}{}
+	}
+	s.used[name] = struct{}{}
+	s.mu.Unlock()
+
+	err := step()
+	if err != nil {
+		s.mu.Lock()
+		delete(s.used, name)
+		s.mu.Unlock()
+	}
+	return err
 }
 
 // StepRunOpts configures a single step.Run invocation.
@@ -103,7 +165,14 @@ const inlineSleepThreshold = 30 * time.Second
 //
 // At-least-once: fn may run more than once on crashes — make it
 // idempotent (Stripe idempotency keys, upsert not insert, etc.).
+//
+// Step names must be unique within a run. Using a name twice in one
+// execution, across Run, Sleep, and WaitFor, fails the run.
 func (s *StepAPI) Run(name string, out any, fn func() (any, error), opts ...StepRunOpts) error {
+	return s.once(name, func() error { return s.run(name, out, fn, opts...) })
+}
+
+func (s *StepAPI) run(name string, out any, fn func() (any, error), opts ...StepRunOpts) error {
 	s.mu.Lock()
 	if cached, ok := s.state[name]; ok {
 		s.mu.Unlock()
@@ -153,6 +222,9 @@ func (s *StepAPI) Run(name string, out any, fn func() (any, error), opts ...Step
 // and retry the same step without ending this execution.
 func (s *StepAPI) saveStep(name string, value any) error {
 	if err := s.client.SaveStep(s.ctx, s.runID, s.workerID, name, value); err != nil {
+		if isStaleOwner(err) && s.lost != nil {
+			s.lost.Store(true)
+		}
 		return err
 	}
 	s.mu.Lock()
@@ -167,12 +239,16 @@ func isControlSignal(err error) bool {
 	var ds *deferSignal
 	var ws *waitSignal
 	return errors.As(err, &bs) || errors.As(err, &fs) ||
-		errors.As(err, &ds) || errors.As(err, &ws)
+		errors.As(err, &ds) || errors.As(err, &ws) || isStaleOwner(err)
 }
 
 // Sleep durably waits for d. Short sleeps run inline; longer sleeps defer
 // the run via the server so the worker process can release.
 func (s *StepAPI) Sleep(name string, d time.Duration) error {
+	return s.once(name, func() error { return s.sleep(name, d) })
+}
+
+func (s *StepAPI) sleep(name string, d time.Duration) error {
 	key := "__sleep:" + name
 	s.mu.Lock()
 	if stored, ok := s.state[key]; ok {
@@ -214,6 +290,10 @@ func (s *StepAPI) Sleep(name string, d time.Duration) error {
 // of 0 means "no timeout" (parked indefinitely until matching signal). On
 // resume, out (a *T) is populated with the signal's payload.
 func (s *StepAPI) WaitFor(name string, out any, timeout time.Duration) error {
+	return s.once(name, func() error { return s.waitFor(name, out, timeout) })
+}
+
+func (s *StepAPI) waitFor(name string, out any, timeout time.Duration) error {
 	s.mu.Lock()
 	cached, ok := s.state[name]
 	s.mu.Unlock()
@@ -254,9 +334,20 @@ type workflowConfig struct {
 // WorkflowOption configures a registered workflow.
 type WorkflowOption func(*workflowConfig)
 
-// WithMaxAttempts sets the total run-level attempt budget.
+// WithMaxAttempts sets the total run-level attempt budget that Enqueue
+// stores on new runs of this workflow when EnqueueOpts.MaxAttempts is nil,
+// and that runs created by its schedule get. The worker always honors the
+// budget stored on the run, so runs enqueued by a process that did not
+// register the workflow keep their own stored budget (the server default
+// is 3).
 func WithMaxAttempts(n uint32) WorkflowOption {
 	return func(c *workflowConfig) { c.maxAttempts = n }
+}
+
+func registeredMaxAttempts(name string) uint32 {
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	return registry[name].config.maxAttempts
 }
 
 // WithSchedule registers a cron schedule for this workflow.
@@ -320,7 +411,11 @@ func RunWorker(ctx context.Context) error {
 	var schedules []ScheduleSpec
 	for name, reg := range handlers {
 		if reg.config.schedule != "" {
-			schedules = append(schedules, ScheduleSpec{Name: name, Cron: reg.config.schedule})
+			schedules = append(schedules, ScheduleSpec{
+				Name:        name,
+				Cron:        reg.config.schedule,
+				MaxAttempts: reg.config.maxAttempts,
+			})
 		}
 	}
 	if len(schedules) > 0 {
@@ -347,6 +442,8 @@ type worker struct {
 	maxBackoff  time.Duration
 	idleTimeout time.Duration
 	lastClaimAt atomic.Int64
+
+	lifecycleRetryDelays []time.Duration
 }
 
 func newWorker(ctx context.Context, client *Client, handlers map[string]workflowRegistration) *worker {
@@ -367,6 +464,8 @@ func newWorker(ctx context.Context, client *Client, handlers map[string]workflow
 		baseBackoff: time.Second,
 		maxBackoff:  time.Hour,
 		idleTimeout: parseIdleTimeout(),
+
+		lifecycleRetryDelays: defaultLifecycleRetryDelays,
 	}
 	w.lastClaimAt.Store(time.Now().UnixMilli())
 	return w
@@ -433,22 +532,53 @@ func (w *worker) run() error {
 	}
 }
 
-// finalize reports a run-finalization RPC failure. The run will re-execute
-// after lease expiry, so leave a forensic trail instead of failing silently.
-func (w *worker) finalize(op, runID string, err error) {
-	if err != nil {
+// defaultLifecycleRetryDelays space retries of a run's final write after a
+// transient failure such as a socket error or a storage timeout.
+var defaultLifecycleRetryDelays = []time.Duration{
+	100 * time.Millisecond, 250 * time.Millisecond, 500 * time.Millisecond, time.Second,
+}
+
+// finalize writes a run's outcome, retrying transient failures while the
+// heartbeat keeps the lease. A run left running is reclaimed after its lease
+// expires, and a lost last attempt ends the run as dead although its handler
+// never failed. Retries stop once ownership is lost.
+func (w *worker) finalize(op, runID string, lost *atomic.Bool, write func() error) {
+	err := write()
+	for _, delay := range w.lifecycleRetryDelays {
+		if err == nil || isStaleOwner(err) || lost.Load() {
+			break
+		}
+		fmt.Fprintf(os.Stderr, "tako-worker: %s failed for run %s, retrying: %v\n", op, runID, err)
+		time.Sleep(delay)
+		err = write()
+	}
+	switch {
+	case err == nil:
+	case isStaleOwner(err) || lost.Load():
+		stopped(runID)
+	default:
+		// The run re-executes after lease expiry; leave a forensic trail.
 		fmt.Fprintf(os.Stderr, "tako-worker: %s failed for run %s: %v\n", op, runID, err)
 	}
 }
 
+// stopped reports an attempt that lost its run to an operator cancel or a
+// reclaim. Another owner or the operator decides the run's fate.
+func stopped(runID string) {
+	fmt.Fprintf(os.Stderr, "tako-worker: run %s stopped: this worker no longer owns it\n", runID)
+}
+
 func (w *worker) execute(task *Run) {
 	if task.WorkerID == "" {
-		w.finalize("claim", task.ID, errors.New("claim response is missing its ownership identifier"))
+		fmt.Fprintf(os.Stderr, "tako-worker: claim failed for run %s: claim response is missing its ownership identifier\n", task.ID)
 		return
 	}
+	lost := &atomic.Bool{}
 	reg, ok := w.handlers[task.Name]
 	if !ok {
-		w.finalize("fail", task.ID, w.client.Fail(w.runCtx, task.ID, task.WorkerID, fmt.Sprintf("no handler registered for %q", task.Name), nil, true))
+		w.finalize("fail", task.ID, lost, func() error {
+			return w.client.Fail(w.runCtx, task.ID, task.WorkerID, fmt.Sprintf("no handler registered for %q", task.Name), nil, true)
+		})
 		return
 	}
 
@@ -456,6 +586,10 @@ func (w *worker) execute(task *Run) {
 	if stepState == nil {
 		stepState = map[string]any{}
 	}
+	// Done fires when ownership is lost, so handlers can stop before their
+	// next checkpoint. RPCs keep the uncancelled context.
+	handlerCtx, cancelHandler := context.WithCancel(w.runCtx)
+	defer cancelHandler()
 	ctx := &WorkflowContext{
 		RunID:        task.ID,
 		WorkflowName: task.Name,
@@ -466,15 +600,24 @@ func (w *worker) execute(task *Run) {
 			runID:    task.ID,
 			workerID: task.WorkerID,
 			state:    stepState,
+			lost:     lost,
 		},
-		ctx: w.runCtx,
+		ctx: handlerCtx,
 	}
 
 	hbStop := make(chan struct{})
-	go w.heartbeatLoop(task.ID, task.WorkerID, hbStop)
+	go w.heartbeatLoop(task.ID, task.WorkerID, hbStop, func() {
+		lost.Store(true)
+		cancelHandler()
+	})
 	defer close(hbStop)
 
 	err := reg.handler(ctx, task.Payload)
+	// Never fail, retry, or complete a run this attempt no longer owns.
+	if lost.Load() || isStaleOwner(err) {
+		stopped(task.ID)
+		return
+	}
 	if err != nil {
 		var bs *bailSignal
 		var fs *failSignal
@@ -487,19 +630,26 @@ func (w *worker) execute(task *Run) {
 			if reason != "" {
 				rp = &reason
 			}
-			w.finalize("cancel", task.ID, w.client.Cancel(w.runCtx, task.ID, task.WorkerID, rp))
+			w.finalize("cancel", task.ID, lost, func() error {
+				return w.client.Cancel(w.runCtx, task.ID, task.WorkerID, rp)
+			})
 		case errors.As(err, &fs):
-			w.finalize("fail", task.ID, w.client.Fail(w.runCtx, task.ID, task.WorkerID, fs.err.Error(), nil, true))
+			w.finalize("fail", task.ID, lost, func() error {
+				return w.client.Fail(w.runCtx, task.ID, task.WorkerID, fs.err.Error(), nil, true)
+			})
 		case errors.As(err, &ds):
-			w.finalize("defer", task.ID, w.client.Defer(w.runCtx, task.ID, task.WorkerID, ds.wakeAt))
+			w.finalize("defer", task.ID, lost, func() error {
+				return w.client.Defer(w.runCtx, task.ID, task.WorkerID, ds.wakeAt)
+			})
 		case errors.As(err, &ws):
-			w.finalize("wait-for-event", task.ID, w.client.WaitForEvent(w.runCtx, task.ID, task.WorkerID, ws.stepName, ws.eventName, ws.timeoutAt))
+			w.finalize("wait-for-event", task.ID, lost, func() error {
+				return w.client.WaitForEvent(w.runCtx, task.ID, task.WorkerID, ws.stepName, ws.eventName, ws.timeoutAt)
+			})
 		default:
-			maxAttempts := reg.config.maxAttempts
-			if maxAttempts == 0 {
-				maxAttempts = task.MaxAttempts
-			}
-			finalize := task.Attempts >= maxAttempts
+			// The budget stored on the run is authoritative: it carries
+			// per-enqueue overrides and is what the server enforces when
+			// it reclaims a lost worker's run.
+			finalize := task.Attempts >= task.MaxAttempts
 			var next *time.Time
 			if !finalize {
 				base := reg.config.backoffBase
@@ -513,14 +663,21 @@ func (w *worker) execute(task *Run) {
 				t := time.Now().Add(expBackoff(task.Attempts, base, max))
 				next = &t
 			}
-			w.finalize("fail", task.ID, w.client.Fail(w.runCtx, task.ID, task.WorkerID, err.Error(), next, finalize))
+			w.finalize("fail", task.ID, lost, func() error {
+				return w.client.Fail(w.runCtx, task.ID, task.WorkerID, err.Error(), next, finalize)
+			})
 		}
 		return
 	}
-	w.finalize("complete", task.ID, w.client.Complete(w.runCtx, task.ID, task.WorkerID))
+	ctx.resultMu.Lock()
+	result := ctx.result
+	ctx.resultMu.Unlock()
+	w.finalize("complete", task.ID, lost, func() error {
+		return w.client.Complete(w.runCtx, task.ID, task.WorkerID, result)
+	})
 }
 
-func (w *worker) heartbeatLoop(id, claimOwner string, stop <-chan struct{}) {
+func (w *worker) heartbeatLoop(id, claimOwner string, stop <-chan struct{}, onLost func()) {
 	ticker := time.NewTicker(time.Duration(w.heartbeatMs) * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -528,7 +685,10 @@ func (w *worker) heartbeatLoop(id, claimOwner string, stop <-chan struct{}) {
 		case <-stop:
 			return
 		case <-ticker.C:
-			_ = w.client.Heartbeat(w.runCtx, id, claimOwner, w.leaseMs)
+			if err := w.client.Heartbeat(w.runCtx, id, claimOwner, w.leaseMs); isStaleOwner(err) {
+				onLost()
+				return
+			}
 		}
 	}
 }

@@ -67,12 +67,18 @@ pub struct VerifiedImageRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct ImagesConfig {
+    /// Local image path patterns, such as `/images/**`. Defaults to `["/**"]`.
     pub local_patterns: Option<Vec<String>>,
+    /// Remote image URL patterns. Remote images are denied unless they match.
     pub remote_patterns: Vec<String>,
+    /// Allowed output widths in pixels.
     pub sizes: Vec<u32>,
+    /// Allowed output qualities, from 1 to 100.
     pub qualities: Vec<u8>,
+    /// Allowed output formats.
     pub formats: Vec<OutputFormat>,
 }
 
@@ -118,6 +124,7 @@ impl ImagesConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum OutputFormat {
     Avif,
     Webp,

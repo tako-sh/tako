@@ -19,6 +19,8 @@ pub(crate) fn command_is_read_only(command: &Command) -> bool {
             | Command::BackupStatus { .. }
             | Command::BackupDownloadUrl { .. }
             | Command::CheckDeploySpace { .. }
+            | Command::ListWorkflowRuns { .. }
+            | Command::GetWorkflowRun { .. }
     )
 }
 
@@ -345,6 +347,41 @@ impl crate::ServerState {
                     "status": "injected",
                     "token": token
                 }))
+            }
+            Command::ListWorkflowRuns {
+                app,
+                status,
+                name,
+                limit,
+            } => {
+                if let Err(msg) = validate_app_name(&app) {
+                    return Response::error(msg);
+                }
+                self.list_workflow_runs(&app, status, name, limit).await
+            }
+            Command::GetWorkflowRun { app, id } => {
+                if let Err(msg) = validate_app_name(&app) {
+                    return Response::error(msg);
+                }
+                self.get_workflow_run(&app, &id).await
+            }
+            Command::RetryWorkflowRun { app, id } => {
+                if let Err(msg) = validate_app_name(&app) {
+                    return Response::error(msg);
+                }
+                if let Some(resp) = self.reject_mutating_when_upgrading("retry-workflow-run").await {
+                    return resp;
+                }
+                self.retry_workflow_run(&app, &id).await
+            }
+            Command::CancelWorkflowRun { app, id } => {
+                if let Err(msg) = validate_app_name(&app) {
+                    return Response::error(msg);
+                }
+                if let Some(resp) = self.reject_mutating_when_upgrading("cancel-workflow-run").await {
+                    return resp;
+                }
+                self.cancel_workflow_run(&app, &id).await
             }
             Command::EnqueueRun { .. }
             | Command::RegisterSchedules { .. }

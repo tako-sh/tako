@@ -4,7 +4,9 @@ use std::time::Duration;
 
 use crate::ServerState;
 use crate::instances::{HealthChecker, HealthConfig};
-use crate::runtime_events::{handle_health_event, handle_idle_event, handle_instance_event};
+use crate::runtime_events::{
+    handle_health_event, handle_idle_event, handle_instance_event, reconcile_instances,
+};
 use crate::scaling::{IdleConfig, IdleMonitor};
 use crate::socket::SocketServer;
 use tokio::runtime::Runtime;
@@ -73,6 +75,20 @@ pub(super) fn spawn_health_monitoring(rt: &Runtime, state: Arc<ServerState>) {
     rt.spawn(async move {
         while let Some(event) = health_event_rx.recv().await {
             handle_health_event(&health_state, event).await;
+        }
+    });
+}
+
+/// Health events are edge-triggered and handled by one serial consumer. This
+/// periodic pass repairs whatever they left behind, one task per app.
+pub(super) fn spawn_instance_reconcile(rt: &Runtime, state: Arc<ServerState>) {
+    rt.spawn(async move {
+        let mut ticks = tokio::time::interval(crate::runtime_events::INSTANCE_RECONCILE_INTERVAL);
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticks.tick().await;
+            // Recovery tasks run detached; a slow start must not hold the next tick.
+            drop(reconcile_instances(&state, std::time::Instant::now()));
         }
     });
 }

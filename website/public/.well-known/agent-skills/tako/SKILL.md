@@ -31,7 +31,8 @@ checks exercise the same configuration the application deploys with.
 4. Use the matching `tako-sdk-js`, `tako-sdk-go`, or `tako-sdk-rust` skill when
    writing SDK code. Read `framework-guides` and its matching framework topic
    before changing an adapter. For image releases, read `docker`, `dockerfile`,
-   and `docker-workflows`; HTTP containers have different data/socket limits.
+   and `docker-workflows`; HTTP containers get app data as a mount and have no
+   internal socket.
 5. Without MCP, use `tako <command> --help` for exact flags and `--json` for
    structured results. Full docs: https://tako.sh/llms.txt.
 
@@ -61,6 +62,12 @@ checks exercise the same configuration the application deploys with.
 3. For production, inspect `tako_status`, `tako_releases_list`, and `tako_logs`.
    Use a finite log window rather than an unbounded tail. Distinguish build,
    readiness, routing/TLS, and application errors before changing code.
+   For a failing or stuck workflow run, read its stored state with
+   `tako_workflows_list` (filter `status: "dead"`) and `tako_workflows_show`:
+   the saved steps show the last checkpoint and the stored error shows what
+   failed after it. Retry only after fixing the cause; cancel stops a running
+   handler at its next checkpoint, not immediately. Both are writes that need
+   the user's authorization. These tools work on deployed environments only.
 4. Read `troubleshooting` and the relevant configuration or SDK docs. Fix the
    cause, then repeat the original request and check the resulting logs.
    Check output truncation before treating a log window as complete. If an MCP

@@ -2,6 +2,9 @@ use super::*;
 use rusqlite::types::Value;
 
 mod histories;
+mod operator;
+mod reclaim;
+mod schedules;
 
 fn opts() -> EnqueueOpts {
     EnqueueOpts::default()

@@ -51,6 +51,8 @@ export default {
 };
 ```
 
+On deploy or scale-down, Tako waits up to 30 seconds for an old instance's in-flight requests, `text/event-stream` responses included, before stopping it. On `SIGTERM` the SDK stops accepting connections and lets in-flight requests and streams finish for up to 8 seconds, then closes the rest abruptly, so clients see an error and retry instead of accepting a cut-off stream as complete. The fetch handler cannot accept WebSocket upgrades. For long-lived subscriptions use [channels](#channels): `tako-server` serves them, so deploys do not close them.
+
 ## Package Exports
 
 | Import path        | Purpose                                         | Key exports                                                                                                          |
@@ -128,7 +130,7 @@ if (!profile) {
 await tako.cache.delete(`profile:${userId}`);
 ```
 
-`get(key)` returns `undefined` for missing or expired keys. `put(key, value, { ttl })` stores a JSON-serializable value; `ttl` is milliseconds. `delete(key)` removes one key. Native dev and deploy runtimes store cache entries in Tako-managed local SQLite outside app backups. Container releases do not expose `TAKO_DATA_DIR` in v0, so the cache helper is unavailable there.
+`get(key)` returns `undefined` for missing or expired keys. `put(key, value, { ttl })` stores a JSON-serializable value; `ttl` is milliseconds. `delete(key)` removes one key. Native dev and deploy runtimes store cache entries in Tako-managed local SQLite outside app backups. Container releases set `TAKO_DATA_DIR` to the mounted app data path, but the cache file sits beside that mount in the container's own filesystem, so entries are lost when the container is replaced and are not shared between instances.
 
 ## Images
 
@@ -732,6 +734,8 @@ The handler's second argument is the workflow context. Use `ctx` in examples.
 | `ctx.runId`                   | The id of the current run                                                 |
 | `ctx.workflowName`            | The name of the current workflow                                          |
 | `ctx.attempt`                 | The current run attempt number (1-indexed; bumps on each run-level retry) |
+
+Step names must be unique within a run: `ctx.run`, `ctx.sleep`, and `ctx.waitFor` share one namespace. In loops, put an index or id in the name (``ctx.run(`reserve:${item.sku}`, ...)``). Using a name twice in one execution of the handler fails the run as `dead` immediately with an error naming the step; it never returns the first result. A step replayed from an earlier attempt still returns its saved result once per execution.
 
 `ctx.run` options:
 

@@ -1063,3 +1063,55 @@ fn postgres_same_process_reclaim_rejects_old_attempt() {
         .execute("DELETE FROM tako_workflows.runs WHERE app_id=$1", &[&app])
         .unwrap();
 }
+
+/// Operator commands belong to the management path. An app process may not
+/// list, show, retry, or cancel runs, neither its own nor another app's.
+#[test]
+fn operator_workflow_commands_are_rejected_on_the_internal_socket() {
+    let db = Arc::new(RunsDb::open_in_memory().unwrap());
+    let id = db
+        .enqueue("work", &serde_json::json!({}), &EnqueueOpts::default())
+        .unwrap()
+        .id;
+    let lookup = lookup_for([("app".to_string(), db.clone())].into());
+    // The peer is authorized as "app" for every command it sends.
+    let auth: PeerAuthFn = Arc::new(|app, _| {
+        (app == "app")
+            .then_some(())
+            .ok_or_else(|| "forbidden".to_string())
+    });
+    for app in ["app", "other"] {
+        for cmd in [
+            Command::ListWorkflowRuns {
+                app: app.into(),
+                status: None,
+                name: None,
+                limit: None,
+            },
+            Command::GetWorkflowRun {
+                app: app.into(),
+                id: id.clone(),
+            },
+            Command::RetryWorkflowRun {
+                app: app.into(),
+                id: id.clone(),
+            },
+            Command::CancelWorkflowRun {
+                app: app.into(),
+                id: id.clone(),
+            },
+        ] {
+            let response = handle_command(&lookup, None, Some(&auth), Some(1000), None, cmd);
+            assert!(
+                response
+                    .error_message()
+                    .is_some_and(|message| message.contains("not accepted on the internal socket")),
+                "{response:?}"
+            );
+        }
+    }
+    assert_eq!(
+        db.get_run(&id).unwrap().unwrap().status,
+        tako_core::WorkflowRunStatus::Pending
+    );
+}

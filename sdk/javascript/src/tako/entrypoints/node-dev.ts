@@ -25,7 +25,7 @@ void run(async (handleRequest) => {
     setDraining();
     void (async () => {
       await drainInProcessWorker();
-      close();
+      void close();
     })();
   });
 

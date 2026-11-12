@@ -49,7 +49,7 @@ const responsive = imageSrcSet("/images/hero.jpg", {
 
 Helpers support widths `320`, `640`, `960`, `1200`, and `1920`; `imageUrl` defaults to width `1200` and quality `75`. `imageSrcSet` requires a width and accepts `constrained`, `full-width`, or `fixed` layout, optional explicit widths, and a custom `sizes` string. In HTML use `srcset`; JSX uses `srcSet`.
 
-Local sources begin with `/`. Remote sources must be HTTP(S) URLs without embedded credentials. Do not feed private signed download URLs into a public optimizer.
+Local sources begin with `/`. Remote sources must be HTTP(S) URLs without embedded credentials, on a public host: Tako refuses a source that names or resolves to a private, loopback, link-local, reserved, or documentation address, including IPv6 forms that carry such an IPv4 address. Do not feed private signed download URLs into a public optimizer.
 
 ## Allow sources and output variants
 

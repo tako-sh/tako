@@ -2,14 +2,14 @@ use crate::commands::helpers;
 use crate::config::{ServersToml, TakoToml};
 
 #[derive(Debug, Clone)]
-pub(super) struct BackupTarget {
-    pub(super) app_name: String,
-    pub(super) env: String,
-    pub(super) remote_app_name: String,
-    pub(super) server_names: Vec<String>,
+pub(crate) struct BackupTarget {
+    pub(crate) app_name: String,
+    pub(crate) env: String,
+    pub(crate) remote_app_name: String,
+    pub(crate) server_names: Vec<String>,
 }
 
-pub(super) fn resolve_backup_target(
+pub(crate) fn resolve_backup_target(
     app_name: &str,
     requested_env: Option<&str>,
     requested_server: Option<&str>,
