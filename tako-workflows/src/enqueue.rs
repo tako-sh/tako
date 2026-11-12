@@ -433,7 +433,8 @@ impl RunsDb {
         }
     }
 
-    /// Newest runs first, at most `limit`, and whether more match.
+    /// Newest runs first, at most `limit` and the reply budget, and whether
+    /// more match.
     pub fn list_runs(
         &self,
         status: Option<WorkflowRunStatus>,
@@ -446,13 +447,7 @@ impl RunsDb {
             RunsDbBackend::Sqlite(db) => db.list_runs(status, name, fetch),
             RunsDbBackend::Postgres(db) => db.list_runs(status, name, fetch),
         }?;
-        let has_more = rows.len() > limit as usize;
-        let runs = rows
-            .into_iter()
-            .take(limit as usize)
-            .map(operator::SummaryRow::into_summary)
-            .collect::<Result<_, _>>()?;
-        Ok((runs, has_more))
+        operator::summary_page(rows, limit as usize)
     }
 
     /// Every field of a run with its most recent steps, capped for a

@@ -367,3 +367,46 @@ fn cancel_removes_parked_waits_and_retry_restarts_parked_runs() {
         assert_eq!(db.signal("approved", &serde_json::json!(true)).unwrap(), 1);
     });
 }
+
+/// JSON escapes a control character to six bytes, so byte caps alone do not
+/// bound a reply. Lists and runs stay inside the 1 MiB frame anyway.
+#[test]
+fn replies_fit_the_frame_with_escape_heavy_errors_and_long_names() {
+    each_store("operator_budget", |store| {
+        let db = &store.db;
+        let control = |bytes: usize| "\u{1}".repeat(bytes);
+        let (name, worker) = (control(4096), control(4096));
+        for index in 0..200 {
+            enqueue(db, &format!("r{index}"), &name, 1);
+        }
+        for _ in 0..200 {
+            let claimed = claim(db, &name, &worker);
+            db.fail(&claimed.id, &claimed.worker_id, &control(4096), None, true)
+                .unwrap();
+        }
+        let (runs, has_more) = db.list_runs(None, None, 200).unwrap();
+        let size = serde_json::to_vec(&runs).unwrap().len();
+        assert!(size <= 768 * 1024, "{size}");
+        assert!(has_more && !runs.is_empty() && runs.len() < 200);
+        assert!(runs.iter().all(|run| run.name.len() == 256));
+        assert!(runs.iter().all(|run| run.last_error_truncated));
+
+        enqueue(db, "parked", &name, 3);
+        let claimed = claim(db, &name, &worker);
+        let running = run(db, "parked");
+        assert_eq!(running.name.len(), 256);
+        assert_eq!(running.worker_id.unwrap().len(), 256);
+        db.wait_for_event(
+            "parked",
+            &claimed.worker_id,
+            &control(4096),
+            &control(4096),
+            None,
+        )
+        .unwrap();
+        let parked = run(db, "parked");
+        assert_eq!(parked.waits.len(), 1);
+        assert_eq!(parked.waits[0].step_name.len(), 256);
+        assert_eq!(parked.waits[0].event_name.len(), 256);
+    });
+}

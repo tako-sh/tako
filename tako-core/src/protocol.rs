@@ -514,6 +514,13 @@ pub const WORKFLOW_STEP_VALUE_MAX_BYTES: usize = 2 * 1024;
 /// `GetWorkflowRun` returns at most this many of the most recent steps, and
 /// at most this many event waits.
 pub const WORKFLOW_RUN_MAX_STEPS: usize = 100;
+/// Workflow, step and event names and claim owners are cut to at most this
+/// many bytes in `ListWorkflowRuns` and `GetWorkflowRun`.
+pub const WORKFLOW_NAME_MAX_BYTES: usize = 256;
+/// `ListWorkflowRuns` and `GetWorkflowRun` replies serialize to at most this
+/// many bytes, inside the 1 MiB frame. A list stops early and sets
+/// `has_more`; a run drops its oldest steps.
+pub const WORKFLOW_REPLY_MAX_BYTES: usize = 768 * 1024;
 
 /// Lifecycle status of a workflow run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

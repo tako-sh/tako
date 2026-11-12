@@ -2,19 +2,15 @@
 //! management reply types.
 
 use tako_core::{
-    CappedJson, WORKFLOW_LIST_ERROR_MAX_BYTES, WORKFLOW_RUN_ERROR_MAX_BYTES,
-    WORKFLOW_RUN_VALUE_MAX_BYTES, WORKFLOW_STEP_VALUE_MAX_BYTES, WorkflowRunDetail,
-    WorkflowRunStatus, WorkflowRunStep, WorkflowRunSummary, WorkflowRunWait,
+    CappedJson, WORKFLOW_LIST_ERROR_MAX_BYTES, WORKFLOW_NAME_MAX_BYTES, WORKFLOW_REPLY_MAX_BYTES,
+    WORKFLOW_RUN_ERROR_MAX_BYTES, WORKFLOW_RUN_VALUE_MAX_BYTES, WORKFLOW_STEP_VALUE_MAX_BYTES,
+    WorkflowRunDetail, WorkflowRunStatus, WorkflowRunStep, WorkflowRunSummary, WorkflowRunWait,
 };
 
 use super::RunsDbError;
 
 /// Stored as the error of a run an operator cancels.
 pub const OPERATOR_CANCEL_REASON: &str = "cancelled by operator";
-
-/// Serialized `GetWorkflowRun` replies stay below this, well inside the 1 MiB
-/// JSONL frame, after the per-field caps. Older steps are dropped to fit.
-const RUN_DETAIL_BUDGET_BYTES: usize = 768 * 1024;
 
 /// One `runs` row without its payload or result.
 pub(crate) struct SummaryRow {
@@ -107,6 +103,12 @@ fn due_time(run_at: i64) -> Option<i64> {
     (run_at != i64::MAX).then_some(run_at)
 }
 
+/// Raw text serializes to at most six bytes per byte (`\u001f`), so every
+/// capped field has a known worst case on the wire.
+fn capped_name(name: &str) -> String {
+    cap_text(name, WORKFLOW_NAME_MAX_BYTES).0
+}
+
 fn capped_error(error: Option<&str>, max: usize) -> (Option<String>, bool) {
     match error {
         Some(error) => {
@@ -124,7 +126,7 @@ impl SummaryRow {
         Ok(WorkflowRunSummary {
             status: parse_status(&self.status)?,
             id: self.id,
-            name: self.name,
+            name: capped_name(&self.name),
             attempts: self.attempts.max(0) as u32,
             max_attempts: self.max_attempts.max(0) as u32,
             created_at_ms: self.created_at,
@@ -134,6 +136,29 @@ impl SummaryRow {
             last_error_truncated,
         })
     }
+}
+
+/// Summaries of `rows` (newest first), at most `limit` and at most
+/// [`WORKFLOW_REPLY_MAX_BYTES`] serialized, and whether more rows match.
+/// Fetch `limit + 1` rows so a full page can report `has_more`.
+pub(crate) fn summary_page(
+    rows: Vec<SummaryRow>,
+    limit: usize,
+) -> Result<(Vec<WorkflowRunSummary>, bool), RunsDbError> {
+    let mut has_more = rows.len() > limit;
+    let mut runs = Vec::new();
+    // Envelope and the surrounding list brackets.
+    let mut size = 256;
+    for row in rows.into_iter().take(limit) {
+        let summary = row.into_summary()?;
+        size += serde_json::to_vec(&summary)?.len() + 1;
+        if size > WORKFLOW_REPLY_MAX_BYTES {
+            has_more = true;
+            break;
+        }
+        runs.push(summary);
+    }
+    Ok((runs, has_more))
 }
 
 impl RunRecord {
@@ -152,21 +177,21 @@ impl RunRecord {
             .rev()
             .map(|step| WorkflowRunStep {
                 result: cap_json(&step.result, WORKFLOW_STEP_VALUE_MAX_BYTES),
-                name: step.name,
+                name: capped_name(&step.name),
                 completed_at_ms: step.completed_at,
             })
             .collect();
         let mut detail = WorkflowRunDetail {
             status: parse_status(&summary.status)?,
             id: summary.id,
-            name: summary.name,
+            name: capped_name(&summary.name),
             attempts: summary.attempts.max(0) as u32,
             max_attempts: summary.max_attempts.max(0) as u32,
             created_at_ms: summary.created_at,
             run_at_ms: due_time(summary.run_at),
             finished_at_ms: summary.finished_at,
             lease_until_ms: run.lease_until,
-            worker_id: run.worker_id,
+            worker_id: run.worker_id.as_deref().map(capped_name),
             last_error,
             last_error_truncated,
             payload: cap_json(&run.payload, WORKFLOW_RUN_VALUE_MAX_BYTES),
@@ -179,19 +204,21 @@ impl RunRecord {
             waits: waits
                 .into_iter()
                 .map(|wait| WorkflowRunWait {
-                    step_name: wait.step_name,
-                    event_name: wait.event_name,
+                    step_name: capped_name(&wait.step_name),
+                    event_name: capped_name(&wait.event_name),
                     expires_at_ms: wait.expires_at,
                 })
                 .collect(),
         };
-        // Long step or event names are not capped individually. Keep the
-        // newest steps that fit the reply budget.
-        let mut size = serde_json::to_vec(&detail)?.len();
+        // Everything but the steps fits the budget in the worst case: the
+        // payload and result previews escape to at most 64 KiB each, the error
+        // to 48 KiB, and 100 waits with escape-heavy names to about 310 KiB.
+        // Keep the newest steps that fit the rest.
+        let mut size = serde_json::to_vec(&detail)?.len() + 256;
         let mut keep = 0;
         for step in steps.iter().rev() {
             let step_size = serde_json::to_vec(step)?.len() + 1;
-            if size + step_size > RUN_DETAIL_BUDGET_BYTES {
+            if size + step_size > WORKFLOW_REPLY_MAX_BYTES {
                 break;
             }
             size += step_size;
@@ -242,8 +269,7 @@ mod tests {
     fn huge_values_cannot_push_a_run_reply_past_the_frame_limit() {
         let huge = format!("\"{}\"", "\"".repeat(1024 * 1024));
         let step = |index: usize| StepRow {
-            // Step names are not capped; the reply budget still holds.
-            name: format!("{index}:{}", "n".repeat(16 * 1024)),
+            name: format!("{index}:{}", "\u{1}".repeat(16 * 1024)),
             result: huge.clone(),
             completed_at: index as i64,
         };
@@ -258,11 +284,18 @@ mod tests {
             // Newest first, as the backends return them.
             steps: (0..100).rev().map(step).collect(),
             steps_total: 250,
-            waits: Vec::new(),
+            // Escape-heavy waits leave room for only some of the steps.
+            waits: (0..100)
+                .map(|_| WaitRow {
+                    step_name: "\u{1}".repeat(1024),
+                    event_name: "\u{1}".repeat(1024),
+                    expires_at: None,
+                })
+                .collect(),
         };
         let detail = record.into_detail().unwrap();
         let size = serde_json::to_vec(&detail).unwrap().len();
-        assert!(size <= RUN_DETAIL_BUDGET_BYTES, "{size}");
+        assert!(size <= WORKFLOW_REPLY_MAX_BYTES, "{size}");
         assert!(detail.payload.truncated && detail.result.as_ref().unwrap().truncated);
         assert_eq!(detail.payload.bytes, huge.len() as u64);
         assert!(detail.last_error_truncated);
@@ -289,5 +322,50 @@ mod tests {
             summary.last_error.unwrap().len(),
             WORKFLOW_LIST_ERROR_MAX_BYTES
         );
+    }
+
+    #[test]
+    fn a_run_with_every_field_at_its_worst_case_fits_the_reply_budget() {
+        // Raw control characters escape to six bytes each.
+        let control = |bytes: usize| "\u{1}".repeat(bytes);
+        // Stored JSON text has no raw control characters; quotes escape to two.
+        let huge = format!("\"{}\"", "\\\"".repeat(512 * 1024));
+        let mut summary = row("run");
+        summary.name = control(64 * 1024);
+        summary.last_error = Some(control(64 * 1024));
+        let record = RunRecord {
+            run: RunRow {
+                summary,
+                payload: huge.clone(),
+                result: Some(huge.clone()),
+                lease_until: Some(1),
+                worker_id: Some(control(64 * 1024)),
+            },
+            steps: (0..100)
+                .rev()
+                .map(|index| StepRow {
+                    name: control(16 * 1024),
+                    result: huge.clone(),
+                    completed_at: index,
+                })
+                .collect(),
+            steps_total: 100,
+            waits: (0..100)
+                .map(|_| WaitRow {
+                    step_name: control(16 * 1024),
+                    event_name: control(16 * 1024),
+                    expires_at: Some(1),
+                })
+                .collect(),
+        };
+        let detail = record.into_detail().unwrap();
+        let size = serde_json::to_vec(&detail).unwrap().len();
+        assert!(size <= 768 * 1024, "{size}");
+        assert_eq!(detail.waits.len(), 100, "waits are never dropped");
+        assert!(!detail.steps.is_empty());
+        assert_eq!(detail.name.len(), 256);
+        assert_eq!(detail.worker_id.unwrap().len(), 256);
+        assert!(detail.steps.iter().all(|step| step.name.len() == 256));
+        assert!(detail.waits.iter().all(|wait| wait.step_name.len() == 256));
     }
 }
