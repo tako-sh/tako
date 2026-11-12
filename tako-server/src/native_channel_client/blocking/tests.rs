@@ -58,6 +58,36 @@ fn parameterized_publications_reach_the_broker_by_stream_key_and_ack_the_public_
     );
 }
 #[test]
+fn closes_reach_the_broker_as_markers_and_closed_streams_reject_by_name() {
+    let link = Arc::new(FakeBroker::default());
+    let publisher = BlockingPublisher::with_link(link.clone()).unwrap();
+    let params = serde_json::json!({"room": "a"});
+    let close = TrustedPublication::close(
+        "events",
+        &params,
+        Some(serde_json::json!({"replayWindowMs": 1000})),
+    )
+    .unwrap();
+    let marker = publisher.publish("chat", &close, None).unwrap();
+    assert_eq!(marker["channel"], "events");
+    assert_eq!(marker["type"], tako_channels::CLOSE_MESSAGE_TYPE);
+    assert_eq!(*link.calls.lock(), vec!["register", "sync", "publish"]);
+
+    link.closed.store(true, Ordering::SeqCst);
+    let error = publisher
+        .publish(
+            "chat",
+            &publication(
+                "events",
+                params,
+                serde_json::json!({"type":"update", "data":1}),
+            ),
+            None,
+        )
+        .unwrap_err();
+    assert_eq!(error, "channel stream is closed");
+}
+#[test]
 fn failed_registration_never_dispatches_publication_and_redacts_credentials() {
     let link = Arc::new(FakeBroker::default());
     link.reject.store(true, Ordering::SeqCst);

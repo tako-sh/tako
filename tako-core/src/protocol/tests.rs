@@ -721,3 +721,50 @@ fn test_server_runtime_info_pid_roundtrip() {
         Some("SHA256:testidentity")
     );
 }
+
+#[test]
+fn channel_close_command_roundtrip() {
+    let wire = serde_json::json!({
+        "command": "channel_close",
+        "app": "app/production",
+        "channel": "chat",
+        "params": {"room": "a"},
+        "build": "v1",
+        "lifecycle": {"replayWindowMs": 1000}
+    });
+    let command: Command = serde_json::from_value(wire.clone()).unwrap();
+    let Command::ChannelClose {
+        app,
+        channel,
+        params,
+        build,
+        lifecycle,
+    } = &command
+    else {
+        panic!("expected channel_close, got {command:?}");
+    };
+    assert_eq!(
+        (app.as_str(), channel.as_str(), build.as_deref()),
+        ("app/production", "chat", Some("v1"))
+    );
+    assert_eq!(params, &serde_json::json!({"room": "a"}));
+    assert_eq!(
+        lifecycle,
+        &Some(serde_json::json!({"replayWindowMs": 1000}))
+    );
+    assert_eq!(serde_json::to_value(&command).unwrap(), wire);
+    // Params, build and lifecycle are optional, as for channel_publish.
+    let bare: Command = serde_json::from_value(serde_json::json!({
+        "command": "channel_close", "app": "app", "channel": "chat"
+    }))
+    .unwrap();
+    assert!(matches!(
+        bare,
+        Command::ChannelClose {
+            params: serde_json::Value::Null,
+            build: None,
+            lifecycle: None,
+            ..
+        }
+    ));
+}

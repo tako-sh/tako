@@ -441,6 +441,108 @@ async fn remote_ingest_is_idempotent_not_echoed_and_notified_without_repersistin
     );
 }
 #[tokio::test]
+async fn closing_replicates_the_marker_once_and_closed_streams_reject_publishes() {
+    let (_temp, mut broker) = new_broker().await;
+    let (_, _, _, _, mb) = identities();
+    let (sender, mut outgoing) = wire::queue(Budget::new(16 * MAX_FRAME));
+    broker.peers.insert(mb.device_id, sender);
+    let Reply::Subscription(mut notices) = broker
+        .local(Request::Subscribe { app: app() })
+        .await
+        .unwrap()
+    else {
+        panic!()
+    };
+    let sent = publish(&mut broker, 1).await;
+    let close = ChannelPublishPayload {
+        r#type: tako_channels::CLOSE_MESSAGE_TYPE.into(),
+        data: serde_json::Value::Null,
+    };
+    let request = |payload: ChannelPublishPayload| Request::Publish {
+        app: app(),
+        channel: "events".into(),
+        payload,
+        ephemeral: false,
+    };
+    let Reply::Response(Response::Published { message: marker }) =
+        broker.local(request(close.clone())).await.unwrap()
+    else {
+        panic!("close rejected")
+    };
+    assert!(tako_channels::is_close_marker(&marker));
+    // Closing again returns the marker without committing, notifying, or
+    // fencing replay.
+    let Reply::Response(Response::Published { message: again }) =
+        broker.local(request(close)).await.unwrap()
+    else {
+        panic!("repeated close rejected")
+    };
+    assert_eq!(again.id, marker.id);
+    let mut notified = 0;
+    while let Ok(packet) = notices.try_recv() {
+        let Notice::Notification { notification } = serde_json::from_slice(&packet.bytes).unwrap()
+        else {
+            panic!()
+        };
+        assert!(matches!(notification, Notification::Committed { .. }));
+        notified += 1;
+    }
+    assert_eq!(notified, 2);
+    // Over IPC, a publish to the closed stream is answered by name.
+    let (commands, receiver) = mpsc::channel(8);
+    let (_control, control_rx) = watch::channel(broker::Control::default());
+    let (shutdown, shutdown_rx) = watch::channel(false);
+    let store = broker.apps[&app()].store.clone();
+    let actor = tokio::spawn(broker::run(broker, receiver, control_rx, shutdown_rx));
+    let (mut client, server) = tokio::io::duplex(8192);
+    let task = tokio::spawn(ipc::serve(
+        server,
+        commands,
+        Budget::new(MAX_FRAME),
+        Budget::new(8 * MAX_FRAME),
+    ));
+    wire::write(&mut client, &request(payload(2)))
+        .await
+        .unwrap();
+    let response: Response = wire::read(&mut client, &Budget::new(MAX_FRAME))
+        .await
+        .unwrap()
+        .value;
+    task.await.unwrap().unwrap();
+    assert!(matches!(response, Response::StreamClosed));
+    shutdown.send_replace(true);
+    actor.await.unwrap().unwrap();
+
+    // Peers received the message and the marker, each exactly once.
+    let mut replicated = Vec::new();
+    while let Ok(packet) = outgoing.try_recv() {
+        let Frame::Publication {
+            publication: ChannelPublication::Event(event),
+            ..
+        } = serde_json::from_slice(&packet.bytes).unwrap()
+        else {
+            panic!("unexpected frame");
+        };
+        replicated.push(event.payload.r#type);
+    }
+    assert_eq!(
+        replicated,
+        vec!["update", tako_channels::CLOSE_MESSAGE_TYPE]
+    );
+    // The broker fenced replay when it stopped; the history itself is intact.
+    let retained = store.read_after("events", None, 10).unwrap();
+    assert_eq!(
+        retained
+            .iter()
+            .map(|message| (message.event_id.clone(), message.r#type.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            (sent.event_id, "update"),
+            (marker.event_id, tako_channels::CLOSE_MESSAGE_TYPE)
+        ]
+    );
+}
+#[tokio::test]
 async fn unknown_remote_app_never_creates_database() {
     let (temp, mut broker) = new_broker().await;
     broker

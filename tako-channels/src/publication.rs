@@ -2,9 +2,10 @@
 
 use crate::live_store::{STORE_CHANNEL_PREFIX, publication_channel};
 use crate::params::{ParamsError, validate_value};
+use crate::stream::close_payload;
 use crate::{
-    ChannelAuthResponse, ChannelDefinitionMeta, ChannelError, ChannelLifecycle, ChannelMessage,
-    ChannelPublishPayload, ChannelStore, ChannelStream,
+    CLOSE_MESSAGE_TYPE, ChannelAuthResponse, ChannelDefinitionMeta, ChannelError, ChannelLifecycle,
+    ChannelMessage, ChannelPublishPayload, ChannelStore, ChannelStream, PRESENCE_CHANNEL_PREFIX,
 };
 use serde_json::Value;
 
@@ -32,13 +33,54 @@ impl TrustedPublication {
             .map(serde_json::from_value::<ChannelLifecycle>)
             .transpose()
             .map_err(|e| ChannelError::BadRequest(format!("invalid channel lifecycle: {e}")))?;
-        let payload = serde_json::from_value(payload)
+        let payload: ChannelPublishPayload = serde_json::from_value(payload)
             .map_err(|e| ChannelError::BadRequest(format!("invalid payload: {e}")))?;
+        if payload.r#type == CLOSE_MESSAGE_TYPE {
+            return Err(ChannelError::BadRequest(format!(
+                "message type '{CLOSE_MESSAGE_TYPE}' is reserved: close the stream instead"
+            )));
+        }
         Ok(Self {
             stream,
             payload,
             lifecycle,
         })
+    }
+
+    /// One `channel_close` command: the terminal marker of the stream its
+    /// params select. Only durable channel streams can be closed: an
+    /// ephemeral stream retains nothing a marker could follow, and Stores and
+    /// presence spaces are not message streams.
+    pub fn close(
+        channel: &str,
+        params: &Value,
+        lifecycle: Option<Value>,
+    ) -> Result<Self, ChannelError> {
+        if channel.starts_with(STORE_CHANNEL_PREFIX) || channel.starts_with(PRESENCE_CHANNEL_PREFIX)
+        {
+            return Err(ChannelError::BadRequest(
+                "only channel streams can be closed".into(),
+            ));
+        }
+        let stream = ChannelStream::for_publish(channel, params)?;
+        let lifecycle = lifecycle
+            .map(serde_json::from_value::<ChannelLifecycle>)
+            .transpose()
+            .map_err(|e| ChannelError::BadRequest(format!("invalid channel lifecycle: {e}")))?;
+        let publication = Self {
+            stream,
+            payload: close_payload(),
+            lifecycle,
+        };
+        if publication.ephemeral() {
+            return Err(ephemeral_close());
+        }
+        Ok(publication)
+    }
+
+    /// Whether this publication closes its stream.
+    pub fn is_close(&self) -> bool {
+        self.payload.r#type == CLOSE_MESSAGE_TYPE
     }
 
     pub fn ephemeral(&self) -> bool {
@@ -51,6 +93,23 @@ impl TrustedPublication {
     pub fn lifecycle_auth(&self) -> Option<ChannelAuthResponse> {
         self.lifecycle.as_ref().map(ChannelLifecycle::auth)
     }
+}
+
+fn ephemeral_close() -> ChannelError {
+    ChannelError::BadRequest("ephemeral channel streams cannot be closed".into())
+}
+
+/// Check a publication against the publisher's channel definition: params as
+/// subscribe params are checked, and a close only on a durable channel.
+pub fn validate_publication(
+    definition: &ChannelDefinitionMeta,
+    publication: &TrustedPublication,
+    params: &Value,
+) -> Result<(), ChannelError> {
+    if publication.is_close() && definition.lifecycle.ephemeral {
+        return Err(ephemeral_close());
+    }
+    validate_publish_params(definition, params)
 }
 
 /// Check publish params against the publisher's channel definition, as

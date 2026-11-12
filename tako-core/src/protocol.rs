@@ -411,6 +411,22 @@ pub enum Command {
         build: Option<String>,
         payload: serde_json::Value,
     },
+    /// Server-side close of a channel stream: appends a durable terminal
+    /// marker after which the stream accepts no publishes. `channel`, `params`
+    /// and `build` select and check the stream as for `ChannelPublish`.
+    /// `lifecycle` is the channel definition's lifecycle, the shape a publish
+    /// payload's `lifecycle` has; ephemeral streams cannot be closed. Closing
+    /// a closed stream succeeds.
+    ChannelClose {
+        app: String,
+        channel: String,
+        #[serde(default)]
+        params: serde_json::Value,
+        #[serde(default)]
+        build: Option<String>,
+        #[serde(default)]
+        lifecycle: Option<serde_json::Value>,
+    },
     /// Authenticated app-to-app call. `app` is the caller, never the destination.
     NetworkCall {
         app: String,

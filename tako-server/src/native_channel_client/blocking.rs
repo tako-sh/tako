@@ -5,7 +5,9 @@ use std::{
     sync::{Arc, mpsc},
     time::{Duration, Instant},
 };
-use tako_channels::{ChannelLifecycle, ChannelMessage, ChannelPublishPayload, TrustedPublication};
+use tako_channels::{
+    ChannelError, ChannelLifecycle, ChannelMessage, ChannelPublishPayload, TrustedPublication,
+};
 use tako_network::AppEnv;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use zeroize::Zeroizing;
@@ -145,7 +147,13 @@ async fn send(link: &dyn BrokerLink, publication: &Publication) -> Result<Channe
             .is_some_and(|lifecycle| lifecycle.ephemeral),
     )
     .await
-    .map_err(|_| "native channel publication rejected or acknowledgement lost".into())
+    .map_err(|error| {
+        if crate::native_channels::is_stream_closed(&error) {
+            ChannelError::StreamClosed.to_string()
+        } else {
+            "native channel publication rejected or acknowledgement lost".into()
+        }
+    })
 }
 
 #[cfg(test)]

@@ -124,3 +124,145 @@ async fn params_select_the_stream_subscribers_and_publishers_share() {
             .is_empty()
     );
 }
+
+#[tokio::test]
+async fn closed_streams_replay_from_start_and_end_readers_as_in_production() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let app_port = registry_app(json!([{
+        "channel": "feed",
+        "paramsSchema": {
+            "type": "object",
+            "properties": {"id": {"type": "integer"}},
+            "required": ["id"],
+            "additionalProperties": false
+        },
+        "auth": false,
+        "transport": "ws",
+        "maxConnectionLifetimeMs": 3000,
+    }]))
+    .await;
+    let routes = crate::proxy::Routes::default();
+    routes.set_routes("app".into(), vec!["app.test".into()], app_port, true);
+    routes.set_store_auth("app", "app.tako".into(), "test-token".into());
+    let target = routes.lookup("app.test", "/").unwrap();
+    let app_id = target.channel_store_key.clone();
+    let dev_store = DevChannelStore::new();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = listener.local_addr().unwrap();
+    {
+        let dev_store = dev_store.clone();
+        tokio::spawn(async move {
+            loop {
+                let (socket, _) = listener.accept().await.unwrap();
+                let (dev_store, target) = (dev_store.clone(), target.clone());
+                tokio::spawn(async move {
+                    let mut session = Session::new_h1(Box::new(Stream::from(socket)));
+                    session.read_request().await.unwrap();
+                    let path = session.req_header().uri.path().to_owned();
+                    let _ = try_handle(&mut session, &dev_store, &target, &path, "GET").await;
+                });
+            }
+        });
+    }
+    // The internal socket's close command, as main.rs applies it.
+    let write = |write: tako_workflows::ChannelWrite| {
+        let publication = trusted_publication(tako_workflows::ChannelPublishRequest {
+            app: &app_id,
+            channel: "feed",
+            params: &json!({"id": 1}),
+            build: None,
+            write,
+        })?;
+        dev_store.publish(&app_id, &publication)
+    };
+    let token =
+        |data: &str| tako_workflows::ChannelWrite::Publish(json!({"type": "token", "data": data}));
+    let first = write(token("hel")).unwrap();
+    write(token("lo")).unwrap();
+    let close = || tako_workflows::ChannelWrite::Close { lifecycle: None };
+    let marker = write(close()).unwrap();
+    assert_eq!(marker.channel, "feed");
+    assert_eq!(write(close()).unwrap().id, marker.id);
+    assert!(matches!(
+        write(token("late")),
+        Err(ChannelError::StreamClosed)
+    ));
+    assert!(matches!(
+        write(tako_workflows::ChannelWrite::Close {
+            lifecycle: Some(json!({"ephemeral": true}))
+        }),
+        Err(ChannelError::BadRequest(_))
+    ));
+
+    let request = |query: &str, headers: &str| {
+        let request = format!(
+            "GET /_tako/channels/feed?{query} HTTP/1.1\r\nHost: app.test\r\n{headers}Connection: close\r\n\r\n"
+        );
+        async move {
+            let mut client = tokio::net::TcpStream::connect(endpoint).await.unwrap();
+            client.write_all(request.as_bytes()).await.unwrap();
+            let mut response = Vec::new();
+            tokio::time::timeout(Duration::from_secs(2), client.read_to_end(&mut response))
+                .await
+                .expect("a closed stream ends the response")
+                .unwrap();
+            response
+        }
+    };
+    let close_event = format!("id: {}\nevent: tako.close\ndata: {{}}\n\n", marker.id);
+    let data = |response: &[u8]| -> Vec<serde_json::Value> {
+        std::str::from_utf8(response)
+            .unwrap()
+            .lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .map(|data| serde_json::from_str(data).unwrap())
+            .collect()
+    };
+    let replay = request("id=1&from=start", "").await;
+    let text = String::from_utf8_lossy(&replay).into_owned();
+    assert_eq!(
+        data(&replay)
+            .iter()
+            .map(|message| message.get("data").cloned())
+            .collect::<Vec<_>>(),
+        vec![Some(json!("hel")), Some(json!("lo")), None],
+        "{text}"
+    );
+    assert!(text.contains(&close_event), "{text}");
+    assert!(!text.contains("tako.stream"), "{text}");
+    for (query, headers, count) in [
+        (
+            "id=1&from=start",
+            format!("Last-Event-ID: {}\r\n", first.id),
+            2,
+        ),
+        ("id=1", String::new(), 1),
+    ] {
+        let response = request(query, &headers).await;
+        assert_eq!(data(&response).len(), count, "{query}");
+        assert!(String::from_utf8_lossy(&response).contains(&close_event));
+    }
+    let invalid = request("id=1&from=end", "").await;
+    assert!(invalid.starts_with(b"HTTP/1.1 400"));
+
+    // WebSocket readers end with the stream-closed close frame.
+    let upgrade = "Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n";
+    let mut close_frame = vec![0x88, 15];
+    close_frame.extend_from_slice(&4200u16.to_be_bytes());
+    close_frame.extend_from_slice(b"stream-closed");
+    for (query, texts) in [
+        ("id=1&from=start".to_owned(), 2),
+        (format!("id=1&from=start&last_message_id={}", first.id), 1),
+        ("id=1".to_owned(), 0),
+    ] {
+        let response = request(&query, upgrade).await;
+        assert!(response.starts_with(b"HTTP/1.1 101"), "{query}");
+        assert!(response.ends_with(&close_frame), "{query}");
+        // Text frames start with 0x81, a byte no JSON payload or header contains.
+        assert_eq!(
+            response.iter().filter(|byte| **byte == 0x81).count(),
+            texts,
+            "{query}"
+        );
+    }
+}

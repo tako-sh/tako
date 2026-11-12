@@ -47,7 +47,7 @@ impl TakoProxy {
         session: &mut Session,
         store: &Arc<ProxyChannelStore>,
         stream: &tako_channels::ChannelStream,
-        query_after: Option<tako_channels::ReplayCursor>,
+        requested: tako_channels::ReplayFrom,
         presence_params: serde_json::Value,
         auth_mode: ChannelWebSocketAuth,
     ) -> Result<bool> {
@@ -70,8 +70,8 @@ impl TakoProxy {
             .await?;
 
         let mut reader = WebSocketFrameReader::default();
-        let (auth, requested_after) = match auth_mode {
-            ChannelWebSocketAuth::Authorized(auth) => (auth, query_after),
+        let (auth, requested) = match auth_mode {
+            ChannelWebSocketAuth::Authorized(auth) => (auth, requested),
             ChannelWebSocketAuth::FirstFrame {
                 endpoint,
                 internal_host,
@@ -150,7 +150,8 @@ impl TakoProxy {
                     }
                 };
 
-                (auth, parsed.last_message_id.or(query_after))
+                // An auth-frame cursor wins over the query's cursor or `from`.
+                (auth, requested.or_cursor(parsed.last_message_id))
             }
         };
 
@@ -158,7 +159,7 @@ impl TakoProxy {
             session,
             store.store(),
             stream,
-            requested_after,
+            requested,
             auth,
             presence_params,
             reader,

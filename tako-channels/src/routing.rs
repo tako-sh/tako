@@ -55,3 +55,55 @@ pub fn parse_ws_last_message_id(query: Option<&str>) -> Result<Option<ReplayCurs
 
     Ok(None)
 }
+
+/// Where a reader starts: after an explicit cursor, at the oldest retained
+/// message, or at the head.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ReplayFrom {
+    #[default]
+    Head,
+    Start,
+    After(ReplayCursor),
+}
+
+impl ReplayFrom {
+    /// An explicit cursor wins over `from=start`.
+    pub fn new(cursor: Option<ReplayCursor>, from_start: bool) -> Self {
+        match cursor {
+            Some(cursor) => Self::After(cursor),
+            None if from_start => Self::Start,
+            None => Self::Head,
+        }
+    }
+
+    /// Prefer `cursor`, such as one from a WebSocket auth frame, when given.
+    pub fn or_cursor(self, cursor: Option<ReplayCursor>) -> Self {
+        cursor.map_or(self, Self::After)
+    }
+}
+
+/// Read the reserved `from` query key of a channel route. `from=start`
+/// replays every retained message; any other value is rejected so a param
+/// cannot hide behind the name.
+pub fn parse_replay_from(query: Option<&str>) -> Result<bool, ChannelError> {
+    let mut from_start = false;
+    for pair in query.unwrap_or_default().split('&') {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let decode = |part: &str| {
+            percent_decode_str(&part.replace('+', " "))
+                .decode_utf8()
+                .map(|part| part.into_owned())
+                .map_err(|_| ChannelError::BadRequest("invalid query encoding".to_string()))
+        };
+        if decode(key)? != "from" {
+            continue;
+        }
+        if decode(value)? != "start" {
+            return Err(ChannelError::BadRequest(
+                "invalid 'from': expected 'start'".to_string(),
+            ));
+        }
+        from_start = true;
+    }
+    Ok(from_start)
+}

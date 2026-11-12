@@ -120,14 +120,28 @@ pub(crate) fn trusted_publication(
     registry: &registry::ChannelRegistry,
     request: tako_workflows::ChannelPublishRequest<'_>,
 ) -> Result<TrustedPublication, ChannelError> {
-    let publication = TrustedPublication::parse(request.channel, request.params, request.payload)?;
+    let publication = parse_trusted_publication(&request)?;
     if let Some(definition) = request
         .build
         .and_then(|build| registry.cached(request.app, build, request.channel))
     {
-        validate_publish_params(&definition, request.params)?;
+        validate_publication(&definition, &publication, request.params)?;
     }
     Ok(publication)
+}
+
+/// A publish appends its payload; a close appends the stream's terminal marker.
+pub(crate) fn parse_trusted_publication(
+    request: &tako_workflows::ChannelPublishRequest<'_>,
+) -> Result<TrustedPublication, ChannelError> {
+    match &request.write {
+        tako_workflows::ChannelWrite::Publish(payload) => {
+            TrustedPublication::parse(request.channel, request.params, payload.clone())
+        }
+        tako_workflows::ChannelWrite::Close { lifecycle } => {
+            TrustedPublication::close(request.channel, request.params, lifecycle.clone())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -162,7 +176,9 @@ mod tests {
                     channel: "chat",
                     params: &params,
                     build,
-                    payload: serde_json::json!({"type": "msg", "data": 1}),
+                    write: tako_workflows::ChannelWrite::Publish(
+                        serde_json::json!({"type": "msg", "data": 1}),
+                    ),
                 },
             )
         };
@@ -182,6 +198,58 @@ mod tests {
         assert!(publish(serde_json::json!({"rom": "a"}), Some("v2")).is_ok());
         assert!(publish(serde_json::json!({"rom": "a"}), None).is_ok());
         assert!(publish(serde_json::json!(["a"]), None).is_err());
+    }
+
+    #[tokio::test]
+    async fn trusted_closes_are_checked_like_publishes_and_only_on_durable_channels() {
+        let registry = registry::ChannelRegistry::new();
+        let definition = |channel: &str, ephemeral: bool| -> ChannelDefinitionMeta {
+            serde_json::from_value(serde_json::json!({
+                "channel": channel,
+                "paramsSchema": {
+                    "type": "object",
+                    "properties": {"room": {"type": "string"}},
+                    "required": ["room"],
+                    "additionalProperties": false
+                },
+                "auth": false,
+                "ephemeral": ephemeral
+            }))
+            .unwrap()
+        };
+        registry
+            .get_or_load("app/production", "v1", "chat", || async {
+                Ok(vec![definition("chat", false), definition("live", true)])
+            })
+            .await
+            .unwrap();
+        let close = |channel: &str, params: serde_json::Value| {
+            trusted_publication(
+                &registry,
+                tako_workflows::ChannelPublishRequest {
+                    app: "app/production",
+                    channel,
+                    params: &params,
+                    build: Some("v1"),
+                    write: tako_workflows::ChannelWrite::Close { lifecycle: None },
+                },
+            )
+        };
+        let closed = close("chat", serde_json::json!({"room": "a"})).unwrap();
+        assert!(closed.is_close());
+        assert_eq!(
+            closed.stream,
+            ChannelStream::new("chat", &serde_json::json!({"room": "a"}))
+        );
+        for (channel, params) in [
+            ("chat", serde_json::json!({"rom": "a"})),
+            ("live", serde_json::json!({"room": "a"})),
+        ] {
+            assert!(matches!(
+                close(channel, params),
+                Err(ChannelError::BadRequest(_))
+            ));
+        }
     }
 
     #[test]

@@ -173,7 +173,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = paths::tako_data_dir().unwrap_or_else(|_| PathBuf::from("."));
     let workflows = Arc::new(tako_workflows::WorkflowManager::new(&data_dir));
 
-    // Server-side channel `.publish()` — goes through the internal
+    // Server-side channel `.publish()` and `.close()` — go through the internal
     // socket straight to the channel store, no HTTPS/auth roundtrip.
     {
         let channels = channels.clone();
@@ -181,14 +181,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // their stream without a schema check.
         workflows.set_channel_publisher(std::sync::Arc::new(
             move |request: tako_workflows::ChannelPublishRequest<'_>| {
-                let publication = tako_channels::TrustedPublication::parse(
-                    request.channel,
-                    request.params,
-                    request.payload,
-                )
-                .map_err(|error| error.to_string())?;
+                let app = request.app;
+                let publication = dev_channels::trusted_publication(request)
+                    .map_err(|error| error.to_string())?;
                 channels
-                    .publish(request.app, &publication)
+                    .publish(app, &publication)
                     .map(|msg| serde_json::to_value(msg).unwrap_or(serde_json::Value::Null))
                     .map_err(|e| e.to_string())
             },

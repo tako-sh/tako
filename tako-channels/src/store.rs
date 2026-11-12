@@ -6,8 +6,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::stream::close_payload;
 use crate::{
-    ChannelAuthResponse, ChannelError, ChannelMessage, ChannelPublishPayload, ReplayCursor,
+    CLOSE_MESSAGE_TYPE, ChannelAuthResponse, ChannelError, ChannelMessage, ChannelPublishPayload,
+    ReplayCursor, ReplayFrom,
 };
 use postgres::PostgresChannelStore;
 use sqlite::SqliteChannelStore;
@@ -216,6 +218,28 @@ impl ChannelStore {
             .await
     }
 
+    pub async fn close_marker_async(
+        self: &Arc<Self>,
+        channel: &str,
+    ) -> Result<Option<ChannelMessage>, ChannelError> {
+        let channel = channel.to_owned();
+        self.run(move |store| store.close_marker(&channel)).await
+    }
+
+    /// Resolve where a reader starts. `None` means every retained message:
+    /// retention may already have dropped the beginning, which is no reset.
+    pub async fn replay_from_async(
+        self: &Arc<Self>,
+        channel: &str,
+        from: ReplayFrom,
+    ) -> Result<Option<ReplayCursor>, ChannelError> {
+        match from {
+            ReplayFrom::Head => self.replay_cursor_async(channel, None).await,
+            ReplayFrom::After(cursor) => self.replay_cursor_async(channel, Some(cursor)).await,
+            ReplayFrom::Start => Ok(None),
+        }
+    }
+
     pub async fn sync_channel_async(
         self: &Arc<Self>,
         channel: &str,
@@ -416,6 +440,14 @@ impl ChannelStore {
         self.publish(channel, payload, false)
     }
 
+    /// Close a stream durably by appending its terminal marker. Later
+    /// publishes fail with [`ChannelError::StreamClosed`] while the marker is
+    /// retained. Closing a closed stream returns its existing marker.
+    pub fn close(&self, channel: &str) -> Result<ChannelMessage, ChannelError> {
+        self.append(channel, &close_payload())
+    }
+
+    /// Appending a close marker closes the stream; see [`Self::close`].
     fn publish(
         &self,
         channel: &str,
@@ -423,18 +455,32 @@ impl ChannelStore {
         ephemeral: bool,
     ) -> Result<ChannelMessage, ChannelError> {
         self.ensure_writable()?;
+        if ephemeral && payload.r#type == CLOSE_MESSAGE_TYPE {
+            return Err(ChannelError::BadRequest(
+                "ephemeral channel streams cannot be closed".into(),
+            ));
+        }
         let _publication = self.delivery.publish.lock();
         let (message, publication) = match self.backend.as_ref() {
             ChannelStoreBackend::Sqlite(store) => {
                 let (message, event) = store.publish(channel, payload, ephemeral)?;
+                // An already closed stream returns its marker; nothing new to deliver.
+                let Some(event) = event else {
+                    return Ok(message);
+                };
                 (message, ChannelPublication::Event(event))
             }
             ChannelStoreBackend::Postgres(store) => {
                 if ephemeral {
                     return Err(crate::ephemeral::unsupported());
                 }
+                let (message, appended) = store.append(channel, payload)?;
+                let message = scope_postgres_id(channel, message)?;
+                if !appended {
+                    return Ok(message);
+                }
                 (
-                    scope_postgres_id(channel, store.append(channel, payload)?)?,
+                    message,
                     ChannelPublication::Wake {
                         channel: channel.into(),
                     },
@@ -546,6 +592,18 @@ impl ChannelStore {
                 .into_iter()
                 .map(|message| scope_postgres_id(channel, message))
                 .collect(),
+        }
+    }
+
+    /// The retained terminal marker of a closed stream. Messages a reader
+    /// has not seen up to this marker are still delivered before it.
+    pub fn close_marker(&self, channel: &str) -> Result<Option<ChannelMessage>, ChannelError> {
+        match self.backend.as_ref() {
+            ChannelStoreBackend::Sqlite(store) => store.close_marker(channel),
+            ChannelStoreBackend::Postgres(store) => store
+                .close_marker(channel)?
+                .map(|message| scope_postgres_id(channel, message))
+                .transpose(),
         }
     }
 

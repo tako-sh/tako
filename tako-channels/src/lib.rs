@@ -11,13 +11,16 @@ pub mod close_codes;
 pub mod error_codes;
 pub mod params;
 mod publication;
-pub use publication::{TrustedPublication, validate_publish_params};
+pub use publication::{TrustedPublication, validate_publication, validate_publish_params};
 pub mod registry;
 mod routing;
 pub mod sse;
 mod store;
 mod stream;
-pub use stream::{ChannelStream, STREAM_CHANNEL_PREFIX, reserved_stream_name};
+pub use stream::{
+    CLOSE_MESSAGE_TYPE, ChannelStream, RESERVED_PARAM_NAMES, STREAM_CHANNEL_PREFIX,
+    is_close_marker, reserved_stream_name,
+};
 mod types;
 mod writer;
 pub use writer::{ChannelWriter, LocalChannelWriter};
@@ -25,7 +28,10 @@ pub mod websocket;
 
 pub use client::authorize_channel_request;
 pub use close_codes::ChannelCloseCode;
-pub use routing::{parse_channel_route, parse_message_id_cursor, parse_ws_last_message_id};
+pub use routing::{
+    ReplayFrom, parse_channel_route, parse_message_id_cursor, parse_replay_from,
+    parse_ws_last_message_id,
+};
 pub use store::{
     ChannelStore, ChannelStoreConfig, POSTGRES_CHANNELS_SCHEMA, SqliteReplayLimits,
     channels_db_path,
@@ -63,3 +69,6 @@ mod history_tests;
 
 #[cfg(test)]
 mod stream_tests;
+
+#[cfg(test)]
+mod close_tests;

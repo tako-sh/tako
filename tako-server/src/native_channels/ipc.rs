@@ -113,7 +113,21 @@ pub(super) enum Response {
     Presence {
         members: Vec<PresenceMember>,
     },
+    /// The publish targets a stream with a retained close marker.
+    StreamClosed,
     Rejected,
+}
+
+/// The broker refused a publish because its stream is closed: a final answer,
+/// not an unavailable broker.
+#[derive(Debug, thiserror::Error)]
+#[error("channel stream is closed")]
+pub struct StreamClosed;
+
+pub fn is_stream_closed(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<StreamClosed>())
 }
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -167,6 +181,9 @@ impl Client {
                 .value;
             if matches!(response, Response::Rejected) {
                 return Err(error("channel broker rejected request"));
+            }
+            if matches!(response, Response::StreamClosed) {
+                return Err(io::Error::other(StreamClosed));
             }
             Ok((stream, response))
         })

@@ -338,7 +338,13 @@ impl ProxyChannelStore {
                     ephemeral,
                 )
                 .await
-                .map_err(|_| unavailable())
+                .map_err(|error| {
+                    if crate::native_channels::is_stream_closed(&error) {
+                        ChannelError::StreamClosed
+                    } else {
+                        unavailable()
+                    }
+                })
         } else {
             let channel = channel.to_owned();
             let payload = payload.clone();

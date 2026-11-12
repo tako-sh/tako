@@ -1,11 +1,29 @@
 //! One replay log, cursor space and fanout per (channel, validated params).
 
-use crate::{ChannelError, ChannelMessage, PRESENCE_CHANNEL_PREFIX};
+use crate::{ChannelError, ChannelMessage, ChannelPublishPayload, PRESENCE_CHANNEL_PREFIX};
 use serde_json::Value;
 
 /// Storage namespace of parameterized streams. Never a public channel name.
 pub const STREAM_CHANNEL_PREFIX: &str = "tako.stream:";
 const MAX_STREAM_PARAMS_BYTES: usize = 16 << 10;
+/// Message type of a stream's durable terminal marker. Only a close appends
+/// one; it is never published by apps or delivered as a message.
+pub const CLOSE_MESSAGE_TYPE: &str = "tako.close";
+/// Query keys that select where a reader starts. No channel param may use them.
+pub const RESERVED_PARAM_NAMES: [&str; 2] = ["last_message_id", "from"];
+
+/// The terminal marker a close appends.
+pub(crate) fn close_payload() -> ChannelPublishPayload {
+    ChannelPublishPayload {
+        r#type: CLOSE_MESSAGE_TYPE.into(),
+        data: Value::Null,
+    }
+}
+
+/// Whether a stored or replicated message is a stream's terminal marker.
+pub fn is_close_marker(message: &ChannelMessage) -> bool {
+    message.r#type == CLOSE_MESSAGE_TYPE
+}
 
 /// Canonical scope of a wire name and its params. Object keys are sorted and
 /// integral floats become integers: query coercion may produce 1.0 where an
@@ -95,6 +113,16 @@ impl ChannelStream {
             return Err(ChannelError::BadRequest(
                 "channel params must be an object of at most 16 KiB".into(),
             ));
+        }
+        // Subscribers cannot send these as params, so no reader could bind
+        // the stream a publish to them would start.
+        if let Some(name) = RESERVED_PARAM_NAMES
+            .iter()
+            .find(|name| params.get(**name).is_some_and(|value| !value.is_null()))
+        {
+            return Err(ChannelError::BadRequest(format!(
+                "channel params cannot use the reserved name '{name}'"
+            )));
         }
         Ok(Self::new(channel, params))
     }
@@ -215,6 +243,9 @@ mod tests {
         assert!(ChannelStream::for_publish(&key, &json!({})).is_err());
         for params in [json!([]), json!("a"), json!(1)] {
             assert!(ChannelStream::for_publish("chat", &params).is_err());
+        }
+        for name in RESERVED_PARAM_NAMES {
+            assert!(ChannelStream::for_publish("chat", &json!({ name: "start" })).is_err());
         }
         let large = json!({"room": "a".repeat(MAX_STREAM_PARAMS_BYTES)});
         assert!(ChannelStream::for_publish("chat", &large).is_err());

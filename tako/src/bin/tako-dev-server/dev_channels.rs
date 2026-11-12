@@ -13,8 +13,8 @@ use tako_channels::live_store::{
     store_scope, valid_store_name,
 };
 use tako_channels::{
-    ChannelAuthResponse, ChannelError, ChannelStore, ChannelStream, TrustedPublication,
-    parse_channel_route, parse_message_id_cursor,
+    ChannelAuthResponse, ChannelError, ChannelStore, ChannelStream, ReplayFrom, TrustedPublication,
+    parse_channel_route, parse_message_id_cursor, parse_replay_from, parse_ws_last_message_id,
 };
 
 /// Default auth response for dev mode — permissive, no subject, SSE transport.
@@ -76,6 +76,21 @@ impl DevChannelStore {
     }
 }
 
+/// Bind an internal-socket publish or close to its stream. A close appends
+/// the stream's terminal marker; ephemeral channels cannot be closed.
+pub fn trusted_publication(
+    request: tako_workflows::ChannelPublishRequest<'_>,
+) -> Result<TrustedPublication, ChannelError> {
+    match request.write {
+        tako_workflows::ChannelWrite::Publish(payload) => {
+            TrustedPublication::parse(request.channel, request.params, payload)
+        }
+        tako_workflows::ChannelWrite::Close { lifecycle } => {
+            TrustedPublication::close(request.channel, request.params, lifecycle)
+        }
+    }
+}
+
 /// Try to handle a channel request. Returns `Ok(true)` if handled,
 /// `Ok(false)` if the path is not a channel route (pass to upstream).
 pub async fn try_handle(
@@ -127,6 +142,14 @@ pub async fn try_handle(
         Ok(params) => params,
         Err(_) => return write_json(session, 400, r#"{"error":"Invalid channel params"}"#).await,
     };
+    let Ok(from_start) = parse_replay_from(session.req_header().uri.query()) else {
+        return write_json(
+            session,
+            400,
+            r#"{"error":"Invalid 'from': expected 'start'"}"#,
+        )
+        .await;
+    };
     let auth = definition
         .as_ref()
         .map(|meta| meta.lifecycle_auth())
@@ -137,6 +160,7 @@ pub async fn try_handle(
         &target.channel_store_key,
         &ChannelStream::new(&route.channel, &params),
         params,
+        from_start,
         auth,
     )
     .await
@@ -247,6 +271,7 @@ async fn serve_sse(
     app_id: &str,
     stream: &ChannelStream,
     params: serde_json::Value,
+    from_start: bool,
     auth: ChannelAuthResponse,
 ) -> Result<bool> {
     let dev_store = dev_store.clone();
@@ -265,6 +290,11 @@ async fn serve_sse(
                         e.to_string(),
                     )
                 })?;
+        // As in production, a query cursor wins over `from`; the shared
+        // session loop resolves it and signals a stale cursor or a close.
+        let Ok(cursor) = parse_ws_last_message_id(session.req_header().uri.query()) else {
+            return write_json(session, 400, r#"{"error":"Invalid replay cursor"}"#).await;
+        };
         session
             .write_response_header(Box::new(header), false)
             .await?;
@@ -272,7 +302,7 @@ async fn serve_sse(
             session,
             &store,
             stream,
-            None,
+            ReplayFrom::new(cursor, from_start),
             auth,
             params,
             Default::default(),
@@ -311,7 +341,10 @@ async fn serve_sse(
                 return write_json(session, 400, r#"{"error":"Invalid replay cursor"}"#).await;
             }
         };
-        match store.replay_cursor_async(stream.key(), requested).await {
+        match store
+            .replay_from_async(stream.key(), ReplayFrom::new(requested, from_start))
+            .await
+        {
             Ok(cursor) => cursor,
             Err(ChannelError::StaleCursor) => {
                 return write_json(session, 410, r#"{"error":"Replay history expired"}"#).await;

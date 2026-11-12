@@ -59,15 +59,26 @@ pub struct AppHandlers {
 /// `None` if the app isn't registered.
 pub type AppLookup = Arc<dyn Fn(&str) -> Option<AppHandlers> + Send + Sync>;
 
-/// One `Command::ChannelPublish` from an authenticated app process. `channel`
-/// and `params` select the stream; `build` is the publisher's build, when it
-/// declared one.
+/// One `Command::ChannelPublish` or `Command::ChannelClose` from an
+/// authenticated app process. `channel` and `params` select the stream;
+/// `build` is the publisher's build, when it declared one.
 pub struct ChannelPublishRequest<'a> {
     pub app: &'a str,
     pub channel: &'a str,
     pub params: &'a serde_json::Value,
     pub build: Option<&'a str>,
-    pub payload: serde_json::Value,
+    pub write: ChannelWrite,
+}
+
+/// What a channel request writes to its stream.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChannelWrite {
+    /// One `{ type, data, lifecycle? }` publish payload.
+    Publish(serde_json::Value),
+    /// The stream's terminal marker, with the channel definition's lifecycle.
+    Close {
+        lifecycle: Option<serde_json::Value>,
+    },
 }
 
 /// Closure that appends a `ChannelPublishPayload` to an app's channel
@@ -381,8 +392,25 @@ fn command_app(cmd: &Command) -> Option<&str> {
         | Command::WaitForEvent { app, .. }
         | Command::Signal { app, .. }
         | Command::ChannelPublish { app, .. }
+        | Command::ChannelClose { app, .. }
         | Command::NetworkCall { app, .. } => Some(app),
         _ => None,
+    }
+}
+
+fn write_channel(
+    channel_publish: Option<&ChannelPublishFn>,
+    operation: &str,
+    request: ChannelPublishRequest<'_>,
+) -> Response {
+    let Some(publish) = channel_publish else {
+        return Response::error(
+            "channel publish is not configured on this internal socket".to_string(),
+        );
+    };
+    match publish(request) {
+        Ok(message) => Response::ok(message),
+        Err(e) => Response::error(format!("channel {operation} failed: {e}")),
     }
 }
 
@@ -424,34 +452,44 @@ fn handle_command(
         };
     }
 
-    // Channel publish takes a different route — the channel store lives
-    // outside the workflow manager, so we hand the payload to the
+    // Channel publish and close take a different route — the channel store
+    // lives outside the workflow manager, so we hand the request to the
     // caller-provided closure and skip the workflow app lookup.
-    if let Command::ChannelPublish {
-        channel,
-        params,
-        build,
-        payload,
-        ..
-    } = cmd
-    {
-        let Some(publish) = channel_publish else {
-            return Response::error(
-                "channel publish is not configured on this internal socket".to_string(),
-            );
-        };
-        let request = ChannelPublishRequest {
-            app: &app,
-            channel: &channel,
-            params: &params,
-            build: build.as_deref(),
+    let cmd = match cmd {
+        Command::ChannelPublish {
+            channel,
+            params,
+            build,
             payload,
-        };
-        return match publish(request) {
-            Ok(message) => Response::ok(message),
-            Err(e) => Response::error(format!("channel publish failed: {e}")),
-        };
-    }
+            ..
+        } => {
+            let request = ChannelPublishRequest {
+                app: &app,
+                channel: &channel,
+                params: &params,
+                build: build.as_deref(),
+                write: ChannelWrite::Publish(payload),
+            };
+            return write_channel(channel_publish, "publish", request);
+        }
+        Command::ChannelClose {
+            channel,
+            params,
+            build,
+            lifecycle,
+            ..
+        } => {
+            let request = ChannelPublishRequest {
+                app: &app,
+                channel: &channel,
+                params: &params,
+                build: build.as_deref(),
+                write: ChannelWrite::Close { lifecycle },
+            };
+            return write_channel(channel_publish, "close", request);
+        }
+        cmd => cmd,
+    };
 
     let Some(handlers) = lookup(&app) else {
         return Response::error(format!("unknown app: {app}"));

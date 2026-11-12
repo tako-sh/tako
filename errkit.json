@@ -28,6 +28,10 @@
         "description": "lastMessageId is older than the channel replay window.",
         "code": "YHNEN8"
       },
+      "stream_closed": {
+        "description": "The app closed the channel stream; no further messages follow.",
+        "code": "SVUM3R"
+      },
       "verify_rejected": {
         "description": "The app's verify callback rejected the channel request.",
         "code": "GJRQHR"

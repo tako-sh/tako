@@ -17,6 +17,7 @@ use tempfile::TempDir;
 
 mod backend_resolution;
 mod cache;
+mod channel_close;
 mod channel_streams;
 mod core;
 mod redirects;

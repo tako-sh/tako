@@ -303,6 +303,9 @@ pub enum ChannelError {
     NotDefined,
     #[error("requested channel cursor is outside the replay window")]
     StaleCursor,
+    /// The stream has a durable close marker; it accepts no more messages.
+    #[error("channel stream is closed")]
+    StreamClosed,
     #[error("bad request: {0}")]
     BadRequest(String),
     #[error("channel auth unavailable")]

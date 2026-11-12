@@ -8,7 +8,7 @@ use crate::channels::{
     ChannelAuthResponse, ChannelAuthScheme, ChannelDefinitionMeta, ChannelError,
     ChannelHeaderValue, ChannelOperation, ChannelStore, ChannelTransport,
     authorize_channel_request, fetch_channel_registry, parse_channel_route,
-    parse_message_id_cursor, parse_ws_last_message_id,
+    parse_message_id_cursor, parse_replay_from, parse_ws_last_message_id,
 };
 use crate::native_channel_client::{ProxyChannelStore, app_scope};
 use crate::proxy::TakoProxy;
@@ -24,7 +24,7 @@ use tako_channels::live_store::{
     store_scope, valid_store_name, validate_store_lifecycle, validate_store_query,
 };
 use tako_channels::params::{ParamsError, validate_query};
-use tako_channels::{ChannelStream, ReplayCursor};
+use tako_channels::{ChannelStream, ReplayCursor, ReplayFrom};
 use ws::ChannelWebSocketAuth;
 
 mod drain;
@@ -69,6 +69,10 @@ impl TakoProxy {
             ChannelError::StaleCursor => (
                 410,
                 serde_json::json!({ "error": "Channel cursor is outside the replay window" }),
+            ),
+            ChannelError::StreamClosed => (
+                409,
+                serde_json::json!({ "error": "Channel stream is closed" }),
             ),
             ChannelError::BadRequest(message) => (400, serde_json::json!({ "error": message })),
             ChannelError::Unsupported => (
@@ -234,6 +238,15 @@ impl TakoProxy {
         };
         // Validated params select the stream; the app authorizes the public name.
         let stream = ChannelStream::new(&route.channel, &params);
+        // `from=start` replays every retained message; a cursor still wins.
+        let from_start = if is_store {
+            false
+        } else {
+            match parse_replay_from(session.req_header().uri.query()) {
+                Ok(from_start) => from_start,
+                Err(error) => return self.write_channel_error(session, error).await,
+            }
+        };
 
         let is_websocket = session.as_downstream().is_upgrade_req();
         let request_headers = request_headers_to_map(session.req_header());
@@ -277,8 +290,8 @@ impl TakoProxy {
                     .write_channel_error(session, ChannelError::Unsupported)
                     .await;
             }
-            let query_cursor = match parse_ws_last_message_id(session.req_header().uri.query()) {
-                Ok(cursor) => cursor,
+            let requested = match parse_ws_last_message_id(session.req_header().uri.query()) {
+                Ok(cursor) => ReplayFrom::new(cursor, from_start),
                 Err(error) => {
                     ctx.observation.set_handler_result("error");
                     return self.write_channel_error(session, error).await;
@@ -325,7 +338,7 @@ impl TakoProxy {
                         session,
                         &store,
                         &stream,
-                        query_cursor,
+                        requested,
                         presence_params,
                         auth_mode,
                     )
@@ -363,7 +376,7 @@ impl TakoProxy {
                     session,
                     &store,
                     &stream,
-                    query_cursor,
+                    requested,
                     presence_params,
                     ChannelWebSocketAuth::Authorized(auth_result),
                 )
@@ -487,7 +500,10 @@ impl TakoProxy {
             }
         };
         let resets = store.resets(stream.key());
-        let cursor = match store.replay_cursor_async(stream.key(), cursor).await {
+        let cursor = match store
+            .replay_from_async(stream.key(), ReplayFrom::new(cursor, from_start))
+            .await
+        {
             Ok(cursor) => cursor,
             Err(error) => return self.write_channel_error(session, error).await,
         };

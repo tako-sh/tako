@@ -1,7 +1,9 @@
 use ::postgres::{Client, NoTls};
 use parking_lot::Mutex;
 
-use crate::{ChannelAuthResponse, ChannelError, ChannelMessage, ChannelPublishPayload};
+use crate::{
+    CLOSE_MESSAGE_TYPE, ChannelAuthResponse, ChannelError, ChannelMessage, ChannelPublishPayload,
+};
 
 use super::{IDLE_STREAM_GRACE_MS, channel_message_from_row, now_unix_ms, resolve_replay_cursor};
 
@@ -44,11 +46,14 @@ impl PostgresChannelStore {
         })
     }
 
+    /// Append one message, or close the stream when `payload` is the close
+    /// marker. Returns whether a row was appended: closing a closed stream
+    /// returns its marker instead.
     pub(super) fn append(
         &self,
         channel: &str,
         payload: &ChannelPublishPayload,
-    ) -> Result<ChannelMessage, ChannelError> {
+    ) -> Result<(ChannelMessage, bool), ChannelError> {
         let data_json = serde_json::to_string(&payload.data)
             .map_err(|e| ChannelError::BadRequest(format!("serialize payload: {e}")))?;
         let mut client = self.client.lock();
@@ -63,6 +68,15 @@ impl PostgresChannelStore {
             &[&format!("{}:{}", self.schema, self.app_id)],
         )
         .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        // The app lock orders this check before every other server's append.
+        if let Some(marker) = self.first_close_marker(&mut tx, channel)? {
+            if payload.r#type == CLOSE_MESSAGE_TYPE {
+                tx.commit()
+                    .map_err(|e| ChannelError::Storage(e.to_string()))?;
+                return Ok((marker, false));
+            }
+            return Err(ChannelError::StreamClosed);
+        }
         tx.execute(&format!(
             "INSERT INTO {schema}.channel_metadata (app_id, channel, replay_window_ms, inactivity_ttl_ms, keepalive_interval_ms, max_connection_lifetime_ms, last_activity_unix_ms, latest_message_id, highest_deleted_message_id)
              VALUES ($1, $2, 600000, 0, 25000, 7200000, $3, {born}, {born}) ON CONFLICT(app_id, channel) DO NOTHING",
@@ -95,13 +109,46 @@ impl PostgresChannelStore {
         tx.commit()
             .map_err(|e| ChannelError::Storage(e.to_string()))?;
 
-        Ok(ChannelMessage {
-            id: id.to_string(),
-            event_id: None,
-            channel: channel.to_string(),
-            r#type: payload.r#type.clone(),
-            data: payload.data.clone(),
-        })
+        Ok((
+            ChannelMessage {
+                id: id.to_string(),
+                event_id: None,
+                channel: channel.to_string(),
+                r#type: payload.r#type.clone(),
+                data: payload.data.clone(),
+            },
+            true,
+        ))
+    }
+
+    fn first_close_marker(
+        &self,
+        client: &mut impl ::postgres::GenericClient,
+        channel: &str,
+    ) -> Result<Option<ChannelMessage>, ChannelError> {
+        client
+            .query_opt(
+                &format!(
+                    "SELECT id, channel, type, data_json
+                     FROM {}.channel_messages
+                     WHERE app_id = $1 AND channel = $2 AND type = '{CLOSE_MESSAGE_TYPE}'
+                     ORDER BY id ASC
+                     LIMIT 1",
+                    self.schema
+                ),
+                &[&self.app_id, &channel],
+            )
+            .map_err(|e| ChannelError::Storage(e.to_string()))?
+            .map(|row| channel_message_from_row((row.get(0), row.get(1), row.get(2), row.get(3))))
+            .transpose()
+    }
+
+    /// The stream's retained terminal marker, as every server sees it.
+    pub(super) fn close_marker(
+        &self,
+        channel: &str,
+    ) -> Result<Option<ChannelMessage>, ChannelError> {
+        self.first_close_marker(&mut *self.client.lock(), channel)
     }
 
     pub(super) fn read_after(
@@ -345,6 +392,8 @@ const POSTGRES_MIGRATIONS: &[&str] = &[
      WHERE highest_deleted_message_id IS NULL;
      ALTER TABLE {schema}.channel_metadata ALTER COLUMN highest_deleted_message_id SET DEFAULT 0;
      ALTER TABLE {schema}.channel_metadata ALTER COLUMN highest_deleted_message_id SET NOT NULL;",
+    "CREATE INDEX IF NOT EXISTS idx_channel_messages_close
+       ON {schema}.channel_messages(app_id, channel, id) WHERE type = 'tako.close';",
 ];
 
 /// Connections without an explicit `connect_timeout` get a bounded one, so an
@@ -508,6 +557,7 @@ mod integration_tests {
                 },
             )
             .unwrap()
+            .0
     }
 
     fn id(message: &ChannelMessage) -> i64 {

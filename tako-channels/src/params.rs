@@ -34,8 +34,8 @@ pub fn validate_query(schema: &Value, query: &str) -> Result<Value, ParamsError>
     Ok(value)
 }
 
-/// The params part of a channel route's query. `last_message_id` is the
-/// WebSocket replay cursor, never a param.
+/// The params part of a channel route's query. `last_message_id` (the
+/// WebSocket replay cursor) and `from` (the replay start) are never params.
 pub fn channel_params_query(query: Option<&str>) -> String {
     let Some(query) = query else {
         return String::new();
@@ -45,7 +45,11 @@ pub fn channel_params_query(query: Option<&str>) -> String {
         .split('&')
         .filter(|pair| {
             let key = pair.split_once('=').map_or(*pair, |(key, _)| key);
-            key != "last_message_id"
+            // Compare decoded keys: an encoded spelling must not become a
+            // param. Undecodable keys stay, so validation rejects them.
+            decode_query_component(key, "key").map_or(true, |key| {
+                !crate::stream::RESERVED_PARAM_NAMES.contains(&key.as_str())
+            })
         })
         .filter(|pair| !pair.is_empty())
         .collect::<Vec<_>>()

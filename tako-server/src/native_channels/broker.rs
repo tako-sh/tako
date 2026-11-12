@@ -10,7 +10,7 @@ use super::{
 use std::{collections::BTreeMap, io, path::PathBuf, sync::Arc};
 use tako_channels::{ChannelMessage, ChannelPublication, ChannelStore, RemoteIngest};
 use tako_network::{AppEnv, DeviceId};
-use tokio::sync::{broadcast, mpsc, oneshot, watch};
+use tokio::sync::{broadcast, broadcast::error::TryRecvError, mpsc, oneshot, watch};
 use zeroize::Zeroizing;
 
 pub(super) enum Command {
@@ -366,10 +366,16 @@ impl Broker {
                     Ok(message) => {
                         // Consume each committed publication before executing the next command.
                         let publication = application.publications.try_recv();
-                        self.committed(&app, &message, ephemeral, publication.ok())
-                            .await?;
+                        // Closing a closed stream returns its marker and commits nothing.
+                        let unchanged = tako_channels::is_close_marker(&message)
+                            && matches!(publication, Err(TryRecvError::Empty));
+                        if !unchanged {
+                            self.committed(&app, &message, ephemeral, publication.ok())
+                                .await?;
+                        }
                         Response::Published { message }
                     }
+                    Err(tako_channels::ChannelError::StreamClosed) => Response::StreamClosed,
                     Err(_) => Response::Rejected,
                 }
             }

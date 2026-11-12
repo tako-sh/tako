@@ -112,7 +112,7 @@ fn channel_publish_passes_the_stream_params_and_build_to_the_publisher() {
             request.channel.to_owned(),
             request.params.clone(),
             request.build.map(str::to_owned),
-            request.payload,
+            request.write,
         ));
         Ok(serde_json::json!({"id": "1"}))
     });
@@ -152,17 +152,115 @@ fn channel_publish_passes_the_stream_params_and_build_to_the_publisher() {
                 "chat".to_owned(),
                 serde_json::json!({"room": "a"}),
                 Some("v1".to_owned()),
-                payload.clone(),
+                ChannelWrite::Publish(payload.clone()),
             ),
             (
                 "web".to_owned(),
                 "chat".to_owned(),
                 serde_json::Value::Null,
                 None,
-                payload.clone(),
+                ChannelWrite::Publish(payload.clone()),
             ),
         ]
     );
+}
+
+#[test]
+fn channel_close_reaches_the_publisher_with_its_stream_and_reports_failures() {
+    let lookup = lookup_for(Default::default());
+    let auth: PeerAuthFn = Arc::new(|app, _| {
+        if app == "web" {
+            Ok(())
+        } else {
+            Err("caller mismatch".into())
+        }
+    });
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed = seen.clone();
+    let publish: ChannelPublishFn = Arc::new(move |request| {
+        observed.lock().unwrap().push((
+            request.channel.to_owned(),
+            request.params.clone(),
+            request.build.map(str::to_owned),
+            request.write.clone(),
+        ));
+        match request.write {
+            ChannelWrite::Close { .. } if request.channel == "closed" => {
+                Err("channel stream is closed".into())
+            }
+            _ => Ok(serde_json::json!({"id": "1", "channel": request.channel})),
+        }
+    });
+    let command = |app: &str, channel: &str, kind: &str| -> Command {
+        let mut command = serde_json::json!({
+            "command": kind, "app": app, "channel": channel,
+            "params": {"room": "a"}, "build": "v1",
+        });
+        if kind == "channel_close" {
+            command["lifecycle"] = serde_json::json!({"replayWindowMs": 1000});
+        } else {
+            command["payload"] = serde_json::json!({"type": "msg", "data": 1});
+        }
+        serde_json::from_value(command).unwrap()
+    };
+    let handle = |command| {
+        handle_command(
+            &lookup,
+            Some(&publish),
+            Some(&auth),
+            Some(1001),
+            None,
+            command,
+        )
+    };
+
+    let closed = handle(command("web", "chat", "channel_close"));
+    assert_eq!(
+        closed.data(),
+        Some(&serde_json::json!({"id": "1", "channel": "chat"}))
+    );
+    // Publisher errors name the operation and keep the publisher's reason.
+    let rejected = handle(command("web", "closed", "channel_close"));
+    assert_eq!(
+        rejected.error_message(),
+        Some("channel close failed: channel stream is closed")
+    );
+    // Close is authorized like publish.
+    assert!(
+        handle(command("other", "chat", "channel_close"))
+            .data()
+            .is_none()
+    );
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![
+            (
+                "chat".to_owned(),
+                serde_json::json!({"room": "a"}),
+                Some("v1".to_owned()),
+                ChannelWrite::Close {
+                    lifecycle: Some(serde_json::json!({"replayWindowMs": 1000}))
+                },
+            ),
+            (
+                "closed".to_owned(),
+                serde_json::json!({"room": "a"}),
+                Some("v1".to_owned()),
+                ChannelWrite::Close {
+                    lifecycle: Some(serde_json::json!({"replayWindowMs": 1000}))
+                },
+            ),
+        ]
+    );
+    let missing = handle_command(
+        &lookup,
+        None,
+        Some(&auth),
+        Some(1001),
+        None,
+        command("web", "chat", "channel_close"),
+    );
+    assert!(missing.error_message().unwrap().contains("not configured"));
 }
 
 #[tokio::test]

@@ -30,7 +30,7 @@ pub async fn serve(
     session: &mut Session,
     store: &Arc<ChannelStore>,
     stream: &ChannelStream,
-    requested_after: Option<crate::ReplayCursor>,
+    requested: crate::ReplayFrom,
     auth: ChannelAuthResponse,
     params: serde_json::Value,
     reader: WebSocketFrameReader,
@@ -39,7 +39,7 @@ pub async fn serve(
         session,
         store,
         stream,
-        requested_after,
+        requested,
         auth,
         params,
         reader,
@@ -53,7 +53,7 @@ pub async fn serve_with_writer(
     session: &mut Session,
     store: &Arc<ChannelStore>,
     stream: &ChannelStream,
-    requested_after: Option<crate::ReplayCursor>,
+    requested: crate::ReplayFrom,
     auth: ChannelAuthResponse,
     params: serde_json::Value,
     mut reader: WebSocketFrameReader,
@@ -101,10 +101,11 @@ pub async fn serve_with_writer(
     } else {
         None
     };
+    // Nothing is retained on an ephemeral stream, so it always starts live.
     let mut after = if auth.ephemeral {
         None
     } else {
-        match store.replay_cursor_async(key, requested_after).await {
+        match store.replay_from_async(key, requested).await {
             Ok(after) => after,
             Err(ChannelError::StaleCursor) => {
                 return write_close(session, crate::ChannelCloseCode::ReplayTooOld, true).await;
@@ -116,11 +117,23 @@ pub async fn serve_with_writer(
         }
     };
 
+    let mut read_replay = presence.is_none() && !auth.ephemeral;
+    if read_replay {
+        match crate::sse::closed_before(store, stream, after).await {
+            Ok(Some(_)) => {
+                return write_close(session, crate::ChannelCloseCode::StreamClosed, true).await;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::error!("failed to read websocket channel state: {error}");
+                return write_close(session, crate::ChannelCloseCode::VerifyRejected, true).await;
+            }
+        }
+    }
     let keepalive_interval = Duration::from_millis(auth.keepalive_interval_ms.max(1));
     let max_connection_lifetime = Duration::from_millis(auth.max_connection_lifetime_ms.max(1));
     let started_at = tokio::time::Instant::now();
     let mut next_ping = started_at + keepalive_interval;
-    let mut read_replay = presence.is_none() && !auth.ephemeral;
     let mut buffered = true;
 
     loop {
@@ -164,6 +177,10 @@ pub async fn serve_with_writer(
 
         if !messages.is_empty() {
             for message in messages {
+                // Every earlier message was sent; the close frame is final.
+                if crate::is_close_marker(&message) {
+                    return write_close(session, crate::ChannelCloseCode::StreamClosed, true).await;
+                }
                 let message = stream.public(message);
                 let encoded = serde_json::to_string(&message).map_err(|error| {
                     Error::explain(
@@ -269,6 +286,14 @@ pub async fn serve_with_writer(
                                     )
                                 })?;
                             let result = writer.publish(key, &payload, auth.ephemeral).await;
+                            if matches!(result, Err(ChannelError::StreamClosed)) {
+                                return write_close(
+                                    session,
+                                    crate::ChannelCloseCode::StreamClosed,
+                                    true,
+                                )
+                                .await;
+                            }
                             result.map_err(|error| {
                                 Error::explain(
                                     ErrorType::InternalError,

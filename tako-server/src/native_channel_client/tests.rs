@@ -14,6 +14,8 @@ pub(super) struct FakeBroker {
     pub(super) publishes: AtomicUsize,
     /// Channel names publications reached the broker under.
     pub(super) channels: parking_lot::Mutex<Vec<String>>,
+    /// Answer publishes as a broker whose stream is closed.
+    pub(super) closed: AtomicBool,
 }
 impl FakeBroker {
     async fn stream(&self) -> DuplexStream {
@@ -63,6 +65,9 @@ impl BrokerLink for FakeBroker {
         self.channels.lock().push(channel.clone());
         if self.reject.load(Ordering::SeqCst) {
             return Err(io::Error::other("offline"));
+        }
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(io::Error::other(crate::native_channels::StreamClosed));
         }
         Ok(ChannelMessage {
             id: "ack".into(),

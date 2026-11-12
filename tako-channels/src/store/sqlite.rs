@@ -4,7 +4,8 @@ use parking_lot::Mutex;
 use std::path::Path;
 
 use crate::{
-    ChannelAuthResponse, ChannelError, ChannelMessage, ChannelPublishPayload, ReplayCursor,
+    CLOSE_MESSAGE_TYPE, ChannelAuthResponse, ChannelError, ChannelMessage, ChannelPublishPayload,
+    ReplayCursor,
 };
 
 use super::{IDLE_STREAM_GRACE_MS, channel_message_from_row, now_unix_ms};
@@ -14,6 +15,59 @@ use rusqlite::OptionalExtension;
 const READ_AFTER_SQL: &str = "SELECT id, channel, type, data_json,
     (SELECT event_json FROM channel_message_events WHERE message_id = channel_messages.id)
     FROM channel_messages WHERE channel = ?1 AND id > ?2 ORDER BY id ASC LIMIT ?3";
+
+/// The first retained terminal marker of a stream after a floor. The partial
+/// index on markers keeps this a single seek however long the stream is.
+fn close_marker_sql() -> String {
+    format!(
+        "SELECT id, channel, type, data_json,
+            (SELECT event_json FROM channel_message_events WHERE message_id = channel_messages.id)
+         FROM channel_messages WHERE channel = ?1 AND type = '{CLOSE_MESSAGE_TYPE}' AND id > ?2
+         ORDER BY id ASC LIMIT 1"
+    )
+}
+
+type StoredRow = (i64, String, String, String, Option<String>);
+
+fn stored_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredRow> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+    ))
+}
+
+/// A stored row as clients see it: its id is a cursor of this epoch and stream.
+fn stored_message(
+    epoch: [u8; 16],
+    channel: &str,
+    row: StoredRow,
+) -> Result<ChannelMessage, ChannelError> {
+    let cursor = ReplayCursor::sqlite(epoch, channel, row.0);
+    let mut message = channel_message_from_row((row.0, row.1, row.2, row.3))?;
+    message.event_id = row
+        .4
+        .map(|json| serde_json::from_str(&json))
+        .transpose()
+        .map_err(storage_err)?;
+    message.id = cursor.to_string();
+    Ok(message)
+}
+
+fn close_marker(
+    conn: &rusqlite::Connection,
+    epoch: [u8; 16],
+    channel: &str,
+    floor: i64,
+) -> Result<Option<ChannelMessage>, ChannelError> {
+    conn.prepare_cached(&close_marker_sql())?
+        .query_row(rusqlite::params![channel, floor], stored_row)
+        .optional()?
+        .map(|row| stored_message(epoch, channel, row))
+        .transpose()
+}
 
 const INCREMENTAL_VACUUM_PAGES: i64 = 128;
 const WAL_TRUNCATE_DELETED_ROWS_THRESHOLD: usize = 1024;
@@ -119,14 +173,25 @@ impl SqliteChannelStore {
         })
     }
 
+    /// Publish one message, or close the stream when `payload` is the close
+    /// marker. Closing a closed stream returns its marker and no event.
     pub(super) fn publish(
         &self,
         channel: &str,
         payload: &ChannelPublishPayload,
         ephemeral: bool,
-    ) -> Result<(ChannelMessage, ChannelEvent), ChannelError> {
+    ) -> Result<(ChannelMessage, Option<ChannelEvent>), ChannelError> {
         let mut conn = self.conn.lock();
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        // A marker closes the stream until retention deletes it. One that has
+        // expired but awaits maintenance still closes: the stream reopens only
+        // once its history is gone, never under a stale marker.
+        if !ephemeral && let Some(marker) = close_marker(&tx, replay_epoch(&tx)?, channel, 0)? {
+            if payload.r#type == CLOSE_MESSAGE_TYPE {
+                return Ok((marker, None));
+            }
+            return Err(ChannelError::StreamClosed);
+        }
         let sequence: i64 = tx.query_row(
             "UPDATE channel_event_sequence SET sequence = sequence + 1
              WHERE singleton = 1 AND sequence < 9223372036854775807 RETURNING sequence",
@@ -144,7 +209,20 @@ impl SqliteChannelStore {
         };
         let message = append_event(&tx, replay_epoch(&tx)?, &event)?;
         tx.commit()?;
-        Ok((message, event))
+        Ok((message, Some(event)))
+    }
+
+    /// The stream's first terminal marker that readers can still see.
+    pub(super) fn close_marker(
+        &self,
+        channel: &str,
+    ) -> Result<Option<ChannelMessage>, ChannelError> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)?;
+        let expired_floor = expired_floor(&tx, load_limits(&tx)?, channel, now_unix_ms())?;
+        let marker = close_marker(&tx, replay_epoch(&tx)?, channel, expired_floor)?;
+        tx.commit()?;
+        Ok(marker)
     }
 
     pub(super) fn ingest_remote(
@@ -228,31 +306,13 @@ impl SqliteChannelStore {
                     after.map_or(0, |cursor| cursor.position).max(expired_floor),
                     i64::from(limit)
                 ],
-                |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, Option<String>>(4)?,
-                    ))
-                },
+                stored_row,
             )?
             .collect::<Result<Vec<_>, _>>()?
         };
         tx.commit()?;
         rows.into_iter()
-            .map(|row| {
-                let cursor = ReplayCursor::sqlite(epoch, channel, row.0);
-                let mut message = channel_message_from_row((row.0, row.1, row.2, row.3))?;
-                message.event_id = row
-                    .4
-                    .map(|json| serde_json::from_str(&json))
-                    .transpose()
-                    .map_err(storage_err)?;
-                message.id = cursor.to_string();
-                Ok(message)
-            })
+            .map(|row| stored_message(epoch, channel, row))
             .collect()
     }
 
@@ -766,10 +826,12 @@ fn init_connection(
 
     ensure_channel_metadata_schema(conn)?;
 
-    conn.execute_batch(
+    conn.execute_batch(&format!(
         "CREATE INDEX IF NOT EXISTS idx_channel_messages_channel_id
-         ON channel_messages(channel, id);",
-    )
+         ON channel_messages(channel, id);
+         CREATE INDEX IF NOT EXISTS idx_channel_messages_close
+         ON channel_messages(channel, id) WHERE type = '{CLOSE_MESSAGE_TYPE}';"
+    ))
     .map_err(storage_err)?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS channel_store_state (
@@ -956,5 +1018,19 @@ mod tests {
             )
             .unwrap();
         assert!(detail.contains("channel=? AND id>?"), "{detail}");
+    }
+
+    #[test]
+    fn close_marker_lookup_seeks_the_partial_marker_index() {
+        let store = SqliteChannelStore::open_in_memory().unwrap();
+        let conn = store.conn.lock();
+        let detail: String = conn
+            .query_row(
+                &format!("EXPLAIN QUERY PLAN {}", close_marker_sql()),
+                rusqlite::params!["feed", 0],
+                |row| row.get(3),
+            )
+            .unwrap();
+        assert!(detail.contains("idx_channel_messages_close"), "{detail}");
     }
 }

@@ -1,6 +1,9 @@
 //! Durable SSE delivery shared by the production proxy and local dev.
 
-use crate::{ChannelAuthResponse, ChannelError, ChannelStore, ChannelStream, ReplayCursor};
+use crate::{
+    ChannelAuthResponse, ChannelError, ChannelMessage, ChannelStore, ChannelStream, ReplayCursor,
+    is_close_marker,
+};
 use bytes::Bytes;
 use pingora_core::prelude::*;
 use pingora_proxy::Session;
@@ -8,10 +11,36 @@ use std::{sync::Arc, time::Duration};
 
 /// Control event telling the reader to drop its cursor and reconnect.
 const RESET_FRAME: &[u8] = b"id:\nevent: tako.reset\ndata: {}\n\n";
+/// Name of the final control event of a closed stream.
+pub const CLOSE_EVENT: &str = "tako.close";
+
+/// Whether a reader positioned at `after` has already passed the stream's
+/// terminal marker, so the next thing it receives is the terminal signal.
+/// A reader with no cursor replays from the start and meets the marker in
+/// order. The caller resolved `after` against this stream.
+pub(crate) async fn closed_before(
+    store: &Arc<ChannelStore>,
+    stream: &ChannelStream,
+    after: Option<ReplayCursor>,
+) -> Result<Option<ChannelMessage>, ChannelError> {
+    let Some(after) = after else {
+        return Ok(None);
+    };
+    Ok(store
+        .close_marker_async(stream.key())
+        .await?
+        .filter(|marker| {
+            marker
+                .id
+                .parse::<ReplayCursor>()
+                .is_ok_and(|marker| marker.position <= after.position)
+        }))
+}
 
 /// Replay retained messages after `after`, then follow the stream until the
-/// connection lifetime ends. The caller subscribes to `resets` before resolving
-/// `after`, and writes the response headers before calling this.
+/// connection lifetime ends or the stream's terminal marker is reached. `None`
+/// replays every retained message. The caller subscribes to `resets` before
+/// resolving `after`, and writes the response headers before calling this.
 pub async fn serve_events(
     session: &mut Session,
     store: &Arc<ChannelStore>,
@@ -26,6 +55,16 @@ pub async fn serve_events(
     let mut next_keepalive = started_at + keepalive_interval;
     let mut changes = store.changes(stream.key());
     let mut read_replay = true;
+    match closed_before(store, stream, after).await {
+        Ok(Some(marker)) => return write_close(session, &marker).await,
+        Ok(None) => {}
+        Err(error) => {
+            return Err(Error::explain(
+                ErrorType::InternalError,
+                format!("Failed to read channel state: {error}"),
+            ));
+        }
+    }
 
     loop {
         if resets.has_changed().unwrap_or(true) {
@@ -52,6 +91,9 @@ pub async fn serve_events(
             for message in messages {
                 if resets.has_changed().unwrap_or(true) {
                     return write_reset(session).await;
+                }
+                if is_close_marker(&message) {
+                    return write_close(session, &message).await;
                 }
                 // Storage names the stream by its key; clients see the channel.
                 let message = stream.public(message);
@@ -97,6 +139,19 @@ pub async fn serve_events(
             _ = tokio::time::sleep_until(next_keepalive.min(started_at + max_connection_lifetime)) => {}
         }
     }
+}
+
+/// The terminal signal: every earlier message was sent, none follows. Its id
+/// is the marker's cursor, so a reader resuming from it is told again.
+fn close_frame(marker: &ChannelMessage) -> String {
+    format!("id: {}\nevent: {CLOSE_EVENT}\ndata: {{}}\n\n", marker.id)
+}
+
+async fn write_close(session: &mut Session, marker: &ChannelMessage) -> Result<bool> {
+    session
+        .write_response_body(Some(Bytes::from(close_frame(marker))), true)
+        .await?;
+    Ok(true)
 }
 
 async fn write_reset(session: &mut Session) -> Result<bool> {

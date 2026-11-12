@@ -515,7 +515,7 @@ async fn websocket_publishes_and_frames_stay_within_the_connection_binding() {
                     &mut session,
                     &store,
                     &ChannelStream::new("chat", &params),
-                    None,
+                    ReplayFrom::Head,
                     auth(json!({"ok": true, "transport": "ws"})),
                     params,
                     Default::default(),
