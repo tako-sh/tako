@@ -969,9 +969,10 @@ mod tests {
             WorkflowRunStatus::Cancelled
         );
         running.stop(&app, Duration::from_secs(1)).await;
+        // The last store handle is released in async code.
+        drop(handlers);
 
         tokio::task::spawn_blocking(move || {
-            drop(handlers);
             let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
             for table in ["steps", "event_waiters", "runs"] {
                 client
@@ -984,6 +985,47 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    /// The synchronous Postgres client panics when it closes on a runtime
+    /// thread. Each lifecycle path below releases the store's last handle
+    /// in async code.
+    #[tokio::test]
+    async fn postgres_store_survives_every_lifecycle_path_that_releases_it() {
+        let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let m = WorkflowManager::new(tmp.path());
+        m.set_postgres_url_resolver(Arc::new(move |_| Some(url.clone())));
+        let app = format!("lifecycle-{}", nanoid::nanoid!(8, &['a', 'b', 'c', 'd']));
+        let cwd = tmp.path().to_path_buf();
+        let start = || m.ensure(&app, None, |db| dummy_spec(cwd.clone(), db));
+
+        // A replacement that fails to start is the only holder of its store.
+        m.ensure(&app, None, |db| invalid_start_spec(cwd.clone(), db))
+            .await
+            .unwrap_err();
+
+        start().await.unwrap();
+        m.stop(&app, Duration::from_secs(1)).await;
+
+        start().await.unwrap();
+        start().await.unwrap();
+        let (_, replaced) = m.retired.lock().pop().unwrap();
+        replaced.await.unwrap();
+
+        m.retire(&app).await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while m.has(&app) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        start().await.unwrap();
+        m.shutdown_all(Duration::from_secs(1)).await;
     }
 
     #[tokio::test]

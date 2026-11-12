@@ -3,6 +3,7 @@ use postgres::{Client, NoTls};
 use std::collections::HashMap;
 use tako_core::{EnqueueOpts, EnqueueRunResponse, RunPayload, ScheduleSpec};
 
+use super::blocking::ReleaseOffRuntime;
 use super::enqueue::operator::{
     CancelledRun, OPERATOR_CANCEL_REASON, RunRecord, RunRow, StepRow, SummaryRow, WaitRow,
     parse_status,
@@ -23,7 +24,7 @@ const DEFAULT_MAX_ATTEMPTS: u32 = 3;
 const DB_NOW_MS: &str = "(EXTRACT(EPOCH FROM statement_timestamp()) * 1000)::BIGINT";
 
 pub(super) struct PostgresRunsDb {
-    client: Mutex<Client>,
+    client: Mutex<ReleaseOffRuntime<Client>>,
     schema: String,
     app_id: String,
     /// This server's clock, in Unix milliseconds, for scheduling and history
@@ -47,7 +48,7 @@ impl PostgresRunsDb {
         let mut client = Client::connect(url, NoTls)?;
         init_schema(&mut client, schema)?;
         Ok(Self {
-            client: Mutex::new(client),
+            client: Mutex::new(ReleaseOffRuntime::new(client)),
             schema: schema.to_string(),
             app_id: app_id.to_string(),
             clock,
