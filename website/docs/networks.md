@@ -143,7 +143,7 @@ Private app hostnames have this form:
 shop.production.0123456789abcdef0123456789abcdef.tako.internal
 ```
 
-The components are app name, environment, and stable network ID. Native service discovery uses current authenticated placement information. Missing, expired, revoked, or drained placements are unavailable; a private name must not fall through to a public wildcard route. Supported Compose services use Tako's private gateway and resolver for this traffic.
+The components are app name, environment, and stable network ID. Native service discovery uses current authenticated placement information. Missing, expired, revoked, or drained placements are unavailable; a private name must not fall through to a public wildcard route. Placements are short-lived and signed by the server that runs the app, so keep server clocks synchronized: peers accept a placement signed up to five seconds ahead of their own clock and ignore one further ahead until their clock catches up. Supported Compose services use Tako's private gateway and resolver for this traffic.
 
 Automatic private DNS for native processes on the server requires an active systemd-resolved service. If it is absent, the WireGuard helper can still configure the link but reports `dns_supported = false` with a DNS error; do not treat link setup as successful DNS setup. Compose uses its managed gateway DNS independently of host systemd-resolved.
 
