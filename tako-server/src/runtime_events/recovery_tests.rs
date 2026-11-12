@@ -568,3 +568,45 @@ async fn successful_deploy_resets_the_backoff() {
     assert_eq!(app.restart_backoff_remaining(Instant::now()), None);
     state.app_manager.stop_app(name).await.unwrap();
 }
+
+#[tokio::test]
+async fn an_app_in_error_with_live_instances_keeps_recovering_after_repeated_crashes() {
+    // A server restart started one of two instances; the second failed, so
+    // the app is in `Error` while the first keeps serving.
+    let dir = crate::isolation::fixture::TestDataDir::new().unwrap();
+    let state = test_state(dir.path());
+    let app = running_app(&state, dir.path(), "error-live", 1, sh(READY));
+    app.set_state(AppState::Error);
+    let instance = healthy_instance(&app);
+
+    // First crash: the health path replaces it at once.
+    handle_health_event(&state, dead(&app, &instance)).await;
+    assert_eq!(live(&app), 1);
+
+    // The replacement crashes too: the replacement is now backed off and
+    // left to the reconcile, which must not ignore the app for its state.
+    let replacement = app.get_instances().remove(0);
+    handle_health_event(&state, dead(&app, &replacement)).await;
+    assert!(app.get_instances().is_empty());
+    assert!(
+        app.recovery_status()
+            .unwrap()
+            .next_restart_at_unix_secs
+            .is_some()
+    );
+    tick_after_backoff(&state).await;
+    assert_eq!(live(&app), 1, "an app in Error was left at zero instances");
+
+    // A start that fails in `Error` is reported and backs off like any other.
+    app.config.write().command = vec!["./missing-app".into()];
+    let instance = app.get_instances().remove(0);
+    handle_health_event(&state, dead(&app, &instance)).await;
+    tick_after_backoff(&state).await;
+    let status = app.recovery_status().unwrap();
+    assert_eq!(
+        status.last_exit.unwrap().reason,
+        tako_core::InstanceExitReason::FailedToStart
+    );
+    assert!(status.next_restart_at_unix_secs.is_some());
+    state.app_manager.stop_app(&app.name()).await.unwrap();
+}

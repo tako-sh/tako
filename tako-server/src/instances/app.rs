@@ -124,6 +124,10 @@ impl App {
         self.recovery.lock().observe_health(healthy, now);
     }
 
+    pub(crate) fn has_recovery_history(&self) -> bool {
+        self.recovery.lock().has_history()
+    }
+
     /// Forget crash history, e.g. after a successful deploy or scale.
     pub(crate) fn reset_recovery(&self) {
         self.recovery.lock().reset();

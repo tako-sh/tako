@@ -81,7 +81,7 @@ impl Recovery {
     /// Feed one observation of whether the app is at its minimum and fully
     /// healthy. Forgets the backoff once that has held for the stable window.
     pub(crate) fn observe_health(&mut self, healthy: bool, now: Instant) {
-        if self.failures == 0 && self.restarts == 0 {
+        if !self.has_history() {
             return;
         }
         if !healthy {
@@ -94,12 +94,17 @@ impl Recovery {
         }
     }
 
+    /// Whether a loss or a replacement was recorded since the last reset.
+    pub(crate) fn has_history(&self) -> bool {
+        self.failures != 0 || self.restarts != 0
+    }
+
     pub(crate) fn reset(&mut self) {
         *self = Self::default();
     }
 
     pub(crate) fn status(&self, now: Instant) -> Option<RecoveryStatus> {
-        if self.failures == 0 && self.restarts == 0 {
+        if !self.has_history() {
             return None;
         }
         Some(RecoveryStatus {

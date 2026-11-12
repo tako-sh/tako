@@ -356,7 +356,7 @@ async fn start_replacement(
             // A deploy, scale-down or stop that arrived meanwhile owns this
             // instance and stopped it on purpose; that is not a failed start.
             if app.remove_instance(&instance.id).is_some()
-                && app.state() == AppState::Running
+                && matches!(app.state(), AppState::Running | AppState::Error)
                 && app.version() == instance.build_version()
             {
                 app.record_instance_exit(instance.exit_report());
@@ -430,10 +430,23 @@ fn survey(app: &App) -> Survey {
     survey
 }
 
+/// Whether the reconcile may restore this app's instances. A running app,
+/// and an app in `Error` that health recovery is already repairing: a failed
+/// restore or rollback can leave live instances, the health path replaces
+/// them in any state but `Stopped`, and once it backs off it leaves the next
+/// replacement to the reconcile.
+fn reconciles(app: &App) -> bool {
+    match app.state() {
+        AppState::Running => true,
+        AppState::Error => app.has_recovery_history(),
+        AppState::Idle | AppState::Deploying | AppState::Stopped => false,
+    }
+}
+
 /// Cheap, lock-free look at one app: does it need the reconcile at all?
 /// Also feeds the stable-window observation that forgets an old backoff.
 fn needs_recovery(app: &App, now: Instant) -> bool {
-    if app.state() != AppState::Running {
+    if !reconciles(app) {
         return false;
     }
     let survey = survey(app);
@@ -485,7 +498,7 @@ async fn recover_app(state: &ServerState, app: &Arc<App>, now: Instant) {
     let Ok(_lifecycle) = app.lifecycle_gate.try_read() else {
         return;
     };
-    if app.state() != AppState::Running {
+    if !reconciles(app) {
         return;
     }
     // Deploy, scale, secrets, backup and idle eviction hold this lock while
@@ -546,7 +559,7 @@ async fn recover_app(state: &ServerState, app: &Arc<App>, now: Instant) {
             let Ok(_mutation) = lock.try_lock() else {
                 break;
             };
-            if app.state() != AppState::Running
+            if !reconciles(app)
                 || state
                     .drain_requested
                     .load(std::sync::atomic::Ordering::Acquire)
