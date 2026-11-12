@@ -172,6 +172,15 @@ impl crate::ServerState {
                 Err(error) => PostDeployBackup::Failed(error),
             },
             Ok(None) => {
+                // Outside the schedule's lock and off the runtime. The queue
+                // removes the marker only after the snapshot it waits for and
+                // then a full archive finish.
+                let marker = self.post_deploy_backup_marker(app);
+                let name = app.to_string();
+                let _ = tokio::task::spawn_blocking(move || {
+                    record_post_deploy_marker(&name, &marker, true)
+                })
+                .await;
                 tracing::info!(app, "Post-deploy backup queued behind a database snapshot");
                 PostDeployBackup::Queued
             }
@@ -343,22 +352,7 @@ impl crate::ServerState {
     }
 
     pub(super) fn record_post_deploy_backup_queued(&self, app: &str, queued: bool) {
-        let marker = self.post_deploy_backup_marker(app);
-        let result = if queued {
-            std::fs::File::create(&marker).and_then(|file| file.sync_all())
-        } else {
-            match std::fs::remove_file(&marker) {
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                result => result,
-            }
-        };
-        if let Err(error) = result {
-            tracing::warn!(
-                app,
-                path = %marker.display(),
-                "Failed to record the queued post-deploy backup; a restart may drop it: {error}"
-            );
-        }
+        record_post_deploy_marker(app, &self.post_deploy_backup_marker(app), queued);
     }
 
     /// Forget the in-memory schedule of a deleted app, so an app created
@@ -416,6 +410,24 @@ impl crate::ServerState {
                 state.checked_at_unix_secs = Some(started);
             }
         }
+    }
+}
+
+fn record_post_deploy_marker(app: &str, marker: &std::path::Path, queued: bool) {
+    let result = if queued {
+        std::fs::File::create(marker).and_then(|file| file.sync_all())
+    } else {
+        match std::fs::remove_file(marker) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            result => result,
+        }
+    };
+    if let Err(error) = result {
+        tracing::warn!(
+            app,
+            path = %marker.display(),
+            "Failed to record the queued post-deploy backup; a restart may drop it: {error}"
+        );
     }
 }
 

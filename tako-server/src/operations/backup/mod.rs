@@ -502,11 +502,20 @@ impl crate::ServerState {
             .ok_or_else(|| format!("Backups are not configured for {app}."))?;
         let info = self.find_backup(&backup, app, backup_id).await?;
         let data_root = app_runtime_data_paths(&self.runtime.data_dir, app).root;
-        // Before downloading anything; the swap checks again.
-        refuse_unfinished_restores(&data_root)?;
-        if info.kind == BackupKind::Full {
-            snapshot::refuse_mounts_in_data_tree(&data_root)?;
-        }
+        // Before downloading anything; the swap checks again. Removing a
+        // finished restore's directory can take a while.
+        off_runtime({
+            let data_root = data_root.clone();
+            let full = info.kind == BackupKind::Full;
+            move || -> Result<(), String> {
+                refuse_unfinished_restores(&data_root)?;
+                if full {
+                    snapshot::refuse_mounts_in_data_tree(&data_root)?;
+                }
+                Ok(())
+            }
+        })
+        .await??;
 
         let app_ref = self
             .app_manager
@@ -638,8 +647,22 @@ impl crate::ServerState {
                 .await
                 .map_err(|error| format!("Stop failed before restore: {error}"))?;
             let swapped = match staged {
-                StagedRestore::Full => restore_data_tree(&extract_dir, &data_root)
-                    .map(|swap| (RestoreSwap::Tree(swap), None)),
+                // The closure owns the rollback directory until the swap is
+                // done, even if this future is dropped meanwhile.
+                StagedRestore::Full => off_runtime({
+                    let extract_dir = extract_dir.clone();
+                    let data_root = data_root.clone();
+                    move || restore_data_tree(&extract_dir, &data_root)
+                })
+                .await
+                // A panic dropped the rollback directory, which abandoned it.
+                .unwrap_or_else(|message| {
+                    Err(SwapError {
+                        message,
+                        originals_intact: false,
+                    })
+                })
+                .map(|swap| (RestoreSwap::Tree(swap), None)),
                 StagedRestore::Databases(databases) => swap_databases_off_runtime(
                     extract_dir.join(DATABASE_SNAPSHOT_ARCHIVE_ROOT),
                     databases,
@@ -705,7 +728,10 @@ impl crate::ServerState {
                         kept.display()
                     ));
                 }
-                if let Err(rollback) = swap.rollback() {
+                if let Err(rollback) = off_runtime(move || swap.rollback())
+                    .await
+                    .and_then(|rolled_back| rolled_back)
+                {
                     self.note_unresolved_restore(app, &app_ref);
                     return Err(format!("{error}; {rollback}; app left stopped"));
                 }
@@ -728,7 +754,11 @@ impl crate::ServerState {
                 });
             }
             self.finish_restart(app, &app_ref, &config);
-            if let Err(error) = swap.commit() {
+            // A full commit removes the whole original tree.
+            if let Err(error) = off_runtime(move || swap.commit())
+                .await
+                .and_then(|committed| committed)
+            {
                 tracing::warn!(
                     app,
                     "Restore succeeded but previous data cleanup failed: {error}"
@@ -856,7 +886,6 @@ impl crate::ServerState {
             ));
         }
         state.post_deploy_backup_queued = true;
-        self.record_post_deploy_backup_queued(app, true);
         Ok(None)
     }
 }
@@ -954,6 +983,16 @@ impl RestoreSwap {
             Self::Databases(swap) => swap.abandon(reason),
         }
     }
+}
+
+/// Run restore file work on the blocking pool. The closure owns what it
+/// works on, so dropping the caller never drops it while the work runs.
+async fn off_runtime<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, String> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|error| format!("restore file worker failed: {error}"))
 }
 
 /// A database snapshot restore holds the encrypted object and its decrypted
