@@ -138,7 +138,7 @@ wait_tako_management_http() {
     if timeout 10 env HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" \
         "$TAKO_BIN" --ci --json status >"$status_file" 2>"$error_file" &&
       jq -e --arg host "$host" \
-        'any(.servers[]?; .name == $host and .service_status == "active" and .error == null)' \
+        'any(.servers[]?; .host == $host and .service_status == "active" and .error == null)' \
         "$status_file" >/dev/null; then
       return 0
     fi
@@ -628,7 +628,7 @@ run_cli_post_deploy_checks() {
     cat "$status_log" >&2 || true
     exit 1
   fi
-  require_file_contains "$status_log" "Server $server_host" "tako status"
+  require_file_contains "$status_log" "Server e2e/$server_host" "tako status"
   require_file_contains "$status_log" "$app_name" "tako status"
   require_file_contains "$status_log" "production" "tako status"
   require_file_contains "$status_log" "$route_host" "tako status"
