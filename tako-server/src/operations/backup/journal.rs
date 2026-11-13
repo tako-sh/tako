@@ -198,6 +198,10 @@ pub(super) fn retire(dir: &Path) -> Result<(), String> {
     if is_gone(dir) {
         return Ok(());
     }
+    #[cfg(test)]
+    if RETIRE_FAILS.get() {
+        return Err("retire failed".into());
+    }
     let path = dir.join(INTENT_FILE);
     match std::fs::remove_file(&path) {
         Ok(()) => {}
@@ -205,6 +209,13 @@ pub(super) fn retire(dir: &Path) -> Result<(), String> {
         Err(error) => return Err(format!("remove {}: {error}", path.display())),
     }
     sync_dir(dir)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Makes [`retire`] fail on this thread, as a transient disk error
+    /// would, while other writes still work.
+    static RETIRE_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn is_gone(dir: &Path) -> bool {
@@ -266,14 +277,21 @@ fn undo(dir: &Path) -> Result<(), String> {
 }
 
 /// Undo what the intent in `dir` describes and retire it. A failed removal
-/// of the directory afterwards leaves it for the next start to remove.
+/// of the directory afterwards leaves it for the next start to remove. When
+/// the record cannot be retired after the undo, it is changed to say the
+/// original data is live, if it can be.
 pub(super) fn roll_back(dir: &Path) -> Result<(), String> {
     // A restore worker that rolled back and removed the directory itself.
     if is_gone(dir) {
         return Ok(());
     }
     undo(dir)?;
-    retire(dir)?;
+    if let Err(error) = retire(dir) {
+        // The original data is live in full again: say so before the
+        // caller gives the directory up, as `RollbackDir::roll_back` does.
+        record_live_data(dir, IntentState::Original);
+        return Err(error);
+    }
     if let Err(error) = discard(dir) {
         tracing::warn!("Restore rolled back but its rollback copy remains: {error}");
     }
@@ -837,7 +855,8 @@ fn recover_restore_dirs(data_dir: &Path, mode: RecoveryMode, eligible: Option<&s
             ),
             Err(error) => tracing::error!(
                 path = %dir.display(),
-                "Could not recover an interrupted backup restore; the original data remains in this directory: {error}"
+                "Could not recover an interrupted backup restore ({error}); it is left in place. {} See {UNFINISHED_RESTORE_DOCS}",
+                live_data_summary(marked_path.as_deref().unwrap_or(&dir))
             ),
         }
     }
@@ -1629,6 +1648,56 @@ mod tests {
             "the server's rollback must see the restore already rolled back"
         );
         assert!(restore_dirs(temp.path()).is_empty());
+    }
+
+    /// A rollback or commit that cannot retire its record records what the
+    /// live data is before the directory is marked abandoned, so whole data
+    /// does not keep the app stopped: startup recovery that put the original
+    /// data back, as a running server's rollback does, and a commit.
+    #[test]
+    fn a_restore_that_cannot_retire_its_record_records_what_is_live() {
+        let temp = tempfile::tempdir().unwrap();
+        let (data_root, _) = interrupted(temp.path(), "g1");
+        let live = |state| {
+            let left = restore_dirs_in(data_root.parent().unwrap());
+            left.len() == 1
+                && has_prefix(&left[0], ABANDONED_DIR_PREFIX)
+                && read_intent(&left[0])
+                    .is_ok_and(|intent| intent.is_some_and(|i| i.state == state))
+        };
+        RETIRE_FAILS.set(true);
+        recover_restore_dirs(temp.path(), RecoveryMode::Primary, Some("g1"));
+        RETIRE_FAILS.set(false);
+        assert!(
+            std::fs::read(data_root.join("app/marker")).unwrap() == b"original",
+            "recovery must put the original data back"
+        );
+        assert!(
+            live(IntentState::Original),
+            "the record must say the original data is live"
+        );
+        assert!(
+            unresolved_restore(&data_root).is_none(),
+            "whole original data must not keep the app stopped"
+        );
+        for dir in restore_dirs_in(data_root.parent().unwrap()) {
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+
+        let dir = RollbackDir::create(&data_root).unwrap();
+        write_intent(dir.path(), &RestoreIntent::full(&data_root, true)).unwrap();
+        RETIRE_FAILS.set(true);
+        let committed = dir.finish();
+        RETIRE_FAILS.set(false);
+        assert!(committed.is_err(), "the commit must report the failure");
+        assert!(
+            live(IntentState::Restored),
+            "the record must say the restored data is live"
+        );
+        assert!(
+            unresolved_restore(&data_root).is_none(),
+            "whole restored data must not keep the app stopped"
+        );
     }
 
     /// Giving up records what the live data is; recovery never rolls back
