@@ -344,14 +344,13 @@ async fn replication_and_ephemeral_fanout_stay_within_one_binding() {
     assert!(peer.read_after(b.key(), None, 10).unwrap().is_empty());
     assert!(peer.read_after("chat", None, 10).unwrap().is_empty());
 
+    let mut live_events = origin.ephemeral_publications();
     let mut live_a = peer.subscribe_ephemeral(a.key()).unwrap();
     let mut live_b = peer.subscribe_ephemeral(b.key()).unwrap();
     let sent = origin
         .publish_ephemeral(a.key(), &payload(json!("live")))
         .unwrap();
-    let ChannelPublication::Event(event) = publications.try_recv().unwrap() else {
-        panic!("expected an event")
-    };
+    let event = live_events.try_recv().unwrap();
     assert_eq!(peer.ingest_remote(&event).unwrap(), RemoteIngest::Applied);
     let delivered = tokio::time::timeout(Duration::from_secs(1), live_a.recv())
         .await
@@ -363,9 +362,7 @@ async fn replication_and_ephemeral_fanout_stay_within_one_binding() {
     let own = origin
         .publish_ephemeral(b.key(), &payload(json!("b live")))
         .unwrap();
-    let ChannelPublication::Event(event) = publications.try_recv().unwrap() else {
-        panic!("expected an event")
-    };
+    let event = live_events.try_recv().unwrap();
     assert_eq!(peer.ingest_remote(&event).unwrap(), RemoteIngest::Applied);
     let delivered = tokio::time::timeout(Duration::from_secs(1), live_b.recv())
         .await

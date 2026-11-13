@@ -459,7 +459,16 @@ impl ChannelStore {
         channel: &str,
         payload: &ChannelPublishPayload,
     ) -> Result<ChannelMessage, ChannelError> {
-        self.publish(channel, payload, true, None)
+        self.ensure_writable()?;
+        self.ensure_ephemeral_supported()?;
+        if payload.r#type == CLOSE_MESSAGE_TYPE {
+            return Err(ChannelError::BadRequest(
+                "ephemeral channel streams cannot be closed".into(),
+            ));
+        }
+        self.delivery.ephemeral.publish(channel, payload, |event| {
+            let _ = self.delivery.ephemeral_publications.send(event);
+        })
     }
 
     pub fn append(
@@ -467,7 +476,7 @@ impl ChannelStore {
         channel: &str,
         payload: &ChannelPublishPayload,
     ) -> Result<ChannelMessage, ChannelError> {
-        self.publish(channel, payload, false, None)
+        self.publish(channel, payload, None)
     }
 
     /// Append to a durable stream and apply the lifecycle its definition
@@ -480,7 +489,7 @@ impl ChannelStore {
         payload: &ChannelPublishPayload,
         lifecycle: Option<&ChannelLifecycle>,
     ) -> Result<ChannelMessage, ChannelError> {
-        self.publish(channel, payload, false, lifecycle)
+        self.publish(channel, payload, lifecycle)
     }
 
     /// Close a stream durably by appending its terminal marker. Later
@@ -495,19 +504,13 @@ impl ChannelStore {
         &self,
         channel: &str,
         payload: &ChannelPublishPayload,
-        ephemeral: bool,
         lifecycle: Option<&ChannelLifecycle>,
     ) -> Result<ChannelMessage, ChannelError> {
         self.ensure_writable()?;
-        if ephemeral && payload.r#type == CLOSE_MESSAGE_TYPE {
-            return Err(ChannelError::BadRequest(
-                "ephemeral channel streams cannot be closed".into(),
-            ));
-        }
         let _publication = self.delivery.publish.lock();
         let (message, publication) = match self.backend.as_ref() {
             ChannelStoreBackend::Sqlite(store) => {
-                let (message, event) = store.publish(channel, payload, ephemeral, lifecycle)?;
+                let (message, event) = store.publish(channel, payload, lifecycle)?;
                 // An already closed stream returns its marker; nothing new to deliver.
                 let Some(event) = event else {
                     return Ok(message);
@@ -515,9 +518,6 @@ impl ChannelStore {
                 (message, ChannelPublication::Event(event))
             }
             ChannelStoreBackend::Postgres(store) => {
-                if ephemeral {
-                    return Err(crate::ephemeral::unsupported());
-                }
                 let (message, appended) = store.append(channel, payload, lifecycle)?;
                 let message = scope_postgres_id(channel, message)?;
                 if !appended {
@@ -531,7 +531,7 @@ impl ChannelStore {
                 )
             }
         };
-        self.deliver(&message, ephemeral);
+        self.deliver(&message, false);
         let _ = self.delivery.publications.send(publication);
         Ok(message)
     }
@@ -539,6 +539,7 @@ impl ChannelStore {
     fn deliver(&self, message: &ChannelMessage, ephemeral: bool) {
         if ephemeral {
             self.delivery.ephemeral.deliver(message);
+            return;
         }
         self.delivery.wake(
             &message.channel,
@@ -561,11 +562,20 @@ impl ChannelStore {
         self.delivery.publications.subscribe()
     }
 
+    /// Live publications have a separate queue; their loss never invalidates replay.
+    pub fn ephemeral_publications(&self) -> tokio::sync::broadcast::Receiver<ChannelEvent> {
+        self.delivery.ephemeral_publications.subscribe()
+    }
+
     /// Ingest authenticated, app-scoped events in FIFO order per origin. Never
     /// republishes. An event its stream cannot take is acknowledged and
     /// dropped ([`RemoteIngest::Dropped`]), so it does not read as a gap.
     pub fn ingest_remote(&self, event: &ChannelEvent) -> Result<RemoteIngest, ChannelError> {
         self.ensure_writable()?;
+        if event.ephemeral {
+            self.ensure_ephemeral_supported()?;
+            return self.delivery.ephemeral.ingest(event);
+        }
         let _publication = self.delivery.publish.lock();
         let ChannelStoreBackend::Sqlite(store) = self.backend.as_ref() else {
             return Err(ChannelError::BadRequest(

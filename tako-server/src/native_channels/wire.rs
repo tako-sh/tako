@@ -9,10 +9,13 @@ use zeroize::Zeroizing;
 
 pub(super) const MAX_FRAME: usize = 1024 * 1024;
 #[derive(Clone)]
-pub(super) struct Budget(Arc<Semaphore>);
+pub(super) struct Budget(Arc<Semaphore>, Arc<Semaphore>);
 impl Budget {
     pub fn new(bytes: usize) -> Self {
-        Self(Arc::new(Semaphore::new(bytes)))
+        Self(
+            Arc::new(Semaphore::new(bytes)),
+            Arc::new(Semaphore::new(bytes)),
+        )
     }
     pub async fn wait(&self, bytes: usize) -> io::Result<OwnedSemaphorePermit> {
         self.0
@@ -27,12 +30,22 @@ impl Budget {
             .try_acquire_many_owned(bytes as u32)
             .map_err(|_| error("channel byte budget exhausted"))
     }
+    fn take_ephemeral(&self, bytes: usize) -> io::Result<OwnedSemaphorePermit> {
+        self.1
+            .clone()
+            .try_acquire_many_owned(bytes as u32)
+            .map_err(|_| error("ephemeral byte budget exhausted"))
+    }
 }
 pub(super) struct Received<T> {
     pub value: T,
     _bytes: OwnedSemaphorePermit,
 }
 impl<T> Received<T> {
+    pub fn into_ephemeral(mut self, budget: &Budget) -> io::Result<Self> {
+        self._bytes = budget.take_ephemeral(self._bytes.num_permits())?;
+        Ok(self)
+    }
     pub fn into_parts(self) -> (T, OwnedSemaphorePermit) {
         (self.value, self._bytes)
     }
@@ -45,21 +58,88 @@ pub(super) struct Packet {
 #[derive(Clone)]
 pub(super) struct Sender {
     tx: mpsc::Sender<Packet>,
+    ephemeral: mpsc::Sender<Packet>,
     global: Budget,
     local: Budget,
+    id: Arc<()>,
+    dropped: Arc<std::sync::atomic::AtomicU64>,
 }
-pub(super) fn queue(global: Budget) -> (Sender, mpsc::Receiver<Packet>) {
+pub(super) struct Receiver {
+    reliable: mpsc::Receiver<Packet>,
+    ephemeral: mpsc::Receiver<Packet>,
+}
+impl Receiver {
+    pub async fn recv(&mut self) -> Option<Packet> {
+        // Reliable/control traffic has reserved queue and byte capacity.
+        tokio::select! {
+            biased;
+            packet = self.reliable.recv() => match packet {
+                Some(packet) => Some(packet),
+                None => self.ephemeral.recv().await,
+            },
+            packet = self.ephemeral.recv() => match packet {
+                Some(packet) => Some(packet),
+                None => self.reliable.recv().await,
+            },
+        }
+    }
+    #[cfg(test)]
+    pub fn try_recv(&mut self) -> Result<Packet, mpsc::error::TryRecvError> {
+        self.reliable
+            .try_recv()
+            .or_else(|_| self.ephemeral.try_recv())
+    }
+}
+pub(super) fn queue(global: Budget) -> (Sender, Receiver) {
     let (tx, rx) = mpsc::channel(64);
+    let (ephemeral, live_rx) = mpsc::channel(64);
     (
         Sender {
             tx,
+            ephemeral,
             global,
             local: Budget::new(2 * MAX_FRAME),
+            id: Arc::new(()),
+            dropped: Arc::default(),
         },
-        rx,
+        Receiver {
+            reliable: rx,
+            ephemeral: live_rx,
+        },
     )
 }
 impl Sender {
+    pub fn session(&self) -> Arc<()> {
+        self.id.clone()
+    }
+    pub fn is_session(&self, session: &Arc<()>) -> bool {
+        Arc::ptr_eq(&self.id, session)
+    }
+
+    pub fn send_ephemeral_bytes(&self, bytes: Arc<Zeroizing<Vec<u8>>>) {
+        let send = || -> io::Result<()> {
+            let packet = Packet {
+                _global: self.global.take_ephemeral(bytes.len())?,
+                _local: self.local.take_ephemeral(bytes.len())?,
+                bytes,
+            };
+            self.ephemeral
+                .try_send(packet)
+                .map_err(|_| error("ephemeral queue full"))
+        };
+        if send().is_err() {
+            let dropped = self
+                .dropped
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                .saturating_add(1);
+            if dropped.is_power_of_two() {
+                tracing::warn!(
+                    dropped,
+                    "dropping ephemeral events for a slow channel receiver"
+                );
+            }
+        }
+    }
     pub fn send<T: Serialize>(&self, value: &T) -> io::Result<()> {
         self.send_bytes(encode(value)?)
     }

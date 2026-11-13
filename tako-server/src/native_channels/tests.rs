@@ -15,6 +15,8 @@ use tako_network::{
 };
 use tokio::{io::AsyncWriteExt, sync::oneshot};
 
+mod ephemeral;
+
 fn remote_id() -> DeviceId {
     "11".repeat(32).parse().unwrap()
 }
@@ -316,12 +318,12 @@ fn stale(store: &ChannelStore, message: &ChannelMessage) {
 }
 #[tokio::test]
 async fn fifo_commit_and_mesh_order_across_concurrent_local_duplex_publishers() {
-    let (_temp, mut broker) = new_broker().await;
+    let (_temp, broker) = new_broker().await;
     let (_, _, _, _, mb) = identities();
     let (sender, mut outgoing) = wire::queue(Budget::new(16 * MAX_FRAME));
-    broker.peers.insert(mb.device_id, sender);
+    broker.peers.lock().insert(mb.device_id, sender);
     let store = broker.apps[&app()].store.clone();
-    let (commands, receiver) = mpsc::channel(128);
+    let (commands, receiver) = broker::commands(128);
     let (_control, control_rx) = watch::channel(broker::Control::default());
     let (shutdown, shutdown_rx) = watch::channel(false);
     let actor = tokio::spawn(broker::run(broker, receiver, control_rx, shutdown_rx));
@@ -360,7 +362,8 @@ async fn fifo_commit_and_mesh_order_across_concurrent_local_duplex_publishers() 
         result.unwrap();
     }
     let mut durable = Vec::new();
-    for sequence in 1..=32 {
+    let mut live_sequence = 0;
+    for _ in 0..32 {
         let packet = outgoing.recv().await.unwrap();
         let frame: Frame = serde_json::from_slice(&packet.bytes).unwrap();
         let Frame::Publication {
@@ -371,8 +374,11 @@ async fn fifo_commit_and_mesh_order_across_concurrent_local_duplex_publishers() 
             panic!("missing event");
         };
         assert_eq!(scope, app());
-        assert_eq!(event.id.sequence, sequence);
-        if !event.ephemeral {
+        if event.ephemeral {
+            live_sequence += 1;
+            assert_eq!(event.id.sequence, live_sequence);
+        } else {
+            assert_eq!(event.id.sequence, durable.len() as u64 + 1);
             durable.push(event.id);
         }
     }
@@ -391,9 +397,10 @@ async fn remote_ingest_is_idempotent_not_echoed_and_notified_without_repersistin
     let (_temp, mut broker) = new_broker().await;
     let source = ChannelStore::open_in_memory().unwrap();
     let mut publications = source.publications();
+    let mut live_publications = source.ephemeral_publications();
     let (_, _, _, _, mb) = identities();
     let (sender, mut outgoing) = wire::queue(Budget::new(MAX_FRAME));
-    broker.peers.insert(mb.device_id, sender);
+    broker.peers.lock().insert(mb.device_id, sender);
     let Reply::Subscription(mut notices) = broker
         .local(Request::Subscribe { app: app() })
         .await
@@ -407,7 +414,11 @@ async fn remote_ingest_is_idempotent_not_echoed_and_notified_without_repersistin
         } else {
             source.append("events", &payload(1)).unwrap();
         }
-        let publication = publications.recv().await.unwrap();
+        let publication = if ephemeral {
+            ChannelPublication::Event(live_publications.recv().await.unwrap())
+        } else {
+            publications.recv().await.unwrap()
+        };
         let frame = Frame::Publication {
             app: app(),
             publication,
@@ -447,7 +458,7 @@ async fn closing_replicates_the_marker_once_and_closed_streams_reject_publishes(
     let (_temp, mut broker) = new_broker().await;
     let (_, _, _, _, mb) = identities();
     let (sender, mut outgoing) = wire::queue(Budget::new(16 * MAX_FRAME));
-    broker.peers.insert(mb.device_id, sender);
+    broker.peers.lock().insert(mb.device_id, sender);
     let Reply::Subscription(mut notices) = broker
         .local(Request::Subscribe { app: app() })
         .await
@@ -492,7 +503,7 @@ async fn closing_replicates_the_marker_once_and_closed_streams_reject_publishes(
     }
     assert_eq!(notified, 2);
     // Over IPC, a publish to the closed stream is answered by name.
-    let (commands, receiver) = mpsc::channel(8);
+    let (commands, receiver) = broker::commands(8);
     let (_control, control_rx) = watch::channel(broker::Control::default());
     let (shutdown, shutdown_rx) = watch::channel(false);
     let store = broker.apps[&app()].store.clone();
@@ -577,7 +588,7 @@ async fn queue_overflow_commits_successfully_and_persists_gap_without_subscriber
     let first = publish(&mut broker, 1).await;
     let (_, _, _, _, mb) = identities();
     let (sender, _blocked_receiver) = wire::queue(Budget::new(1));
-    broker.peers.insert(mb.device_id, sender);
+    broker.peers.lock().insert(mb.device_id, sender);
     let second = publish(&mut broker, 2).await;
     stale(&broker.apps[&app()].store, &first);
     stale(&broker.apps[&app()].store, &second);
@@ -585,7 +596,7 @@ async fn queue_overflow_commits_successfully_and_persists_gap_without_subscriber
         first.event_id.as_ref().unwrap().origin,
         second.event_id.as_ref().unwrap().origin
     );
-    assert!(broker.peers.is_empty());
+    assert!(broker.peers.lock().is_empty());
     assert_eq!(
         broker.apps[&app()]
             .store
@@ -621,7 +632,7 @@ async fn control_disconnect_fences_persistently_and_rejects_old_generation() {
     let before = publish(&mut broker, 1).await;
     let store = broker.apps[&app()].store.clone();
     let mut resets = store.resets("events");
-    let (commands, receiver) = mpsc::channel(16);
+    let (commands, receiver) = broker::commands(16);
     let (control, control_rx) = watch::channel(broker::Control::default());
     let (shutdown, shutdown_rx) = watch::channel(false);
     let actor = tokio::spawn(broker::run(broker, receiver, control_rx, shutdown_rx));
@@ -681,12 +692,13 @@ async fn bounded_framing_and_global_queue_budget_release() {
 async fn pump_preserves_partial_inbound_frame_while_sending_keepalives() {
     let (transport, mut remote) = tokio::io::duplex(32 * 1024);
     let (_, _, _, _, mb) = identities();
-    let (commands, mut receive) = mpsc::channel(4);
+    let (commands, mut receive) = broker::commands(4);
     let (_sender, outgoing) = wire::queue(Budget::new(MAX_FRAME));
     let task = tokio::spawn(peer::pump(
         transport,
         mb.device_id,
         0,
+        _sender.session(),
         commands,
         Budget::new(MAX_FRAME),
         outgoing,
@@ -716,7 +728,7 @@ async fn postgres_wake_seam_never_reinserts_or_echoes_and_commit_dispatches_only
     let mut publications = store.publications();
     let (_, _, _, _, mb) = identities();
     let (sender, mut outgoing) = wire::queue(Budget::new(MAX_FRAME));
-    broker.peers.insert(mb.device_id, sender);
+    broker.peers.lock().insert(mb.device_id, sender);
     let Reply::Subscription(mut notifications) = broker
         .local(Request::Subscribe { app: app() })
         .await
@@ -887,7 +899,7 @@ async fn expired_handshake_cannot_attach_a_ghost_peer() {
         })
         .await
         .unwrap();
-    assert!(broker.peers.is_empty());
+    assert!(broker.peers.lock().is_empty());
 }
 
 #[tokio::test]
@@ -928,8 +940,8 @@ async fn peer_loss_control_fences_offline_replay_without_membership_change() {
     let mut resets = store.resets("events");
     let (_, _, _, _, mb) = identities();
     let (sender, _outgoing) = wire::queue(Budget::new(MAX_FRAME));
-    broker.peers.insert(mb.device_id.clone(), sender);
-    let (_commands, receiver) = mpsc::channel(16);
+    broker.peers.lock().insert(mb.device_id.clone(), sender);
+    let (_commands, receiver) = broker::commands(16);
     let (control, control_rx) = watch::channel(broker::Control::default());
     let (shutdown, shutdown_rx) = watch::channel(false);
     let actor = tokio::spawn(broker::run(broker, receiver, control_rx, shutdown_rx));
@@ -958,7 +970,7 @@ async fn local_subscribers_receive_internal_gap_after_mesh_queue_loss() {
     };
     let (_, _, _, _, mb) = identities();
     let (sender, _blocked_receiver) = wire::queue(Budget::new(1));
-    broker.peers.insert(mb.device_id, sender);
+    broker.peers.lock().insert(mb.device_id, sender);
     let message = publish(&mut broker, 7).await;
     let committed = notices.recv().await.unwrap();
     assert!(
@@ -1022,9 +1034,9 @@ async fn presence_updates_and_leaves_cross_peers_once_with_origin_bound_identity
         .await
         .unwrap();
     let (send, mut frames) = wire::queue(Budget::new(MAX_FRAME));
-    left.peers.insert(remote_id(), send);
+    left.peers.lock().insert(remote_id(), send);
     let (send, mut echoes) = wire::queue(Budget::new(MAX_FRAME));
-    right.peers.insert(local_id(), send);
+    right.peers.lock().insert(local_id(), send);
     let member = presence_member();
     let Reply::Response(Response::Ok) = left
         .local(Request::UpdatePresence {
@@ -1128,7 +1140,7 @@ async fn postgres_presence_seam_uses_shared_table_and_does_not_forward_or_reinse
     let (_temp, mut broker) = new_broker().await;
     broker.postgres_seam(&app());
     let (sender, mut outgoing) = wire::queue(Budget::new(MAX_FRAME));
-    broker.peers.insert(remote_id(), sender);
+    broker.peers.lock().insert(remote_id(), sender);
     broker
         .local(Request::UpdatePresence {
             app: app(),
@@ -1178,7 +1190,7 @@ async fn postgres_presence_seam_uses_shared_table_and_does_not_forward_or_reinse
 #[tokio::test]
 async fn presence_ipc_roundtrips_over_real_duplex() {
     let (_temp, broker) = new_broker().await;
-    let (commands, receiver) = mpsc::channel(8);
+    let (commands, receiver) = broker::commands(8);
     let (_control, control_rx) = watch::channel(broker::Control::default());
     let (shutdown, shutdown_rx) = watch::channel(false);
     let actor = tokio::spawn(broker::run(broker, receiver, control_rx, shutdown_rx));
@@ -1240,8 +1252,8 @@ async fn first_presence_query_discovers_existing_peer_leases_without_client_rene
         .unwrap();
     let (left_sender, mut left_out) = wire::queue(Budget::new(MAX_FRAME));
     let (right_sender, mut right_out) = wire::queue(Budget::new(MAX_FRAME));
-    left.peers.insert(remote_id(), left_sender);
-    right.peers.insert(local_id(), right_sender);
+    left.peers.lock().insert(remote_id(), left_sender);
+    right.peers.lock().insert(local_id(), right_sender);
     assert!(presence_members(&mut right).await.is_empty());
     let query: Frame = serde_json::from_slice(&right_out.recv().await.unwrap().bytes).unwrap();
     left.remote(&remote_id(), query).await.unwrap();
@@ -1257,7 +1269,7 @@ async fn disconnected_or_expired_ipc_cannot_commit_queued_mutations() {
     let store = broker.apps[&app()].store.clone();
     for expired in [false, true] {
         let (mut client, server) = tokio::io::duplex(8192);
-        let (commands, mut receiver) = mpsc::channel(1);
+        let (commands, mut receiver) = broker::commands(1);
         let budget = Budget::new(MAX_FRAME);
         let replies = Budget::new(MAX_FRAME);
         let task = tokio::spawn(ipc::serve(
@@ -1303,7 +1315,7 @@ async fn disconnected_or_expired_ipc_cannot_commit_queued_mutations() {
 #[tokio::test]
 async fn ipc_reply_budget_survives_blocked_write_and_releases_on_disconnect() {
     let (mut client, server) = tokio::io::duplex(256);
-    let (commands, mut receiver) = mpsc::channel(2);
+    let (commands, mut receiver) = broker::commands(2);
     let replies = Budget::new(MAX_FRAME);
     let task = tokio::spawn(ipc::serve(
         server,
@@ -1415,7 +1427,7 @@ async fn unauthenticated_peer_failure_cannot_attach_or_request_replay_fence() {
     let roster = BTreeMap::from([(mb.device_id.clone(), mb.clone())]);
     let remote_roster = BTreeMap::from([(ma.device_id.clone(), ma.clone())]);
     let (server, mut remote) = tokio::io::duplex(8192);
-    let (commands, mut receiver) = mpsc::channel(1);
+    let (commands, mut receiver) = broker::commands(1);
     let (end, _) = tokio::join!(
         peer::serve_stream(
             server,
@@ -1451,7 +1463,7 @@ async fn authenticated_peer_loss_requests_fence_even_when_admission_fails() {
     let roster = BTreeMap::from([(mb.device_id.clone(), mb.clone())]);
     let remote_roster = BTreeMap::from([(ma.device_id.clone(), ma.clone())]);
     let (server, mut remote) = tokio::io::duplex(8192);
-    let (commands, receiver) = mpsc::channel(1);
+    let (commands, receiver) = broker::commands(1);
     drop(receiver);
     let (end, authenticated) = tokio::join!(
         peer::serve_stream(
@@ -1508,7 +1520,7 @@ async fn re_registration_with_a_changed_backend_replaces_the_store_and_signals_a
     let application = &broker.apps[&app()];
     assert!(!Arc::ptr_eq(&previous, &application.store));
     assert!(application.postgres_url.is_none());
-    assert_eq!(application.subscribers.len(), 1);
+    assert_eq!(application.subscribers.lock().len(), 1);
     let packet = notices.recv().await.unwrap();
     assert!(matches!(
         serde_json::from_slice::<Notice>(&packet.bytes).unwrap(),
