@@ -122,7 +122,7 @@ S3 URLs target the storage provider. Local storage returns a relative signed `/_
 
 Local uploads and downloads are served by the Rust proxy in development and production, even when no app worker is running. The JavaScript SDK only creates signed URLs. Tako uses Apache `object_store` for atomic local publication and enables file and directory fsync before acknowledging an upload. Uploads are streamed and limited to 128 MiB.
 
-Local objects live in Tako's private data area, separately from `tako.dataDir`. Development storage is scoped to the registered config; production storage is scoped to the deployed app and environment. Existing SDK-managed files are copied into the private area on first use; the original files remain untouched. Migration rejects symlinks and special files. Local filesystem key restrictions still apply. Production app-data backups include the private storage area; local objects remain tied to that server unless backed up elsewhere.
+Local objects live in Tako's private data area, separately from `tako.dataDir`. Development storage is scoped to the registered config; production storage is scoped to the deployed app and environment. Existing SDK-managed files are copied into the private area on first use; the original files remain untouched. Migration rejects symbolic links, hard links, and special files. Local filesystem key restrictions still apply. Production app-data backups include the private storage area; local objects remain tied to that server unless backed up elsewhere.
 
 ## Public files and images
 

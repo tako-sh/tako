@@ -205,6 +205,21 @@ async fn overlapping_binding_paths_import_missing_objects_without_replacing_new_
 
 #[cfg(unix)]
 #[tokio::test]
+async fn migration_rejects_hardlinks_to_files_outside_the_app_tree() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = storage(dir.path(), "secret");
+    let private = dir.path().join("private-file");
+    fs::write(&private, b"private").unwrap();
+    fs::create_dir_all(storage.legacy_root.join("storage/uploads")).unwrap();
+    fs::hard_link(&private, storage.legacy_root.join("storage/uploads/linked")).unwrap();
+    let uri = signed("GET", "linked", "secret", 4_102_444_800);
+    assert_eq!(request(&storage, "GET", &uri, &[]).await.0, 503);
+    assert!(!storage.root.join("storage/uploads/linked").exists());
+    assert_eq!(fs::read(private).unwrap(), b"private");
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn migration_rejects_symlink_escape_and_never_publishes_a_partial_tree() {
     let dir = tempfile::tempdir().unwrap();
     let storage = storage(dir.path(), "secret");

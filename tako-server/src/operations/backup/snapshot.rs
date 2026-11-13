@@ -59,16 +59,19 @@ fn copy_snapshot_dir(parent: &File, relative: &Path, destination: &Path) -> io::
         }
         let path = relative.join(name);
         let object = path.starts_with("tako/storages/objects");
+        let staging = object && is_object_upload_staging_file(&path);
         // SQLite may unlink a journal after read_dir buffered its name. Only
         // the pinned database snapshot consumes its companion files.
-        if is_transient_tako_sqlite_file(&path)
-            || (object && is_object_upload_staging_file(&path))
-            || (!object && is_sqlite_companion(parent, name)?)
-        {
+        if is_transient_tako_sqlite_file(&path) || (!object && is_sqlite_companion(parent, name)?) {
             continue;
         }
         let dest = destination.join(name);
-        let stat = fs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW)?;
+        let stat = match fs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(stat) => stat,
+            // Atomic publication can remove a staging file after read_dir.
+            Err(rustix::io::Errno::NOENT) if staging => continue,
+            Err(error) => return Err(error.into()),
+        };
         match FileType::from_raw_mode(stat.st_mode) {
             FileType::Symlink => {
                 let target = fs::readlinkat(parent, name, Vec::new())?;
@@ -80,6 +83,9 @@ fn copy_snapshot_dir(parent: &File, relative: &Path, destination: &Path) -> io::
                 copy_snapshot_dir(&File::from(dir), &path, &dest)?;
             }
             FileType::RegularFile => {
+                if staging {
+                    continue;
+                }
                 let mut file = open_regular(parent, name)?;
                 if !object && is_sqlite_database(&file)? {
                     sqlite::snapshot(parent, name, file, &dest).map_err(|e| {
@@ -606,7 +612,7 @@ services:
         let relative = "tako/storages/objects/storage/uploads";
         std::fs::create_dir_all(source.join("app")).unwrap();
         let store = tako_storage::local(&source.join(relative)).unwrap();
-        let objects: [(&str, &[u8]); 4] = [
+        let objects: [(&str, &[u8]); 5] = [
             (
                 "file.sqlite",
                 b"SQLite format 3\0opaque object, not a database",
@@ -614,6 +620,7 @@ services:
             ("file.sqlite-wal", b"opaque wal"),
             ("file.sqlite-shm", b"opaque shm"),
             ("hash#name#123", b"committed hash name"),
+            ("folder#123/nested", b"committed nested object"),
         ];
         for (key, bytes) in objects {
             store

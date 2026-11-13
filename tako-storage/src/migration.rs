@@ -92,10 +92,16 @@ fn copy_tree(source: &Dir, destination: &Path) -> io::Result<()> {
                 use cap_std::fs::OpenOptionsExt;
                 options.custom_flags(libc::O_NONBLOCK);
             }
-            let input = source.open_with(&name, &options)?;
+            let input = source.open_with(&name, &options)?.into_std();
             let metadata = input.metadata()?;
             if !metadata.is_file() {
                 return Err(io::Error::other("storage source changed to a special file"));
+            }
+            #[cfg(unix)]
+            if std::os::unix::fs::MetadataExt::nlink(&metadata) != 1 {
+                return Err(io::Error::other(
+                    "local storage migration does not accept hard links",
+                ));
             }
             if target.exists() {
                 continue;
