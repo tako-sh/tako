@@ -41,7 +41,7 @@ Entries live in Tako-managed `cache.sqlite`, separately from your app-owned data
 
 Include the tenant, user, data version, and other authorization-relevant inputs in keys when results differ by reader. Authorize the request before returning private cached data. Do not treat a cache key as an access check.
 
-Container HTTP instances do not receive `TAKO_DATA_DIR` in v0, so this helper is not available there by default. Browser code cannot use this server cache.
+Container releases receive `TAKO_DATA_DIR`, but the cache file sits beside that directory, outside the persistent data mount. Inside a container it is created in the container's own filesystem (`/tako/tako/cache.sqlite` with the default data path): entries are lost when the container is replaced, instances do not share them, and the image's user must be able to create that directory. Browser code cannot use this server cache.
 
 ## Choose the right cache
 

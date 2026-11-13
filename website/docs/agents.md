@@ -136,10 +136,13 @@ those documents. They are also available through MCP resources:
 - `tako://docs/troubleshooting`
 - `tako://skills/tako`
 - `tako://skills/tako-sdk-js` (also `go` and `rust`)
+- `tako://schemas/tako-toml.json` (the `tako.toml` JSON Schema)
 
 Docs and skills are bundled at build time and match the installed CLI. Upgrade
 Tako for newer content. The live docs index is https://tako.sh/llms.txt and the
 skills discovery index is https://tako.sh/.well-known/agent-skills/index.json.
+The `tako.toml` JSON Schema is published at https://tako.sh/schemas/tako-toml.json
+for validating config without running the CLI.
 
 Live web docs can describe a newer release than the installed CLI. Prefer bundled docs for the selected tool version. Fetch individual web `.md` pages when needed; `llms-full.txt` loads the entire corpus and is usually unnecessary for a scoped task.
 

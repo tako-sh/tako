@@ -6,7 +6,10 @@ use std::{
     time::{Duration, Instant},
 };
 use tako_core::network::NetworkInvocation;
-use tako_network::{AppEnv, DeviceId, DeviceKind, LocalDeviceKeys, NetworkId, SshPublicKey};
+use tako_network::{
+    AppEnv, DeviceId, DeviceKind, LocalDeviceKeys, NetworkId, SshPublicKey,
+    services::CLOCK_SKEW_SECONDS,
+};
 
 const NAMESPACE: &str = "tako-network-invocation-v1";
 const LIFETIME: u64 = 30;
@@ -71,7 +74,7 @@ impl SignedInvocation {
         .map_err(io::Error::other)
     }
     fn validate(&self, now: u64) -> io::Result<()> {
-        if self.issued_at > now.saturating_add(5)
+        if self.issued_at > now.saturating_add(CLOCK_SKEW_SECONDS)
             || now > self.issued_at.saturating_add(LIFETIME)
             || self.signature.len() > 2048
             || self.nonce.len() != 32
@@ -114,7 +117,10 @@ impl ReplayGuard {
         }
         // Proof timestamps have whole-second precision and accept the entire
         // last second, including when the signer is five seconds ahead.
-        self.0.insert(key, now + Duration::from_secs(LIFETIME + 6));
+        self.0.insert(
+            key,
+            now + Duration::from_secs(LIFETIME + CLOCK_SKEW_SECONDS + 1),
+        );
         true
     }
 }

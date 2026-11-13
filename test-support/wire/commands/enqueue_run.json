@@ -1,0 +1,13 @@
+{
+  "app": "demo",
+  "command": "enqueue_run",
+  "name": "send-email",
+  "opts": {
+    "id": "order-42",
+    "max_attempts": 5,
+    "run_at_ms": 1767225600000
+  },
+  "payload": {
+    "to": "a@example.com"
+  }
+}

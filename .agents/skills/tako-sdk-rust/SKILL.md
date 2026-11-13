@@ -75,7 +75,14 @@ returns `Option<PresenceGrant>`: `None` denies, while
 `Some(PresenceGrant::default())` allows an anonymous connection. Omit
 `.auth(...)` for a public space. Cookie-only auth uses `PresenceAuth { header_name:
 None, cookie_name: Some("session".into()) }`. Async verifiers receive the public
-space name, operation, schema-validated params, header, and cookie.
+space name, operation, schema-validated params, header, and cookie. Params schema
+properties cannot be named `from` or `last_message_id`; Tako reserves both on
+channel routes. tako-server rejects params the schema does not declare under
+`properties` unless it sets `"additionalProperties": true`; without
+`.params_schema(...)` a space takes no params. The schema must be one object
+schema with every param under its top-level `properties` (no top-level `$ref`, and
+a top-level `allOf`, `anyOf`, `oneOf`, `not`, or `if` may only add constraints such
+as `required`); tako-server reports any other shape as an invalid schema.
 
 `router_with_presence(app, registry)` wraps a custom Axum loop. Both presence
 adapter helpers preserve status probes and protect internal registry/auth routes
@@ -90,9 +97,9 @@ scope sees its roster; permissions are checked again when the configured maximum
 connection lifetime expires. Configure the shared `postgres_url` credential for
 multiple servers; native registration is not detected by the JS deploy preflight.
 
-Local Presence connections bypass auth callbacks and use in-memory state.
-Verify private-room rejection and trusted identities in a deployed test
-environment. Deduplicate subjects when counting users across tabs; connection
+Local Presence connections run the same auth callbacks as production and use
+in-memory state, so private-room rejection and trusted identities can be
+verified with `tako dev`. Deduplicate subjects when counting users across tabs; connection
 IDs identify sessions, not people.
 
 ## Stores
@@ -163,9 +170,11 @@ unlike Presence, Store auth is enforced during local development too.
 
 ## Network primitive callers
 
-Use `tako::network::Client::from_env()?` inside a managed process. `enqueue_blocking(address, payload, EnqueueOptions)` returns `EnqueueResult { id, deduplicated }`; `publish_blocking(address, params, message_type, data)` returns the JSON publication acknowledgement. With the `tokio` feature on Unix, async `enqueue` and `publish` take the same arguments. Payloads and params implement `serde::Serialize`; calls return `std::io::Result` and use bounded Unix-socket frames and timeouts.
+Use `tako::network::Client::from_env()?` inside a managed process. `enqueue_blocking(address, payload, EnqueueOptions)` returns `EnqueueResult { id, deduplicated }`; `publish_blocking(address, params, message_type, data)` returns the JSON publication acknowledgement; `params` select the recipient channel's stream and must be flat string, number, or boolean values. With the `tokio` feature on Unix, async `enqueue` and `publish` take the same arguments. Payloads and params implement `serde::Serialize`; calls return `std::io::Result` and use bounded Unix-socket frames and timeouts.
 
 Addresses such as `mail.send-email` target a JavaScript-owned primitive in the caller's environment and private network. Bare names select the current app. `EnqueueOptions` has optional `run_at_ms`, `max_attempts` (total attempts), and `id`. Omitted attempts inherit the recipient's policy. Delivery is attempted once; use a stable enqueue ID for retries. Rust does not implement workflow authoring, general channel registration, or recipient network dispatch. Verify calls against a managed JavaScript recipient and inspect its workflow logs or channel subscription. See [Network Primitives](https://tako.sh/docs/network-primitives).
+
+A rejected call is an `io::Error` whose `tako::ErrorCode::of(&error)` names the server's reason: `RunIdConflict`, `InvalidRequest`, `ChannelUnknown`, `ChannelParamsInvalid`, `ChannelClosed`, `Unavailable`, or `None` when the server gave none. Branch on it, never on the message. A rejected Store invalidation is `StoreError::Rejected(Option<ErrorCode>)`.
 
 `Client::call(address, input)` / `call_blocking` execute a private handler directly with no enqueue or automatic retries. `result(address, id)` / `result_blocking` return `Option<WorkflowResult>` once: inspect `status`, `result`, and `error`; poll pending/running states with an application deadline. None means missing or no longer retained. Async APIs require `tokio`. Rust has no workflow authoring or automatic durable child-call API.
 

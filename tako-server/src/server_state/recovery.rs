@@ -141,6 +141,17 @@ impl ServerState {
                 );
             }
 
+            // Neither the app nor its workflows start on data a restore left
+            // partly restored.
+            if let Some(reason) = self.unresolved_restore_block(&app_name) {
+                tracing::error!(app = %app_name, "{reason}");
+                // Also stops Compose containers that outlived the server.
+                if let Err(error) = self.app_manager.stop_app(&app_name).await {
+                    tracing::error!(app = %app_name, "Could not stop the app: {error}");
+                }
+                app.set_last_error(reason);
+                continue;
+            }
             if let Err(error) = self
                 .try_sync_app_workflows(&app_name, &release_path, runtime_bin_path.as_deref())
                 .await

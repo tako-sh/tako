@@ -181,9 +181,17 @@ pub fn websocket_close_frame(code: u16, reason: &str) -> Vec<u8> {
     websocket_frame(0x8, &payload)
 }
 
+/// Parse a client publish. Clients cannot close a stream: the marker type is reserved.
 pub fn parse_publish_payload(payload: &[u8]) -> Result<ChannelPublishPayload, ChannelError> {
-    serde_json::from_slice(payload)
-        .map_err(|_| ChannelError::BadRequest("invalid websocket publish payload".to_string()))
+    let payload: ChannelPublishPayload = serde_json::from_slice(payload)
+        .map_err(|_| ChannelError::BadRequest("invalid websocket publish payload".to_string()))?;
+    if payload.r#type == crate::CLOSE_MESSAGE_TYPE {
+        return Err(ChannelError::BadRequest(format!(
+            "message type '{}' is reserved",
+            crate::CLOSE_MESSAGE_TYPE
+        )));
+    }
+    Ok(payload)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -327,13 +335,13 @@ mod tests {
                 .unwrap();
         assert_eq!(
             parsed.last_message_id,
-            Some(crate::ReplayCursor::postgres(42))
+            Some(crate::ReplayCursor::unscoped(42))
         );
 
         let parsed = parse_first_frame(r#"{"type":"tako.auth","lastMessageId":43}"#).unwrap();
         assert_eq!(
             parsed.last_message_id,
-            Some(crate::ReplayCursor::postgres(43))
+            Some(crate::ReplayCursor::unscoped(43))
         );
     }
 

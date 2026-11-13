@@ -1,0 +1,57 @@
+{
+  "description": "A handler error with attempts left fails the attempt with a retry time about one base backoff (1s, +/-20% jitter) away.",
+  "drive": "run",
+  "workflows": ["fails"],
+  "steps": [
+    {
+      "expect": {
+        "command": "claim_run",
+        "app": "scenario-app",
+        "worker_id": {
+          "$var": "process_worker",
+          "is": {
+            "$type": "string"
+          }
+        },
+        "names": ["fails"],
+        "lease_ms": {
+          "$var": "lease_ms",
+          "is": {
+            "$positive": true
+          }
+        }
+      },
+      "reply": {
+        "status": "ok",
+        "data": {
+          "id": "run-1",
+          "worker_id": "claim-1",
+          "name": "fails",
+          "payload": {},
+          "status": "running",
+          "attempts": 1,
+          "max_attempts": 3,
+          "run_at_ms": 1700000000000,
+          "step_state": {}
+        }
+      }
+    },
+    {
+      "expect": {
+        "command": "fail_run",
+        "app": "scenario-app",
+        "id": "run-1",
+        "worker_id": "claim-1",
+        "error": "boom",
+        "next_run_at_ms": {
+          "$ms_from_now": [500, 1200]
+        },
+        "finalize": false
+      },
+      "reply": {
+        "status": "ok",
+        "data": {}
+      }
+    }
+  ]
+}

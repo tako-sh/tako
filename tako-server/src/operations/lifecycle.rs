@@ -56,6 +56,9 @@ impl crate::ServerState {
             Some(app) => app,
             None => return Response::error(format!("App not found: {}", app_name)),
         };
+        if let Some(response) = self.refuse_unresolved_restore(app_name) {
+            return response;
+        }
 
         let previous_config = app.config.read().clone();
         if previous_config.compose.is_some() {
@@ -139,6 +142,9 @@ impl crate::ServerState {
         }
 
         crate::runtime_events::update_instance_count_metric(app_name, &app);
+        // The operator just set the instance count and saw it take effect;
+        // earlier crash history and its backoff no longer apply.
+        app.reset_recovery();
         if app.get_instances().is_empty() && effective_instances == 0 {
             app.set_state(AppState::Idle);
             self.cold_start.reset(app_name);
@@ -163,18 +169,18 @@ impl crate::ServerState {
         instance: &Arc<crate::instances::Instance>,
     ) -> Result<(), String> {
         app.set_instance_state(instance, InstanceState::Draining);
-        let deadline = tokio::time::Instant::now() + RollingUpdateConfig::default().drain_timeout;
-        while instance.in_flight() > 0 {
-            if tokio::time::Instant::now() >= deadline {
-                tracing::warn!(
-                    app = %app.name(),
-                    instance = %instance.id,
-                    in_flight = instance.in_flight(),
-                    "Scale drain timeout exceeded, forcing stop"
-                );
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
+        if !crate::instances::wait_for_short_requests(
+            instance,
+            RollingUpdateConfig::default().drain_timeout,
+        )
+        .await
+        {
+            tracing::warn!(
+                app = %app.name(),
+                instance = %instance.id,
+                in_flight = instance.in_flight(),
+                "Scale drain timeout exceeded, forcing stop"
+            );
         }
 
         instance
@@ -227,6 +233,7 @@ impl crate::ServerState {
 
         self.load_balancer.unregister_app(app_name);
         self.cold_start.reset(app_name);
+        self.forget_backup_schedule(app_name);
 
         {
             let mut route_table = self.routes.write();

@@ -180,7 +180,7 @@ fn independent_workflow_connections_complete_under_sustained_contention() {
                     assert_eq!(run.payload, payload);
                     db.save_step(&id, &owner, "saved", &payload).unwrap();
                     db.heartbeat(&id, &owner, LEASE_MS).unwrap();
-                    assert!(db.reclaim_expired_with_workers().unwrap().is_empty());
+                    assert!(db.reclaim_expired().unwrap().workers.is_empty());
                     db.wait_for_event(&id, &owner, "approval", &id, None)
                         .unwrap();
                     assert_eq!(db.signal(&id, &payload).unwrap(), 1);

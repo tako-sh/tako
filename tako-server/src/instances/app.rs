@@ -3,11 +3,13 @@ use dashmap::DashMap;
 use parking_lot::RwLock;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use super::AppLogHandle;
 use super::config::AppConfig;
-use super::instance::{HealthyInstance, Instance, generate_instance_id};
+use super::instance::{HealthyInstance, Instance, generate_instance_id, now_unix_millis};
+use super::recovery::Recovery;
 
 /// Manages all instances of an app
 pub struct App {
@@ -26,6 +28,19 @@ pub struct App {
     state: RwLock<AppState>,
     /// Serializes stop/restore against cold starts and health replacements.
     pub(crate) lifecycle_gate: Arc<tokio::sync::RwLock<()>>,
+
+    /// Serializes health replacement and the periodic reconcile for this app.
+    /// Only ever tried, never awaited, and taken after every other gate.
+    pub(crate) recovery_gate: tokio::sync::Mutex<()>,
+    /// True while a backup holds the deploy lock. A backup leaves the
+    /// instance set alone, so recovery may claim instance slots meanwhile,
+    /// holding this lock for the claim; see `BackupDeployLock`.
+    pub(crate) recovery_claims_open: parking_lot::Mutex<bool>,
+    /// Which background work holds the deploy lock, and whether an operator
+    /// operation has priority over it; see `BackgroundDeployLock`.
+    pub(crate) deploy_lock_access: parking_lot::Mutex<crate::runtime_events::DeployLockAccess>,
+    /// Crash backoff and the last lost instance, for recovery and status.
+    recovery: parking_lot::Mutex<Recovery>,
 
     /// Most recent error message (if any)
     last_error: RwLock<Option<String>>,
@@ -57,6 +72,10 @@ impl App {
             routing_suppressed_instances: RwLock::new(HashSet::new()),
             state: RwLock::new(AppState::Stopped),
             lifecycle_gate: Arc::new(tokio::sync::RwLock::new(())),
+            recovery_gate: tokio::sync::Mutex::new(()),
+            recovery_claims_open: parking_lot::Mutex::new(false),
+            deploy_lock_access: parking_lot::Mutex::default(),
+            recovery: parking_lot::Mutex::new(Recovery::default()),
             last_error: RwLock::new(None),
             instance_tx,
             log_handle,
@@ -89,6 +108,42 @@ impl App {
 
     pub fn last_error(&self) -> Option<String> {
         self.last_error.read().clone()
+    }
+
+    /// Record a lost instance and schedule the next replacement.
+    pub(crate) fn record_instance_exit(&self, exit: tako_core::InstanceExit) {
+        self.recovery.lock().record_exit(
+            exit,
+            Instant::now(),
+            (now_unix_millis() / 1000) as i64,
+            unit_jitter(),
+        );
+    }
+
+    /// Time left before recovery may start another replacement.
+    pub(crate) fn restart_backoff_remaining(&self, now: Instant) -> Option<Duration> {
+        self.recovery.lock().backoff_remaining(now)
+    }
+
+    pub(crate) fn record_restart(&self) {
+        self.recovery.lock().record_restart();
+    }
+
+    pub(crate) fn observe_recovery_health(&self, healthy: bool, now: Instant) {
+        self.recovery.lock().observe_health(healthy, now);
+    }
+
+    pub(crate) fn has_recovery_history(&self) -> bool {
+        self.recovery.lock().has_history()
+    }
+
+    /// Forget crash history, e.g. after a successful deploy or scale.
+    pub(crate) fn reset_recovery(&self) {
+        self.recovery.lock().reset();
+    }
+
+    pub(crate) fn recovery_status(&self) -> Option<tako_core::RecoveryStatus> {
+        self.recovery.lock().status(Instant::now())
     }
 
     #[cfg(test)]
@@ -330,4 +385,13 @@ impl App {
         config.apply_internal_defaults();
         *self.config.write() = config;
     }
+}
+
+/// Unit-interval sample for restart jitter. Not security sensitive: the
+/// per-process random hasher seed is enough to spread restarts apart.
+fn unit_jitter() -> f64 {
+    use std::hash::{BuildHasher, Hasher};
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    hasher.write_u64(now_unix_millis());
+    (hasher.finish() >> 11) as f64 / (1u64 << 53) as f64
 }

@@ -2,7 +2,7 @@
 
 use std::sync::OnceLock;
 use std::time::Duration;
-use tako_core::Response;
+use tako_core::{ErrorCode, Response, SocketError};
 
 pub async fn invoke_http(
     url: &str,
@@ -28,7 +28,8 @@ pub async fn invoke_http(
         let mut response = request
             .send()
             .await
-            .map_err(|_| "destination unavailable")?;
+            // Transport failures, not an answer: the caller may retry.
+            .map_err(|_| SocketError::new(ErrorCode::Unavailable, "destination unavailable"))?;
         if let Some(token) = token {
             if response
                 .headers()
@@ -36,22 +37,22 @@ pub async fn invoke_http(
                 .and_then(|v| v.to_str().ok())
                 != Some(token)
             {
-                return Err("destination did not authenticate its response");
+                return Err("destination did not authenticate its response".into());
             }
         }
         let mut body = Vec::new();
         while let Some(chunk) = response
             .chunk()
             .await
-            .map_err(|_| "destination response failed")?
+            .map_err(|_| SocketError::new(ErrorCode::Unavailable, "destination response failed"))?
         {
             if body.len() + chunk.len() > 1024 * 1024 {
-                return Err("destination response too large");
+                return Err("destination response too large".into());
             }
             body.extend_from_slice(&chunk);
         }
-        serde_json::from_slice(&body).map_err(|_| "invalid destination response")
+        serde_json::from_slice(&body).map_err(|_| SocketError::from("invalid destination response"))
     }
     .await;
-    result.unwrap_or_else(Response::error)
+    result.unwrap_or_else(Response::from)
 }

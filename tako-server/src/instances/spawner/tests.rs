@@ -504,6 +504,68 @@ fn build_instance_env_always_sets_app_name_even_without_socket() {
     assert!(!env.contains_key("TAKO_INTERNAL_SOCKET"));
 }
 
+#[tokio::test]
+async fn publish_identity_from_instance_env_matches_the_proxy_registry_key() {
+    // The proxy loads a channel registry under the routed app id and the
+    // instance's build. An app's `channel_publish` sends `TAKO_APP_NAME` and
+    // `TAKO_BUILD` from this env; they must name the same registry entry, or
+    // publish params would never be validated.
+    let (instance_tx, _instance_rx) = mpsc::channel(4);
+    let app = App::new(
+        AppConfig {
+            name: "shop".to_string(),
+            environment: "production".to_string(),
+            version: "v7".to_string(),
+            env_vars: HashMap::from([("TAKO_BUILD".to_string(), "v7".to_string())]),
+            ..Default::default()
+        },
+        instance_tx,
+        noop_log_handle(),
+    );
+    let instance = app.allocate_instance();
+    let env = build_instance_env(&app.config.read().clone(), &instance, None);
+
+    let registry = crate::channels::registry::ChannelRegistry::new();
+    let definition: crate::channels::ChannelDefinitionMeta =
+        serde_json::from_value(serde_json::json!({
+            "channel": "chat",
+            "paramsSchema": {
+                "type": "object",
+                "properties": {"room": {"type": "string"}},
+                "required": ["room"],
+                "additionalProperties": false
+            },
+            "auth": false
+        }))
+        .unwrap();
+    registry
+        .get_or_load(&app.name(), instance.build_version(), "chat", || async {
+            Ok(vec![definition])
+        })
+        .await
+        .unwrap();
+
+    let publish = |params: serde_json::Value| {
+        crate::channels::trusted_publication(
+            &registry,
+            tako_workflows::ChannelPublishRequest {
+                app: &env["TAKO_APP_NAME"],
+                channel: "chat",
+                params: &params,
+                build: env.get("TAKO_BUILD").map(String::as_str),
+                write: tako_workflows::ChannelWrite::Publish(
+                    serde_json::json!({"type": "msg", "data": 1}),
+                ),
+            },
+        )
+    };
+    publish(serde_json::json!({"room": "a"})).unwrap();
+    assert!(matches!(
+        publish(serde_json::json!({"rom": "a"})),
+        Err(crate::channels::ChannelError::ParamsInvalid(_))
+    ));
+}
+
 #[test]
 fn build_instance_args_never_includes_socket_flag() {
     let (instance_tx, _instance_rx) = mpsc::channel(4);

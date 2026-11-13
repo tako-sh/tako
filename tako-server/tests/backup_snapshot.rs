@@ -103,3 +103,53 @@ fn snapshot_captures_committed_rows_with_an_open_writer() {
         assert_eq!(value, expected, "{journal}");
     }
 }
+
+#[test]
+fn database_snapshot_worker_captures_only_sqlite_databases() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("data");
+    std::fs::create_dir_all(source.join("app/media")).unwrap();
+    std::fs::create_dir_all(source.join("tako")).unwrap();
+    std::fs::write(source.join("app/media/photo.jpg"), b"jpeg").unwrap();
+    let db = rusqlite::Connection::open(source.join("app/database")).unwrap();
+    db.execute_batch(
+        "PRAGMA journal_mode=WAL; CREATE TABLE items (id INTEGER); INSERT INTO items VALUES (3);",
+    )
+    .unwrap();
+
+    let measure = Command::new(env!("CARGO_BIN_EXE_tako-server"))
+        .arg("--measure-databases")
+        .arg(temp.path())
+        .arg("data")
+        .output()
+        .unwrap();
+    assert!(measure.status.success());
+    let measured: u64 = String::from_utf8(measure.stdout)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let on_disk = ["app/database", "app/database-wal"]
+        .iter()
+        .map(|path| std::fs::metadata(source.join(path)).unwrap().len())
+        .sum::<u64>();
+    assert_eq!(measured, on_disk);
+
+    let dest = temp.path().join("snapshot");
+    let status = Command::new(env!("CARGO_BIN_EXE_tako-server"))
+        .arg("--snapshot-databases")
+        .arg(temp.path())
+        .arg("data")
+        .arg(&dest)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(!dest.join("app/media").exists());
+    assert!(!dest.join("app/database-wal").exists());
+    assert!(dest.join("tako").is_dir());
+    let value: i64 = rusqlite::Connection::open(dest.join("app/database"))
+        .unwrap()
+        .query_row("SELECT id FROM items", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(value, 3);
+}

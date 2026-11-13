@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import type { Type } from "@sinclair/typebox";
+import { Value } from "@sinclair/typebox/value";
 import { setChannelSocketPublisher } from "../../src/channels";
 import {
   CHANNEL_SYMBOL,
@@ -6,6 +8,7 @@ import {
   isChannelDefinition,
   isChannelExport,
 } from "../../src/channels/define";
+import { definePresence } from "../../src/presence/define";
 
 describe("defineChannel", () => {
   test("server publishes include lifecycle before any subscription", async () => {
@@ -181,4 +184,112 @@ test("ephemeral publishes carry the flag without a replay window", async () => {
   } finally {
     setChannelSocketPublisher(null);
   }
+});
+
+describe("defineChannel params schemas declare every param", () => {
+  test("channel and presence schemas reject undeclared params unless they opt in", () => {
+    expect(defineChannel("status").definition.paramsSchema).toMatchObject({
+      additionalProperties: false,
+    });
+    const room = defineChannel("room", { paramsSchema: (t) => t.Object({ id: t.String() }) });
+    expect(room.definition.paramsSchema).toMatchObject({ additionalProperties: false });
+    expect(Value.Check(room.definition.paramsSchema, { id: "a", junk: "1" })).toBe(false);
+    const open = defineChannel("open", {
+      paramsSchema: (t) => t.Object({ id: t.String() }, { additionalProperties: true }),
+    });
+    expect(open.definition.paramsSchema).toMatchObject({ additionalProperties: true });
+    // Store scopes carry JSON params and keep their schema as declared.
+    expect(defineChannel("tako.store:notes").definition.paramsSchema).not.toHaveProperty(
+      "additionalProperties",
+    );
+  });
+});
+
+type T = typeof Type;
+
+describe("defineChannel params schemas are one flat object", () => {
+  test("combinators and references are rejected at definition time", () => {
+    const a = (t: T) => t.Object({ a: t.String() });
+    const b = (t: T) => t.Object({ b: t.String() });
+    for (const [keyword, paramsSchema] of [
+      ["allOf", (t: T) => t.Intersect([a(t), b(t)])],
+      ["anyOf", (t: T) => t.Union([a(t), b(t)])],
+      ["$ref", (t: T) => t.Ref("Room")],
+    ] as const) {
+      expect(() => defineChannel("room", { paramsSchema })).toThrow(
+        keyword === "$ref"
+          ? `Channel 'room' params schema uses '${keyword}'`
+          : `Channel 'room' params schema declares params through 'properties' inside '${keyword}'`,
+      );
+      expect(() => definePresence("room", { paramsSchema })).toThrow("t.Composite");
+    }
+    expect(() => defineChannel("room", { paramsSchema: (t) => t.String() })).toThrow(
+      `params schema has type "string"`,
+    );
+    // Composite flattens objects into one, and property-level unions are fine.
+    const room = defineChannel("room", {
+      paramsSchema: (t) =>
+        t.Composite([a(t), t.Object({ kind: t.Union([t.Literal("x"), t.Literal("y")]) })]),
+    });
+    expect(Object.keys(room.definition.paramsSchema.properties)).toEqual(["a", "kind"]);
+    // Store scopes carry JSON params and keep their schema as declared.
+    expect(() =>
+      defineChannel("tako.store:notes", { paramsSchema: (t) => t.Union([a(t), b(t)]) }),
+    ).not.toThrow();
+  });
+
+  test("top-level combinators may constrain the declared params", () => {
+    const ids = (t: T, options: object) =>
+      t.Object({ userId: t.Optional(t.String()), teamId: t.Optional(t.String()) }, options);
+    for (const constraint of [
+      { oneOf: [{ required: ["userId"] }, { required: ["teamId"] }] },
+      { if: { required: ["userId"] }, then: { required: ["teamId"] } },
+      { not: { required: ["teamId"] } },
+      { dependentSchemas: { teamId: { required: ["userId"] } } },
+      { allOf: [{ anyOf: [{ required: ["userId"] }, { additionalProperties: false }] }] },
+    ]) {
+      const scoped = defineChannel("scoped", { paramsSchema: (t) => ids(t, constraint) });
+      const presence = definePresence("scoped", { paramsSchema: (t) => ids(t, constraint) });
+      // The constraint reaches tako-server, which enforces it on every request.
+      for (const definition of [scoped.definition, presence.definition]) {
+        expect(definition.paramsSchema).toMatchObject({
+          ...constraint,
+          additionalProperties: false,
+        });
+        expect(Object.keys(definition.paramsSchema.properties)).toEqual(["userId", "teamId"]);
+      }
+    }
+  });
+
+  test("a combinator that declares params is rejected wherever it nests", () => {
+    for (const [keyword, combinator, constraint] of [
+      ["properties", "allOf", { allOf: [{ properties: { teamId: { type: "string" } } }] }],
+      [
+        "properties",
+        "anyOf",
+        { anyOf: [{ allOf: [{ not: { properties: { teamId: { type: "string" } } } }] }] },
+      ],
+      ["additionalProperties", "oneOf", { oneOf: [{ additionalProperties: true }] }],
+      ["additionalProperties", "if", { if: { additionalProperties: { type: "string" } } }],
+      ["$ref", "not", { not: { $ref: "#/$defs/x" } }],
+      [
+        "patternProperties",
+        "dependentSchemas",
+        { dependentSchemas: { userId: { patternProperties: { "^t": {} } } } },
+      ],
+    ] as const) {
+      const paramsSchema = (t: T) => t.Object({ userId: t.String() }, constraint);
+      for (const define of [
+        () => defineChannel("room", { paramsSchema }),
+        () => definePresence("room", { paramsSchema }),
+      ]) {
+        expect(define).toThrow(`declares params through '${keyword}' inside '${combinator}'`);
+      }
+    }
+    expect(() =>
+      defineChannel("room", {
+        paramsSchema: (t) => t.Object({ a: t.String() }, { patternProperties: { "^b": {} } }),
+      }),
+    ).toThrow("params schema uses 'patternProperties'");
+  });
 });

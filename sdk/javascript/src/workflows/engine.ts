@@ -15,7 +15,7 @@
  */
 
 import { discoverWorkflows, type WorkflowDiscoveryOptions } from "./discovery";
-import { WorkflowsClient } from "./rpc-client";
+import { WorkflowsClient, type ScheduleSpec } from "./rpc-client";
 import type { WorkflowRuntimeOpts } from "./types";
 import type { RunId } from "./types";
 import { Worker, type RegisteredWorkflow, type WorkflowHandler } from "./worker";
@@ -206,12 +206,17 @@ export class WorkflowEngine {
     return this.worker?.runningCount ?? 0;
   }
 
-  /** Gather registered cron schedules for `RegisterSchedules`. */
-  collectSchedules(): Array<{ name: string; cron: string }> {
-    const out: Array<{ name: string; cron: string }> = [];
+  /**
+   * Gather registered cron schedules for `RegisterSchedules`. Scheduled runs
+   * get the workflow's retry budget; without `retries` the server default applies.
+   */
+  collectSchedules(): ScheduleSpec[] {
+    const out: ScheduleSpec[] = [];
     for (const [name, reg] of this.registrations) {
       if (reg.opts.schedule) {
-        out.push({ name, cron: reg.opts.schedule });
+        const schedule: ScheduleSpec = { name, cron: reg.opts.schedule };
+        if (reg.opts.retries !== undefined) schedule.max_attempts = reg.opts.retries + 1;
+        out.push(schedule);
       }
     }
     return out;

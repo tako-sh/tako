@@ -2,13 +2,19 @@ use serde::{Deserialize, Serialize};
 
 /// One Compose project on one server, with one HTTP service exposed by Tako.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ComposeConfig {
+    /// Compose file, relative to the app directory and inside it.
     pub file: String,
+    /// Compose service that receives HTTP traffic.
     pub service: String,
+    /// Port the service listens on inside its container.
     pub port: u16,
+    /// HTTP health check path.
     #[serde(default = "default_health_path")]
     pub health_path: String,
+    /// HTTP Host header sent with health checks.
     #[serde(default)]
     pub health_host: Option<String>,
 }

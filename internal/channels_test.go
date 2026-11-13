@@ -2,6 +2,8 @@ package internal
 
 import (
 	"encoding/json"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -101,6 +103,22 @@ func TestRegistryMetadataSerializesPublicAuthAsFalse(t *testing.T) {
 	}
 }
 
+func TestRegistryDefaultSchemaAcceptsNoParams(t *testing.T) {
+	t.Parallel()
+
+	r := NewChannelRegistry()
+	r.Register("status", ChannelDefinition{})
+	b, err := json.Marshal(r.Metadata())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Params select streams: tako-server rejects undeclared ones, and the
+	// default schema says so.
+	if !contains(string(b), `"paramsSchema":{"type":"object","additionalProperties":false}`) {
+		t.Fatalf("expected a schema without params in %s", b)
+	}
+}
+
 func TestAuthorizeInheritsDefinitionLifecycleForSubjectOnlyGrant(t *testing.T) {
 	t.Parallel()
 	r := NewChannelRegistry()
@@ -192,4 +210,94 @@ func TestEphemeralChannelRejectsReplayWindow(t *testing.T) {
 		}
 	}()
 	NewChannelRegistry().Register("invalid", ChannelDefinition{ChannelLifecycleConfig: ChannelLifecycleConfig{Ephemeral: true, ReplayWindowMs: 10}})
+}
+
+func TestChannelRegistrationRejectsReservedParamNames(t *testing.T) {
+	for _, name := range []string{"from", "last_message_id"} {
+		func() {
+			defer func() {
+				message, _ := recover().(string)
+				if !strings.Contains(message, `declares param "`+name+`"`) {
+					t.Fatalf("expected reserved param %q to panic, got %q", name, message)
+				}
+			}()
+			NewChannelRegistry().Register("reply", ChannelDefinition{
+				ParamsSchema: json.RawMessage(`{"type":"object","properties":{"` + name + `":{"type":"string"}}}`),
+			})
+		}()
+	}
+	// Stores carry params as JSON, not query values.
+	NewChannelRegistry().Register(storeChannelPrefix+"notes", ChannelDefinition{
+		ParamsSchema: json.RawMessage(`{"type":"object","properties":{"from":{"type":"string"}}}`),
+	})
+}
+
+func TestChannelRegistrationRejectsParamsSchemasThatAreNotOneFlatObject(t *testing.T) {
+	room := `{"type":"object","properties":{"roomId":{"type":"string"}}}`
+	for keyword, schema := range map[string]string{
+		"allOf": `{"allOf":[` + room + `],"additionalProperties":false}`,
+		"anyOf": `{"anyOf":[` + room + `]}`,
+		"$ref":  `{"$ref":"#/$defs/room","$defs":{"room":` + room + `}}`,
+		"type":  `{"type":"string"}`,
+	} {
+		for _, register := range []func(){
+			func() {
+				NewChannelRegistry().Register("room", ChannelDefinition{ParamsSchema: json.RawMessage(schema)})
+			},
+			func() { RegisterPresence("room", PresenceDefinition{ParamsSchema: json.RawMessage(schema)}) },
+		} {
+			func() {
+				defer func() {
+					message, _ := recover().(string)
+					if !strings.Contains(message, "top-level \"properties\"") || !strings.Contains(message, keyword) {
+						t.Fatalf("expected %s schema to panic, got %q", keyword, message)
+					}
+				}()
+				register()
+			}()
+		}
+	}
+	// A combinator that declares params is rejected wherever it nests.
+	for _, tc := range []struct{ keyword, combinator, schema string }{
+		{"properties", "anyOf", `{"type":"object","properties":{"u":{"type":"string"}},"anyOf":[{"allOf":[{"not":{"properties":{"t":{}}}}]}]}`},
+		{"additionalProperties", "oneOf", `{"type":"object","properties":{"u":{"type":"string"}},"oneOf":[{"additionalProperties":true}]}`},
+		{"additionalProperties", "if", `{"type":"object","properties":{"u":{"type":"string"}},"if":{"additionalProperties":{"type":"string"}}}`},
+		{"$ref", "not", `{"type":"object","properties":{"u":{"type":"string"}},"not":{"$ref":"#/$defs/x"}}`},
+		{"patternProperties", "dependentSchemas", `{"type":"object","properties":{"u":{"type":"string"}},"dependentSchemas":{"u":{"patternProperties":{"^t":{}}}}}`},
+	} {
+		want := strconv.Quote(tc.keyword) + " inside " + strconv.Quote(tc.combinator)
+		if problem := nonFlatParamsSchema(json.RawMessage(tc.schema)); !strings.Contains(problem, want) {
+			t.Fatalf("a combinator declaring %s must be rejected naming it", tc.keyword)
+		}
+	}
+	if problem := nonFlatParamsSchema(json.RawMessage(`{"patternProperties":{"^u":{}}}`)); !strings.Contains(problem, "patternProperties") {
+		t.Fatal("a top-level patternProperties must be rejected")
+	}
+	// Combinators inside a property are fine, and Stores keep their schema.
+	NewChannelRegistry().Register("room", ChannelDefinition{
+		ParamsSchema: json.RawMessage(`{"type":"object","properties":{"kind":{"anyOf":[{"const":"a"},{"const":"b"}]}}}`),
+	})
+	NewChannelRegistry().Register(storeChannelPrefix+"notes", ChannelDefinition{
+		ParamsSchema: json.RawMessage(`{"anyOf":[` + room + `]}`),
+	})
+}
+
+func TestChannelRegistrationAcceptsTopLevelCombinatorsThatOnlyConstrainParams(t *testing.T) {
+	ids := `"type":"object","properties":{"userId":{"type":"string"},"teamId":{"type":"string"}}`
+	for _, constraint := range []string{
+		`"oneOf":[{"required":["userId"]},{"required":["teamId"]}]`,
+		`"if":{"required":["userId"]},"then":{"required":["teamId"]}`,
+		`"not":{"required":["teamId"]}`,
+		`"dependentSchemas":{"teamId":{"required":["userId"]}}`,
+		`"allOf":[{"anyOf":[{"required":["userId"]},{"additionalProperties":false}]}]`,
+	} {
+		schema := json.RawMessage(`{` + ids + `,` + constraint + `}`)
+		registry := NewChannelRegistry()
+		registry.Register("scoped", ChannelDefinition{ParamsSchema: schema})
+		RegisterPresence("scoped", PresenceDefinition{ParamsSchema: schema})
+		// The constraint reaches tako-server unchanged, which enforces it.
+		if got := registry.Lookup("scoped").ParamsSchema; string(got) != string(schema) {
+			t.Fatal("a constraint-only schema must be registered unchanged")
+		}
+	}
 }

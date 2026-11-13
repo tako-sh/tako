@@ -94,6 +94,178 @@ fn network_calls_authenticate_the_caller_before_resolving_the_destination() {
     );
 }
 
+#[test]
+fn channel_publish_passes_the_stream_params_and_build_to_the_publisher() {
+    let lookup = lookup_for(Default::default());
+    let auth: PeerAuthFn = Arc::new(|app, _| {
+        if app == "web" {
+            Ok(())
+        } else {
+            Err("caller mismatch".into())
+        }
+    });
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed = seen.clone();
+    let publish: ChannelPublishFn = Arc::new(move |request| {
+        observed.lock().unwrap().push((
+            request.app.to_owned(),
+            request.channel.to_owned(),
+            request.params.clone(),
+            request.build.map(str::to_owned),
+            request.write,
+        ));
+        Ok(serde_json::json!({"id": "1"}))
+    });
+    let payload = serde_json::json!({"type": "msg", "data": 1});
+    let command = |app: &str, extra: serde_json::Value| -> Command {
+        let mut command = serde_json::json!({
+            "command": "channel_publish", "app": app, "channel": "chat", "payload": payload,
+        });
+        command
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        serde_json::from_value(command).unwrap()
+    };
+    let bound = serde_json::json!({"params": {"room": "a"}, "build": "v1"});
+    for (app, extra, accepted) in [
+        ("web", bound.clone(), true),
+        // Unparameterized channels send neither field.
+        ("web", serde_json::json!({}), true),
+        ("other", bound, false),
+    ] {
+        let response = handle_command(
+            &lookup,
+            Some(&publish),
+            Some(&auth),
+            Some(1001),
+            None,
+            command(app, extra),
+        );
+        assert_eq!(response.data().is_some(), accepted, "{app}");
+    }
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![
+            (
+                "web".to_owned(),
+                "chat".to_owned(),
+                serde_json::json!({"room": "a"}),
+                Some("v1".to_owned()),
+                ChannelWrite::Publish(payload.clone()),
+            ),
+            (
+                "web".to_owned(),
+                "chat".to_owned(),
+                serde_json::Value::Null,
+                None,
+                ChannelWrite::Publish(payload.clone()),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn channel_close_reaches_the_publisher_with_its_stream_and_reports_failures() {
+    let lookup = lookup_for(Default::default());
+    let auth: PeerAuthFn = Arc::new(|app, _| {
+        if app == "web" {
+            Ok(())
+        } else {
+            Err("caller mismatch".into())
+        }
+    });
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed = seen.clone();
+    let publish: ChannelPublishFn = Arc::new(move |request| {
+        observed.lock().unwrap().push((
+            request.channel.to_owned(),
+            request.params.clone(),
+            request.build.map(str::to_owned),
+            request.write.clone(),
+        ));
+        match request.write {
+            ChannelWrite::Close { .. } if request.channel == "closed" => Err(SocketError::new(
+                ErrorCode::ChannelClosed,
+                "channel stream is closed",
+            )),
+            _ => Ok(serde_json::json!({"id": "1", "channel": request.channel})),
+        }
+    });
+    let command = |app: &str, channel: &str, kind: &str| -> Command {
+        let mut command = serde_json::json!({
+            "command": kind, "app": app, "channel": channel,
+            "params": {"room": "a"}, "build": "v1",
+        });
+        if kind == "channel_close" {
+            command["lifecycle"] = serde_json::json!({"replayWindowMs": 1000});
+        } else {
+            command["payload"] = serde_json::json!({"type": "msg", "data": 1});
+        }
+        serde_json::from_value(command).unwrap()
+    };
+    let handle = |command| {
+        handle_command(
+            &lookup,
+            Some(&publish),
+            Some(&auth),
+            Some(1001),
+            None,
+            command,
+        )
+    };
+
+    let closed = handle(command("web", "chat", "channel_close"));
+    assert_eq!(
+        closed.data(),
+        Some(&serde_json::json!({"id": "1", "channel": "chat"}))
+    );
+    // Publisher errors name the operation and keep the publisher's reason
+    // and code.
+    let rejected = handle(command("web", "closed", "channel_close"));
+    assert_eq!(
+        rejected.error_message(),
+        Some("channel close failed: channel stream is closed")
+    );
+    assert_eq!(rejected.error_code(), Some(ErrorCode::ChannelClosed));
+    // Close is authorized like publish.
+    assert!(
+        handle(command("other", "chat", "channel_close"))
+            .data()
+            .is_none()
+    );
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![
+            (
+                "chat".to_owned(),
+                serde_json::json!({"room": "a"}),
+                Some("v1".to_owned()),
+                ChannelWrite::Close {
+                    lifecycle: Some(serde_json::json!({"replayWindowMs": 1000}))
+                },
+            ),
+            (
+                "closed".to_owned(),
+                serde_json::json!({"room": "a"}),
+                Some("v1".to_owned()),
+                ChannelWrite::Close {
+                    lifecycle: Some(serde_json::json!({"replayWindowMs": 1000}))
+                },
+            ),
+        ]
+    );
+    let missing = handle_command(
+        &lookup,
+        None,
+        Some(&auth),
+        Some(1001),
+        None,
+        command("web", "chat", "channel_close"),
+    );
+    assert!(missing.error_message().unwrap().contains("not configured"));
+}
+
 #[tokio::test]
 async fn internal_socket_is_group_accessible_for_app_processes() {
     use std::os::unix::fs::PermissionsExt;
@@ -259,6 +431,7 @@ async fn enqueue_rejects_when_health_check_fails() {
         err.contains("worker unhealthy") && err.contains("bootstrap crashed"),
         "expected unhealthy error with reason, got: {err}"
     );
+    assert_eq!(resp.error_code(), Some(ErrorCode::Unavailable));
     // DB must stay empty — enqueue short-circuited before db.enqueue().
     assert_eq!(db.pending_count().unwrap(), 0);
 
@@ -299,6 +472,7 @@ async fn draining_runtime_rejects_enqueue_and_claims_nothing() {
     write_json_line(&mut w, &enqueue).await.unwrap();
     let resp: Response = read_json_line(&mut r).await.unwrap().unwrap();
     assert!(resp.error_message().unwrap().contains("draining"));
+    assert_eq!(resp.error_code(), Some(ErrorCode::Unavailable));
 
     let claim = Command::ClaimRun {
         app: "a".into(),
@@ -562,6 +736,59 @@ async fn unknown_app_returns_error() {
     write_json_line(&mut w, &cmd).await.unwrap();
     let resp: Response = read_json_line(&mut r).await.unwrap().unwrap();
     assert!(resp.error_message().unwrap().contains("unknown app"));
+    // Unclassified: the reply has no code field at all.
+    assert!(serde_json::to_value(&resp).unwrap().get("code").is_none());
+
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn enqueue_and_request_errors_carry_codes_on_the_socket() {
+    let tmp = tempfile::tempdir().unwrap();
+    let sock = tmp.path().join("internal.sock");
+    let db = Arc::new(RunsDb::open_in_memory().unwrap());
+    let mut map = std::collections::HashMap::new();
+    map.insert("a".to_string(), db.clone());
+    let handle = spawn(&sock, lookup_for(map), None, None, None).unwrap();
+
+    let stream = UnixStream::connect(&sock).await.unwrap();
+    let (r, mut w) = stream.into_split();
+    let mut r = BufReader::new(r);
+    let mut send = async |cmd: serde_json::Value| -> serde_json::Value {
+        write_json_line(&mut w, &cmd).await.unwrap();
+        read_json_line(&mut r).await.unwrap().unwrap()
+    };
+    let enqueue = |id: &str, payload: serde_json::Value| {
+        serde_json::json!({
+            "command": "enqueue_run", "app": "a", "name": "w",
+            "payload": payload, "opts": {"id": id},
+        })
+    };
+
+    assert_eq!(
+        send(enqueue("order-1", serde_json::json!(1))).await["status"],
+        "ok"
+    );
+    // The conflict message echoes the caller's id; only the code is stable.
+    let conflict = send(enqueue("order-1", serde_json::json!(2))).await;
+    assert_eq!(conflict["status"], "error");
+    assert_eq!(conflict["code"], "run_id_conflict");
+    assert!(conflict["message"].as_str().unwrap().contains("order-1"));
+    assert_eq!(
+        send(enqueue("", serde_json::json!(1))).await["code"],
+        "invalid_request"
+    );
+    // A worker write on a run this worker never claimed.
+    let stale = send(serde_json::json!({
+        "command": "heartbeat_run", "app": "a", "id": "order-1",
+        "worker_id": "someone-else", "lease_ms": 1000,
+    }))
+    .await;
+    assert_eq!(stale["code"], "run_not_owned");
+    // A line that is not a command.
+    let malformed = send(serde_json::json!({"command": "no_such_command"})).await;
+    assert_eq!(malformed["status"], "error");
+    assert_eq!(malformed["code"], "invalid_request");
 
     handle.shutdown().await;
 }
@@ -733,7 +960,7 @@ fn assert_same_process_takeover(db: Arc<RunsDb>, expire: impl FnOnce(&str)) {
             id: id.clone(),
             worker_id: worker_id.clone(),
             error: "late".into(),
-            next_run_at_ms: None,
+            next_run_at_ms: Some(0),
             finalize: false,
         },
         Command::DeferRun {
@@ -753,6 +980,12 @@ fn assert_same_process_takeover(db: Arc<RunsDb>, expire: impl FnOnce(&str)) {
     ] {
         let response = call(cmd);
         assert!(!response.is_ok(), "stale attempt was accepted");
+        // The worker stops on this code, never on the message text.
+        assert_eq!(
+            response.error_code(),
+            Some(ErrorCode::RunNotOwned),
+            "{response:?}"
+        );
         assert_eq!(limiter.count("same:process"), 1);
     }
     assert!(
@@ -893,4 +1126,56 @@ fn postgres_same_process_reclaim_rejects_old_attempt() {
     client
         .execute("DELETE FROM tako_workflows.runs WHERE app_id=$1", &[&app])
         .unwrap();
+}
+
+/// Operator commands belong to the management path. An app process may not
+/// list, show, retry, or cancel runs, neither its own nor another app's.
+#[test]
+fn operator_workflow_commands_are_rejected_on_the_internal_socket() {
+    let db = Arc::new(RunsDb::open_in_memory().unwrap());
+    let id = db
+        .enqueue("work", &serde_json::json!({}), &EnqueueOpts::default())
+        .unwrap()
+        .id;
+    let lookup = lookup_for([("app".to_string(), db.clone())].into());
+    // The peer is authorized as "app" for every command it sends.
+    let auth: PeerAuthFn = Arc::new(|app, _| {
+        (app == "app")
+            .then_some(())
+            .ok_or_else(|| "forbidden".to_string())
+    });
+    for app in ["app", "other"] {
+        for cmd in [
+            Command::ListWorkflowRuns {
+                app: app.into(),
+                status: None,
+                name: None,
+                limit: None,
+            },
+            Command::GetWorkflowRun {
+                app: app.into(),
+                id: id.clone(),
+            },
+            Command::RetryWorkflowRun {
+                app: app.into(),
+                id: id.clone(),
+            },
+            Command::CancelWorkflowRun {
+                app: app.into(),
+                id: id.clone(),
+            },
+        ] {
+            let response = handle_command(&lookup, None, Some(&auth), Some(1000), None, cmd);
+            assert!(
+                response
+                    .error_message()
+                    .is_some_and(|message| message.contains("not accepted on the internal socket")),
+                "{response:?}"
+            );
+        }
+    }
+    assert_eq!(
+        db.get_run(&id).unwrap().unwrap().status,
+        tako_core::WorkflowRunStatus::Pending
+    );
 }

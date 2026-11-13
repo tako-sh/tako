@@ -56,6 +56,15 @@ impl Client {
         })
     }
 
+    /// A client for a given socket and caller app, without the runtime env.
+    #[cfg(test)]
+    pub(crate) fn at(socket: impl Into<PathBuf>, app: &str) -> Self {
+        Self {
+            socket: socket.into(),
+            app: app.into(),
+        }
+    }
+
     fn encode(&self, address: &str, request: Value) -> io::Result<Vec<u8>> {
         let mut bytes = serde_json::to_vec(
             &json!({"command":"network_call", "app":self.app, "address":address, "request":request}),
@@ -77,6 +86,10 @@ impl Client {
         serde_json::from_value(self.send_blocking(&bytes)?).map_err(io::Error::other)
     }
 
+    /// Publish to a channel owned by an app on this private network. `params`
+    /// select the recipient channel's stream: only subscribers bound to the
+    /// same flat string, number, or boolean params receive the message; `{}`
+    /// selects the unparameterized stream.
     pub fn publish_blocking(
         &self,
         address: &str,
@@ -124,6 +137,7 @@ impl Client {
         serde_json::from_value(self.send(&bytes).await?).map_err(io::Error::other)
     }
 
+    /// Async form of [`Client::publish_blocking`].
     #[cfg(all(unix, feature = "tokio"))]
     pub async fn publish(
         &self,
@@ -189,7 +203,9 @@ fn decode(bytes: &[u8]) -> io::Result<Value> {
     }
     let response: Value = serde_json::from_slice(bytes)?;
     if response.get("status").and_then(Value::as_str) != Some("ok") {
-        return Err(io::Error::other("network primitive call failed"));
+        return Err(io::Error::other(crate::error::Rejected {
+            code: crate::error::reply_code(&response),
+        }));
     }
     Ok(response.get("data").cloned().unwrap_or(Value::Null))
 }
@@ -261,12 +277,17 @@ mod tests {
         assert_eq!(value["request"]["opts"], json!({}));
         assert!(decode(b"{\"status\":\"ok\",\"data\":{}}\n").is_ok());
         assert!(decode(b"{\"status\":\"ok\"}").is_err());
-        assert!(
-            decode(b"{\"status\":\"error\",\"message\":\"private backend detail\"}\n")
-                .unwrap_err()
-                .to_string()
-                .find("private")
-                .is_none()
+        let unclassified =
+            decode(b"{\"status\":\"error\",\"message\":\"private backend detail\"}\n").unwrap_err();
+        assert!(unclassified.to_string().find("private").is_none());
+        assert_eq!(crate::ErrorCode::of(&unclassified), None);
+        let closed =
+            decode(b"{\"status\":\"error\",\"message\":\"private\",\"code\":\"channel_closed\"}\n")
+                .unwrap_err();
+        assert_eq!(closed.to_string(), "network primitive call failed");
+        assert_eq!(
+            crate::ErrorCode::of(&closed),
+            Some(crate::ErrorCode::ChannelClosed)
         );
     }
 }

@@ -440,11 +440,18 @@ mod tests {
                 ],
                 state: AppState::Deploying,
                 last_error: None,
+                recovery: None,
             }),
             deployed_at_unix_secs: None,
             error: None,
         };
 
+        let mut status = status;
+        status.app_status.as_mut().unwrap().recovery = Some(tako_core::RecoveryStatus {
+            restart_count: 2,
+            last_exit: None,
+            next_restart_at_unix_secs: None,
+        });
         let expanded = expand_status_by_running_builds(status);
         let versions: Vec<&str> = expanded
             .iter()
@@ -453,6 +460,16 @@ mod tests {
         assert_eq!(expanded.len(), 2);
         assert!(versions.contains(&"v1"));
         assert!(versions.contains(&"v2"));
+        // Restarts belong to the current release, not the one being replaced.
+        for entry in &expanded {
+            let app = entry.app_status.as_ref().unwrap();
+            assert_eq!(
+                app.recovery.is_some(),
+                app.version == "v2",
+                "{}",
+                app.version
+            );
+        }
     }
 
     #[test]
@@ -683,6 +700,7 @@ servers = ["second"]
                 builds: vec![],
                 state: AppState::Running,
                 last_error: None,
+                recovery: None,
             }),
             deployed_at_unix_secs: None,
             error: None,
@@ -707,6 +725,7 @@ servers = ["second"]
                 builds: vec![],
                 state: AppState::Deploying,
                 last_error: None,
+                recovery: None,
             }),
             deployed_at_unix_secs: None,
             error: None,

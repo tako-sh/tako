@@ -67,7 +67,7 @@ fn lease_round_trip_binds_entire_placement_and_lifetime() {
         decoded.verify(&registry, 10).unwrap(),
         registry.network.id.address(&keys.wg_public_key().unwrap())
     );
-    assert!(lease.verify(&registry, 9).is_err());
+    assert!(lease.verify(&registry, 4).is_err());
     assert!(lease.verify(&registry, 40).is_err());
     for field in ["apps", "network_id", "server_id", "issued_at", "expires_at"] {
         let mut tampered = serde_json::to_value(&lease).unwrap();
@@ -81,6 +81,49 @@ fn lease_round_trip_binds_entire_placement_and_lifetime() {
         let tampered: ServiceLease = serde_json::from_value(tampered).unwrap();
         assert!(tampered.verify(&registry, 10).is_err(), "{field}");
     }
+}
+
+#[test]
+fn lease_tolerates_a_publisher_clock_slightly_ahead_of_the_verifier() {
+    let (registry, keys) = fixture();
+    let lease = ServiceLease::sign(
+        &keys,
+        registry.network.id.clone(),
+        ["api/prod".parse().unwrap()].into(),
+        100,
+    )
+    .unwrap();
+    assert_eq!(lease.expires_at, 100 + MAX_LEASE_SECONDS);
+    for ahead in 1..=CLOCK_SKEW_SECONDS {
+        assert!(lease.verify(&registry, 100 - ahead).is_ok(), "{ahead}");
+    }
+    assert!(
+        lease
+            .verify(&registry, 100 - CLOCK_SKEW_SECONDS - 1)
+            .is_err()
+    );
+    // Expiry gets no tolerance: a slow publisher clock never outlives its lease.
+    assert!(lease.verify(&registry, 129).is_ok());
+    assert!(lease.verify(&registry, 130).is_err());
+    assert!(lease.verify(&registry, 130 + CLOCK_SKEW_SECONDS).is_err());
+    // A verifier clock near zero cannot underflow the comparison.
+    let early = ServiceLease::sign(&keys, registry.network.id.clone(), BTreeSet::new(), 3).unwrap();
+    assert!(
+        early
+            .verify_member(&registry.network.id, &registry.members[0], 0)
+            .is_ok()
+    );
+    let late = ServiceLease::sign(
+        &keys,
+        registry.network.id.clone(),
+        BTreeSet::new(),
+        u64::MAX - MAX_LEASE_SECONDS,
+    )
+    .unwrap();
+    assert!(
+        late.verify_member(&registry.network.id, &registry.members[0], u64::MAX - 1)
+            .is_ok()
+    );
 }
 
 #[test]

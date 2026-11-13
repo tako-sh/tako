@@ -205,7 +205,7 @@ pub enum Command {
     /// Create a short-lived download URL for a backup archive.
     BackupDownloadUrl { app: String, backup_id: String },
 
-    /// Restore app data from a backup archive on this server.
+    /// Restore a full backup, or the SQLite databases of a database snapshot, on this server.
     RestoreBackup { app: String, backup_id: String },
 
     /// Update the desired minimum number of instances for an app.
@@ -397,11 +397,35 @@ pub enum Command {
     /// Server-side channel publish. Used by app/workflow code inside a
     /// Tako-managed process — goes straight to the channel store instead
     /// of round-tripping through the HTTPS proxy. `payload` mirrors the
-    /// `ChannelPublishPayload` wire shape (`{ type, data }`).
+    /// `ChannelPublishPayload` wire shape (`{ type, data }`). `channel` and
+    /// `params` together select the stream; omitted params select the
+    /// channel's unparameterized stream. `build` is the publisher's
+    /// `TAKO_BUILD`: the server checks `params` against that build's channel
+    /// definition when it has loaded it.
     ChannelPublish {
         app: String,
         channel: String,
+        #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+        params: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        build: Option<String>,
         payload: serde_json::Value,
+    },
+    /// Server-side close of a channel stream: appends a durable terminal
+    /// marker after which the stream accepts no publishes. `channel`, `params`
+    /// and `build` select and check the stream as for `ChannelPublish`.
+    /// `lifecycle` is the channel definition's lifecycle, the shape a publish
+    /// payload's `lifecycle` has; ephemeral streams cannot be closed. Closing
+    /// a closed stream succeeds.
+    ChannelClose {
+        app: String,
+        channel: String,
+        #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+        params: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        build: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lifecycle: Option<serde_json::Value>,
     },
     /// Authenticated app-to-app call. `app` is the caller, never the destination.
     NetworkCall {
@@ -409,6 +433,32 @@ pub enum Command {
         address: String,
         request: crate::network::NetworkRequest,
     },
+
+    /// Operator: list an app's workflow runs on this server's store, newest
+    /// first. `limit` defaults to [`WORKFLOW_RUNS_DEFAULT_LIMIT`] and must be
+    /// between 1 and [`WORKFLOW_RUNS_MAX_LIMIT`].
+    ListWorkflowRuns {
+        app: String,
+        #[serde(default)]
+        status: Option<WorkflowRunStatus>,
+        /// Only runs of this workflow.
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        limit: Option<u32>,
+    },
+
+    /// Operator: read one run with its saved steps. Large values are capped.
+    GetWorkflowRun { app: String, id: String },
+
+    /// Operator: return a `dead` or `cancelled` run to `pending`, due now,
+    /// with a fresh retry budget. Saved steps are kept.
+    RetryWorkflowRun { app: String, id: String },
+
+    /// Operator: cancel a `pending` or `running` run. Unlike the worker's
+    /// `CancelRun`, it carries no claim owner: a running attempt is fenced
+    /// and its later writes are rejected as stale.
+    CancelWorkflowRun { app: String, id: String },
 }
 
 /// A single cron schedule for a workflow.
@@ -419,6 +469,10 @@ pub struct ScheduleSpec {
     /// Cron expression. 6-field format (sec min hour day month dayofweek) per
     /// the `cron` crate, or 5-field (the worker SDK normalizes).
     pub cron: String,
+    /// The workflow's attempt budget (inclusive of the first) for the runs
+    /// this schedule creates. Defaults to 3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_attempts: Option<u32>,
 }
 
 /// Options for `Command::EnqueueRun`.
@@ -473,6 +527,189 @@ pub struct RunPayload {
     pub step_state: serde_json::Value,
 }
 
+/// Default page size of `ListWorkflowRuns`.
+pub const WORKFLOW_RUNS_DEFAULT_LIMIT: u32 = 50;
+/// Largest page `ListWorkflowRuns` accepts.
+pub const WORKFLOW_RUNS_MAX_LIMIT: u32 = 200;
+/// `last_error` is capped at this many bytes in `ListWorkflowRuns`.
+pub const WORKFLOW_LIST_ERROR_MAX_BYTES: usize = 1024;
+/// `last_error` is capped at this many bytes in `GetWorkflowRun`.
+pub const WORKFLOW_RUN_ERROR_MAX_BYTES: usize = 8 * 1024;
+/// The run payload and result are capped at this many bytes of JSON text.
+pub const WORKFLOW_RUN_VALUE_MAX_BYTES: usize = 32 * 1024;
+/// Each saved step result is capped at this many bytes of JSON text.
+pub const WORKFLOW_STEP_VALUE_MAX_BYTES: usize = 2 * 1024;
+/// `GetWorkflowRun` returns at most this many of the most recent steps, and
+/// at most this many event waits.
+pub const WORKFLOW_RUN_MAX_STEPS: usize = 100;
+/// Workflow, step and event names and claim owners are cut to at most this
+/// many bytes in `ListWorkflowRuns` and `GetWorkflowRun`.
+pub const WORKFLOW_NAME_MAX_BYTES: usize = 256;
+/// `ListWorkflowRuns` and `GetWorkflowRun` replies serialize to at most this
+/// many bytes, inside the 1 MiB frame. A list stops early and sets
+/// `has_more`; a run drops its oldest steps.
+pub const WORKFLOW_REPLY_MAX_BYTES: usize = 768 * 1024;
+
+/// Lifecycle status of a workflow run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowRunStatus {
+    Pending,
+    Running,
+    Succeeded,
+    Cancelled,
+    Dead,
+}
+
+impl WorkflowRunStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Cancelled => "cancelled",
+            Self::Dead => "dead",
+        }
+    }
+}
+
+impl std::fmt::Display for WorkflowRunStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for WorkflowRunStatus {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "running" => Ok(Self::Running),
+            "succeeded" => Ok(Self::Succeeded),
+            "cancelled" => Ok(Self::Cancelled),
+            "dead" => Ok(Self::Dead),
+            other => Err(format!("unknown workflow run status '{other}'")),
+        }
+    }
+}
+
+/// Which workflow store answered. A `postgres` store is shared by every
+/// server of the app/environment; a `sqlite` store belongs to one server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowStoreKind {
+    Sqlite,
+    Postgres,
+}
+
+/// A stored JSON value, capped for management replies.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CappedJson {
+    /// The value, or null when it was truncated.
+    pub value: serde_json::Value,
+    /// True when the value exceeded its cap and only `preview` is returned.
+    pub truncated: bool,
+    /// Size of the stored JSON text in bytes.
+    pub bytes: u64,
+    /// When truncated: the start of the stored JSON text, cut at a UTF-8
+    /// boundary within the cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
+}
+
+/// One row of `ListWorkflowRuns`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkflowRunSummary {
+    pub id: String,
+    pub name: String,
+    pub status: WorkflowRunStatus,
+    /// Attempts started with the current budget.
+    pub attempts: u32,
+    pub max_attempts: u32,
+    pub created_at_ms: i64,
+    /// When the run is next due (pending) or was last due. Null while it is
+    /// parked until a signal with no timeout.
+    pub run_at_ms: Option<i64>,
+    pub finished_at_ms: Option<i64>,
+    pub last_error: Option<String>,
+    #[serde(default)]
+    pub last_error_truncated: bool,
+}
+
+/// Response payload for `Command::ListWorkflowRuns`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ListWorkflowRunsResponse {
+    pub app: String,
+    pub store: WorkflowStoreKind,
+    pub runs: Vec<WorkflowRunSummary>,
+    /// True when more runs match than `runs` holds.
+    pub has_more: bool,
+}
+
+/// A completed step saved for a run.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorkflowRunStep {
+    pub name: String,
+    pub completed_at_ms: i64,
+    pub result: CappedJson,
+}
+
+/// A run parked waiting for an event.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkflowRunWait {
+    pub step_name: String,
+    pub event_name: String,
+    pub expires_at_ms: Option<i64>,
+}
+
+/// Every stored field of a run.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorkflowRunDetail {
+    pub id: String,
+    pub name: String,
+    pub status: WorkflowRunStatus,
+    pub attempts: u32,
+    pub max_attempts: u32,
+    pub created_at_ms: i64,
+    pub run_at_ms: Option<i64>,
+    pub finished_at_ms: Option<i64>,
+    /// Lease expiry of a running attempt.
+    pub lease_until_ms: Option<i64>,
+    /// Claim owner of a running attempt.
+    pub worker_id: Option<String>,
+    pub last_error: Option<String>,
+    #[serde(default)]
+    pub last_error_truncated: bool,
+    pub payload: CappedJson,
+    /// Present once the run succeeded.
+    pub result: Option<CappedJson>,
+    /// The most recent saved steps, oldest first.
+    pub steps: Vec<WorkflowRunStep>,
+    /// Saved steps in the store; more than `steps.len()` when older ones were left out.
+    pub steps_total: u64,
+    pub waits: Vec<WorkflowRunWait>,
+}
+
+/// Response payload for `Command::GetWorkflowRun`. `run` is null when this
+/// store has no run with that ID.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GetWorkflowRunResponse {
+    pub app: String,
+    pub store: WorkflowStoreKind,
+    pub run: Option<WorkflowRunDetail>,
+}
+
+/// Response payload for `Command::RetryWorkflowRun` and `Command::CancelWorkflowRun`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkflowRunTransition {
+    pub app: String,
+    pub store: WorkflowStoreKind,
+    pub id: String,
+    pub previous_status: WorkflowRunStatus,
+    pub status: WorkflowRunStatus,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HelloResponse {
     pub protocol_version: u32,
@@ -492,6 +729,7 @@ pub enum UpgradeMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 #[derive(Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum SourceIpMode {
     #[default]
     Auto,
@@ -502,6 +740,7 @@ pub enum SourceIpMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum SslProvider {
     #[serde(rename = "letsencrypt")]
     #[default]
@@ -565,6 +804,89 @@ pub struct BackupInfo {
     pub archive_key: String,
     pub manifest_key: String,
     pub encryption: BackupEncryptionInfo,
+    /// Entries written before kinds existed are full archives.
+    #[serde(default)]
+    pub kind: BackupKind,
+    /// Keyed digest of the SQLite databases the entry captured, used to skip
+    /// unchanged database snapshots. Absent on older entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub database_digest: Option<String>,
+    /// Paths, relative to the app data directory, of the SQLite databases a
+    /// database snapshot contains. Empty for full archives.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub databases: Vec<String>,
+}
+
+impl BackupInfo {
+    /// File name for saving a download of the encrypted archive. Built from
+    /// the id and kind, never from the storage object key: the index is
+    /// remote text that anyone with write access to the bucket can change.
+    /// Fails unless the id has the form Tako creates, `b<secs>-<nanoid>` for
+    /// a full archive or `d<secs>-<nanoid>` for a database snapshot.
+    pub fn archive_file_name(&self) -> Result<String, String> {
+        let prefix = match self.kind {
+            BackupKind::Full => 'b',
+            BackupKind::Databases => 'd',
+        };
+        let valid = self.id.strip_prefix(prefix).is_some_and(|rest| {
+            rest.split_once('-').is_some_and(|(secs, suffix)| {
+                !secs.is_empty()
+                    && secs.bytes().all(|byte| byte.is_ascii_digit())
+                    && !suffix.is_empty()
+                    && suffix
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+            })
+        });
+        if !valid {
+            return Err(format!(
+                "Backup id {:?} is not a valid {} backup id",
+                self.id,
+                self.kind.as_str()
+            ));
+        }
+        Ok(match self.kind {
+            BackupKind::Full => format!("{}.tar.zst.enc", self.id),
+            BackupKind::Databases => format!("{}.databases.tar.zst.enc", self.id),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BackupKind {
+    /// The whole app data tree.
+    #[default]
+    Full,
+    /// Only the SQLite databases of the app data tree.
+    Databases,
+}
+
+impl BackupKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Databases => "databases",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BackupSkipReason {
+    Unchanged,
+    NoDatabases,
+    TooLarge,
+    InsufficientDisk,
+    DeployInProgress,
+    BackupInProgress,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackupSkip {
+    pub at_unix_secs: i64,
+    pub reason: BackupSkipReason,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -579,10 +901,39 @@ pub struct BackupStatusResponse {
     pub enabled: bool,
     #[serde(default)]
     pub retention_days: Option<u16>,
+    /// The latest full archive.
     #[serde(default)]
     pub last_backup: Option<BackupInfo>,
     #[serde(default)]
     pub next_backup_at_unix_secs: Option<i64>,
+    #[serde(default)]
+    pub last_database_snapshot_at_unix_secs: Option<i64>,
+    /// The latest hourly database snapshot attempt that uploaded nothing.
+    #[serde(default)]
+    pub last_database_snapshot_skip: Option<BackupSkip>,
+    /// Why scheduled full archives are failing, until one succeeds.
+    #[serde(default)]
+    pub last_backup_failure: Option<BackupFailure>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BackupFailureReason {
+    /// Creating or uploading the full archive failed.
+    Failed,
+    /// Too little free disk for the archive's temporary copies.
+    InsufficientDisk,
+    /// The remote backup index could not be read; no scheduled backup runs.
+    IndexUnreadable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackupFailure {
+    pub at_unix_secs: i64,
+    pub reason: BackupFailureReason,
+    pub message: String,
+    /// When the scheduler tries again.
+    pub retry_at_unix_secs: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -590,6 +941,25 @@ pub struct BackupDownloadUrlResponse {
     pub backup: BackupInfo,
     pub url: String,
     pub expires_in_seconds: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackupRestoreResponse {
+    pub backup: BackupInfo,
+    /// What a database snapshot restore changed. Absent for full archives.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub databases: Option<RestoredDatabases>,
+}
+
+/// Paths relative to the app data directory.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RestoredDatabases {
+    /// Live databases replaced by their snapshot copies.
+    pub replaced: Vec<String>,
+    /// Snapshot databases that did not exist live and were created.
+    pub created: Vec<String>,
+    /// Live databases the snapshot does not contain, left as they were.
+    pub untouched: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -626,8 +996,17 @@ pub enum Response {
     /// Command succeeded
     Ok { data: serde_json::Value },
 
-    /// Command failed
-    Error { message: String },
+    /// Command failed. `code` is present only when an SDK must be able to
+    /// branch on the failure; management errors carry free text alone.
+    Error {
+        message: String,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "crate::error_code::lenient_code"
+        )]
+        code: Option<crate::ErrorCode>,
+    },
 }
 
 impl Response {
@@ -640,6 +1019,15 @@ impl Response {
     pub fn error(message: impl Into<String>) -> Self {
         Self::Error {
             message: message.into(),
+            code: None,
+        }
+    }
+
+    /// An error reply an SDK can branch on by `code`.
+    pub fn coded_error(code: crate::ErrorCode, message: impl Into<String>) -> Self {
+        Self::Error {
+            message: message.into(),
+            code: Some(code),
         }
     }
 
@@ -660,7 +1048,24 @@ impl Response {
     pub fn error_message(&self) -> Option<&str> {
         match self {
             Self::Ok { .. } => None,
-            Self::Error { message } => Some(message),
+            Self::Error { message, .. } => Some(message),
+        }
+    }
+
+    /// Get the machine-readable code of an Error response, when it has one
+    pub fn error_code(&self) -> Option<crate::ErrorCode> {
+        match self {
+            Self::Ok { .. } => None,
+            Self::Error { code, .. } => *code,
+        }
+    }
+}
+
+impl From<crate::SocketError> for Response {
+    fn from(error: crate::SocketError) -> Self {
+        Self::Error {
+            message: error.message,
+            code: error.code,
         }
     }
 }
@@ -681,6 +1086,55 @@ pub struct AppStatus {
     pub state: AppState,
 
     pub last_error: Option<String>,
+    /// Present only while there is instance recovery activity to report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<RecoveryStatus>,
+}
+
+/// Instance recovery activity since the app was deployed or last stayed healthy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoveryStatus {
+    /// Replacement starts attempted by the server.
+    pub restart_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_exit: Option<InstanceExit>,
+    /// Set while the server backs off before the next replacement start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_restart_at_unix_secs: Option<i64>,
+}
+
+/// The most recent instance the server lost.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstanceExit {
+    pub reason: InstanceExitReason,
+    /// Observed process exit code, when the process exited by itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    /// Signal that terminated the process, when one did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal: Option<i32>,
+    pub at_unix_secs: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstanceExitReason {
+    /// The process exited after it had become healthy.
+    Crashed,
+    /// Health probes failed until the instance was declared dead.
+    Unhealthy,
+    /// The instance never became healthy.
+    FailedToStart,
+}
+
+impl std::fmt::Display for InstanceExitReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InstanceExitReason::Crashed => write!(f, "crashed"),
+            InstanceExitReason::Unhealthy => write!(f, "unhealthy"),
+            InstanceExitReason::FailedToStart => write!(f, "failed to start"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -763,6 +1217,17 @@ pub struct ListResponse {
     pub apps: Vec<AppStatus>,
 }
 
+/// The Tako SDK a release was built against, as its manifest records it.
+/// Informational only: no compatibility decision depends on it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReleaseSdk {
+    /// `javascript`, `go`, or `rust`.
+    pub language: String,
+    /// Package, module, or crate name as the ecosystem spells it.
+    pub name: String,
+    pub version: String,
+}
+
 /// Release/build metadata for an app.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReleaseInfo {
@@ -775,6 +1240,9 @@ pub struct ReleaseInfo {
     pub description: Option<String>,
     #[serde(default)]
     pub git_dirty: Option<bool>,
+    /// Absent when the release has no detectable Tako SDK.
+    #[serde(default)]
+    pub sdk: Option<ReleaseSdk>,
 }
 
 /// Response payload for `list_releases`.

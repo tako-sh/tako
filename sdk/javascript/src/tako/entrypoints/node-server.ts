@@ -9,6 +9,7 @@ import { installErrorHooks } from "../error-hooks";
 import { installStdioBridge } from "../stdio-bridge";
 import { startNodeServer } from "../node-http";
 import { initBootstrapFromFd, readBootstrapData } from "../secrets-fd";
+import { createGracefulShutdown } from "../shutdown";
 
 installStdioBridge("app");
 installErrorHooks("app");
@@ -17,10 +18,18 @@ initBootstrapFromFd(readBootstrapData);
 const { run, host, port, setDraining } = createEntrypoint();
 
 void run(async (handleRequest) => {
-  const { actualPort, close } = await startNodeServer(host, port, handleRequest);
-  process.on("SIGTERM", () => {
-    setDraining();
-    close();
-  });
+  const { actualPort, close, closeAllConnections } = await startNodeServer(
+    host,
+    port,
+    handleRequest,
+  );
+  process.on(
+    "SIGTERM",
+    createGracefulShutdown({
+      setDraining,
+      stopServer: close,
+      forceClose: closeAllConnections,
+    }),
+  );
   return actualPort;
 });

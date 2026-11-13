@@ -268,3 +268,68 @@ async fn h2_shared_connection_keeps_each_request_counted_after_driver_exit() {
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn only_an_upgrade_response_releases_the_instance_drain() {
+    let temp = tempfile::tempdir().unwrap();
+    for (upgrade_header, status, content_type, upgraded) in [
+        (true, 101, None, true),
+        // An Upgrade header the app declines or ignores (for example `h2c`).
+        (true, 200, None, false),
+        (true, 426, None, false),
+        // Event streams are often finite (token streaming), so they are waited for.
+        (false, 200, Some("text/event-stream"), false),
+        (false, 200, None, false),
+    ] {
+        let manager = Arc::new(AppManager::new(temp.path().into()));
+        let lb = Arc::new(LoadBalancer::new(manager.clone()));
+        let app = manager.register_app(crate::instances::AppConfig {
+            name: "drain-app".to_string(),
+            ..Default::default()
+        });
+        lb.register_app(app.clone());
+        let instance = app.allocate_instance();
+        app.set_instance_state(&instance, crate::socket::InstanceState::Healthy);
+        let proxy = TakoProxy::new(
+            lb.clone(),
+            Arc::new(parking_lot::RwLock::new(RouteTable::default())),
+            ProxyConfig::default(),
+            Arc::new(ColdStartManager::new(ColdStartConfig::default())),
+            CloudflareIpRanges::default(),
+        );
+        let (_client, mut session) = downstream(8192).await;
+        let mut ctx = proxy.new_ctx();
+        ctx.request_guard = proxy.proxy_requests.register(Some(descriptor()));
+        if upgrade_header {
+            // What request_filter does for a request carrying an Upgrade header.
+            ctx.mark_long_lived();
+        }
+        ctx.backend = lb.get_backend("drain-app");
+        ctx.mark_backend_request_started();
+        assert_eq!(
+            instance.short_in_flight(),
+            1,
+            "a started request holds the instance drain until its response ({status})"
+        );
+        let mut response = ResponseHeader::build(status, None).unwrap();
+        if let Some(content_type) = content_type {
+            response
+                .insert_header("Content-Type", content_type)
+                .unwrap();
+        }
+        proxy
+            .upstream_response_filter(&mut session, &mut response, &mut ctx)
+            .await
+            .unwrap();
+        assert_eq!(instance.in_flight(), 1);
+        assert_eq!(
+            instance.short_in_flight(),
+            u64::from(!upgraded),
+            "status {status}, content type {content_type:?}"
+        );
+        drop(ctx);
+        assert_eq!(instance.in_flight(), 0);
+        assert_eq!(instance.short_in_flight(), 0);
+        assert_eq!(proxy.proxy_requests.active_count(), 0);
+    }
+}

@@ -30,7 +30,7 @@ On the web, use [llms.txt](/llms.txt) to discover topics and the `.md` version o
 
 | Need                                  | Primitive                | Important boundary                                                                      |
 | ------------------------------------- | ------------------------ | --------------------------------------------------------------------------------------- |
-| Deliver events to every subscriber    | [Channels](/channels/)   | Params do not partition a channel's stream; replay is temporary.                        |
+| Deliver events to every subscriber    | [Channels](/channels/)   | Params select separate streams; auth must check them. Replay is temporary.              |
 | Track online connections and metadata | [Presence](/presence/)   | Membership is scoped by params; metadata does not establish identity.                   |
 | Keep database reads current in the UI | [Stores](/stores/)       | Invalidate after committed writes; Tako does not detect database changes automatically. |
 | Execute background jobs or schedules  | [Workflows](/workflows/) | Checkpointed side effects still need idempotency.                                       |

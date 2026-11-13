@@ -2,9 +2,15 @@ use super::super::agents::ASSETS;
 use rmcp::model::{ContentBlock, Resource, Tool, ToolAnnotations};
 use serde_json::{Map, Value, json};
 
+/// The published `tako.toml` JSON Schema, served as a resource and topic.
+const TAKO_TOML_SCHEMA: (&str, &str) = (
+    "schemas/tako-toml.json",
+    include_str!("../../../../website/public/schemas/tako-toml.json"),
+);
+
 pub(super) fn tools() -> Vec<Tool> {
     [
-        ("tako_docs", "List bundled documentation and SDK skills, or read a topic. Topics include docs/quickstart, docs/cli, docs/tako-toml, docs/troubleshooting, and skills/tako-sdk-js. A bare docs topic such as quickstart also works.", json!({"topic":{"type":"string","description":"Omit to list all topics; otherwise use a topic from the list."}}), vec![]),
+        ("tako_docs", "List bundled documentation and SDK skills, or read a topic. Topics include docs/quickstart, docs/cli, docs/tako-toml, docs/troubleshooting, skills/tako-sdk-js, and the tako.toml JSON Schema schemas/tako-toml.json. A bare docs topic such as quickstart also works.", json!({"topic":{"type":"string","description":"Omit to list all topics; otherwise use a topic from the list."}}), vec![]),
         ("tako_search_docs", "Search version-matched Tako documentation and language SDK skills offline. Returns matching lines with topic names and line numbers. Use tako_docs to read the full topic.", json!({"query":{"type":"string","minLength":1,"description":"Case-insensitive literal text to find."}}), vec!["query"]),
     ].into_iter().map(|(name, description, properties, required)| Tool::new(name, description,
         json!({"type":"object","properties":properties,"required":required,"additionalProperties":false}).as_object().unwrap().clone())
@@ -19,12 +25,19 @@ pub(super) fn resources() -> Vec<Resource> {
                 .with_mime_type("text/markdown")
                 .with_size(content.len() as u64)
         })
+        .chain(std::iter::once({
+            let (key, content) = TAKO_TOML_SCHEMA;
+            Resource::new(format!("tako://{key}"), key)
+                .with_mime_type("application/schema+json")
+                .with_size(content.len() as u64)
+        }))
         .collect()
 }
 
 pub(super) fn content(key: &str) -> Option<&'static str> {
     ASSETS
         .iter()
+        .chain(std::iter::once(&TAKO_TOML_SCHEMA))
         .find(|(name, _)| *name == key)
         .map(|(_, content)| *content)
 }
@@ -65,6 +78,10 @@ pub(super) fn call(
                     Some(title) => format!("{key}: # {title}"),
                     None => key.to_string(),
                 })
+                .chain(std::iter::once(format!(
+                    "{}: tako.toml JSON Schema",
+                    TAKO_TOML_SCHEMA.0
+                )))
                 .collect::<Vec<_>>()
                 .join("\n"),
             Some(Value::String(topic)) => {

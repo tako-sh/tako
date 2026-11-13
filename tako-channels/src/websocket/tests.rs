@@ -21,8 +21,8 @@ async fn presence_websockets_isolate_chats_and_track_verified_tabs() {
                 let mut session = Session::new_h1(Box::new(Stream::from(socket)));
                 session.read_request().await.unwrap();
                 let query = session.req_header().uri.query().unwrap_or_default();
-                let params =
-                    crate::params::validate_query(&json!({"type":"object"}), query).unwrap();
+                let schema = json!({"type":"object", "properties": {"chatId": {"type": "string"}}});
+                let params = crate::params::validate_query(&schema, query).unwrap();
                 let auth: ChannelAuthResponse = serde_json::from_value(json!({
                     "ok": true, "subject": "verified-user", "transport": "ws",
                 }))
@@ -35,8 +35,8 @@ async fn presence_websockets_isolate_chats_and_track_verified_tabs() {
                 let _ = serve(
                     &mut session,
                     &store,
-                    "tako.presence:chat",
-                    None,
+                    &crate::ChannelStream::new("tako.presence:chat", &params),
+                    crate::ReplayFrom::Head,
                     auth,
                     params,
                     Default::default(),
@@ -142,8 +142,8 @@ async fn ephemeral_websockets_publish_live_without_replaying_old_events() {
                 let _ = serve(
                     &mut session,
                     &store,
-                    "live",
-                    Some(crate::ReplayCursor::postgres(-100)),
+                    &crate::ChannelStream::new("live", &json!({})),
+                    crate::ReplayFrom::After(crate::ReplayCursor::unscoped(-100)),
                     auth,
                     json!({}),
                     Default::default(),
@@ -207,8 +207,8 @@ async fn ephemeral_duplex_websockets_preserve_identity_without_replaying_old_eve
                 serve(
                     &mut session,
                     &server_store,
-                    "live",
-                    Some(crate::ReplayCursor::postgres(-100)),
+                    &crate::ChannelStream::new("live", &json!({})),
+                    crate::ReplayFrom::After(crate::ReplayCursor::unscoped(-100)),
                     serde_json::from_value(json!({"ok":true,"ephemeral":true,"transport":"ws"})).unwrap(),
                     json!({}),
                     Default::default(),

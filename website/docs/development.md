@@ -235,9 +235,9 @@ JS channels, presence spaces, stores, and workflows are discovered under `<app_r
 
 Presence uses the dev daemon’s in-memory store with separate membership for each validated params scope. See [Presence](/presence/) for the React hook and production auth policy.
 
-[Stores](/stores/) loads backend data with live invalidation and optional cached offline reads. Unlike existing local channel and presence subscriptions, Store reads and subscriptions enforce authorization in development. Invalidate a store after committed writes; each validated params scope has its own notification stream.
+[Stores](/stores/) loads backend data with live invalidation and optional cached offline reads. Store reads and subscriptions enforce authorization in development, as channel and presence subscriptions do. Invalidate a store after committed writes; each validated params scope has its own notification stream.
 
-Channels are broadcast streams, not work queues. Multiple local clients subscribed to the same channel read the same app events, with independent cursors for reconnect replay. Dev channel replay stays in the dev daemon's in-memory store until the daemon restarts.
+Channel subscriptions and WebSocket connections run the app's auth callback as in production, after the daemon wakes the app. If the app cannot answer its channel registry or authorize endpoint, the request fails with `503` instead of being allowed. Channels are broadcast streams, not work queues. Multiple local clients subscribed to the same channel read the same app events, with independent cursors for reconnect replay. Dev channel replay stays in the dev daemon's in-memory store until the daemon restarts.
 
 Workflows in dev use the same architecture as production: the dev daemon owns the runs database, internal socket, dispatcher, and scale-to-zero worker supervisor. The worker exits after a short idle window and restarts for the next runnable enqueue, signal, cron tick, or retry, so code edits take effect on fresh work.
 

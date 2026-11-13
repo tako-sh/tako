@@ -5,7 +5,7 @@ use crate::object_storage::{
     S3Method, S3PresignOptions, presign_s3_url, presign_s3_url_with_options,
 };
 
-use super::{index::BackupIndex, now_unix_secs};
+use super::{databases::DATABASE_SNAPSHOT_RETENTION_SECS, index::BackupIndex, now_unix_secs};
 
 pub(super) const DOWNLOAD_URL_EXPIRES_SECONDS: u32 = 15 * 60;
 pub(super) const S3_URL_EXPIRES_SECONDS: u32 = 60 * 60;
@@ -14,7 +14,12 @@ pub(super) const TRANSFER_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 pub(super) const METADATA_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(super) fn backup_http_client(timeout: Duration) -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
+    let builder = reqwest::Client::builder();
+    // Unit tests trust the storage fixture's authority in addition to the
+    // system roots; certificate validation is never relaxed.
+    #[cfg(test)]
+    let builder = builder.tls_certs_merge([tests::fixture_root_certificate()]);
+    builder
         .connect_timeout(Duration::from_secs(10))
         .read_timeout(Duration::from_secs(60))
         .timeout(timeout)
@@ -24,7 +29,7 @@ pub(super) fn backup_http_client(timeout: Duration) -> Result<reqwest::Client, S
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 
 pub(super) async fn upload_file(
     client: &reqwest::Client,
@@ -146,8 +151,19 @@ async fn delete_object(
 }
 
 pub(super) fn queue_retention(index: &mut BackupIndex, retention_days: u16) {
-    let cutoff = now_unix_secs().saturating_sub(i64::from(retention_days) * 24 * 60 * 60);
+    queue_retention_at(index, retention_days, now_unix_secs());
+}
+
+/// Full archives follow the configured retention; database snapshots only
+/// bridge the gap between full archives and expire after a fixed window.
+pub(super) fn queue_retention_at(index: &mut BackupIndex, retention_days: u16, now: i64) {
+    let full_cutoff = now.saturating_sub(i64::from(retention_days) * 24 * 60 * 60);
+    let database_cutoff = now.saturating_sub(DATABASE_SNAPSHOT_RETENTION_SECS);
     index.backups.retain(|backup| {
+        let cutoff = match backup.kind {
+            tako_core::BackupKind::Full => full_cutoff,
+            tako_core::BackupKind::Databases => database_cutoff,
+        };
         if backup.created_at_unix_secs < cutoff {
             index.pending_deletions.push(backup.clone());
             false

@@ -130,6 +130,14 @@ impl Backend {
     pub fn request_finished(&self) {
         self.instance.request_finished();
     }
+
+    pub fn request_became_long_lived(&self) {
+        self.instance.request_became_long_lived();
+    }
+
+    pub fn long_lived_request_finished(&self) {
+        self.instance.long_lived_request_finished();
+    }
 }
 
 #[cfg(test)]

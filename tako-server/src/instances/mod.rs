@@ -10,6 +10,7 @@ mod instance;
 pub mod logger;
 mod manager;
 mod network;
+mod recovery;
 mod rolling;
 mod spawner;
 
@@ -18,12 +19,10 @@ pub(crate) use crate::socket::AppState;
 pub(crate) use crate::socket::InstanceState;
 pub use app::{App, InstanceEvent};
 #[cfg(test)]
-pub(crate) use config::effective_instance_limit;
-#[cfg(test)]
 pub(crate) use config::host_instance_limit_for_parallelism;
 pub(crate) use config::{
     AppConfig, AppLaunch, clamp_instances_to_limit, default_max_instances_for_host,
-    validate_requested_instances,
+    effective_instance_limit, validate_requested_instances,
 };
 pub use error::InstanceError;
 pub use health::*;

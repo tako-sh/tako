@@ -1,0 +1,76 @@
+{
+  "description": "A sleep of one hour saves its wake time and defers the run until then instead of sleeping inline.",
+  "drive": "run",
+  "workflows": ["sleeps"],
+  "steps": [
+    {
+      "expect": {
+        "command": "claim_run",
+        "app": "scenario-app",
+        "worker_id": {
+          "$var": "process_worker",
+          "is": {
+            "$type": "string"
+          }
+        },
+        "names": ["sleeps"],
+        "lease_ms": {
+          "$var": "lease_ms",
+          "is": {
+            "$positive": true
+          }
+        }
+      },
+      "reply": {
+        "status": "ok",
+        "data": {
+          "id": "run-1",
+          "worker_id": "claim-1",
+          "name": "sleeps",
+          "payload": {},
+          "status": "running",
+          "attempts": 1,
+          "max_attempts": 3,
+          "run_at_ms": 1700000000000,
+          "step_state": {}
+        }
+      }
+    },
+    {
+      "expect": {
+        "command": "save_step",
+        "app": "scenario-app",
+        "id": "run-1",
+        "worker_id": "claim-1",
+        "step_name": "__sleep:nap",
+        "result": {
+          "wakeAt": {
+            "$var": "wake_at",
+            "is": {
+              "$ms_from_now": [3599000, 3600000]
+            }
+          }
+        }
+      },
+      "reply": {
+        "status": "ok",
+        "data": {}
+      }
+    },
+    {
+      "expect": {
+        "command": "defer_run",
+        "app": "scenario-app",
+        "id": "run-1",
+        "worker_id": "claim-1",
+        "wake_at_ms": {
+          "$var": "wake_at"
+        }
+      },
+      "reply": {
+        "status": "ok",
+        "data": {}
+      }
+    }
+  ]
+}

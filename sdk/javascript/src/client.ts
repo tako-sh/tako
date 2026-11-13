@@ -12,7 +12,7 @@
  * ```typescript
  * import { Channel } from "tako.sh/client";
  *
- * const chat = new Channel("chat:room-123");
+ * const chat = new Channel("chat", undefined, { roomId: "room-123" });
  * const sub = chat.subscribe({ authorization: token });
  * ```
  */

@@ -299,6 +299,7 @@ async fn publish(broker: &mut Broker, n: usize) -> ChannelMessage {
             channel: "events".into(),
             payload: payload(n),
             ephemeral: false,
+            lifecycle: None,
         })
         .await
         .unwrap()
@@ -342,6 +343,7 @@ async fn fifo_commit_and_mesh_order_across_concurrent_local_duplex_publishers() 
                     channel: "events".into(),
                     payload: payload(n),
                     ephemeral: n % 2 == 0,
+                    lifecycle: None,
                 },
             )
             .await
@@ -441,6 +443,109 @@ async fn remote_ingest_is_idempotent_not_echoed_and_notified_without_repersistin
     );
 }
 #[tokio::test]
+async fn closing_replicates_the_marker_once_and_closed_streams_reject_publishes() {
+    let (_temp, mut broker) = new_broker().await;
+    let (_, _, _, _, mb) = identities();
+    let (sender, mut outgoing) = wire::queue(Budget::new(16 * MAX_FRAME));
+    broker.peers.insert(mb.device_id, sender);
+    let Reply::Subscription(mut notices) = broker
+        .local(Request::Subscribe { app: app() })
+        .await
+        .unwrap()
+    else {
+        panic!()
+    };
+    let sent = publish(&mut broker, 1).await;
+    let close = ChannelPublishPayload {
+        r#type: tako_channels::CLOSE_MESSAGE_TYPE.into(),
+        data: serde_json::Value::Null,
+    };
+    let request = |payload: ChannelPublishPayload| Request::Publish {
+        app: app(),
+        channel: "events".into(),
+        payload,
+        ephemeral: false,
+        lifecycle: None,
+    };
+    let Reply::Response(Response::Published { message: marker }) =
+        broker.local(request(close.clone())).await.unwrap()
+    else {
+        panic!("close rejected")
+    };
+    assert!(tako_channels::is_close_marker(&marker));
+    // Closing again returns the marker without committing, notifying, or
+    // fencing replay.
+    let Reply::Response(Response::Published { message: again }) =
+        broker.local(request(close)).await.unwrap()
+    else {
+        panic!("repeated close rejected")
+    };
+    assert_eq!(again.id, marker.id);
+    let mut notified = 0;
+    while let Ok(packet) = notices.try_recv() {
+        let Notice::Notification { notification } = serde_json::from_slice(&packet.bytes).unwrap()
+        else {
+            panic!()
+        };
+        assert!(matches!(notification, Notification::Committed { .. }));
+        notified += 1;
+    }
+    assert_eq!(notified, 2);
+    // Over IPC, a publish to the closed stream is answered by name.
+    let (commands, receiver) = mpsc::channel(8);
+    let (_control, control_rx) = watch::channel(broker::Control::default());
+    let (shutdown, shutdown_rx) = watch::channel(false);
+    let store = broker.apps[&app()].store.clone();
+    let actor = tokio::spawn(broker::run(broker, receiver, control_rx, shutdown_rx));
+    let (mut client, server) = tokio::io::duplex(8192);
+    let task = tokio::spawn(ipc::serve(
+        server,
+        commands,
+        Budget::new(MAX_FRAME),
+        Budget::new(8 * MAX_FRAME),
+    ));
+    wire::write(&mut client, &request(payload(2)))
+        .await
+        .unwrap();
+    let response: Response = wire::read(&mut client, &Budget::new(MAX_FRAME))
+        .await
+        .unwrap()
+        .value;
+    task.await.unwrap().unwrap();
+    assert!(matches!(response, Response::StreamClosed));
+    shutdown.send_replace(true);
+    actor.await.unwrap().unwrap();
+
+    // Peers received the message and the marker, each exactly once.
+    let mut replicated = Vec::new();
+    while let Ok(packet) = outgoing.try_recv() {
+        let Frame::Publication {
+            publication: ChannelPublication::Event(event),
+            ..
+        } = serde_json::from_slice(&packet.bytes).unwrap()
+        else {
+            panic!("unexpected frame");
+        };
+        replicated.push(event.payload.r#type);
+    }
+    assert_eq!(
+        replicated,
+        vec!["update", tako_channels::CLOSE_MESSAGE_TYPE]
+    );
+    // The broker fenced replay when it stopped; the history itself is intact.
+    let retained = store.read_after("events", None, 10).unwrap();
+    assert_eq!(
+        retained
+            .iter()
+            .map(|message| (message.event_id.clone(), message.r#type.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            (sent.event_id, "update"),
+            (marker.event_id, tako_channels::CLOSE_MESSAGE_TYPE)
+        ]
+    );
+}
+#[tokio::test]
 async fn unknown_remote_app_never_creates_database() {
     let (temp, mut broker) = new_broker().await;
     broker
@@ -456,6 +561,8 @@ async fn unknown_remote_app_never_creates_database() {
                     channel: "events".into(),
                     payload: payload(1),
                     ephemeral: false,
+                    lifecycle: None,
+                    created_at_unix_ms: None,
                 }),
             },
         )
@@ -650,6 +757,8 @@ async fn postgres_wake_seam_never_reinserts_or_echoes_and_commit_dispatches_only
                     channel: "events".into(),
                     payload: payload(1),
                     ephemeral: false,
+                    lifecycle: None,
+                    created_at_unix_ms: None,
                 }),
             },
         )
@@ -702,6 +811,7 @@ async fn transport_frame_overflow_is_gap_after_successful_commit() {
                 data: serde_json::json!("x".repeat(MAX_FRAME)),
             },
             ephemeral: false,
+            lifecycle: None,
         })
         .await
         .unwrap();
@@ -1163,6 +1273,7 @@ async fn disconnected_or_expired_ipc_cannot_commit_queued_mutations() {
                 channel: "events".into(),
                 payload: payload(1),
                 ephemeral: false,
+                lifecycle: None,
             },
         )
         .await
@@ -1460,4 +1571,351 @@ async fn unresponsive_backend_registration_ends_at_the_deadline_without_stalling
     ));
     publish(&mut broker, 1).await;
     server.await.unwrap();
+}
+
+/// The request kinds a broker from the previous release understands. Like the
+/// real one, it drops the connection without an answer on any other frame.
+#[derive(serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum PreviousRequest {
+    Register {
+        #[allow(dead_code)]
+        app: AppEnv,
+        #[allow(dead_code)]
+        postgres_url: Option<String>,
+    },
+    Publish {
+        #[allow(dead_code)]
+        app: AppEnv,
+        channel: String,
+        payload: ChannelPublishPayload,
+        #[allow(dead_code)]
+        ephemeral: bool,
+    },
+    SyncChannel {
+        #[allow(dead_code)]
+        app: AppEnv,
+        #[allow(dead_code)]
+        channel: String,
+        auth: serde_json::Value,
+    },
+}
+/// How a [`broker_stub`] behaves; tests may change it between requests.
+#[derive(Default)]
+struct StubControl {
+    /// Parse the frame set of the previous release instead of the current one.
+    previous: std::sync::atomic::AtomicBool,
+    /// Connections still to drop after the length prefix, as a busy or
+    /// stopping current broker does; recorded as `busy`.
+    drops: std::sync::atomic::AtomicUsize,
+}
+
+/// A broker stub on a real socket. `previous` selects the frame set of the
+/// previous release; otherwise it parses the current one. Each answered frame
+/// is recorded, unparsable ones as `dropped`.
+async fn broker_stub(
+    previous: bool,
+) -> (
+    tempfile::TempDir,
+    Client,
+    Arc<parking_lot::Mutex<Vec<String>>>,
+) {
+    let control = StubControl::default();
+    control
+        .previous
+        .store(previous, std::sync::atomic::Ordering::SeqCst);
+    let (temp, client, seen, _) = controlled_broker_stub(control).await;
+    (temp, client, seen)
+}
+
+async fn controlled_broker_stub(
+    control: StubControl,
+) -> (
+    tempfile::TempDir,
+    Client,
+    Arc<parking_lot::Mutex<Vec<String>>>,
+    Arc<StubControl>,
+) {
+    use std::sync::atomic::Ordering;
+    use tokio::io::AsyncReadExt;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("channels.sock");
+    let listener = tokio::net::UnixListener::bind(&path).unwrap();
+    let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let log = seen.clone();
+    let control = Arc::new(control);
+    let controls = control.clone();
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let budget = Budget::new(MAX_FRAME);
+            let previous = controls.previous.load(Ordering::SeqCst);
+            if controls
+                .drops
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .is_ok()
+            {
+                let _ = stream.read_u32().await;
+                log.lock().push("busy".into());
+                continue;
+            }
+            let answer = |channel: String, payload: ChannelPublishPayload| Response::Published {
+                message: ChannelMessage {
+                    id: "1".into(),
+                    event_id: None,
+                    channel,
+                    r#type: payload.r#type,
+                    data: payload.data,
+                },
+            };
+            let response = if previous {
+                match wire::read::<_, PreviousRequest>(&mut stream, &budget).await {
+                    Ok(request) => match request.value {
+                        PreviousRequest::Register { .. } => {
+                            log.lock().push("register".into());
+                            Response::Ok
+                        }
+                        PreviousRequest::SyncChannel { auth, .. } => {
+                            log.lock().push(format!("sync {}", auth["replayWindowMs"]));
+                            Response::Ok
+                        }
+                        PreviousRequest::Publish {
+                            channel, payload, ..
+                        } => {
+                            log.lock().push("publish".into());
+                            answer(channel, payload)
+                        }
+                    },
+                    Err(_) => {
+                        log.lock().push("dropped".into());
+                        continue;
+                    }
+                }
+            } else {
+                match wire::read::<_, Request>(&mut stream, &budget).await {
+                    Ok(request) => match request.value {
+                        Request::Features => {
+                            log.lock().push("features".into());
+                            Response::Features {
+                                features: vec![ipc::PUBLISH_LIFECYCLE.into()],
+                            }
+                        }
+                        Request::SyncChannel { .. } => {
+                            log.lock().push("sync".into());
+                            Response::Ok
+                        }
+                        Request::Publish {
+                            channel,
+                            payload,
+                            lifecycle,
+                            ..
+                        } => {
+                            log.lock().push(match lifecycle {
+                                Some(lifecycle) => {
+                                    format!("publish {}", lifecycle.replay_window_ms)
+                                }
+                                None => "publish".into(),
+                            });
+                            answer(channel, payload)
+                        }
+                        _ => Response::Rejected,
+                    },
+                    Err(_) => {
+                        log.lock().push("dropped".into());
+                        continue;
+                    }
+                }
+            };
+            let _ = wire::write(&mut stream, &response).await;
+        }
+    });
+    (temp, Client::new(path), seen, control)
+}
+fn long_lifecycle() -> tako_channels::ChannelLifecycle {
+    serde_json::from_value(serde_json::json!({ "replayWindowMs": 86_400_000 })).unwrap()
+}
+
+#[tokio::test]
+async fn a_lifecycle_publish_falls_back_to_sync_then_publish_on_a_previous_broker() {
+    let (_temp, client, seen) = broker_stub(true).await;
+    for n in 0..2 {
+        let message = client
+            .publish(
+                app(),
+                "events".into(),
+                payload(n),
+                false,
+                Some(long_lifecycle()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(message.data, serde_json::json!(n));
+    }
+    // The probe goes unanswered twice, so the broker is taken to be the
+    // previous one; afterwards each publish syncs the lifecycle
+    // first, as publishers did before the lifecycle travelled with the append.
+    assert_eq!(
+        *seen.lock(),
+        vec![
+            "dropped",
+            "dropped",
+            "sync 86400000",
+            "publish",
+            "sync 86400000",
+            "publish"
+        ]
+    );
+    // Publishes without a lifecycle never need the probe.
+    let (_temp, client, seen) = broker_stub(true).await;
+    client
+        .publish(app(), "events".into(), payload(1), false, None)
+        .await
+        .unwrap();
+    assert_eq!(*seen.lock(), vec!["publish"]);
+}
+
+#[tokio::test]
+async fn a_lifecycle_publish_travels_with_the_append_on_a_current_broker() {
+    let (_temp, client, seen) = broker_stub(false).await;
+    for n in 0..2 {
+        client
+            .publish(
+                app(),
+                "events".into(),
+                payload(n),
+                false,
+                Some(long_lifecycle()),
+            )
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        *seen.lock(),
+        vec!["features", "publish 86400000", "publish 86400000"]
+    );
+}
+
+#[tokio::test]
+async fn a_probe_dropped_once_by_a_busy_current_broker_is_asked_again() {
+    let control = StubControl::default();
+    control.drops.store(1, std::sync::atomic::Ordering::SeqCst);
+    let (_temp, client, seen, _) = controlled_broker_stub(control).await;
+    for n in 0..2 {
+        client
+            .publish(
+                app(),
+                "events".into(),
+                payload(n),
+                false,
+                Some(long_lifecycle()),
+            )
+            .await
+            .unwrap();
+    }
+    // One dropped connection is not an answer: the second probe finds the
+    // current broker, and the lifecycle travels with every append.
+    assert_eq!(
+        *seen.lock(),
+        vec!["busy", "features", "publish 86400000", "publish 86400000"]
+    );
+}
+
+#[tokio::test]
+async fn a_previous_broker_answer_is_rechecked_after_a_minute() {
+    let control = StubControl::default();
+    control
+        .previous
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let (_temp, client, seen, control) = controlled_broker_stub(control).await;
+    let publish = |n| {
+        client.publish(
+            app(),
+            "events".into(),
+            payload(n),
+            false,
+            Some(long_lifecycle()),
+        )
+    };
+    publish(0).await.unwrap();
+    // The network agent restarts with the current broker.
+    control
+        .previous
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    // Within the minute the cached answer holds and no probe is sent.
+    client.age_feature_probe(Duration::from_secs(59));
+    publish(1).await.unwrap();
+    // Past it, the next publish asks again and finds the current broker.
+    client.age_feature_probe(Duration::from_secs(2));
+    publish(2).await.unwrap();
+    assert_eq!(
+        *seen.lock(),
+        vec![
+            "dropped",
+            "dropped",
+            "sync 86400000",
+            "publish",
+            "sync",
+            "publish",
+            "features",
+            "publish 86400000"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn an_unreachable_broker_fails_the_publish_without_caching_an_answer() {
+    let temp = tempfile::tempdir().unwrap();
+    let client = Client::new(temp.path().join("channels.sock"));
+    let error = client
+        .publish(
+            app(),
+            "events".into(),
+            payload(0),
+            false,
+            Some(long_lifecycle()),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            error.kind(),
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+        ),
+        "an unreachable broker must fail the publish as unreachable"
+    );
+    assert_eq!(client.cached_publish_lifecycle(), None);
+}
+
+#[tokio::test]
+async fn the_broker_answers_the_feature_probe_without_queueing_a_command() {
+    let (commands, _receiver) = mpsc::channel(1);
+    let (mut client, server) = tokio::io::duplex(8192);
+    let task = tokio::spawn(ipc::serve(
+        server,
+        commands,
+        Budget::new(MAX_FRAME),
+        Budget::new(8 * MAX_FRAME),
+    ));
+    wire::write(&mut client, &Request::Features).await.unwrap();
+    let response: Response = wire::read(&mut client, &Budget::new(MAX_FRAME))
+        .await
+        .unwrap()
+        .value;
+    assert!(matches!(
+        response,
+        Response::Features { features } if features == vec![ipc::PUBLISH_LIFECYCLE.to_owned()]
+    ));
+    task.await.unwrap().unwrap();
+}
+
+#[test]
+fn stream_limit_drops_are_reported_at_most_once_a_minute_with_their_count() {
+    let mut warning = broker::StreamLimitWarning::default();
+    let start = tokio::time::Instant::now();
+    assert_eq!(warning.dropped(start), Some(1));
+    for second in 1..60 {
+        assert_eq!(warning.dropped(start + Duration::from_secs(second)), None);
+    }
+    assert_eq!(warning.dropped(start + Duration::from_secs(60)), Some(60));
+    assert_eq!(warning.dropped(start + Duration::from_secs(61)), None);
 }

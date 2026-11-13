@@ -10,7 +10,7 @@ use super::{
 use std::{collections::BTreeMap, io, path::PathBuf, sync::Arc};
 use tako_channels::{ChannelMessage, ChannelPublication, ChannelStore, RemoteIngest};
 use tako_network::{AppEnv, DeviceId};
-use tokio::sync::{broadcast, mpsc, oneshot, watch};
+use tokio::sync::{broadcast, broadcast::error::TryRecvError, mpsc, oneshot, watch};
 use zeroize::Zeroizing;
 
 pub(super) enum Command {
@@ -84,6 +84,31 @@ pub(super) struct Application {
     pub(super) subscribers: Vec<wire::Sender>,
     presence: super::presence::Leases,
     presence_queried: std::collections::BTreeSet<DeviceId>,
+    stream_limit: StreamLimitWarning,
+}
+/// How often an app at its stream limit is reported while peers keep sending
+/// events for new streams.
+const STREAM_LIMIT_WARNING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+/// Mesh events dropped because the app is at its stream limit, reported at
+/// most once per interval so a busy peer cannot flood the log.
+#[derive(Default)]
+pub(super) struct StreamLimitWarning {
+    dropped: u64,
+    reported: Option<tokio::time::Instant>,
+}
+impl StreamLimitWarning {
+    /// Count one drop; returns the drops to report when a report is due.
+    pub(super) fn dropped(&mut self, now: tokio::time::Instant) -> Option<u64> {
+        self.dropped += 1;
+        if self
+            .reported
+            .is_some_and(|at| now.duration_since(at) < STREAM_LIMIT_WARNING_INTERVAL)
+        {
+            return None;
+        }
+        self.reported = Some(now);
+        Some(std::mem::take(&mut self.dropped))
+    }
 }
 pub(super) struct Broker {
     apps_root: PathBuf,
@@ -246,6 +271,7 @@ impl Broker {
                 subscribers: Vec::new(),
                 presence: Default::default(),
                 presence_queried: Default::default(),
+                stream_limit: Default::default(),
             },
         );
         Ok(())
@@ -261,7 +287,7 @@ impl Broker {
         deadline: tokio::time::Instant,
     ) -> io::Result<Reply> {
         let response = match request {
-            Request::SignInvocation { .. } => Response::Rejected,
+            Request::SignInvocation { .. } | Request::Features => Response::Rejected,
             Request::UpdatePresence {
                 app,
                 channel,
@@ -345,6 +371,7 @@ impl Broker {
                 channel,
                 payload,
                 ephemeral,
+                lifecycle,
             } => {
                 if !valid_channel(&channel) || payload.r#type.len() > 1024 {
                     return Ok(Reply::Response(Response::Rejected));
@@ -358,7 +385,7 @@ impl Broker {
                         if ephemeral {
                             store.publish_ephemeral(&channel, &payload)
                         } else {
-                            store.append(&channel, &payload)
+                            store.append_with_lifecycle(&channel, &payload, lifecycle.as_ref())
                         }
                     })
                     .await;
@@ -366,10 +393,17 @@ impl Broker {
                     Ok(message) => {
                         // Consume each committed publication before executing the next command.
                         let publication = application.publications.try_recv();
-                        self.committed(&app, &message, ephemeral, publication.ok())
-                            .await?;
+                        // Closing a closed stream returns its marker and commits nothing.
+                        let unchanged = tako_channels::is_close_marker(&message)
+                            && matches!(publication, Err(TryRecvError::Empty));
+                        if !unchanged {
+                            self.committed(&app, &message, ephemeral, publication.ok())
+                                .await?;
+                        }
                         Response::Published { message }
                     }
+                    Err(tako_channels::ChannelError::StreamClosed) => Response::StreamClosed,
+                    Err(tako_channels::ChannelError::StreamLimit) => Response::StreamLimit,
                     Err(_) => Response::Rejected,
                 }
             }
@@ -494,6 +528,26 @@ impl Broker {
                         }
                         if reset.has_changed().unwrap_or(true) {
                             self.notify(&app, Notification::Gap);
+                        }
+                        // Acknowledged in sequence, but no message to deliver.
+                        if result == RemoteIngest::Dropped {
+                            return Ok(());
+                        }
+                        if result == RemoteIngest::StreamLimit {
+                            if let Some(application) = self.apps.get_mut(&app)
+                                && let Some(dropped) = application
+                                    .stream_limit
+                                    .dropped(tokio::time::Instant::now())
+                            {
+                                tracing::warn!(
+                                    app = app.as_str(),
+                                    limit = tako_channels::MAX_STREAMS,
+                                    dropped,
+                                    "channel stream limit reached: dropped mesh events for new streams; \
+                                     this server's readers of those streams miss them"
+                                );
+                            }
+                            return Ok(());
                         }
                         if event.ephemeral {
                             Notification::Committed {

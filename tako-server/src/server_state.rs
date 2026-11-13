@@ -112,8 +112,15 @@ pub struct ServerState {
     /// Bumped whenever an app's runtime credentials change, so the proxy
     /// re-resolves channel backends only then instead of on every request.
     pub(crate) channel_credentials_generation: Arc<std::sync::atomic::AtomicU64>,
+    /// Channel definitions per app build, shared by the proxy and the
+    /// server-side publisher.
+    pub(crate) channel_registry: Arc<crate::channels::registry::ChannelRegistry>,
     pub(crate) deploy_locks: AsyncRwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     pub(crate) backup_locks: SyncRwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Latest hourly database snapshot attempt per app. Not persisted: the
+    /// remote index keeps the cadence across restarts.
+    pub(crate) database_snapshots:
+        SyncRwLock<HashMap<String, crate::operations::DatabaseSnapshotState>>,
     prepared_deploy_ssl: AsyncRwLock<HashMap<PreparedDeployKey, PreparedDeploySsl>>,
     pub(crate) cold_start: Arc<crate::scaling::ColdStartManager>,
     pub(crate) state_store: Arc<SqliteStateStore>,

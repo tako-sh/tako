@@ -1,0 +1,15 @@
+{
+  "app": "demo",
+  "command": "register_schedules",
+  "schedules": [
+    {
+      "cron": "0 3 * * *",
+      "max_attempts": 5,
+      "name": "nightly-report"
+    },
+    {
+      "cron": "*/15 * * * *",
+      "name": "cleanup"
+    }
+  ]
+}

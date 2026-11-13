@@ -244,6 +244,47 @@ fn withdrawal_stale_replay_expiry_and_revocation_remove_placements() {
 }
 
 #[test]
+fn fast_publisher_clock_places_at_once_without_outliving_the_signed_lifetime() {
+    use tako_network::services::CLOCK_SKEW_SECONDS;
+    let (registry, keys, mut directory) = fixture();
+    let app = "api/prod".parse().unwrap();
+    let server = registry.members[0].device_id.clone();
+    // The publisher's clock runs ahead of this verifier's by the full tolerance.
+    let ahead = lease(&registry, &keys, &["api/prod"], 10 + CLOCK_SKEW_SECONDS);
+    directory.replace(&registry, &[ahead.clone()], 10).unwrap();
+    let placements = directory.placements(&app, 10);
+    assert_eq!(placements.len(), 1);
+    assert!(placements[0].expires_at <= 10 + MAX_LEASE_SECONDS);
+    // The verifier honors the lease for its signed lifetime, not for that plus
+    // the skew, and re-reading the same lease never moves the deadline later.
+    let limit = Instant::now() + Duration::from_secs(MAX_LEASE_SECONDS);
+    let first = directory.latest[&server].1;
+    assert!(first <= limit);
+    directory.replace(&registry, &[ahead.clone()], 12).unwrap();
+    assert_eq!(directory.latest[&server].1, first);
+    assert_eq!(directory.placements(&app, 12).len(), 1);
+
+    // Ordering stays by the publisher's own timestamps: an older lease cannot
+    // replace the early one, and the next renewal can.
+    let older = lease(&registry, &keys, &["api/prod"], 12);
+    directory.replace(&registry, &[older], 13).unwrap();
+    assert!(directory.placements(&app, 13).is_empty());
+    let renewed = lease(&registry, &keys, &[], 25);
+    directory.replace(&registry, &[renewed], 20).unwrap();
+    assert!(directory.placements(&app, 20).is_empty());
+    assert_eq!(directory.latest[&server].0.issued_at, 25);
+
+    // Beyond the tolerance the lease is ignored until the clocks agree.
+    let (registry, keys, mut directory) = fixture();
+    let far = lease(&registry, &keys, &["api/prod"], 11 + CLOCK_SKEW_SECONDS);
+    directory.replace(&registry, &[far.clone()], 10).unwrap();
+    assert!(directory.placements(&app, 10).is_empty());
+    assert!(directory.latest.is_empty());
+    directory.replace(&registry, &[far], 11).unwrap();
+    assert_eq!(directory.placements(&app, 11).len(), 1);
+}
+
+#[test]
 fn monotonic_deadlines_survive_wall_clock_rollback_and_file_rereads() {
     let (registry, keys, mut directory) = fixture();
     let app = "api/prod".parse().unwrap();

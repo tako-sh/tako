@@ -17,6 +17,7 @@ Maintain Tako's complete agent-facing experience: workflow skills, MCP capabilit
 | `/docs/llms.txt` and `/docs/llms-full.txt`   | Markdown in `website/docs/` and Blume configuration                                        | Blume generates these; the combined build publishes them under `/docs`.                                   |
 | `/skills.md` and `.well-known/agent-skills/` | Canonical SDK skills                                                                       | Website generation publishes descriptions, URLs, contents, and hashes.                                    |
 | Bundled MCP docs and skills                  | `website/docs/` and canonical SDK skills                                                   | `tako/build.rs` embeds them into each CLI build.                                                          |
+| `tako.toml` JSON Schema                      | `tako/src/config/tako_toml/json_schema.rs` and the parser types                            | CLI tests check `website/public/schemas/tako-toml.json`; the MCP server embeds it as a resource.          |
 
 For a scoped change, inspect the affected sources and surfaces. For a full refresh, inspect all of them. Update sources first and regenerate their outputs.
 

@@ -31,7 +31,8 @@ checks exercise the same configuration the application deploys with.
 4. Use the matching `tako-sdk-js`, `tako-sdk-go`, or `tako-sdk-rust` skill when
    writing SDK code. Read `framework-guides` and its matching framework topic
    before changing an adapter. For image releases, read `docker`, `dockerfile`,
-   and `docker-workflows`; HTTP containers have different data/socket limits.
+   and `docker-workflows`; HTTP containers get app data as a mount and have no
+   internal socket.
 5. Without MCP, use `tako <command> --help` for exact flags and `--json` for
    structured results. Full docs: https://tako.sh/llms.txt.
 
@@ -61,6 +62,12 @@ checks exercise the same configuration the application deploys with.
 3. For production, inspect `tako_status`, `tako_releases_list`, and `tako_logs`.
    Use a finite log window rather than an unbounded tail. Distinguish build,
    readiness, routing/TLS, and application errors before changing code.
+   For a failing or stuck workflow run, read its stored state with
+   `tako_workflows_list` (filter `status: "dead"`) and `tako_workflows_show`:
+   the saved steps show the last checkpoint and the stored error shows what
+   failed after it. Retry only after fixing the cause; cancel stops a running
+   handler at its next checkpoint, not immediately. Both are writes that need
+   the user's authorization. These tools work on deployed environments only.
 4. Read `troubleshooting` and the relevant configuration or SDK docs. Fix the
    cause, then repeat the original request and check the resulting logs.
    Check output truncation before treating a log window as complete. If an MCP
@@ -154,9 +161,18 @@ these features. Keep names consistent with their definitions,
 regenerate types, and test both the producer and consumer. Check state-store
 requirements before scaling across multiple servers; local state is per server.
 
-Channel params do not isolate message streams. Presence membership and Store
-invalidations are scoped by their names and validated params; authorization must
-still check access to the requested room or tenant. Presence tracks connections,
+Channel streams, presence membership, and Store invalidations are scoped by
+their names and validated params; authorization must still check access to the
+requested room or tenant. Channel params are flat scalars and cannot be named
+`from` or `last_message_id` (reserved on channel routes). Channel and presence
+requests reject params the schema does not declare, so a definition without a
+params schema takes none. A params schema is one object schema with every param
+under its top-level `properties`; unions, intersections, and `$ref` are rejected, while a top-level
+`oneOf`/`anyOf`/`allOf`/`not`/`if` that only adds constraints such as `required` is allowed. JavaScript server code
+can `close()` a durable stream; readers subscribing with `from: "start"` replay
+its retained messages, then stop for good at the close. Use this for output that
+must survive a refresh, such as LLM replies, and keep the finished result in the
+app database because replay retention is bounded. Presence tracks connections,
 so deduplicate trusted subjects when counting people across tabs. Its metadata
 is client-provided and must not establish identity or permissions.
 
@@ -173,9 +189,9 @@ read or validation failures must not trigger a backend fallback. Multi-server
 workflows still require Postgres unless intentionally local. Test expired history
 and the resulting authoritative-state reload.
 
-Local channel and Presence connections bypass auth callbacks. Verify their
-private access rules in a deployed test environment. Store reads and
-subscriptions enforce validation and authorization in both dev and production.
+Channel, Presence, and Store requests enforce params validation and the app's
+authorization in both dev and production, so private access rules can be
+tested locally with `tako dev`.
 
 Stores are live, authorized reads over an existing database, with explicit
 invalidation after committed writes. They do not automatically track SQL or

@@ -3,6 +3,7 @@ package internal
 import (
 	"encoding/json"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -138,7 +139,17 @@ func RejectChannel() ChannelAuthDecision {
 // ChannelDefinition describes a channel registered with a [ChannelRegistry].
 type ChannelDefinition struct {
 	ChannelLifecycleConfig
-	// ParamsSchema is a JSON Schema for query params.
+	// ParamsSchema is a JSON Schema for the query params that bind a channel.
+	// Validated params select the channel stream, so it must be one object
+	// schema with flat string, integer, number, or boolean properties under
+	// its top-level "properties" (no $ref; a top-level allOf, anyOf, oneOf,
+	// not, if/then/else, or dependentSchemas may only add constraints such as
+	// "required" over those properties; Register panics otherwise). tako-server rejects a param the
+	// schema does not list under "properties" unless it sets
+	// "additionalProperties": true; nil means the channel takes no params. "from" and "last_message_id"
+	// are reserved query names, so [ChannelRegistry.Register] panics if a
+	// property uses one. Verify must still check that the caller may use the
+	// requested params.
 	ParamsSchema json.RawMessage
 	// Auth configures where credentials are read from. Nil means public.
 	Auth *ChannelAuthScheme
@@ -216,13 +227,36 @@ func NewChannelRegistry() *ChannelRegistry {
 // Channels is the process-local channel registry used by Tako endpoints.
 var Channels = NewChannelRegistry()
 
-// Register adds or replaces a channel definition.
+// ReservedChannelParamNames are the query names Tako reserves on channel
+// routes: "from" (where a reader starts) and "last_message_id" (the
+// WebSocket replay cursor). Channel and presence params cannot use them.
+var ReservedChannelParamNames = []string{"from", "last_message_id"}
+
+// Register adds or replaces a channel definition. It panics if the
+// definition is invalid, including a params schema property named "from" or
+// "last_message_id".
 func (r *ChannelRegistry) Register(name string, definition ChannelDefinition) {
 	if definition.Ephemeral && definition.ReplayWindowMs != 0 {
 		panic("ephemeral channels cannot set ReplayWindowMs")
 	}
+	// Store reads carry params as JSON; channel and presence params are query values.
+	if !strings.HasPrefix(name, storeChannelPrefix) {
+		if problem := nonFlatParamsSchema(definition.ParamsSchema); problem != "" {
+			panic("tako: channel " + strconv.Quote(name) + " params schema " + problem + "; declare every param under the top-level \"properties\" of one object schema")
+		}
+		if reserved := reservedParamName(definition.ParamsSchema); reserved != "" {
+			panic("tako: channel " + strconv.Quote(name) + " declares param " + strconv.Quote(reserved) + ", a name Tako reserves on channel routes; rename the param")
+		}
+	}
 	if definition.ParamsSchema == nil {
-		definition.ParamsSchema = json.RawMessage(`{"type":"object"}`)
+		// Params select channel and presence streams, so tako-server rejects
+		// params a schema does not declare; without a schema there are none.
+		// Store params are JSON validated as given.
+		if strings.HasPrefix(name, storeChannelPrefix) {
+			definition.ParamsSchema = json.RawMessage(`{"type":"object"}`)
+		} else {
+			definition.ParamsSchema = json.RawMessage(`{"type":"object","additionalProperties":false}`)
+		}
 	}
 	if definition.Auth != nil && definition.Auth.HeaderName == "" && definition.Auth.CookieName == "" {
 		definition.Auth.HeaderName = "authorization"
@@ -231,6 +265,129 @@ func (r *ChannelRegistry) Register(name string, definition ChannelDefinition) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.definitions[name] = definition
+}
+
+// nonFlatSchemaKeywords place properties outside a schema's top-level
+// "properties", where channel params are declared and coerced.
+var nonFlatSchemaKeywords = []string{"$ref", "$dynamicRef", "patternProperties"}
+
+// Combinators whose subschemas apply to the whole params object. They may add
+// constraints such as "required" over the declared params, but a param
+// declared inside one would be neither coerced nor allowed.
+var (
+	arrayCombinators  = []string{"allOf", "anyOf", "oneOf"}
+	schemaCombinators = []string{"not", "if", "then", "else"}
+	mapCombinators    = []string{"dependentSchemas"}
+)
+
+// declaringKeywords declare params when a combinator subschema uses them.
+var declaringKeywords = []string{"properties", "patternProperties", "additionalProperties", "$ref", "$dynamicRef"}
+
+type combinatorSubschema struct {
+	combinator string
+	schema     json.RawMessage
+}
+
+// combinatorSubschemas lists the subschemas a schema's combinators apply to
+// the same instance, each with the combinator that holds it.
+func combinatorSubschemas(schema map[string]json.RawMessage) []combinatorSubschema {
+	var subschemas []combinatorSubschema
+	for _, keyword := range arrayCombinators {
+		var items []json.RawMessage
+		if raw, ok := schema[keyword]; ok && json.Unmarshal(raw, &items) == nil {
+			for _, item := range items {
+				subschemas = append(subschemas, combinatorSubschema{keyword, item})
+			}
+		}
+	}
+	for _, keyword := range schemaCombinators {
+		if raw, ok := schema[keyword]; ok {
+			subschemas = append(subschemas, combinatorSubschema{keyword, raw})
+		}
+	}
+	for _, keyword := range mapCombinators {
+		var entries map[string]json.RawMessage
+		if raw, ok := schema[keyword]; ok && json.Unmarshal(raw, &entries) == nil {
+			names := make([]string, 0, len(entries))
+			for name := range entries {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			for _, name := range names {
+				subschemas = append(subschemas, combinatorSubschema{keyword, entries[name]})
+			}
+		}
+	}
+	return subschemas
+}
+
+// declaringKeyword returns the keyword through which a combinator subschema,
+// or one nested in it, declares params. "additionalProperties": false only
+// constrains.
+func declaringKeyword(subschema json.RawMessage) string {
+	var parsed map[string]json.RawMessage
+	if json.Unmarshal(subschema, &parsed) != nil {
+		return ""
+	}
+	for _, keyword := range declaringKeywords {
+		if raw, ok := parsed[keyword]; ok && strings.TrimSpace(string(raw)) != "false" {
+			return keyword
+		}
+	}
+	for _, nested := range combinatorSubschemas(parsed) {
+		if keyword := declaringKeyword(nested.schema); keyword != "" {
+			return keyword
+		}
+	}
+	return ""
+}
+
+// nonFlatParamsSchema describes why schema is not one flat object schema, or
+// returns "" when it is (or is nil). Top-level combinators may only add
+// constraints over the declared params. tako-server rejects such schemas too.
+func nonFlatParamsSchema(schema json.RawMessage) string {
+	if len(schema) == 0 {
+		return ""
+	}
+	var parsed map[string]json.RawMessage
+	if json.Unmarshal(schema, &parsed) != nil {
+		return "is not a JSON object"
+	}
+	for _, keyword := range nonFlatSchemaKeywords {
+		if _, ok := parsed[keyword]; ok {
+			return "uses " + strconv.Quote(keyword)
+		}
+	}
+	if kind, ok := parsed["type"]; ok && string(kind) != `"object"` {
+		return "has type " + string(kind)
+	}
+	if properties, ok := parsed["properties"]; ok {
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(properties, &fields) != nil {
+			return "has \"properties\" that is not an object"
+		}
+	}
+	for _, subschema := range combinatorSubschemas(parsed) {
+		if keyword := declaringKeyword(subschema.schema); keyword != "" {
+			return "declares params through " + strconv.Quote(keyword) + " inside " + strconv.Quote(subschema.combinator) + " (combinators may only add constraints such as \"required\" over the top-level \"properties\")"
+		}
+	}
+	return ""
+}
+
+func reservedParamName(schema json.RawMessage) string {
+	var parsed struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if len(schema) == 0 || json.Unmarshal(schema, &parsed) != nil {
+		return ""
+	}
+	for _, name := range ReservedChannelParamNames {
+		if _, ok := parsed.Properties[name]; ok {
+			return name
+		}
+	}
+	return ""
 }
 
 // Clear removes all registered channel definitions.

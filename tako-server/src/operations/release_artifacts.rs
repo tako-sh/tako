@@ -62,12 +62,16 @@ impl crate::ServerState {
         match self.finalize_release_inner(app, version).await {
             Ok(()) => {
                 let backup = match self.backup_after_deploy(app).await {
-                    Some(Ok(info)) => serde_json::json!({
+                    Some(super::PostDeployBackup::Created(info)) => serde_json::json!({
                         "status": "created",
                         "id": info.id,
                         "size_bytes": info.size_bytes
                     }),
-                    Some(Err(error)) => {
+                    Some(super::PostDeployBackup::Queued) => serde_json::json!({
+                        "status": "queued",
+                        "message": "An hourly database snapshot is running; the backup starts when it finishes."
+                    }),
+                    Some(super::PostDeployBackup::Failed(error)) => {
                         tracing::warn!(app, "Post-deploy backup failed: {error}");
                         serde_json::json!({
                             "status": "failed",
@@ -332,7 +336,7 @@ fn remove_release(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(unix)]
-fn available_bytes(path: &Path) -> Result<u64, String> {
+pub(super) fn available_bytes(path: &Path) -> Result<u64, String> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
 
@@ -348,7 +352,7 @@ fn available_bytes(path: &Path) -> Result<u64, String> {
 }
 
 #[cfg(not(unix))]
-fn available_bytes(_path: &Path) -> Result<u64, String> {
+pub(super) fn available_bytes(_path: &Path) -> Result<u64, String> {
     Err("disk space checks require Unix".to_string())
 }
 

@@ -4,6 +4,13 @@ use tako_images::ImagesConfig;
 
 pub const DEFAULT_JS_APP_ROOT: &str = "src";
 
+/// Published JSON Schema for `tako.toml`.
+pub const TAKO_TOML_SCHEMA_URL: &str = "https://tako.sh/schemas/tako-toml.json";
+
+/// First line of generated `tako.toml` files. Taplo-based editors such as
+/// Even Better TOML read it to validate and complete the file.
+pub const TAKO_TOML_SCHEMA_DIRECTIVE: &str = "#:schema https://tako.sh/schemas/tako-toml.json";
+
 /// Root configuration from tako.toml
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct TakoToml {
@@ -102,6 +109,8 @@ pub struct TakoToml {
 
 /// Build configuration from [build].
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[cfg_attr(test, schemars(deny_unknown_fields))]
 pub struct BuildConfig {
     /// Build command (e.g. "vinxi build", "bun run build").
     pub run: Option<String>,
@@ -123,6 +132,8 @@ pub struct BuildConfig {
 
 /// Custom build stage from [[build_stages]].
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[cfg_attr(test, schemars(deny_unknown_fields))]
 pub struct BuildStage {
     /// Optional display label.
     #[serde(default)]
@@ -147,15 +158,20 @@ pub struct BuildStage {
 
 /// Environment configuration from [envs.*]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct EnvConfig {
-    /// Stable network ID; local aliases are not portable project configuration.
+    /// Native network, identified by its stable 32-character hexadecimal ID
+    /// (see `tako network list`). Local aliases are not portable project configuration.
+    #[cfg_attr(test, schemars(regex(pattern = r"^[0-9a-f]{32}$")))]
     pub network: Option<String>,
 
-    /// Single route (mutually exclusive with routes)
+    /// Route: an exact host, wildcard host, or either with a path, such as
+    /// `app.example.com`, `*.example.com`, or `example.com/api/*`.
+    /// Mutually exclusive with `routes`.
     pub route: Option<String>,
 
-    /// Multiple routes (mutually exclusive with route)
+    /// Multiple routes. Mutually exclusive with `route`.
     pub routes: Option<Vec<String>>,
 
     /// Deployment targets. In a native network these are enrolled names or device IDs.
@@ -184,6 +200,7 @@ pub struct EnvConfig {
 
     /// Idle timeout in seconds (300 = 5 minutes).
     #[serde(default = "default_idle_timeout")]
+    #[cfg_attr(test, schemars(range(min = 1)))]
     pub idle_timeout: u32,
 
     /// Per-environment release command override. An empty string explicitly
@@ -192,25 +209,35 @@ pub struct EnvConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct BackupConfig {
     /// Private S3-compatible storage resource used for app data backups.
     pub storage: String,
 }
 
+/// S3-compatible storage resource from [storages.*]. Credentials are stored
+/// encrypted in `.tako/secrets.json`, not here.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct StorageResourceConfig {
+    /// Storage provider. Only `s3` can be declared; `local` is built in.
     #[serde(default = "default_storage_provider")]
     pub provider: tako_core::StorageProvider,
+    /// Bucket name. Required for `s3`.
     #[serde(default)]
     pub bucket: Option<String>,
+    /// HTTPS endpoint URL. Required for `s3`.
     #[serde(default)]
     pub endpoint: Option<String>,
+    /// Region, such as `auto`. Required for `s3`.
     #[serde(default)]
     pub region: Option<String>,
+    /// Use path-style bucket URLs instead of virtual-hosted bucket URLs.
     #[serde(default)]
     pub force_path_style: bool,
+    /// Public HTTPS base URL for objects. Backup storage must not set it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_base_url: Option<String>,
 }
@@ -302,12 +329,14 @@ impl Default for EffectiveWorkflowsConfig {
 /// `[workflows.<worker>]`, `[servers.<name>.workflows]`, and
 /// `[servers.<name>.workflows.<worker>]`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowWorkerConfig {
-    /// Command to run this workflow worker role. This is portable Tako
-    /// process vocabulary; container releases translate it to an entrypoint
-    /// override, while native releases can run it directly.
+    /// Command that runs this workflow worker group, for runtimes that need
+    /// one. Container releases translate it to an entrypoint override, while
+    /// native releases run it directly.
     #[serde(default)]
+    #[cfg_attr(test, schemars(length(min = 1), inner(regex(pattern = r"\S"))))]
     pub run: Option<Vec<String>>,
 
     /// Number of always-on worker processes. `0` means scale-to-zero.

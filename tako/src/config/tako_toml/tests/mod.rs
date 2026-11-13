@@ -1,8 +1,10 @@
 mod build_release_storage;
+mod edit;
 mod env_vars;
 mod environment_servers;
 mod errors;
 mod helpers;
+mod json_schema;
 mod parsing_build;
 mod parsing_env_routes;
 mod parsing_workflows;

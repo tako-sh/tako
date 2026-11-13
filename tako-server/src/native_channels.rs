@@ -6,7 +6,9 @@ mod peer;
 mod presence;
 mod wire;
 
-pub use ipc::{Client, Notification, Subscription};
+#[cfg(test)]
+pub(crate) use ipc::StreamClosed;
+pub use ipc::{Client, Notification, Subscription, is_stream_closed, publish_refusal};
 
 use broker::Broker;
 use std::{

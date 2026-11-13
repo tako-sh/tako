@@ -418,4 +418,20 @@ mod tests {
 
         assert_eq!(err, ImageError::InvalidSource);
     }
+
+    #[test]
+    fn special_purpose_resolved_remote_addrs_are_rejected() {
+        for ip in [
+            "198.18.0.1",
+            "203.0.113.7",
+            "64:ff9b::a00:1",
+            "2002:a00:1::1",
+        ] {
+            let addr = SocketAddr::new(ip.parse().unwrap(), 443);
+            let err = validate_remote_resolved_addrs(&[addr]).unwrap_err();
+            assert_eq!(err, ImageError::InvalidSource, "{ip}");
+        }
+        let public: SocketAddr = "[2606:4700:4700::1111]:443".parse().unwrap();
+        validate_remote_resolved_addrs(&[public]).expect("public address");
+    }
 }

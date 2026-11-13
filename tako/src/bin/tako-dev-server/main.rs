@@ -173,26 +173,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = paths::tako_data_dir().unwrap_or_else(|_| PathBuf::from("."));
     let workflows = Arc::new(tako_workflows::WorkflowManager::new(&data_dir));
 
-    // Server-side channel `.publish()` — goes through the internal
+    // Server-side channel `.publish()` and `.close()` — go through the internal
     // socket straight to the channel store, no HTTPS/auth roundtrip.
     {
         let channels = channels.clone();
+        // Dev loads no channel registry, so publish params are bound to
+        // their stream without a schema check.
         workflows.set_channel_publisher(std::sync::Arc::new(
-            move |app: &str, channel: &str, payload: serde_json::Value| {
-                let channel = tako_channels::live_store::publication_channel(channel, &payload)
-                    .map_err(|error| error.to_string())?;
-                let lifecycle = payload
-                    .get("lifecycle")
-                    .cloned()
-                    .map(serde_json::from_value::<tako_channels::ChannelLifecycle>)
-                    .transpose()
-                    .map_err(|e| format!("invalid channel lifecycle: {e}"))?;
-                let typed: tako_channels::ChannelPublishPayload =
-                    serde_json::from_value(payload).map_err(|e| format!("invalid payload: {e}"))?;
+            move |request: tako_workflows::ChannelPublishRequest<'_>| {
+                let app = request.app;
+                let publication = dev_channels::trusted_publication(request)?;
                 channels
-                    .publish(app, &channel, &typed, lifecycle)
+                    .publish(app, &publication)
                     .map(|msg| serde_json::to_value(msg).unwrap_or(serde_json::Value::Null))
-                    .map_err(|e| e.to_string())
+                    .map_err(tako_core::SocketError::from)
             },
         ));
     }

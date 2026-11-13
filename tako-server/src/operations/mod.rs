@@ -1,5 +1,9 @@
 mod backup;
-pub(crate) use backup::snapshot_data_tree;
+pub(crate) use backup::{
+    DatabaseSnapshotState, PostDeployBackup, RecoveryMode, measure_database_tree,
+    recover_interrupted_restores, run_restore_worker, snapshot_data_tree, snapshot_database_tree,
+    sweep_backup_work_dirs,
+};
 mod compose;
 mod deploy;
 mod dispatch;
@@ -12,3 +16,4 @@ mod release_artifacts;
 mod releases;
 mod secrets;
 mod tls;
+mod workflows;

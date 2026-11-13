@@ -88,6 +88,40 @@ export default defineWorkflow("manual", { handler: async () => {} });
     ]);
   });
 
+  test("schedules carry the workflow's retry budget", async () => {
+    const workflowsDir = join(dir, "workflows");
+    await mkdir(workflowsDir);
+    const defineUrl = new URL("../../src/workflows/define.ts", import.meta.url).href;
+    await writeFile(
+      join(workflowsDir, "nightly.mjs"),
+      `
+import { defineWorkflow } from "${defineUrl}";
+export default defineWorkflow("nightly", { schedule: "0 0 * * *", retries: 4, handler: async () => {} });
+`,
+    );
+    await writeFile(
+      join(workflowsDir, "hourly.mjs"),
+      `
+import { defineWorkflow } from "${defineUrl}";
+export default defineWorkflow("hourly", { schedule: "0 * * * *", handler: async () => {} });
+`,
+    );
+
+    const commands: Array<{ schedules?: unknown[] }> = [];
+    server = await startRpcCaptureServer(sock, commands);
+
+    await bootstrapWorker({ appDir: dir, appRoot: "." });
+
+    expect(commands[0]?.schedules).toHaveLength(2);
+    expect(commands[0]?.schedules).toContainEqual({
+      name: "nightly",
+      cron: "0 0 * * *",
+      max_attempts: 5,
+    });
+    // Without `retries`, the server default budget applies.
+    expect(commands[0]?.schedules).toContainEqual({ name: "hourly", cron: "0 * * * *" });
+  });
+
   test("default worker group does not load workflows assigned to another group", async () => {
     const workflowsDir = join(dir, "workflows");
     await mkdir(workflowsDir);

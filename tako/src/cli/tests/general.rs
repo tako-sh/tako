@@ -78,6 +78,7 @@ fn telemetry_command_uses_top_level_name() {
         (&["tako", "secrets", "list"][..], "secrets"),
         (&["tako", "version"][..], "version"),
         (&["tako", "scale", "2"][..], "scale"),
+        (&["tako", "workflows", "list"][..], "workflows"),
     ];
     for (args, expected) in cases {
         let cli = Cli::try_parse_from(args).unwrap();

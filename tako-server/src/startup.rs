@@ -29,7 +29,7 @@ use signals::{TakoShutdownSignalWatch, spawn_reload_signal_handlers};
 use standby::{StandbyPromotionConfig, spawn_standby_monitor};
 use tasks::{
     spawn_health_monitoring, spawn_idle_monitoring, spawn_instance_event_bridge,
-    spawn_management_http, spawn_management_socket,
+    spawn_instance_reconcile, spawn_management_http, spawn_management_socket,
 };
 
 pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
@@ -201,6 +201,28 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
+    // Before any app or workflow store opens app data: at a normal start, a
+    // restore that the previous server's death interrupted is rolled back to
+    // the original data. A standby, an upgrade reload, a promotion child, and
+    // a normal start while another server process (such as a hot standby)
+    // serves this data directory only report unfinished restores.
+    let (recovery_mode, recovery_lease) = startup_recovery_mode(
+        &data_dir,
+        if standby {
+            crate::operations::RecoveryMode::Standby
+        } else if promotion_child || reload_owner.is_some() {
+            crate::operations::RecoveryMode::Successor
+        } else {
+            crate::operations::RecoveryMode::Primary
+        },
+    );
+    crate::operations::recover_interrupted_restores(&data_dir, recovery_mode);
+    if recovery_mode == crate::operations::RecoveryMode::Primary {
+        // Only this process can be using backup work directories now.
+        crate::operations::sweep_backup_work_dirs(&data_dir);
+    }
+    // This process takes its own shared lease below.
+    drop(recovery_lease);
     let state = Arc::new(if let Some(reload_owner) = reload_owner {
         ServerState::new_with_runtime_for_reload(
             data_dir.clone(),
@@ -268,6 +290,7 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     }
     spawn_instance_event_bridge(&rt, state.clone());
     spawn_health_monitoring(&rt, state.clone());
+    spawn_instance_reconcile(&rt, state.clone());
     spawn_idle_monitoring(&rt, state.clone());
     spawn_certificate_renewals(&rt, state.clone(), args.renewal_interval_hours);
     spawn_management_socket(&rt, state.clone(), socket_listener);
@@ -366,6 +389,7 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             Arc::new(move |app: &str| state.runtime_postgres_url(app))
         }),
         channel_credentials_generation: state.channel_credentials_generation.clone(),
+        channel_registry: state.channel_registry.clone(),
     })?;
 
     sd_notify_ready();
@@ -377,6 +401,39 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     });
 
     Ok(())
+}
+
+/// What startup recovery of backup restores may do. A normal start rolls
+/// back only while no other server process serves this data directory:
+/// each holds a shared drain activity lease, a hot standby included, whose
+/// app instances use the same app data. The returned exclusive lease keeps
+/// any from starting to serve until recovery is done.
+fn startup_recovery_mode(
+    data_dir: &std::path::Path,
+    mode: crate::operations::RecoveryMode,
+) -> (
+    crate::operations::RecoveryMode,
+    Option<crate::state_store::DrainLease>,
+) {
+    use crate::operations::RecoveryMode;
+    if mode != RecoveryMode::Primary {
+        return (mode, None);
+    }
+    match crate::state_store::DrainLease::try_exclusive_in(data_dir) {
+        Ok(Some(lease)) => (mode, Some(lease)),
+        Ok(None) => {
+            tracing::warn!(
+                "Another server process serves this data directory; this start only reports unfinished backup restores"
+            );
+            (RecoveryMode::Successor, None)
+        }
+        Err(error) => {
+            tracing::error!(
+                "Cannot tell whether another server process serves this data directory ({error}); this start only reports unfinished backup restores"
+            );
+            (RecoveryMode::Successor, None)
+        }
+    }
 }
 
 fn take_upgrade_reload_owner(data_dir: &std::path::Path) -> std::io::Result<Option<String>> {

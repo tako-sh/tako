@@ -273,6 +273,15 @@ fn replay_and_presence_expiry_histories_are_reproducible() {
         let auth =
             serde_json::from_value(serde_json::json!({"ok": true, "replayWindowMs": 100})).unwrap();
         store.sync_channel("events", &auth).unwrap();
+        // Stream activity follows the logical clock too, so the history never
+        // idles long enough for the stream's bookkeeping to be released.
+        let touch = |now: i64| {
+            store.raw_execute(
+                "UPDATE channel_metadata SET last_activity_unix_ms=?1",
+                (now,),
+            )
+        };
+        touch(now);
         let mut latest = store.replay_cursor("events", None).unwrap().unwrap();
         let member = crate::PresenceMember {
             connection_id: "connection".into(),
@@ -297,6 +306,7 @@ fn replay_and_presence_expiry_histories_are_reproducible() {
                         "UPDATE channel_messages SET created_at_unix_ms=?1 WHERE id=?2",
                         (now, id),
                     );
+                    touch(now);
                     retained.push((id, now));
                     latest = cursor;
                 }

@@ -14,6 +14,8 @@ pub enum Err {
     ParamsInvalid,
     /// lastMessageId is older than the channel replay window.
     ReplayTooOld,
+    /// The app closed the channel stream; no further messages follow.
+    StreamClosed,
     /// The app's verify callback rejected the channel request.
     VerifyRejected,
 }
@@ -25,6 +27,7 @@ impl Err {
         Self::ChannelUnknown,
         Self::ParamsInvalid,
         Self::ReplayTooOld,
+        Self::StreamClosed,
         Self::VerifyRejected,
     ];
 
@@ -35,6 +38,7 @@ impl Err {
             Self::ChannelUnknown => "7RQYM3",
             Self::ParamsInvalid => "K5Q4D8",
             Self::ReplayTooOld => "YHNEN8",
+            Self::StreamClosed => "SVUM3R",
             Self::VerifyRejected => "GJRQHR",
         }
     }
@@ -46,6 +50,7 @@ impl Err {
             "7RQYM3" => Some(Self::ChannelUnknown),
             "K5Q4D8" => Some(Self::ParamsInvalid),
             "YHNEN8" => Some(Self::ReplayTooOld),
+            "SVUM3R" => Some(Self::StreamClosed),
             "GJRQHR" => Some(Self::VerifyRejected),
             _ => None,
         }

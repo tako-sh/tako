@@ -4,6 +4,10 @@
     {
       "path": "tako-channels/src/error_codes.rs",
       "scopes": ["channels"]
+    },
+    {
+      "path": "tako-core/src/error_codes.rs",
+      "scopes": ["socket"]
     }
   ],
   "scopes": {
@@ -28,9 +32,43 @@
         "description": "lastMessageId is older than the channel replay window.",
         "code": "YHNEN8"
       },
+      "stream_closed": {
+        "description": "The app closed the channel stream; no further messages follow.",
+        "code": "SVUM3R"
+      },
       "verify_rejected": {
         "description": "The app's verify callback rejected the channel request.",
         "code": "GJRQHR"
+      }
+    },
+    "socket": {
+      "channel_closed": {
+        "description": "Internal socket: the channel stream has a close marker and accepts no more messages.",
+        "code": "JTCF76"
+      },
+      "channel_params_invalid": {
+        "description": "Internal socket: channel params are malformed or fail the channel's params schema.",
+        "code": "QNGCZD"
+      },
+      "channel_unknown": {
+        "description": "Internal socket: the publisher's build, or the network recipient, does not define the channel.",
+        "code": "F2XQ4S"
+      },
+      "invalid_request": {
+        "description": "Internal socket: the command or its arguments are malformed; retrying the same request cannot succeed.",
+        "code": "THDDYW"
+      },
+      "run_id_conflict": {
+        "description": "Internal socket: the supplied workflow run ID already belongs to a different workflow or payload.",
+        "code": "X9HMTE"
+      },
+      "run_not_owned": {
+        "description": "Internal socket: a worker write names a run this claim no longer owns (lease reclaimed, cancelled, or finished).",
+        "code": "P5UMN4"
+      },
+      "unavailable": {
+        "description": "Internal socket: the server is draining, overloaded, or a backing store is unreachable; retry later.",
+        "code": "E4PNC9"
       }
     }
   }

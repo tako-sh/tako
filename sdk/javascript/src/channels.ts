@@ -17,21 +17,37 @@ import {
 } from "./channels/meta";
 import { getChannelsConfig } from "./channels/configure";
 import { SseReader } from "./channels/sse-reader";
+import { channelParamQuery, channelStreamParams, type ChannelParamValue } from "./channels/params";
 
 export type { SseRecoveryReason, ChannelSubscribeOptions } from "./types";
 
 /**
  * Server-side publisher hook used by the Tako runtime to fan out channel
- * messages over the internal socket.
+ * messages over the internal socket. `params` select the stream and hold the
+ * values subscribers with the same params are bound to; `{}` selects the
+ * channel's unparameterized stream.
  *
  * Browser code should publish through WebSocket channels instead.
  */
 export type ChannelSocketPublisher = <T>(
   channel: string,
   message: ChannelPublishInput<T>,
+  params: Record<string, ChannelParamValue>,
 ) => Promise<ChannelMessage<T>>;
 
+/**
+ * Server-side closer hook used by the Tako runtime to append a stream's
+ * terminal marker over the internal socket. `params` select the stream as for
+ * {@link ChannelSocketPublisher}; `lifecycle` is the definition's lifecycle.
+ */
+export type ChannelSocketCloser = (
+  channel: string,
+  params: Record<string, ChannelParamValue>,
+  lifecycle: ChannelLifecycleConfig | undefined,
+) => Promise<ChannelMessage<null>>;
+
 let socketPublisher: ChannelSocketPublisher | null = null;
+let socketCloser: ChannelSocketCloser | null = null;
 
 /**
  * Install or clear the server-side channel publisher hook.
@@ -41,6 +57,20 @@ let socketPublisher: ChannelSocketPublisher | null = null;
 export function setChannelSocketPublisher(fn: ChannelSocketPublisher | null): void {
   socketPublisher = fn;
 }
+
+/**
+ * Install or clear the server-side channel closer hook.
+ *
+ * @internal
+ */
+export function setChannelSocketCloser(fn: ChannelSocketCloser | null): void {
+  socketCloser = fn;
+}
+
+/** Message type of the terminal marker a closed stream ends with. Never an application message. */
+export const CHANNEL_CLOSE_MESSAGE_TYPE = "tako.close";
+/** WebSocket close code tako-server sends after the last message of a closed stream. */
+export const CHANNEL_STREAM_CLOSED_CODE = 4200;
 
 /** Base path for Tako channel subscribe/connect/publish routes. */
 export const TAKO_CHANNELS_BASE_PATH = "/_tako/channels";
@@ -63,23 +93,15 @@ function channelBaseUrl(
   channel: string,
   baseUrl?: string,
   params: Record<string, unknown> = {},
+  schema?: object,
 ): URL {
   const url = normalizeBaseUrl(baseUrl);
   url.pathname = `${TAKO_CHANNELS_BASE_PATH}/${encodeURIComponent(channel)}`;
   url.search = "";
-  for (const [key, value] of Object.entries(params)) {
-    if (value === undefined || value === null) continue;
-    url.searchParams.set(key, encodeQueryValue(value));
+  for (const [key, value] of channelParamQuery(params, schema)) {
+    url.searchParams.set(key, value);
   }
   return url;
-}
-
-function encodeQueryValue(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
-    return value.toString();
-  }
-  return JSON.stringify(value);
 }
 
 function withQuery(url: URL, key: string, value?: string | number): URL {
@@ -87,6 +109,34 @@ function withQuery(url: URL, key: string, value?: string | number): URL {
     url.searchParams.set(key, String(value));
   }
   return url;
+}
+
+/** Add `from=start` unless an explicit cursor is given; the cursor wins. */
+function withReadFrom(url: URL, from: string | undefined, cursor: string | undefined): URL {
+  if (from === undefined) return url;
+  if (from !== "start") {
+    throw new TypeError(`Channel option 'from' must be "start"; received ${JSON.stringify(from)}.`);
+  }
+  return cursor === undefined ? withQuery(url, "from", from) : url;
+}
+
+function once(fn: (() => void) | undefined): () => void {
+  let called = false;
+  return () => {
+    if (called) return;
+    called = true;
+    fn?.();
+  };
+}
+
+function addRawListener(raw: unknown, type: string, listener: (event: Event) => void): void {
+  if (typeof raw !== "object" || raw === null) return;
+  const target = raw as {
+    addEventListener?: (type: string, listener: (event: Event) => void) => void;
+  };
+  if (typeof target.addEventListener === "function") {
+    target.addEventListener.call(raw, type, listener);
+  }
 }
 
 function toWebSocketUrl(url: URL): string {
@@ -206,7 +256,12 @@ export class Channel {
   readonly name: string;
   /** Live transport enabled by the channel definition. Undefined means SSE. */
   readonly transport: ChannelDefinitionTransport | undefined;
-  /** Params serialized into subscribe/connect URLs. */
+  /**
+   * Params bound to this handle. They select the channel stream: subscribe
+   * and connect send them as query values, and `publish()` sends them so the
+   * message reaches subscribers with the same params. Values must be flat
+   * strings, numbers, or booleans; `undefined` and `null` are omitted.
+   */
   readonly params: Record<string, unknown>;
 
   /**
@@ -214,7 +269,10 @@ export class Channel {
    *
    * @param name - Exact channel name.
    * @param transport - Pass `"ws"` for WebSocket channels; omit for SSE.
-   * @param params - Query params bound to this channel.
+   * @param params - Params selecting the channel stream.
+   * @param lifecycle - Lifecycle sent with server-side publishes.
+   * @param paramsSchema - Params JSON Schema; publish coerces params by its
+   * declared property types, as tako-server coerces subscribe query values.
    * @defaultValue params = {}
    */
   constructor(
@@ -222,6 +280,7 @@ export class Channel {
     transport?: ChannelDefinitionTransport,
     params: Record<string, unknown> = {},
     private readonly lifecycle?: ChannelLifecycleConfig,
+    private readonly paramsSchema?: object,
   ) {
     this.name = name;
     this.transport = transport;
@@ -229,7 +288,8 @@ export class Channel {
   }
 
   /**
-   * Publish a typed message to current channel subscribers from server-side code.
+   * Publish a typed message from server-side code to the subscribers of the
+   * stream this handle's params select.
    *
    * Browser clients should use `connect().send(...)` on WebSocket channels.
    *
@@ -242,8 +302,9 @@ export class Channel {
     _options: ChannelPublishOptions = {},
   ): Promise<ChannelMessage<T>> {
     if (socketPublisher) {
+      const params = channelStreamParams(this.params, this.paramsSchema);
       const payload = this.lifecycle ? { ...message, lifecycle: this.lifecycle } : message;
-      return socketPublisher(this.name, payload);
+      return socketPublisher(this.name, payload, params);
     }
 
     throw new Error(
@@ -252,13 +313,51 @@ export class Channel {
   }
 
   /**
+   * Close the stream this handle's params select, from server-side code.
+   *
+   * Appends a durable terminal marker. Subscribers receive every earlier
+   * message, then the end of the stream (`onClose`), and do not reconnect.
+   * Later publishes to the stream fail. Closing a closed stream succeeds and
+   * returns the existing marker. The stream stays closed while retention
+   * keeps the marker; after that a publish starts it fresh.
+   *
+   * @returns The terminal marker, of type `"tako.close"`.
+   * @throws {Error} On ephemeral channels (they retain nothing to close) and
+   * outside the Tako server runtime, such as in the browser.
+   * @throws {TakoError} If tako-server rejects the close.
+   */
+  async close(): Promise<ChannelMessage<null>> {
+    if (this.lifecycle?.ephemeral) {
+      throw new Error(
+        `Channel '${this.name}' is ephemeral; only durable channel streams can be closed.`,
+      );
+    }
+    if (socketCloser) {
+      const params = channelStreamParams(this.params, this.paramsSchema);
+      return socketCloser(this.name, params, this.lifecycle);
+    }
+
+    throw new Error(
+      "Channel.close requires the Tako server runtime. Browser clients cannot close channel streams.",
+    );
+  }
+
+  /**
    * Subscribe to this channel over SSE.
    *
-   * @param options - Authorization, base URL, resume id, and optional custom EventSource factory.
+   * When the server closed the stream, the subscription delivers every earlier
+   * message, calls `onClose` once, and stops without reconnecting. A custom
+   * `EventSource` is closed on the `tako.close` event so the browser does not
+   * reconnect.
+   *
+   * @param options - Authorization, base URL, resume id or `from`, close
+   * callback, and optional custom EventSource factory.
    * @defaultValue options = {}
    */
   subscribe(options: ChannelSubscribeOptions = {}): ChannelSubscription {
-    const url = channelBaseUrl(this.name, options.baseUrl, this.params);
+    const url = channelBaseUrl(this.name, options.baseUrl, this.params, this.paramsSchema);
+    withReadFrom(url, options.from, options.lastEventId);
+    const onClose = once(options.onClose);
     const factory = options.eventSourceFactory;
     const headers = headersWithAuthorization(options.headers, options.authorization);
     const init: { headers?: Record<string, string>; lastEventId?: string } = {};
@@ -270,6 +369,15 @@ export class Channel {
     }
     if (factory) {
       const raw = factory(url.toString(), init);
+      // A plain EventSource reconnects when the response ends; stop it here.
+      addRawListener(
+        raw,
+        CHANNEL_CLOSE_MESSAGE_TYPE,
+        once(() => {
+          closeRaw(raw);
+          onClose();
+        }),
+      );
       return {
         transport: "sse",
         raw,
@@ -283,6 +391,7 @@ export class Channel {
       fetch: getChannelsConfig().fetch,
       onMessage: () => {},
       retryOnDisconnect: true,
+      onClose,
       ...(options.onRecovery !== undefined && { onRecovery: options.onRecovery }),
       ...(options.onError !== undefined && { onError: options.onError }),
       ...(options.signal !== undefined && { signal: options.signal }),
@@ -305,9 +414,13 @@ export class Channel {
   /**
    * Open a WebSocket connection to this channel.
    *
-   * Only valid for channels defined with WebSocket handlers.
+   * Only valid for channels defined with WebSocket handlers. When the server
+   * closed the stream, the socket closes with code 4200 (`stream-closed`)
+   * after every earlier message, `onClose` runs once, and `send()` throws.
+   * Do not reconnect after code 4200.
    *
-   * @param options - Authorization, base URL, resume id, and optional custom WebSocket factory.
+   * @param options - Authorization, base URL, resume id or `from`, close
+   * callback, and optional custom WebSocket factory.
    * @defaultValue options = {}
    */
   connect(options: ChannelConnectOptions = {}): ChannelSocket {
@@ -315,13 +428,22 @@ export class Channel {
       throw new Error("Channel does not enable WebSocket transport.");
     }
 
-    const url = channelBaseUrl(this.name, options.baseUrl, this.params);
+    const url = channelBaseUrl(this.name, options.baseUrl, this.params, this.paramsSchema);
     withQuery(url, "last_message_id", options.lastMessageId);
+    withReadFrom(url, options.from, options.lastMessageId);
 
     const factory = options.webSocketFactory ?? defaultWebSocketFactory;
     const raw = factory(toWebSocketUrl(url));
     const headers = headersWithAuthorization(options.headers, options.authorization);
     sendAuthEnvelope(raw, options.lastMessageId, explicitAuthorizationHeader(headers));
+    let streamClosed = false;
+    const onClose = once(options.onClose);
+    addRawListener(raw, "close", (event) => {
+      if ((event as CloseEvent).code !== CHANNEL_STREAM_CLOSED_CODE) return;
+      streamClosed = true;
+      onClose();
+    });
+    const name = this.name;
     return {
       transport: "ws",
       raw,
@@ -329,6 +451,9 @@ export class Channel {
         closeRaw(raw, code, reason);
       },
       send(data: unknown) {
+        if (streamClosed) {
+          throw new Error(`Channel '${name}' stream is closed; it accepts no more messages.`);
+        }
         sendRaw(raw, data);
       },
     };

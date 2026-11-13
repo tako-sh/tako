@@ -14,7 +14,10 @@ fn shared_client() -> Result<&'static reqwest::Client, ChannelError> {
     if let Some(client) = CLIENT.get() {
         return Ok(client);
     }
+    // The request carries the internal token, and only the app may grant
+    // access: a redirect is not followed, and its 3xx is no answer.
     let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(2))
         .timeout(Duration::from_secs(5))
         .build()
@@ -104,6 +107,58 @@ mod tests {
             Err(ChannelError::NotDefined)
         ));
         assert!(map_channel_auth_http_status(200).is_ok());
+    }
+
+    /// Answers every request on a fresh connection with `response`, and
+    /// counts the requests that reach it.
+    async fn http_server(
+        response: String,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = hits.clone();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let mut request = [0u8; 8192];
+                let _ = socket.read(&mut request).await;
+                let _ = socket.write_all(response.as_bytes()).await;
+            }
+        });
+        (endpoint, hits)
+    }
+
+    #[tokio::test]
+    async fn a_redirect_is_never_followed_with_the_internal_token() {
+        let body = r#"{"ok":true}"#;
+        let (elsewhere, hits) = http_server(format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        ))
+        .await;
+        let (app, _) = http_server(format!(
+            "HTTP/1.1 307 Temporary Redirect\r\nlocation: http://{elsewhere}{INTERNAL_CHANNEL_AUTH_PATH}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+        ))
+        .await;
+        let result = authorize_channel_request(
+            &app,
+            "app.tako",
+            "x-tako-internal-token",
+            "secret",
+            ChannelOperation::Subscribe,
+            "chat",
+            serde_json::json!({}),
+            None,
+            None,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(ChannelError::AuthUnavailable)),
+            "a redirect is no grant"
+        );
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     #[test]

@@ -9,9 +9,9 @@
 //!
 //! The same tick also calls `RunsDb::reclaim_expired()` so runs whose worker
 //! died holding a lease (SIGKILL, OOM, host crash, server-side drop without
-//! graceful drain) come back to `pending` once `lease_until` passes. The
-//! callback notifies the dispatcher; the dispatcher wakes a worker only when
-//! runnable work exists.
+//! graceful drain) come back to `pending` once `lease_until` passes, or
+//! become `dead` when that was their last attempt. The callback notifies the
+//! dispatcher; the dispatcher wakes a worker only when runnable work exists.
 
 use std::str::FromStr;
 use std::sync::Arc;
@@ -89,7 +89,7 @@ pub fn tick_once(db: &RunsDb, now_ms: i64) -> Result<u64, RunsDbError> {
         let opts = EnqueueOpts {
             id: Some(id),
             run_at_ms: Some(bucket_ms),
-            max_attempts: None,
+            max_attempts: row.max_attempts,
         };
         db.enqueue(&row.name, &serde_json::json!({}), &opts)?;
         set_last_run_at(db, &row.name, bucket_ms)?;
@@ -319,10 +319,12 @@ mod tests {
                 ScheduleSpec {
                     name: "a".into(),
                     cron: "0 */5 * * * *".into(),
+                    max_attempts: None,
                 },
                 ScheduleSpec {
                     name: "b".into(),
                     cron: "0 0 * * * *".into(),
+                    max_attempts: None,
                 },
             ],
         )
@@ -338,6 +340,7 @@ mod tests {
         let s = ScheduleSpec {
             name: "a".into(),
             cron: "0 */5 * * * *".into(),
+            max_attempts: None,
         };
         register_schedules(&db, std::slice::from_ref(&s)).unwrap();
         register_schedules(&db, std::slice::from_ref(&s)).unwrap();
@@ -353,10 +356,12 @@ mod tests {
                 ScheduleSpec {
                     name: "keep".into(),
                     cron: "0 */5 * * * *".into(),
+                    max_attempts: None,
                 },
                 ScheduleSpec {
                     name: "drop".into(),
                     cron: "0 0 * * * *".into(),
+                    max_attempts: None,
                 },
             ],
         )
@@ -366,6 +371,7 @@ mod tests {
             &[ScheduleSpec {
                 name: "keep".into(),
                 cron: "0 */5 * * * *".into(),
+                max_attempts: None,
             }],
         )
         .unwrap();
@@ -382,6 +388,7 @@ mod tests {
             &[ScheduleSpec {
                 name: "a".into(),
                 cron: "not a cron".into(),
+                max_attempts: None,
             }],
         )
         .unwrap_err();
@@ -396,6 +403,7 @@ mod tests {
             &[ScheduleSpec {
                 name: "every-sec".into(),
                 cron: "* * * * * *".into(),
+                max_attempts: None,
             }],
         )
         .unwrap();
@@ -414,6 +422,7 @@ mod tests {
             &[ScheduleSpec {
                 name: "min".into(),
                 cron: "0 * * * * *".into(), // every minute boundary
+                max_attempts: None,
             }],
         )
         .unwrap();
@@ -507,6 +516,36 @@ mod tests {
         assert_ne!(reclaimed.worker_id, expired.worker_id);
         limiter.release_claim(&expired.worker_id);
         assert_eq!(limiter.count("worker"), 2);
+    }
+
+    #[test]
+    fn tick_and_reclaim_frees_the_slot_of_a_run_that_died() {
+        let db = db();
+        db.enqueue(
+            "w",
+            &serde_json::json!({}),
+            &EnqueueOpts {
+                max_attempts: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let limiter = crate::in_flight::InFlightLimiter::new(1);
+        let lost = limiter
+            .claim(&db, "worker", &["w".into()], 60_000)
+            .unwrap()
+            .unwrap();
+        db.raw_execute("UPDATE runs SET lease_until = 0 WHERE id = ?1", [&lost.id]);
+
+        tick_and_reclaim(
+            &db,
+            chrono::Utc::now().timestamp_millis(),
+            &|| {},
+            Some(&limiter),
+        );
+        assert_eq!(db.result("w", &lost.id).unwrap().unwrap().status, "dead");
+        assert_eq!(limiter.count("worker"), 0);
+        assert!(!db.has_runnable_work().unwrap());
     }
 
     #[test]

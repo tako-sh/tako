@@ -1,0 +1,9 @@
+{
+  "app": "demo",
+  "command": "wait_for_event",
+  "event_name": "order-approved",
+  "id": "run-1",
+  "step_name": "approval",
+  "timeout_at_ms": 1767312000000,
+  "worker_id": "claim-7"
+}
