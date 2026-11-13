@@ -7,6 +7,7 @@ fn bootstrap() -> (RegistrySnapshot, LocalDeviceKeys, DeviceId) {
     let id = keys.device_id(&network, DeviceKind::Laptop).unwrap();
     let mut registry = RegistrySnapshot {
         network: NetworkDescriptor {
+            name: "test".parse().unwrap(),
             id: network,
             initial_admin: id.clone(),
         },
@@ -216,8 +217,8 @@ fn scopes_and_administrative_categories_do_not_share_implicit_access() {
     for kind in [
         SecretKind::Credential,
         SecretKind::BackupKey,
-        SecretKind::StorageAccessKey,
-        SecretKind::StorageSecretKey,
+        SecretKind::Storage,
+        SecretKind::BackupActive,
     ] {
         other.kind = kind;
         other.scope = "shop/production".parse().unwrap();

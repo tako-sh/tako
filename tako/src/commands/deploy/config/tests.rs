@@ -1,5 +1,5 @@
 use super::*;
-use crate::config::{EnvConfig, ServerEntry, ServerTarget, ServersToml, TakoToml};
+use crate::config::{EnvConfig, ServerEntry, ServerInventory, ServerTarget, TakoToml};
 use tempfile::TempDir;
 
 #[test]
@@ -304,7 +304,7 @@ fn resolve_deploy_servers_prefers_explicit_mapping() {
         },
     );
 
-    let mut servers = ServersToml::default();
+    let mut servers = ServerInventory::default();
     servers.servers.insert(
         "prod-1".to_string(),
         ServerEntry {
@@ -326,7 +326,7 @@ fn resolve_deploy_servers_require_explicit_mapping() {
         .envs
         .insert("production".to_string(), Default::default());
 
-    let mut servers = ServersToml::default();
+    let mut servers = ServerInventory::default();
     servers.servers.insert(
         "solo".to_string(),
         ServerEntry {
@@ -347,11 +347,11 @@ fn resolve_deploy_servers_errors_with_hint_when_no_global_servers_exist() {
     config
         .envs
         .insert("production".to_string(), Default::default());
-    let servers = ServersToml::default();
+    let servers = ServerInventory::default();
 
     let err = resolve_deploy_server_names(&config, &servers, "production").unwrap_err();
     assert!(err.contains("No servers have been added"));
-    assert!(err.contains("tako servers add <host>"));
+    assert!(err.contains("tako network server add <host>"));
 }
 
 #[test]
@@ -360,7 +360,7 @@ fn resolve_deploy_servers_errors_for_non_production_without_mapping() {
     config
         .envs
         .insert("staging".to_string(), Default::default());
-    let mut servers = ServersToml::default();
+    let mut servers = ServerInventory::default();
     servers.servers.insert(
         "solo".to_string(),
         ServerEntry {
@@ -415,7 +415,7 @@ async fn resolve_deploy_servers_with_setup_persists_single_server_mapping() {
         .collect(),
         ..Default::default()
     };
-    let mut servers = ServersToml::default();
+    let mut servers = ServerInventory::default();
     servers.servers.insert(
         "solo".to_string(),
         ServerEntry {
@@ -455,7 +455,7 @@ route = "app.example.com"
 #[tokio::test]
 async fn resolve_deploy_servers_with_setup_requires_interactive_selection_when_multiple_servers() {
     let config = TakoToml::default();
-    let mut servers = ServersToml::default();
+    let mut servers = ServerInventory::default();
     servers.servers.insert(
         "a".to_string(),
         ServerEntry {
@@ -489,7 +489,7 @@ async fn resolve_deploy_servers_with_setup_requires_interactive_selection_when_m
 
 #[test]
 fn resolve_deploy_server_targets_requires_metadata_for_each_server() {
-    let mut servers = ServersToml::default();
+    let mut servers = ServerInventory::default();
     servers.servers.insert(
         "prod-1".to_string(),
         ServerEntry {
@@ -508,7 +508,7 @@ fn resolve_deploy_server_targets_requires_metadata_for_each_server() {
 
 #[test]
 fn resolve_deploy_server_targets_rejects_invalid_values() {
-    let mut servers = ServersToml::default();
+    let mut servers = ServerInventory::default();
     servers.servers.insert(
         "prod-1".to_string(),
         ServerEntry {

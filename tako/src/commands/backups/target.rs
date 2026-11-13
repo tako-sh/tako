@@ -1,5 +1,5 @@
 use crate::commands::helpers;
-use crate::config::{ServersToml, TakoToml};
+use crate::config::{ServerInventory, TakoToml};
 
 #[derive(Debug, Clone)]
 pub(crate) struct BackupTarget {
@@ -14,7 +14,7 @@ pub(crate) fn resolve_backup_target(
     requested_env: Option<&str>,
     requested_server: Option<&str>,
     tako_config: &TakoToml,
-    servers: &ServersToml,
+    servers: &ServerInventory,
 ) -> Result<BackupTarget, Box<dyn std::error::Error>> {
     let env = helpers::resolve_env(requested_env);
     if !tako_config.envs.contains_key(&env) {

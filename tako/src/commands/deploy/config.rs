@@ -4,7 +4,7 @@ use crate::build::{
     BuildAdapter, infer_adapter_from_preset_reference, qualify_runtime_local_preset_ref,
 };
 use crate::commands::server;
-use crate::config::{ServerTarget, ServersToml, TakoToml};
+use crate::config::{ServerInventory, ServerTarget, TakoToml};
 use crate::output;
 
 use super::format::{
@@ -96,7 +96,7 @@ pub(super) fn confirm_production_deploy(env: &str, skip: bool) -> std::io::Resul
 
 pub(super) fn resolve_deploy_server_names(
     tako_config: &TakoToml,
-    servers: &ServersToml,
+    servers: &ServerInventory,
     env: &str,
 ) -> Result<Vec<String>, String> {
     let mut names = super::super::helpers::resolve_servers_for_env(tako_config, servers, env)?;
@@ -108,7 +108,7 @@ pub(super) fn resolve_deploy_server_names(
 
 pub(super) async fn resolve_deploy_server_names_with_setup(
     tako_config: &TakoToml,
-    servers: &mut ServersToml,
+    servers: &mut ServerInventory,
     env: &str,
     config_path: &Path,
 ) -> Result<Vec<String>, String> {
@@ -171,7 +171,7 @@ pub(super) async fn resolve_deploy_server_names_with_setup(
 }
 
 pub(super) fn select_production_server_for_mapping(
-    servers: &ServersToml,
+    servers: &ServerInventory,
 ) -> Result<String, String> {
     if !output::is_interactive() {
         return Err(format_no_servers_for_env_error("production"));
@@ -211,7 +211,7 @@ pub(super) fn persist_server_env_mapping(
 }
 
 pub(super) async fn refresh_native_build_targets(
-    servers: &mut ServersToml,
+    servers: &mut ServerInventory,
     server_names: &[String],
 ) -> Result<(), String> {
     let mut tasks = tokio::task::JoinSet::new();
@@ -251,7 +251,7 @@ pub(super) async fn refresh_native_build_targets(
 }
 
 pub(super) fn resolve_deploy_server_targets(
-    servers: &ServersToml,
+    servers: &ServerInventory,
     server_names: &[String],
 ) -> Result<Vec<(String, ServerTarget)>, String> {
     let mut resolved = Vec::with_capacity(server_names.len());

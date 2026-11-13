@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::commands::project_context;
 use crate::commands::server;
-use crate::config::{ServersToml, TakoToml};
+use crate::config::{ServerInventory, TakoToml};
 use crate::output;
 use json::JsonLogWriter;
 use json::json_records;
@@ -124,7 +124,7 @@ async fn run_async(
 
 async fn stream_logs(
     server_names: &[String],
-    servers: &ServersToml,
+    servers: &ServerInventory,
     remote_app_name: &str,
     display_app_name: &str,
     show_prefix: bool,
@@ -215,7 +215,7 @@ async fn stream_logs(
 
 async fn fetch_logs(
     server_names: &[String],
-    servers: &ServersToml,
+    servers: &ServerInventory,
     app_name: &str,
     days: u32,
     output_options: LogOutputOptions,
@@ -488,7 +488,7 @@ fn pager_program_names(pager: &str) -> impl Iterator<Item = &str> {
 
 fn server_not_found_error(name: &str) -> Box<dyn std::error::Error> {
     format!(
-        "Server '{}' not found in config.toml [[servers]]. Run 'tako servers add --name {} <host>'.",
+        "Server '{}' not found in config.toml [[servers]]. Run 'tako network server add --name {} <host>'.",
         name, name
     )
     .into()
@@ -496,7 +496,7 @@ fn server_not_found_error(name: &str) -> Box<dyn std::error::Error> {
 
 async fn resolve_log_server_names(
     tako_config: &TakoToml,
-    servers: &mut ServersToml,
+    servers: &mut ServerInventory,
     env: &str,
     config_path: Option<&Path>,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
@@ -530,7 +530,7 @@ async fn resolve_log_server_names(
                 }
             }
             Err(
-                "No servers have been added. Run 'tako servers add <host>' first, \
+                "No servers have been added. Run 'tako network server add <host>' first, \
                  then add it under [envs.production].servers in tako.toml."
                     .into(),
             )
@@ -554,7 +554,7 @@ servers = ["solo"]
 "#,
         )
         .unwrap();
-        let mut servers = ServersToml::default();
+        let mut servers = ServerInventory::default();
         servers.servers.insert(
             "solo".to_string(),
             ServerEntry {
@@ -574,7 +574,7 @@ servers = ["solo"]
     #[tokio::test]
     async fn resolve_log_server_names_errors_for_non_production_without_mapping() {
         let tako_config = TakoToml::default();
-        let mut servers = ServersToml::default();
+        let mut servers = ServerInventory::default();
         servers.servers.insert(
             "solo".to_string(),
             ServerEntry {

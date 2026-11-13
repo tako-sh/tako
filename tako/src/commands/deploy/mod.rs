@@ -16,7 +16,7 @@ use std::time::Duration;
 use crate::app::require_app_name_from_config_path;
 use crate::build::{BuildAdapter, PresetGroup, js};
 use crate::commands::project_context;
-use crate::config::{SecretsStore, ServerEntry, ServerTarget, ServersToml, TakoToml};
+use crate::config::{SecretsStore, ServerEntry, ServerInventory, ServerTarget, TakoToml};
 use crate::output;
 use crate::validation::{
     validate_full_config, validate_secrets_for_deployment, validate_ssl_for_deployment,
@@ -109,7 +109,7 @@ struct BuildPhaseResult {
 
 struct ValidationResult {
     tako_config: TakoToml,
-    servers: ServersToml,
+    servers: ServerInventory,
     secrets: SecretsStore,
     env: String,
     warnings: Vec<String>,
@@ -176,7 +176,7 @@ async fn run_async(
             let _t = output::timed("Configuration validation");
             let tako_config =
                 TakoToml::load_from_file(&context.config_path).map_err(|e| e.to_string())?;
-            let servers = ServersToml::load().map_err(|e| e.to_string())?;
+            let servers = ServerInventory::load().map_err(|e| e.to_string())?;
             let secrets = SecretsStore::load_from_dir(&project_dir).map_err(|e| e.to_string())?;
 
             let env = resolve_deploy_environment(requested_env, &tako_config)?;
@@ -188,16 +188,7 @@ async fn run_async(
                     config_result.errors.join("\n  ")
                 ));
             }
-            let mut warnings = config_result.warnings.clone();
-
-            let secrets_result = validate_secrets_for_deployment(&secrets, &env);
-            if secrets_result.has_errors() {
-                return Err(format!(
-                    "Secret errors:\n  {}",
-                    secrets_result.errors.join("\n  ")
-                ));
-            }
-            warnings.extend(secrets_result.warnings.clone());
+            let warnings = config_result.warnings.clone();
 
             Ok(ValidationResult {
                 tako_config,
@@ -281,6 +272,32 @@ async fn run_async(
             std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()).into()
         },
     )?;
+    let _deploy_lock = if output::is_dry_run() {
+        None
+    } else {
+        Some(
+            acquire_project_deploy_lock(&project_dir)
+                .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?,
+        )
+    };
+    if !output::is_dry_run() {
+        secrets = tokio::task::block_in_place(|| {
+            crate::network::secrets::sync_environment(
+                &project_dir,
+                &tako_config,
+                &app_name,
+                &env,
+                false,
+            )
+        })?;
+    }
+    let secrets_result = validate_secrets_for_deployment(&secrets, &env);
+    if secrets_result.has_errors() {
+        return Err(format!("Secret errors: {}", secrets_result.errors.join("; ")).into());
+    }
+    for warning in secrets_result.warnings {
+        output::warning(&warning);
+    }
     let routes = required_env_routes(&tako_config, &env)
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
     let source_ip = tako_config.get_source_ip_mode(&env);
@@ -389,8 +406,9 @@ async fn run_async(
         return Ok(());
     }
 
-    let _deploy_lock = acquire_project_deploy_lock(&project_dir)
-        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    secrets = tokio::task::block_in_place(|| {
+        crate::network::secrets::sync_environment(&project_dir, &tako_config, &app_name, &env, true)
+    })?;
 
     let use_per_server_spinners = deploy_task_tree.is_none()
         && should_use_per_server_spinners(server_names.len(), output::is_interactive());

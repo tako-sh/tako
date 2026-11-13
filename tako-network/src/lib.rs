@@ -10,6 +10,7 @@ mod challenge;
 pub mod corrosion;
 mod enrollment;
 mod error;
+pub mod invitation;
 mod keys;
 pub mod node_config;
 mod profile;

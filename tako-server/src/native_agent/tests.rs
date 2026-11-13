@@ -72,6 +72,7 @@ impl Fixture {
             expires_at: None,
         };
         let network = NetworkDescriptor {
+            name: "test".parse().unwrap(),
             id: network_id,
             initial_admin: admin_id,
         };

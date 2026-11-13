@@ -12,6 +12,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
+mod invitation;
 mod shared;
 
 use crate::{
@@ -175,6 +176,8 @@ impl<S: RegistryStore> ServerRuntime<S> {
             CREATE TABLE IF NOT EXISTS revocation_nonces (signer TEXT NOT NULL, nonce TEXT NOT NULL, expires INTEGER NOT NULL, PRIMARY KEY(signer, nonce));
             CREATE INDEX IF NOT EXISTS revocation_nonce_expiry ON revocation_nonces(expires);
             CREATE TABLE IF NOT EXISTS pending_entitlements (id TEXT PRIMARY KEY, expires INTEGER NOT NULL, payload TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS invitations (id TEXT PRIMARY KEY, expires INTEGER NOT NULL, payload TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS shared_observed (kind TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(kind, id));
             CREATE TABLE IF NOT EXISTS shared_commands (id TEXT PRIMARY KEY, payload TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS shared_grants (id TEXT PRIMARY KEY, payload TEXT NOT NULL);")?;
         let network = serde_json::to_string(&config.network)?;
@@ -367,6 +370,14 @@ impl<S: RegistryStore> ServerRuntime<S> {
         }
         self.require_server(&snapshot, now)?;
         let entitlement = match &signed.request {
+            RpcRequest::ClaimInvitation(claim) => {
+                claim.request.verify()?;
+                if claim.request.device_id_for(&self.config.network.id)? != signed.signer {
+                    return Err(RuntimeError::Authentication);
+                }
+                signed.verify(&claim.request.ssh_public_key)?;
+                None
+            }
             RpcRequest::Begin { pending_id } | RpcRequest::Complete { pending_id, .. } => {
                 let entitlement = self.pending(pending_id, now)?;
                 if entitlement
@@ -386,7 +397,9 @@ impl<S: RegistryStore> ServerRuntime<S> {
                 signed.verify(&member.request.ssh_public_key)?;
                 if matches!(
                     signed.request,
-                    RpcRequest::Approve(_) | RpcRequest::Revoke { .. }
+                    RpcRequest::Approve(_)
+                        | RpcRequest::CreateInvitation(_)
+                        | RpcRequest::Revoke { .. }
                 ) && !member.permissions.network_admin
                 {
                     return Err(RuntimeError::Denied);
@@ -407,6 +420,10 @@ impl<S: RegistryStore> ServerRuntime<S> {
                     action,
                 })
             }
+            RpcRequest::CreateInvitation(grant) => {
+                self.create_invitation(*grant, signed.signer, snapshot, now)
+            }
+            RpcRequest::ClaimInvitation(claim) => self.claim_invitation(*claim, snapshot, now),
             RpcRequest::Snapshot => Ok(RpcResponse::Snapshot(snapshot)),
             RpcRequest::PullSecrets { scope } => {
                 self.pull_secrets(&signed.signer, scope.as_ref(), &snapshot, now)
@@ -929,6 +946,7 @@ mod tests {
     use std::{cell::RefCell, rc::Rc};
 
     include!("runtime/shared_tests.rs");
+    include!("runtime/invitation_tests.rs");
 
     #[derive(Clone)]
     struct MemoryStore(Rc<RefCell<MemoryState>>);
@@ -1128,6 +1146,7 @@ mod tests {
             let network = NetworkId::random().unwrap();
             let admin_id = admin_keys.device_id(&network, DeviceKind::Laptop).unwrap();
             let descriptor = NetworkDescriptor {
+                name: "test".parse().unwrap(),
                 id: network.clone(),
                 initial_admin: admin_id,
             };

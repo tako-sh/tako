@@ -1,3 +1,5 @@
+mod client;
+
 use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -8,12 +10,28 @@ use tako_network::{
     Permissions, RegistrySnapshot, WgChallenge,
 };
 
-use crate::config::NetworksToml;
+use crate::config::LocalNetworks;
 use crate::network::{self, Profile, Result};
 use crate::output;
 
 #[derive(Subcommand)]
 pub enum NetworkCommands {
+    /// Refresh membership and the local cache of encrypted secrets
+    Sync { network: Option<String> },
+    /// Manage servers in a network
+    #[command(subcommand)]
+    Server(super::server::ServerCommands),
+    /// Invite, inspect, and revoke clients
+    #[command(subcommand)]
+    Client(client::ClientCommands),
+    /// Join a network using a single-use invitation
+    Join {
+        #[arg(long)]
+        name: Option<String>,
+        /// Read the invitation from standard input instead of the protected prompt
+        #[arg(long)]
+        invitation_stdin: bool,
+    },
     /// Create a private network and this machine's administrator identity
     Create { name: String },
     /// Generate this machine's keys and write a public enrollment request
@@ -52,29 +70,10 @@ pub enum NetworkCommands {
         #[arg(long)]
         network: Option<String>,
     },
-    /// Stop new application traffic and drain a server, keeping management available
-    Drain {
-        device: String,
-        #[arg(long)]
-        network: Option<String>,
-        #[arg(long, default_value_t = 120, value_name = "SECONDS", value_parser = clap::value_parser!(u64).range(0..=3600))]
-        timeout: u64,
-    },
-    /// Resume persisted applications on a drained server
-    Resume {
-        device: String,
-        #[arg(long)]
-        network: Option<String>,
-    },
     /// Refresh and inspect network membership
     Status { network: Option<String> },
     /// Import an approved profile for keys generated on this machine
-    Import {
-        file: PathBuf,
-        /// Local alias for the imported network
-        #[arg(long)]
-        name: Option<String>,
-    },
+    Import { file: PathBuf },
     /// Export public network configuration without private keys or app secrets
     Export {
         network: Option<String>,
@@ -88,13 +87,29 @@ pub enum NetworkCommands {
 
 pub fn run(command: NetworkCommands, config_path: Option<&Path>) -> Result<()> {
     match command {
+        NetworkCommands::Sync { network: value } => {
+            let alias = network::resolve_network(value.as_deref(), config_path)?;
+            if !output::is_dry_run() {
+                network::secrets::pull(&alias, None)?;
+            }
+            finish(
+                "Synchronized network state",
+                serde_json::json!({"network":alias.name,"dry_run":output::is_dry_run()}),
+            )
+        }
+        NetworkCommands::Server(command) => super::server::run(command, config_path),
+        NetworkCommands::Client(command) => client::run(command, config_path),
+        NetworkCommands::Join {
+            name,
+            invitation_stdin,
+        } => client::join(name.as_deref(), invitation_stdin),
         NetworkCommands::Create { name } => create(&name),
         NetworkCommands::Request {
             name,
             network,
             output,
         } => request(name.as_deref(), network.as_deref(), &output),
-        NetworkCommands::Import { file, name } => import(&file, name.as_deref()),
+        NetworkCommands::Import { file } => import(&file),
         NetworkCommands::Export { network, output } => {
             export(network.as_deref(), config_path, &output)
         }
@@ -123,29 +138,11 @@ pub fn run(command: NetworkCommands, config_path: Option<&Path>) -> Result<()> {
         NetworkCommands::Revoke { device, network } => {
             revoke(&device, network.as_deref(), config_path)
         }
-        NetworkCommands::Drain {
-            device,
-            network,
-            timeout,
-        } => manage_server(
-            &device,
-            network.as_deref(),
-            config_path,
-            tako_core::Command::DrainServer {
-                timeout_seconds: timeout,
-            },
-        ),
-        NetworkCommands::Resume { device, network } => manage_server(
-            &device,
-            network.as_deref(),
-            config_path,
-            tako_core::Command::ResumeServer,
-        ),
         NetworkCommands::Status { network } => status(network.as_deref(), config_path),
     }
 }
 
-fn manage_server(
+pub(super) fn manage_server(
     device: &str,
     value: Option<&str>,
     config_path: Option<&Path>,
@@ -211,9 +208,13 @@ fn manage_server(
 
 fn create(name: &str) -> Result<()> {
     crate::config::validate_network_name(name)?;
-    let aliases = NetworksToml::load()?;
-    if aliases.networks.contains_key(name) {
-        return Err(format!("Network alias '{name}' already exists").into());
+    let aliases = LocalNetworks::load()?;
+    if aliases
+        .networks
+        .values()
+        .any(|network| network.name == name)
+    {
+        return Err(format!("Network '{name}' already exists").into());
     }
     if output::is_dry_run() {
         return finish(
@@ -230,6 +231,7 @@ fn create(name: &str) -> Result<()> {
     let verified = pending.verify(&keys.answer_challenge(&challenge, &request, now)?, now)?;
     let mut snapshot = RegistrySnapshot {
         network: NetworkDescriptor {
+            name: name.parse()?,
             id,
             initial_admin: verified.device_id().clone(),
         },
@@ -254,13 +256,13 @@ fn create(name: &str) -> Result<()> {
         },
     )?);
     network::store_keys(&request.request_id, &keys)?;
-    let alias = network::save_profile(name, &Profile::Created { request, snapshot })?;
+    let alias = network::save_profile(&Profile::Created { request, snapshot })?;
     finish(
         &format!("Created network {name}"),
         serde_json::to_value(&alias)?,
     )?;
     output::hint(&format!(
-        "Add a server with `tako servers add <admin@host> --network {name}`."
+        "Add a server with `tako network server add <admin@host> --network {name}`."
     ));
     Ok(())
 }
@@ -272,7 +274,7 @@ fn request(name: Option<&str>, network: Option<&str>, destination: &Path) -> Res
             if let Ok(id) = value.parse::<NetworkId>() {
                 return Ok(id);
             }
-            Ok(NetworksToml::load()?.select(Some(value))?.id.parse()?)
+            Ok(LocalNetworks::load()?.select(Some(value))?.id.parse()?)
         })
         .transpose()?;
     if output::is_dry_run() {
@@ -301,20 +303,10 @@ fn request(name: Option<&str>, network: Option<&str>, destination: &Path) -> Res
     Ok(())
 }
 
-fn import(path: &Path, name: Option<&str>) -> Result<()> {
+fn import(path: &Path) -> Result<()> {
     let profile: Profile = network::read_json(path)?;
     let id = profile.snapshot().network.id.to_string();
-    let aliases = NetworksToml::load()?;
-    let default_name = format!("network-{}", &id[..8]);
-    let name = name
-        .or_else(|| {
-            aliases
-                .networks
-                .values()
-                .find(|alias| alias.id == id)
-                .map(|alias| alias.name.as_str())
-        })
-        .unwrap_or(&default_name);
+    let name = profile.snapshot().network.name.as_str();
     let keys = LocalDeviceKeys::load(&network::keys_path(&profile.request().request_id)?)
         .map_err(|_| "This profile needs the keys from its enrollment request. Run `tako network request` on this machine and have an administrator approve it.")?;
     profile.validate(&keys)?;
@@ -324,7 +316,7 @@ fn import(path: &Path, name: Option<&str>) -> Result<()> {
             serde_json::json!({"dry_run": true, "name": name, "id": id}),
         );
     }
-    let alias = network::save_profile(name, &profile)?;
+    let alias = network::save_profile(&profile)?;
     finish(
         &format!("Imported network {name}"),
         serde_json::to_value(alias)?,
@@ -356,15 +348,15 @@ fn export(value: Option<&str>, config_path: Option<&Path>, destination: &Path) -
 }
 
 fn list() -> Result<()> {
-    let networks = NetworksToml::load()?;
+    let networks = LocalNetworks::load()?;
     if output::is_json() {
         return output::json_result(
             serde_json::json!({"networks": networks.networks.values().collect::<Vec<_>>()}),
         );
     }
     for network in networks.networks.values() {
-        output::info(&format!("{}  {}", network.name, network.id));
-        tracing::info!("{}  {}", network.name, network.id);
+        output::info(&network.name);
+        tracing::info!("{}", network.name);
     }
     if networks.networks.is_empty() {
         output::hint("No networks configured. Run `tako network create <name>`.");
@@ -568,7 +560,7 @@ fn approve(
     request.verify()?;
     permissions.validate()?;
     if request.kind != DeviceKind::Laptop {
-        return Err("Use `tako servers add --network` to enroll a server".into());
+        return Err("Use `tako network server add --network` to enroll a server".into());
     }
     let alias = network::resolve_network(value, config_path)?;
     request.device_id_for(&alias.id.parse()?)?;
@@ -627,6 +619,13 @@ fn revoke(device: &str, value: Option<&str>, config_path: Option<&Path>) -> Resu
         );
     }
     let revocation = network::revocation::run(&alias, device)?;
+    if alias.device != revocation.target.to_string() {
+        if let Err(error) = network::secrets::pull(&alias, None) {
+            output::hint(&format!(
+                "Membership changed; refresh the secret cache later with `tako network sync`: {error}"
+            ));
+        }
+    }
     finish(
         "Recorded device revocation",
         serde_json::json!({"network": alias.name, "revocation": revocation, "enforcement": "pending"}),
@@ -686,7 +685,7 @@ fn status(value: Option<&str>, config_path: Option<&Path>) -> Result<()> {
             serde_json::json!({"network": alias, "members": members, "revocations": profile.snapshot().revocations}),
         );
     }
-    output::success(&format!("Network {} ({})", alias.name, alias.id));
+    output::success(&format!("Network {}", alias.name));
     for (id, member) in members {
         let role = if matches!(member.kind, MemberKind::Server(_)) {
             "server"

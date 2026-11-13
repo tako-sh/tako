@@ -14,7 +14,6 @@ dist/
 .blume/
 .blume-verify/
 **/.tako/*
-!**/.tako/secrets.json
 .e2e-cache/
 .e2e-bin/
 .worktrees/

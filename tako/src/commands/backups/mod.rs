@@ -8,7 +8,7 @@ use tako_core::{
 
 use crate::app::require_app_name_from_config_path;
 use crate::commands::project_context;
-use crate::config::{ServersToml, TakoToml};
+use crate::config::{ServerInventory, TakoToml};
 use crate::output;
 
 pub(crate) mod client;
@@ -188,7 +188,7 @@ async fn run_async(
 
 async fn backup_now(
     target: &target::BackupTarget,
-    servers: &ServersToml,
+    servers: &ServerInventory,
     backup: Option<tako_core::BackupBinding>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     output::section("Backups");
@@ -243,7 +243,7 @@ async fn backup_now(
 
 async fn list_backups(
     target: &target::BackupTarget,
-    servers: &ServersToml,
+    servers: &ServerInventory,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let results = send_typed_to_servers::<BackupListResponse>(
         &target.server_names,
@@ -329,7 +329,7 @@ async fn list_backups(
 
 async fn backup_status(
     target: &target::BackupTarget,
-    servers: &ServersToml,
+    servers: &ServerInventory,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let results = send_typed_to_servers::<BackupStatusResponse>(
         &target.server_names,
@@ -415,7 +415,7 @@ async fn backup_status(
 
 async fn download_backup(
     target: &target::BackupTarget,
-    servers: &ServersToml,
+    servers: &ServerInventory,
     backup_id: &str,
     output_path: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -495,7 +495,7 @@ async fn download_backup(
 
 async fn restore_backup(
     target: &target::BackupTarget,
-    servers: &ServersToml,
+    servers: &ServerInventory,
     backup_id: &str,
     assume_yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {

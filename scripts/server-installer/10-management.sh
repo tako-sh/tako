@@ -43,7 +43,7 @@ detect_management_ip() {
     native)
       addresses="$(/usr/local/libexec/tako/native-address "$preferred" 2>/dev/null)" || return 1
       ;;
-    *) echo "error: only native Tako networking is supported; enroll with tako servers add admin@host --network <network>" >&2; return 1 ;;
+    *) echo "error: only native Tako networking is supported; enroll with tako network server add admin@host --network <network>" >&2; return 1 ;;
   esac
   for address in $addresses; do
     if valid_management_ip "$address" && { [ -z "$preferred" ] || [ "$address" = "$preferred" ]; }; then
@@ -65,7 +65,7 @@ configure_management_http() {
   TAKO_VPN="${TAKO_VPN:-$saved_vpn}"
   case "$TAKO_VPN" in
     native) ;;
-    *) echo "error: only native Tako networking is supported; re-enroll with tako servers add admin@host --network <network>" >&2; exit 1 ;;
+    *) echo "error: only native Tako networking is supported; re-enroll with tako network server add admin@host --network <network>" >&2; exit 1 ;;
   esac
 
   requested_management_host="$TAKO_MANAGEMENT_HOST"
@@ -87,7 +87,7 @@ configure_management_http() {
     return
   fi
   if is_enabled "$TAKO_RESTART_SERVICE"; then
-    echo "error: $TAKO_MANAGEMENT_REQUIRED_MESSAGE Enroll this server with tako servers add admin@host --network <network>." >&2
+    echo "error: $TAKO_MANAGEMENT_REQUIRED_MESSAGE Enroll this server with tako network server add admin@host --network <network>." >&2
     exit 1
   fi
   echo "warning: remote management was not configured; enroll this server in a Tako network before starting tako-server." >&2

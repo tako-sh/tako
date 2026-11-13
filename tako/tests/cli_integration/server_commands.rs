@@ -12,7 +12,7 @@ fn test_server_list_empty() {
 
     // Point tako at this isolated TAKO_HOME.
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_tako"));
-    cmd.args(["servers", "list"])
+    cmd.args(["network", "server", "list"])
         .current_dir(&project_dir)
         .env("HOME", &project_dir)
         .env("TAKO_HOME", &tako_dir)
@@ -24,7 +24,7 @@ fn test_server_list_empty() {
 
     assert!(
         output.status.success(),
-        "tako servers list failed: {}",
+        "tako network server list failed: {}",
         stderr_str(&output)
     );
 
@@ -35,8 +35,8 @@ fn test_server_list_empty() {
         combined
     );
     assert!(
-        combined.contains("Run 'tako servers add' to add a server.")
-            || combined.contains("Run tako servers add to add a server."),
+        combined.contains("Run 'tako network server add' to add a server.")
+            || combined.contains("Run tako network server add to add a server."),
         "Should include add-server hint: {}",
         combined
     );
@@ -52,7 +52,7 @@ fn servers_add_requires_native_network_without_writing_inventory() {
     let temp = TempDir::new().unwrap();
     let tako_home = temp.path().join("tako-home");
     let out = run_tako_with_env(
-        &["--ci", "servers", "add", "admin@192.0.2.1"],
+        &["--ci", "network", "server", "add", "admin@192.0.2.1"],
         temp.path(),
         temp.path(),
         &tako_home,
@@ -78,7 +78,8 @@ fn native_server_add_dry_run_uses_sole_network_without_touching_server_or_invent
         &[
             "--dry-run",
             "--json",
-            "servers",
+            "network",
+            "server",
             "add",
             "admin@not-resolved.invalid",
             "--name",
@@ -110,7 +111,7 @@ fn removed_vpn_configuration_is_not_silently_accepted() {
             format!("[[servers]]\nname = 'edge'\nhost = 'edge.internal'\nvpn = '{provider}'\n");
         fs::write(tako_home.join("config.toml"), &config).unwrap();
         let out = run_tako_with_env(
-            &["servers", "list", "--json"],
+            &["network", "server", "list", "--json"],
             temp.path(),
             temp.path(),
             &tako_home,
@@ -162,7 +163,8 @@ fn native_server_add_honors_selected_project_config_and_explicit_network() {
             "--json",
             "--config",
             "other.toml",
-            "servers",
+            "network",
+            "server",
             "add",
             "admin@unreachable.invalid",
             "--name",
@@ -196,7 +198,12 @@ fn servers_list_renders_aligned_name_host_and_description_columns() {
 
     fs::write(tako_home.join("config.toml"), "[[servers]]\nname = 'eu-edge'\nhost = '10.0.0.2'\ndescription = 'EU Edge'\n[[servers]]\nname = 'us-edge'\nhost = '東京'\ndescription = 'US Edge'\n").unwrap();
 
-    let ls = run_tako_with_env(&["servers", "list"], &project_dir, &home, &tako_home);
+    let ls = run_tako_with_env(
+        &["network", "server", "list"],
+        &project_dir,
+        &home,
+        &tako_home,
+    );
     assert!(
         ls.status.success(),
         "servers list should succeed: {}{}",
@@ -241,7 +248,12 @@ fn servers_remove_without_name_in_non_interactive_mode_shows_hint() {
     )
     .unwrap();
 
-    let rm = run_tako_with_env(&["servers", "remove"], &project_dir, &home, &tako_home);
+    let rm = run_tako_with_env(
+        &["network", "server", "remove"],
+        &project_dir,
+        &home,
+        &tako_home,
+    );
     assert!(
         !rm.status.success(),
         "remove without name should fail on non-tty"
@@ -274,7 +286,7 @@ fn servers_remove_named_non_interactive_uses_operation_cancelled_message() {
     .unwrap();
 
     let rm = run_tako_with_env(
-        &["servers", "remove", "prod-2"],
+        &["network", "server", "remove", "prod-2"],
         &project_dir,
         &home,
         &tako_home,
@@ -292,7 +304,12 @@ fn servers_remove_named_non_interactive_uses_operation_cancelled_message() {
         "expected shared cancellation message: {stderr}"
     );
 
-    let ls = run_tako_with_env(&["servers", "list"], &project_dir, &home, &tako_home);
+    let ls = run_tako_with_env(
+        &["network", "server", "list"],
+        &project_dir,
+        &home,
+        &tako_home,
+    );
     assert!(
         ls.status.success(),
         "servers list should succeed after cancellation: {}{}",

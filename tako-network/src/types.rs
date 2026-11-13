@@ -327,6 +327,7 @@ text_type!(DeviceName, |s: &str| !s.is_empty()
     && s.as_bytes()[0].is_ascii_alphanumeric()
     && s.bytes()
         .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)));
+text_type!(NetworkName, |s: &str| segment(s) && !s.contains('_'));
 text_type!(SshUser, |s: &str| segment(s) && s.len() <= 32);
 text_type!(AppEnv, |s: &str| s
     .split_once('/')

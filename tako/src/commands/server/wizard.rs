@@ -49,7 +49,7 @@ pub(super) async fn add(
         }
         None => {
             return Err(
-                "Server host is required. Run `tako servers add admin@host --network <network>`."
+                "Server host is required. Run `tako network server add admin@host --network <network>`."
                     .into(),
             );
         }

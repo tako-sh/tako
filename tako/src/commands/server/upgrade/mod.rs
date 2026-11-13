@@ -202,7 +202,7 @@ pub(super) async fn upgrade_servers(
         output::error("No servers configured.");
         output::hint(&format!(
             "Run {} to add a server.",
-            output::strong("tako servers add")
+            output::strong("tako network server add")
         ));
         return Ok(());
     }

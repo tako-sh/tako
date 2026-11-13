@@ -69,36 +69,16 @@ fn read_env_names(project_dir: &Path) -> Vec<String> {
 /// environment exists. Returns an empty vec if the file doesn't exist or is
 /// malformed.
 fn read_secret_names(project_dir: &Path) -> Vec<String> {
-    let secrets_path = project_dir.join(".tako").join("secrets.json");
-    let Ok(content) = fs::read_to_string(&secrets_path) else {
-        return Vec::new();
+    let Ok(store) = crate::config::SecretsStore::load_from_dir(project_dir) else {
+        return vec![];
     };
-
-    let Ok(parsed): Result<serde_json::Value, _> = serde_json::from_str(&content) else {
-        return Vec::new();
-    };
-
-    let Some(envs) = parsed.as_object() else {
-        return Vec::new();
-    };
-
-    if let Some(dev) = envs.get("development")
-        && let Some(secrets) = dev.get("app").and_then(|s| s.as_object())
-    {
-        let mut names: Vec<String> = secrets.keys().cloned().collect();
+    if let Some(development) = store.get_env("development") {
+        let mut names: Vec<_> = development.keys().cloned().collect();
         names.sort();
-        return names;
+        names
+    } else {
+        store.all_secret_names()
     }
-
-    let mut names_set = std::collections::BTreeSet::new();
-    for env_value in envs.values() {
-        if let Some(secrets) = env_value.get("app").and_then(|s| s.as_object()) {
-            for name in secrets.keys() {
-                names_set.insert(name.clone());
-            }
-        }
-    }
-    names_set.into_iter().collect()
 }
 
 /// Read storage binding names from `tako.toml` environment assignments.
@@ -223,12 +203,12 @@ fn secret_example_binding(name: &str) -> String {
 
 fn build_secrets_block(names: &[String]) -> String {
     if names.is_empty() {
-        return "  /**\n   * Project-specific secret keys from `.tako/secrets.json`.\n   *\n   * No secrets are currently configured for this project. After you add one,\n   * this interface is regenerated with typed readonly keys.\n   */\n  export interface TakoSecrets {}\n\n".to_string();
+        return "  /**\n   * Project-specific secret keys from the local network cache and worktree drafts.\n   *\n   * No secrets are currently configured for this project. After you add one,\n   * this interface is regenerated with typed readonly keys.\n   */\n  export interface TakoSecrets {}\n\n".to_string();
     }
 
     let example_name = names.first().map(String::as_str).unwrap_or("MY_SECRET");
     let mut out = format!(
-        "  /**\n   * Project-specific secret keys from `.tako/secrets.json`.\n   *\n   * Values are injected by Tako at runtime and redacted during bulk serialization.\n   * App code reads individual values from `tako.secrets` imported from `tako.sh`.\n   *\n   * @example\n   * ```ts\n   * import {{ tako }} from \"tako.sh\";\n   *\n   * const {} = {};\n   * ```\n   */\n",
+        "  /**\n   * Project-specific secret keys from the local network cache and worktree drafts.\n   *\n   * Values are injected by Tako at runtime and redacted during bulk serialization.\n   * App code reads individual values from `tako.secrets` imported from `tako.sh`.\n   *\n   * @example\n   * ```ts\n   * import {{ tako }} from \"tako.sh\";\n   *\n   * const {} = {};\n   * ```\n   */\n",
         secret_example_binding(example_name),
         ts_secret_accessor(example_name)
     );

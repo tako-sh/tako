@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::config::{ServerEntry, ServersToml};
+use crate::config::{ServerEntry, ServerInventory};
 use crate::output;
 
 use super::task_tree::ArtifactBuildGroup;
@@ -92,7 +92,7 @@ pub(super) fn format_route_url_with_https_port(route: &str, https_port: Option<u
 
 pub(super) fn common_https_port_for_servers(
     server_names: &[String],
-    servers: &ServersToml,
+    servers: &ServerInventory,
 ) -> Option<u16> {
     let mut ports = server_names
         .iter()
@@ -275,12 +275,12 @@ pub(super) fn format_no_servers_for_env_error(env: &str) -> String {
 }
 
 pub(super) fn format_no_global_servers_error() -> String {
-    "No servers have been added. Run 'tako servers add <host>' first, then add the server under [envs.production].servers in tako.toml.".to_string()
+    "No servers have been added. Run 'tako network server add <host>' first, then add the server under [envs.production].servers in tako.toml.".to_string()
 }
 
 pub(super) fn format_server_not_found_error(server_name: &str) -> String {
     format!(
-        "Server '{}' not found in config.toml [[servers]]. Run 'tako servers add --name {} <host>'.",
+        "Server '{}' not found in config.toml [[servers]]. Run 'tako network server add --name {} <host>'.",
         server_name, server_name
     )
 }
@@ -319,7 +319,7 @@ pub(super) fn format_server_target_metadata_error(
     }
 
     format!(
-        "Deploy target metadata check failed: {}. Remove and add each affected server again (`tako servers remove <name>` then `tako servers add --name <name> <host>`). Deploy does not probe server targets.",
+        "Deploy target metadata check failed: {}. Remove and add each affected server again (`tako network server remove <name>` then `tako network server add --name <name> <host>`). Deploy does not probe server targets.",
         details.join("; ")
     )
 }

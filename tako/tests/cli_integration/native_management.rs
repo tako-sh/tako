@@ -83,6 +83,7 @@ impl Fixture {
         .unwrap();
         let mut snapshot = RegistrySnapshot {
             network: NetworkDescriptor {
+                name: "test".parse().unwrap(),
                 id: network.clone(),
                 initial_admin: own.clone(),
             },

@@ -1,14 +1,13 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub(super) fn ensure_project_gitignore_tracks_secrets(project_dir: &Path) -> std::io::Result<()> {
+pub(super) fn ensure_project_gitignore_ignores_state(project_dir: &Path) -> std::io::Result<()> {
     let gitignore_root =
         find_git_repo_root(project_dir).unwrap_or_else(|| project_dir.to_path_buf());
     let gitignore_path = gitignore_root.join(".gitignore");
     let rules = [
-        "# tako: ignore runtime artifacts, keep secrets".to_string(),
+        "# tako: local runtime state and secret drafts".to_string(),
         "**/.tako/*".to_string(),
-        "!**/.tako/secrets.json".to_string(),
     ];
 
     let mut content = if gitignore_path.exists() {
@@ -16,11 +15,20 @@ pub(super) fn ensure_project_gitignore_tracks_secrets(project_dir: &Path) -> std
     } else {
         String::new()
     };
+    let previous = content.clone();
+    content = content
+        .lines()
+        .filter(|line| {
+            line.trim() != "!**/.tako/secrets.json"
+                && line.trim() != "# tako: ignore runtime artifacts, keep secrets"
+        })
+        .map(|line| format!("{line}\n"))
+        .collect();
     let mut existing_lines = content
         .lines()
         .map(|line| line.trim_end().to_string())
         .collect::<std::collections::BTreeSet<_>>();
-    let mut changed = false;
+    let mut changed = content != previous;
 
     for rule in rules {
         if existing_lines.insert(rule.clone()) {
@@ -52,8 +60,14 @@ pub(super) fn display_config_path_for_prompt(config_path: &Path, cwd: &Path) -> 
 }
 
 pub(super) fn find_git_repo_root(project_dir: &Path) -> Option<PathBuf> {
-    project_dir
-        .ancestors()
-        .find(|dir| dir.join(".git").exists())
-        .map(Path::to_path_buf)
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(project_dir)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(PathBuf::from(String::from_utf8(output.stdout).ok()?.trim()))
 }

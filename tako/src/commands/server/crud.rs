@@ -33,7 +33,7 @@ pub(super) async fn remove_server(name: Option<&str>) -> Result<(), Box<dyn std:
         output::error("No servers configured.");
         output::hint(&format!(
             "Run {} to add a server.",
-            output::strong("tako servers add")
+            output::strong("tako network server add")
         ));
         return Ok(());
     }
@@ -63,7 +63,7 @@ pub(super) async fn remove_server(name: Option<&str>) -> Result<(), Box<dyn std:
 
     if !output::is_interactive() {
         return Err(
-            "No server name provided and selection requires an interactive terminal. Run 'tako servers remove <name>'."
+            "No server name provided and selection requires an interactive terminal. Run 'tako network server remove <name>'."
                 .into(),
         );
     }
@@ -139,10 +139,7 @@ fn remove_entry(
             Ok(())
         })
     } else {
-        let mut servers = crate::config::ServersToml::load()?;
-        servers.remove(name)?;
-        servers.save()?;
-        Ok(())
+        Err("Server is not enrolled in a network".into())
     }
 }
 
@@ -161,7 +158,7 @@ pub(super) async fn list_servers() -> Result<(), Box<dyn std::error::Error>> {
         output::warning("No servers configured");
         output::hint(&format!(
             "Run {} to add a server.",
-            output::strong("tako servers add")
+            output::strong("tako network server add")
         ));
         return Ok(());
     }

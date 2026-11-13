@@ -95,7 +95,7 @@ if [ "$SERVICE_MANAGER" = "systemd" ]; then
       echo "OK refreshed tako-server service without restarting"
     else
       echo "OK installed tako-server service (not started)"
-      echo 'Run `tako servers add <host>` from your workstation to start and verify it.'
+      echo 'Run `tako network server add <host>` from your workstation to start and verify it.'
     fi
   fi
 else

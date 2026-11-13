@@ -12,8 +12,8 @@ pub use prompts::{
 
 // Re-export spinner types and functions
 pub use spinners::{
-    PhaseSpinner, SPINNER_TICKS, TrackedSpinner, with_spinner, with_spinner_async,
-    with_spinner_async_err, with_spinner_async_simple, with_spinner_silent,
+    PhaseSpinner, SPINNER_TICKS, with_spinner, with_spinner_async, with_spinner_async_err,
+    with_spinner_async_simple, with_spinner_silent,
 };
 
 // Re-export tracing types

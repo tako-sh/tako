@@ -3,7 +3,7 @@ use std::path::Path;
 use crate::app::require_app_name_from_config_path;
 use crate::commands::helpers::{resolve_servers_for_env, validate_server_names};
 use crate::commands::project_context;
-use crate::config::{ServerEntry, ServersToml, TakoToml};
+use crate::config::{ServerEntry, ServerInventory, TakoToml};
 use crate::management_http::ManagementClient;
 use crate::output;
 use tako_core::{Command, Response};
@@ -222,7 +222,7 @@ fn resolve_scale_target(
 
 fn resolve_scale_server_names(
     project_tako: Option<&TakoToml>,
-    servers: &ServersToml,
+    servers: &ServerInventory,
     env: Option<&str>,
     server: Option<&str>,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {

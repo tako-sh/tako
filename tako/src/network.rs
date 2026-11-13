@@ -10,11 +10,12 @@ use tako_network::{
     PendingApprovalProfile, RegistrySnapshot, RequestId,
 };
 
-use crate::config::{NetworkAlias, NetworksToml};
+use crate::config::{LocalNetwork, LocalNetworks};
 
 pub(crate) mod client;
 pub(crate) mod local_access;
 pub(crate) mod revocation;
+pub(crate) mod secrets;
 pub(crate) mod server_access;
 pub(crate) mod ssh_session;
 pub(crate) mod ssh_tunnel;
@@ -142,7 +143,7 @@ pub(crate) fn store_keys(request: &RequestId, keys: &LocalDeviceKeys) -> Result<
     Ok(())
 }
 
-pub(crate) fn load_profile(network: &NetworkAlias) -> Result<Profile> {
+pub(crate) fn load_profile(network: &LocalNetwork) -> Result<Profile> {
     let mut profile: Profile = read_json(&network.profile_path()?)?;
     if profile.snapshot().network.id.to_string() != network.id
         || profile
@@ -159,12 +160,13 @@ pub(crate) fn load_profile(network: &NetworkAlias) -> Result<Profile> {
     Ok(profile)
 }
 
-pub(crate) fn save_profile(name: &str, profile: &Profile) -> Result<NetworkAlias> {
+pub(crate) fn save_profile(profile: &Profile) -> Result<LocalNetwork> {
     let mut profile = profile.clone();
     profile.normalize_trusted_servers()?;
     let keys = LocalDeviceKeys::load(&keys_path(&profile.request().request_id)?)?;
     profile.validate_for_storage(&keys)?;
-    let alias = NetworkAlias {
+    let name = profile.snapshot().network.name.as_str();
+    let alias = LocalNetwork {
         name: name.into(),
         id: profile.snapshot().network.id.to_string(),
         device: profile
@@ -173,19 +175,14 @@ pub(crate) fn save_profile(name: &str, profile: &Profile) -> Result<NetworkAlias
             .to_string(),
     };
     alias.validate()?;
-    if let Some(existing) = NetworksToml::load()?.networks.get(name)
-        && existing.id != alias.id
-    {
-        return Err(format!("Alias '{name}' already names another network").into());
-    }
     let profile = persist_profile(&alias, profile)?;
     profile.validate(&keys)?;
-    NetworksToml::save_alias(&alias)?;
+    LocalNetworks::save_identity(&alias)?;
     Ok(alias)
 }
 
 pub(crate) fn record_revocation(
-    alias: &NetworkAlias,
+    alias: &LocalNetwork,
     revocation: tako_network::Revocation,
 ) -> Result<()> {
     let mut profile: Profile = read_json(&alias.profile_path()?)?;
@@ -199,7 +196,7 @@ pub(crate) fn record_revocation(
     Ok(())
 }
 
-fn persist_profile(alias: &NetworkAlias, mut profile: Profile) -> Result<Profile> {
+fn persist_profile(alias: &LocalNetwork, mut profile: Profile) -> Result<Profile> {
     alias.validate()?;
     if profile.snapshot().network.id.to_string() != alias.id
         || profile
@@ -566,8 +563,8 @@ pub(crate) fn server_members(
 pub(crate) fn resolve_network(
     value: Option<&str>,
     config_path: Option<&Path>,
-) -> Result<NetworkAlias> {
-    let aliases = NetworksToml::load()?;
+) -> Result<LocalNetwork> {
+    let aliases = LocalNetworks::load()?;
     if value.is_some() {
         return Ok(aliases.select(value)?.clone());
     }

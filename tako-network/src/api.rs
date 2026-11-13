@@ -122,6 +122,8 @@ pub enum RpcRequest {
         action: ManagementAction,
     },
     Approve(Box<ApproveRequest>),
+    CreateInvitation(Box<crate::invitation::CreateInvitation>),
+    ClaimInvitation(Box<crate::invitation::ClaimInvitation>),
     Begin {
         pending_id: RequestId,
     },
@@ -145,6 +147,8 @@ impl RpcRequest {
     pub fn path(&self) -> &'static str {
         match self {
             Self::Authorize { .. } => "/v1/network/authorize",
+            Self::CreateInvitation(_) => "/v1/network/invitation/create",
+            Self::ClaimInvitation(_) => "/v1/network/invitation/claim",
             Self::Approve(_) => "/v1/network/approve",
             Self::Begin { .. } => "/v1/network/begin",
             Self::Complete { .. } => "/v1/network/complete",
@@ -261,6 +265,9 @@ pub enum RpcResponse {
         signer: DeviceId,
         permissions: Permissions,
         action: ManagementAction,
+    },
+    InvitationCreated {
+        id: RequestId,
     },
     Pending(PendingApprovalProfile),
     Challenge {

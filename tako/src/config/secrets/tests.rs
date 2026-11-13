@@ -646,11 +646,11 @@ fn test_save_and_load() {
 }
 
 #[test]
-fn test_default_path_uses_secrets_json() {
+fn test_default_path_uses_local_secret_state() {
     let temp_dir = TempDir::new().unwrap();
     assert_eq!(
         SecretsStore::default_path(temp_dir.path()),
-        temp_dir.path().join(".tako").join("secrets.json")
+        temp_dir.path().join(".tako").join("secrets.local.json")
     );
 }
 
@@ -672,14 +672,20 @@ fn test_save_to_dir_writes_new_secrets_json_path() {
 
     store.save_to_dir(temp_dir.path()).unwrap();
 
-    assert!(temp_dir.path().join(".tako").join("secrets.json").exists());
+    assert!(
+        temp_dir
+            .path()
+            .join(".tako")
+            .join("secrets.local.json")
+            .exists()
+    );
     assert!(!temp_dir.path().join(".tako").join("secrets").exists());
 }
 
 #[test]
 fn save_omits_expires_on_when_unknown() {
     let temp_dir = TempDir::new().unwrap();
-    let path = temp_dir.path().join(".tako").join("secrets.json");
+    let path = temp_dir.path().join(".tako").join("secrets.local.json");
     let mut store = SecretsStore::default();
     store.ensure_env_key_id("production").unwrap();
     store
@@ -701,7 +707,7 @@ fn save_omits_expires_on_when_unknown() {
 #[test]
 fn save_preserves_backup_keys() {
     let temp_dir = TempDir::new().unwrap();
-    let path = temp_dir.path().join(".tako").join("secrets.json");
+    let path = temp_dir.path().join(".tako").join("secrets.local.json");
     let mut store = SecretsStore::default();
     store.ensure_env_key_id("production").unwrap();
     store
@@ -726,7 +732,7 @@ fn save_preserves_backup_keys() {
 #[test]
 fn test_save_to_file_orders_environments_and_secret_names_stably() {
     let temp_dir = TempDir::new().unwrap();
-    let path = temp_dir.path().join(".tako").join("secrets.json");
+    let path = temp_dir.path().join(".tako").join("secrets.local.json");
     let mut store = SecretsStore::default();
     store.ensure_env_key_id("staging").unwrap();
     store.set("staging", "Z_KEY", "z".to_string()).unwrap();

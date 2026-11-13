@@ -381,7 +381,8 @@ route = "prod.example.com"
 
     let stderr = stderr_str(&output);
     assert!(
-        stderr.contains("No servers have been added") || stderr.contains("tako servers add <host>"),
+        stderr.contains("No servers have been added")
+            || stderr.contains("tako network server add <host>"),
         "Should include add-server hint: {}",
         stderr
     );

@@ -58,7 +58,12 @@ fn servers_uninstall_without_name_in_non_interactive_mode_shows_hint() {
     )
     .unwrap();
 
-    let uninstall = run_tako_with_env(&["servers", "uninstall"], &project_dir, &home, &tako_home);
+    let uninstall = run_tako_with_env(
+        &["network", "server", "uninstall"],
+        &project_dir,
+        &home,
+        &tako_home,
+    );
     assert!(
         !uninstall.status.success(),
         "uninstall without name should fail on non-tty"
@@ -79,7 +84,14 @@ fn servers_uninstall_dry_run_does_not_connect_or_modify_inventory() {
     let config = "[[servers]]\nname = 'edge'\nhost = 'unreachable.invalid'\n";
     fs::write(tako_home.join("config.toml"), config).unwrap();
     let out = run_tako_with_env(
-        &["--dry-run", "servers", "uninstall", "edge", "--yes"],
+        &[
+            "--dry-run",
+            "network",
+            "server",
+            "uninstall",
+            "edge",
+            "--yes",
+        ],
         temp.path(),
         temp.path(),
         &tako_home,
@@ -110,7 +122,7 @@ fn servers_uninstall_nonexistent_name_fails() {
     .unwrap();
 
     let uninstall = run_tako_with_env(
-        &["servers", "uninstall", "ghost-server", "--yes"],
+        &["network", "server", "uninstall", "ghost-server", "--yes"],
         &project_dir,
         &home,
         &tako_home,

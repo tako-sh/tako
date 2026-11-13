@@ -143,41 +143,15 @@ pub fn write_secret_accessors_with_secrets(
 ///
 /// Prefers "development" env, falls back to union of all envs.
 fn read_secret_names(project_dir: &Path) -> Vec<String> {
-    let secrets_path = project_dir.join(".tako").join("secrets.json");
-    let content = match fs::read_to_string(&secrets_path) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
+    let Ok(store) = crate::config::SecretsStore::load_from_dir(project_dir) else {
+        return vec![];
     };
-
-    let parsed: serde_json::Value = match serde_json::from_str(&content) {
-        Ok(v) => v,
-        Err(_) => return Vec::new(),
-    };
-
-    let obj = match parsed.as_object() {
-        Some(o) => o,
-        None => return Vec::new(),
-    };
-
-    if let Some(dev) = obj.get("development") {
-        extract_secret_names(dev)
+    if let Some(development) = store.get_env("development") {
+        let mut names: Vec<_> = development.keys().cloned().collect();
+        names.sort();
+        names
     } else {
-        let mut all: Vec<String> = obj.values().flat_map(extract_secret_names).collect();
-        all.sort();
-        all.dedup();
-        all
-    }
-}
-
-fn extract_secret_names(env_value: &serde_json::Value) -> Vec<String> {
-    let secrets = env_value.get("app").and_then(|s| s.as_object());
-    match secrets {
-        Some(map) => {
-            let mut names: Vec<String> = map.keys().cloned().collect();
-            names.sort();
-            names
-        }
-        None => Vec::new(),
+        store.all_secret_names()
     }
 }
 

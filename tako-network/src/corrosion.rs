@@ -654,6 +654,7 @@ mod tests {
     fn network() -> NetworkDescriptor {
         let id = NetworkId::random().unwrap();
         NetworkDescriptor {
+            name: "test".parse().unwrap(),
             initial_admin: LocalDeviceKeys::generate()
                 .unwrap()
                 .device_id(&id, DeviceKind::Laptop)

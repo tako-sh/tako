@@ -17,7 +17,44 @@ impl<S: RegistryStore> ServerRuntime<S> {
         if snapshot.network != self.config.network.id {
             return Err(RuntimeError::Conflict("shared state network"));
         }
-        Ok(snapshot)
+        let mut observed = SharedSnapshot::empty(self.config.network.id.clone());
+        let tx = self.db.transaction()?;
+        {
+            let mut statement =
+                tx.prepare("SELECT kind, payload FROM shared_observed ORDER BY kind, id")?;
+            let mut rows = statement.query([])?;
+            let mut bytes = 0;
+            while let Some(row) = rows.next()? {
+                let kind: String = row.get(0)?;
+                let payload: String = row.get(1)?;
+                bytes += payload.len();
+                if bytes > crate::shared::MAX_SHARED_BYTES
+                    || observed.secrets.len() + observed.grants.len() >= MAX_SHARED_RECORDS
+                {
+                    return Err(RuntimeError::Capacity("observed shared state"));
+                }
+                match kind.as_str() {
+                    "secret" => observed.secrets.push(serde_json::from_str(&payload)?),
+                    "grant" => observed.grants.push(serde_json::from_str(&payload)?),
+                    _ => return Err(RuntimeError::Invalid("observed shared record kind")),
+                }
+            }
+        }
+        observed.merge(&snapshot)?;
+        for record in &snapshot.secrets {
+            tx.execute(
+                "INSERT OR IGNORE INTO shared_observed VALUES ('secret',?1,?2)",
+                params![record.id.to_string(), serde_json::to_string(record)?],
+            )?;
+        }
+        for grant in &snapshot.grants {
+            tx.execute(
+                "INSERT OR IGNORE INTO shared_observed VALUES ('grant',?1,?2)",
+                params![grant.id(), serde_json::to_string(grant)?],
+            )?;
+        }
+        tx.commit()?;
+        Ok(observed)
     }
 
     pub(super) fn publish_secret(

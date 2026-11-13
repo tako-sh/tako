@@ -47,6 +47,8 @@ fn refresh_generated_files_after_secret_change(project_dir: &Path, config_path: 
 
 #[derive(Subcommand)]
 pub enum SecretCommands {
+    /// Move the old Git-tracked secret file into ignored local state
+    Migrate,
     /// Set a secret (creates or overwrites)
     #[command(visible_alias = "add")]
     Set {
@@ -60,10 +62,6 @@ pub enum SecretCommands {
         /// Optional expiry date. Use YYYY-MM-DD or "in 30 days".
         #[arg(long)]
         expires_on: Option<String>,
-
-        /// Sync secrets to servers after setting
-        #[arg(long)]
-        sync: bool,
     },
 
     /// Remove a secret
@@ -75,17 +73,13 @@ pub enum SecretCommands {
         /// Environment to remove from (or all if not specified)
         #[arg(long)]
         env: Option<String>,
-
-        /// Sync secrets to servers after removing
-        #[arg(long)]
-        sync: bool,
     },
 
     /// List all secrets
     #[command(visible_aliases = ["ls", "show"])]
     List,
 
-    /// Sync secrets to servers
+    /// Publish this worktree's secret drafts to the network
     Sync {
         /// Only sync to specific environment
         #[arg(long)]
@@ -220,11 +214,22 @@ async fn run_async(
     context: crate::commands::project_context::ProjectContext,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
+        SecretCommands::Migrate => {
+            if output::is_dry_run() {
+                output::dry_run_skip("Migrate tracked secrets to local drafts");
+                return Ok(());
+            }
+            crate::network::secrets::migrate(&context.project_dir)?;
+            output::success("Migrated secrets to this worktree's local drafts");
+            output::hint(
+                "Commit the deletion of .tako/secrets.json. Deploy or run `tako secrets sync` to publish the drafts; Git history is unchanged.",
+            );
+            Ok(())
+        }
         SecretCommands::Set {
             name,
             env,
             expires_on,
-            sync,
         } => {
             let Some(input) =
                 resolve_secret_set_input(&context, env.as_deref(), &name, expires_on)?
@@ -237,12 +242,12 @@ async fn run_async(
                 &input.env,
                 &input.value,
                 input.expires_on,
-                sync,
+                false,
             )
             .await
         }
-        SecretCommands::Rm { name, env, sync } => {
-            remove_secret(&context, &name, env.as_deref(), sync).await
+        SecretCommands::Rm { name, env } => {
+            remove_secret(&context, &name, env.as_deref(), false).await
         }
         SecretCommands::List => list_secrets(&context).await,
         SecretCommands::Sync { env } => sync_secrets(&context, env.as_deref()).await,

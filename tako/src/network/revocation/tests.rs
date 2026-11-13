@@ -4,12 +4,12 @@ use crate::network::{
     tests::{Fixture, TestHome, fixture},
 };
 
-fn saved(fixture: &Fixture) -> NetworkAlias {
+fn saved(fixture: &Fixture) -> LocalNetwork {
     network::store_keys(&fixture.profile.request().request_id, &fixture.keys).unwrap();
-    network::save_profile("test", &fixture.profile).unwrap()
+    network::save_profile(&fixture.profile).unwrap()
 }
 
-fn journal(alias: &NetworkAlias) -> Journal {
+fn journal(alias: &LocalNetwork) -> Journal {
     network::read_bounded_json(
         network::private_file(
             &alias
@@ -23,7 +23,7 @@ fn journal(alias: &NetworkAlias) -> Journal {
     .unwrap()
 }
 
-fn fail_publication(alias: &NetworkAlias, fixture: &Fixture, device: &str) -> SignedRequest {
+fn fail_publication(alias: &LocalNetwork, fixture: &Fixture, device: &str) -> SignedRequest {
     let mut attempted = None;
     let result = run_with(
         alias,

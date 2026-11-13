@@ -4,7 +4,8 @@ use super::*;
 fn global_ssh_passphrase_parses_for_one_liners() {
     let cli = Cli::try_parse_from([
         "tako",
-        "servers",
+        "network",
+        "server",
         "add",
         "example.com",
         "--ssh-passphrase",
@@ -74,7 +75,7 @@ fn telemetry_command_uses_top_level_name() {
         (&["tako", "dev", "list"][..], "dev list"),
         (&["tako", "dev", "stop"][..], "dev stop"),
         (&["tako", "deploy", "--yes"][..], "deploy"),
-        (&["tako", "servers", "list"][..], "servers"),
+        (&["tako", "network", "server", "list"][..], "network"),
         (&["tako", "secrets", "list"][..], "secrets"),
         (&["tako", "version"][..], "version"),
         (&["tako", "scale", "2"][..], "scale"),

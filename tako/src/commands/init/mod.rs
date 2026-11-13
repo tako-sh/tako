@@ -14,7 +14,7 @@ use crate::config::TakoToml;
 use crate::output;
 use generated::{install_tako_sdk, write_init_generated_file};
 use non_interactive::run_non_interactive;
-use project::{display_config_path_for_prompt, ensure_project_gitignore_tracks_secrets};
+use project::{display_config_path_for_prompt, ensure_project_gitignore_ignores_state};
 use scaffold::{TemplateParams, detect_local_runtime_version, generate_template, sanitize_route};
 use ssl::prompt_init_ssl_token;
 use wizard::{InteractiveInitSelection, prompt_interactive_config};
@@ -117,7 +117,7 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
 
     let parsed_template = TakoToml::parse(&template)?;
     fs::write(&tako_toml_path, template)?;
-    ensure_project_gitignore_tracks_secrets(&project_dir)?;
+    ensure_project_gitignore_ignores_state(&project_dir)?;
     let configured_init_ssl = init_ssl_token.is_some();
     if let Some((token, expires_on)) = init_ssl_token {
         crate::commands::credentials::set_ssl_cloudflare_credential(
@@ -169,7 +169,7 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
     ));
     output::info(&format!(
         "2. Run {} to add deployment servers",
-        output::strong("tako servers add")
+        output::strong("tako network server add")
     ));
     output::info(&format!(
         "3. Run {} to add secrets",

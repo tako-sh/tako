@@ -56,9 +56,9 @@ impl SecretContent {
 pub enum SecretKind {
     App,
     Credential,
-    StorageAccessKey,
-    StorageSecretKey,
+    Storage,
     BackupKey,
+    BackupActive,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
