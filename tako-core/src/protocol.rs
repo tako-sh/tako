@@ -12,6 +12,7 @@ use crate::storage::StorageBinding;
 pub const PROTOCOL_VERSION: u32 = 0;
 pub const UPGRADE_RELOAD_MARKER_FILE: &str = ".upgrade-reload";
 pub const MANAGEMENT_AUTH_NAMESPACE: &str = "tako-management-rpc-v0";
+pub const MAX_RELEASE_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
 pub const DEFAULT_BACKUP_RETENTION_DAYS: u16 = 30;
 pub const BACKUP_INTERVAL_SECS: i64 = 24 * 60 * 60;
 const DEPLOYMENT_APP_ID_SEPARATOR: char = '/';
@@ -37,6 +38,13 @@ pub fn release_artifact_upload_auth_body(
     sha256_hex: &str,
 ) -> Vec<u8> {
     format!("release_artifact_upload\n{app}\n{version}\n{size_bytes}\n{sha256_hex}").into_bytes()
+}
+
+/// Allow five minutes plus six seconds per started MiB of compressed data.
+/// Bound the total even if an unauthenticated sender advertises a larger size.
+pub fn release_artifact_upload_timeout(size_bytes: u64) -> std::time::Duration {
+    let size = size_bytes.min(MAX_RELEASE_ARTIFACT_BYTES);
+    std::time::Duration::from_secs(5 * 60 + 6 * size.div_ceil(1024 * 1024))
 }
 
 pub fn logs_request_auth_body(

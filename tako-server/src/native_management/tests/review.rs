@@ -1,4 +1,5 @@
 use super::*;
+use futures_util::StreamExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 fn upload_request() -> (Request<Full<Bytes>>, SignedRequest) {
@@ -34,6 +35,81 @@ fn upload_request() -> (Request<Full<Bytes>>, SignedRequest) {
         .body(Full::new(Bytes::from(archive)))
         .unwrap();
     (request, signed)
+}
+
+#[tokio::test]
+async fn progressing_upload_can_finish_after_five_minutes() {
+    let (dir, state) = state();
+    let (request, signed) = upload_request();
+    let grant = authorized(&signed, scoped());
+    let (parts, archive) = request.into_parts();
+    let archive = archive.collect().await.unwrap().to_bytes();
+    // Twelve 25-second gaps plus two seconds exceed the old five-minute deadline.
+    let frames = futures_util::stream::iter(0..13).then(move |i| {
+        let bytes = archive.slice(archive.len() * i / 13..archive.len() * (i + 1) / 13);
+        async move {
+            tokio::time::pause();
+            tokio::time::advance(Duration::from_secs(if i == 12 { 2 } else { 25 })).await;
+            tokio::time::resume();
+            Ok::<_, std::io::Error>(hyper::body::Frame::data(bytes))
+        }
+    });
+    let body = http_body_util::StreamBody::new(Box::pin(frames));
+    let response = handle_using(Request::from_parts(parts, body), state, |_| async {
+        Ok(grant)
+    })
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        std::fs::read(
+            dir.path()
+                .join("apps/demo/production/releases/v1/hello.txt")
+        )
+        .unwrap(),
+        b"hello"
+    );
+}
+
+#[tokio::test]
+async fn stalled_upload_reports_timeout_and_cleans_up() {
+    let (dir, state) = state();
+    let (request, signed) = upload_request();
+    let grant = authorized(&signed, scoped());
+    let size = request.headers()["x-tako-artifact-size"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let (started, reading_body) = tokio::sync::oneshot::channel();
+    let frames = futures_util::stream::once(async {
+        started.send(()).unwrap();
+        std::future::pending::<std::io::Result<hyper::body::Frame<Bytes>>>().await
+    });
+    let response = tokio::spawn(handle_using(
+        request.map(|_| http_body_util::StreamBody::new(Box::pin(frames))),
+        state,
+        |_| async { Ok(grant) },
+    ));
+    reading_body.await.unwrap();
+    tokio::time::pause();
+    tokio::time::advance(BODY_TIMEOUT + Duration::from_secs(1)).await;
+    tokio::time::resume();
+    let response = tokio::time::timeout(Duration::from_secs(2), response)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let result: tako_core::Response = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        result.error_message().unwrap(),
+        format!("Artifact upload stalled (0 of {size} bytes received)")
+    );
+    assert_eq!(
+        std::fs::read_dir(dir.path().join("tmp/uploads"))
+            .unwrap()
+            .count(),
+        0
+    );
 }
 
 #[tokio::test]

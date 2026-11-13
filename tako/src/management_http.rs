@@ -18,7 +18,6 @@ pub(crate) const MANAGEMENT_PORT: u16 = 9844;
 const MANAGEMENT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const MANAGEMENT_RPC_TIMEOUT: Duration = Duration::from_secs(5);
 const MANAGEMENT_DEPLOY_RPC_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-const MANAGEMENT_UPLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const HEADER_UPLOAD_APP: &str = "x-tako-app";
 const HEADER_UPLOAD_VERSION: &str = "x-tako-version";
 const HEADER_UPLOAD_SIZE: &str = "x-tako-artifact-size";
@@ -54,7 +53,6 @@ pub(crate) struct NativeTarget {
 pub(crate) struct ManagementClient {
     http: reqwest::Client,
     deploy_http: reqwest::Client,
-    upload_http: reqwest::Client,
     signer: ManagementAuth,
     preflight_scope: Option<tako_network::AppEnv>,
 }
@@ -94,7 +92,6 @@ impl ManagementClient {
             ManagementTarget::Legacy { host } => Ok(Self {
                 http: http_client(MANAGEMENT_RPC_TIMEOUT)?,
                 deploy_http: http_client(MANAGEMENT_DEPLOY_RPC_TIMEOUT)?,
-                upload_http: http_client(MANAGEMENT_UPLOAD_TIMEOUT)?,
                 signer: ManagementAuth::Legacy {
                     host: host.clone(),
                     signer: auth::ManagementSigner::load().await?,
@@ -106,7 +103,6 @@ impl ManagementClient {
                 Ok(Self {
                     http: identity.client(MANAGEMENT_RPC_TIMEOUT)?,
                     deploy_http: identity.client(MANAGEMENT_DEPLOY_RPC_TIMEOUT)?,
-                    upload_http: identity.client(MANAGEMENT_UPLOAD_TIMEOUT)?,
                     signer: ManagementAuth::Native(identity),
                     preflight_scope: None,
                 })
@@ -270,13 +266,17 @@ impl ManagementClient {
                 .await
                 .map_err(|error| ManagementError::Message(error.to_string()))?;
             let response = self
-                .request(&self.upload_http, "release-artifact", headers)
+                .request(&self.deploy_http, "release-artifact", headers)
                 .header(HEADER_UPLOAD_APP, app)
                 .header(HEADER_UPLOAD_VERSION, version)
                 .header(HEADER_UPLOAD_SIZE, size.to_string())
                 .header(HEADER_UPLOAD_SHA256, sha256.as_str())
                 .header("content-type", "application/zstd")
-                .timeout(MANAGEMENT_UPLOAD_TIMEOUT)
+                // The primary still verifies and extracts the archive after receiving its bytes.
+                .timeout(
+                    tako_core::release_artifact_upload_timeout(size)
+                        + MANAGEMENT_DEPLOY_RPC_TIMEOUT,
+                )
                 .body(reqwest::Body::from(file))
                 .send()
                 .await
@@ -603,12 +603,6 @@ mod tests {
             release_artifact_url("prod.internal"),
             "http://prod.internal:9844/release-artifact"
         );
-    }
-
-    #[test]
-    fn release_artifact_upload_has_room_for_large_archives() {
-        assert!(MANAGEMENT_UPLOAD_TIMEOUT > MANAGEMENT_RPC_TIMEOUT);
-        assert!(MANAGEMENT_UPLOAD_TIMEOUT >= Duration::from_secs(10 * 60));
     }
 
     #[test]

@@ -55,6 +55,8 @@ Tako copies the source root into `.tako/build`, respects `.gitignore`, symlinks 
 
 The final native artifact includes regular files only; build-created symlinks are omitted too. Do not depend on linked files being deployed. This differs from app data backups, which preserve symlinks.
 
+Native network servers accept compressed artifacts up to 512 MiB. The upload deadline is five minutes plus six seconds per MiB, rounded up. A 102 MiB upload has 15 minutes and 12 seconds to finish. An upload that stops sending data for 30 seconds times out. Transfer errors include the number of bytes received and the declared size.
+
 Always-excluded paths: `.git/`, `.tako/`, `.env*`, and `node_modules/`.
 
 Version names are based on git state: clean commit hash, dirty commit plus content hash, or `nogit_<hash>` when no git commit is available.

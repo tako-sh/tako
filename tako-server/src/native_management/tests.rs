@@ -338,14 +338,14 @@ async fn upload_verifies_digest_and_confines_extraction() {
             .body(Full::new(Bytes::from(archive.clone())))
             .unwrap();
         let response = handle_using(req, state.clone(), |_| async { Ok(response) }).await;
-        assert_eq!(
-            response.status(),
-            if bad_digest {
-                StatusCode::BAD_REQUEST
-            } else {
-                StatusCode::OK
-            }
-        );
+        if bad_digest {
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let result: tako_core::Response = serde_json::from_slice(&bytes).unwrap();
+            assert!(result.error_message().unwrap().contains("SHA-256 mismatch"));
+        } else {
+            assert_eq!(response.status(), StatusCode::OK);
+        }
     }
     assert_eq!(
         std::fs::read(

@@ -1,6 +1,6 @@
 import React from "react";
 import { HeadContent, Outlet, Scripts, createRootRoute } from "@tanstack/react-router";
-import appCss from "../styles/app.css?url";
+import "../styles/app.css";
 
 export const Route = createRootRoute({
   head: () => ({
@@ -13,7 +13,6 @@ export const Route = createRootRoute({
       },
     ],
     links: [
-      { rel: "stylesheet", href: appCss },
       { rel: "icon", type: "image/svg+xml", href: "/favicon.svg" },
       { rel: "apple-touch-icon", sizes: "180x180", href: "/apple-touch-icon.png" },
     ],
