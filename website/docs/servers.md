@@ -45,7 +45,7 @@ Allow the configured HTTPS port for management and the WireGuard UDP endpoint fo
 
 Tako manages its own WireGuard network. Provider selection and Tailscale/NetBird integrations have been removed. The `--vpn`, `--no-test`, `--install`, and server `--description` flags are no longer available.
 
-To replace an old installation, create a Tako network, re-enroll each server with the command above, and set `[envs.<env>].network` to its stable ID. Remove the old `[[servers]]` entries from your local inventory after enrollment. To preserve placement in each project, set the environment’s `servers` list to the corresponding enrolled server names. Saved `vpn` fields fail with re-enrollment guidance; they are not silently reassigned.
+To replace an old installation, preserve its app data and keys, create a Tako network, re-enroll each server with the command above, and set `[envs.<env>].network` to its stable ID. File-based inventories and their old `[[servers]]` entries are no longer read. To preserve placement in each project, set the environment’s `servers` list to the corresponding enrolled server names. Older native identities also need fresh enrollment; see [Native networks](/networks/) for the version-2 identity boundary.
 
 ### Install directly on the server
 

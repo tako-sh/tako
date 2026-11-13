@@ -182,3 +182,11 @@ complete. Commit and push each coherent milestone to the same branch.
   Corrosion checks. Full deployment verification reached native enrollment but
   the managed host kernel rejects WireGuard interface creation. Linux CI remains
   the deployment verification gate; do not claim that local E2E completed.
+- CI builds the authentic native membership fixture for CLI tests and runs the
+  two-agent test against the checksum-pinned Corrosion release. Minimal deployment
+  images retain their signed-package HTTP bootstrap until CA certificates exist;
+  managed-proxy builds use HTTPS with the supplied trust bundle.
+- Administrator recovery must account for cascading delegation revocation:
+  a replacement administrator invited by the retiring administrator still
+  depends on that authority chain. Preserve administrator keys and verify an
+  independent surviving authority before revocation.

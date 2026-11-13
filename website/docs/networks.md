@@ -93,7 +93,7 @@ tako network export production --output production.public.json
 
 Network export contains public membership and server trust information. It contains neither private device keys nor app secrets, and it cannot enroll a different device by itself. Use an invitation to enroll a new device.
 
-Network membership grants access according to the device's permissions; published secrets are encrypted to authorized device keys. Keep `tako.toml` in Git, including app configuration and network IDs. Keep `.tako/` local and ignored. An invitation restores access to published values, but cannot recover another machine's unpublished drafts. Back up server state and keep a second administrator enrolled before retiring your only administration device.
+Network membership grants access according to the device's permissions; published secrets are encrypted to authorized device keys. Keep `tako.toml` in Git, including app configuration and network IDs. Keep `.tako/` local and ignored. An invitation restores access to published values, but cannot recover another machine's unpublished drafts. Back up server state and administrator keys. Before revoking an administrator, verify that a remaining administrator's authority does not depend on it: an invited client remains subject to its inviter's revocation chain.
 
 See [Secrets](/secrets/) for worktree isolation, publication, and migration from a tracked secret file. Legacy environment-key import/export remains available for migration and explicit recovery; it is no longer the normal new-device workflow.
 

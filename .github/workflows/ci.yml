@@ -126,6 +126,18 @@ jobs:
           python3 scripts/build-server-installer.py --check
           python3 -m unittest discover -s scripts/tests -v
 
+      - name: Test live Corrosion replication
+        run: |
+          set -euo pipefail
+          corrosion_test_dir=$(mktemp -d)
+          trap 'rm -rf "$corrosion_test_dir"' EXIT
+          curl --fail --show-error --location --retry 5 \
+            https://github.com/superfly/corrosion/releases/download/v1.0.0/corrosion-x86_64-unknown-linux-gnu.tar.gz \
+            --output "$corrosion_test_dir/corrosion.tar.gz"
+          echo "3504d7d1b4b53737457fc40f2353a400cf4df0c1217ec318924d7ee310876194  $corrosion_test_dir/corrosion.tar.gz" | sha256sum --check
+          tar -xzf "$corrosion_test_dir/corrosion.tar.gz" -C "$corrosion_test_dir"
+          CORROSION_BIN="$corrosion_test_dir/corrosion" python3 e2e/network/corrosion-state.py
+
       - name: Run workspace tests
         env:
           TAKO_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:${{ job.services.postgres.ports['5432'] }}/postgres
@@ -254,6 +266,11 @@ jobs:
       - name: Build SDK
         run: bun run --filter 'tako.sh' build
 
+      - name: Build network test fixture
+        run: |
+          rustup toolchain install stable --profile minimal
+          cargo +stable build -p tako-network --locked --example cli-fixture
+
       - name: Add E2E bin to PATH
         run: echo "${{ github.workspace }}/.e2e-bin" >> "$GITHUB_PATH"
 
@@ -305,6 +322,11 @@ jobs:
 
       - name: Build SDK
         run: bun run --filter 'tako.sh' build
+
+      - name: Build network test fixture
+        run: |
+          rustup toolchain install stable --profile minimal
+          cargo +stable build -p tako-network --locked --example cli-fixture
 
       - name: Add E2E bin to PATH
         run: echo "${{ github.workspace }}/.e2e-bin" >> "$GITHUB_PATH"

@@ -27,7 +27,6 @@ if not binary:
 repository = Path(__file__).resolve().parents[2]
 root = Path(tempfile.mkdtemp(prefix="corrosion-shared-"))
 processes = []
-logs = []
 
 
 def port():
@@ -44,9 +43,9 @@ for file, const in [
     ("shared.rs", "SHARED_SCHEMA"),
 ]:
     text = (repository / "tako-network" / "src" / file).read_text()
-    literal = re.search(r"pub const " + const + r': &str = (".*?");', text, re.S).group(
-        1
-    )
+    literal = re.search(
+        r"pub const " + const + r': &str = (".*?");', text, re.DOTALL
+    ).group(1)
     schema.append(ast.literal_eval(literal.replace("\\\n", "")))
 http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -83,13 +82,14 @@ plaintext = true
 [admin]
 path = "{d}/admin.sock"
 ''')
-        log = open(d / "agent.log", "w")
-        logs.append(log)
-        processes.append(
-            subprocess.Popen(
-                [binary, "-c", str(d / "config.toml"), "agent"], stdout=log, stderr=log
+        with open(d / "agent.log", "w") as log:
+            processes.append(
+                subprocess.Popen(
+                    [binary, "-c", str(d / "config.toml"), "agent"],
+                    stdout=log,
+                    stderr=log,
+                )
             )
-        )
     for i in range(2):
         for attempt in range(100):
             if processes[i].poll() is not None:
@@ -120,7 +120,7 @@ path = "{d}/admin.sock"
                 ],
             )
             assert "error" not in result, result
-    for attempt in range(100):
+    for _ in range(100):
         result = [
             post(
                 i,
@@ -156,6 +156,4 @@ finally:
         except subprocess.TimeoutExpired:
             p.kill()
             p.wait()
-    for log in logs:
-        log.close()
     shutil.rmtree(root)
