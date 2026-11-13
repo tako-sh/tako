@@ -9,7 +9,7 @@ imageAlt: "An octopus broadcasts glowing message bubbles to connected laptops wh
 
 A browser is watching a live process. Another update arrives. The browser disconnects, and by the time it returns, those intermediate updates are already old news. Sometimes the useful thing to send is simply whatever happens next.
 
-Tako Channels now support `ephemeral: true`: memory-only pub/sub over WebSocket or SSE. Events go to current subscribers on the same Tako server process. They never enter the channel replay log. For transient application signals, that gives you a delivery contract you can explain in one sentence: be connected when it happens.
+Tako Channels now support `ephemeral: true`: memory-only pub/sub over WebSocket or SSE. Events go to current subscribers locally and across connected native server peers. They never enter the channel replay log. For transient application signals, that gives you a delivery contract you can explain in one sentence: be connected when it happens.
 
 ## Choose what should disappear
 
@@ -138,8 +138,8 @@ The hook's existing `messages` array is browser memory, separate from server rep
 
 Test authorization separately in a deployed test environment. Local channel connections bypass authorization callbacks, so a successful local subscription doesn't prove that `readOperatorSession` rejects unauthorized access in production. Verify an allowed operator and a denied client through the deployed route.
 
-Current production support is **one server without a `postgres_url` credential**. Shared Postgres stores reject ephemeral publication and subscription, including when configured on a single server. The existing cross-server channel transport depends on persisted messages. Pointing multiple servers at the same database doesn't turn the memory bus into distributed pub/sub.
+Production supports **one server or a native network of servers without a `postgres_url` credential**. Brokers forward live events to connected peers without storing messages or sequencing metadata. Disconnected peers miss events and resume with new ones after reconnection. Ordering is per originating broker, with no global order across concurrent publishers. A publish acknowledgement confirms local acceptance for best-effort fanout, not delivery to every subscriber. Shared Postgres stores still reject ephemeral publication and subscription, including on a single server.
 
-Durable and ephemeral channels can coexist in the same supported app deployment. Keep durable events where replay matters, choose ephemeral events where loss is acceptable, and follow the [deployment guide](/docs/deployment/) when selecting servers and storage. Before expanding beyond one server, revisit that choice rather than assuming the stream will cross machines.
+Durable and ephemeral channels can coexist in the same supported app deployment. Keep durable events where replay matters, choose ephemeral events where loss is acceptable, and follow the [deployment guide](/docs/deployment/) when selecting servers and storage. For multiple servers, configure the native network and verify delivery between clients connected to different servers.
 
 Start with a transient event whose absence your product can handle. Define its access policy, verify the disconnected case, and let the app's normal data API answer “what is true now?” The channel can concentrate on “what just happened while you were here?”

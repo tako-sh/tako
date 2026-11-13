@@ -94,7 +94,7 @@ impl Broker {
             .get_mut(app)
             .ok_or_else(|| error("unknown presence app"))?;
         if application.postgres_url.is_none() {
-            for (peer, sender) in &self.peers {
+            for (peer, sender) in self.peers.lock().iter() {
                 if !application.presence_queried.contains(peer)
                     && sender
                         .send(&Frame::Presence {
@@ -121,7 +121,7 @@ impl Broker {
                         return false;
                     };
                     origin.parse::<DeviceId>().ok().is_some_and(|origin| {
-                        (origin == self.local || self.peers.contains_key(&origin))
+                        (origin == self.local || self.peers.lock().contains_key(&origin))
                             && presence::validate_owned_id(&origin, &member.connection_id).is_ok()
                     })
                 })
@@ -199,7 +199,7 @@ impl Broker {
         let publication = match publication {
             Publication::Sync => {
                 let snapshot = application.presence.local_snapshot(&self.local);
-                if let Some(sender) = self.peers.get(peer) {
+                if let Some(sender) = self.peers.lock().get(peer) {
                     sender.send(&Frame::Presence {
                         app: app.clone(),
                         publication: snapshot,

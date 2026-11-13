@@ -1,5 +1,9 @@
 //! Process-local, bounded live fanout. Nothing is retained without a subscriber.
-use crate::{ChannelAuthResponse, ChannelError, ChannelMessage, ChannelStream};
+use crate::{
+    ChannelAuthResponse, ChannelError, ChannelEvent, ChannelEventId, ChannelMessage,
+    ChannelPublishPayload, ChannelStream, RemoteIngest,
+};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use parking_lot::Mutex;
 use std::{
     collections::HashMap,
@@ -9,12 +13,100 @@ use std::{
 use tokio::sync::broadcast;
 
 const CAPACITY: usize = 64;
+// Deduplication is only a bounded live-delivery aid, never a durable receipt.
+const MAX_ORIGINS: usize = 256;
+
+#[derive(Default)]
+struct Publications {
+    origin: Option<String>,
+    sequence: u64,
+    received: std::collections::VecDeque<(String, u64)>,
+}
+
 #[derive(Default)]
 pub(crate) struct EphemeralHub {
     channels: Mutex<HashMap<String, broadcast::Sender<Arc<ChannelMessage>>>>,
+    publications: Mutex<Publications>,
 }
 
 impl EphemeralHub {
+    /// Allocation, local delivery and enqueueing have one order, independent
+    /// of the durable writer lock. A new hub gets a new incarnation.
+    pub(crate) fn publish(
+        &self,
+        channel: &str,
+        payload: &ChannelPublishPayload,
+        enqueue: impl FnOnce(ChannelEvent),
+    ) -> Result<ChannelMessage, ChannelError> {
+        let mut state = self.publications.lock();
+        if state.origin.is_none() {
+            let mut nonce = [0; 32];
+            getrandom::fill(&mut nonce)
+                .map_err(|error| ChannelError::Storage(error.to_string()))?;
+            state.origin = Some(format!("live_{}", URL_SAFE_NO_PAD.encode(nonce)));
+        }
+        state.sequence = state
+            .sequence
+            .checked_add(1)
+            .filter(|sequence| *sequence <= i64::MAX as u64)
+            .ok_or_else(|| ChannelError::Storage("ephemeral sequence exhausted".into()))?;
+        let event = ChannelEvent {
+            id: ChannelEventId {
+                origin: state.origin.clone().unwrap(),
+                sequence: state.sequence,
+            },
+            channel: channel.into(),
+            payload: payload.clone(),
+            ephemeral: true,
+            lifecycle: None,
+            created_at_unix_ms: None,
+        };
+        let message = message(&event);
+        self.deliver(&message);
+        enqueue(event);
+        Ok(message)
+    }
+
+    pub(crate) fn ingest(&self, event: &ChannelEvent) -> Result<RemoteIngest, ChannelError> {
+        if !event.ephemeral
+            || !event.id.origin.starts_with("live_")
+            || event.id.origin.len() > 128
+            || !event
+                .id
+                .origin
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+            || event.id.sequence == 0
+            || event.id.sequence > i64::MAX as u64
+            || event.payload.r#type == crate::CLOSE_MESSAGE_TYPE
+        {
+            return Err(ChannelError::BadRequest("invalid ephemeral event".into()));
+        }
+        let mut state = self.publications.lock();
+        if state.origin.as_ref() == Some(&event.id.origin) {
+            return Ok(RemoteIngest::Duplicate);
+        }
+        if let Some(index) = state
+            .received
+            .iter()
+            .position(|(origin, _)| origin == &event.id.origin)
+        {
+            if event.id.sequence <= state.received[index].1 {
+                return Ok(RemoteIngest::Duplicate);
+            }
+            state.received.remove(index);
+        }
+        if state.received.len() == MAX_ORIGINS {
+            state.received.pop_front();
+        }
+        state
+            .received
+            .push_back((event.id.origin.clone(), event.id.sequence));
+        // A missing transient event neither rotates durable cursors nor replays.
+        self.deliver(&message(event));
+        Ok(RemoteIngest::Applied)
+    }
+
     /// Publishing and proxy stores open separate connections to the same app DB.
     pub(crate) fn for_path(path: PathBuf) -> Arc<Self> {
         static HUBS: OnceLock<Mutex<HashMap<PathBuf, Weak<EphemeralHub>>>> = OnceLock::new();
@@ -51,6 +143,16 @@ impl EphemeralHub {
         if let Some(sender) = self.channels.lock().get(&message.channel) {
             let _ = sender.send(Arc::new(message.clone()));
         }
+    }
+}
+
+pub fn message(event: &ChannelEvent) -> ChannelMessage {
+    ChannelMessage {
+        id: String::new(),
+        event_id: Some(event.id.clone()),
+        channel: event.channel.clone(),
+        r#type: event.payload.r#type.clone(),
+        data: event.payload.data.clone(),
     }
 }
 
@@ -145,6 +247,80 @@ mod tests {
             r#type: "progress".into(),
             data: serde_json::json!(n),
         }
+    }
+
+    #[tokio::test]
+    async fn publishing_and_receiving_need_no_sqlite_access_and_gaps_preserve_replay() {
+        let a = ChannelStore::open_in_memory().unwrap();
+        let b = ChannelStore::open_in_memory().unwrap();
+        let durable = a.append("durable", &payload(0)).unwrap();
+        let replay = a.replay_cursor("durable", durable.id.parse().ok()).unwrap();
+        let resets = b.resets("durable");
+        let mut outbound = a.ephemeral_publications();
+        let mut inbound = b.subscribe_ephemeral("live").unwrap();
+        // Holding both database mutexes makes any accidental DB access deadlock.
+        // Run the operation on a thread so the deadline detects that regression.
+        let a = Arc::new(a);
+        let b = Arc::new(b);
+        let (done, finished) = tokio::sync::oneshot::channel();
+        let task = {
+            let (a, b) = (a.clone(), b.clone());
+            std::thread::spawn(move || {
+                let _a_db = a.sqlite_conn();
+                let _b_db = b.sqlite_conn();
+                a.publish_ephemeral("live", &payload(1)).unwrap();
+                let skipped = outbound.try_recv().unwrap();
+                a.publish_ephemeral("live", &payload(2)).unwrap();
+                let received = outbound.try_recv().unwrap();
+                assert_eq!(b.ingest_remote(&received).unwrap(), RemoteIngest::Applied);
+                assert_eq!(b.ingest_remote(&received).unwrap(), RemoteIngest::Duplicate);
+                assert_eq!(b.ingest_remote(&skipped).unwrap(), RemoteIngest::Duplicate);
+                done.send(()).unwrap();
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(2), finished)
+            .await
+            .unwrap()
+            .unwrap();
+        task.join().unwrap();
+        assert_eq!(inbound.recv().await.unwrap().data, 2);
+        assert!(!resets.has_changed().unwrap());
+        assert_eq!(a.replay_cursor("durable", replay).unwrap(), replay);
+        assert_eq!(
+            a.raw_query_i64("SELECT sequence FROM channel_event_sequence", []),
+            1
+        );
+        assert_eq!(
+            b.raw_query_i64("SELECT COUNT(*) FROM channel_remote_origins", []),
+            0
+        );
+    }
+
+    #[test]
+    fn reopening_starts_a_new_live_identity_without_persisting_a_sequence() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("channels.sqlite");
+        let first = {
+            let store = ChannelStore::open(&path).unwrap();
+            store
+                .publish_ephemeral("live", &payload(1))
+                .unwrap()
+                .event_id
+                .unwrap()
+        };
+        let store = ChannelStore::open(&path).unwrap();
+        let second = store
+            .publish_ephemeral("live", &payload(2))
+            .unwrap()
+            .event_id
+            .unwrap();
+        assert_ne!(first.origin, second.origin);
+        assert_eq!(first.sequence, 1);
+        assert_eq!(second.sequence, 1);
+        assert_eq!(
+            store.raw_query_i64("SELECT sequence FROM channel_event_sequence", []),
+            0
+        );
     }
 
     #[tokio::test]

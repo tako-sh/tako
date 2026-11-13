@@ -133,12 +133,13 @@ fn canonical_handles_publish_and_wake_synchronously_for_all_paths() {
     assert_eq!(durable.event_id.as_ref(), Some(&first.id));
     assert_eq!(first.payload, payload(1));
     assert!(!first.ephemeral);
+    let mut live = one.ephemeral_publications();
     let ephemeral = two.publish_ephemeral("events", &payload(2)).unwrap();
-    assert!(changes.has_changed().unwrap());
-    let second = next_event(&mut publications);
+    assert!(!changes.has_changed().unwrap());
+    let second = live.try_recv().unwrap();
     assert!(second.ephemeral);
-    assert_eq!(second.id.sequence, first.id.sequence + 1);
-    assert_eq!(second.id.origin, first.id.origin);
+    assert_eq!(second.id.sequence, 1);
+    assert_ne!(second.id.origin, first.id.origin);
     assert_eq!(ephemeral.event_id.as_ref(), Some(&second.id));
     assert!(publications.try_recv().is_err());
     assert_eq!(one.read_after("events", None, 10).unwrap(), vec![durable]);
@@ -172,8 +173,9 @@ async fn separate_databases_ingest_durable_and_ephemeral_without_rebroadcast() {
         Err(ChannelError::StaleCursor)
     ));
     let mut live = b.subscribe_ephemeral("live").unwrap();
+    let mut live_events = a.ephemeral_publications();
     let sent = a.publish_ephemeral("live", &payload(2)).unwrap();
-    let event = next_event(&mut outbound);
+    let event = live_events.try_recv().unwrap();
     assert_eq!(b.ingest_remote(&event).unwrap(), RemoteIngest::Applied);
     assert_eq!(*live.recv().await.unwrap(), sent);
     assert_eq!(b.ingest_remote(&event).unwrap(), RemoteIngest::Duplicate);
@@ -202,8 +204,9 @@ fn identities_and_dedup_survive_reopen_and_replay_eviction() {
     a.append("events", &payload(1)).unwrap();
     let first = next_event(&mut events);
     b.ingest_remote(&first).unwrap();
+    let mut live_events = a.ephemeral_publications();
     a.publish_ephemeral("live", &payload(2)).unwrap();
-    let ephemeral = next_event(&mut events);
+    let ephemeral = live_events.try_recv().unwrap();
     b.ingest_remote(&ephemeral).unwrap();
     drop(a);
     drop(b);
@@ -213,13 +216,10 @@ fn identities_and_dedup_survive_reopen_and_replay_eviction() {
     a.append("events", &payload(3)).unwrap();
     let third = next_event(&mut events);
     assert_eq!(third.id.origin, first.id.origin);
-    assert_eq!(third.id.sequence, first.id.sequence + 2);
+    assert_eq!(third.id.sequence, first.id.sequence + 1);
     assert_eq!(b.ingest_remote(&third).unwrap(), RemoteIngest::Applied);
     assert_eq!(b.ingest_remote(&first).unwrap(), RemoteIngest::Duplicate);
-    assert_eq!(
-        b.ingest_remote(&ephemeral).unwrap(),
-        RemoteIngest::Duplicate
-    );
+    assert_eq!(b.ingest_remote(&ephemeral).unwrap(), RemoteIngest::Applied);
     let messages = b.read_after("events", None, 10).unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].event_id.as_ref(), Some(&third.id));
@@ -280,13 +280,14 @@ fn transport_gaps_are_out_of_band_and_scoped_resets_do_not_publish() {
 }
 
 #[test]
-fn concurrent_handles_publish_in_persisted_sequence_order() {
+fn concurrent_handles_preserve_independent_durable_and_live_orders() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("a.sqlite");
     let a = ChannelStore::open(&path).unwrap();
     let b = ChannelStore::open(&path).unwrap();
     let reader = ChannelStore::open(&path).unwrap();
     let mut events = reader.publications();
+    let mut live = reader.ephemeral_publications();
     let threads: Vec<_> = [a, b]
         .into_iter()
         .map(|store| {
@@ -304,8 +305,9 @@ fn concurrent_handles_publish_in_persisted_sequence_order() {
     for thread in threads {
         thread.join().unwrap();
     }
-    for sequence in 1..=40 {
+    for sequence in 1..=20 {
         assert_eq!(next_event(&mut events).id.sequence, sequence);
+        assert_eq!(live.try_recv().unwrap().id.sequence, sequence);
     }
     assert_eq!(reader.read_after("events", None, 100).unwrap().len(), 20);
 }
@@ -391,19 +393,23 @@ async fn async_appends_and_symlinked_handles_share_the_publication_queue() {
 }
 
 #[test]
-fn lagged_publication_queue_is_bounded_and_can_reset_connected_streams() {
+fn live_publication_overflow_does_not_affect_durable_publications_or_cursors() {
     let store = ChannelStore::open_in_memory().unwrap();
     let mut events = store.publications();
+    let mut live = store.ephemeral_publications();
     let resets = store.resets("a");
     for n in 0..300 {
         store.publish_ephemeral("a", &payload(n)).unwrap();
     }
     assert!(matches!(
-        events.try_recv(),
+        live.try_recv(),
         Err(broadcast::error::TryRecvError::Lagged(_))
     ));
-    store.signal_gap(None);
-    assert!(resets.has_changed().unwrap());
+    assert!(matches!(
+        events.try_recv(),
+        Err(broadcast::error::TryRecvError::Empty)
+    ));
+    assert!(!resets.has_changed().unwrap());
     assert_eq!(
         store.raw_query_i64("SELECT COUNT(*) FROM channel_messages", []),
         0

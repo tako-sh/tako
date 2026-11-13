@@ -16,7 +16,7 @@ use tako_network::AppEnv;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite},
     net::{UnixListener, UnixStream},
-    sync::{mpsc, oneshot},
+    sync::oneshot,
 };
 use zeroize::Zeroizing;
 
@@ -164,7 +164,7 @@ pub(super) enum Notice {
 }
 pub(super) enum Reply {
     Response(Response),
-    Subscription(mpsc::Receiver<wire::Packet>),
+    Subscription(wire::Receiver),
 }
 
 #[derive(Clone)]
@@ -340,7 +340,7 @@ pub(super) fn authorized(stream: &UnixStream) -> io::Result<bool> {
 #[cfg(test)]
 pub(super) async fn serve<S>(
     stream: S,
-    commands: mpsc::Sender<Command>,
+    commands: super::broker::Commands,
     budget: wire::Budget,
     replies: wire::Budget,
 ) -> io::Result<()>
@@ -352,7 +352,7 @@ where
 
 pub(super) async fn serve_with_signer<S>(
     mut stream: S,
-    commands: mpsc::Sender<Command>,
+    commands: super::broker::Commands,
     budget: wire::Budget,
     replies: wire::Budget,
     signer: Option<(
@@ -365,6 +365,17 @@ where
 {
     let deadline = tokio::time::Instant::now() + IO_TIMEOUT;
     let request = wire::read(&mut stream, &budget).await?;
+    let request = if matches!(
+        &request.value,
+        Request::Publish {
+            ephemeral: true,
+            ..
+        }
+    ) {
+        request.into_ephemeral(&budget)?
+    } else {
+        request
+    };
     if let Request::SignInvocation {
         destination,
         caller,

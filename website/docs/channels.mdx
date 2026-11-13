@@ -3,7 +3,7 @@ title: Channels
 description: "Define SSE and WebSocket channels with typed messages, authorization, replay recovery, and SQLite or shared Postgres storage."
 ---
 
-Tako Channels are broadcast streams for live app events over SSE or WebSocket. Channels are durable by default: Tako stores each message before fanout and retains a bounded replay window. Set `ephemeral: true` for memory-only delivery on a single server.
+Tako Channels are broadcast streams for live app events over SSE or WebSocket. Channels are durable by default: Tako stores each message before fanout and retains a bounded replay window. Set `ephemeral: true` for memory-only live delivery on one server or across native network servers.
 
 JavaScript and Go can register channel definitions. JavaScript additionally provides local server-side publication and can close a stream. JavaScript, Go, and Rust can [publish to a JavaScript-owned network channel](/network-primitives/). Rust currently has no general Channels registration API; its [Presence](/presence/) and [Stores](/stores/) registries are separate capabilities. Browser and React examples below use the JavaScript client with any supported backend definition.
 
@@ -103,13 +103,17 @@ tako.Channels.Register("live-progress", tako.ChannelDefinition{
 
 </CodeGroup>
 
-Ephemeral messages never enter the channel database or replay log. They reach only subscribers currently connected to the same Tako server process. Messages published without subscribers, during disconnects, or before a server restart are lost. Each active stream has a bounded 64-message buffer; slow subscribers skip events that have been evicted. The buffer is released when the last subscriber disconnects.
+Ephemeral publishing and receiving use memory, including event identity and duplicate detection; they do not read or write the channel database per event. On native networks, the originating broker sends events to its local subscribers and connected server peers, which deliver to their own subscribers without forwarding them again. A server with no local subscribers still forwards events to its peers.
+
+Messages published without reachable subscribers, during disconnects, or before a server restart can be lost. Reconnection does not replay them. Each active stream has a bounded 64-message buffer; slow subscribers skip evicted events, and the buffer is released when the last subscriber disconnects. Native peer and proxy-notification queues have separate ephemeral capacity (64 messages and 2 MiB per receiver, also subject to a shared ephemeral byte budget); when full, they drop new ephemeral events without disconnecting the peer or invalidating durable replay. Actual shared-connection failures still trigger the normal recovery path.
 
 Ephemeral messages have `id: ""`; SSE frames omit the `id` field. Reconnects start with live events and do not resume from a replay cursor. Authorization, params, SSE/WebSocket transport, keepalives, and connection lifetime still apply. Setting `replayWindowMs` together with `ephemeral: true` is rejected; in Go, leave `ReplayWindowMs` at its zero value.
 
-Ephemeral channels currently support local development and single-server production without a `postgres_url` credential. Shared Postgres deployments reject ephemeral publishing and subscriptions because the current cross-server transport requires persisted messages. A channel can be durable or ephemeral independently of other channels in the app. Use [Presence](/presence/) for membership and current typing/cursor metadata.
+Ephemeral channels support local development, single-server production, and native network servers without a `postgres_url` credential. Shared Postgres deployments still reject ephemeral publishing and subscriptions; a shared database alone does not provide the native live transport. A channel can be durable or ephemeral independently of other channels in the app. Use [Presence](/presence/) for membership and current typing/cursor metadata.
 
-To verify, connect two clients and publish an event. Both should receive it. Disconnect, publish another event, then reconnect: the disconnected event must not replay.
+A successful ephemeral publish means the local broker accepted the event for best-effort fanout; it does not acknowledge receipt by every server or browser. A lost acknowledgement leaves acceptance uncertain, so retries can create another event. Events keep their originating broker's order while its incarnation is active, but concurrent publishers on different servers have no shared total order. Internal `eventId` values use a fresh random origin when the in-memory publisher is recreated; duplicate detection is bounded and does not survive a restart. Applications must tolerate missing events and repeats. Fetch authoritative state or use expiry for updates that must eventually converge: a browser can remain connected while its server loses a peer, and not every dropped event produces a recovery callback.
+
+To verify, connect two clients (on different native servers when using a network) and publish an event. Both should receive it. Disconnect one client or a server peer, publish another event, then reconnect: the missed event must not replay, and the next live event should arrive. Check that an overloaded ephemeral receiver does not reset an unrelated durable subscription.
 
 ## Understand Channel Params
 

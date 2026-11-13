@@ -352,14 +352,11 @@ impl ProxyChannelStore {
         } else {
             let channel = channel.to_owned();
             let payload = payload.clone();
+            if ephemeral {
+                return self.store.publish_ephemeral(&channel, &payload);
+            }
             self.store
-                .run(move |store| {
-                    if ephemeral {
-                        store.publish_ephemeral(&channel, &payload)
-                    } else {
-                        store.append(&channel, &payload)
-                    }
-                })
+                .run(move |store| store.append(&channel, &payload))
                 .await
         }
     }
