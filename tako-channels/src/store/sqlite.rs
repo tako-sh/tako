@@ -321,10 +321,11 @@ impl SqliteChannelStore {
                             None => false,
                         };
                     if reopened {
-                        // Deleting the closed history raises the stream's
-                        // replay floor past the marker (the delete trigger),
-                        // so a reader paging through it is reset instead of
-                        // continuing into the new life without the close.
+                        // Deleting the closed history sets the stream's
+                        // replay floor to the marker (the delete trigger), so
+                        // a reader paging through it is reset instead of
+                        // continuing into the new life without the close; one
+                        // at the marker already got the close and continues.
                         tx.execute(
                             "DELETE FROM channel_messages WHERE channel = ?1 AND id <= ?2",
                             rusqlite::params![event.channel, marker],

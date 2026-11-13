@@ -1273,8 +1273,8 @@ fn a_reader_inside_closed_history_is_reset_when_a_reopen_deletes_it() {
         let event = with_lifecycle(event, lifecycle.clone());
         assert_eq!(peer.ingest_remote(&event).unwrap(), RemoteIngest::Applied);
     }
-    let page = peer.read_after("feed", None, 1).unwrap();
-    let below_marker = cursor(&page[0]);
+    let page = peer.read_after("feed", None, 10).unwrap();
+    let (below_marker, at_marker) = (cursor(&page[0]), cursor(&page[2]));
     // The marker expired where the origin is; it reopened and published.
     peer.raw_execute(
         "UPDATE channel_messages SET created_at_unix_ms = created_at_unix_ms - 61000",
@@ -1295,4 +1295,10 @@ fn a_reader_inside_closed_history_is_reset_when_a_reopen_deletes_it() {
         peer.replay_cursor("feed", Some(below_marker)),
         Err(ChannelError::StaleCursor)
     ));
+    // A reader that got the close continues into the new life, as it does
+    // at the origin once maintenance deleted the marker.
+    assert_eq!(
+        peer.read_after("feed", Some(at_marker), 10).unwrap().len(),
+        1
+    );
 }
