@@ -6,6 +6,8 @@ description: "Sidekick turns a VPS into a Docker-powered mini-PaaS. Tako skips D
 image: bd807fb514a9
 ---
 
+> **Update, November 14, 2026:** This article describes an earlier Tako release. The SFTP transport and server requirements below are historical. Native deployments now use pinned HTTPS, with administrator SSH for installation. Check [current server requirements](/docs/servers/) and [deployment behavior](/docs/deployment/) before following the examples. Read [the new network and secrets workflow](/blog/sync-deployment-secrets-with-tako-networks/).
+
 [Sidekick](https://github.com/MightyMoud/sidekick) markets itself as "your own Fly.io" — a Go CLI that turns a VPS into a mini-PaaS with Docker, Traefik, and automatic SSL. At 7.3k GitHub stars, it's one of the more popular tools in the self-hosted deploy space, and for good reason: `sidekick init` sets up a fresh Ubuntu box in about two minutes. That's a great pitch.
 
 Tako does the same job — get your app running on your own server — but makes fundamentally different choices about how to get there. No Docker, no Traefik, no container registry. Let's look at what that means in practice.

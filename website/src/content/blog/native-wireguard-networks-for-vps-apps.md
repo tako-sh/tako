@@ -6,7 +6,7 @@ image: 01e13c209f85
 imageAlt: "A coral octopus lays a cable between server racks on two islands."
 ---
 
-> **Update, November 13, 2026:** This article describes an earlier Tako release. Server commands now use `tako network server`; native network membership supplies the inventory. See the [current enrollment instructions](/docs/networks/).
+> **Update, November 14, 2026:** This article describes an earlier Tako release. Network names are now shared across devices, server commands use `tako network server`, and invitations grant access to published encrypted secrets. The local aliases and separate key-sharing steps below are historical. Older native identities require fresh enrollment; see the [current network setup and upgrade guidance](/docs/networks/). Read [the new network and secrets workflow](/blog/sync-deployment-secrets-with-tako-networks/).
 
 A CI runner needs to upload a release. An operator needs a shell on the VPS. Two app instances need to exchange events. All three need to know which machine they are talking to, but only two need a private IP route. Tako's native networks let us give each of them an identity and grant the access its job requires.
 

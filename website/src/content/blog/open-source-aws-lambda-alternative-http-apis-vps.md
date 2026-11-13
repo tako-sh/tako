@@ -6,6 +6,8 @@ description: "Compare AWS Lambda HTTP APIs with Tako: fetch handlers, native pro
 image: 0fc512199ec4
 ---
 
+> **Update, November 14, 2026:** This article describes an earlier Tako release. The SFTP path below is historical: native deployments now use [pinned HTTPS management](/docs/deployment/). Read [the new network and secrets workflow](/blog/sync-deployment-secrets-with-tako-networks/).
+
 [AWS Lambda](https://aws.amazon.com/lambda/) is the default answer when someone says "serverless function." It made tiny deployable handlers feel normal, scales without you planning capacity first, and plugs into the rest of AWS like it was born there.
 
 For event glue, cron fan-out, S3 triggers, and bursty workloads inside AWS, Lambda is excellent. This post is about a narrower question: what if your workload is mostly an HTTP API, and what you really want is the Lambda-shaped developer experience without renting the runtime one invocation at a time?

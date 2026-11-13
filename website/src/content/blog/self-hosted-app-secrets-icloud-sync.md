@@ -5,7 +5,7 @@ description: "How Tako's earlier Git-based secret storage used local environment
 image: 16daaacdbe32
 ---
 
-> **Update, November 13, 2026:** This article describes an earlier Tako release. Published encrypted secrets now live on network servers, with ignored drafts in each worktree. Keep `tako.toml` in Git; see [current secret storage and migration](/docs/secrets/).
+> **Update, November 14, 2026:** This article describes an earlier Tako release. Git-based ciphertext and key sharing below describe the previous workflow. Published encrypted values now live on network servers, and new devices join through invitations. `secrets set --sync` has been removed; use `secrets sync` to publish and deploy to apply changes to running apps. See [secret migration and recovery](/docs/secrets/). Read [the new network and secrets workflow](/blog/sync-deployment-secrets-with-tako-networks/).
 
 Secrets are easy until a second laptop shows up.
 

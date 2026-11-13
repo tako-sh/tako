@@ -5,6 +5,8 @@ description: "Heroku-shaped DX — one CLI, release commands, review apps, scale
 image: 758fae75e34c
 ---
 
+> **Update, November 14, 2026:** This article describes an earlier Tako release. The SFTP path below is historical: native deployments now use [pinned HTTPS management](/docs/deployment/). Read [the new network and secrets workflow](/blog/sync-deployment-secrets-with-tako-networks/).
+
 If you've recently typed "open source Heroku alternative" into a search bar, you know the shape of what you want. One CLI. A clean deploy flow. Releases. Add-ons. Review apps. Scale-to-zero idle dynos. No Kubernetes, no AWS console, no Terraform — just a tool that points at your code and gets it on the internet.
 
 The good news: in 2026, that tool is no longer Heroku-only. There's a whole field of self-hosted alternatives, and they're getting genuinely good. [Coolify](https://coolify.io) and [Dokku](https://dokku.com) each have north of 30k GitHub stars. [Kamal](https://kamal-deploy.org) made "deploy to your own servers" cool again. And [Tako](https://tako.sh) is the newest member of the club, with an opinion you won't find elsewhere: ship the Heroku DX _without_ Docker.

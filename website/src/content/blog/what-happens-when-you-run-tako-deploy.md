@@ -5,6 +5,8 @@ description: "The full sequence from command to live traffic — build, upload, 
 image: 40a61319c723
 ---
 
+> **Update, November 14, 2026:** This article describes an earlier Tako release. The SSH/SFTP path, secret-transfer details, and timing examples below describe the old deployment flow. Native management now uses pinned HTTPS, and deploy publishes selected-environment secret drafts before building. A later build failure does not undo that publication. See the [current deployment flow](/docs/deployment/) and [secret publication behavior](/docs/secrets/). Read [the new network and secrets workflow](/blog/sync-deployment-secrets-with-tako-networks/).
+
 The whole thing takes about 10 seconds. You type the command, your terminal fills with a progress tree, and then it's done — new version live, zero requests dropped.
 
 But a lot happens in those 10 seconds. Here's the full sequence, from keystroke to live traffic.

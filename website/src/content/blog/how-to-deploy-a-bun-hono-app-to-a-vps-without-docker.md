@@ -5,7 +5,7 @@ description: "A literal Bun + Hono walkthrough: export app.fetch, run tako init,
 image: ad66c5107af2
 ---
 
-> **Update, November 13, 2026:** This article describes an earlier Tako release. Server commands now use `tako network server`; native network membership supplies the inventory. See the [current enrollment instructions](/docs/networks/).
+> **Update, November 14, 2026:** This article describes an earlier Tako release. Server commands now use `tako network server`, with inventory supplied by native network membership. See the [current enrollment instructions](/docs/networks/). The SFTP path below is historical: native deployments now use [pinned HTTPS management](/docs/deployment/). Read [the new network and secrets workflow](/blog/sync-deployment-secrets-with-tako-networks/).
 
 [Hono](https://hono.dev) is a tiny web framework with a very useful property: a Hono app already speaks the web `fetch` shape. On Bun, that means your server can be one file that exports `fetch: app.fetch`. On [Tako](/docs/), that also means your deploy target is just a Bun process behind Pingora, TLS, health checks, and rolling updates.
 

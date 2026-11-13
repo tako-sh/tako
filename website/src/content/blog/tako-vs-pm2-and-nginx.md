@@ -6,6 +6,8 @@ description: "PM2 + Nginx is the quiet default for self-hosted Node — a stack 
 image: fde56a5e241f
 ---
 
+> **Update, November 14, 2026:** This article describes an earlier Tako release. The SFTP path below is historical: native deployments now use [pinned HTTPS management](/docs/deployment/). Read [the new network and secrets workflow](/blog/sync-deployment-secrets-with-tako-networks/).
+
 Before Docker, before Kubernetes, before the whole self-hosted PaaS genre showed up, there was a stack that shipped a lot of Node apps: [PM2](https://github.com/Unitech/pm2) keeping processes alive, Nginx out front for TLS and routing, a `.env` file for secrets, and a small pile of shell scripts holding it all together. PM2 has 42k+ GitHub stars and over a decade of production use. Nginx powers a huge slice of the internet. The combo has been the quiet default for self-hosted Node.js for years, and plenty of production apps still run on it today.
 
 Tako collapses that stack into a single CLI. We think the philosophy is still right — a VPS and a good tool should be enough — but the shape of "a good tool" can be a lot more cohesive.

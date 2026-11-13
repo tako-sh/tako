@@ -6,7 +6,7 @@ description: "A concrete Go walkthrough: pass Gin, Echo, or Chi to tako.ListenAn
 image: aae315e9f037
 ---
 
-> **Update, November 13, 2026:** This article describes an earlier Tako release. Server commands now use `tako network server`; native network membership supplies the inventory. See the [current enrollment instructions](/docs/networks/).
+> **Update, November 14, 2026:** This article describes an earlier Tako release. Server commands now use `tako network server`, with inventory supplied by native network membership. See the [current enrollment instructions](/docs/networks/). The SFTP path below is historical: native deployments now use [pinned HTTPS management](/docs/deployment/). Read [the new network and secrets workflow](/blog/sync-deployment-secrets-with-tako-networks/).
 
 Go web apps already have the interface Tako wants: `http.Handler`. Gin can be served by `net/http`. Echo has a server-compatible handler. Chi is proudly built around the standard library. That means the path from framework router to VPS deploy is small enough to fit in one sentence: build your router, pass it to `tako.ListenAndServe`, run `tako deploy`.
 

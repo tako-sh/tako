@@ -5,6 +5,8 @@ description: "How Tako rolls out new versions with connection draining, health-c
 image: 170a5555e1fb
 ---
 
+> **Update, November 14, 2026:** This article describes an earlier Tako release. The SFTP path below is historical: native deployments now use [pinned HTTPS management](/docs/deployment/). Read [the new network and secrets workflow](/blog/sync-deployment-secrets-with-tako-networks/).
+
 Zero-downtime deploys usually mean containers. Kubernetes rolling updates, Docker Swarm service convergence, Fly.io machine replacement. The assumption is that you need an abstraction layer — something that can spin up a fresh container, health-check it, and tear down the old one.
 
 Tako does all of that with native processes. No Docker, no container runtime, no image registry. Just your app, a [Pingora-based proxy](/blog/pingora-vs-caddy-vs-traefik/), and a unix socket protocol that orchestrates the whole thing.

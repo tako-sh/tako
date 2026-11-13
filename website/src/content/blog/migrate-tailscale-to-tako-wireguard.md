@@ -6,7 +6,7 @@ image: 253da8d8143d
 imageAlt: "An octopus listens on a switchboard receiver while plugging in a second cable beside the first."
 ---
 
-> **Update, November 13, 2026:** This article describes an earlier Tako release. Server commands now use `tako network server`; native network membership supplies the inventory. See the [current enrollment instructions](/docs/networks/).
+> **Update, November 14, 2026:** This article describes an earlier Tako release. The current enrollment format requires fresh native identities, and server commands use `tako network server`. Preserve application data and legacy secret keys before rebuilding a network; an ordinary server upgrade does not migrate older native identities. Use the [current enrollment and upgrade guidance](/docs/networks/) alongside the historical VPN cleanup notes below. Read [the new network and secrets workflow](/blog/sync-deployment-secrets-with-tako-networks/).
 
 If you can SSH into your VPS only by its Tailscale name, keep that session open. It can bootstrap the replacement network. It can also get you back onto the machine if your provider drops the first WireGuard packet. The useful finish line here is a *second, fresh administrator login* over the new network while your existing app still serves its usual URL.
 

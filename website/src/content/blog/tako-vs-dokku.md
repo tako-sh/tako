@@ -5,6 +5,8 @@ description: "Dokku wraps everything in Docker. Tako runs your app directly. Her
 image: 6e6d653dcf57
 ---
 
+> **Update, November 14, 2026:** This article describes an earlier Tako release. The SFTP path below is historical: native deployments now use [pinned HTTPS management](/docs/deployment/). Read [the new network and secrets workflow](/blog/sync-deployment-secrets-with-tako-networks/).
+
 [Dokku](https://dokku.com) has been around since 2013. It's the original "mini-Heroku" — a `git push` and your app is live in a Docker container, complete with Heroku buildpacks, nginx routing, and a plugin ecosystem that covers databases, caching, and more. With ~32k GitHub stars and over a decade of production use, it's earned its reputation.
 
 Tako takes a different path. We think there's a faster, simpler way to deploy web apps to your own servers — one that doesn't require Docker at all.

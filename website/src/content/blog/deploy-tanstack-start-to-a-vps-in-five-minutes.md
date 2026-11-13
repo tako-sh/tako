@@ -5,9 +5,7 @@ description: "A concrete walkthrough: scaffold a TanStack Start app, run tako in
 image: da501b0d6381
 ---
 
-> **Update, November 13, 2026:** This article describes an earlier Tako release. Server commands now use `tako network server`; native network membership supplies the inventory. See the [current enrollment instructions](/docs/networks/). Published encrypted secrets now live on network servers, with ignored drafts in each worktree. Keep `tako.toml` in Git; see [current secret storage and migration](/docs/secrets/).
-
-> **Networking update.** The Tailscale and NetBird integrations and older setup commands described here have been retired. For new installations, see [native WireGuard networks](/blog/native-wireguard-networks-for-vps-apps/). For an existing Tailscale or NetBird host, follow the [migration guide](/blog/migrate-tailscale-to-tako-wireguard/).
+> **Update, November 14, 2026:** This article describes an earlier Tako release. Server commands now use `tako network server`, with inventory supplied by native network membership. See the [current enrollment instructions](/docs/networks/). Published encrypted secrets now live on network servers, with ignored drafts in each worktree; see [secret storage and migration](/docs/secrets/). The Tailscale and NetBird integrations described below have been retired; follow [current native network setup](/docs/networks/). Read [the new network and secrets workflow](/blog/sync-deployment-secrets-with-tako-networks/).
 
 [TanStack Start](https://tanstack.com/start/latest) is a full-stack React framework with file-based routing, server functions, and a real SSR build. Most tutorials for it end with "now deploy to Netlify / Vercel / Cloudflare Workers." Those work, but they're not your only option. The SSR output is a Node-compatible fetch handler — which means a single Linux box with [Tako](/docs/) on it is enough.
 

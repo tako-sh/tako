@@ -5,7 +5,7 @@ description: "Three $5 VPS boxes in different regions, one tako.toml, and Cloudf
 image: 755f99939072
 ---
 
-> **Update, November 13, 2026:** This article describes an earlier Tako release. Server commands now use `tako network server`; native network membership supplies the inventory. See the [current enrollment instructions](/docs/networks/).
+> **Update, November 14, 2026:** This article describes an earlier Tako release. Server commands now use `tako network server`, with inventory supplied by native network membership. See the [current enrollment instructions](/docs/networks/). The SFTP path below is historical: native deployments now use [pinned HTTPS management](/docs/deployment/). Read [the new network and secrets workflow](/blog/sync-deployment-secrets-with-tako-networks/).
 
 Fly.io lets you scatter micro-VMs across 30+ regions with a single command. It's genuinely great. It's also someone else's hardware with someone else's pricing — and those micro-VMs come with [256 MB of RAM](/blog/your-5-dollar-vps-is-more-powerful-than-you-think/).
 

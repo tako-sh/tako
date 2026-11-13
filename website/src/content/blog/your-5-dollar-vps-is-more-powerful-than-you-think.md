@@ -5,6 +5,8 @@ description: "A $5 Hetzner box gives you 2 vCPUs, 4 GB RAM, and 20 TB bandwidth.
 image: baa7089d6301
 ---
 
+> **Update, November 14, 2026:** This article describes an earlier Tako release. The SFTP path below is historical: native deployments now use [pinned HTTPS management](/docs/deployment/). Read [the new network and secrets workflow](/blog/sync-deployment-secrets-with-tako-networks/).
+
 Look at what a $5 Hetzner box actually gives you: 2 vCPUs, 4 GB of RAM, 40 GB of NVMe storage, and 20 TB of monthly bandwidth. That's a real machine. Now look at what cloud platforms charge for comparable resources.
 
 ## The numbers
