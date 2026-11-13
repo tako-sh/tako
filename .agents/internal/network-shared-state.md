@@ -193,3 +193,8 @@ complete. Commit and push each coherent milestone to the same branch.
   a replacement administrator invited by the retiring administrator still
   depends on that authority chain. Preserve administrator keys and verify an
   independent surviving authority before revocation.
+- Native enrollment failures identify installation, identity bootstrap, or service
+  startup and retain bounded stderr diagnostics without exposing identity stdout.
+  Failed deployment fixtures collect the native service journal before cleanup.
+  Secret-validation test assertions use fixed failure messages rather than
+  dumping secret-derived diagnostics into CI logs.

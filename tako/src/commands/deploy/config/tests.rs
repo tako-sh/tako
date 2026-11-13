@@ -16,7 +16,10 @@ fn release_snapshot_rechecks_expiry_after_a_valid_preflight_snapshot() {
         .unwrap();
     let initial =
         validate_release_secret_snapshot(project.path(), &config, &secrets, "production", 1, true);
-    assert!(!initial.has_errors(), "{:?}", initial.errors);
+    assert!(
+        !initial.has_errors(),
+        "The initial snapshot should be valid"
+    );
 
     // The final network sync can observe a concurrent change after preflight.
     secrets
@@ -41,8 +44,7 @@ fn release_snapshot_rechecks_expiry_after_a_valid_preflight_snapshot() {
                 .errors
                 .iter()
                 .any(|error| error.contains("API_KEY") && error.contains("expired on 2000-01-01")),
-            "{:?}",
-            result.errors
+            "The final snapshot must reject an expired app secret"
         );
     }
 }
@@ -69,7 +71,10 @@ fn release_snapshot_rechecks_removed_credentials_only_for_binding_administrators
         .unwrap();
     let initial =
         validate_release_secret_snapshot(project.path(), &config, &secrets, "production", 1, true);
-    assert!(!initial.has_errors(), "{:?}", initial.errors);
+    assert!(
+        !initial.has_errors(),
+        "The initial snapshot should be valid"
+    );
     secrets
         .remove_credential("production", crate::config::SSL_CLOUDFLARE_CREDENTIAL_NAME)
         .unwrap();
@@ -80,8 +85,7 @@ fn release_snapshot_rechecks_removed_credentials_only_for_binding_administrators
             .errors
             .iter()
             .any(|error| error.contains("ssl.cloudflare")),
-        "{:?}",
-        result.errors
+        "The final snapshot must reject a removed SSL credential"
     );
     // Scoped deployment clients reuse the server's provisioned credentials.
     assert!(

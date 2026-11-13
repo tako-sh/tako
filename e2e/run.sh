@@ -82,6 +82,13 @@ current_e2e_build_stamp() {
 cleanup() {
   local exit_code=$?
   if [[ $exit_code -ne 0 ]]; then
+    for server in server-ubuntu server-alma; do
+      "${COMPOSE[@]}" exec -T "$server" sh -c '
+        systemctl --no-pager --full status tako-network-agent.service tako-network-helper.service tako-server.service || true
+        journalctl --no-pager --lines=100 -u tako-network-agent.service -u tako-network-helper.service || true
+        if [ -f /tmp/tako-server.log ]; then tail -100 /tmp/tako-server.log; fi
+      ' || true
+    done
     "${COMPOSE[@]}" logs --no-color --tail=200 server-ubuntu server-alma runner || true
   fi
   if [[ $exit_code -ne 0 && "${E2E_KEEP_FAILED:-0}" == 1 ]]; then

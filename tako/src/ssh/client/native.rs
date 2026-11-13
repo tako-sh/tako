@@ -13,7 +13,8 @@ impl SshClient {
         let env = super::tako::install_server_env(key, Some(ports));
         let command = Self::run_with_root_or_sudo(&format!("{env} TAKO_VPN_PROVIDER=native sh -s"));
         self.exec_checked_with_stdin(&command, super::tako::INSTALL_SERVER_SCRIPT.as_bytes())
-            .await?;
+            .await
+            .map_err(|error| native_command_error("Install native network components", error))?;
         Ok(())
     }
 
@@ -31,7 +32,10 @@ impl SshClient {
         let command = Self::run_with_root_or_sudo(
             "runuser -u tako -- /usr/local/bin/tako-server --data-dir /opt/tako --network-bootstrap",
         );
-        let output = self.exec_checked_with_stdin(&command, &bytes).await?;
+        let output = self
+            .exec_checked_with_stdin(&command, &bytes)
+            .await
+            .map_err(|error| native_command_error("Bootstrap native server identity", error))?;
         if output.stdout.len() > 4 * 1024 * 1024 {
             return Err(SshError::CommandFailed(
                 "Native bootstrap response exceeds 4 MiB".into(),
@@ -53,7 +57,32 @@ impl SshClient {
              /usr/local/bin/tako-server-service configure {} {} native '{address}'",
             ports.http_port, ports.https_port,
         ));
-        self.exec_checked(&command).await?;
+        self.exec_checked(&command)
+            .await
+            .map_err(|error| native_command_error("Start native network services", error))?;
         Ok(())
+    }
+}
+
+fn native_command_error(action: &str, error: SshError) -> SshError {
+    match error {
+        SshError::NonZeroExit { code, stderr } => {
+            let detail = stderr.trim();
+            let suffix = if detail.is_empty() {
+                String::new()
+            } else {
+                // Bootstrap stdout can contain private identity material. Only
+                // include the remote diagnostic stream, with a bounded tail.
+                let start = detail
+                    .char_indices()
+                    .rev()
+                    .take(4096)
+                    .last()
+                    .map_or(0, |(index, _)| index);
+                format!("\n{}", &detail[start..])
+            };
+            SshError::CommandFailed(format!("{action} failed (exit {code}){suffix}"))
+        }
+        error => SshError::CommandFailed(format!("{action}: {error}")),
     }
 }
