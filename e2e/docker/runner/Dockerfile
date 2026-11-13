@@ -7,7 +7,8 @@ RUN --mount=type=secret,id=proxy_ca,mode=0444 \
     export APT_CONFIG=/tmp/e2e-apt.conf; \
     trap 'rm -f /tmp/e2e-apt.conf' EXIT; \
   fi; \
-  apt-get update \
+  sed -i 's|http://|https://|g' /etc/apt/sources.list.d/*.sources \
+  && apt-get update \
   && apt-get install -y --no-install-recommends \
     openssh-client \
     curl \

@@ -7,12 +7,8 @@ if [ -n "${SSL_CERT_FILE:-}" ] && [ -s "$SSL_CERT_FILE" ] && [ -f /etc/dnf/dnf.c
   printf '\nsslcacert=%s\n' "$SSL_CERT_FILE" >> /etc/dnf/dnf.conf
 fi
 
-# Compose gives each server its own cgroup namespace. Never mount the host's
-# cgroup tree: this only delegates the disposable container's subtree.
+# systemd owns only this disposable container's private cgroup namespace.
 test "$(cat /proc/1/cgroup)" = "0::/"
-mkdir -p /sys/fs/cgroup/control
-printf '%s\n' "$$" > /sys/fs/cgroup/control/cgroup.procs
-printf '%s\n' '+cpu +memory +pids' > /sys/fs/cgroup/cgroup.subtree_control
 
 if ! getent group tako >/dev/null 2>&1; then
   groupadd --system tako
@@ -31,22 +27,24 @@ with open('/run/tako-e2e-env', 'w') as output:
     for name in ('HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy',
                  'SSL_CERT_FILE', 'CURL_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS'):
         if name in os.environ:
-            output.write(f'export {name}={shlex.quote(os.environ[name])}\n')
+            output.write(f'{name}={shlex.quote(os.environ[name])}\n')
 PY
 chown tako:tako /run/tako-e2e-env
 chmod 0600 /run/tako-e2e-env
 
-# A separate Docker daemon exercises Compose against this host's real release
-# paths. Its socket and storage stay inside the disposable server container.
-dockerd --storage-driver=vfs --host=unix:///var/run/docker.sock > /tmp/docker.log 2>&1 &
-ready=0
-for attempt in $(seq 1 60); do
-  if docker info >/dev/null 2>&1; then ready=1; break; fi
-  sleep 1
-done
-if [ "$ready" != 1 ]; then cat /tmp/docker.log >&2; exit 1; fi
-chgrp tako /var/run/docker.sock
-chmod 0660 /var/run/docker.sock
+# A separate engine and systemd exercise the same native-agent service lifecycle
+# as production. Never mount the executor's Docker socket or host cgroup tree.
+cat > /etc/systemd/system/e2e-docker.service <<'UNIT'
+[Unit]
+After=network.target
+[Service]
+EnvironmentFile=/run/tako-e2e-env
+ExecStart=/usr/local/bin/dockerd --storage-driver=vfs --host=unix:///var/run/docker.sock --group=tako
+Delegate=yes
+Restart=on-failure
+[Install]
+WantedBy=multi-user.target
+UNIT
 
 if command -v chpasswd >/dev/null 2>&1; then
   echo "tako:tako-e2e" | chpasswd
@@ -60,21 +58,44 @@ chmod 600 /home/tako/.ssh/authorized_keys
 chmod 600 /opt/tako/management-authorized-keys
 chown -R tako:tako /home/tako/.ssh /var/run/tako /opt/tako || true
 
-# Install the mounted build while still root, then exercise only the production
-# sudo policy through SSH. The runner has no unrestricted root shell.
-libc_kind=glibc
-if [ -x "/opt/e2e/bin/$libc_kind/tako-server" ]; then
-  archive_dir="$(mktemp -d)"
-  archive="$archive_dir/tako-server.tar.zst"
-  tar -cf - -C "/opt/e2e/bin/$libc_kind" tako-server -C /opt/e2e scripts/tako-network-helper.py | zstd -f -o "$archive"
-  sha256sum "$archive" | awk '{print $1}' > "$archive.sha256"
-  TAKO_SERVER_URL="file://$archive" TAKO_RESTART_SERVICE=0 TAKO_SERVER_NAME=e2e sh /opt/e2e/install-server.sh
-  rm -f "$archive" "$archive.sha256"
-  rmdir "$archive_dir"
+# Keep the exact tested build available to the normal SSH installer.
+archive=/opt/e2e-tako-server.tar.zst
+tar -cf - -C /opt/e2e/bin/glibc tako-server -C /opt/e2e scripts/tako-network-helper.py | zstd -f -o "$archive"
+sha256sum "$archive" | awk '{print $1}' > "$archive.sha256"
+
+# Bootstrap needs an administrator. Keep the production tako account restricted
+# so app isolation and provisioning checks continue to use its real sudo policy.
+useradd --create-home --shell /bin/bash e2e-admin
+mkdir -p /home/e2e-admin/.ssh
+cp /opt/e2e/keys/id_ed25519.pub /home/e2e-admin/.ssh/authorized_keys
+chown -R e2e-admin:e2e-admin /home/e2e-admin/.ssh
+chmod 0700 /home/e2e-admin/.ssh
+chmod 0600 /home/e2e-admin/.ssh/authorized_keys
+echo 'e2e-admin:e2e-bootstrap' | chpasswd
+printf '%s\n' 'e2e-admin ALL=(root) NOPASSWD: ALL' 'Defaults:e2e-admin env_keep += "HTTP_PROXY HTTPS_PROXY NO_PROXY SSL_CERT_FILE CURL_CA_BUNDLE"' > /etc/sudoers.d/e2e-bootstrap
+chmod 0440 /etc/sudoers.d/e2e-bootstrap
+
+# Trust the session proxy only inside this disposable host for installer downloads.
+if [ -n "${SSL_CERT_FILE:-}" ] && [ -s "$SSL_CERT_FILE" ]; then
+  if command -v update-ca-certificates >/dev/null; then
+    cp "$SSL_CERT_FILE" /usr/local/share/ca-certificates/e2e-proxy.crt
+    update-ca-certificates
+  elif command -v update-ca-trust >/dev/null; then
+    cp "$SSL_CERT_FILE" /etc/pki/ca-trust/source/anchors/e2e-proxy.crt
+    update-ca-trust
+  fi
 fi
 
-# Fixed fixture commands supply the proxy unit's capabilities without systemd
-# and inspect app-owned Compose inputs. Neither accepts runner-supplied arguments.
+mkdir -p /etc/systemd/system/tako-server.service.d
+cat > /etc/systemd/system/tako-server.service.d/e2e.conf <<'UNIT'
+[Service]
+EnvironmentFile=/run/tako-e2e-env
+Environment=RUST_LOG=info
+StandardOutput=append:/tmp/tako-server.log
+StandardError=append:/tmp/tako-server.log
+UNIT
+
+# Fixed fixture commands restart the managed proxy and inspect app-owned Compose inputs.
 install -o root -g root -m 0755 /opt/e2e/start-server.sh /usr/local/bin/tako-e2e-start-server
 install -o root -g root -m 0755 /opt/e2e/verify-compose-inputs.sh /usr/local/bin/tako-e2e-verify-compose-inputs
 printf '%s\n' \
@@ -93,9 +114,34 @@ PasswordAuthentication no
 ChallengeResponseAuthentication no
 PubkeyAuthentication yes
 AuthorizedKeysFile .ssh/authorized_keys
-AllowUsers tako
+AllowUsers tako e2e-admin
 Subsystem sftp internal-sftp
 PidFile /run/sshd.pid
 CFG
 
-exec /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config
+# sshd constructs a new environment for remote commands; its own inherited
+# environment is insufficient for downloads in the SSH bootstrap session.
+python3 - <<'PY'
+import json
+import os
+with open('/etc/ssh/sshd_config', 'a') as output:
+    for name in ('HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'SSL_CERT_FILE', 'CURL_CA_BUNDLE'):
+        if name in os.environ:
+            output.write('SetEnv ' + json.dumps(f'{name}={os.environ[name]}') + '\n')
+PY
+
+cat > /etc/systemd/system/e2e-sshd.service <<'UNIT'
+[Unit]
+After=network.target
+[Service]
+ExecStart=/usr/sbin/sshd -D -e -f /etc/ssh/sshd_config
+RuntimeDirectory=sshd
+Restart=on-failure
+[Install]
+WantedBy=multi-user.target
+UNIT
+mkdir -p /etc/systemd/system/multi-user.target.wants
+ln -sf ../e2e-sshd.service /etc/systemd/system/multi-user.target.wants/e2e-sshd.service
+ln -sf ../e2e-docker.service /etc/systemd/system/multi-user.target.wants/e2e-docker.service
+systemctl mask --force ssh.service ssh.socket sshd.service getty.target console-getty.service systemd-udevd.service
+exec /sbin/init

@@ -20,6 +20,7 @@ RUN --mount=type=secret,id=proxy_ca,mode=0444 \
       openssh-clients \
       procps-ng \
       sudo \
+      systemd systemd-resolved dbus iproute wireguard-tools \
       xz \
       zstd \
     && dnf clean all \

@@ -12,6 +12,7 @@ RUN --mount=type=secret,id=proxy_ca,mode=0444 \
     trap 'rm -f /tmp/e2e-apt.conf' EXIT; \
   fi; \
   set -eu; \
+  sed -i 's|http://|https://|g' /etc/apt/sources.list.d/*.sources; \
   for attempt in 1 2 3 4 5; do \
     rm -rf /var/lib/apt/lists/*; \
     if apt-get -o Acquire::Retries=5 update \
@@ -26,6 +27,7 @@ RUN --mount=type=secret,id=proxy_ca,mode=0444 \
         netcat-openbsd \
         npm \
         sudo \
+        systemd systemd-sysv systemd-resolved dbus iproute2 wireguard-tools \
         xz-utils \
         zstd; then \
       rm -rf /var/lib/apt/lists/*; \

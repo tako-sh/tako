@@ -102,12 +102,14 @@ if [[ "$E2E_USE_PREBUILT" != 1 ]] && { [[ ! -f "$E2E_BIN_DIR/glibc/tako" ]] || [
   mkdir -p "$E2E_BIN_DIR/glibc"
 
   docker build \
+    --build-arg HTTP_PROXY --build-arg HTTPS_PROXY --build-arg NO_PROXY \
     "${BUILD_TRUST[@]}" \
     --file e2e/docker/builder/glibc.Dockerfile \
     --tag "$GLIBC_BUILDER_IMAGE" \
     .
   docker run --rm \
     "${RUN_TRUST[@]}" \
+    --env HTTP_PROXY --env HTTPS_PROXY --env NO_PROXY \
     --env CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}" \
     --env CARGO_TARGET_DIR=/workspace/target/e2e-linux-glibc \
     --env TAKO_BUILD_SHA="$(git rev-parse HEAD 2>/dev/null || true)" \
