@@ -1119,7 +1119,9 @@ fn a_publish_made_before_the_close_never_reopens_a_short_window_stream() {
     // close wins, however short the window.
     let raced = remote("b", 1, "feed", "msg", closed_at - 500);
     assert_eq!(peer.ingest_remote(&raced).unwrap(), RemoteIngest::Dropped);
-    assert!(peer.close_marker("feed").unwrap().is_some());
+    // The row itself, not what readers see: the window is shorter than a
+    // stalled test run.
+    assert_eq!(retained_markers(&peer, "feed"), 1);
 }
 
 #[test]
