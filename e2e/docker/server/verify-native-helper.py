@@ -19,6 +19,9 @@ def run(*args, input=None):
     return result.stdout.strip()
 
 
+# The privileged helper deliberately excludes /usr/local/bin from its PATH.
+run('env', '-i', 'PATH=/usr/sbin:/usr/bin:/sbin:/bin', 'docker', '--version')
+
 ident = 'ab' * 16
 dev = 'tako' + ident[:10]
 helper = '/usr/local/libexec/tako/tako-network-helper'
