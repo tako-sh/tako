@@ -305,13 +305,16 @@ where
                             continue;
                         }
                         let (sender, incoming) = mpsc::channel(8);
+                        let client = client.clone();
+                        let snapshot = snapshot.clone();
                         let state = Arc::clone(&state);
                         let config_path = config_path.clone();
                         let outbound = outbound_tx.clone();
                         let task_id = id.clone();
                         let abort = tasks.spawn(async move {
-                            let result = match current_upstream_port(&state, &config_path).await {
-                                Ok(upstream_port) => relay_local_websocket(upstream_port, open, &outbound, incoming).await,
+                            let result = match current_upstream_port(&state, &config_path).await
+                                .and_then(|_| local_proxy_url(&snapshot.local_host, &snapshot.listen_addr, &open.path)) {
+                                Ok(url) => relay_local_websocket(&client, &url, open, &outbound, incoming).await,
                                 Err(_) => send_websocket_response(&outbound, open.id, 502, vec![]).await,
                             };
                             if let Err(error) = result { tracing::debug!(%error, "local websocket closed"); }

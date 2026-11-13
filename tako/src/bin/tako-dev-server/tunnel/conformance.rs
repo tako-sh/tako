@@ -45,8 +45,7 @@ async fn check_contract() {
     let created = register(&base, &identity, &public_key).await;
 
     let (snapshot, local_client, mut closed, http_fixture) = http_fixture().await;
-    let (ws_port, ws_fixture) = websocket_fixture().await;
-    let state = super::tests::tunnel_state_with_app(&snapshot.config_path, ws_port, true);
+    let state = super::tests::tunnel_state_with_app(&snapshot.config_path, 1, true);
     let browser = reqwest::Client::builder().no_proxy().build().unwrap();
     let mut sessions = tokio::task::JoinSet::new();
     connect(
@@ -166,7 +165,6 @@ async fn check_contract() {
         "relay must drain and exit cleanly"
     );
     http_fixture.await.unwrap();
-    ws_fixture.await.unwrap();
 }
 
 async fn register(base: &str, identity: &TakoIdentity, public_key: &str) -> CreatedTunnel {
@@ -270,40 +268,6 @@ async fn acknowledge_close(socket: &mut BrowserSocket) {
     socket.flush().await.unwrap();
 }
 
-// Tungstenite's handshake callback requires its unboxed HTTP error response.
-#[allow(clippy::result_large_err)]
-async fn websocket_fixture() -> (u16, tokio::task::JoinHandle<()>) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let task = tokio::spawn(async move {
-        let mut sockets = tokio::task::JoinSet::new();
-        for _ in 0..2 {
-            let (stream, _) = listener.accept().await.unwrap();
-            sockets.spawn(async move {
-                let mut socket = tokio_tungstenite::accept_hdr_async(stream, |
-                    request: &tokio_tungstenite::tungstenite::handshake::server::Request,
-                    mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
-                    assert_eq!(request.headers()["sec-websocket-protocol"], "conformance");
-                    response.headers_mut().insert("sec-websocket-protocol", "conformance".parse().unwrap());
-                    for cookie in ["one=1", "two=2"] {
-                        response.headers_mut().append("set-cookie", cookie.parse().unwrap());
-                    }
-                    Ok(response)
-                }).await.unwrap();
-                socket.send(Message::Text("hello".into())).await.unwrap();
-                while let Some(Ok(message)) = socket.next().await {
-                    if message.is_close() { let _ = socket.flush().await; break; }
-                    socket.send(message).await.unwrap();
-                }
-            });
-        }
-        while let Some(result) = sockets.join_next().await {
-            result.unwrap();
-        }
-    });
-    (port, task)
-}
-
 async fn http_fixture() -> (
     TunnelSnapshot,
     reqwest::Client,
@@ -332,7 +296,7 @@ async fn http_fixture() -> (
     let (closed_tx, closed_rx) = mpsc::channel(2);
     let task = tokio::spawn(async move {
         let mut requests = tokio::task::JoinSet::new();
-        for _ in 0..6 {
+        for _ in 0..8 {
             let (stream, _) = listener.accept().await.unwrap();
             let stream = stream.into_std().unwrap();
             stream.set_nonblocking(false).unwrap();
@@ -351,7 +315,22 @@ async fn http_fixture() -> (
                 }
                 let headers = String::from_utf8(headers).unwrap();
                 let path = headers.split_whitespace().nth(1).unwrap();
-                if path == "/sse" {
+                if path == "/socket" {
+                    use tokio_tungstenite::tungstenite::{WebSocket, protocol::Role, handshake::derive_accept_key};
+                    let header = |name: &str| headers.lines().find_map(|line| {
+                        let (key, value) = line.split_once(':')?;
+                        key.eq_ignore_ascii_case(name).then_some(value.trim())
+                    }).unwrap();
+                    assert_eq!(header("sec-websocket-protocol"), "conformance");
+                    let accept = derive_accept_key(header("sec-websocket-key").as_bytes());
+                    write!(stream, "HTTP/1.1 101 Switching Protocols\r\nConnection: upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: {accept}\r\nSec-WebSocket-Protocol: conformance\r\nSet-Cookie: one=1\r\nSet-Cookie: two=2\r\n\r\n").unwrap();
+                    let mut socket = WebSocket::from_raw_socket(stream, Role::Server, None);
+                    socket.send(Message::Text("hello".into())).unwrap();
+                    while let Ok(message) = socket.read() {
+                        if message.is_close() { let _ = socket.flush(); break; }
+                        if socket.send(message).is_err() { break; }
+                    }
+                } else if path == "/sse" {
                     stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nd\r\ndata: first\n\n\r\n").unwrap();
                     stream.flush().unwrap();
                     let disconnected = match stream.read(&mut [0]) {
