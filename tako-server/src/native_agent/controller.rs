@@ -224,27 +224,20 @@ impl Controller {
                 BearerToken::new(token.to_string())?,
                 config.network.clone(),
             )?;
-            let deadline = Instant::now() + Duration::from_secs(30);
             // Only transport failures are retryable. An empty/malformed existing
             // registry is not permission to bootstrap a replacement database.
-            loop {
-                check_stop(&stop)?;
-                if !child.running()? {
-                    return Err(AgentError::Invalid("Corrosion exited during startup"));
-                }
-                let result = if marker {
-                    store.snapshot().map(|_| ())
-                } else {
-                    store.initialize()
-                };
-                match result {
-                    Ok(()) => break,
-                    Err(RuntimeError::Transport) if Instant::now() < deadline => {
-                        thread::sleep(Duration::from_millis(100))
+            wait_for_corrosion(
+                &stop,
+                || child.running(),
+                || {
+                    if marker {
+                        store.snapshot().map(|_| ())
+                    } else {
+                        store.initialize()
                     }
-                    Err(error) => return Err(error.into()),
-                }
-            }
+                },
+                Instant::now() + Duration::from_secs(30),
+            )?;
             if !marker {
                 for member in &config.bootstrap.members {
                     check_stop(&stop)?;
@@ -342,6 +335,14 @@ impl Controller {
                 process::apply(&self.config, bytes)
             })
     }
+    fn wait_for_registry(&mut self) -> Result<()> {
+        wait_for_corrosion(
+            &self.stop,
+            || self.child.running(),
+            || self.runtime.snapshot().map(|_| ()),
+            Instant::now() + Duration::from_secs(30),
+        )
+    }
     fn reconcile(&mut self) -> Result<()> {
         let now = now()?;
         // Runtime projection advances its durable clock floor and includes
@@ -377,7 +378,8 @@ impl Controller {
             self.gossip_hash = hash;
             self.renewal.restart = false;
             // The new child must answer a validated read before readiness/ACK.
-            self.runtime.snapshot()?;
+            // Spawning it does not mean its HTTP listener is already serving.
+            self.wait_for_registry()?;
         }
         self.runtime.acknowledge_applied(&snapshot)?;
         // ACK creates rows; reject rollback observed while writing those ACKs.
@@ -425,6 +427,7 @@ impl Controller {
                 self.child = OwnedChild::corrosion(&self.config, &self.data_dir)?;
                 self.gossip_hash = gossip_hash(&bundle, &seeds)?;
                 self.renewal.restart = false;
+                self.wait_for_registry()?;
             }
             self.reconcile()
         })();
@@ -859,6 +862,27 @@ fn check_stop(stop: &AtomicBool) -> Result<()> {
     Ok(())
 }
 
+fn wait_for_corrosion(
+    stop: &AtomicBool,
+    mut running: impl FnMut() -> Result<bool>,
+    mut read: impl FnMut() -> tako_network::api::RuntimeResult<()>,
+    deadline: Instant,
+) -> Result<()> {
+    loop {
+        check_stop(stop)?;
+        if !running()? {
+            return Err(AgentError::Invalid("Corrosion exited during startup"));
+        }
+        match read() {
+            Ok(()) => return Ok(()),
+            Err(RuntimeError::Transport) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(100));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
 fn gossip_hash(bundle: &str, seeds: &[String]) -> Result<[u8; 32]> {
     Ok(openssl::sha::sha256(&serde_json::to_vec(&(bundle, seeds))?))
 }
@@ -926,6 +950,85 @@ fn validate_gossip_leaf(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn corrosion_readiness_waits_for_the_restarted_api() {
+        let stop = AtomicBool::new(false);
+        let mut reads = 0;
+        wait_for_corrosion(
+            &stop,
+            || Ok(true),
+            || {
+                reads += 1;
+                if reads == 1 {
+                    Err(RuntimeError::Transport)
+                } else {
+                    Ok(())
+                }
+            },
+            Instant::now() + Duration::from_secs(1),
+        )
+        .unwrap();
+        assert_eq!(reads, 2);
+    }
+
+    #[test]
+    fn corrosion_readiness_does_not_retry_invalid_registry_state() {
+        let stop = AtomicBool::new(false);
+        let mut reads = 0;
+        let result = wait_for_corrosion(
+            &stop,
+            || Ok(true),
+            || {
+                reads += 1;
+                Err(RuntimeError::Corrosion("known records missing"))
+            },
+            Instant::now() + Duration::from_secs(1),
+        );
+        assert!(matches!(
+            result,
+            Err(AgentError::Runtime(RuntimeError::Corrosion(_)))
+        ));
+        assert_eq!(reads, 1);
+    }
+
+    #[test]
+    fn corrosion_readiness_stops_on_deadline_shutdown_or_child_exit() {
+        let stop = AtomicBool::new(false);
+        assert!(matches!(
+            wait_for_corrosion(
+                &stop,
+                || Ok(true),
+                || Err(RuntimeError::Transport),
+                Instant::now(),
+            ),
+            Err(AgentError::Runtime(RuntimeError::Transport))
+        ));
+        let mut reads = 0;
+        let result = wait_for_corrosion(
+            &stop,
+            || Ok(true),
+            || {
+                reads += 1;
+                stop.store(true, Ordering::Release);
+                Err(RuntimeError::Transport)
+            },
+            Instant::now() + Duration::from_secs(1),
+        );
+        assert!(matches!(result, Err(AgentError::Invalid("agent stopping"))));
+        assert_eq!(reads, 1);
+        stop.store(false, Ordering::Release);
+        assert!(matches!(
+            wait_for_corrosion(
+                &stop,
+                || Ok(false),
+                || panic!("an exited child must not be queried"),
+                Instant::now() + Duration::from_secs(1),
+            ),
+            Err(AgentError::Invalid("Corrosion exited during startup"))
+        ));
+    }
+
     fn healthy_dns() -> DnsStatus {
         DnsStatus {
             dns_supported: true,

@@ -63,6 +63,19 @@ def post(i, path, value):
         return response.read().decode()
 
 
+def wait_ready(i):
+    for attempt in range(100):
+        if processes[i].poll() is not None:
+            raise RuntimeError(f"Corrosion {i} exited")
+        try:
+            post(i, "/v1/queries", ["SELECT count(*) FROM tako_shared_records", []])
+            return
+        except Exception:
+            if attempt == 99:
+                raise
+            time.sleep(0.1)
+
+
 try:
     for i, (api, gossip) in enumerate(ports):
         d = root / str(i)
@@ -91,16 +104,7 @@ path = "{d}/admin.sock"
                 )
             )
     for i in range(2):
-        for attempt in range(100):
-            if processes[i].poll() is not None:
-                raise RuntimeError(f"Corrosion {i} exited")
-            try:
-                post(i, "/v1/queries", ["SELECT count(*) FROM tako_shared_records", []])
-                break
-            except Exception:
-                if attempt == 99:
-                    raise
-                time.sleep(0.1)
+        wait_ready(i)
     expected = []
     for i in range(2):
         # Preserve both variants of a conflicting operation. The application
@@ -137,8 +141,26 @@ path = "{d}/admin.sock"
         time.sleep(0.2)
     else:
         raise RuntimeError(result)
+
+    # Membership/CA changes restart Corrosion. A spawned process is not yet an
+    # HTTP-ready store; wait for reads and verify its durable records survive.
+    processes[0].terminate()
+    processes[0].wait(timeout=20)
+    with (root / "0" / "agent.log").open("a") as log:
+        processes[0] = subprocess.Popen(
+            [binary, "-c", str(root / "0" / "config.toml"), "agent"],
+            stdout=log,
+            stderr=log,
+        )
+    wait_ready(0)
+    restored = post(
+        0,
+        "/v1/queries",
+        ["SELECT record_id,payload FROM tako_shared_records ORDER BY record_id", []],
+    )
+    assert all(value in restored for value in expected), restored
     print(
-        "PASS: actual Corrosion accepts all schemas, replicates independent records, and preserves conflicting operations"
+        "PASS: actual Corrosion accepts all schemas, replicates independent records, preserves conflicting operations, and recovers them after restart"
     )
 except Exception:
     for i in range(len(processes)):

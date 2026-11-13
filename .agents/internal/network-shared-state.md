@@ -210,3 +210,8 @@ complete. Commit and push each coherent milestone to the same branch.
 - Migration validates the tracked file's original keys even when an existing
   worktree draft uses different keys. Missing legacy keys leave both files
   untouched; successful migration preserves the draft and an exact recovery copy.
+- Adding another server changes gossip trust and restarts Corrosion. The agent
+  waits for a validated registry read after that restart, retrying only transport
+  failures before restoring readiness. Tests cover delayed availability, invalid
+  state, shutdown and deadlines; live Corrosion retains replicated records after
+  a real process restart.
