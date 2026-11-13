@@ -2000,7 +2000,7 @@ mod tests {
         // A database snapshot that fails after its capture leaks nothing either.
         let server = fixture.serve(3);
         let error = state.database_snapshot_now(app).await.unwrap_err();
-        assert!(error.contains("returned 404"), "{error}");
+        assert!(error.contains("404"), "{error}");
         assert_eq!(server.await.unwrap().len(), 3);
         assert!(!state.database_snapshot_running(app));
         assert_deploy_lock_released(state, app).await;

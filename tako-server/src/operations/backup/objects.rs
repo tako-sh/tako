@@ -59,17 +59,20 @@ pub(super) async fn upload_file(
         .map_err(|e| format!("open backup upload: {e}"))?;
     let key = ObjectPath::parse(key).map_err(|e| e.to_string())?;
     let mut writer = BufWriter::with_capacity(store, key, 8 * 1024 * 1024).with_max_concurrency(1);
+    let mut committing = false;
     let result = with_deadline(TRANSFER_TIMEOUT, async {
         tokio::io::copy(&mut file, &mut writer)
             .await
             .map_err(|e| format!("upload backup object: {e}"))?;
+        committing = true;
         writer
             .shutdown()
             .await
             .map_err(|e| format!("commit backup object: {e}"))
     })
     .await;
-    if result.is_err() {
+    // Shutdown owns multipart cleanup; aborting after it starts panics in BufWriter.
+    if result.is_err() && !committing {
         let _ = writer.abort().await;
     }
     result

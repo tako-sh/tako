@@ -146,7 +146,6 @@ pub async fn serve(
             }
         }
         if let Err(error) = writer.shutdown().await {
-            let _ = writer.abort().await;
             tracing::error!(%error, "Local storage commit failed");
             return reply(session, 500, "Storage unavailable").await;
         }

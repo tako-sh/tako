@@ -87,6 +87,28 @@ async fn rust_handler_accepts_sdk_signed_urls_and_streams_large_uploads() {
 }
 
 #[tokio::test]
+async fn failed_commit_returns_an_error_and_later_uploads_still_work() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = storage(dir.path(), "secret");
+    let put = signed("PUT", "good", "secret", 4_102_444_800);
+    assert_eq!(request(&storage, "PUT", &put, b"before").await.0, 204);
+    fs::create_dir(storage.root.join("storage/uploads/blocked")).unwrap();
+    let blocked = signed("PUT", "blocked", "secret", 4_102_444_800);
+    assert_eq!(
+        request(&storage, "PUT", &blocked, b"cannot replace a directory")
+            .await
+            .0,
+        500
+    );
+    assert_eq!(request(&storage, "PUT", &put, b"after").await.0, 204);
+    let get = signed("GET", "good", "secret", 4_102_444_800);
+    assert_eq!(
+        request(&storage, "GET", &get, &[]).await,
+        (200, b"after".to_vec())
+    );
+}
+
+#[tokio::test]
 async fn authorization_rejects_wrong_method_key_app_and_expiry_before_storage_io() {
     let dir = tempfile::tempdir().unwrap();
     let storage = storage(dir.path(), "secret-a");
