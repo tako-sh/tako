@@ -1,0 +1,29 @@
+[package]
+name = "tako-terse-prototype"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Keep the experiment outside server builds until integration is approved.
+[workspace]
+
+[dependencies]
+anyhow = "1"
+bytes = "1"
+futures = "0.3"
+object_store = { version = "=0.14.2", default-features = false, features = ["fs", "aws"] }
+# Match the server's current Cargo.lock, including its SQLite native library.
+rusqlite = { version = "=0.41.0", features = ["bundled"] }
+terse-litestream = { path = "../../vendor/terse-litestream" }
+terse-ltx = { git = "https://github.com/TerseAI/terse-ltx", rev = "fdc27e08f09a532b8f0b8d72971de4b2772ef86b" }
+tempfile = "3"
+tako-storage = { path = "../../tako-storage", default-features = false }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[dev-dependencies]
+async-trait = "0.1"
+
+[[bin]]
+name = "terse-fixture"
+path = "src/bin/fixture.rs"
+test = false

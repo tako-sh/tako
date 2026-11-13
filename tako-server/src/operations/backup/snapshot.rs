@@ -58,9 +58,13 @@ fn copy_snapshot_dir(parent: &File, relative: &Path, destination: &Path) -> io::
             continue;
         }
         let path = relative.join(name);
+        let object = path.starts_with("tako/storages/objects");
         // SQLite may unlink a journal after read_dir buffered its name. Only
         // the pinned database snapshot consumes its companion files.
-        if is_transient_tako_sqlite_file(&path) || is_sqlite_companion(parent, name)? {
+        if is_transient_tako_sqlite_file(&path)
+            || (object && is_object_upload_staging_file(&path))
+            || (!object && is_sqlite_companion(parent, name)?)
+        {
             continue;
         }
         let dest = destination.join(name);
@@ -77,7 +81,7 @@ fn copy_snapshot_dir(parent: &File, relative: &Path, destination: &Path) -> io::
             }
             FileType::RegularFile => {
                 let mut file = open_regular(parent, name)?;
-                if is_sqlite_database(&file)? {
+                if !object && is_sqlite_database(&file)? {
                     sqlite::snapshot(parent, name, file, &dest).map_err(|e| {
                         io::Error::other(format!("snapshot {}: {e}", path.display()))
                     })?;
@@ -94,6 +98,14 @@ fn copy_snapshot_dir(parent: &File, relative: &Path, destination: &Path) -> io::
         }
     }
     Ok(())
+}
+
+fn is_object_upload_staging_file(path: &Path) -> bool {
+    // Match object_store's reserved atomic-upload filenames.
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.split_once('#'))
+        .is_some_and(|(_, suffix)| !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()))
 }
 
 fn open_regular(parent: &File, name: &OsStr) -> io::Result<File> {
@@ -583,6 +595,74 @@ services:
             assert_eq!(std::fs::read(&outside).unwrap(), b"private content");
             std::fs::remove_file(sidecar).unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn archive_restore_preserves_opaque_objects_and_excludes_staged_uploads() {
+        use object_store::{ObjectStoreExt, path::Path as ObjectPath};
+
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("data");
+        let relative = "tako/storages/objects/storage/uploads";
+        std::fs::create_dir_all(source.join("app")).unwrap();
+        let store = tako_storage::local(&source.join(relative)).unwrap();
+        let objects: [(&str, &[u8]); 4] = [
+            (
+                "file.sqlite",
+                b"SQLite format 3\0opaque object, not a database",
+            ),
+            ("file.sqlite-wal", b"opaque wal"),
+            ("file.sqlite-shm", b"opaque shm"),
+            ("hash#name#123", b"committed hash name"),
+        ];
+        for (key, bytes) in objects {
+            store
+                .put(&ObjectPath::from(key), bytes.into())
+                .await
+                .unwrap();
+        }
+        let pending_key = ObjectPath::from("pending");
+        let mut pending = store.put_multipart(&pending_key).await.unwrap();
+        pending
+            .put_part(b"incomplete".as_slice().into())
+            .await
+            .unwrap();
+        assert!(
+            std::fs::read_dir(source.join(relative))
+                .unwrap()
+                .any(|entry| { is_object_upload_staging_file(&entry.unwrap().path()) })
+        );
+
+        let snapshot = temp.path().join("snapshot");
+        snapshot_data_tree(&source, Path::new(""), &snapshot).unwrap();
+        let archive = temp.path().join("backup.tar.zst");
+        create_backup_archive(&snapshot, &archive).unwrap();
+        let extracted = temp.path().join("extracted");
+        crate::extract_zstd_archive(&archive, &extracted).unwrap();
+        let restored = temp.path().join("restored");
+        restore_data_tree(&extracted, &restored)
+            .unwrap()
+            .commit()
+            .unwrap();
+
+        let reopened = tako_storage::local(&restored.join(relative)).unwrap();
+        for (key, bytes) in objects {
+            assert_eq!(
+                reopened
+                    .get(&ObjectPath::from(key))
+                    .await
+                    .unwrap()
+                    .bytes()
+                    .await
+                    .unwrap(),
+                bytes
+            );
+        }
+        assert_eq!(
+            std::fs::read_dir(restored.join(relative)).unwrap().count(),
+            objects.len()
+        );
+        pending.abort().await.unwrap();
     }
 
     #[test]

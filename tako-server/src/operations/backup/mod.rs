@@ -5,15 +5,16 @@ use tako_core::{
     BackupStatusResponse, Response,
 };
 
-use crate::object_storage::{S3Method, presign_s3_url};
 use crate::release::{
     app_runtime_data_paths, ensure_app_runtime_data_dirs, release_app_path,
     requested_deployment_identity, resolve_release_runtime_bin,
 };
+use object_store::{path::Path as ObjectPath, signer::Signer};
+use std::sync::Arc;
 
 mod encryption;
 mod index;
-mod s3;
+mod objects;
 mod scheduler;
 mod snapshot;
 
@@ -22,9 +23,9 @@ use encryption::{
     validate_backup_key,
 };
 use index::{backup_index_key, backup_object_prefix, latest_backup};
-use s3::{
-    DOWNLOAD_URL_EXPIRES_SECONDS, S3_URL_EXPIRES_SECONDS, TRANSFER_TIMEOUT, backup_http_client,
-    download_object, prune_retention, put_json_object, queue_retention, upload_file,
+use objects::{
+    DOWNLOAD_URL_EXPIRES_SECONDS, download_object, prune_retention, put_json_object,
+    queue_retention, upload_file,
 };
 pub(crate) use snapshot::snapshot_data_tree;
 use snapshot::{create_backup_archive, restore_data_tree, sha256_file_hex};
@@ -167,16 +168,16 @@ impl crate::ServerState {
                 encryption,
             };
 
-            let client = backup_http_client(TRANSFER_TIMEOUT)?;
+            let store: Arc<dyn object_store::ObjectStore> =
+                Arc::new(tako_storage::s3(&backup.storage)?);
             let mut index = self.read_backup_index(&backup, app).await?;
             upload_file(
-                &client,
-                &backup.storage,
+                Arc::clone(&store),
                 &info.archive_key,
                 &encrypted_archive_path,
             )
             .await?;
-            put_json_object(&client, &backup.storage, &info.manifest_key, &info).await?;
+            put_json_object(store.as_ref(), &info.manifest_key, &info).await?;
 
             index.backups.retain(|existing| existing.id != info.id);
             index.backups.push(info.clone());
@@ -186,25 +187,14 @@ impl crate::ServerState {
                     .then_with(|| b.id.cmp(&a.id))
             });
             queue_retention(&mut index, backup.retention_days);
-            put_json_object(
-                &client,
-                &backup.storage,
-                &backup_index_key(app, self),
-                &index,
-            )
-            .await?;
+            put_json_object(store.as_ref(), &backup_index_key(app, self), &index).await?;
 
             // Persist the new backup and deletion intent before deleting any
             // objects. A failed final index write leaves safe, retryable work.
             if !index.pending_deletions.is_empty() {
-                prune_retention(&client, &backup.storage, &mut index).await;
-                if let Err(error) = put_json_object(
-                    &client,
-                    &backup.storage,
-                    &backup_index_key(app, self),
-                    &index,
-                )
-                .await
+                prune_retention(store.as_ref(), &mut index).await;
+                if let Err(error) =
+                    put_json_object(store.as_ref(), &backup_index_key(app, self), &index).await
                 {
                     tracing::warn!(
                         app,
@@ -280,12 +270,15 @@ impl crate::ServerState {
             .map_err(|error| format!("read backup config: {error}"))?
             .ok_or_else(|| format!("Backups are not configured for {app}."))?;
         let info = self.find_backup(&backup, app, backup_id).await?;
-        let url = presign_s3_url(
-            &backup.storage,
-            &info.archive_key,
-            S3Method::Get,
-            DOWNLOAD_URL_EXPIRES_SECONDS,
-        )?;
+        let url = tako_storage::s3(&backup.storage)?
+            .signed_url(
+                http::Method::GET,
+                &ObjectPath::parse(&info.archive_key).map_err(|e| e.to_string())?,
+                Duration::from_secs(u64::from(DOWNLOAD_URL_EXPIRES_SECONDS)),
+            )
+            .await
+            .map_err(|e| format!("sign backup download URL: {e}"))?
+            .to_string();
         Ok(BackupDownloadUrlResponse {
             backup: info,
             url,
@@ -324,14 +317,8 @@ impl crate::ServerState {
         create_private_work_dir(&work_dir).await?;
 
         let result: Result<BackupInfo, String> = async {
-            let client = backup_http_client(TRANSFER_TIMEOUT)?;
-            download_object(
-                &client,
-                &backup.storage,
-                &info.archive_key,
-                &encrypted_archive_path,
-            )
-            .await?;
+            let store = tako_storage::s3(&backup.storage)?;
+            download_object(&store, &info.archive_key, &encrypted_archive_path).await?;
             let actual_sha256 = tokio::task::spawn_blocking({
                 let encrypted_archive_path = encrypted_archive_path.clone();
                 move || sha256_file_hex(&encrypted_archive_path)

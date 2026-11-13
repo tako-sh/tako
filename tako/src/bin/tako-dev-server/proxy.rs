@@ -84,6 +84,7 @@ struct AppRoute {
     images: tako_images::ImagesConfig,
     channel_store_key: String,
     store_auth: Option<StoreAuth>,
+    local_storage: Option<Arc<tako_storage::local_http::LocalStorage>>,
 }
 
 #[derive(Clone)]
@@ -100,6 +101,7 @@ pub(crate) struct RouteTarget {
     pub(crate) active: bool,
     pub(crate) images: tako_images::ImagesConfig,
     pub(crate) store_auth: Option<StoreAuth>,
+    pub(crate) local_storage: Option<Arc<tako_storage::local_http::LocalStorage>>,
 }
 
 #[derive(Clone, Default)]
@@ -173,6 +175,7 @@ impl Routes {
             images: images.clone(),
             channel_store_key: channel_store_key.clone(),
             store_auth: None,
+            local_storage: None,
         });
         entry.upstream_port = upstream_port;
         entry.active = active;
@@ -189,6 +192,16 @@ impl Routes {
                 internal_host,
                 token,
             });
+        }
+    }
+
+    pub(crate) fn set_local_storage(
+        &self,
+        app_id: &str,
+        storage: tako_storage::local_http::LocalStorage,
+    ) {
+        if let Some(route) = self.apps.lock().unwrap().get_mut(app_id) {
+            route.local_storage = Some(Arc::new(storage));
         }
     }
 
@@ -249,6 +262,7 @@ impl Routes {
             active: r.active,
             images: r.images,
             store_auth: r.store_auth,
+            local_storage: r.local_storage,
         })
     }
 
@@ -401,6 +415,16 @@ impl ProxyHttp for DevProxy {
             return Ok(true);
         };
 
+        if path.starts_with(tako_storage::local_http::PREFIX) {
+            return match target.local_storage {
+                Some(storage) => storage.serve(session).await,
+                None => {
+                    session.respond_error(404).await?;
+                    Ok(true)
+                }
+            };
+        }
+
         // Channel requests are scoped by the matched app. Each app gets a
         // separate local dev replay store even when channel names overlap.
         let is_store = path.starts_with(tako_channels::live_store::STORES_BASE_PATH)
@@ -491,6 +515,67 @@ impl ProxyHttp for DevProxy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn local_storage_is_served_while_the_app_route_is_inactive() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let dir = tempfile::tempdir().unwrap();
+        let routes = Routes::default();
+        routes.set_routes("app".into(), vec!["app.test".into()], 0, false);
+        routes.set_local_storage(
+            "app",
+            tako_storage::local_http::LocalStorage {
+                root: dir.path().join("private/objects"),
+                legacy_root: dir.path().join("app"),
+                bindings: HashMap::from([(
+                    "uploads".into(),
+                    tako_core::StorageBinding {
+                        provider: tako_core::StorageProvider::Local,
+                        bucket: None,
+                        endpoint: None,
+                        region: None,
+                        access_key_id: None,
+                        secret_access_key: None,
+                        force_path_style: false,
+                        public_base_url: None,
+                        path: Some("storage/uploads".into()),
+                        signing_key: Some("test-signing-key".into()),
+                    },
+                )]),
+            },
+        );
+        std::fs::create_dir_all(dir.path().join("app/storage/uploads/avatars")).unwrap();
+        std::fs::write(
+            dir.path().join("app/storage/uploads/avatars/a b.txt"),
+            "hello",
+        )
+        .unwrap();
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let proxy = DevProxy {
+            routes,
+            events,
+            channels: crate::dev_channels::DevChannelStore::new(),
+        };
+        let (mut client, stream) = tokio::io::duplex(8192);
+        client.write_all(b"GET /_tako/storages/uploads/avatars/a%20b.txt?expires=4102444800&token=970ee037d59e09374aca4ce2cea30fe57b397bed8e40ecd921dc49496cf05eb9 HTTP/1.1\r\nHost: app.test\r\nConnection: close\r\n\r\n").await.unwrap();
+        let mut session = Session::new_h1(Box::new(stream));
+        session.read_request().await.unwrap();
+        let mut ctx = proxy.new_ctx();
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                proxy.request_filter(&mut session, &mut ctx)
+            )
+            .await
+            .unwrap()
+            .unwrap()
+        );
+        session.downstream_session.finish().await.unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).await.unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(response.ends_with("hello"));
+    }
 
     #[test]
     fn lookup_matches_wildcard_route() {

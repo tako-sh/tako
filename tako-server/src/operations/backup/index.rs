@@ -1,9 +1,9 @@
 use tako_core::BackupInfo;
 
-use crate::object_storage::{S3Method, presign_s3_url};
 use crate::release::requested_deployment_identity;
+use object_store::{ObjectStoreExt, path::Path as ObjectPath};
 
-use super::{S3_URL_EXPIRES_SECONDS, validate_backup_binding};
+use super::validate_backup_binding;
 
 const BACKUP_INDEX_VERSION: u8 = 1;
 
@@ -33,23 +33,22 @@ impl crate::ServerState {
         app: &str,
     ) -> Result<BackupIndex, String> {
         validate_backup_binding(backup)?;
-        let key = backup_index_key(app, self);
-        let url = presign_s3_url(&backup.storage, &key, S3Method::Get, S3_URL_EXPIRES_SECONDS)?;
-        let response = super::s3::backup_http_client(super::s3::METADATA_TIMEOUT)?
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| format!("read backup index: {e}"))?;
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
-            return Ok(BackupIndex::default());
-        }
-        if !response.status().is_success() {
-            return Err(format!("read backup index returned {}", response.status()));
-        }
-        response
-            .json::<BackupIndex>()
-            .await
-            .map_err(|e| format!("parse backup index: {e}"))
+        super::objects::with_deadline(super::objects::METADATA_TIMEOUT, async {
+            let key = backup_index_key(app, self);
+            let store = tako_storage::s3(&backup.storage)?;
+            let key = ObjectPath::parse(key).map_err(|e| e.to_string())?;
+            let result = match store.get(&key).await {
+                Ok(result) => result,
+                Err(object_store::Error::NotFound { .. }) => return Ok(BackupIndex::default()),
+                Err(error) => return Err(format!("read backup index: {error}")),
+            };
+            let bytes = result
+                .bytes()
+                .await
+                .map_err(|e| format!("read backup index body: {e}"))?;
+            serde_json::from_slice(&bytes).map_err(|e| format!("parse backup index: {e}"))
+        })
+        .await
     }
 
     pub(super) fn backup_server_label(&self) -> String {

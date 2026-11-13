@@ -15,31 +15,14 @@ fn old_index() -> BackupIndex {
 
 fn storage_fixture(
     statuses: Vec<u16>,
-) -> (
-    tako_core::StorageBinding,
-    reqwest::Client,
-    tokio::task::JoinHandle<()>,
-) {
+) -> (object_store::aws::AmazonS3, tokio::task::JoinHandle<()>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
-    let endpoint = format!("https://{}", listener.local_addr().unwrap());
-    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-    let mut acceptor =
-        openssl::ssl::SslAcceptor::mozilla_intermediate(openssl::ssl::SslMethod::tls()).unwrap();
-    acceptor
-        .set_certificate(&openssl::x509::X509::from_pem(cert.cert.pem().as_bytes()).unwrap())
-        .unwrap();
-    acceptor
-        .set_private_key(
-            &openssl::pkey::PKey::private_key_from_pem(cert.signing_key.serialize_pem().as_bytes())
-                .unwrap(),
-        )
-        .unwrap();
-    let acceptor = acceptor.build();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
     let fixture = tokio::task::spawn_blocking(move || {
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         for status in statuses {
-            let stream = loop {
+            let mut stream = loop {
                 match listener.accept() {
                     Ok((stream, _)) => break stream,
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -59,7 +42,6 @@ fn storage_fixture(
             stream
                 .set_write_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
-            let mut stream = acceptor.accept(stream).unwrap();
             let mut bytes = Vec::new();
             while !bytes.windows(4).any(|value| value == b"\r\n\r\n") {
                 let mut chunk = [0; 4096];
@@ -67,36 +49,81 @@ fn storage_fixture(
                 assert_ne!(size, 0);
                 bytes.extend_from_slice(&chunk[..size]);
             }
-            assert!(bytes.starts_with(b"DELETE "));
+            // object_store uses S3's bulk-delete API even for one key.
+            assert!(bytes.starts_with(b"POST "));
+            let header_end = bytes
+                .windows(4)
+                .position(|part| part == b"\r\n\r\n")
+                .unwrap()
+                + 4;
+            let header = std::str::from_utf8(&bytes[..header_end]).unwrap();
+            let length: usize = header
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse().unwrap())
+                })
+                .unwrap();
+            while bytes.len() < header_end + length {
+                let mut chunk = [0; 4096];
+                let size = stream.read(&mut chunk).unwrap();
+                assert_ne!(size, 0);
+                bytes.extend_from_slice(&chunk[..size]);
+            }
+            let request = std::str::from_utf8(&bytes[header_end..]).unwrap();
+            let key = request
+                .split_once("<Key>")
+                .unwrap()
+                .1
+                .split_once("</Key>")
+                .unwrap()
+                .0;
+            let (status, body) = if status == 204 {
+                (
+                    200,
+                    format!("<DeleteResult><Deleted><Key>{key}</Key></Deleted></DeleteResult>"),
+                )
+            } else {
+                (status, String::new())
+            };
             write!(
                 stream,
-                "HTTP/1.1 {status} Fixture\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                "HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()
             )
             .unwrap();
         }
     });
-    let storage = serde_json::from_value(serde_json::json!({
-        "provider": "s3", "bucket": "fixture", "endpoint": endpoint,
-        "region": "local", "access_key_id": "fixture", "secret_access_key": "fixture",
-        "force_path_style": true
-    }))
-    .unwrap();
-    let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .no_proxy()
-        .timeout(Duration::from_secs(5))
+    (fixture_store(&endpoint), fixture)
+}
+
+fn fixture_store(endpoint: &str) -> object_store::aws::AmazonS3 {
+    object_store::aws::AmazonS3Builder::new()
+        .with_endpoint(endpoint)
+        .with_bucket_name("fixture")
+        .with_region("local")
+        .with_access_key_id("fixture")
+        .with_secret_access_key("fixture")
+        .with_retry(object_store::RetryConfig {
+            max_retries: 0,
+            ..Default::default()
+        })
+        .with_client_options(
+            object_store::ClientOptions::new().with_timeout(Duration::from_secs(5)),
+        )
+        // Plain HTTP is confined to this loopback error fixture, never production config.
+        .with_allow_http(true)
         .build()
-        .unwrap();
-    (storage, client, fixture)
+        .unwrap()
 }
 
 #[tokio::test]
 async fn retention_retries_failed_object_deletes() {
     for status in [403, 500] {
-        let (storage, client, fixture) = storage_fixture(vec![status, status]);
+        let (storage, fixture) = storage_fixture(vec![status, status]);
         let mut index = old_index();
         queue_retention(&mut index, 1);
-        prune_retention(&client, &storage, &mut index).await;
+        prune_retention(&storage, &mut index).await;
         fixture.await.unwrap();
         assert!(
             index.backups.is_empty(),
@@ -111,8 +138,8 @@ async fn retention_retries_failed_object_deletes() {
         // Retry from a persisted index, including an already-removed object.
         let mut index: BackupIndex =
             serde_json::from_slice(&serde_json::to_vec(&index).unwrap()).unwrap();
-        let (storage, client, fixture) = storage_fixture(vec![204, 404]);
-        prune_retention(&client, &storage, &mut index).await;
+        let (storage, fixture) = storage_fixture(vec![204, 404]);
+        prune_retention(&storage, &mut index).await;
         fixture.await.unwrap();
         assert!(index.pending_deletions.is_empty());
     }
@@ -120,10 +147,10 @@ async fn retention_retries_failed_object_deletes() {
 
 #[tokio::test]
 async fn partial_delete_retains_cleanup_intent() {
-    let (storage, client, fixture) = storage_fixture(vec![204, 500]);
+    let (storage, fixture) = storage_fixture(vec![204, 500]);
     let mut index = old_index();
     queue_retention(&mut index, 1);
-    prune_retention(&client, &storage, &mut index).await;
+    prune_retention(&storage, &mut index).await;
     fixture.await.unwrap();
     assert!(index.backups.is_empty());
     assert_eq!(index.pending_deletions.len(), 1);
@@ -148,12 +175,16 @@ async fn backup_request_deadline_covers_a_stalled_response_body() {
             .unwrap();
         let _ = stream.read(&mut [0]).await;
     });
-    let client = backup_http_client(Duration::from_millis(100)).unwrap();
-    let response = client.get(url).send().await.unwrap();
-    let error = tokio::time::timeout(Duration::from_secs(2), response.bytes())
-        .await
-        .unwrap()
-        .unwrap_err();
-    assert!(error.is_timeout());
+    let store = fixture_store(&url);
+    let error = with_deadline(Duration::from_millis(100), async {
+        let response = store
+            .get(&ObjectPath::from("stalled"))
+            .await
+            .map_err(|e| e.to_string())?;
+        response.bytes().await.map_err(|e| e.to_string())
+    })
+    .await
+    .unwrap_err();
+    assert!(error.contains("timed out"), "{error}");
     fixture.abort();
 }

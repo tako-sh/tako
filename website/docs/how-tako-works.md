@@ -56,7 +56,7 @@ Public `/_tako/*` paths are reserved after a request matches an app route:
 
 - `/_tako/channels/<name>` serves durable SSE or WebSocket channels.
 - `/_tako/image` serves the public image optimizer.
-- `/_tako/storages/<binding>/<key>` serves signed local storage upload/download routes.
+- `/_tako/storages/<binding>/<key>` is served directly by the Rust proxy for signed local storage uploads and downloads, independently of app workers. The SDK creates URLs and does not perform storage file I/O.
 
 Channels are broadcast streams for app events. All authorized subscribers to the same channel can read the same messages, each subscriber keeps its own cursor, and receiving a message does not remove it for other subscribers.
 

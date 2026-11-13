@@ -273,6 +273,27 @@ impl TakoProxy {
             return self.handle_network_request(session, &app_name).await;
         }
 
+        if path.starts_with(tako_storage::local_http::PREFIX) {
+            let Some(app) = self.lb.app_manager().get_app(&app_name) else {
+                return native::reject(session, 404).await;
+            };
+            // Restore swaps the data tree under this gate. Finish each storage
+            // operation before that swap, even when no app worker is running.
+            let _storage = app.lifecycle_gate.read().await;
+            let bindings = app.config.read().storages.clone();
+            let paths =
+                crate::release::app_runtime_data_paths(self.lb.app_manager().data_dir(), &app_name);
+            ctx.observation.set_handler("storage", "local");
+            ctx.start_request_metrics(&app_name, self.metrics_enabled());
+            return tako_storage::local_http::serve(
+                session,
+                &bindings,
+                &paths.tako.join("storages/objects"),
+                &paths.app,
+            )
+            .await;
+        }
+
         if path_uses_tako_handler(path) {
             let path = path.to_string();
             let host = host.to_string();

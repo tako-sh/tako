@@ -43,10 +43,13 @@ declare module "tako.sh" {
   /**
    * Project-specific object storage bindings from `tako.toml`.
    *
-   * No storages are currently configured for this project. After you add one,
-   * this interface is regenerated with typed readonly bindings.
+   * Values are injected by Tako at runtime. App code uses `tako.storages.<name>`
+   * to create upload/download URLs.
    */
-  export interface TakoStorages {}
+  export interface TakoStorages {
+    /** Storage `uploads`. Read it with `tako.storages.uploads`. */
+    readonly uploads: import("tako.sh").TakoStorage;
+  }
 }
 
 interface TakoUserEnv {}
