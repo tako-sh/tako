@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { Channel, setChannelSocketCloser } from "../../src/channels";
 import { configureChannels, resetChannelsConfig } from "../../src/channels/configure";
 import { defineChannel } from "../../src/channels/define";
@@ -20,10 +20,13 @@ class FakeSocket extends EventTarget {
   close() {}
 }
 
-afterEach(() => {
+function resetChannelState() {
   setChannelSocketCloser(null);
   resetChannelsConfig();
-});
+}
+
+beforeEach(resetChannelState);
+afterEach(resetChannelState);
 
 describe("Channel.close", () => {
   test("rejects outside the server runtime", async () => {
