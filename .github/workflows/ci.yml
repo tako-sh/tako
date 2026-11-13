@@ -60,7 +60,6 @@ jobs:
             docker rm --force "$fixture" >/dev/null
           }
           trap cleanup EXIT
-          docker exec "$fixture" timeout 30 systemctl is-system-running --wait || true
           docker exec "$fixture" python3 /opt/e2e/verify-native-helper.py
 
   detect-changes:

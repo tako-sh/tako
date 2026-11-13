@@ -4,6 +4,7 @@
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 
 
@@ -31,6 +32,10 @@ public_key = run('wg', 'pubkey', input=private_key + '\n')
     'network_id': ident, 'device_id': '12' * 32,
     'address': 'fd12:7461:6b6f::1/128', 'private_key': private_key, 'peers': [],
 }))
+deadline = time.monotonic() + 30
+while not Path('/run/systemd/private').is_socket():
+    assert time.monotonic() < deadline, 'systemd did not become ready'
+    time.sleep(0.1)
 run('systemctl', 'start', 'tako-network-helper.socket')
 try:
     for action in ('apply', 'apply', 'isolate'):
