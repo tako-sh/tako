@@ -682,11 +682,14 @@ fn append_event(
     // every node at once, within bounds: never in this node's future, never
     // more than the tolerated skew in its past, and never before the stream's
     // newest row. Creation times then grow with ids in every stream, which
-    // the expired floor and age pruning rely on.
+    // the expired floor and age pruning rely on. A newest row stamped in this
+    // node's future (stored before stamps were bounded, or under a clock that
+    // stepped back since) only lifts the stamp to now: inheriting it would
+    // keep every later row, a marker too, from ever aging out.
     let created = match event.created_at_unix_ms {
         Some(origin) => origin
             .clamp(now.saturating_sub(MESH_CLOCK_SKEW_MS), now)
-            .max(newest_created_at(tx, &event.channel)?),
+            .max(newest_created_at(tx, &event.channel)?.min(now)),
         None => now,
     };
     tx.execute("INSERT INTO channel_messages (channel, type, data_json, created_at_unix_ms) VALUES (?1, ?2, ?3, ?4)",

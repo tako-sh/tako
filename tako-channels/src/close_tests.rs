@@ -1057,6 +1057,31 @@ fn skewed_origins_keep_creation_times_in_id_order_within_a_stream() {
     assert_eq!(peer.read_after("feed", None, 10).unwrap().len(), 3);
 }
 
+#[test]
+fn a_row_stamped_in_the_future_before_the_upgrade_is_not_inherited() {
+    let store = ChannelStore::open_in_memory_without_maintenance();
+    store.append("feed", &payload(json!(1))).unwrap();
+    // Stored before stamps were bounded, or by a clock that later stepped back.
+    store.raw_execute(
+        "UPDATE channel_messages SET created_at_unix_ms = ?1",
+        [now() + 24 * 60 * 60 * 1000],
+    );
+    store.append("feed", &payload(json!(2))).unwrap();
+    store
+        .ingest_remote(&remote("a", 1, "feed", "msg", now()))
+        .unwrap();
+    store.close("feed").unwrap();
+    let later = &stamps(&store, "feed")[1..];
+    assert!(
+        later.iter().all(|stamp| *stamp <= now()),
+        "rows after a future stamp must keep this node's time"
+    );
+    // One window later the marker has aged out and the stream reopens.
+    store.prune_at(now() + DEFAULT_WINDOW_MS + 1_000);
+    assert_eq!(retained_markers(&store, "feed"), 0);
+    store.append("feed", &payload(json!(3))).unwrap();
+}
+
 fn window(replay_window_ms: u64) -> ChannelLifecycle {
     ChannelLifecycle {
         ephemeral: false,
