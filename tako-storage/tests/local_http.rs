@@ -188,9 +188,11 @@ async fn migration_preserves_existing_objects_and_is_not_repeated_after_publicat
 async fn overlapping_binding_paths_import_missing_objects_without_replacing_new_writes() {
     let dir = tempfile::tempdir().unwrap();
     let mut storage = storage(dir.path(), "secret");
-    fs::create_dir_all(storage.legacy_root.join("storage/uploads/nested")).unwrap();
+    fs::create_dir_all(storage.legacy_root.join("storage/uploads/nested#123%raw")).unwrap();
     fs::write(
-        storage.legacy_root.join("storage/uploads/nested/file"),
+        storage
+            .legacy_root
+            .join("storage/uploads/nested#123%raw/file"),
         "old",
     )
     .unwrap();
@@ -199,7 +201,8 @@ async fn overlapping_binding_paths_import_missing_objects_without_replacing_new_
         "imported",
     )
     .unwrap();
-    storage.bindings.get_mut("uploads").unwrap().path = Some("storage/uploads/nested".into());
+    storage.bindings.get_mut("uploads").unwrap().path =
+        Some("storage/uploads/nested#123%raw".into());
     let put = signed("PUT", "file", "secret", 4_102_444_800);
     assert_eq!(request(&storage, "PUT", &put, b"new").await.0, 204);
     storage.bindings.get_mut("uploads").unwrap().path = Some("storage/uploads".into());
@@ -217,7 +220,7 @@ async fn overlapping_binding_paths_import_missing_objects_without_replacing_new_
         request(
             &storage,
             "GET",
-            &signed("GET", "nested/file", "secret", 4_102_444_800),
+            &signed("GET", "nested%23123%25raw/file", "secret", 4_102_444_800),
             &[]
         )
         .await,

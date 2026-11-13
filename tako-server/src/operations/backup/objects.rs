@@ -2,10 +2,10 @@ use std::{future::Future, path::Path, sync::Arc, time::Duration};
 
 use futures_util::TryStreamExt;
 use object_store::{
-    Attribute, AttributeValue, Attributes, ObjectStore, ObjectStoreExt, PutOptions,
-    buffered::BufWriter, path::Path as ObjectPath,
+    Attribute, AttributeValue, Attributes, MultipartUpload, ObjectStore, ObjectStoreExt,
+    PutOptions, path::Path as ObjectPath,
 };
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::{index::BackupIndex, now_unix_secs};
 
@@ -16,15 +16,14 @@ pub(super) const METADATA_TIMEOUT: Duration = Duration::from_secs(30);
 pub(super) fn backup_store(
     binding: &tako_core::StorageBinding,
 ) -> Result<object_store::aws::AmazonS3, String> {
-    let builder = tako_storage::s3_builder(binding)?;
+    let options = object_store::ClientOptions::new()
+        .with_timeout(TRANSFER_TIMEOUT)
+        .with_read_timeout(Duration::from_secs(60))
+        .with_connect_timeout(Duration::from_secs(5));
     #[cfg(test)]
-    let builder = builder.with_client_options(
-        object_store::ClientOptions::new()
-            .with_timeout(Duration::from_secs(60))
-            .with_connect_timeout(Duration::from_secs(5))
-            .with_root_certificate(failure_tests::fixture_store_certificate()),
-    );
-    builder
+    let options = options.with_root_certificate(failure_tests::fixture_store_certificate());
+    tako_storage::s3_builder(binding)?
+        .with_client_options(options)
         .build()
         .map_err(|e| format!("configure backup storage: {e}"))
 }
@@ -58,22 +57,58 @@ pub(super) async fn upload_file(
         .await
         .map_err(|e| format!("open backup upload: {e}"))?;
     let key = ObjectPath::parse(key).map_err(|e| e.to_string())?;
-    let mut writer = BufWriter::with_capacity(store, key, 8 * 1024 * 1024).with_max_concurrency(1);
-    let mut committing = false;
+    const PART_BYTES: u64 = 8 * 1024 * 1024;
+    let mut upload: Option<Box<dyn MultipartUpload>> = None;
     let result = with_deadline(TRANSFER_TIMEOUT, async {
-        tokio::io::copy(&mut file, &mut writer)
-            .await
-            .map_err(|e| format!("upload backup object: {e}"))?;
-        committing = true;
-        writer
-            .shutdown()
-            .await
-            .map_err(|e| format!("commit backup object: {e}"))
+        let mut part = Vec::new();
+        loop {
+            (&mut file)
+                .take(PART_BYTES)
+                .read_to_end(&mut part)
+                .await
+                .map_err(|e| format!("read backup upload: {e}"))?;
+            match &mut upload {
+                None if part.len() < PART_BYTES as usize => {
+                    store
+                        .put(&key, part.into())
+                        .await
+                        .map_err(|e| format!("upload backup object: {e}"))?;
+                    return Ok(());
+                }
+                None => {
+                    upload = Some(
+                        store
+                            .put_multipart(&key)
+                            .await
+                            .map_err(|e| format!("start backup upload: {e}"))?,
+                    );
+                }
+                Some(_) => {}
+            }
+            let pending = upload.as_mut().ok_or("backup upload missing")?;
+            if part.is_empty() {
+                pending
+                    .complete()
+                    .await
+                    .map_err(|e| format!("commit backup object: {e}"))?;
+                return Ok(());
+            }
+            pending
+                .put_part(part.into())
+                .await
+                .map_err(|e| format!("upload backup part: {e}"))?;
+            part = Vec::new();
+        }
     })
     .await;
-    // Shutdown owns multipart cleanup; aborting after it starts panics in BufWriter.
-    if result.is_err() && !committing {
-        let _ = writer.abort().await;
+    if result.is_err()
+        && let Some(mut upload) = upload
+    {
+        // Retain ownership across the deadline, including a cancelled complete().
+        let _ = with_deadline(METADATA_TIMEOUT, async {
+            upload.abort().await.map_err(|e| e.to_string())
+        })
+        .await;
     }
     result
 }
@@ -181,6 +216,8 @@ pub(super) async fn prune_retention(store: &dyn ObjectStore, index: &mut BackupI
 
 #[cfg(test)]
 pub(super) mod failure_tests;
+#[cfg(test)]
+mod timeout_tests;
 
 #[cfg(test)]
 mod tests {

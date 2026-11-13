@@ -1,4 +1,5 @@
 use cap_std::{ambient_authority, fs::Dir};
+use object_store::path::{Path as ObjectPath, PathPart};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File},
@@ -28,7 +29,7 @@ pub(crate) fn prepare(root: &Path, legacy_root: &Path, relative: &str) -> Result
         .map_err(|e| e.to_string())?;
     lock.try_lock()
         .map_err(|e| format!("storage migration busy: {e}"))?;
-    let destination = root.join(relative);
+    let destination = root.join(ObjectPath::from(relative).as_ref());
     if marker.exists() {
         return Ok(());
     }
@@ -38,7 +39,7 @@ pub(crate) fn prepare(root: &Path, legacy_root: &Path, relative: &str) -> Result
     let source = Dir::open_ambient_dir(legacy_root, ambient_authority());
     match source {
         Ok(source) => match source.open_dir(relative) {
-            Ok(directory) => copy_tree(&directory, staging.path())
+            Ok(directory) => copy_tree(&directory, staging.path(), SourceNames::Legacy)
                 .map_err(|e| format!("migrate local storage: {e}"))?,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(format!("open previous local storage: {error}")),
@@ -52,7 +53,7 @@ pub(crate) fn prepare(root: &Path, legacy_root: &Path, relative: &str) -> Result
     if destination.exists() {
         let staged = Dir::open_ambient_dir(staging.path(), ambient_authority())
             .map_err(|e| e.to_string())?;
-        copy_tree(&staged, &destination)
+        copy_tree(&staged, &destination, SourceNames::Encoded)
             .map_err(|e| format!("merge local storage migration: {e}"))?;
     } else {
         fs::rename(staging.path(), &destination).map_err(|e| e.to_string())?;
@@ -74,15 +75,29 @@ pub(crate) fn prepare(root: &Path, legacy_root: &Path, relative: &str) -> Result
     Ok(())
 }
 
-fn copy_tree(source: &Dir, destination: &Path) -> io::Result<()> {
+#[derive(Clone, Copy)]
+enum SourceNames {
+    Legacy,
+    Encoded,
+}
+
+fn copy_tree(source: &Dir, destination: &Path, names: SourceNames) -> io::Result<()> {
     for entry in source.entries()? {
         let entry = entry?;
         let name = entry.file_name();
         let kind = entry.file_type()?;
-        let target = destination.join(&name);
+        let target = match names {
+            SourceNames::Legacy => destination.join(
+                PathPart::from(name.to_str().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "storage filename is not UTF-8")
+                })?)
+                .as_ref(),
+            ),
+            SourceNames::Encoded => destination.join(&name),
+        };
         if kind.is_dir() {
             crate::create_directory(&target)?;
-            copy_tree(&source.open_dir(&name)?, &target)?;
+            copy_tree(&source.open_dir(&name)?, &target, names)?;
             File::open(&target)?.sync_all()?;
         } else if kind.is_file() {
             let mut options = cap_std::fs::OpenOptions::new();

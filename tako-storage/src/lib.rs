@@ -6,6 +6,7 @@ use object_store::{
     ClientOptions, ObjectStore, RetryConfig,
     aws::{AmazonS3, AmazonS3Builder, S3ConditionalPut},
     local::LocalFileSystem,
+    path::Path as ObjectPath,
 };
 use tako_core::{StorageBinding, StorageProvider};
 
@@ -117,7 +118,9 @@ pub fn from_binding(
         StorageProvider::Local => {
             let path = required(&binding.path, "path")?;
             validate_relative(path)?;
-            Ok(Arc::new(local(&local_root.join(path))?))
+            Ok(Arc::new(local(
+                &local_root.join(ObjectPath::from(path).as_ref()),
+            )?))
         }
     }
 }

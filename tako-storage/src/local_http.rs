@@ -60,12 +60,15 @@ pub async fn serve(
         .map(decode)
         .collect::<std::result::Result<Vec<_>, _>>()
     {
-        Ok(parts) if parts.iter().all(|s| !s.contains('/') && !s.contains('\\')) => parts.join("/"),
+        Ok(parts)
+            if parts.iter().all(|s| {
+                !s.is_empty() && s != "." && s != ".." && !s.contains('/') && !s.contains('\0')
+            }) =>
+        {
+            parts.join("/")
+        }
         _ => return reply(session, 400, "Invalid key").await,
     };
-    if crate::validate_relative(&key).is_err() {
-        return reply(session, 400, "Invalid key").await;
-    }
     let Some(binding) = bindings
         .get(&name)
         .filter(|b| b.provider == StorageProvider::Local)
@@ -118,10 +121,7 @@ pub async fn serve(
             return reply(session, 503, "Storage unavailable").await;
         }
     };
-    let key = match ObjectPath::parse(key) {
-        Ok(key) => key,
-        Err(_) => return reply(session, 400, "Invalid key").await,
-    };
+    let key = ObjectPath::from(key);
     if session.req_header().method == http::Method::PUT {
         let mut writer = BufWriter::with_capacity(Arc::clone(&store), key, 1024 * 1024);
         let mut received = 0_u64;

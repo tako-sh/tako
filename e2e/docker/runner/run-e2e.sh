@@ -241,7 +241,7 @@ run_local_storage_checks() {
   if [[ "$status" != 200 || "$(cat "$TMP_ROOT/storage-get")" != object-storage-roundtrip ]]; then
     echo "Rust local storage download did not match upload ($status)" >&2; exit 1
   fi
-  status=$(fetch_route_path "$server_host" "$route_host" /_tako/storages/uploads/e2e/file.txt "$TMP_ROOT/storage-headers" "$TMP_ROOT/storage-unsigned")
+  status=$(fetch_route_path "$server_host" "$route_host" "${download%%\?*}" "$TMP_ROOT/storage-headers" "$TMP_ROOT/storage-unsigned")
   if [[ "$status" != 403 ]]; then echo "Unsigned local storage request was not rejected ($status)" >&2; exit 1; fi
 }
 

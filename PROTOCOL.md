@@ -86,6 +86,8 @@ The Rust development and production proxies own signed `/_tako/storages/<binding
 
 `tako-storage` delegates object operations to Apache `object_store`. Local roots are in the application's private Tako data area; app-owned data is only a capability-confined migration source. Development roots also include a stable hash of the registration/config identity. Object and directory writes are synced before acknowledgment. Local uploads share the production 128 MiB request-body limit. Storage requests do not require a running app worker.
 
+Local binding paths and logical object keys use `object_store::path` encoding in the private filesystem, including during legacy imports. This keeps literal `%`, `#`, and backslash characters distinct from backend staging names. Signed URLs continue to encode the original logical key.
+
 ## Health probes
 
 The server probes `GET /status` with `Host: <app>.tako` and an `X-Tako-Internal-Token` header. Tako SDK adapters own this internal endpoint. A healthy response must be successful and echo the token header so an unrelated public `/status` route cannot satisfy the probe.

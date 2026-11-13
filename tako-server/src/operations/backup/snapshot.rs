@@ -10,6 +10,8 @@ use sha2::{Digest, Sha256};
 
 mod database_restore;
 mod sqlite;
+#[cfg(test)]
+mod storage_tests;
 
 use super::journal::{self, RestoreIntent, RollbackDir, Steps};
 use super::mounts;

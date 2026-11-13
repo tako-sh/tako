@@ -78,6 +78,7 @@ landlock = "0.4.7"
 rusqlite = { workspace = true, features = ["backup"] }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 toml.workspace = true
 h2 = "0.4"
 filetime = "=0.2.29"

@@ -5,9 +5,10 @@ export default async function fetch(request: Request) {
   if (url.pathname === "/storage/urls") {
     const storage = tako.storages.uploads;
     if (!storage) return new Response("Missing storage", { status: 500 });
+    const key = "e2e%/report#123";
     return Response.json({
-      upload: await storage.createUploadUrl("e2e/file.txt"),
-      download: await storage.createDownloadUrl("e2e/file.txt"),
+      upload: await storage.createUploadUrl(key),
+      download: await storage.createDownloadUrl(key),
     });
   }
   if (url.pathname === "/") {

@@ -103,7 +103,7 @@ pub(in crate::operations::backup) fn fixture_root_certificate() -> reqwest::Cert
     reqwest::Certificate::from_pem(fixture_tls().ca_pem.as_bytes()).unwrap()
 }
 
-fn tls_listener() -> (std::net::TcpListener, String, openssl::ssl::SslAcceptor) {
+pub(super) fn tls_listener() -> (std::net::TcpListener, String, openssl::ssl::SslAcceptor) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let endpoint = format!("https://{}", listener.local_addr().unwrap());
@@ -121,7 +121,7 @@ fn tls_listener() -> (std::net::TcpListener, String, openssl::ssl::SslAcceptor) 
     (listener, endpoint, acceptor.build())
 }
 
-fn accept(
+pub(super) fn accept(
     listener: &std::net::TcpListener,
     acceptor: &openssl::ssl::SslAcceptor,
 ) -> openssl::ssl::SslStream<std::net::TcpStream> {
@@ -152,7 +152,7 @@ fn accept(
 /// Read one whole request, body included. Answering and closing while the
 /// client is still sending its body resets the connection, and the client
 /// then reports a transport error instead of the fixture's response.
-fn read_request(stream: &mut impl Read) -> Vec<u8> {
+pub(super) fn read_request(stream: &mut impl Read) -> Vec<u8> {
     fn fill(stream: &mut impl Read, bytes: &mut Vec<u8>) {
         let mut chunk = [0; 4096];
         let size = stream.read(&mut chunk).unwrap();
@@ -242,7 +242,7 @@ fn the_fixture_reads_a_request_to_the_end_of_its_body() {
     }
 }
 
-fn storage_binding(endpoint: &str) -> tako_core::StorageBinding {
+pub(super) fn storage_binding(endpoint: &str) -> tako_core::StorageBinding {
     serde_json::from_value(serde_json::json!({
         "provider": "s3", "bucket": "fixture", "endpoint": endpoint,
         "region": "local", "access_key_id": "fixture", "secret_access_key": "fixture",
