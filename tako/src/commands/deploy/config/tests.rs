@@ -3,6 +3,101 @@ use crate::config::{EnvConfig, ServerEntry, ServerInventory, ServerTarget, TakoT
 use tempfile::TempDir;
 
 #[test]
+fn release_snapshot_rechecks_expiry_after_a_valid_preflight_snapshot() {
+    let project = TempDir::new().unwrap();
+    let mut config = TakoToml::default();
+    config
+        .envs
+        .insert("production".into(), EnvConfig::default());
+    let mut secrets = SecretsStore::default();
+    secrets.ensure_env_key_id("production").unwrap();
+    secrets
+        .set("production", "API_KEY", "encrypted".into())
+        .unwrap();
+    let initial =
+        validate_release_secret_snapshot(project.path(), &config, &secrets, "production", 1, true);
+    assert!(!initial.has_errors(), "{:?}", initial.errors);
+
+    // The final network sync can observe a concurrent change after preflight.
+    secrets
+        .environments
+        .get_mut("production")
+        .unwrap()
+        .app
+        .get_mut("API_KEY")
+        .unwrap()
+        .expires_on = Some("2000-01-01".into());
+    for configure in [false, true] {
+        let result = validate_release_secret_snapshot(
+            project.path(),
+            &config,
+            &secrets,
+            "production",
+            1,
+            configure,
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.contains("API_KEY") && error.contains("expired on 2000-01-01")),
+            "{:?}",
+            result.errors
+        );
+    }
+}
+
+#[test]
+fn release_snapshot_rechecks_removed_credentials_only_for_binding_administrators() {
+    let project = TempDir::new().unwrap();
+    let mut config = TakoToml::default();
+    config.envs.insert(
+        "production".into(),
+        EnvConfig {
+            route: Some("*.example.com".into()),
+            ..Default::default()
+        },
+    );
+    let mut secrets = SecretsStore::default();
+    secrets.ensure_env_key_id("production").unwrap();
+    secrets
+        .set_credential(
+            "production",
+            crate::config::SSL_CLOUDFLARE_CREDENTIAL_NAME,
+            crate::config::EncryptedSecretValue::new("encrypted".into(), None),
+        )
+        .unwrap();
+    let initial =
+        validate_release_secret_snapshot(project.path(), &config, &secrets, "production", 1, true);
+    assert!(!initial.has_errors(), "{:?}", initial.errors);
+    secrets
+        .remove_credential("production", crate::config::SSL_CLOUDFLARE_CREDENTIAL_NAME)
+        .unwrap();
+    let result =
+        validate_release_secret_snapshot(project.path(), &config, &secrets, "production", 1, true);
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|error| error.contains("ssl.cloudflare")),
+        "{:?}",
+        result.errors
+    );
+    // Scoped deployment clients reuse the server's provisioned credentials.
+    assert!(
+        !validate_release_secret_snapshot(
+            project.path(),
+            &config,
+            &secrets,
+            "production",
+            1,
+            false,
+        )
+        .has_errors()
+    );
+}
+
+#[test]
 fn resolve_deploy_environment_prefers_explicit_env() {
     let mut config = TakoToml::default();
     config.envs.insert(

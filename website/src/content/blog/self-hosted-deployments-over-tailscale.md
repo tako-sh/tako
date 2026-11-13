@@ -6,6 +6,8 @@ description: "Tako keeps server management on private Tailscale HTTP and signs m
 image: eaa03cb44e6f
 ---
 
+> **Update, November 13, 2026:** This article describes an earlier Tako release. Server commands now use `tako network server`; native network membership supplies the inventory. See the [current enrollment instructions](/docs/networks/).
+
 > **Networking update.** The Tailscale and NetBird integrations and older setup commands described here have been retired. For new installations, see [native WireGuard networks](/blog/native-wireguard-networks-for-vps-apps/). For an existing Tailscale or NetBird host, follow the [migration guide](/blog/migrate-tailscale-to-tako-wireguard/).
 
 SSH is a wonderful recovery tool. It is not a wonderful status API.

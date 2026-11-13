@@ -1,9 +1,11 @@
 ---
 title: "Encrypted App Secrets in Git, Keys in iCloud"
 date: "2026-05-07T04:55"
-description: "Tako lets you commit encrypted app secrets to git while decryption keys stay local, sync through iCloud Keychain, or move by export/import."
+description: "How Tako's earlier Git-based secret storage used local environment keys, iCloud Keychain, and key export/import, with links to current network-based storage."
 image: 16daaacdbe32
 ---
+
+> **Update, November 13, 2026:** This article describes an earlier Tako release. Published encrypted secrets now live on network servers, with ignored drafts in each worktree. Keep `tako.toml` in Git; see [current secret storage and migration](/docs/secrets/).
 
 Secrets are easy until a second laptop shows up.
 

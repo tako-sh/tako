@@ -6,6 +6,8 @@ image: 253da8d8143d
 imageAlt: "An octopus listens on a switchboard receiver while plugging in a second cable beside the first."
 ---
 
+> **Update, November 13, 2026:** This article describes an earlier Tako release. Server commands now use `tako network server`; native network membership supplies the inventory. See the [current enrollment instructions](/docs/networks/).
+
 If you can SSH into your VPS only by its Tailscale name, keep that session open. It can bootstrap the replacement network. It can also get you back onto the machine if your provider drops the first WireGuard packet. The useful finish line here is a *second, fresh administrator login* over the new network while your existing app still serves its usual URL.
 
 We'll migrate one existing Linux VPS in place. The example uses the legacy inventory name `shop-vps`, the local network alias `shop`, and the public example address `203.0.113.10`. Substitute your own values throughout. If you use NetBird, the same enrollment and verification steps apply. Keep your existing NetBird connection available during the move and use its own cleanup procedure at the end. [How native networks work](/blog/native-wireguard-networks-for-vps-apps/)

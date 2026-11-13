@@ -175,6 +175,9 @@ complete. Commit and push each coherent milestone to the same branch.
   than treating inaccessible administrative credentials as a request to clear them.
 - Reading an existing worktree draft does not rewrite it; this avoids a dev
   watcher restart loop. Local edits still trigger reloads through the new filename.
+- Deployment revalidates its fixed release snapshot after the final sync, because
+  concurrent publication can change secrets or remove credentials after preflight.
+  Scoped clients continue to inherit server-provisioned administrative bindings.
 - A real two-agent Corrosion test caught the required default on non-null payload
   columns, which ordinary SQLite accepts without a default. The corrected schemas
   load and preserve independent records and conflicting operation variants.

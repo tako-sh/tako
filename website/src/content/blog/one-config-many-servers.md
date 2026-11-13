@@ -5,6 +5,8 @@ description: "One tako.toml, two environments, three servers across regions — 
 image: 5dc15ac9f3c7
 ---
 
+> **Update, November 13, 2026:** This article describes an earlier Tako release. Server commands now use `tako network server`; native network membership supplies the inventory. See the [current enrollment instructions](/docs/networks/).
+
 Your side project works. It's deployed on one VPS, it has real HTTPS, you're happy. Now someone actually depends on it, and the questions start piling up: where do I test changes before prod? Where does the second server go when the first one falls over? How do I point staging at a different database without duplicating the whole config?
 
 Tako's answer is: add a few lines to your `tako.toml`. One config file describes every environment you run and every server each environment lives on. Deploys know the difference, rolling updates happen in parallel, and rollback is a single command.

@@ -5,6 +5,8 @@ description: 'Use container = "Dockerfile" to ship Dockerfile-shaped apps to a V
 image: 5530a4adbe14
 ---
 
+> **Update, November 13, 2026:** This article describes an earlier Tako release. Server commands now use `tako network server`; native network membership supplies the inventory. See the [current enrollment instructions](/docs/networks/).
+
 Tako still does not default to Docker. Native releases are faster, smaller, and simpler for the Bun, Node, and Go apps Tako understands directly.
 
 But sometimes your app is already shaped like a container. Maybe it needs system packages. Maybe the runtime is not a native Tako runtime yet. Maybe your team already has a carefully tuned Dockerfile and you just want the VPS deploy experience around it.

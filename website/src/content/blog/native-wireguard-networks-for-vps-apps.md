@@ -6,6 +6,8 @@ image: 01e13c209f85
 imageAlt: "A coral octopus lays a cable between server racks on two islands."
 ---
 
+> **Update, November 13, 2026:** This article describes an earlier Tako release. Server commands now use `tako network server`; native network membership supplies the inventory. See the [current enrollment instructions](/docs/networks/).
+
 A CI runner needs to upload a release. An operator needs a shell on the VPS. Two app instances need to exchange events. All three need to know which machine they are talking to, but only two need a private IP route. Tako's native networks let us give each of them an identity and grant the access its job requires.
 
 Take a shop that runs on two VPSs. The shop's production network can contain both servers, a developer's laptop, and a build runner with permission to deploy just `shop/production`. The runner can work in a sandbox that only permits outbound HTTPS. The servers can talk to each other over WireGuard. Here's how those pieces fit together. [Native networks documentation](/docs/networks/)

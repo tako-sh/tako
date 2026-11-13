@@ -21,7 +21,7 @@ Normal deploys check the CLI/server protocol before parallel deployment starts. 
 
 `PrepareRelease` carries the current deployment's secrets for preparation, including Compose interpolation on a first deploy. Preparation does not replace persisted app secrets; activation persists them after preparation succeeds.
 
-Server upgrades run the candidate binary in check-only mode before reload. The candidate checks the invoking CLI version and every active release, then repeats the check after the new process is ready. A mismatch aborts the upgrade. If a failure happens after reload starts, Tako restores and restarts the previous binary before leaving upgrade mode. `tako servers upgrade --force` permits an incompatible attempt but does not disable readiness or rollback.
+Server upgrades run the candidate binary in check-only mode before reload. The candidate checks the invoking CLI version and every active release, then repeats the check after the new process is ready. A mismatch aborts the upgrade. If a failure happens after reload starts, Tako restores and restarts the previous binary before leaving upgrade mode. `tako network server upgrade --force` permits an incompatible attempt but does not disable readiness or rollback.
 
 Before the controlled reload, the CLI writes a one-shot upgrade-owner marker under the server data directory. The candidate consumes it and preserves the matching persisted upgrade fence through state restoration and the post-readiness check. An ordinary reload has no marker, so it still clears a stale upgrade lock.
 

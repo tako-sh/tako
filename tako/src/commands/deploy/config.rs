@@ -4,7 +4,7 @@ use crate::build::{
     BuildAdapter, infer_adapter_from_preset_reference, qualify_runtime_local_preset_ref,
 };
 use crate::commands::server;
-use crate::config::{ServerInventory, ServerTarget, TakoToml};
+use crate::config::{SecretsStore, ServerInventory, ServerTarget, TakoToml};
 use crate::output;
 
 use super::format::{
@@ -365,6 +365,41 @@ pub(super) fn run_bun_lockfile_preflight(workspace_root: &Path) -> Result<bool, 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let detail = if stderr.is_empty() { stdout } else { stderr };
     Err(format_bun_lockfile_preflight_error(&detail))
+}
+
+/// Recheck the fixed release snapshot after publication has merged concurrent
+/// changes. Early preflight validation may have observed different values.
+pub(super) fn validate_release_secret_snapshot(
+    project: &Path,
+    config: &TakoToml,
+    secrets: &SecretsStore,
+    env: &str,
+    server_count: usize,
+    configure_bindings: bool,
+) -> crate::validation::ValidationResult {
+    let mut result = crate::validation::validate_secrets_for_deployment(secrets, env);
+    if configure_bindings {
+        result.merge(crate::validation::validate_ssl_for_deployment(
+            &config.get_routes(env).unwrap_or_default(),
+            config.get_ssl_provider(env),
+            secrets,
+            env,
+        ));
+        result.merge(validate_runtime_state_storage_for_deploy(
+            project,
+            config,
+            secrets,
+            env,
+            server_count,
+        ));
+        result.merge(crate::validation::validate_storages_for_deployment(
+            config,
+            secrets,
+            env,
+            server_count,
+        ));
+    }
+    result
 }
 
 #[cfg(test)]

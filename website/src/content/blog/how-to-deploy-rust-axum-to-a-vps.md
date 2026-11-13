@@ -6,6 +6,8 @@ image: 58ad61cea9a8
 imageAlt: "A coral octopus secures an Axum application module inside a VPS server as an HTTPS lock lights up."
 ---
 
+> **Update, November 13, 2026:** This article describes an earlier Tako release. Server commands now use `tako network server`; native network membership supplies the inventory. See the [current enrollment instructions](/docs/networks/).
+
 > **Networking update.** The Tailscale and NetBird integrations and older setup commands described here have been retired. For new installations, see [native WireGuard networks](/blog/native-wireguard-networks-for-vps-apps/). For an existing Tailscale or NetBird host, follow the [migration guide](/blog/migrate-tailscale-to-tako-wireguard/).
 
 Your Axum router works locally. Getting it onto a VPS adds a second project: build a Linux binary, keep it running, issue a certificate, and work out whether the next version is healthy before sending users to it.

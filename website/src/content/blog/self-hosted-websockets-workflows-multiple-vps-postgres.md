@@ -5,6 +5,8 @@ description: "Use postgres_url to share Tako channel replay and workflow state a
 image: ec7ad3d89cdd
 ---
 
+> **Update, November 13, 2026:** This article describes an earlier Tako release. Published encrypted secrets now live on network servers, with ignored drafts in each worktree. Keep `tako.toml` in Git; see [current secret storage and migration](/docs/secrets/).
+
 Single-server state is easy to reason about. One app, one proxy, one SQLite file, one place where channel replay and workflow runs live.
 
 Multi-server state is where the footguns start. If a user opens a WebSocket connection to the Tokyo VPS and your checkout route publishes from the Los Angeles VPS, that publish still has to arrive. If a scheduled workflow runs on three servers, it should not accidentally send the same reminder three times unless that is exactly what you asked for.

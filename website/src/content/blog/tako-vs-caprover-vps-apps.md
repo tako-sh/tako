@@ -5,6 +5,8 @@ description: "Compare CapRover's open-source dashboard PaaS with Tako's CLI-firs
 image: 14ec9e1ce95b
 ---
 
+> **Update, November 13, 2026:** This article describes an earlier Tako release. Published encrypted secrets now live on network servers, with ignored drafts in each worktree. Keep `tako.toml` in Git; see [current secret storage and migration](/docs/secrets/).
+
 [CapRover](https://caprover.com/) is one of the friendliest open-source ways to turn a VPS into a self-hosted PaaS. Install it, point a wildcard domain at the box, open the dashboard, and you get app deploys, domains, HTTPS, logs, environment variables, Docker images, and one-click apps in a browser.
 
 That is a good product shape. It gives people a home base.

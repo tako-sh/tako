@@ -5,6 +5,8 @@ description: "Configure Tako backups with private S3-compatible storage, encrypt
 image: f7c38670efaf
 ---
 
+> **Update, November 13, 2026:** This article describes an earlier Tako release. Published encrypted secrets now live on network servers, with ignored drafts in each worktree. Keep `tako.toml` in Git; see [current secret storage and migration](/docs/secrets/).
+
 The cute version of persistent app storage is "SQLite and uploads on a $5 VPS."
 
 The grown-up version is "and I can restore it when the disk disappears."

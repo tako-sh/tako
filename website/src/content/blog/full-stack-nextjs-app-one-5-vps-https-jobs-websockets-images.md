@@ -5,6 +5,8 @@ description: "Deploy a full-stack Next.js app to one cheap VPS with Tako: HTTPS,
 image: cbd3c4bcfbec
 ---
 
+> **Update, November 13, 2026:** This article describes an earlier Tako release. Server commands now use `tako network server`; native network membership supplies the inventory. See the [current enrollment instructions](/docs/networks/).
+
 > **Networking update.** The server setup described here uses Tako’s legacy VPN integration. For new installations, see [native WireGuard networks](/blog/native-wireguard-networks-for-vps-apps/). For an existing Tailscale or NetBird host, follow the [migration guide](/blog/migrate-tailscale-to-tako-wireguard/).
 
 One cheap VPS can run more than a homepage.

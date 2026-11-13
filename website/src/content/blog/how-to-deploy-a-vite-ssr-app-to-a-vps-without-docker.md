@@ -5,6 +5,8 @@ description: "Build a Vite React SSR app, wrap the server bundle with tako.sh/vi
 image: cdeff33db1e3
 ---
 
+> **Update, November 13, 2026:** This article describes an earlier Tako release. Server commands now use `tako network server`; native network membership supplies the inventory. See the [current enrollment instructions](/docs/networks/).
+
 > **Networking update.** The Tailscale and NetBird integrations and older setup commands described here have been retired. For new installations, see [native WireGuard networks](/blog/native-wireguard-networks-for-vps-apps/). For an existing Tailscale or NetBird host, follow the [migration guide](/blog/migrate-tailscale-to-tako-wireguard/).
 
 Vite's SSR story is refreshingly direct: make a browser build, make a server build, and run the server entry in production. Most tutorials finish by wrapping that in Express, a Dockerfile, or a hosted platform adapter.

@@ -5,6 +5,8 @@ description: "Generate local Tako declarations and language-neutral schemas for 
 image: 75030c2f757f
 ---
 
+> **Update, November 13, 2026:** This article describes an earlier Tako release. Published encrypted secrets now live on network servers, with ignored drafts in each worktree. Keep `tako.toml` in Git; see [current secret storage and migration](/docs/secrets/).
+
 Most runtime config is reached through APIs that lie to you. `process.env` pretends every variable is a string and returns `undefined` when you typo a name. `process.env.DATBASE_URL` is a syntactically valid read that fails silently, then explodes somewhere downstream — usually at 2am, usually in production.
 
 Tako's JavaScript SDK ships a different shape. App code imports `tako` from `tako.sh`, and `tako generate` writes a project-local `tako.d.ts` file that teaches TypeScript your secret keys, environment names, channel metadata, and workflow metadata. No app global, no guessing — just ES modules.

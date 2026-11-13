@@ -430,16 +430,31 @@ async fn run_async(
         }
     }
 
+    secrets = tokio::task::block_in_place(|| {
+        crate::network::secrets::sync_environment(&project_dir, &tako_config, &app_name, &env, true)
+    })?;
+    let final_validation = config::validate_release_secret_snapshot(
+        &project_dir,
+        &tako_config,
+        &secrets,
+        &env,
+        server_names.len(),
+        configure_bindings,
+    );
+    if final_validation.has_errors() {
+        return Err(format!(
+            "Secret errors after network synchronization:\n  {}",
+            final_validation.errors.join("\n  ")
+        )
+        .into());
+    }
+
     let deploy_task_tree = should_use_deploy_task_tree()
         .then(|| DeployTaskTreeController::new(&server_names, &build_groups));
 
     if let (Some(task_tree), Some(first_build_group)) = (&deploy_task_tree, build_groups.first()) {
         task_tree.mark_build_target_running(&format_build_plan_target_label(first_build_group));
     }
-
-    secrets = tokio::task::block_in_place(|| {
-        crate::network::secrets::sync_environment(&project_dir, &tako_config, &app_name, &env, true)
-    })?;
 
     let use_per_server_spinners = deploy_task_tree.is_none()
         && should_use_per_server_spinners(server_names.len(), output::is_interactive());

@@ -5,6 +5,8 @@ description: "How Tako encrypts secrets at rest, injects them via fd 3 at runtim
 image: 15ea83719868
 ---
 
+> **Update, November 13, 2026:** This article describes an earlier Tako release. Published encrypted secrets now live on network servers, with ignored drafts in each worktree. Keep `tako.toml` in Git; see [current secret storage and migration](/docs/secrets/).
+
 Every deploy tool has a secrets story. Most of them end with "add it to your `.env` file." The `.env` file sits in `.gitignore`, gets copy-pasted between teammates over Slack, and lives as plaintext on every server it touches. If someone commits it by accident — and someone always does — you're rotating every key in the file.
 
 Tako does secrets differently. Encrypted at rest, injected at runtime through a file descriptor, and typed so your editor knows what's available. No plaintext touches disk. No environment variables leak to child processes.
