@@ -213,15 +213,30 @@ mod bridge {
         *request.uri_mut() = session.req_header().uri.clone();
         *request.version_mut() = session.req_header().version;
         *request.headers_mut() = session.req_header().headers.clone();
+        let idle_timeout = crate::native_management::BODY_TIMEOUT;
+        // Give the receiver time to report its own timeout before the relay closes the body.
+        let (body_timeout, read_timeout) =
+            if request.uri().path() == "/v1/management/release-artifact" {
+                let size = request
+                    .headers()
+                    .get("x-tako-artifact-size")
+                    .and_then(|value| value.to_str().ok()?.parse().ok())
+                    .unwrap_or(0);
+                (
+                    tako_core::release_artifact_upload_timeout(size) + idle_timeout,
+                    idle_timeout * 2,
+                )
+            } else {
+                (Duration::from_secs(600), idle_timeout)
+            };
         // The handler can reject an upload before consuming it. A closed body
         // receiver cancels the reader; this connection is never reused afterward.
         session.set_keepalive(None);
         let body_session = &mut *session;
         let pump = async move {
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(600);
+            let deadline = tokio::time::Instant::now() + body_timeout;
             loop {
-                let read_deadline =
-                    deadline.min(tokio::time::Instant::now() + Duration::from_secs(30));
+                let read_deadline = deadline.min(tokio::time::Instant::now() + read_timeout);
                 let chunk = tokio::select! {
                     biased;
                     _ = sender.closed() => break,
@@ -311,6 +326,43 @@ mod bridge {
                 assert!(response.starts_with("HTTP/1.1 200"));
                 assert!(response.ends_with("abcde"));
             }).await.unwrap();
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn large_artifact_keeps_streaming_past_ten_minutes() {
+            const MIB: usize = 1024 * 1024;
+            let size = 102 * MIB;
+            let (mut client, stream) = tokio::io::duplex(64 * 1024);
+            let sender = async {
+                let headers = format!(
+                    "POST /v1/management/release-artifact HTTP/1.1\r\nHost: node.tako.internal\r\nContent-Length: {size}\r\nX-Tako-Artifact-Size: {size}\r\n\r\n"
+                );
+                client.write_all(headers.as_bytes()).await.unwrap();
+                let chunk = vec![0u8; MIB];
+                for _ in 0..102 {
+                    tokio::time::sleep(Duration::from_secs(7)).await;
+                    client.write_all(&chunk).await.unwrap();
+                }
+                let mut response = String::new();
+                client.read_to_string(&mut response).await.unwrap();
+                assert!(response.starts_with("HTTP/1.1 200"));
+            };
+            let receiver = async {
+                let mut session = Session::new_h1(Box::new(stream));
+                session.read_request().await.unwrap();
+                forward(&mut session, |request| async move {
+                    let mut body = request.into_body();
+                    let mut received = 0;
+                    while let Some(frame) = body.frame().await {
+                        received += frame.unwrap().into_data().unwrap().len();
+                    }
+                    assert_eq!(received, size);
+                    hyper::Response::new(http_body_util::Full::new(Bytes::new()))
+                })
+                .await
+                .unwrap();
+            };
+            tokio::join!(sender, receiver);
         }
     }
 }

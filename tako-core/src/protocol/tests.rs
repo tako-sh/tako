@@ -89,6 +89,15 @@ fn management_auth_message_includes_context_and_body() {
 }
 
 #[test]
+fn release_upload_deadline_scales_with_compressed_size_and_stays_bounded() {
+    let mib = 1024 * 1024;
+    assert_eq!(release_artifact_upload_timeout(1).as_secs(), 306);
+    assert_eq!(release_artifact_upload_timeout(mib + 1).as_secs(), 312);
+    assert_eq!(release_artifact_upload_timeout(102 * mib).as_secs(), 912);
+    assert_eq!(release_artifact_upload_timeout(u64::MAX).as_secs(), 3372);
+}
+
+#[test]
 fn release_artifact_upload_auth_body_is_stable() {
     let body = release_artifact_upload_auth_body("my-app/production", "v1", 42, "abcdef");
 

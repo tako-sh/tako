@@ -27,7 +27,7 @@ const AUTH_HEADER: &str = "x-tako-network-authorization";
 const MAX_AUTH_HEADER: usize = 16 * 1024;
 const MAX_RPC_BODY: usize = 1024 * 1024;
 const MAX_LOG_BYTES: usize = 1024 * 1024;
-const BODY_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const BODY_TIMEOUT: Duration = Duration::from_secs(30);
 type HttpResponse = Response<Full<Bytes>>;
 
 pub(crate) async fn handle_request<B>(

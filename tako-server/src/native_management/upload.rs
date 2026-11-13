@@ -5,8 +5,6 @@ use tokio::io::AsyncWriteExt;
 
 use super::*;
 
-const MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
-const UPLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 static UPLOAD_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 
 pub(super) struct Metadata {
@@ -27,7 +25,7 @@ impl Metadata {
                 .map_err(|_| "Invalid artifact size")?,
             sha256: get("x-tako-artifact-sha256")?.into(),
         };
-        if metadata.size == 0 || metadata.size > MAX_ARTIFACT_BYTES {
+        if metadata.size == 0 || metadata.size > tako_core::MAX_RELEASE_ARTIFACT_BYTES {
             return Err("Artifact size exceeds quota");
         }
         if metadata.sha256.len() != 64
@@ -101,36 +99,63 @@ where
     };
     let temp = UploadFile(temp_path);
     let mut file = tokio::fs::File::from_std(file);
-    let received = tokio::time::timeout(UPLOAD_TIMEOUT, async {
-        let mut count = 0_u64;
+    let mut received = 0_u64;
+    let timeout = tako_core::release_artifact_upload_timeout(metadata.size);
+    let body_received = tokio::time::timeout(timeout, async {
         let mut digest = Sha256::new();
-        while let Some(frame) = tokio::time::timeout(BODY_TIMEOUT, body.frame())
+        // Empty frames don't count as progress toward the declared length.
+        let mut idle_deadline = tokio::time::Instant::now() + BODY_TIMEOUT;
+        while let Some(frame) = tokio::time::timeout_at(idle_deadline, body.frame())
             .await
-            .map_err(|_| ())?
+            .map_err(|_| (StatusCode::REQUEST_TIMEOUT, "Artifact upload stalled"))?
         {
-            let frame = frame.map_err(|_| ())?;
-            let data = frame.into_data().map_err(|_| ())?;
-            count = count.checked_add(data.len() as u64).ok_or(())?;
-            if count > metadata.size {
-                return Err(());
+            let frame = frame.map_err(|err| {
+                tracing::debug!(%err, "Failed to read artifact body");
+                (StatusCode::BAD_REQUEST, "Artifact upload interrupted")
+            })?;
+            let Ok(data) = frame.into_data() else {
+                continue;
+            };
+            if data.is_empty() {
+                continue;
             }
+            if data.len() as u64 > metadata.size - received {
+                return Err((StatusCode::BAD_REQUEST, "Artifact exceeds declared size"));
+            }
+            file.write_all(&data).await.map_err(|err| {
+                tracing::error!(%err, "Failed to write artifact file");
+                (StatusCode::INTERNAL_SERVER_ERROR, "Artifact write failed")
+            })?;
+            received += data.len() as u64;
             digest.update(&data);
-            file.write_all(&data).await.map_err(|_| ())?;
+            idle_deadline = tokio::time::Instant::now() + BODY_TIMEOUT;
         }
-        if count != metadata.size || hex::encode(digest.finalize()) != metadata.sha256 {
-            return Err(());
+        if received != metadata.size {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "Artifact ended before declared size",
+            ));
         }
-        file.flush().await.map_err(|_| ())?;
-        Ok::<_, ()>(())
+        if hex::encode(digest.finalize()) != metadata.sha256 {
+            return Err((StatusCode::BAD_REQUEST, "Artifact SHA-256 mismatch"));
+        }
+        file.flush().await.map_err(|err| {
+            tracing::error!(%err, "Failed to flush artifact file");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Artifact flush failed")
+        })
     })
-    .await;
-    drop(file);
-    if !matches!(received, Ok(Ok(()))) {
+    .await
+    .unwrap_or(Err((
+        StatusCode::REQUEST_TIMEOUT,
+        "Artifact upload deadline exceeded",
+    )));
+    if let Err((status, reason)) = body_received {
         return error(
-            StatusCode::BAD_REQUEST,
-            "Artifact body size, digest, or deadline mismatch",
+            status,
+            &format!("{reason} ({received} of {} bytes received)", metadata.size),
         );
     }
+    drop(file);
     match tokio::spawn(async move {
         let guard = state.management_lock.clone().lock_owned().await;
         if state.is_draining() {

@@ -125,7 +125,6 @@ fn native_request_binds_exact_bytes_scope_method_and_server_without_ssh_auth() {
     let client = ManagementClient {
         http: identity.client(MANAGEMENT_RPC_TIMEOUT).unwrap(),
         deploy_http: identity.client(MANAGEMENT_RPC_TIMEOUT).unwrap(),
-        upload_http: identity.client(MANAGEMENT_RPC_TIMEOUT).unwrap(),
         signer: ManagementAuth::Native(identity),
         preflight_scope: None,
     };
