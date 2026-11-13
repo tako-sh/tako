@@ -313,6 +313,7 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if standby {
+        state.clone().start_unresolved_restore_watch(rt.handle());
         spawn_standby_monitor(
             &rt,
             StandbyPromotionConfig {

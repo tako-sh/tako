@@ -60,6 +60,12 @@ impl ServerState {
         runtime: ServerRuntimeConfig,
         expected_upgrade_owner: Option<&str>,
     ) -> Result<Self, StateStoreError> {
+        // Before anything that may start app instances.
+        let standby_lock = if runtime.standby {
+            Some(standby_lock_at_start(&data_dir)?)
+        } else {
+            None
+        };
         let app_manager = Arc::new(AppManager::new(data_dir.clone()));
         let load_balancer = Arc::new(LoadBalancer::new(app_manager.clone()));
         let device_key = load_or_create_device_key(&data_dir.join("secret.key"))?;
@@ -246,6 +252,7 @@ impl ServerState {
             state_store,
             drain_requested,
             drain_activity,
+            standby_lock: parking_lot::Mutex::new(standby_lock),
             drain_observer_started: AtomicBool::new(false),
             proxy_requests,
             server_mode: AsyncRwLock::new(server_mode),
@@ -253,6 +260,33 @@ impl ServerState {
             workflows,
         })
     }
+}
+
+/// How long a start waits for a lease another server process holds
+/// exclusively, such as a restore's standby lock.
+const STARTUP_LEASE_WAIT: Duration = if cfg!(test) {
+    Duration::from_secs(2)
+} else {
+    Duration::from_secs(5 * 60)
+};
+
+/// A standby runs the apps of the data directory, so it never starts while
+/// a restore holds the standby lock: it waits for the restore to end, up to
+/// [`STARTUP_LEASE_WAIT`], then fails its start.
+fn standby_lock_at_start(
+    data_dir: &std::path::Path,
+) -> Result<crate::state_store::DrainLease, StateStoreError> {
+    crate::state_store::wait_for_lease(
+        STARTUP_LEASE_WAIT,
+        "a backup restore on this data directory to finish before this standby runs apps",
+        || crate::state_store::DrainLease::try_standby_in(data_dir, false),
+    )?
+    .ok_or_else(|| {
+        StateStoreError::InvalidData(format!(
+            "a backup restore on this data directory still runs after {} s, and a standby never runs apps during a restore; retry startup once the restore has finished",
+            STARTUP_LEASE_WAIT.as_secs()
+        ))
+    })
 }
 
 pub(crate) fn native_channel_client(

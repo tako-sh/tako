@@ -67,6 +67,66 @@ fn upgrade_reload_marker_is_consumed() {
     assert!(!marker.exists());
 }
 
+fn start_state(data_dir: &Path, standby: bool) -> Result<ServerState, String> {
+    ServerState::new_with_runtime(
+        data_dir.to_path_buf(),
+        Arc::new(crate::tls::CertManager::new(
+            crate::tls::CertManagerConfig {
+                cert_dir: data_dir.join("certs"),
+                ..Default::default()
+            },
+        )),
+        None,
+        Arc::new(parking_lot::RwLock::new(HashMap::new())),
+        crate::ServerRuntimeConfig {
+            standby,
+            ..crate::ServerRuntimeConfig::for_defaults(data_dir.to_path_buf())
+        },
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// A standby never runs apps while a restore runs: its start waits for the
+/// restore's exclusive standby lock, fails once the wait runs out, and holds
+/// a shared one for as long as it runs, which restores refuse to start under.
+#[test]
+fn a_standby_start_waits_for_a_running_restore_and_then_locks_restores_out() {
+    use crate::state_store::DrainLease;
+    let tmp = tempfile::tempdir().unwrap();
+    let restoring = |exclusive| DrainLease::try_standby_in(tmp.path(), exclusive).unwrap();
+
+    let restore = restoring(true).unwrap();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        drop(restore);
+    });
+    let standby = start_state(tmp.path(), true);
+    release.join().unwrap();
+    assert!(
+        standby.is_ok(),
+        "the standby must start once the restore ends"
+    );
+    assert!(
+        restoring(true).is_none(),
+        "a running standby must lock restores out"
+    );
+    drop(standby);
+    assert!(restoring(true).is_some(), "a stopped standby holds nothing");
+
+    let primary = start_state(tmp.path(), false).unwrap();
+    assert!(
+        restoring(true).is_some(),
+        "only a standby holds the standby lock"
+    );
+    drop(primary);
+
+    let _restore = restoring(true).unwrap();
+    assert!(
+        start_state(tmp.path(), true).is_err(),
+        "a standby must not start while a restore runs"
+    );
+}
+
 /// A normal start never rolls back a restore while another server process
 /// (a hot standby serving the same apps) holds the drain activity lease,
 /// and none can start serving app data while a normal start recovers.

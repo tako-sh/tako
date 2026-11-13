@@ -185,6 +185,9 @@ async fn retire_local_runtime(state: &ServerState, deadline: Instant) -> Result<
         .await
         .map_err(|_| "Local workflow socket shutdown timed out".to_string())?;
     state.drain_activity.lock().take();
+    // This process never runs an app instance again, so restores no longer
+    // refuse because of it.
+    state.standby_lock.lock().take();
     Ok(())
 }
 
@@ -206,7 +209,7 @@ mod tests {
     use super::*;
     use std::os::unix::ffi::OsStringExt;
 
-    fn runtime_state(path: &Path) -> Arc<ServerState> {
+    fn runtime_state(path: &Path, standby: bool) -> Arc<ServerState> {
         let path = path.to_path_buf();
         std::thread::spawn(move || {
             Arc::new(
@@ -220,7 +223,10 @@ mod tests {
                     )),
                     None,
                     Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
-                    crate::ServerRuntimeConfig::for_defaults(path),
+                    crate::ServerRuntimeConfig {
+                        standby,
+                        ..crate::ServerRuntimeConfig::for_defaults(path)
+                    },
                 )
                 .unwrap(),
             )
@@ -229,10 +235,27 @@ mod tests {
         .unwrap()
     }
 
+    /// The retired standby runs no app instance again: a restore in the
+    /// promoted child must not refuse because of it.
+    #[tokio::test]
+    async fn retirement_releases_the_standby_lock() {
+        let dir = crate::isolation::fixture::TestDataDir::new().unwrap();
+        let state = runtime_state(dir.path(), true);
+        let restore = || crate::state_store::DrainLease::try_standby_in(dir.path(), true).unwrap();
+        assert!(restore().is_none(), "a standby holds the standby lock");
+        retire_local_runtime(&state, Instant::now() + Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert!(
+            restore().is_some(),
+            "a retired standby must release the lock"
+        );
+    }
+
     #[tokio::test]
     async fn retirement_waits_for_active_spawns_before_snapshotting_instances() {
         let dir = crate::isolation::fixture::TestDataDir::new().unwrap();
-        let state = runtime_state(dir.path());
+        let state = runtime_state(dir.path(), false);
         let app = state.app_manager.register_app(crate::instances::AppConfig {
             name: "app".into(),
             environment: "production".into(),

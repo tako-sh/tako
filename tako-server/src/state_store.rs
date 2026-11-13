@@ -6,7 +6,7 @@ mod compose;
 mod credentials;
 mod device_key;
 mod drain;
-pub(crate) use drain::DrainLease;
+pub(crate) use drain::{DrainLease, wait_for_lease};
 mod encryption;
 mod schema;
 mod upgrade;

@@ -53,11 +53,20 @@ const FULL_BACKUP_DISK_COPIES: u64 = 3;
 /// Why a scheduled backup did not take the deploy lock: a deploy holds it,
 /// or another operation does or was turned away and is about to retry.
 const DEPLOY_LOCK_BUSY: &str = "A deploy or another operation on the app is in progress.";
+/// Why a restore refused before it changed anything: a standby serves the
+/// same app data with instances this process cannot stop.
+const STANDBY_RUNS: &str = "A standby server (tako-server-standby.service) runs on this data directory and serves this app too, so a restore would replace files under its running instances; nothing was changed. Stop the standby first (sudo systemctl stop tako-server-standby), make sure tako-server runs, retry the restore, then start the standby again (sudo systemctl start tako-server-standby).";
 /// How long workflow workers may finish their runs before a restore kills them.
 const WORKFLOW_STOP_TIMEOUT: Duration = if cfg!(test) {
     Duration::from_secs(1)
 } else {
     Duration::from_secs(120)
+};
+/// How often a standby looks for apps an unfinished restore keeps stopped.
+const UNRESOLVED_RESTORE_CHECK: Duration = if cfg!(test) {
+    Duration::from_millis(50)
+} else {
+    Duration::from_secs(5)
 };
 
 impl crate::ServerState {
@@ -114,8 +123,7 @@ impl crate::ServerState {
     }
 
     /// Stop every app that [`Self::unresolved_restore_block`] keeps stopped,
-    /// as startup does: for a standby that takes over, whose apps already
-    /// run.
+    /// as startup does: for a standby, whose apps already run.
     pub(crate) async fn stop_apps_with_unresolved_restores(&self) {
         for name in self.app_manager.list_apps() {
             let Some(reason) = self.unresolved_restore_block(&name) else {
@@ -124,6 +132,13 @@ impl crate::ServerState {
             let Some(app) = self.app_manager.get_app(&name) else {
                 continue;
             };
+            // Stopped already, and status says why.
+            if app.state() == crate::socket::AppState::Stopped
+                && app.get_instances().is_empty()
+                && app.last_error().as_deref() == Some(reason.as_str())
+            {
+                continue;
+            }
             let lock = self.get_deploy_lock(&name).await;
             let _guard = lock.lock().await;
             let _lifecycle = app.lifecycle_gate.write().await;
@@ -135,6 +150,26 @@ impl crate::ServerState {
             tracing::error!(app = %name, "{reason}");
             app.set_last_error(reason);
         }
+    }
+
+    /// A standby serves every app of the primary's data directory, and a
+    /// crash of the primary can leave an app's data partly restored at any
+    /// time: stop such an app at once, not only at the standby's next start.
+    pub(crate) fn start_unresolved_restore_watch(
+        self: std::sync::Arc<Self>,
+        handle: &tokio::runtime::Handle,
+    ) {
+        handle.spawn(async move {
+            let mut ticks = tokio::time::interval(UNRESOLVED_RESTORE_CHECK);
+            ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticks.tick().await;
+                // A drained server runs no app, and its resume checks again.
+                if !self.is_draining() {
+                    self.stop_apps_with_unresolved_restores().await;
+                }
+            }
+        });
     }
 
     /// Create a full archive for an operator unless another backup operation
@@ -495,6 +530,8 @@ impl crate::ServerState {
         let _backup = self.acquire_backup_lock(app)?;
         let lock = self.get_deploy_lock(app).await;
         let _guard = lock.lock().await;
+        // Held until the restore ends, so no standby starts meanwhile.
+        let _standby = self.lock_out_standby()?;
         let backup = self
             .state_store
             .get_backup(app)
@@ -775,6 +812,18 @@ impl crate::ServerState {
 
         let _ = tokio::fs::remove_dir_all(&work_dir).await;
         result
+    }
+
+    /// The standby lock, exclusively and without waiting: a standby process
+    /// that holds it runs instances of every app on this data directory.
+    fn lock_out_standby(&self) -> Result<crate::state_store::DrainLease, String> {
+        match crate::state_store::DrainLease::try_standby_in(&self.runtime.data_dir, true) {
+            Ok(Some(lease)) => Ok(lease),
+            Ok(None) => Err(STANDBY_RUNS.to_string()),
+            Err(error) => Err(format!(
+                "Cannot tell whether a standby server runs on this data directory ({error}); nothing was changed."
+            )),
+        }
     }
 
     async fn restart_after_restore(
@@ -1426,6 +1475,50 @@ mod tests {
         );
     }
 
+    /// A standby serves the same app data with its own instances, which a
+    /// restore cannot stop: while one runs, a restore of either kind changes
+    /// nothing and says to stop it; once it is gone, the restore runs.
+    #[tokio::test]
+    async fn a_restore_refuses_while_a_standby_runs_and_proceeds_without_one() {
+        let fixture = RestoreFixture::new();
+        let standby =
+            crate::state_store::DrainLease::try_standby_in(fixture.temp.path(), false).unwrap();
+        assert!(standby.is_some(), "a standby holds a shared lease");
+        let server = fixture.serve(0);
+        let error = fixture
+            .state
+            .restore_backup_inner(&fixture.app, &fixture.info.id)
+            .await
+            .expect_err("a restore must refuse while a standby runs");
+        assert!(
+            server.await.unwrap().is_empty(),
+            "a refused restore must download nothing"
+        );
+        assert!(
+            error.contains("tako-server-standby") && error.contains("Stop the standby first"),
+            "the refusal must name the standby service and say to stop it"
+        );
+        let data = &fixture.data;
+        assert_eq!(sqlite_value(&data.join("app/data.sqlite")), "live");
+        assert_eq!(fixture.previous_dirs(), 0);
+
+        drop(standby);
+        let server = fixture.serve(2);
+        fixture
+            .state
+            .restore_backup_inner(&fixture.app, &fixture.info.id)
+            .await
+            .expect("a restore must run once no standby runs");
+        server.await.unwrap();
+        assert_eq!(sqlite_value(&data.join("app/data.sqlite")), "snapshot");
+        assert!(
+            crate::state_store::DrainLease::try_standby_in(fixture.temp.path(), false)
+                .unwrap()
+                .is_some(),
+            "a finished restore must let a standby start"
+        );
+    }
+
     #[tokio::test]
     async fn restore_stops_a_retired_workflow_runtime_before_swapping() {
         let fixture = RestoreFixture::new();
@@ -1657,6 +1750,38 @@ mod tests {
         leave_restore(&fixture, Some(journal::IntentState::Swapping));
         fixture.state.stop_apps_with_unresolved_restores().await;
         assert_eq!(app.state(), crate::socket::AppState::Stopped);
+        assert!(app.last_error().is_some(), "status must say why");
+    }
+
+    /// A standby serves the apps of the primary's data directory: it stops
+    /// one as soon as a restore leaves its data partly restored, not only at
+    /// its own next start, and leaves apps with whole data running.
+    #[tokio::test]
+    async fn a_standby_stops_serving_an_app_once_a_restore_leaves_it_partly_restored() {
+        let fixture = RestoreFixture::new();
+        let app = fixture.state.app_manager.get_app(&fixture.app).unwrap();
+        app.set_state(crate::socket::AppState::Running);
+        fixture
+            .state
+            .clone()
+            .start_unresolved_restore_watch(&tokio::runtime::Handle::current());
+        let original = leave_restore(&fixture, Some(journal::IntentState::Original));
+        tokio::time::sleep(UNRESOLVED_RESTORE_CHECK * 4).await;
+        assert_eq!(
+            app.state(),
+            crate::socket::AppState::Running,
+            "whole data must not stop the app"
+        );
+        std::fs::remove_dir_all(original).unwrap();
+
+        leave_restore(&fixture, Some(journal::IntentState::Swapping));
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while app.state() != crate::socket::AppState::Stopped {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the standby must stop the app");
         assert!(app.last_error().is_some(), "status must say why");
     }
 
