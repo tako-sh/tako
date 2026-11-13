@@ -573,11 +573,12 @@ fn retained_marker(
 /// Whether a close marker made at `closed_at` had expired by `at`, by the
 /// rules readers apply: the replay window (and store age cap) by message age,
 /// or inactivity counted from the close, the last activity every server saw.
-/// The rules are those of `lifecycle`, the one the event was made under, when
-/// it carries one, and the stream's stored ones otherwise. The margin keeps
-/// one server's slightly slow clock from turning a publish it made after
-/// reopening into a race; an event made before the close is a race however
-/// short the window.
+/// It has expired when it has under the rules of `lifecycle`, the one the
+/// event was made under, or under the stream's stored ones: a deploy that
+/// changed the window leaves the event's server judging its marker by either.
+/// The margin keeps one server's slightly slow clock from turning a publish
+/// it made after reopening into a race; an event made before the close is a
+/// race however short the window.
 fn marker_expired_at(
     conn: &rusqlite::Connection,
     channel: &str,
@@ -588,26 +589,26 @@ fn marker_expired_at(
     if at <= closed_at {
         return Ok(false);
     }
-    let lifecycle = match lifecycle {
-        Some(lifecycle) => Some((
-            lifecycle.replay_window_ms as i64,
-            lifecycle.inactivity_ttl_ms as i64,
-        )),
-        None => stream_lifecycle(conn, channel)?
-            .map(|(replay_window_ms, inactivity_ttl_ms, _)| (replay_window_ms, inactivity_ttl_ms)),
-    }
-    .map(|(replay_window_ms, inactivity_ttl_ms)| (replay_window_ms, inactivity_ttl_ms, closed_at));
-    Ok(
-        match age_cutoff(
-            load_limits(conn)?,
-            lifecycle,
-            at.saturating_add(MESH_CLOCK_SKEW_MS),
-        ) {
+    let limits = load_limits(conn)?;
+    let expired_under = |lifecycle: Option<(i64, i64)>| {
+        let lifecycle = lifecycle.map(|(replay_window_ms, inactivity_ttl_ms)| {
+            (replay_window_ms, inactivity_ttl_ms, closed_at)
+        });
+        match age_cutoff(limits, lifecycle, at.saturating_add(MESH_CLOCK_SKEW_MS)) {
             None => false,
             Some(AgeCutoff::Everything) => true,
             Some(AgeCutoff::Before(created)) => closed_at < created,
-        },
-    )
+        }
+    };
+    let made_under = lifecycle.map(|lifecycle| {
+        (
+            lifecycle.replay_window_ms as i64,
+            lifecycle.inactivity_ttl_ms as i64,
+        )
+    });
+    let stored = stream_lifecycle(conn, channel)?
+        .map(|(replay_window_ms, inactivity_ttl_ms, _)| (replay_window_ms, inactivity_ttl_ms));
+    Ok(expired_under(made_under) || expired_under(stored))
 }
 
 fn replay_epoch(conn: &rusqlite::Connection) -> Result<[u8; 16], ChannelError> {

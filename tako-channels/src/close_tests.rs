@@ -1146,6 +1146,40 @@ fn the_reopen_check_uses_the_window_the_event_was_made_under() {
     );
 }
 
+/// Let `ms` pass for every row a store retains.
+fn age(store: &ChannelStore, ms: i64) {
+    store.raw_execute(
+        "UPDATE channel_messages SET created_at_unix_ms = created_at_unix_ms - ?1",
+        [ms],
+    );
+}
+
+#[test]
+fn a_deploy_that_changes_the_window_never_drops_a_reopening_publish() {
+    let (minute, hour) = (window(60_000), window(3_600_000));
+    // The stream closed under one definition, then a deploy changed its
+    // window. The origin retired the marker by the window it stored, a
+    // minute after the close, and reopened under the new definition.
+    for (closed_under, reopened_under) in [(&minute, &hour), (&hour, &minute)] {
+        let peer = ChannelStore::open_in_memory_without_maintenance();
+        let close = with_lifecycle(
+            remote("a", 1, "feed", CLOSE_MESSAGE_TYPE, now()),
+            closed_under.clone(),
+        );
+        assert_eq!(peer.ingest_remote(&close).unwrap(), RemoteIngest::Applied);
+        age(&peer, 61_000);
+        let reopening =
+            with_lifecycle(remote("a", 2, "feed", "msg", now()), reopened_under.clone());
+        assert_eq!(
+            peer.ingest_remote(&reopening).unwrap(),
+            RemoteIngest::Applied,
+            "a publish made after the marker expired under either window must reopen"
+        );
+        assert!(peer.close_marker("feed").unwrap().is_none());
+        assert_eq!(peer.read_after("feed", None, 10).unwrap().len(), 1);
+    }
+}
+
 #[test]
 fn a_reader_inside_closed_history_is_reset_when_a_reopen_deletes_it() {
     let peer = ChannelStore::open_in_memory_without_maintenance();
