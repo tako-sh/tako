@@ -133,7 +133,7 @@ jobs:
         run: |
           cargo test --workspace --locked --lib --bins
           cargo test -p tako-network --locked --test '*'
-          cargo test -p tako-server --locked --test backup_snapshot --test backup_live_wal
+          cargo test -p tako-server --locked --test backup_snapshot --test backup_live_wal --test backup_standby
 
       - name: Run Compose integration tests
         run: |
@@ -150,8 +150,10 @@ jobs:
           cargo test --manifest-path vendor/pingora-core/Cargo.toml --locked --no-default-features --features openssl --lib protocols::
           cargo test --manifest-path vendor/pingora-core/Cargo.toml --locked --no-default-features --features openssl --lib listeners::
 
-      - name: Check Rust SDK package
-        run: cargo publish -p tako --dry-run --locked
+      - name: Test and check Rust SDK package
+        run: |
+          cargo test -p tako --all-features --locked
+          cargo publish -p tako --dry-run --locked
 
       - name: Run perf smoke tests
         run: cargo test -p tako-server --locked perf_smoke_
