@@ -86,6 +86,32 @@ fn start_state(data_dir: &Path, standby: bool) -> Result<ServerState, String> {
     .map_err(|error| error.to_string())
 }
 
+#[test]
+fn restarting_a_standby_preserves_the_primary_upgrade_lock() {
+    let temp = tempfile::tempdir().unwrap();
+    let primary = start_state(temp.path(), false).unwrap();
+    assert!(
+        primary
+            .state_store
+            .try_acquire_upgrade_lock("upgrade-test")
+            .unwrap()
+    );
+    primary
+        .state_store
+        .set_server_mode(tako_core::UpgradeMode::Upgrading)
+        .unwrap();
+    let standby = start_state(temp.path(), true).unwrap();
+    assert_eq!(
+        primary.state_store.server_mode().unwrap(),
+        tako_core::UpgradeMode::Upgrading
+    );
+    assert_eq!(
+        primary.state_store.upgrade_lock_owner().unwrap().as_deref(),
+        Some("upgrade-test")
+    );
+    drop(standby);
+}
+
 /// A standby never runs apps while a restore runs: its start waits for the
 /// restore's exclusive standby lock, fails once the wait runs out, and holds
 /// a shared one for as long as it runs, which restores refuse to start under.

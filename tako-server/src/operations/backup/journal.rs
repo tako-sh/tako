@@ -543,6 +543,40 @@ pub(super) fn unresolved_restore(data_root: &Path) -> Option<PathBuf> {
         .find(|dir| partial_restore(dir).is_some())
 }
 
+/// Read-only inventory: do not recover or remove records while reporting status.
+pub(super) fn unfinished_restores(data_root: &Path) -> Vec<tako_core::BackupRestoreStatus> {
+    use tako_core::{BackupRestoreState, BackupRestoreStatus};
+    let Some(parent) = data_root.parent() else {
+        return Vec::new();
+    };
+    restore_dirs_in(parent)
+        .into_iter()
+        .filter(|dir| !has_prefix(dir, FINISHED_DIR_PREFIX))
+        .map(|dir| {
+            let state = if has_prefix(&dir, ABANDONED_DIR_PREFIX) {
+                BackupRestoreState::Abandoned
+            } else if lock_is_held(&dir) {
+                BackupRestoreState::InProgress
+            } else {
+                BackupRestoreState::Unfinished
+            };
+            BackupRestoreStatus {
+                path: dir.display().to_string(),
+                state,
+                blocks_app: partial_restore(&dir).is_some(),
+                message: if state == BackupRestoreState::InProgress {
+                    "A restore is in progress; wait for it to finish.".into()
+                } else {
+                    format!(
+                        "{} Resolve the record before another restore: {UNFINISHED_RESTORE_DOCS}",
+                        live_data_summary(&dir)
+                    )
+                },
+            }
+        })
+        .collect()
+}
+
 /// Why an app with the unresolved restore `dir` stays stopped.
 pub(super) fn unresolved_restore_message(dir: &Path) -> String {
     format!(

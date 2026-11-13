@@ -27,7 +27,7 @@ setcap() { printf 'setcap %s\\n' "$*"; }
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual('setcap ' in result.stdout, provider != 'native')
 
-    def maintenance(self, action, provider='native'):
+    def maintenance(self, action, provider='native', standby=False, fail_agent=False):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -39,14 +39,17 @@ setcap() { printf 'setcap %s\\n' "$*"; }
             f'tako\n{root}/opt/tako\n{root}/run/tako/tako.sock\n')
         (root / 'usr/local/bin/tako-server.prev').write_text('previous binary\n')
         (root / 'etc/systemd/system/tako-network-agent.service').write_text('agent\n')
+        if standby:
+            (root / 'etc/systemd/system/tako-server-standby.service').write_text('standby\n')
         script = MAINTENANCE
         for prefix in ('/usr/local/', '/etc/', '/opt/', '/run/'):
             script = script.replace(prefix, str(root) + prefix)
         result = subprocess.run(['sh', '-s', '--', action], input='''
-systemctl() { printf 'systemctl %s\\n' "$*"; }
+systemctl() { printf 'systemctl %s\\n' "$*"; [ "$FAIL_AGENT:$*" != '1:try-restart tako-network-agent' ]; }
 setcap() { printf 'setcap %s\\n' "$*"; }
 rm() { printf 'rm %s\\n' "$*"; command rm "$@"; }
-''' + script, text=True, capture_output=True, env=os.environ, timeout=5)
+''' + script, text=True, capture_output=True,
+            env={**os.environ, 'FAIL_AGENT': '1' if fail_agent else '0'}, timeout=5)
         return root, result
 
     def test_proxy_reload_and_restart_do_not_touch_agent(self):
@@ -66,6 +69,20 @@ rm() { printf 'rm %s\\n' "$*"; command rm "$@"; }
                 self.assertEqual((root / 'usr/local/bin/tako-server').read_text(), 'previous binary\n')
                 self.assertEqual('setcap ' in result.stdout, provider != 'native')
                 self.assertNotIn('systemctl ', result.stdout)
+
+    def test_upgrade_refreshes_installed_companions_without_starting_inactive_services(self):
+        for standby in (False, True):
+            with self.subTest(standby=standby):
+                _, result = self.maintenance('upgrade-companions', standby=standby)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                expected = ['systemctl try-restart tako-network-agent']
+                if standby:
+                    expected.append('systemctl try-restart tako-server-standby')
+                self.assertEqual(result.stdout.splitlines(), expected)
+
+    def test_upgrade_reports_a_companion_restart_failure(self):
+        _, result = self.maintenance('upgrade-companions', fail_agent=True)
+        self.assertNotEqual(result.returncode, 0)
 
     def test_implode_stops_and_removes_agent_before_removing_data(self):
         root, result = self.maintenance('implode')

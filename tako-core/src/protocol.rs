@@ -916,6 +916,25 @@ pub struct BackupStatusResponse {
     /// Why scheduled full archives are failing, until one succeeds.
     #[serde(default)]
     pub last_backup_failure: Option<BackupFailure>,
+    /// Restore records that still need attention, even if backups are disabled.
+    #[serde(default)]
+    pub unfinished_restores: Vec<BackupRestoreStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackupRestoreStatus {
+    pub path: String,
+    pub state: BackupRestoreState,
+    pub blocks_app: bool,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BackupRestoreState {
+    InProgress,
+    Unfinished,
+    Abandoned,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

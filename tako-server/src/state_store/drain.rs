@@ -24,7 +24,8 @@ impl DrainLease {
         path: &std::path::Path,
         exclusive: bool,
     ) -> Result<Option<Self>, StateStoreError> {
-        let io_error = |error| StateStoreError::InvalidData(format!("drain lease: {error}"));
+        let io_error =
+            |error| StateStoreError::InvalidData(format!("lease {}: {error}", path.display()));
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -40,9 +41,10 @@ impl DrainLease {
             || metadata.mode() & 0o777 != 0o600
             || metadata.uid() != unsafe { libc::geteuid() }
         {
-            return Err(StateStoreError::InvalidData(
-                "unsafe drain lease file".into(),
-            ));
+            return Err(StateStoreError::InvalidData(format!(
+                "unsafe lease file {}",
+                path.display()
+            )));
         }
         let operation = if exclusive {
             libc::LOCK_EX

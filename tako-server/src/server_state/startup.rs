@@ -97,7 +97,10 @@ impl ServerState {
             }
             None => false,
         };
-        if !preserve_upgrade_mode {
+        // A companion restart during a primary upgrade must not release the
+        // primary's persisted upgrade lock. Only a primary start owns recovery
+        // of that state; a standby has its own local mode until promotion.
+        if !preserve_upgrade_mode && !runtime.standby {
             if persisted_mode != UpgradeMode::Normal {
                 state_store.set_server_mode(UpgradeMode::Normal)?;
             }

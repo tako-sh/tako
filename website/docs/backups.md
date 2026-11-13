@@ -102,6 +102,8 @@ tako backups list --env production --server la --json
 
 `backups now` creates a full archive. `backups list` shows every entry, newest first, with its kind. In `--json` output each entry includes `id`, `kind` (`full` or `databases`), `created_at_unix_secs`, `size_bytes`, and the encryption metadata; database snapshots also list their `databases` as paths relative to the data directory, such as `app/data.sqlite` or `tako/workflows.sqlite`. `backups status --json` includes `last_backup` (the latest full archive), `next_backup_at_unix_secs`, `retention_days`, `last_database_snapshot_at_unix_secs`, `last_database_snapshot_skip` with `at_unix_secs`, `reason` (`unchanged`, `no_databases`, `too_large`, `insufficient_disk`, `deploy_in_progress`, `backup_in_progress`, or `unfinished_restore`), and `message`, and `last_backup_failure` with `at_unix_secs`, `reason` (`failed`, `insufficient_disk`, or `index_unreadable`), `message`, and `retry_at_unix_secs` while full archives are failing or the index cannot be read.
 
+`backups status` also lists active, unfinished, and abandoned restores, even when backups are disabled or the remote index is unreadable. JSON includes `unfinished_restores` with each record's `path`, `state` (`in_progress`, `unfinished`, or `abandoned`), `blocks_app`, and recovery `message`. A blocked app has no next scheduled backup. Status only reads these records; resolve them before attempting another restore.
+
 Use explicit environment and server names when selecting recovery data. Download an archive by the ID returned by the list:
 
 ```bash

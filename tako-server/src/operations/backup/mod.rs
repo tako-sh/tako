@@ -449,6 +449,9 @@ impl crate::ServerState {
     }
 
     async fn backup_status_inner(&self, app: &str) -> Result<BackupStatusResponse, String> {
+        let data_root = app_runtime_data_paths(&self.runtime.data_dir, app).root;
+        let unfinished_restores =
+            off_runtime(move || journal::unfinished_restores(&data_root)).await?;
         let Some(backup) = self
             .state_store
             .get_backup(app)
@@ -463,6 +466,7 @@ impl crate::ServerState {
                 last_database_snapshot_at_unix_secs: None,
                 last_database_snapshot_skip: None,
                 last_backup_failure: None,
+                unfinished_restores,
             });
         };
         let now = now_unix_secs();
@@ -490,16 +494,17 @@ impl crate::ServerState {
                         message: format!("Failed to read backup index: {error}"),
                         retry_at_unix_secs,
                     }),
+                    unfinished_restores,
                 });
             }
         };
-        Ok(enabled_backup_status(
-            app,
-            backup.retention_days,
-            &index.backups,
-            &schedule,
-            now,
-        ))
+        let mut status =
+            enabled_backup_status(app, backup.retention_days, &index.backups, &schedule, now);
+        if unfinished_restores.iter().any(|restore| restore.blocks_app) {
+            status.next_backup_at_unix_secs = None;
+        }
+        status.unfinished_restores = unfinished_restores;
+        Ok(status)
     }
 
     async fn backup_download_url_inner(
@@ -532,10 +537,10 @@ impl crate::ServerState {
         backup_id: &str,
     ) -> Result<BackupRestoreResponse, String> {
         let _backup = self.acquire_backup_lock(app)?;
-        let lock = self.get_deploy_lock(app).await;
-        let _guard = lock.lock().await;
         // Held until the restore ends, so no standby starts meanwhile.
         let _standby = self.lock_out_standby()?;
+        let lock = self.get_deploy_lock(app).await;
+        let _guard = lock.lock().await;
         let backup = self
             .state_store
             .get_backup(app)
@@ -684,10 +689,23 @@ impl crate::ServerState {
                     });
                 }
             };
-            self.app_manager
-                .stop_app_locked(&app_ref)
-                .await
-                .map_err(|error| format!("Stop failed before restore: {error}"))?;
+            if let Err(error) = self.app_manager.stop_app_locked(&app_ref).await {
+                let message = format!("Stop failed before restore: {error}");
+                return Err(match restart().await {
+                    Ok(()) => {
+                        self.finish_restart(app, &app_ref, &config);
+                        format!("{message}; original data kept and app restarted")
+                    }
+                    Err(restart) => {
+                        self.leave_stopped(
+                            app,
+                            &app_ref,
+                            format!("{message}; original data kept, but restart failed: {restart}"),
+                        )
+                        .await
+                    }
+                });
+            }
             let swapped = match staged {
                 // The closure owns the rollback directory until the swap is
                 // done, even if this future is dropped meanwhile.
@@ -999,6 +1017,7 @@ fn enabled_backup_status(
             .map(|backup| backup.created_at_unix_secs),
         last_database_snapshot_skip: schedule.skip.clone(),
         last_backup_failure,
+        unfinished_restores: Vec::new(),
     }
 }
 
@@ -1497,10 +1516,17 @@ mod tests {
         assert!(standby.is_some(), "a standby holds a shared lease");
         // Storage that accepts no request.
         drop(fixture.serve(0));
-        let refused = fixture
-            .state
-            .restore_backup_inner(&fixture.app, &fixture.info.id)
-            .await;
+        let deploy_lock = fixture.state.get_deploy_lock(&fixture.app).await;
+        let deploying = deploy_lock.lock().await;
+        let refused = tokio::time::timeout(
+            Duration::from_secs(1),
+            fixture
+                .state
+                .restore_backup_inner(&fixture.app, &fixture.info.id),
+        )
+        .await
+        .expect("standby refusal must not wait for a deploy");
+        drop(deploying);
         assert!(
             refused.is_err_and(|error| error.contains("tako-server-standby")
                 && error.contains("Stop the standby first")),
@@ -1530,6 +1556,36 @@ mod tests {
                 .is_some(),
             "a finished restore must let a standby start"
         );
+    }
+
+    #[tokio::test]
+    async fn a_stop_failure_before_the_swap_recovers_the_original_app() {
+        let fixture = RestoreFixture::new();
+        let app = fixture.state.app_manager.get_app(&fixture.app).unwrap();
+        // A broken Compose release makes stop fail before touching the data.
+        // This scale-to-zero app can still recover its workflow runtime and
+        // cold-start state without spawning a replacement HTTP instance.
+        app.config.write().compose = Some(
+            serde_json::from_value(serde_json::json!({
+                "file":"missing.yml", "service":"web", "port":8080
+            }))
+            .unwrap(),
+        );
+        let server = fixture.serve(2);
+        let error = fixture
+            .state
+            .restore_backup_inner(&fixture.app, &fixture.info.id)
+            .await
+            .unwrap_err();
+        server.await.unwrap();
+        assert!(error.contains("Stop failed before restore"), "{error}");
+        assert!(
+            error.contains("original data kept and app restarted"),
+            "{error}"
+        );
+        assert_eq!(sqlite_value(&fixture.data.join("app/data.sqlite")), "live");
+        assert_eq!(fixture.previous_dirs(), 0);
+        assert_eq!(app.state(), crate::socket::AppState::Idle);
     }
 
     #[tokio::test]
@@ -1681,6 +1737,72 @@ mod tests {
             journal::write_intent(&dir, &intent).unwrap();
         }
         dir
+    }
+
+    #[tokio::test]
+    async fn backup_status_reports_restore_records_even_when_backups_are_disabled() {
+        for (live, blocked) in [
+            (journal::IntentState::Swapping, true),
+            (journal::IntentState::Original, false),
+            (journal::IntentState::Restored, false),
+        ] {
+            let fixture = RestoreFixture::new();
+            let dir = leave_restore(&fixture, Some(live));
+            fixture
+                .state
+                .state_store
+                .set_backup(&fixture.app, None)
+                .unwrap();
+            let status = fixture
+                .state
+                .backup_status_inner(&fixture.app)
+                .await
+                .unwrap();
+            assert!(!status.enabled);
+            assert_eq!(status.unfinished_restores.len(), 1);
+            let restore = &status.unfinished_restores[0];
+            assert_eq!(restore.path, dir.display().to_string());
+            assert_eq!(restore.state, tako_core::BackupRestoreState::Abandoned);
+            assert_eq!(restore.blocks_app, blocked);
+            assert!(restore.message.contains(journal::UNFINISHED_RESTORE_DOCS));
+            assert!(dir.exists(), "status must not remove recovery records");
+        }
+    }
+
+    #[tokio::test]
+    async fn backup_status_distinguishes_active_and_interrupted_restores() {
+        let fixture = RestoreFixture::new();
+        fixture
+            .state
+            .state_store
+            .set_backup(&fixture.app, None)
+            .unwrap();
+        let rollback = journal::RollbackDir::create(&fixture.data).unwrap();
+        journal::write_intent(
+            rollback.path(),
+            &journal::RestoreIntent::full(&fixture.data, true),
+        )
+        .unwrap();
+        let status = fixture
+            .state
+            .backup_status_inner(&fixture.app)
+            .await
+            .unwrap();
+        assert_eq!(
+            status.unfinished_restores[0].state,
+            tako_core::BackupRestoreState::InProgress
+        );
+        rollback.leave_for_recovery();
+        let status = fixture
+            .state
+            .backup_status_inner(&fixture.app)
+            .await
+            .unwrap();
+        assert_eq!(
+            status.unfinished_restores[0].state,
+            tako_core::BackupRestoreState::Unfinished
+        );
+        assert!(status.unfinished_restores[0].blocks_app);
     }
 
     /// An app whose data a restore left partly restored is started by no

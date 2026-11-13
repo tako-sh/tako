@@ -390,6 +390,10 @@ async fn backup_status(
             Ok(status) => {
                 any_success = true;
                 output::bullet(&format_status_line(&server_name, &status));
+                for restore in display::format_status_restores(&server_name, &status) {
+                    output::warning(&restore);
+                    tracing::warn!("{restore}");
+                }
                 if let Some(failure) = format_status_failure(&server_name, &status) {
                     output::warning(&failure);
                 }
