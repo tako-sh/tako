@@ -1112,13 +1112,13 @@ fn the_reopen_check_uses_the_window_the_event_was_made_under() {
         &auth(json!({"ok": true, "replayWindowMs": 3_600_000})),
     )
     .unwrap();
-    // The origin, still on the old definition, reopened once its marker was a
-    // minute old.
+    // Another server, still on the old definition, reopened once its copy of
+    // the marker was a minute old.
     peer.raw_execute(
         "UPDATE channel_messages SET created_at_unix_ms = created_at_unix_ms - 61000",
         [],
     );
-    let reopening = with_lifecycle(remote("a", 2, "feed", "msg", now()), old);
+    let reopening = with_lifecycle(remote("b", 1, "feed", "msg", now()), old);
     assert_eq!(
         peer.ingest_remote(&reopening).unwrap(),
         RemoteIngest::Applied
@@ -1140,7 +1140,7 @@ fn the_reopen_check_uses_the_window_the_event_was_made_under() {
     );
     assert_eq!(
         other
-            .ingest_remote(&remote("a", 2, "feed", "msg", now()))
+            .ingest_remote(&remote("b", 1, "feed", "msg", now()))
             .unwrap(),
         RemoteIngest::Dropped
     );
@@ -1158,8 +1158,8 @@ fn age(store: &ChannelStore, ms: i64) {
 fn a_deploy_that_changes_the_window_never_drops_a_reopening_publish() {
     let (minute, hour) = (window(60_000), window(3_600_000));
     // The stream closed under one definition, then a deploy changed its
-    // window. The origin retired the marker by the window it stored, a
-    // minute after the close, and reopened under the new definition.
+    // window. Another server retired its copy of the marker by the window it
+    // stored, a minute after the close, and reopened under the new one.
     for (closed_under, reopened_under) in [(&minute, &hour), (&hour, &minute)] {
         let peer = ChannelStore::open_in_memory_without_maintenance();
         let close = with_lifecycle(
@@ -1169,7 +1169,7 @@ fn a_deploy_that_changes_the_window_never_drops_a_reopening_publish() {
         assert_eq!(peer.ingest_remote(&close).unwrap(), RemoteIngest::Applied);
         age(&peer, 61_000);
         let reopening =
-            with_lifecycle(remote("a", 2, "feed", "msg", now()), reopened_under.clone());
+            with_lifecycle(remote("b", 1, "feed", "msg", now()), reopened_under.clone());
         assert_eq!(
             peer.ingest_remote(&reopening).unwrap(),
             RemoteIngest::Applied,
@@ -1177,6 +1177,60 @@ fn a_deploy_that_changes_the_window_never_drops_a_reopening_publish() {
         );
         assert!(peer.close_marker("feed").unwrap().is_none());
         assert_eq!(peer.read_after("feed", None, 10).unwrap().len(), 1);
+    }
+}
+
+/// Close markers a store retains for a stream, expired or not.
+fn retained_markers(store: &ChannelStore, channel: &str) -> i64 {
+    store.raw_query_i64(
+        "SELECT COUNT(*) FROM channel_messages WHERE channel = ?1 AND type = ?2",
+        [channel, CLOSE_MESSAGE_TYPE],
+    )
+}
+
+#[test]
+fn neither_a_late_marker_nor_a_fast_clock_decides_a_reopen() {
+    let minute = window(60_000);
+    let day = 24 * 60 * 60 * 1000;
+    // A broker stall delivered the marker 65 seconds after the close, so it
+    // is stamped on arrival here. Its server retired it a minute after the
+    // close and published again: an event that follows its own marker.
+    let late = ChannelStore::open_in_memory_without_maintenance();
+    let close = remote("a", 1, "feed", CLOSE_MESSAGE_TYPE, now() - 65_000);
+    let close = with_lifecycle(close, minute.clone());
+    assert_eq!(late.ingest_remote(&close).unwrap(), RemoteIngest::Applied);
+    let reopening = with_lifecycle(remote("a", 2, "feed", "msg", now()), minute.clone());
+    assert_eq!(
+        late.ingest_remote(&reopening).unwrap(),
+        RemoteIngest::Applied,
+        "a marker stored late must not drop the publish that reopened its stream"
+    );
+    assert_eq!(retained_markers(&late, "feed"), 0);
+
+    // A server whose clock runs a day fast published as the stream closed: a
+    // race the close wins on a peer and on the closer itself.
+    let raced = with_lifecycle(
+        remote("fast", 1, "feed", "msg", now() + day),
+        minute.clone(),
+    );
+    let peer = ChannelStore::open_in_memory_without_maintenance();
+    let close = with_lifecycle(
+        remote("a", 1, "feed", CLOSE_MESSAGE_TYPE, now()),
+        minute.clone(),
+    );
+    assert_eq!(peer.ingest_remote(&close).unwrap(), RemoteIngest::Applied);
+    let closer = ChannelStore::open_in_memory_without_maintenance();
+    closer
+        .sync_channel("feed", &auth(json!({"ok": true, "replayWindowMs": 60_000})))
+        .unwrap();
+    closer.close("feed").unwrap();
+    for store in [&peer, &closer] {
+        assert_eq!(
+            store.ingest_remote(&raced).unwrap(),
+            RemoteIngest::Dropped,
+            "a fast clock must not reopen a stream it raced"
+        );
+        assert_eq!(retained_markers(store, "feed"), 1);
     }
 }
 

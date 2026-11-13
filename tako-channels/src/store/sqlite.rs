@@ -295,26 +295,31 @@ impl SqliteChannelStore {
         // raced it is dropped instead of landing after the marker, and a
         // second marker changes nothing. An event made once the marker had
         // expired is no race: its server had reopened the stream, so this
-        // copy reopens too, whether or not it has pruned the marker yet. The
-        // check reads the origin's own, unclamped clock: that is the clock its
-        // server judged its marker by when it reopened.
+        // copy reopens too, whether or not it has pruned the marker yet.
+        // Events from one server arrive in the order it made them, so a later
+        // event from the marker's own server proves it reopened, however late
+        // the marker arrived here. Another server's event is judged by its
+        // creation time as sent, never later than this node's clock allows,
+        // so a fast clock cannot pass a race off as a reopen.
         let closed = if event.ephemeral {
             false
         } else {
             match retained_marker(&tx, &event.channel)? {
                 None => false,
-                Some((marker, closed_at)) => {
-                    let reopened = match event.created_at_unix_ms {
-                        Some(created) => marker_expired_at(
-                            &tx,
-                            &event.channel,
-                            event.lifecycle.as_ref(),
-                            closed_at,
-                            created,
-                        )?,
-                        // A peer that sends no creation time keeps close-wins.
-                        None => false,
-                    };
+                Some((marker, closed_at, marker_origin)) => {
+                    let from_closer = marker_origin.as_deref() == Some(event.id.origin.as_str());
+                    let reopened = from_closer
+                        || match event.created_at_unix_ms {
+                            Some(created) => marker_expired_at(
+                                &tx,
+                                &event.channel,
+                                event.lifecycle.as_ref(),
+                                closed_at,
+                                created.min(now_unix_ms().saturating_add(MESH_CLOCK_SKEW_MS)),
+                            )?,
+                            // A peer that sends no creation time keeps close-wins.
+                            None => false,
+                        };
                     if reopened {
                         // Deleting the closed history raises the stream's
                         // replay floor past the marker (the delete trigger),
@@ -552,22 +557,33 @@ fn expired_floor(
 /// one server's event time with another's close marker.
 const MESH_CLOCK_SKEW_MS: i64 = 2_000;
 
-/// Id and origin creation time of a stream's first retained close marker,
-/// through the partial marker index.
+/// Id, stored creation time and origin server of a stream's first retained
+/// close marker, through the partial marker index.
 fn retained_marker(
     conn: &rusqlite::Connection,
     channel: &str,
-) -> Result<Option<(i64, i64)>, ChannelError> {
-    Ok(conn
+) -> Result<Option<(i64, i64, Option<String>)>, ChannelError> {
+    let Some((id, created_at, event_json)) = conn
         .query_row(
             &format!(
-                "SELECT id, created_at_unix_ms FROM channel_messages
+                "SELECT id, created_at_unix_ms,
+                    (SELECT event_json FROM channel_message_events WHERE message_id = channel_messages.id)
+                 FROM channel_messages
                  WHERE channel = ?1 AND type = '{CLOSE_MESSAGE_TYPE}' ORDER BY id LIMIT 1"
             ),
             [channel],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get::<_, Option<String>>(2)?)),
         )
-        .optional()?)
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    let origin = event_json
+        .map(|json| serde_json::from_str::<ChannelEventId>(&json))
+        .transpose()
+        .map_err(storage_err)?
+        .map(|id| id.origin);
+    Ok(Some((id, created_at, origin)))
 }
 
 /// Whether a close marker made at `closed_at` had expired by `at`, by the
