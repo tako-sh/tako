@@ -38,7 +38,6 @@ jobs:
           fi
           sh e2e/prepare-ci-host.sh
           docker run --rm --privileged \
-            -v "$PWD/e2e/docker/server/start-server.sh:/opt/e2e/start-server.sh:ro" \
             -v "$PWD/e2e/docker/server/verify-sudo-context.sh:/opt/e2e/verify-sudo-context.sh:ro" \
             tako-alma-fixture sh -ec '
             echo "tako:tako-e2e" | chpasswd

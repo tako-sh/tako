@@ -165,3 +165,20 @@ complete. Commit and push each coherent milestone to the same branch.
   permission checks, independent secret edits, lost responses, pending deletions,
   new worktrees, and revocation. A SQLite-backed Corrosion transport test exercises
   pagination, idempotent writes, conflicting payloads, and corrupt records.
+
+## Verification findings
+
+- Logical publication revisions include the client's highest observed revision,
+  so editing through a lagging server does not place a new write behind a value
+  already observed by that client. Retried operations keep their original revision.
+- A scoped deploy inherits existing server-owned backup/runtime bindings rather
+  than treating inaccessible administrative credentials as a request to clear them.
+- Reading an existing worktree draft does not rewrite it; this avoids a dev
+  watcher restart loop. Local edits still trigger reloads through the new filename.
+- A real two-agent Corrosion test caught the required default on non-null payload
+  columns, which ordinary SQLite accepts without a default. The corrected schemas
+  load and preserve independent records and conflicting operation variants.
+- Local verification passes network, CLI, native management, website, and live
+  Corrosion checks. Full deployment verification reached native enrollment but
+  the managed host kernel rejects WireGuard interface creation. Linux CI remains
+  the deployment verification gate; do not claim that local E2E completed.

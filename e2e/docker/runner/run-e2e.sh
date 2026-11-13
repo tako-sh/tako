@@ -616,7 +616,7 @@ run_cli_post_deploy_checks() {
     cat "$status_log" >&2 || true
     exit 1
   fi
-  require_file_contains "$status_log" "Server ssh" "tako status"
+  require_file_contains "$status_log" "Server $server_host" "tako status"
   require_file_contains "$status_log" "$app_name" "tako status"
   require_file_contains "$status_log" "production" "tako status"
   require_file_contains "$status_log" "$route_host" "tako status"

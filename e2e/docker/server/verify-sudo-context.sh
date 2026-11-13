@@ -1,6 +1,7 @@
 #!/bin/sh
 # The fixture image contains a dummy proxy. Replace it only in this disposable
-# container to exercise PAM under the exact E2E launcher capability settings.
+# container to exercise PAM with the production proxy unit's capabilities,
+# without booting systemd or enrolling a network for this focused check.
 set -eu
 test "$(id -u)" = 0
 test -f /.dockerenv
@@ -19,5 +20,9 @@ docker compose --ansi never version
 exec env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin sudo -n -l
 SH
 chmod 0755 /usr/local/bin/tako-server
-: > /run/tako-e2e-env
-exec sh /opt/e2e/start-server.sh
+exec setpriv \
+  --bounding-set=-all,+net_bind_service,+setuid,+setgid,+kill,+chown,+fowner,+dac_override,+dac_read_search \
+  --inh-caps=-all,+net_bind_service,+setuid,+setgid,+kill \
+  --ambient-caps=-all,+net_bind_service,+setuid,+setgid,+kill \
+  --reuid=tako --regid=tako --init-groups --reset-env \
+  /usr/local/bin/tako-server
