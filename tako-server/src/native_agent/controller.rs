@@ -68,6 +68,16 @@ pub(super) fn worker(
         if Instant::now() >= next {
             controller.reconcile_or_isolate();
             controller.refresh_services();
+            if controller.ready {
+                if let Err(error) = now().and_then(|time| {
+                    controller
+                        .runtime
+                        .reconcile_secret_grants(time)
+                        .map_err(Into::into)
+                }) {
+                    tracing::warn!(error = %error, "shared secret key reconciliation pending");
+                }
+            }
             next = Instant::now() + Duration::from_secs(2);
         }
         match rx.recv_timeout(

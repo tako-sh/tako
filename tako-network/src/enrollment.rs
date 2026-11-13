@@ -1,11 +1,11 @@
 use crate::{
-    DeviceId, DeviceKind, DeviceName, NetworkId, RequestId, Result, SshPublicKey, WgPublicKey,
-    error::invalid,
+    DeviceId, DeviceKind, DeviceName, EncryptionPublicKey, NetworkId, RequestId, Result,
+    SshPublicKey, WgPublicKey, error::invalid,
 };
 use serde::{Deserialize, Serialize};
 
-pub const ENROLLMENT_VERSION: u32 = 1;
-pub const ENROLLMENT_NAMESPACE: &str = "tako-network-enrollment-v1";
+pub const ENROLLMENT_VERSION: u32 = 2;
+pub const ENROLLMENT_NAMESPACE: &str = "tako-network-enrollment-v2";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -18,6 +18,7 @@ pub struct EnrollmentRequest {
     pub name: DeviceName,
     pub wg_public_key: WgPublicKey,
     pub ssh_public_key: SshPublicKey,
+    pub encryption_public_key: EncryptionPublicKey,
     pub expires_at: Option<u64>,
     pub proof: String,
 }
@@ -26,6 +27,12 @@ impl EnrollmentRequest {
     pub fn verify(&self) -> Result<()> {
         if self.version != ENROLLMENT_VERSION {
             return Err(invalid("enrollment version", "unsupported version"));
+        }
+        if self.encryption_public_key.as_bytes() == self.wg_public_key.as_bytes() {
+            return Err(invalid(
+                "encryption public key",
+                "must be independent of WireGuard",
+            ));
         }
         match (&self.network_id, &self.device_id) {
             (Some(network), Some(id)) if *id == self.device_id_for(network)? => {}
@@ -73,8 +80,8 @@ impl EnrollmentRequest {
         )
     }
 
-    /// Fixed v1 framing: domain, version, IDs, length-prefixed name, WG bytes,
-    /// and length-prefixed SSH wire key. Integers are unsigned big-endian.
+    /// Fixed framing: domain, version, IDs, length-prefixed name, WG bytes,
+    /// length-prefixed SSH wire key and encryption key. Integers are big-endian.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
         let mut bytes = b"tako-network-enrollment\0".to_vec();
         bytes.extend_from_slice(&self.version.to_be_bytes());
@@ -104,6 +111,7 @@ impl EnrollmentRequest {
         append_field(&mut bytes, self.name.as_str().as_bytes());
         bytes.extend_from_slice(self.wg_public_key.as_bytes());
         append_field(&mut bytes, &self.ssh_public_key.parsed()?.to_bytes()?);
+        bytes.extend_from_slice(self.encryption_public_key.as_bytes());
         Ok(bytes)
     }
 }

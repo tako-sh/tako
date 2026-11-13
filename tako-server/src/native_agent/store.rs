@@ -83,6 +83,30 @@ pub(super) fn preserves(
     Ok(())
 }
 impl<S: RegistryStore> RegistryStore for MonotonicStore<S> {
+    fn shared_snapshot(&mut self) -> RuntimeResult<tako_network::shared::SharedSnapshot> {
+        if self.stop.load(Ordering::Acquire) {
+            return Err(RuntimeError::Transport);
+        }
+        self.inner.borrow_mut().shared_snapshot()
+    }
+
+    fn append_secret(&mut self, record: &tako_network::shared::SecretRecord) -> RuntimeResult<()> {
+        if self.stop.load(Ordering::Acquire) {
+            return Err(RuntimeError::Transport);
+        }
+        self.inner.borrow_mut().append_secret(record)
+    }
+
+    fn append_secret_grant(
+        &mut self,
+        grant: &tako_network::shared::SecretGrant,
+    ) -> RuntimeResult<()> {
+        if self.stop.load(Ordering::Acquire) {
+            return Err(RuntimeError::Transport);
+        }
+        self.inner.borrow_mut().append_secret_grant(grant)
+    }
+
     fn snapshot(&mut self) -> RuntimeResult<RegistrySnapshot> {
         if self.stop.load(Ordering::Acquire) {
             return Err(RuntimeError::Transport);

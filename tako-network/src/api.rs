@@ -131,6 +131,10 @@ pub enum RpcRequest {
         proof: WgProof,
     },
     Snapshot,
+    PullSecrets {
+        scope: Option<AppEnv>,
+    },
+    PublishSecret(Box<crate::shared::SecretMutation>),
     Revoke {
         id: RevocationId,
         target: DeviceId,
@@ -145,6 +149,8 @@ impl RpcRequest {
             Self::Begin { .. } => "/v1/network/begin",
             Self::Complete { .. } => "/v1/network/complete",
             Self::Snapshot => "/v1/network/snapshot",
+            Self::PullSecrets { .. } => "/v1/network/secrets/pull",
+            Self::PublishSecret(_) => "/v1/network/secrets/publish",
             Self::Revoke { .. } => "/v1/network/revoke",
         }
     }
@@ -263,6 +269,8 @@ pub enum RpcResponse {
     },
     Active(NetworkPublicProfile),
     Snapshot(RegistrySnapshot),
+    Secrets(crate::shared::SharedSnapshot),
+    SecretPublished(crate::shared::SecretRecord),
     Revoked(Revocation),
 }
 

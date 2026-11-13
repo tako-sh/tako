@@ -74,6 +74,7 @@ impl Profile {
             .device_id_for(&profile.snapshot.network.id)?;
         if profile.request.wg_public_key != keys.wg_public_key()?
             || profile.request.ssh_public_key != keys.ssh_public_key()?
+            || profile.request.encryption_public_key != keys.encryption_public_key()?
             || !profile
                 .snapshot
                 .members
@@ -110,6 +111,7 @@ impl Profile {
                 if request.kind != DeviceKind::Laptop
                     || request.wg_public_key != keys.wg_public_key()?
                     || request.ssh_public_key != keys.ssh_public_key()?
+                    || request.encryption_public_key != keys.encryption_public_key()?
                     || request.device_id_for(&snapshot.network.id)?
                         != snapshot.network.initial_admin
                     || snapshot.members.len() != 1

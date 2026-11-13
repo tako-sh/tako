@@ -189,6 +189,35 @@ impl fmt::Display for WgPublicKey {
     }
 }
 
+/// Dedicated X25519 key for secret envelopes. Never used by WireGuard.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct EncryptionPublicKey(WgPublicKey);
+
+impl EncryptionPublicKey {
+    pub fn from_bytes(bytes: [u8; 32]) -> Result<Self> {
+        Ok(Self(WgPublicKey::from_bytes(bytes)?))
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        self.0.as_bytes()
+    }
+}
+
+impl FromStr for EncryptionPublicKey {
+    type Err = crate::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        Ok(Self(value.parse()?))
+    }
+}
+
+impl fmt::Display for EncryptionPublicKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct SshPublicKey(String);

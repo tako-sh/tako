@@ -12,6 +12,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
+mod shared;
+
 use crate::{
     Ack, Approval, BootId, DeviceId, DeviceKind, LocalDeviceKeys, Member, MemberKind,
     NetworkDescriptor, NetworkPublicProfile, PendingApprovalProfile, PendingWgChallenge,
@@ -172,7 +174,9 @@ impl<S: RegistryStore> ServerRuntime<S> {
             CREATE TABLE IF NOT EXISTS registry_failure (singleton INTEGER PRIMARY KEY CHECK(singleton=1));
             CREATE TABLE IF NOT EXISTS revocation_nonces (signer TEXT NOT NULL, nonce TEXT NOT NULL, expires INTEGER NOT NULL, PRIMARY KEY(signer, nonce));
             CREATE INDEX IF NOT EXISTS revocation_nonce_expiry ON revocation_nonces(expires);
-            CREATE TABLE IF NOT EXISTS pending_entitlements (id TEXT PRIMARY KEY, expires INTEGER NOT NULL, payload TEXT NOT NULL);")?;
+            CREATE TABLE IF NOT EXISTS pending_entitlements (id TEXT PRIMARY KEY, expires INTEGER NOT NULL, payload TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS shared_commands (id TEXT PRIMARY KEY, payload TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS shared_grants (id TEXT PRIMARY KEY, payload TEXT NOT NULL);")?;
         let network = serde_json::to_string(&config.network)?;
         db.execute(
             "INSERT OR IGNORE INTO runtime_identity VALUES (1, ?1, ?2, 0, ?3)",
@@ -404,6 +408,12 @@ impl<S: RegistryStore> ServerRuntime<S> {
                 })
             }
             RpcRequest::Snapshot => Ok(RpcResponse::Snapshot(snapshot)),
+            RpcRequest::PullSecrets { scope } => {
+                self.pull_secrets(&signed.signer, scope.as_ref(), &snapshot, now)
+            }
+            RpcRequest::PublishSecret(mutation) => {
+                self.publish_secret(*mutation, &signed.signer, &snapshot, now)
+            }
             RpcRequest::Approve(grant) => {
                 self.approve_pending(*grant, signed.signer, snapshot, now)
             }
@@ -918,15 +928,37 @@ mod tests {
     use crate::NetworkId;
     use std::{cell::RefCell, rc::Rc};
 
+    include!("runtime/shared_tests.rs");
+
     #[derive(Clone)]
     struct MemoryStore(Rc<RefCell<MemoryState>>);
     struct MemoryState {
         snapshot: RegistrySnapshot,
+        shared: crate::shared::SharedSnapshot,
+        fail_before_secret: bool,
+        fail_after_secret: bool,
         fail_before_member: bool,
         fail_after_member: bool,
         fail_ack: bool,
     }
     impl RegistryStore for MemoryStore {
+        fn shared_snapshot(&mut self) -> RuntimeResult<crate::shared::SharedSnapshot> {
+            Ok(self.0.borrow().shared.clone())
+        }
+        fn append_secret(&mut self, record: &crate::shared::SecretRecord) -> RuntimeResult<()> {
+            let mut state = self.0.borrow_mut();
+            if std::mem::take(&mut state.fail_before_secret) {
+                return Err(RuntimeError::Transport);
+            }
+            crate::shared::SharedStore::append_secret(&mut state.shared, record)?;
+            if std::mem::take(&mut state.fail_after_secret) {
+                return Err(RuntimeError::Transport);
+            }
+            Ok(())
+        }
+        fn append_secret_grant(&mut self, grant: &crate::shared::SecretGrant) -> RuntimeResult<()> {
+            crate::shared::SharedStore::append_secret_grant(&mut self.0.borrow_mut().shared, grant)
+        }
         fn snapshot(&mut self) -> RuntimeResult<RegistrySnapshot> {
             Ok(self.0.borrow().snapshot.clone())
         }
@@ -1147,6 +1179,9 @@ mod tests {
             Self {
                 dir,
                 store: MemoryStore(Rc::new(RefCell::new(MemoryState {
+                    shared: crate::shared::SharedSnapshot::empty(snapshot.network.id.clone()),
+                    fail_before_secret: false,
+                    fail_after_secret: false,
                     snapshot,
                     fail_before_member: false,
                     fail_after_member: false,
