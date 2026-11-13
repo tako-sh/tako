@@ -235,6 +235,65 @@ fn migration_preserves_existing_ciphertext_and_missing_key_never_generates_repla
 }
 
 #[test]
+fn migration_checks_legacy_keys_even_when_a_different_local_draft_exists() {
+    let home = TestHome::new();
+    let project = home.directory.path().join("project");
+    std::fs::create_dir_all(project.join(".tako")).unwrap();
+    let legacy_path = project.join(".tako/secrets.json");
+    let mut legacy = SecretsStore::default();
+    let legacy_id = legacy.ensure_env_key_id("production").unwrap();
+    let legacy_key = crate::crypto::EncryptionKey::generate().unwrap();
+    legacy
+        .set(
+            "production",
+            "TOKEN",
+            crate::crypto::encrypt("historical", &legacy_key).unwrap(),
+        )
+        .unwrap();
+    legacy.save_to_file(&legacy_path).unwrap();
+    let original = std::fs::read(&legacy_path).unwrap();
+
+    let mut draft = SecretsStore::default();
+    let draft_id = draft.ensure_env_key_id("production").unwrap();
+    let draft_key = crate::crypto::EncryptionKey::generate().unwrap();
+    crate::crypto::KeyStore::for_key_id(&draft_id)
+        .unwrap()
+        .save_key(&draft_key)
+        .unwrap();
+    draft
+        .set(
+            "production",
+            "TOKEN",
+            crate::crypto::encrypt("local-edit", &draft_key).unwrap(),
+        )
+        .unwrap();
+    save_local(&project, &draft).unwrap();
+    let local_path = SecretsStore::default_path(&project);
+    let local_bytes = std::fs::read(&local_path).unwrap();
+    let recovery = project.join(".tako/secrets.legacy.json");
+
+    assert!(
+        migrate(&project).is_err(),
+        "migration requires the original key"
+    );
+    assert_eq!(std::fs::read(&legacy_path).unwrap(), original);
+    assert_eq!(std::fs::read(&local_path).unwrap(), local_bytes);
+    assert!(!recovery.exists());
+
+    crate::crypto::KeyStore::for_key_id(&legacy_id)
+        .unwrap()
+        .save_key(&legacy_key)
+        .unwrap();
+    migrate(&project).unwrap();
+    assert!(!legacy_path.exists());
+    assert_eq!(std::fs::read(&recovery).unwrap(), original);
+    assert_eq!(
+        decrypted(&load_local(&project).unwrap(), "TOKEN"),
+        "local-edit"
+    );
+}
+
+#[test]
 fn backup_selection_and_storage_pairs_survive_record_ordering() {
     let key = crate::crypto::EncryptionKey::generate().unwrap();
     let mut values = crate::config::EnvironmentSecrets {

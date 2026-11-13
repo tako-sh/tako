@@ -444,18 +444,27 @@ mod tests;
 pub(crate) fn migrate(project: &Path) -> Result<()> {
     let _lock = lock(project)?;
     let state = read_workspace(project)?;
-    for (env, values) in &state.values.environments {
-        let rows = local::rows(Some(values))?;
-        if rows.is_empty() {
-            continue;
-        }
-        let key = crate::commands::secret::load_secret_key(env, &state.values, Some(project))?;
-        for row in rows.values() {
-            local::plaintext(row, &key)?;
+    let legacy = project.join(".tako/secrets.json");
+    let legacy_values = if legacy.try_exists()? {
+        Some(SecretsStore::load_from_file(&legacy)?)
+    } else {
+        None
+    };
+    // An existing draft may use a different key. Validate the original file
+    // independently before replacing it with an ignored recovery copy.
+    for values in std::iter::once(&state.values).chain(legacy_values.as_ref()) {
+        for (env, environment) in &values.environments {
+            let rows = local::rows(Some(environment))?;
+            if rows.is_empty() {
+                continue;
+            }
+            let key = crate::commands::secret::load_secret_key(env, values, Some(project))?;
+            for row in rows.values() {
+                local::plaintext(row, &key)?;
+            }
         }
     }
     write_workspace(project, &state)?;
-    let legacy = project.join(".tako/secrets.json");
     if legacy.try_exists()? {
         let bytes = std::fs::read(&legacy)?;
         let recovery = project.join(".tako/secrets.legacy.json");

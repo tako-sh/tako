@@ -207,3 +207,6 @@ complete. Commit and push each coherent milestone to the same branch.
   a validated root-only directory there and is removed after use. Both native
   host fixtures exercise the installed helper through its real restricted
   systemd service, independently of the Rust build and full deployment suite.
+- Migration validates the tracked file's original keys even when an existing
+  worktree draft uses different keys. Missing legacy keys leave both files
+  untouched; successful migration preserves the draft and an exact recovery copy.
