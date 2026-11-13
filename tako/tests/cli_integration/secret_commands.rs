@@ -139,23 +139,23 @@ fn test_secret_set_reads_from_stdin() {
         stderr_str(&output)
     );
 
-    let secrets_path = project_dir.join(".tako").join("secrets.json");
+    let secrets_path = project_dir.join(".tako").join("secrets.local.json");
     assert!(secrets_path.exists(), "secrets file should be created");
 
     let raw = fs::read_to_string(&secrets_path).expect("read secrets file");
     let parsed: serde_json::Value = serde_json::from_str(&raw).expect("parse secrets json");
-    let stored = parsed["production"]["app"]["API_KEY"]["value"]
+    let stored = parsed["values"]["production"]["app"]["API_KEY"]["value"]
         .as_str()
         .expect("stored API_KEY value");
     assert!(!stored.is_empty(), "stored value should not be empty");
     assert_ne!(stored, "secret123", "stored value should be encrypted");
     assert_eq!(
-        parsed["production"]["app"]["API_KEY"]["expires_on"].as_str(),
+        parsed["values"]["production"]["app"]["API_KEY"]["expires_on"].as_str(),
         Some("2099-01-01")
     );
     // Key id should be present.
     assert!(
-        parsed["production"]["key_id"].as_str().is_some(),
+        parsed["values"]["production"]["key_id"].as_str().is_some(),
         "key id should be present"
     );
 }
@@ -186,13 +186,13 @@ fn test_secret_set_reads_multiline_value_from_stdin() {
         stderr_str(&output)
     );
 
-    let raw = fs::read_to_string(project_dir.join(".tako").join("secrets.json"))
+    let raw = fs::read_to_string(project_dir.join(".tako").join("secrets.local.json"))
         .expect("read secrets file");
     let parsed: serde_json::Value = serde_json::from_str(&raw).expect("parse secrets json");
-    let key_id = parsed["production"]["key_id"]
+    let key_id = parsed["values"]["production"]["key_id"]
         .as_str()
         .expect("production key id");
-    let encrypted = parsed["production"]["app"]["PRIVATE_TOKEN"]["value"]
+    let encrypted = parsed["values"]["production"]["app"]["PRIVATE_TOKEN"]["value"]
         .as_str()
         .expect("stored PRIVATE_TOKEN value");
     let key_b64 = fs::read_to_string(tako_home.join("keys").join(key_id)).expect("read key");
@@ -223,11 +223,11 @@ fn test_secret_set_omits_expiry_when_not_provided() {
         stderr_str(&output)
     );
 
-    let raw = fs::read_to_string(project_dir.join(".tako").join("secrets.json"))
+    let raw = fs::read_to_string(project_dir.join(".tako").join("secrets.local.json"))
         .expect("read secrets file");
     let parsed: serde_json::Value = serde_json::from_str(&raw).expect("parse secrets json");
     assert!(
-        parsed["production"]["app"]["API_KEY"]
+        parsed["values"]["production"]["app"]["API_KEY"]
             .get("expires_on")
             .is_none(),
         "{parsed:#}"
@@ -429,10 +429,11 @@ fn test_secret_key_import_passphrase_initializes_environment_key() {
         combined
     );
 
-    let secrets_json: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(project_dir.join(".tako/secrets.json")).unwrap())
-            .unwrap();
-    let key_id = secrets_json["production"]["key_id"]
+    let secrets_json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(project_dir.join(".tako/secrets.local.json")).unwrap(),
+    )
+    .unwrap();
+    let key_id = secrets_json["values"]["production"]["key_id"]
         .as_str()
         .expect("production key id");
     let expected_key = pbkdf2::pbkdf2_hmac_array::<sha2::Sha256, 32>(
@@ -448,113 +449,42 @@ fn test_secret_key_import_passphrase_initializes_environment_key() {
 }
 
 #[test]
-fn test_secret_sync_when_secrets_file_deleted() {
+fn test_secret_sync_requires_network_even_without_local_secrets() {
     let temp = TempDir::new().unwrap();
-    let project_dir = temp.path().to_path_buf();
-    write_secret_test_tako_toml(&project_dir);
-
-    // Simulate deleted secrets file.
-    fs::create_dir_all(project_dir.join(".tako")).unwrap();
-    fs::write(project_dir.join(".tako").join("secrets.json"), "{}").unwrap();
-    fs::remove_file(project_dir.join(".tako").join("secrets.json")).unwrap();
-
-    let output = run_tako(&["secrets", "sync", "--env", "production"], &project_dir);
-    let combined = format!("{}{}", stdout_str(&output), stderr_str(&output));
-
-    assert!(
-        output.status.success(),
-        "secrets sync should handle deleted file: {}",
-        combined
-    );
-    assert!(
-        combined.contains("No secrets to sync."),
-        "expected no-secrets message: {}",
-        combined
-    );
+    write_secret_test_tako_toml(temp.path());
+    let output = run_tako(&["secrets", "sync", "--env", "production"], temp.path());
+    assert!(!output.status.success());
+    assert!(stderr_str(&output).contains("network ID in tako.toml"));
 }
 
 #[test]
-fn test_secret_sync_reports_network_failure() {
-    let temp = TempDir::new().unwrap();
-    let project_dir = temp.path().to_path_buf();
-    let home = temp.path().join("home");
-    let tako_home = temp.path().join("tako-home");
-    fs::create_dir_all(&home).unwrap();
-    fs::create_dir_all(&tako_home).unwrap();
-
-    // Project config with one environment and one mapped server alias.
+fn test_secret_sync_reports_network_failure_and_preserves_draft() {
+    let fixture = super::native_management::Fixture::with_servers(&["prod"]);
+    let project = fixture.directory.path();
     fs::write(
-        project_dir.join("tako.toml"),
-        r#"
-name = "test-app"
-runtime = "bun"
-main = "index.ts"
-
-[envs.production]
-route = "prod.example.com"
-servers = ["prod-server"]
-"#,
+        project.join("tako.toml"),
+        format!(
+            "name='demo'\n[envs.production]\nnetwork='{}'\nroute='demo.example.test'\n",
+            fixture.profile.snapshot.network.id
+        ),
     )
     .unwrap();
-
-    // Remote servers registry: unreachable endpoint to force network failure quickly.
-    fs::write(
-        tako_home.join("config.toml"),
-        r#"
-[[servers]]
-name = "prod-server"
-host = "localhost"
-port = 1
-"#,
-    )
-    .unwrap();
-
-    // Create encrypted secret and key in isolated HOME/TAKO_HOME.
-    let set_output = run_tako_with_stdin_and_env(
-        &[
-            "secrets",
-            "set",
-            "API_KEY",
-            "--env",
-            "production",
-            "--expires-on",
-            "2099-01-01",
-        ],
-        &project_dir,
-        "secret123\n",
-        &home,
-        &tako_home,
+    let output = run_tako_with_stdin_and_env(
+        &["secrets", "set", "API_KEY", "--env", "production"],
+        project,
+        "local-draft",
+        &fixture.home,
+        &fixture.tako_home,
     );
-    assert!(
-        set_output.status.success(),
-        "secret set should succeed: {}{}",
-        stdout_str(&set_output),
-        stderr_str(&set_output)
-    );
-
-    let sync_output = run_tako_with_env(
+    assert!(output.status.success(), "{}", stderr_str(&output));
+    let path = project.join(".tako/secrets.local.json");
+    let before = fs::read(&path).unwrap();
+    let output = run_tako_with_env(
         &["secrets", "sync", "--env", "production"],
-        &project_dir,
-        &home,
-        &tako_home,
+        project,
+        &fixture.home,
+        &fixture.tako_home,
     );
-    let combined = format!("{}{}", stdout_str(&sync_output), stderr_str(&sync_output));
-
-    assert!(
-        sync_output.status.success(),
-        "sync should report partial failure without crashing: {}",
-        combined
-    );
-    assert!(
-        combined.contains("Connection failed:")
-            || combined.contains("SSH protocol error")
-            || combined.contains("failed"),
-        "expected network failure to be reported: {}",
-        combined
-    );
-    assert!(
-        combined.contains("Synced to 0 server(s), 1 failed"),
-        "expected failure summary: {}",
-        combined
-    );
+    assert!(!output.status.success(), "{}", stdout_str(&output));
+    assert_eq!(fs::read(path).unwrap(), before);
 }

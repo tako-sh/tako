@@ -1,8 +1,9 @@
 use clap::{Parser, Subcommand};
 
+#[cfg(test)]
+use crate::commands::server;
 use crate::commands::{
-    self, backups, credentials, delete, releases, scale, secret, server, storage, upgrade,
-    workflows,
+    self, backups, credentials, delete, releases, scale, secret, storage, upgrade, workflows,
 };
 use clap::CommandFactory;
 

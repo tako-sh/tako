@@ -331,6 +331,20 @@ async fn run_async(
         }
     }
 
+    if output::is_dry_run() {
+        output::dry_run_skip("Server checks");
+        output::dry_run_skip("Build");
+        for name in &server_names {
+            output::dry_run_skip(&format!("Deploy to {}", output::strong(name)));
+        }
+        if output::is_pretty() {
+            eprintln!();
+        }
+        let https_port = common_https_port_for_servers(&server_names, &servers);
+        print_deploy_summary_with_https_port("App", &app_name, &routes, https_port);
+        return Ok(());
+    }
+
     config::refresh_native_build_targets(&mut servers, &server_names).await?;
     let server_targets = resolve_deploy_server_targets(&servers, &server_names)
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
@@ -390,20 +404,6 @@ async fn run_async(
 
     if let (Some(task_tree), Some(first_build_group)) = (&deploy_task_tree, build_groups.first()) {
         task_tree.mark_build_target_running(&format_build_plan_target_label(first_build_group));
-    }
-
-    if output::is_dry_run() {
-        output::dry_run_skip("Server checks");
-        output::dry_run_skip("Build");
-        for name in &server_names {
-            output::dry_run_skip(&format!("Deploy to {}", output::strong(name)));
-        }
-        if output::is_pretty() {
-            eprintln!();
-        }
-        let https_port = common_https_port_for_servers(&server_names, &servers);
-        print_deploy_summary_with_https_port("App", &app_name, &routes, https_port);
-        return Ok(());
     }
 
     secrets = tokio::task::block_in_place(|| {

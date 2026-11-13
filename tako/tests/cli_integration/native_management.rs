@@ -6,13 +6,13 @@ use tako_network::{
     WgChallenge,
 };
 
-struct Fixture {
-    directory: TempDir,
-    home: PathBuf,
-    tako_home: PathBuf,
-    profile_path: PathBuf,
-    profile: NetworkPublicProfile,
-    servers: Vec<DeviceId>,
+pub(super) struct Fixture {
+    pub(super) directory: TempDir,
+    pub(super) home: PathBuf,
+    pub(super) tako_home: PathBuf,
+    pub(super) profile_path: PathBuf,
+    pub(super) profile: NetworkPublicProfile,
+    pub(super) servers: Vec<DeviceId>,
 }
 
 fn admit(
@@ -59,7 +59,7 @@ impl Fixture {
         Self::with_servers(&["node", "node"])
     }
 
-    fn with_servers(names: &[&str]) -> Self {
+    pub(super) fn with_servers(names: &[&str]) -> Self {
         let directory = TempDir::new().unwrap();
         let home = directory.path().join("home");
         let tako_home = directory.path().join("tako-home");
@@ -83,7 +83,7 @@ impl Fixture {
         .unwrap();
         let mut snapshot = RegistrySnapshot {
             network: NetworkDescriptor {
-                name: "test".parse().unwrap(),
+                name: "fleet".parse().unwrap(),
                 id: network.clone(),
                 initial_admin: own.clone(),
             },
@@ -140,10 +140,11 @@ impl Fixture {
             .join("profile.json");
         fs::create_dir_all(profile_path.parent().unwrap()).unwrap();
         fs::write(
-            tako_home.join("config.toml"),
-            format!("[[networks]]\nname = 'fleet'\nid = '{network}'\ndevice = '{own}'\n"),
+            tako_home.join("networks/identities.json"),
+            serde_json::to_vec(&serde_json::json!([{"id":network,"device":own}])).unwrap(),
         )
         .unwrap();
+        fs::write(tako_home.join("config.toml"), "").unwrap();
         let fixture = Self {
             directory,
             home,

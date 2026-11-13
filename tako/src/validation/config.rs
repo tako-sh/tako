@@ -152,7 +152,7 @@ pub fn validate_server_references(
         for server_name in &env_config.servers {
             if !servers_config.contains(server_name) {
                 result.error(format!(
-                    "Server '{}' is configured in tako.toml but not found in config.toml [[servers]]. \
+                    "Server '{}' is configured in tako.toml but not found in enrolled network membership. Set this environment's network ID in tako.toml. \
                       Run 'tako network server add --name {} <host>' to add it.",
                     server_name, server_name
                 ));

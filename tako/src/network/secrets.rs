@@ -431,8 +431,12 @@ pub(crate) fn migrate(project: &Path) -> Result<()> {
     let _lock = lock(project)?;
     let state = read_workspace(project)?;
     for (env, values) in &state.values.environments {
+        let rows = local::rows(Some(values))?;
+        if rows.is_empty() {
+            continue;
+        }
         let key = crate::commands::secret::load_secret_key(env, &state.values, Some(project))?;
-        for row in local::rows(Some(values))?.values() {
+        for row in rows.values() {
             local::plaintext(row, &key)?;
         }
     }

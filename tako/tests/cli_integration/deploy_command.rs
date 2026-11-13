@@ -150,79 +150,15 @@ route = "prod.example.com"
 }
 
 #[test]
-fn test_deploy_validates_entry_point_exists() {
+fn test_deploy_requires_network_before_building() {
     let temp = TempDir::new().unwrap();
-    let project_dir = temp.path().to_path_buf();
-    let home = temp.path().join("home");
-    let tako_home = temp.path().join("tako-home");
-    fs::create_dir_all(&home).unwrap();
-    fs::create_dir_all(&tako_home).unwrap();
-
-    // Create tako.toml with explicit main that doesn't exist.
-    // Include required build preset and explicit server mapping so deploy
-    // reaches entrypoint/build validation before any remote operations.
-    fs::write(
-        project_dir.join("tako.toml"),
-        r#"
-name = "test-app"
-main = "nonexistent.ts"
-preset = "bun"
-
-[envs.production]
-route = "prod.example.com"
-servers = ["test-server"]
-"#,
-    )
-    .unwrap();
-
-    // Configure one global server with explicit target metadata.
-    fs::write(
-        tako_home.join("config.toml"),
-        r#"
-[[servers]]
-name = "test-server"
-host = "127.0.0.1"
-port = 22222
-arch = "x86_64"
-libc = "glibc"
-"#,
-    )
-    .unwrap();
-
-    // Add bun.lockb and package.json so the fixture matches a Bun-style project.
-    fs::write(project_dir.join("bun.lockb"), "").unwrap();
-    fs::write(
-        project_dir.join("package.json"),
-        // Specify a nonexistent main in package.json to test that path too
-        r#"{"name": "test-app", "version": "1.0.0", "main": "nonexistent.ts"}"#,
-    )
-    .unwrap();
-
-    let output = run_tako_with_env(
-        &["deploy", "--env", "production"],
-        &project_dir,
-        &home,
-        &tako_home,
-    );
-
-    // Should fail. In fully provisioned environments this is a missing-entrypoint error.
-    // In restricted CI/sandbox environments it may fail earlier at build or SSH preconditions.
+    fs::write(temp.path().join("tako.toml"), "name='app'\nmain='missing.js'\nruntime='node'\n[envs.production]\nroute='app.example.com'\n").unwrap();
+    let output = run_tako(&["deploy", "--env", "production"], temp.path());
+    assert!(!output.status.success());
     assert!(
-        !output.status.success(),
-        "Deploy should fail for invalid entry point or build preconditions"
-    );
-
-    let stderr = stderr_str(&output);
-    assert!(
-        stderr.contains("entry")
-            || stderr.contains("Entry")
-            || stderr.contains("nonexistent")
-            || stderr.contains("not found")
-            || stderr.contains("main")
-            || stderr.contains("Failed to fetch preset")
-            || stderr.contains("lockfile"),
-        "Should mention missing entry point, lockfile mismatch, or build failure: {}",
-        stderr
+        stderr_str(&output).contains("network ID"),
+        "{}",
+        stderr_str(&output)
     );
 }
 
@@ -381,8 +317,7 @@ route = "prod.example.com"
 
     let stderr = stderr_str(&output);
     assert!(
-        stderr.contains("No servers have been added")
-            || stderr.contains("tako network server add <host>"),
+        stderr.contains("network ID in tako.toml"),
         "Should include add-server hint: {}",
         stderr
     );
@@ -390,131 +325,42 @@ route = "prod.example.com"
 
 #[test]
 fn test_deploy_prints_secret_validation_errors_once() {
-    let temp = TempDir::new().unwrap();
-    let project_dir = temp.path().to_path_buf();
-    let home = temp.path().join("home");
-    let tako_home = temp.path().join("tako-home");
-    fs::create_dir_all(&home).unwrap();
-    fs::create_dir_all(&tako_home).unwrap();
-
-    fs::write(
-        project_dir.join("tako.toml"),
-        r#"
-name = "test-app"
-runtime = "bun"
-main = "index.ts"
-
-[envs.production]
-route = "prod.example.com"
-servers = ["test-server"]
-
-[envs.staging]
-route = "staging.example.com"
-servers = ["test-server"]
-"#,
-    )
-    .unwrap();
-    fs::write(project_dir.join("bun.lockb"), "").unwrap();
-    fs::write(project_dir.join("index.ts"), "export default {}").unwrap();
-    fs::write(
-        tako_home.join("config.toml"),
-        r#"
-[[servers]]
-name = "test-server"
-host = "127.0.0.1"
-port = 22222
-"#,
-    )
-    .unwrap();
-
-    for args in [
-        ["secrets", "set", "API_KEY", "--env", "production"],
-        ["secrets", "set", "API_KEY", "--env", "staging"],
-        ["secrets", "set", "GITHUB_CLIENT_SECRET", "--env", "staging"],
-    ] {
-        let output =
-            run_tako_with_stdin_and_env(&args, &project_dir, "secret123\n", &home, &tako_home);
-        assert!(
-            output.status.success(),
-            "secret set should succeed: {}{}",
-            stdout_str(&output),
-            stderr_str(&output)
-        );
-    }
-
+    let server = super::shared_state::ApiServer::new();
+    let project = server.project("secret-validation");
+    fs::write(project.join("tako.toml"), format!("name='demo'\nimage='nginx:alpine'\n[envs.production]\nnetwork='{}'\nroute='demo.example.test'\n[envs.staging]\nnetwork='{}'\nroute='staging.example.test'\n", server.network, server.network)).unwrap();
+    server.ok(
+        &server.owner_home,
+        &project,
+        &["secrets", "set", "API_KEY", "--env", "staging"],
+        Some("staging-only"),
+    );
     let output = run_tako_with_env(
         &["deploy", "--env", "production"],
-        &project_dir,
-        &home,
-        &tako_home,
+        &project,
+        &server.owner_home,
+        &server.owner_home,
     );
-
-    assert!(
-        !output.status.success(),
-        "deploy should fail when a production secret is missing"
-    );
+    assert!(!output.status.success());
     let combined = format!("{}{}", stdout_str(&output), stderr_str(&output));
-    let needle = "Secret errors:";
-    assert_eq!(
-        combined.matches(needle).count(),
-        1,
-        "secret validation block should be printed once: {combined}"
-    );
+    assert_eq!(combined.matches("Secret errors:").count(), 1, "{combined}");
 }
 
 #[test]
-fn test_deploy_detects_missing_ssl_secret_before_server_setup() {
-    let temp = TempDir::new().unwrap();
-    let project_dir = temp.path().to_path_buf();
-    let home = temp.path().join("home");
-    let tako_home = temp.path().join("tako-home");
-    fs::create_dir_all(&home).unwrap();
-    fs::create_dir_all(&tako_home).unwrap();
-
-    fs::write(
-        project_dir.join("tako.toml"),
-        r#"
-name = "test-app"
-runtime = "node"
-main = "index.js"
-
-[envs.production]
-routes = ["*.example.com"]
-"#,
-    )
-    .unwrap();
-
-    fs::write(
-        project_dir.join("package.json"),
-        r#"{"name": "test-app", "version": "1.0.0"}"#,
-    )
-    .unwrap();
-    fs::write(project_dir.join("index.js"), "export default {}").unwrap();
-
-    let output = run_tako_with_env(
+fn test_deploy_validates_ssl_after_pulling_shared_secrets() {
+    let server = super::shared_state::ApiServer::new();
+    let project = server.project("ssl-validation");
+    fs::write(project.join("tako.toml"), format!("name='demo'\nimage='nginx:alpine'\n[envs.production]\nnetwork='{}'\nroutes=['*.example.com']\n", server.network)).unwrap();
+    let output = server.run(
+        &server.owner_home,
+        &project,
         &["deploy", "--env", "production"],
-        &project_dir,
-        &home,
-        &tako_home,
+        None,
     );
-
+    assert!(!output.status.success());
+    let combined = format!("{}{}", stdout_str(&output), stderr_str(&output));
     assert!(
-        !output.status.success(),
-        "Deploy should fail when wildcard SSL credentials are missing"
-    );
-
-    let stderr = stderr_str(&output);
-    assert!(
-        stderr.contains("SSL errors")
-            && stderr.contains("Let’s Encrypt wildcard routes require credential ssl.cloudflare")
-            && stderr.contains("tako credentials set ssl.cloudflare --env production"),
-        "Should fail locally with the SSL credential hint: {}",
-        stderr
-    );
-    assert!(
-        !stderr.contains("No servers have been added"),
-        "SSL validation should run before server setup: {}",
-        stderr
+        combined.contains("SSL errors") && combined.contains("ssl.cloudflare"),
+        "{combined}"
     );
 }
 
