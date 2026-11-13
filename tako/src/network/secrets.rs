@@ -77,6 +77,7 @@ pub(crate) fn load_local(project: &Path) -> Result<SecretsStore> {
         Some(lock(project)?)
     };
     let mut state = read_workspace(project)?;
+    let mut materialized = false;
     // A new worktree starts from the machine's authenticated shared cache. It
     // never reads another checkout's unpublished values.
     if let Ok(config) = TakoToml::load_from_dir(project)
@@ -99,11 +100,14 @@ pub(crate) fn load_local(project: &Path) -> Result<SecretsStore> {
             let profile = super::load_profile(alias)?;
             let scope: AppEnv = format!("{app}/{env}").parse()?;
             merge_remote(&mut state, env, &scope, &profile, &cache)?;
+            materialized = true;
         }
     }
     // Persist the baseline together with any cache materialization; otherwise
     // a later edit could mistake cached values for unpublished local changes.
-    if !crate::output::is_dry_run() && !state.environments.is_empty() {
+    // A read must not rewrite existing drafts: dev watches this file and reloads
+    // secrets when it changes, so rewriting here would trigger a restart loop.
+    if !crate::output::is_dry_run() && materialized {
         write_workspace(project, &state)?;
     }
     let mut values = state.values;

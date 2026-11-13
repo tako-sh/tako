@@ -72,6 +72,17 @@ fn two_worktrees_share_published_values_but_keep_drafts_and_deletions_separate()
     }
     let mut first = load_local(&a).unwrap();
     assert_eq!(decrypted(&first, "TOKEN"), "published");
+    let path = SecretsStore::default_path(&a);
+    let modified = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(42);
+    std::fs::File::open(&path)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+    assert_eq!(decrypted(&load_local(&a).unwrap(), "TOKEN"), "published");
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().modified().unwrap(),
+        modified
+    );
     let key = crate::crypto::KeyStore::for_key_id(first.get_key_id("production").unwrap())
         .unwrap()
         .load_key()
