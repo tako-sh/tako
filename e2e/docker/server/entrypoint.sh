@@ -17,6 +17,8 @@ fi
 if ! id -u tako >/dev/null 2>&1; then
   useradd --system --create-home --home-dir /home/tako --shell /bin/bash --gid tako tako
 fi
+# An unmatchable shadow entry keeps the account available for SSH public keys.
+usermod --password '*' tako
 
 # SSH starts with a fresh environment. Preserve the test host's proxy and CA
 # settings for the service it launches, including Compose's registry client.
@@ -46,10 +48,6 @@ Restart=on-failure
 WantedBy=multi-user.target
 UNIT
 
-if command -v chpasswd >/dev/null 2>&1; then
-  echo "tako:tako-e2e" | chpasswd
-fi
-
 mkdir -p /home/tako/.ssh /var/run/tako /opt/tako /run/sshd
 chmod 700 /home/tako/.ssh
 cp /opt/e2e/keys/id_ed25519.pub /home/tako/.ssh/authorized_keys
@@ -65,13 +63,12 @@ sha256sum "$archive" | awk '{print $1}' > "$archive.sha256"
 
 # Bootstrap needs an administrator. Keep the production tako account restricted
 # so app isolation and provisioning checks continue to use its real sudo policy.
-useradd --create-home --shell /bin/bash e2e-admin
+useradd --create-home --shell /bin/bash --password '*' e2e-admin
 mkdir -p /home/e2e-admin/.ssh
 cp /opt/e2e/keys/id_ed25519.pub /home/e2e-admin/.ssh/authorized_keys
 chown -R e2e-admin:e2e-admin /home/e2e-admin/.ssh
 chmod 0700 /home/e2e-admin/.ssh
 chmod 0600 /home/e2e-admin/.ssh/authorized_keys
-echo 'e2e-admin:e2e-bootstrap' | chpasswd
 printf '%s\n' 'e2e-admin ALL=(root) NOPASSWD: ALL' 'Defaults:e2e-admin env_keep += "HTTP_PROXY HTTPS_PROXY NO_PROXY SSL_CERT_FILE CURL_CA_BUNDLE"' > /etc/sudoers.d/e2e-bootstrap
 chmod 0440 /etc/sudoers.d/e2e-bootstrap
 
