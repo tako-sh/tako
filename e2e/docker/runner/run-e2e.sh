@@ -128,12 +128,24 @@ wait_tako_socket() {
 
 wait_tako_management_http() {
   local host=$1
-  for _ in $(seq 1 120); do
-    # TLS listener readiness only; real commands below verify the enrolled pin.
-    if curl -sk -m 1 -o /dev/null "https://${host}:8443/"; then return 0; fi
+  local status_file="$TMP_ROOT/management-readiness.json"
+  local error_file="$TMP_ROOT/management-readiness.log"
+  local deadline=$((SECONDS + 60))
+  while (( SECONDS < deadline )); do
+    # Native management requires the enrolled SNI and certificate pin. The
+    # container hostname addresses the public app listener, which has no app
+    # certificate yet. Probe real authenticated management through the CLI.
+    if timeout 10 env HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" \
+        "$TAKO_BIN" --ci --json status >"$status_file" 2>"$error_file" &&
+      jq -e --arg host "$host" \
+        'any(.servers[]?; .name == $host and .service_status == "active" and .error == null)' \
+        "$status_file" >/dev/null; then
+      return 0
+    fi
     sleep 0.25
   done
-  echo "Native HTTPS listener not ready: $host" >&2
+  echo "Authenticated native management not ready: $host" >&2
+  cat "$status_file" "$error_file" >&2
   return 1
 }
 
