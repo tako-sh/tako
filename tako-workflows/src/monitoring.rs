@@ -11,6 +11,7 @@ use prometheus::proto::MetricFamily;
 use prometheus::{GaugeVec, Histogram, HistogramOpts, HistogramVec, Opts, Registry};
 
 use crate::WorkflowManager;
+use crate::blocking::ReleaseOffRuntime;
 
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(30);
 const CLAIM_NAME: &str = "tako_workflow_claim_duration_seconds";
@@ -158,7 +159,7 @@ impl StoreMonitoring {
 
 struct HealthReader {
     config: Config,
-    client: Option<Client>,
+    client: Option<ReleaseOffRuntime<Client>>,
     schema: String,
     app: String,
 }
@@ -189,7 +190,7 @@ impl HealthReader {
         if self.client.is_none() {
             let mut client = self.config.connect(NoTls)?;
             client.batch_execute("SET default_transaction_read_only=on; SET statement_timeout='2s'; SET lock_timeout='500ms'")?;
-            self.client = Some(client);
+            self.client = Some(ReleaseOffRuntime::new(client));
         }
         let client = self.client.as_mut().unwrap();
         // Do not leave a monitoring snapshot open between samples.

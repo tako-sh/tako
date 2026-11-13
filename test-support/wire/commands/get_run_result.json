@@ -1,0 +1,6 @@
+{
+  "app": "demo",
+  "command": "get_run_result",
+  "id": "order-42",
+  "name": "send-email"
+}

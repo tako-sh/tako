@@ -23,6 +23,8 @@ pub fn validate_query(schema: &Value, query: &str) -> Result<Value, ParamsError>
         }
     }
 
+    require_flat_object(schema)?;
+    reject_undeclared(schema, &obj)?;
     let value = Value::Object(obj);
     let validator = jsonschema::draft202012::new(schema)
         .map_err(|error| ParamsError::InvalidSchema(error.to_string()))?;
@@ -32,6 +34,167 @@ pub fn validate_query(schema: &Value, query: &str) -> Result<Value, ParamsError>
     }
 
     Ok(value)
+}
+
+/// The params part of a channel route's query. `last_message_id` (the
+/// WebSocket replay cursor) and `from` (the replay start) are never params.
+pub fn channel_params_query(query: Option<&str>) -> String {
+    let Some(query) = query else {
+        return String::new();
+    };
+
+    query
+        .split('&')
+        .filter(|pair| {
+            let key = pair.split_once('=').map_or(*pair, |(key, _)| key);
+            // Compare decoded keys: an encoded spelling must not become a
+            // param. Undecodable keys stay, so validation rejects them.
+            decode_query_component(key, "key").map_or(true, |key| {
+                !crate::stream::RESERVED_PARAM_NAMES.contains(&key.as_str())
+            })
+        })
+        .filter(|pair| !pair.is_empty())
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+/// Validate already typed params, such as those of a server-side publish,
+/// against the same schema that query params are checked with.
+pub fn validate_value(schema: &Value, params: &Value) -> Result<(), ParamsError> {
+    require_flat_object(schema)?;
+    if let Some(params) = params.as_object() {
+        reject_undeclared(schema, params)?;
+    }
+    let validator = jsonschema::draft202012::new(schema)
+        .map_err(|error| ParamsError::InvalidSchema(error.to_string()))?;
+    validator
+        .validate(params)
+        .map_err(|error| ParamsError::Invalid(error.to_string()))
+}
+
+/// Top-level keywords that place properties somewhere other than the
+/// schema's top-level `properties`, where params are declared and coerced.
+const NON_FLAT_KEYWORDS: &[&str] = &["$ref", "$dynamicRef", "patternProperties"];
+
+/// Combinators whose subschemas apply to the whole params object. They may
+/// add constraints over the declared params (`required`, `const`, ...), but
+/// a param declared inside one would be neither coerced nor allowed.
+const ARRAY_COMBINATORS: &[&str] = &["allOf", "anyOf", "oneOf"];
+const SCHEMA_COMBINATORS: &[&str] = &["not", "if", "then", "else"];
+const MAP_COMBINATORS: &[&str] = &["dependentSchemas"];
+
+/// Keywords of a combinator subschema that declare params.
+const DECLARING_KEYWORDS: &[&str] = &[
+    "properties",
+    "patternProperties",
+    "additionalProperties",
+    "$ref",
+    "$dynamicRef",
+];
+
+/// Whether a schema is usable as a channel or presence params schema. Run
+/// once per loaded registry so a bad definition is reported at deploy.
+pub fn check_params_schema(schema: &Value) -> Result<(), ParamsError> {
+    require_flat_object(schema)?;
+    jsonschema::draft202012::new(schema)
+        .map(|_| ())
+        .map_err(|error| ParamsError::InvalidSchema(error.to_string()))
+}
+
+/// The subschemas a schema's combinators apply to the same instance, each
+/// with the combinator that holds it.
+fn combinator_subschemas(schema: &Map<String, Value>) -> Vec<(&'static str, &Value)> {
+    let mut subschemas = Vec::new();
+    for keyword in ARRAY_COMBINATORS {
+        if let Some(Value::Array(items)) = schema.get(*keyword) {
+            subschemas.extend(items.iter().map(|item| (*keyword, item)));
+        }
+    }
+    for keyword in SCHEMA_COMBINATORS {
+        if let Some(subschema) = schema.get(*keyword) {
+            subschemas.push((*keyword, subschema));
+        }
+    }
+    for keyword in MAP_COMBINATORS {
+        if let Some(Value::Object(entries)) = schema.get(*keyword) {
+            subschemas.extend(entries.values().map(|subschema| (*keyword, subschema)));
+        }
+    }
+    subschemas
+}
+
+/// The keyword through which a combinator subschema, or one nested in it,
+/// declares params. `additionalProperties: false` only constrains.
+fn declaring_keyword(subschema: &Value) -> Option<&'static str> {
+    let subschema = subschema.as_object()?;
+    DECLARING_KEYWORDS
+        .iter()
+        .copied()
+        .find(|keyword| match subschema.get(*keyword) {
+            None | Some(Value::Bool(false)) => false,
+            Some(_) => true,
+        })
+        .or_else(|| {
+            combinator_subschemas(subschema)
+                .into_iter()
+                .find_map(|(_, nested)| declaring_keyword(nested))
+        })
+}
+
+/// A channel or presence params schema is one object schema with its params
+/// under top-level `properties`. Top-level combinators may only constrain
+/// those params. Anything else could declare a param that is never coerced
+/// or allowed, so it is reported as a schema problem rather than as unknown
+/// params.
+fn require_flat_object(schema: &Value) -> Result<(), ParamsError> {
+    let problem = match schema.as_object() {
+        None => Some("is not a JSON object".to_owned()),
+        Some(schema) => {
+            if let Some(keyword) = NON_FLAT_KEYWORDS.iter().find(|k| schema.contains_key(**k)) {
+                Some(format!("uses `{keyword}`"))
+            } else if schema.get("type").is_some_and(|t| t != "object") {
+                Some(format!("has `type` {}", schema["type"]))
+            } else if schema.get("properties").is_some_and(|p| !p.is_object()) {
+                Some("has a `properties` that is not an object".to_owned())
+            } else {
+                combinator_subschemas(schema)
+                    .into_iter()
+                    .find_map(|(combinator, subschema)| {
+                        declaring_keyword(subschema).map(|keyword| {
+                            format!(
+                                "declares params through `{keyword}` inside `{combinator}` (combinators may only add constraints such as `required` over the top-level `properties`)"
+                            )
+                        })
+                    })
+            }
+        }
+    };
+    match problem {
+        Some(problem) => Err(ParamsError::InvalidSchema(format!(
+            "a channel params schema must be one object schema with its params under top-level `properties`, but this one {problem}"
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// Params select streams, so each value of a param the schema does not
+/// declare would start a new one. Only a schema that explicitly sets
+/// `additionalProperties: true` accepts params outside its `properties`,
+/// whatever JSON Schema's own default; a schema without properties accepts none.
+fn reject_undeclared(schema: &Value, params: &Map<String, Value>) -> Result<(), ParamsError> {
+    if schema.get("additionalProperties") == Some(&Value::Bool(true)) {
+        return Ok(());
+    }
+    let declared = schema.get("properties").and_then(Value::as_object);
+    match params
+        .keys()
+        .find(|key| !declared.is_some_and(|declared| declared.contains_key(*key)))
+    {
+        Some(key) => Err(ParamsError::Invalid(format!(
+            "unknown param '{key}': the channel's params schema does not declare it"
+        ))),
+        None => Ok(()),
+    }
 }
 
 fn decode_query_component(value: &str, label: &str) -> Result<String, ParamsError> {
@@ -115,6 +278,280 @@ mod tests {
         let schema = json!({ "type": "object" });
         let value = validate_query(&schema, "").unwrap();
         assert_eq!(value, json!({}));
+    }
+
+    #[test]
+    fn typed_params_use_the_query_schema_without_coercion() {
+        validate_value(&schema(), &json!({"roomId": "room-9", "limit": 10})).unwrap();
+        for params in [
+            json!({"limit": 10}),
+            json!({"roomId": "room-9", "limit": "10"}),
+            json!({"roomId": ""}),
+        ] {
+            let error = validate_value(&schema(), &params).unwrap_err();
+            assert!(matches!(error, ParamsError::Invalid(_)), "got {error:?}");
+        }
+    }
+
+    #[test]
+    fn undeclared_params_are_rejected_unless_the_schema_allows_them() {
+        // Each distinct value of an undeclared param would start a stream.
+        for schema in [
+            schema(),
+            json!({"type": "object", "properties": {"roomId": {"type": "string"}}}),
+        ] {
+            let error = validate_query(&schema, "roomId=a&junk=1").unwrap_err();
+            assert!(
+                matches!(&error, ParamsError::Invalid(message) if message.contains("'junk'")),
+                "got {error:?}"
+            );
+            let error = validate_value(&schema, &json!({"roomId": "a", "junk": 1})).unwrap_err();
+            assert!(matches!(error, ParamsError::Invalid(_)), "got {error:?}");
+        }
+        // A channel without a params schema accepts no params.
+        for schema in [
+            json!({"type": "object"}),
+            json!({"type": "object", "properties": {}}),
+        ] {
+            assert_eq!(validate_query(&schema, "").unwrap(), json!({}));
+            assert!(validate_query(&schema, "junk=1").is_err());
+            assert!(validate_value(&schema, &json!({"junk": 1})).is_err());
+        }
+        let open = json!({"type": "object", "additionalProperties": true});
+        assert_eq!(validate_query(&open, "any=1").unwrap(), json!({"any": "1"}));
+        validate_value(&open, &json!({"any": 1})).unwrap();
+        // Reserved names are not params and keep working.
+        let query = channel_params_query(Some("roomId=a&from=start&last_message_id=x"));
+        assert_eq!(
+            validate_query(&schema(), &query).unwrap(),
+            json!({"roomId": "a"})
+        );
+    }
+
+    #[test]
+    fn params_schemas_must_be_one_flat_object_schema() {
+        // Combinators and references hide properties from the top level, so no
+        // param could be declared; say what is wrong instead of "unknown param".
+        let room = json!({"type": "object", "properties": {"roomId": {"type": "string"}}});
+        for (keyword, schema) in [
+            (
+                "allOf",
+                json!({"allOf": [room.clone()], "additionalProperties": false}),
+            ),
+            (
+                "anyOf",
+                json!({"anyOf": [room.clone()], "additionalProperties": false}),
+            ),
+            ("oneOf", json!({"oneOf": [room.clone()]})),
+            (
+                "$ref",
+                json!({"$ref": "#/$defs/room", "$defs": {"room": room.clone()}}),
+            ),
+            (
+                "allOf",
+                json!({"allOf": [room.clone()], "additionalProperties": true}),
+            ),
+            ("type", json!({"type": "string"})),
+        ] {
+            for error in [
+                validate_query(&schema, "roomId=a").unwrap_err(),
+                validate_query(&schema, "").unwrap_err(),
+                validate_value(&schema, &json!({"roomId": "a"})).unwrap_err(),
+            ] {
+                assert!(
+                    matches!(&error, ParamsError::InvalidSchema(message)
+                        if message.contains("top-level `properties`") && message.contains(keyword)),
+                    "{keyword}: got {error:?}"
+                );
+            }
+        }
+        // Combinators inside a property's own schema are fine.
+        let flat = json!({"type": "object", "properties": {
+            "kind": {"anyOf": [{"const": "a"}, {"const": "b"}]}
+        }});
+        assert_eq!(
+            validate_query(&flat, "kind=a").unwrap(),
+            json!({"kind": "a"})
+        );
+    }
+
+    #[test]
+    fn top_level_combinators_may_constrain_declared_params() {
+        let ids = json!({"userId": {"type": "string"}, "teamId": {"type": "string"}});
+        let one_of = json!({"type": "object", "properties": ids,
+            "oneOf": [{"required": ["userId"]}, {"required": ["teamId"]}]});
+        assert_eq!(
+            validate_query(&one_of, "userId=a").unwrap(),
+            json!({"userId": "a"})
+        );
+        validate_value(&one_of, &json!({"teamId": "b"})).unwrap();
+        for query in ["", "userId=a&teamId=b"] {
+            let error = validate_query(&one_of, query).unwrap_err();
+            assert!(
+                matches!(error, ParamsError::Invalid(_)),
+                "constraint-only schema must reject query {query:?}"
+            );
+        }
+        assert!(matches!(
+            validate_value(&one_of, &json!({})),
+            Err(ParamsError::Invalid(_))
+        ));
+
+        let if_then = json!({"type": "object", "properties": ids,
+            "if": {"required": ["userId"]}, "then": {"required": ["teamId"]}});
+        validate_query(&if_then, "userId=a&teamId=b").unwrap();
+        validate_query(&if_then, "teamId=b").unwrap();
+        assert!(matches!(
+            validate_query(&if_then, "userId=a"),
+            Err(ParamsError::Invalid(_))
+        ));
+
+        let not = json!({"type": "object", "properties": ids, "not": {"required": ["teamId"]}});
+        validate_query(&not, "userId=a").unwrap();
+        assert!(matches!(
+            validate_query(&not, "teamId=b"),
+            Err(ParamsError::Invalid(_))
+        ));
+
+        let dependent = json!({"type": "object", "properties": ids,
+            "dependentSchemas": {"teamId": {"required": ["userId"]}},
+            "allOf": [{"anyOf": [{"required": ["userId"]}, {"required": ["teamId"]}]}],
+            "additionalProperties": false});
+        validate_query(&dependent, "userId=a&teamId=b").unwrap();
+        for query in ["teamId=b", ""] {
+            assert!(
+                matches!(
+                    validate_query(&dependent, query),
+                    Err(ParamsError::Invalid(_))
+                ),
+                "{query}"
+            );
+        }
+        for schema in [&one_of, &if_then, &not, &dependent] {
+            check_params_schema(schema).unwrap();
+        }
+    }
+
+    #[test]
+    fn combinators_that_declare_params_are_rejected_wherever_they_nest() {
+        let ids = json!({"userId": {"type": "string"}});
+        let declared = json!({"properties": {"teamId": {"type": "string"}}});
+        for (combinator, keyword, schema) in [
+            ("allOf", "properties", json!({"allOf": [declared.clone()]})),
+            (
+                "anyOf",
+                "properties",
+                json!({"anyOf": [{"allOf": [{"not": declared.clone()}]}]}),
+            ),
+            (
+                "oneOf",
+                "additionalProperties",
+                json!({"oneOf": [{"additionalProperties": true}]}),
+            ),
+            (
+                "if",
+                "additionalProperties",
+                json!({"if": {"additionalProperties": {"type": "string"}}}),
+            ),
+            (
+                "not",
+                "$ref",
+                json!({"not": {"$ref": "#/$defs/x"}, "$defs": {"x": {}}}),
+            ),
+            (
+                "dependentSchemas",
+                "patternProperties",
+                json!({"dependentSchemas": {"userId": {"patternProperties": {"^t": {}}}}}),
+            ),
+            (
+                "else",
+                "$dynamicRef",
+                json!({"else": {"$dynamicRef": "#x"}}),
+            ),
+        ] {
+            let mut schema = schema;
+            schema["type"] = json!("object");
+            schema["properties"] = ids.clone();
+            for error in [
+                validate_query(&schema, "userId=a").unwrap_err(),
+                validate_value(&schema, &json!({"userId": "a"})).unwrap_err(),
+                check_params_schema(&schema).unwrap_err(),
+            ] {
+                assert!(
+                    matches!(&error, ParamsError::InvalidSchema(message)
+                        if message.contains(&format!("`{keyword}` inside `{combinator}`"))
+                            && message.contains("top-level `properties`")),
+                    "a `{keyword}` inside `{combinator}` must be reported as a schema problem"
+                );
+            }
+        }
+        // `additionalProperties: false` inside a combinator only constrains.
+        let closed = json!({"type": "object", "properties": ids,
+            "allOf": [{"additionalProperties": false}]});
+        check_params_schema(&closed).unwrap();
+        // Top-level references, pattern properties and other types stay rejected.
+        for (keyword, schema) in [
+            (
+                "patternProperties",
+                json!({"patternProperties": {"^u": {}}}),
+            ),
+            ("$dynamicRef", json!({"$dynamicRef": "#x"})),
+            ("type", json!({"type": ["object", "null"]})),
+            ("JSON object", json!(true)),
+        ] {
+            let error = check_params_schema(&schema).unwrap_err();
+            assert!(
+                matches!(&error, ParamsError::InvalidSchema(message) if message.contains(keyword)),
+                "a top-level `{keyword}` problem must be reported"
+            );
+        }
+    }
+
+    #[test]
+    fn query_and_json_numbers_bind_the_same_stream() {
+        // A subscriber's query value is parsed as text; a publisher's arrives
+        // as a JSON number. Both must yield the same f64, or the two name
+        // different streams.
+        let schema = json!({"type": "object", "properties": {"x": {"type": "number"}}});
+        let mut cases: Vec<String> = [
+            "0.1",
+            "1e23",
+            "2.2250738585072011e-308",
+            "2.2250738585072014e-308",
+            "4.9406564584124654e-324",
+            "1.7976931348623157e308",
+            "0.30000000000000004",
+            "123456789.12345678",
+            "8.98846567431158e307",
+        ]
+        .map(String::from)
+        .to_vec();
+        // Deterministic pseudo-random 17 to 20 digit decimals over a wide
+        // exponent range: the inputs where fast float parsing rounds wrong.
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..20_000 {
+            let digits = 17 + (next() % 4) as usize;
+            let mantissa: String = (0..digits)
+                .map(|_| char::from(b'0' + (next() % 10) as u8))
+                .collect();
+            let exponent = (next() % 600) as i64 - 300;
+            cases.push(format!("{}.{}e{exponent}", &mantissa[..1], &mantissa[1..]));
+        }
+        for raw in cases {
+            let queried = validate_query(&schema, &format!("x={raw}")).unwrap();
+            let published = json!({ "x": serde_json::from_str::<Value>(&raw).unwrap() });
+            assert_eq!(
+                crate::ChannelStream::new("c", &queried),
+                crate::ChannelStream::new("c", &published),
+                "{raw}: query {queried} vs JSON {published}"
+            );
+        }
     }
 
     #[test]

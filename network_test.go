@@ -147,3 +147,43 @@ func TestNetworkCallCancellationDuringResponse(t *testing.T) {
 	}
 	<-done
 }
+
+func TestNetworkRejectionsCarryTheServerCode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "coded.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	t.Setenv("TAKO_INTERNAL_SOCKET", path)
+	t.Setenv("TAKO_APP_NAME", "web/staging")
+	replies := []string{
+		`{"status":"error","message":"private detail","code":"channel_closed"}`,
+		`{"status":"error","message":"private detail","code":"run_id_conflict"}`,
+		`{"status":"error","message":"private detail"}`,
+	}
+	go func() {
+		for _, reply := range replies {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			_, _ = bufio.NewReader(conn).ReadBytes('\n')
+			_, _ = conn.Write([]byte(reply + "\n"))
+			_ = conn.Close()
+		}
+	}()
+	_, err = Publish(context.Background(), "web.progress", nil, "update", 1)
+	if !errors.Is(err, ErrChannelClosed) || err.Error() != "tako: network primitive call failed" {
+		t.Fatalf("publish: %v", err)
+	}
+	_, err = Enqueue(context.Background(), "mail.send-email", nil, NetworkEnqueueOptions{})
+	var rejected *ServerError
+	if !errors.Is(err, ErrRunIDConflict) || !errors.As(err, &rejected) || rejected.Code != "run_id_conflict" {
+		t.Fatalf("enqueue: %v", err)
+	}
+	_, err = Call(context.Background(), "users.lookup", nil)
+	if err == nil || errors.Is(err, ErrUnavailable) || errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("unclassified call: %v", err)
+	}
+}

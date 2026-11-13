@@ -3,31 +3,37 @@
  *
  * Server-side SDK code (app fetch handlers, workflow bodies, cron ticks)
  * reaches `tako-server` via a single unix socket. Workflow RPCs and
- * server-side channel `.publish()` both land here — no HTTPS, no auth, same
+ * server-side channel `.publish()` and `.close()` all land here — no HTTPS, no auth, same
  * trust boundary as the hosting process.
  *
  * Env vars set by the server when spawning an instance or worker:
  *   TAKO_INTERNAL_SOCKET — path to the shared unix socket
  *   TAKO_APP_NAME        — app name used on every command payload
+ *   TAKO_BUILD           — build sent with channel publishes and closes, when set
  */
 
 import { createConnection } from "node:net";
 import type { Socket } from "node:net";
-import { setChannelSocketPublisher } from "../channels";
+import { setChannelSocketCloser, setChannelSocketPublisher } from "../channels";
+import type { ChannelLifecycleConfig } from "../channels/meta";
 import { setNetworkCaller } from "../network";
 import { createLogger } from "../logger";
 import type { ChannelMessage, ChannelPublishInput } from "../types";
+import type { ChannelParamValue } from "../channels/params";
 
 export const INTERNAL_SOCKET_ENV = "TAKO_INTERNAL_SOCKET";
 export const APP_NAME_ENV = "TAKO_APP_NAME";
+export const BUILD_ENV = "TAKO_BUILD";
 
-export { TakoError, type TakoErrorCode } from "./error";
-import { TakoError, type TakoErrorCode } from "./error";
+export { TakoError, type TakoErrorCode, type TakoErrorReason } from "./error";
+import { TakoError, takoErrorReason, type TakoErrorCode } from "./error";
 
 interface RpcResponse {
   status: "ok" | "error";
   data?: unknown;
   message?: string;
+  /** Machine-readable reason, present only where an SDK may need to branch. */
+  code?: string;
 }
 
 const logger = createLogger("sdk.rpc");
@@ -97,7 +103,8 @@ export function assertInternalSocketEnvConsistency(): void {
 }
 
 /**
- * Install a channel publisher that routes `Channel.publish()` calls through
+ * Install a channel publisher and closer that route `Channel.publish()` and
+ * `Channel.close()` calls through
  * the Tako internal socket when `TAKO_INTERNAL_SOCKET` + `TAKO_APP_NAME` are
  * set. Called from the server and worker bootstraps so app/workflow code can
  * publish without an HTTPS round-trip back through the proxy.
@@ -117,15 +124,46 @@ export function installChannelSocketPublisherFromEnv(): boolean {
       request,
     }),
   );
-  setChannelSocketPublisher(async <T>(channel: string, message: ChannelPublishInput<T>) => {
-    const result = await callInternal(socketPath, {
-      command: "channel_publish",
-      app,
-      channel,
-      payload: message,
-    });
-    return result as ChannelMessage<T>;
-  });
+  setChannelSocketPublisher(
+    async <T>(
+      channel: string,
+      message: ChannelPublishInput<T>,
+      params: Record<string, ChannelParamValue>,
+    ) => {
+      // Params select the stream; the build lets the server check them
+      // against the channel definition subscribers are validated with.
+      const build = process.env[BUILD_ENV] || undefined;
+      const result = await callInternal(socketPath, {
+        command: "channel_publish",
+        app,
+        channel,
+        ...(Object.keys(params).length > 0 && { params }),
+        ...(build !== undefined && { build }),
+        payload: message,
+      });
+      return result as ChannelMessage<T>;
+    },
+  );
+  setChannelSocketCloser(
+    async (
+      channel: string,
+      params: Record<string, ChannelParamValue>,
+      lifecycle: ChannelLifecycleConfig | undefined,
+    ) => {
+      // Same stream selection as publish; the lifecycle tells the server the
+      // stream is durable and how long to retain its terminal marker.
+      const build = process.env[BUILD_ENV] || undefined;
+      const result = await callInternal(socketPath, {
+        command: "channel_close",
+        app,
+        channel,
+        ...(Object.keys(params).length > 0 && { params }),
+        ...(build !== undefined && { build }),
+        ...(lifecycle !== undefined && { lifecycle }),
+      });
+      return result as ChannelMessage<null>;
+    },
+  );
   return true;
 }
 
@@ -135,9 +173,11 @@ export async function callInternal(socketPath: string, cmd: unknown): Promise<un
     typeof cmd === "object" && cmd !== null && "command" in cmd && cmd.command === "network_call";
   const resp = await internalSocketPool(socketPath, network).call(cmd);
   if (resp.status === "error") {
-    logger.error("rpc rejected", { code: "TAKO_RPC_ERROR", message: resp.message });
+    const reason = takoErrorReason(resp.code);
+    logger.error("rpc rejected", { code: "TAKO_RPC_ERROR", reason, message: resp.message });
     throw new TakoError("TAKO_RPC_ERROR", "Internal Server Error", {
       cause: resp.message ? new Error(resp.message) : undefined,
+      ...(reason !== undefined && { reason }),
     });
   }
   return resp.data ?? null;

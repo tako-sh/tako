@@ -241,7 +241,7 @@ async fn query_connected_app_status(
                     error = Some(format!("Failed to parse app status: {}", e));
                 }
             },
-            Ok(Response::Error { message }) => {
+            Ok(Response::Error { message, .. }) => {
                 if !message.contains("not found") {
                     error = Some(message);
                 }
@@ -309,6 +309,11 @@ pub(super) fn expand_status_by_running_builds(
                 builds: Vec::new(),
                 state: build.state,
                 last_error: app_status.last_error.clone(),
+                // Recovery is about the instances of the current release.
+                recovery: app_status
+                    .recovery
+                    .clone()
+                    .filter(|_| build.version == app_status.version),
             }),
             deployed_at_unix_secs: status.deployed_at_unix_secs,
             error: status.error.clone(),
@@ -342,7 +347,7 @@ pub(super) fn parse_list_apps_response(response: Response) -> Result<Vec<String>
             names.dedup();
             Ok(names)
         }
-        Response::Error { message } => Err(format!("tako-server error (list): {}", message)),
+        Response::Error { message, .. } => Err(format!("tako-server error (list): {}", message)),
     }
 }
 
@@ -353,7 +358,9 @@ fn parse_list_releases_response(response: Response) -> Result<Vec<ReleaseInfo>, 
                 .map_err(|e| format!("invalid list_releases response: {}", e))?;
             Ok(parsed.releases)
         }
-        Response::Error { message } => Err(format!("tako-server error (list_releases): {message}")),
+        Response::Error { message, .. } => {
+            Err(format!("tako-server error (list_releases): {message}"))
+        }
     }
 }
 

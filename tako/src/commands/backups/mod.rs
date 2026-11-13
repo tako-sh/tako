@@ -2,7 +2,8 @@ use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
 use tako_core::{
-    BackupDownloadUrlResponse, BackupInfo, BackupListResponse, BackupStatusResponse, Command,
+    BackupDownloadUrlResponse, BackupInfo, BackupListResponse, BackupRestoreResponse,
+    BackupStatusResponse, Command,
 };
 
 use crate::app::require_app_name_from_config_path;
@@ -10,13 +11,16 @@ use crate::commands::project_context;
 use crate::config::{ServersToml, TakoToml};
 use crate::output;
 
-mod client;
+pub(crate) mod client;
 mod display;
 mod download;
-mod target;
+pub(crate) mod target;
 
 use client::{send_typed_to_server, send_typed_to_servers};
-use display::{format_status_line, output_backup_line};
+use display::{
+    format_status_failure, format_status_line, output_backup_line, output_restored_databases,
+    restore_confirm_description,
+};
 use download::download_url_to_file;
 use target::{resolve_backup_target, resolve_single_server};
 
@@ -65,7 +69,7 @@ pub enum BackupCommands {
         output: Option<PathBuf>,
     },
 
-    /// Restore app data from a backup archive
+    /// Restore app data, or only SQLite databases, from a backup
     Restore {
         /// Backup id from `tako backups list`
         backup_id: String,
@@ -386,6 +390,9 @@ async fn backup_status(
             Ok(status) => {
                 any_success = true;
                 output::bullet(&format_status_line(&server_name, &status));
+                if let Some(failure) = format_status_failure(&server_name, &status) {
+                    output::warning(&failure);
+                }
             }
             Err(error) => output::warning(&format!(
                 "{}: failed to load backup status ({})",
@@ -423,9 +430,12 @@ async fn download_backup(
         output::strong(&server_name)
     ));
     if output::is_dry_run() {
-        let output_path =
-            output_path.unwrap_or_else(|| PathBuf::from(format!("{backup_id}.tar.zst.enc")));
-        output::dry_run_skip(&format!("Download backup to {}", output_path.display()));
+        // The default file name depends on the backup kind, which only the
+        // server knows.
+        output::dry_run_skip(&match &output_path {
+            Some(path) => format!("Download backup {backup_id} to {}", path.display()),
+            None => format!("Download backup {backup_id}"),
+        });
         return Ok(());
     }
 
@@ -438,8 +448,17 @@ async fn download_backup(
         "backup_download_url",
     )
     .await?;
-    let output_path =
-        output_path.unwrap_or_else(|| PathBuf::from(format!("{backup_id}.tar.zst.enc")));
+    if download.backup.id != backup_id {
+        return Err(format!(
+            "Server returned backup {} for requested backup {backup_id}",
+            download.backup.id
+        )
+        .into());
+    }
+    let output_path = match output_path {
+        Some(path) => path,
+        None => PathBuf::from(download.backup.archive_file_name()?),
+    };
 
     let bytes = output::with_spinner_async(
         "Downloading backup",
@@ -449,6 +468,18 @@ async fn download_backup(
     .await
     .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
+    if output::is_json() {
+        return output::json_result(serde_json::json!({
+            "ok": true,
+            "command": "backups",
+            "app": target.app_name,
+            "environment": target.env,
+            "server": server_name,
+            "backup": download.backup,
+            "path": output_path,
+            "size_bytes": bytes,
+        }));
+    }
     output::section("Summary");
     output::info(&format!(
         "Saved {} ({})",
@@ -473,6 +504,13 @@ async fn restore_backup(
         .ok_or_else(|| format!("Server '{}' not found in config.toml", server_name))?;
 
     if output::is_interactive() && !assume_yes {
+        // The confirmation says what this backup's kind replaces. Dry runs
+        // stay offline and describe both kinds.
+        let entry = if output::is_dry_run() {
+            None
+        } else {
+            Some(find_backup_entry(&target.remote_app_name, server, backup_id).await?)
+        };
         let confirmed = output::confirm_with_description(
             &format!(
                 "Restore {} in {} on {} from {}?",
@@ -481,7 +519,7 @@ async fn restore_backup(
                 output::strong(&server_name),
                 output::strong(backup_id)
             ),
-            Some("This stops the app and replaces its data directory."),
+            Some(&restore_confirm_description(entry.as_ref())),
             false,
         )?;
         if !confirmed {
@@ -501,10 +539,10 @@ async fn restore_backup(
         return Ok(());
     }
 
-    let info = output::with_spinner_async(
+    let restored = output::with_spinner_async(
         "Restoring backup",
         "Backup restored",
-        send_typed_to_server::<BackupInfo>(
+        send_typed_to_server::<BackupRestoreResponse>(
             server,
             Command::RestoreBackup {
                 app: target.remote_app_name.clone(),
@@ -516,12 +554,49 @@ async fn restore_backup(
     .await
     .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
+    if output::is_json() {
+        return output::json_result(serde_json::json!({
+            "ok": true,
+            "command": "backups",
+            "app": target.app_name,
+            "environment": target.env,
+            "server": server_name,
+            "backup": restored.backup,
+            "databases": restored.databases,
+        }));
+    }
     output::section("Summary");
-    output::info(&format!(
-        "Restored {} from {} ({})",
-        output::strong(&target.app_name),
-        output::strong(&info.id),
-        output::format_size(info.size_bytes)
-    ));
+    match &restored.databases {
+        None => output::info(&format!(
+            "Restored {} from {} ({})",
+            output::strong(&target.app_name),
+            output::strong(&restored.backup.id),
+            output::format_size(restored.backup.size_bytes)
+        )),
+        Some(databases) => output_restored_databases(&target.app_name, &restored.backup, databases),
+    }
     Ok(())
+}
+
+async fn find_backup_entry(
+    remote_app_name: &str,
+    server: &crate::config::ServerEntry,
+    backup_id: &str,
+) -> Result<BackupInfo, Box<dyn std::error::Error>> {
+    let _t = output::timed("Load backup entry");
+    let list = output::with_spinner_async_simple(
+        "Loading backup",
+        send_typed_to_server::<BackupListResponse>(
+            server,
+            Command::ListBackups {
+                app: remote_app_name.to_string(),
+            },
+            "list_backups",
+        ),
+    )
+    .await?;
+    list.backups
+        .into_iter()
+        .find(|backup| backup.id == backup_id)
+        .ok_or_else(|| format!("Backup not found: {backup_id}").into())
 }

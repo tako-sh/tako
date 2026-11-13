@@ -1,0 +1,11 @@
+{
+  "address": "users.lookup",
+  "app": "demo",
+  "command": "network_call",
+  "request": {
+    "input": {
+      "id": "u1"
+    },
+    "operation": "call"
+  }
+}

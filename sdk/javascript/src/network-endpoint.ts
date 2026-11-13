@@ -6,6 +6,7 @@ import { discoverWorkflows } from "./workflows/discovery";
 import { WorkflowsClient } from "./workflows/rpc-client";
 import { resolveAppRootDir } from "./tako/app-root";
 import { discoverNetworkHandlers } from "./network/discovery";
+import { TakoError, type TakoErrorReason } from "./tako/error";
 
 /** Dispatch only declared primitives; no handler, transport, or lifecycle supplied by the caller. */
 export async function handleNetworkInvocation(
@@ -13,8 +14,10 @@ export async function handleNetworkInvocation(
   channels: ChannelRegistry,
 ): Promise<Response> {
   const reply = (body: unknown, status = 200) => Response.json(body, { status });
-  if (request.method !== "POST")
-    return reply({ status: "error", message: "Method not allowed" }, 405);
+  // The caller's SDK branches on `code`, as on its own internal-socket replies.
+  const reject = (status: number, message: string, code?: TakoErrorReason) =>
+    reply({ status: "error", message, ...(code !== undefined && { code }) }, status);
+  if (request.method !== "POST") return reject(405, "Method not allowed", "invalid_request");
   try {
     const input = (await request.json()) as { name?: unknown; request?: Record<string, unknown> };
     if (
@@ -22,7 +25,7 @@ export async function handleNetworkInvocation(
       !/^[A-Za-z0-9_:-]{1,255}$/.test(input.name) ||
       !input.request
     ) {
-      return reply({ status: "error", message: "Invalid network invocation" }, 400);
+      return reject(400, "Invalid network invocation", "invalid_request");
     }
     const call = input.request;
     if (call["operation"] === "call") {
@@ -30,36 +33,37 @@ export async function handleNetworkInvocation(
         join(resolveAppRootDir(process.cwd()), "network-handlers"),
       );
       const handler = handlers.get(input.name);
-      if (!handler) return reply({ status: "error", message: "Unknown network handler" }, 404);
+      if (!handler) return reject(404, "Unknown network handler");
       const data = await handler(call["input"]);
       return reply({ status: "ok", data: data ?? null });
     }
     if (call["operation"] === "result") {
-      if (typeof call["id"] !== "string")
-        return reply({ status: "error", message: "Invalid run ID" }, 400);
+      if (typeof call["id"] !== "string") return reject(400, "Invalid run ID", "invalid_request");
       const client = WorkflowsClient.fromEnv();
-      if (!client) return reply({ status: "error", message: "Workflow runtime unavailable" }, 503);
+      if (!client) return reject(503, "Workflow runtime unavailable", "unavailable");
       return reply({ status: "ok", data: await client.result(input.name, call["id"]) });
     }
     if (call["operation"] === "publish") {
       const entry = channels.all.find(({ name }) => name === input.name);
       if (!entry || input.name.startsWith("tako.")) {
-        return reply({ status: "error", message: "Unknown channel" }, 404);
+        return reject(404, "Unknown channel", "channel_unknown");
       }
       const params = call["params"] ?? {};
       if (!Value.Check(entry.definition.paramsSchema as TSchema, params)) {
-        return reply({ status: "error", message: "Invalid channel params" }, 400);
+        return reject(400, "Invalid channel params", "channel_params_invalid");
       }
       const message = call["message"] as { type?: unknown; data?: unknown } | undefined;
       if (!message || typeof message.type !== "string" || !("data" in message)) {
-        return reply({ status: "error", message: "Invalid channel message" }, 400);
+        return reject(400, "Invalid channel message", "invalid_request");
       }
       const channel = new Channel(
         entry.name,
         entry.definition.transport,
         params as Record<string, unknown>,
         definitionLifecycleConfig(entry.definition),
+        entry.definition.paramsSchema,
       );
+      // Params select the recipient stream, as `channel(params).publish` does.
       const data = await channel.publish({ type: message.type, data: message.data });
       return reply({ status: "ok", data });
     }
@@ -68,7 +72,7 @@ export async function handleNetworkInvocation(
         join(resolveAppRootDir(process.cwd()), "workflows"),
       );
       const definition = workflows.find(({ name }) => name === input.name);
-      if (!definition) return reply({ status: "error", message: "Unknown workflow" }, 404);
+      if (!definition) return reject(404, "Unknown workflow");
       const options = (call["opts"] ?? {}) as {
         run_at_ms?: number;
         max_attempts?: number;
@@ -82,10 +86,10 @@ export async function handleNetworkInvocation(
         (options.run_at_ms !== undefined && !Number.isSafeInteger(options.run_at_ms)) ||
         (options.id !== undefined && typeof options.id !== "string")
       ) {
-        return reply({ status: "error", message: "Invalid enqueue options" }, 400);
+        return reject(400, "Invalid enqueue options", "invalid_request");
       }
       const client = WorkflowsClient.fromEnv();
-      if (!client) return reply({ status: "error", message: "Workflow runtime unavailable" }, 503);
+      if (!client) return reject(503, "Workflow runtime unavailable", "unavailable");
       const retries =
         options.max_attempts === undefined ? definition.opts.retries : options.max_attempts - 1;
       const data = await client.enqueue(definition.name, call["payload"], {
@@ -95,8 +99,11 @@ export async function handleNetworkInvocation(
       });
       return reply({ status: "ok", data });
     }
-    return reply({ status: "error", message: "Unsupported network operation" }, 400);
-  } catch {
-    return reply({ status: "error", message: "Network invocation failed" }, 500);
+    return reject(400, "Unsupported network operation", "invalid_request");
+  } catch (err) {
+    // The recipient's own socket rejection (a conflicting run ID, a closed
+    // stream) keeps its code; its message stays private to the recipient.
+    const reason = err instanceof TakoError ? err.reason : undefined;
+    return reject(500, "Network invocation failed", reason);
   }
 }

@@ -44,7 +44,7 @@ Native releases run from the prepared artifact. Container releases upload source
 
 Native HTTP instances bind `HOST=127.0.0.1` and `PORT=0`. The SDK binds an OS-assigned loopback port and reports it on fd 4. `tako-server` then probes the private endpoint and routes traffic through the app load balancer.
 
-Container HTTP instances receive `HOST=0.0.0.0`, `PORT=3000`, and `TAKO_BOOTSTRAP_DATA`. They do not receive fd 3, fd 4, the internal socket, or `TAKO_DATA_DIR` in v0. A configured container workflow `run` starts a separate process from the same image with the internal socket mounted; container releases support one configured workflow `run` command in v0.
+Container HTTP instances receive `HOST=0.0.0.0`, `PORT=3000`, and `TAKO_BOOTSTRAP_DATA`. The app data directory is mounted into the container at `container_options.data_dir` (`/tako/data` by default), and `TAKO_DATA_DIR` names that container path. They do not receive fd 3, fd 4, or the internal socket in v0. A configured container workflow `run` starts a separate process from the same image with the same data mount and `TAKO_DATA_DIR`, plus the internal socket; container releases support one configured workflow `run` command in v0.
 
 Secrets and storage bindings are stored encrypted on the server. Native app and worker processes receive them through the fd 3 bootstrap envelope. Containers receive the same envelope through `TAKO_BOOTSTRAP_DATA`. Backup storage is not exposed to app code unless it is also configured as an app storage binding.
 
@@ -58,7 +58,7 @@ Public `/_tako/*` paths are reserved after a request matches an app route:
 - `/_tako/image` serves the public image optimizer.
 - `/_tako/storages/<binding>/<key>` is served directly by the Rust proxy for signed local storage uploads and downloads, independently of app workers. The SDK creates URLs and does not perform storage file I/O.
 
-Channels are broadcast streams for app events. All authorized subscribers to the same channel can read the same messages, each subscriber keeps its own cursor, and receiving a message does not remove it for other subscribers.
+Channels are broadcast streams for app events. All authorized subscribers to the same channel and params can read the same messages, each subscriber keeps its own cursor, and receiving a message does not remove it for other subscribers.
 
 Unknown production routes return `404`. Unknown managed local development hosts return a helpful `421` that lists registered dev routes.
 
@@ -76,7 +76,11 @@ Desired instance count is server-side runtime state, not `tako.toml` config. New
 
 Scaling to zero enables on-demand cold starts. Deploy still keeps one warm instance immediately after rollout so the app is reachable, then idle timeout can stop it later. A cold request waits for readiness, queues behind an in-progress cold start up to the server limit, and gets a generic 502/503/504 response if startup fails.
 
+If an instance exits or fails its health checks, the server replaces it. The first loss is replaced at once; repeated losses wait with jittered backoff from about 1 second doubling to 30 seconds. A periodic check every few seconds starts any instances still missing below the desired count, so a failed or postponed replacement is retried without a deploy. The backoff resets after the app stays healthy for a minute, and a successful deploy or `tako scale` clears it. Apps scaled to zero are started only by requests.
+
 During rolling deploys, new instances do not receive public traffic and old instances are not drained until every replacement batch stays healthy for a short stability window. If active health probing marks a new batch unhealthy during that window, deploy rolls back and keeps the previous release serving.
+
+Draining an instance, for a deploy or a scale-down, stops new requests to it and waits up to 30 seconds for its in-flight requests to finish, server-sent event streams included. Connections the app upgraded (it answered `101 Switching Protocols`, as for a WebSocket) do not hold the drain: once the other requests finish, the server sends `SIGTERM` and kills the process if it has not exited after a grace period (15 seconds for native processes). Sockets still open to that instance are closed, and clients should reconnect. On `SIGTERM` the JavaScript SDK lets in-flight requests and streams finish for up to 8 seconds, then closes the rest abruptly so clients see an error rather than a response that looks complete; an app that serves its own WebSockets can close them with code `1012` (service restart). Long-lived subscriptions belong on channels and presence: those connections are served by `tako-server`, not by app instances, and stay open across deploys. Idle scale-down still counts every open connection, so an instance with an open socket is never treated as idle.
 
 Health checks call `/status` with `Host: <app>.tako` and `X-Tako-Internal-Token`. SDK adapters handle this endpoint and echo the token. Browser-facing production 5xx bodies stay generic; detailed startup, proxy, storage, channel, and image diagnostics go to app logs.
 
@@ -86,11 +90,11 @@ Each deployed app has durable data under the server data directory:
 
 ```text
 /opt/tako/apps/{app}/{env}/data/
-├── app/   # exposed to app code as TAKO_DATA_DIR for native releases
+├── app/   # exposed to app code as TAKO_DATA_DIR; mounted into containers
 └── tako/  # Tako-owned workflow/channel/cache state
 ```
 
-Backups are opt-in with `[envs.<env>].backup`. Backup storage must be a private S3-compatible storage resource. Archives preserve symlinks as symlinks, are compressed and encrypted with environment-managed backup keys, uploaded under Tako's reserved backup prefix, and indexed remotely. Deploy creates a backup after successful finalize when backups are enabled; the server also runs due backups about every 24 hours.
+Backups are opt-in with `[envs.<env>].backup`. Backup storage must be a private S3-compatible storage resource. Archives preserve symlinks as symlinks, are compressed and encrypted with environment-managed backup keys, uploaded under Tako's reserved backup prefix, and indexed remotely. Deploy creates a full backup after successful finalize when backups are enabled; the server also runs a due full backup about every 24 hours and, between them, an hourly snapshot of only the SQLite databases when they changed. SQLite data can therefore be recovered to within about an hour, other files to within about a day.
 
 Local workflow state is backed up. Channel replay and SDK cache storage are not backed up because they are transient and recomputable. External databases, shared Postgres state, and S3 object contents need their own backup policies; the app-data snapshot does not copy them. See [Backups](/backups/) for the exact boundary and recovery workflow.
 

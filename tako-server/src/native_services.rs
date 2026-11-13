@@ -221,7 +221,11 @@ impl ServiceDirectory {
             let Ok(address) = lease.verify_member(&self.network, member, now) else {
                 continue;
             };
-            let mut deadline = Instant::now() + Duration::from_secs(lease.expires_at - now);
+            // A lease issued ahead of this clock (within the verifier's skew
+            // tolerance) is honored for its signed lifetime, never that plus
+            // the skew. Verification guarantees `expires_at > now`.
+            let remaining = lease.expires_at - now.max(lease.issued_at);
+            let mut deadline = Instant::now() + Duration::from_secs(remaining);
             if let Some((previous, previous_deadline)) = self.latest.get(&lease.server_id) {
                 if lease.issued_at < previous.issued_at {
                     continue;

@@ -6,7 +6,7 @@ use crate::config::{ServerEntry, ServersToml};
 use crate::management_http::ManagementClient;
 use crate::output;
 
-pub(super) async fn send_typed_to_servers<T>(
+pub(crate) async fn send_typed_to_servers<T>(
     server_names: &[String],
     servers: &ServersToml,
     command: Command,
@@ -61,7 +61,7 @@ where
     Ok(out)
 }
 
-pub(super) async fn send_typed_to_server<T>(
+pub(crate) async fn send_typed_to_server<T>(
     server: &ServerEntry,
     command: Command,
     response_name: &'static str,
@@ -85,6 +85,6 @@ where
     match response {
         Response::Ok { data } => serde_json::from_value(data)
             .map_err(|e| format!("invalid {response_name} response: {e}")),
-        Response::Error { message } => Err(message),
+        Response::Error { message, .. } => Err(message),
     }
 }

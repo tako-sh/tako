@@ -1,5 +1,6 @@
 import { Type, type Static, type TSchema } from "@sinclair/typebox";
 import { Channel, definitionLifecycleConfig } from "../channels";
+import { assertFlatChannelParamsSchema, channelParamQuery } from "./params";
 import {
   CHANNEL_SYMBOL,
   isChannelDefinition,
@@ -28,6 +29,7 @@ export interface ChannelConfig<
 > extends ChannelLifecycleConfig {
   /**
    * TypeBox schema for query params required to bind this channel.
+   * Properties cannot be named `from` or `last_message_id`.
    *
    * Omit for an unparameterized channel.
    */
@@ -95,6 +97,12 @@ export type ChannelHandle<
     options?: ChannelPublishOptions,
   ): Promise<ChannelMessage<Messages[T]>>;
   /**
+   * Close this stream from server-side code: subscribers get every earlier
+   * message, then the end of the stream, and later publishes fail. Rejects on
+   * ephemeral channels and outside the Tako server runtime.
+   */
+  close(): Promise<ChannelMessage<null>>;
+  /**
    * Subscribe to messages with the default browser transport.
    */
   subscribe(options?: ChannelSubscribeOptions): ChannelSubscription;
@@ -158,35 +166,24 @@ function lifecycle(config: ChannelLifecycleConfig): ChannelLifecycleConfig {
   };
 }
 
-function encodeParams(params: Record<string, unknown>): string {
-  const search = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) {
-    if (value === undefined || value === null) continue;
-    search.set(key, encodeQueryValue(value));
-  }
-  const query = search.toString();
+/** Binding checks params as subscribe and publish both will, so it fails once, here. */
+function encodeParams(params: Record<string, unknown>, schema: object): string {
+  const query = new URLSearchParams(channelParamQuery(params, schema)).toString();
   return query ? `?${query}` : "";
-}
-
-function encodeQueryValue(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
-    return value.toString();
-  }
-  return JSON.stringify(value);
 }
 
 function makeHandle<P, M, Transport extends ChannelLiveTransport>(
   definition: ChannelDefinition<P>,
   params: P,
 ): ChannelHandle<P, M, Transport> {
-  const query = encodeParams(params as Record<string, unknown>);
+  const query = encodeParams(params as Record<string, unknown>, definition.paramsSchema);
   const makeChannel = () =>
     new Channel(
       definition.channel,
       definition.transport,
       params as Record<string, unknown>,
       definitionLifecycleConfig(definition),
+      definition.paramsSchema,
     );
   const handle = {
     get name() {
@@ -197,6 +194,9 @@ function makeHandle<P, M, Transport extends ChannelLiveTransport>(
       options?: ChannelPublishOptions,
     ) {
       return makeChannel().publish(message, options);
+    },
+    close() {
+      return makeChannel().close();
     },
     subscribe(options?: ChannelSubscribeOptions) {
       return makeChannel().subscribe(options);
@@ -243,6 +243,12 @@ function attachMeta<P, Transport extends ChannelLiveTransport, T extends object>
  * controls subscribe/publish/connect authorization, and `transport: "ws"`
  * enables client publishing over WebSocket.
  *
+ * Params select the stream: `chat({ roomId: "a" })` and `chat({ roomId: "b" })`
+ * have separate messages, replay, and subscribers. Params are flat string,
+ * number, or boolean values, and cannot be named `from` or `last_message_id`
+ * (reserved on channel routes). `auth.verify` must still check that the caller
+ * may use the requested params.
+ *
  * @example
  * ```ts
  * import { defineChannel } from "tako.sh";
@@ -251,7 +257,12 @@ function attachMeta<P, Transport extends ChannelLiveTransport, T extends object>
  *
  * export default defineChannel("chat", {
  *   paramsSchema: (t) => t.Object({ roomId: t.String() }),
+ *   auth: {
+ *     verify: ({ header, params }) => canJoinRoom(header, params.roomId),
+ *   },
  * }).$messageTypes<Messages>();
+ *
+ * await chat({ roomId: "a" }).publish({ type: "msg", data: { text: "hi" } });
  * ```
  */
 export function defineChannel<ParamsSchema extends TSchema>(
@@ -283,7 +294,19 @@ export function defineChannel(name: string, maybeConfig?: unknown): unknown {
     ...(maybeConfig as object | undefined),
     name,
   } as AnyChannelConfig;
-  const schema = config.paramsSchema?.(Type) ?? Type.Object({});
+  const declared = config.paramsSchema?.(Type) ?? Type.Object({});
+  // Store reads carry params as JSON; channel and presence params are query values.
+  const isStore = config.name.startsWith("tako.store:");
+  if (!isStore) {
+    assertFlatChannelParamsSchema(config.name, declared);
+  }
+  // Params select streams, so tako-server rejects params a channel does not
+  // declare unless its schema sets `additionalProperties: true`. Say so in
+  // the schema too, so SDK-side checks agree.
+  const schema: TSchema =
+    isStore || "additionalProperties" in declared
+      ? declared
+      : { ...declared, additionalProperties: false };
   const auth: ChannelDefinition<unknown>["auth"] =
     config.auth === undefined || config.auth === false
       ? false

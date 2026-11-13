@@ -1,0 +1,5 @@
+{
+  "code": "from_a_newer_server",
+  "message": "rejected by a newer server",
+  "status": "error"
+}

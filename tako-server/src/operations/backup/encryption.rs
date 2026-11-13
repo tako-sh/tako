@@ -140,6 +140,15 @@ pub(super) fn validate_backup_key(key: &BackupKeyBinding) -> Result<(), String> 
     decode_backup_key(key).map(|_| ())
 }
 
+/// A key for database digests, separate from the archive encryption key.
+pub(super) fn database_digest_key(key: &BackupKeyBinding) -> Result<[u8; 32], String> {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"tako backup database digest v1\0");
+    hasher.update(decode_backup_key(key)?);
+    Ok(hasher.finalize().into())
+}
+
 fn crypt_file(input: &mut File, output: &mut File, crypter: &mut Crypter) -> Result<(), String> {
     let mut input_buf = [0_u8; BUFFER_SIZE];
     let mut output_buf = vec![0_u8; BUFFER_SIZE + Cipher::aes_256_gcm().block_size()];

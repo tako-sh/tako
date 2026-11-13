@@ -3,6 +3,7 @@ use crate::commands::backups::BackupCommands;
 use crate::commands::credentials::CredentialCommands;
 use crate::commands::secret::SecretKeyCommands;
 use crate::commands::storage::{StorageCommands, StorageProviderArg};
+use crate::commands::workflows::{RunStatusArg, WorkflowCommands};
 use clap::{CommandFactory, Parser};
 
 mod backups;
@@ -13,3 +14,4 @@ mod general;
 mod secrets;
 mod servers;
 mod storages;
+mod workflows;

@@ -8,11 +8,13 @@ impl ChannelCloseCode {
             Self::ChannelUnknown => "channel-unknown",
             Self::ParamsInvalid => "params-invalid",
             Self::ReplayTooOld => "replay-too-old",
+            Self::StreamClosed => "stream-closed",
             Self::VerifyRejected => "verify-rejected",
         }
     }
 
-    /// WebSocket close code in the 4xxx app-defined range.
+    /// WebSocket close code in the 4xxx app-defined range. `StreamClosed` is
+    /// not an error: the stream ended and clients must not reconnect.
     pub const fn ws_close_code(self) -> u16 {
         match self {
             Self::AuthFrameMalformed => 4400,
@@ -20,6 +22,7 @@ impl ChannelCloseCode {
             Self::VerifyRejected => 4403,
             Self::ChannelUnknown => 4404,
             Self::ReplayTooOld => 4410,
+            Self::StreamClosed => 4200,
             Self::ParamsInvalid => 4422,
         }
     }

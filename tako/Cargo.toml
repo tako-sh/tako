@@ -125,4 +125,9 @@ daemonize = "0.5"
 
 [dev-dependencies]
 tokio = { version = "=1.53.1", features = ["test-util"] }
+# The tako.toml JSON Schema is generated and checked only by tests.
+tako-core = { path = "../tako-core", features = ["schema"] }
+tako-images = { path = "../tako-images", features = ["schema"] }
+schemars = "1.2"
+jsonschema = { version = "0.60.0", default-features = false }
 rand = { version = "=0.10.3", features = ["thread_rng"] }

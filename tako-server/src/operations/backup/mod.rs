@@ -1,34 +1,65 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tako_core::{
-    BACKUP_INTERVAL_SECS, BackupDownloadUrlResponse, BackupInfo, BackupListResponse,
-    BackupStatusResponse, Response,
+    BACKUP_INTERVAL_SECS, BackupDownloadUrlResponse, BackupFailure, BackupFailureReason,
+    BackupInfo, BackupKind, BackupListResponse, BackupRestoreResponse, BackupStatusResponse,
+    Response,
 };
 
 use crate::release::{
     app_runtime_data_paths, ensure_app_runtime_data_dirs, release_app_path,
     requested_deployment_identity, resolve_release_runtime_bin,
 };
-use object_store::{path::Path as ObjectPath, signer::Signer};
+use object_store::{ObjectStore, path::Path as ObjectPath, signer::Signer};
 use std::sync::Arc;
 
+mod databases;
 mod encryption;
 mod index;
+mod journal;
+mod mounts;
 mod objects;
 mod scheduler;
 mod snapshot;
+mod worker;
 
+use databases::DISK_RESERVE_BYTES;
+pub(crate) use databases::DatabaseSnapshotState;
 use encryption::{
-    active_backup_key, decrypt_backup_file, encrypt_backup_file, find_backup_key,
-    validate_backup_key,
+    active_backup_key, database_digest_key, decrypt_backup_file, encrypt_backup_file,
+    find_backup_key, validate_backup_key,
 };
 use index::{backup_index_key, backup_object_prefix, latest_backup};
+use journal::{
+    DatabaseSwap, RESTORE_WORKER_TIMEOUT, refuse_unfinished_restores, swap_databases_off_runtime,
+    unresolved_restore, unresolved_restore_message,
+};
+pub(crate) use journal::{
+    RecoveryMode, recover_interrupted_restores, run_restore_worker, sweep_backup_work_dirs,
+};
 use objects::{
-    DOWNLOAD_URL_EXPIRES_SECONDS, download_object, prune_retention, put_json_object,
+    DOWNLOAD_URL_EXPIRES_SECONDS, backup_store, download_object, prune_retention, put_json_object,
     queue_retention, upload_file,
 };
-pub(crate) use snapshot::snapshot_data_tree;
-use snapshot::{create_backup_archive, restore_data_tree, sha256_file_hex};
+pub(crate) use scheduler::PostDeployBackup;
+use snapshot::{
+    DATABASE_SNAPSHOT_ARCHIVE_ROOT, RestoredData, SwapError, create_backup_archive,
+    database_digest, extract_database_snapshot, restore_data_tree, sha256_file_hex,
+};
+pub(crate) use snapshot::{measure_database_tree, snapshot_data_tree, snapshot_database_tree};
+
+/// A full archive holds the snapshot copy, the compressed archive, and its
+/// encrypted copy at once.
+const FULL_BACKUP_DISK_COPIES: u64 = 3;
+/// Why a scheduled backup did not take the deploy lock: a deploy holds it,
+/// or another operation does or was turned away and is about to retry.
+const DEPLOY_LOCK_BUSY: &str = "A deploy or another operation on the app is in progress.";
+/// How long workflow workers may finish their runs before a restore kills them.
+const WORKFLOW_STOP_TIMEOUT: Duration = if cfg!(test) {
+    Duration::from_secs(1)
+} else {
+    Duration::from_secs(120)
+};
 
 impl crate::ServerState {
     pub(crate) async fn backup_now(&self, app: &str) -> Response {
@@ -64,18 +95,139 @@ impl crate::ServerState {
 
     pub(crate) async fn restore_backup(&self, app: &str, backup_id: &str) -> Response {
         match self.restore_backup_inner(app, backup_id).await {
-            Ok(info) => Response::ok(info),
+            Ok(restored) => Response::ok(restored),
             Err(error) => Response::error(error),
         }
     }
 
+    /// Why `app` must not start: a restore that did not finish left its data
+    /// partly restored or in an unknown state, until the operator removes
+    /// the directory it names.
+    pub(crate) fn unresolved_restore_block(&self, app: &str) -> Option<String> {
+        unresolved_restore(&app_runtime_data_paths(&self.runtime.data_dir, app).root)
+            .map(|dir| unresolved_restore_message(&dir))
+    }
+
+    /// Refuse an operator operation that would start `app` while
+    /// [`Self::unresolved_restore_block`] keeps it stopped.
+    pub(crate) fn refuse_unresolved_restore(&self, app: &str) -> Option<Response> {
+        self.unresolved_restore_block(app).map(Response::error)
+    }
+
+    /// Stop every app that [`Self::unresolved_restore_block`] keeps stopped,
+    /// as startup does: for a standby that takes over, whose apps already
+    /// run.
+    pub(crate) async fn stop_apps_with_unresolved_restores(&self) {
+        for name in self.app_manager.list_apps() {
+            let Some(reason) = self.unresolved_restore_block(&name) else {
+                continue;
+            };
+            let Some(app) = self.app_manager.get_app(&name) else {
+                continue;
+            };
+            let lock = self.get_deploy_lock(&name).await;
+            let _guard = lock.lock().await;
+            let _lifecycle = app.lifecycle_gate.write().await;
+            self.cold_start.mark_failed(&name, "restoring_backup");
+            self.workflows.stop(&name, WORKFLOW_STOP_TIMEOUT).await;
+            if let Err(error) = self.app_manager.stop_app_locked(&app).await {
+                tracing::error!(app = %name, "Could not stop the app: {error}");
+            }
+            tracing::error!(app = %name, "{reason}");
+            app.set_last_error(reason);
+        }
+    }
+
+    /// Create a full archive for an operator unless another backup operation
+    /// holds the lock.
     async fn backup_app_now(&self, app: &str) -> Result<BackupInfo, String> {
-        let backup_lock = self.backup_operation_lock(app);
-        let _backup = backup_lock
-            .try_lock()
-            .map_err(|_| format!("A backup operation is already in progress for {app}."))?;
-        let lock = self.get_deploy_lock(app).await;
-        let _guard = lock.lock().await;
+        let backup = self.acquire_backup_lock(app)?;
+        self.operator_full_backup_with_lock(app, backup).await
+    }
+
+    /// `backups now` and the post-deploy archive inside finalize are operator
+    /// operations: they wait for the deploy lock.
+    pub(super) async fn operator_full_backup_with_lock(
+        &self,
+        app: &str,
+        backup: tokio::sync::OwnedMutexGuard<()>,
+    ) -> Result<BackupInfo, String> {
+        self.full_backup_with_lock(app, backup, FullBackupStart::Operator)
+            .await?
+            .ok_or_else(|| DEPLOY_LOCK_BUSY.to_string())
+    }
+
+    /// Records the outcome for the scheduler's retry backoff and status.
+    /// `Ok(None)`: a scheduled archive did not take the deploy lock; nothing
+    /// ran, nothing is recorded, and the scheduler tries again on its next
+    /// tick. Operator archives wait for the lock instead.
+    pub(super) async fn full_backup_with_lock(
+        &self,
+        app: &str,
+        _backup: tokio::sync::OwnedMutexGuard<()>,
+        start: FullBackupStart,
+    ) -> Result<Option<BackupInfo>, String> {
+        let result = match self.full_backup_disk_preflight(app).await {
+            Ok(()) => self
+                .full_backup_locked(app, start)
+                .await
+                .map_err(|message| (BackupFailureReason::Failed, message)),
+            Err(failure) => Err(failure),
+        };
+        let mut states = self.database_snapshots.write();
+        let state = states.entry(app.to_string()).or_default();
+        match result {
+            Ok(None) => Ok(None),
+            Ok(Some(info)) => {
+                state.record_full_success();
+                Ok(Some(info))
+            }
+            Err((reason, message)) => {
+                state.record_full_failure(now_unix_secs(), reason, message.clone());
+                Err(message)
+            }
+        }
+    }
+
+    /// A full archive holds the snapshot copy, the compressed archive, and its
+    /// encrypted copy at once; each is at most the measured size of the data
+    /// tree, which counts block rounding and archive headers per file.
+    async fn full_backup_disk_preflight(
+        &self,
+        app: &str,
+    ) -> Result<(), (BackupFailureReason, String)> {
+        let data_dir = self.runtime.data_dir.clone();
+        let data_root = app_runtime_data_paths(std::path::Path::new(""), app).root;
+        let measured = tokio::task::spawn_blocking(move || {
+            let size = snapshot::measure_data_tree(&data_dir, &data_root)?;
+            Ok::<_, String>((size, super::release_artifacts::available_bytes(&data_dir)?))
+        })
+        .await
+        .map_err(|e| format!("backup size worker failed: {e}"))
+        .and_then(|result| result)
+        .map_err(|message| (BackupFailureReason::Failed, message))?;
+        full_backup_preflight(measured.0, measured.1)
+            .map_err(|message| (BackupFailureReason::InsufficientDisk, message))
+    }
+
+    /// Call with the app's backup lock.
+    async fn full_backup_locked(
+        &self,
+        app: &str,
+        start: FullBackupStart,
+    ) -> Result<Option<BackupInfo>, String> {
+        let _guard = match start {
+            FullBackupStart::Operator => self.lock_deploy_for_backup(app).await,
+            FullBackupStart::Scheduled => {
+                match self
+                    .try_lock_deploy_for_scheduled_backup(app, std::time::Instant::now())
+                    .await
+                {
+                    Some(guard) => guard,
+                    None => return Ok(None),
+                }
+            }
+        };
         if self.is_draining() {
             return Err("Server is draining".into());
         }
@@ -109,33 +261,31 @@ impl crate::ServerState {
                 let encrypted_archive_path = encrypted_archive_path.clone();
                 let backup_key = backup_key.clone();
                 move || {
-                    // SQLite POSIX locks belong to the process. Closing a descriptor
-                    // to a live workflow DB here could release the server's own locks.
-                    let worker = std::env::current_exe().map_err(|e| e.to_string())?;
-                    let output = std::process::Command::new(worker)
-                        .arg("--snapshot-data")
-                        .arg(data_dir)
-                        .arg(data_root)
-                        .arg(&snapshot_dir)
-                        .output()
-                        .map_err(|e| format!("start snapshot worker: {e}"))?;
-                    if !output.status.success() {
-                        return Err(format!(
-                            "snapshot worker failed ({}): {}",
-                            output.status,
-                            String::from_utf8_lossy(&output.stderr).trim()
-                        ));
-                    }
+                    worker::run_worker(&[
+                        "--snapshot-data".as_ref(),
+                        data_dir.as_os_str(),
+                        data_root.as_os_str(),
+                        snapshot_dir.as_os_str(),
+                    ])?;
+                    // Lets the next hourly database snapshot skip if nothing
+                    // changed. Without it that snapshot is simply uploaded.
+                    let database_digest = database_digest_key(&backup_key)
+                        .and_then(|key| database_digest(&snapshot_dir, &key))
+                        .map(|digest| digest.hex)
+                        .inspect_err(|error| {
+                            tracing::warn!("Backup database digest unavailable: {error}")
+                        })
+                        .ok();
                     create_backup_archive(&snapshot_dir, &archive_path)?;
                     let encryption =
                         encrypt_backup_file(&archive_path, &encrypted_archive_path, &backup_key)?;
                     let sha256_hex = sha256_file_hex(&encrypted_archive_path)?;
-                    Ok::<_, String>((sha256_hex, encryption))
+                    Ok::<_, String>((sha256_hex, encryption, database_digest))
                 }
             })
             .await
             .map_err(|e| format!("backup worker failed: {e}"))?;
-            let (sha256_hex, encryption) = archive_result?;
+            let (sha256_hex, encryption, database_digest) = archive_result?;
             // The snapshot is independent of the live app now. Remote I/O must
             // not keep stop/delete/deploy waiting on this lifecycle lock.
             drop(_guard);
@@ -166,49 +316,73 @@ impl crate::ServerState {
                 archive_key,
                 manifest_key,
                 encryption,
+                kind: BackupKind::Full,
+                database_digest,
+                databases: Vec::new(),
             };
-
-            let store: Arc<dyn object_store::ObjectStore> =
-                Arc::new(tako_storage::s3(&backup.storage)?);
-            let mut index = self.read_backup_index(&backup, app).await?;
-            upload_file(
-                Arc::clone(&store),
-                &info.archive_key,
-                &encrypted_archive_path,
-            )
-            .await?;
-            put_json_object(store.as_ref(), &info.manifest_key, &info).await?;
-
-            index.backups.retain(|existing| existing.id != info.id);
-            index.backups.push(info.clone());
-            index.backups.sort_by(|a, b| {
-                b.created_at_unix_secs
-                    .cmp(&a.created_at_unix_secs)
-                    .then_with(|| b.id.cmp(&a.id))
-            });
-            queue_retention(&mut index, backup.retention_days);
-            put_json_object(store.as_ref(), &backup_index_key(app, self), &index).await?;
-
-            // Persist the new backup and deletion intent before deleting any
-            // objects. A failed final index write leaves safe, retryable work.
-            if !index.pending_deletions.is_empty() {
-                prune_retention(store.as_ref(), &mut index).await;
-                if let Err(error) =
-                    put_json_object(store.as_ref(), &backup_index_key(app, self), &index).await
-                {
-                    tracing::warn!(
-                        app,
-                        "Failed to acknowledge backup retention cleanup: {error}"
-                    );
-                }
-            }
+            self.publish_backup(&backup, app, &info, &encrypted_archive_path)
+                .await?;
 
             Ok(info)
         }
         .await;
 
         let _ = tokio::fs::remove_dir_all(&work_dir).await;
-        result
+        result.map(Some)
+    }
+
+    /// Upload an encrypted archive and its manifest, then record it in the
+    /// index and apply retention. Call with the app's backup operation lock.
+    async fn publish_backup(
+        &self,
+        backup: &tako_core::BackupBinding,
+        app: &str,
+        info: &BackupInfo,
+        encrypted_archive_path: &std::path::Path,
+    ) -> Result<(), String> {
+        let store: Arc<dyn ObjectStore> = Arc::new(backup_store(&backup.storage)?);
+        let mut index = self.read_backup_index(backup, app).await?;
+        upload_file(
+            Arc::clone(&store),
+            &info.archive_key,
+            encrypted_archive_path,
+        )
+        .await?;
+        put_json_object(store.as_ref(), &info.manifest_key, info).await?;
+
+        index.backups.retain(|existing| existing.id != info.id);
+        index.backups.push(info.clone());
+        index.backups.sort_by(|a, b| {
+            b.created_at_unix_secs
+                .cmp(&a.created_at_unix_secs)
+                .then_with(|| b.id.cmp(&a.id))
+        });
+        queue_retention(&mut index, backup.retention_days);
+        put_json_object(store.as_ref(), &backup_index_key(app, self), &index).await?;
+
+        // Persist the new backup and deletion intent before deleting any
+        // objects. A failed final index write leaves safe, retryable work.
+        self.prune_queued_retention(store.as_ref(), app, &mut index)
+            .await;
+        Ok(())
+    }
+
+    async fn prune_queued_retention(
+        &self,
+        store: &dyn ObjectStore,
+        app: &str,
+        index: &mut index::BackupIndex,
+    ) {
+        if index.pending_deletions.is_empty() {
+            return;
+        }
+        prune_retention(store, index).await;
+        if let Err(error) = put_json_object(store, &backup_index_key(app, self), index).await {
+            tracing::warn!(
+                app,
+                "Failed to acknowledge backup retention cleanup: {error}"
+            );
+        }
     }
 
     async fn list_backups_inner(&self, app: &str) -> Result<Vec<BackupInfo>, String> {
@@ -238,25 +412,46 @@ impl crate::ServerState {
                 retention_days: None,
                 last_backup: None,
                 next_backup_at_unix_secs: None,
+                last_database_snapshot_at_unix_secs: None,
+                last_database_snapshot_skip: None,
+                last_backup_failure: None,
             });
         };
-        let index = self.read_backup_index(&backup, app).await?;
-        let last_backup = latest_backup(index.backups.iter()).cloned();
-        let next_backup_at_unix_secs = last_backup
-            .as_ref()
-            .map(|backup| {
-                backup
-                    .created_at_unix_secs
-                    .saturating_add(BACKUP_INTERVAL_SECS)
-            })
-            .or_else(|| Some(now_unix_secs()));
-        Ok(BackupStatusResponse {
-            app: app.to_string(),
-            enabled: true,
-            retention_days: Some(backup.retention_days),
-            last_backup,
-            next_backup_at_unix_secs,
-        })
+        let now = now_unix_secs();
+        let schedule = self.backup_schedule_state(app);
+        let index = match self.read_backup_index(&backup, app).await {
+            Ok(index) => index,
+            Err(error) => {
+                // Report the index itself as the problem: nothing it lists
+                // can be shown, and no scheduled backup runs without it.
+                let retry_at_unix_secs = schedule
+                    .index_failures
+                    .failure()
+                    .map_or(now, |failure| failure.retry_at_unix_secs);
+                return Ok(BackupStatusResponse {
+                    app: app.to_string(),
+                    enabled: true,
+                    retention_days: Some(backup.retention_days),
+                    last_backup: None,
+                    next_backup_at_unix_secs: None,
+                    last_database_snapshot_at_unix_secs: None,
+                    last_database_snapshot_skip: schedule.skip.clone(),
+                    last_backup_failure: Some(BackupFailure {
+                        at_unix_secs: now,
+                        reason: BackupFailureReason::IndexUnreadable,
+                        message: format!("Failed to read backup index: {error}"),
+                        retry_at_unix_secs,
+                    }),
+                });
+            }
+        };
+        Ok(enabled_backup_status(
+            app,
+            backup.retention_days,
+            &index.backups,
+            &schedule,
+            now,
+        ))
     }
 
     async fn backup_download_url_inner(
@@ -270,7 +465,7 @@ impl crate::ServerState {
             .map_err(|error| format!("read backup config: {error}"))?
             .ok_or_else(|| format!("Backups are not configured for {app}."))?;
         let info = self.find_backup(&backup, app, backup_id).await?;
-        let url = tako_storage::s3(&backup.storage)?
+        let url = backup_store(&backup.storage)?
             .signed_url(
                 http::Method::GET,
                 &ObjectPath::parse(&info.archive_key).map_err(|e| e.to_string())?,
@@ -286,11 +481,12 @@ impl crate::ServerState {
         })
     }
 
-    async fn restore_backup_inner(&self, app: &str, backup_id: &str) -> Result<BackupInfo, String> {
-        let backup_lock = self.backup_operation_lock(app);
-        let _backup = backup_lock
-            .try_lock()
-            .map_err(|_| format!("A backup operation is already in progress for {app}."))?;
+    async fn restore_backup_inner(
+        &self,
+        app: &str,
+        backup_id: &str,
+    ) -> Result<BackupRestoreResponse, String> {
+        let _backup = self.acquire_backup_lock(app)?;
         let lock = self.get_deploy_lock(app).await;
         let _guard = lock.lock().await;
         let backup = self
@@ -299,6 +495,22 @@ impl crate::ServerState {
             .map_err(|error| format!("read backup config: {error}"))?
             .ok_or_else(|| format!("Backups are not configured for {app}."))?;
         let info = self.find_backup(&backup, app, backup_id).await?;
+        let data_root = app_runtime_data_paths(&self.runtime.data_dir, app).root;
+        // Before downloading anything; the swap checks again. Removing a
+        // finished restore's directory can take a while.
+        off_runtime({
+            let data_root = data_root.clone();
+            let full = info.kind == BackupKind::Full;
+            move || -> Result<(), String> {
+                refuse_unfinished_restores(&data_root)?;
+                snapshot::refuse_symlinked_data_root(&data_root)?;
+                if full {
+                    snapshot::refuse_mounts_in_data_tree(&data_root)?;
+                }
+                Ok(())
+            }
+        })
+        .await??;
 
         let app_ref = self
             .app_manager
@@ -316,9 +528,15 @@ impl crate::ServerState {
         let extract_dir = work_dir.join("extracted");
         create_private_work_dir(&work_dir).await?;
 
-        let result: Result<BackupInfo, String> = async {
-            let store = tako_storage::s3(&backup.storage)?;
-            download_object(&store, &info.archive_key, &encrypted_archive_path).await?;
+        let result: Result<BackupRestoreResponse, String> = async {
+            if info.kind == BackupKind::Databases {
+                restore_download_preflight(
+                    info.size_bytes,
+                    super::release_artifacts::available_bytes(&work_dir)?,
+                )?;
+            }
+            let store: Arc<dyn ObjectStore> = Arc::new(backup_store(&backup.storage)?);
+            download_object(store.as_ref(), &info.archive_key, &encrypted_archive_path).await?;
             let actual_sha256 = tokio::task::spawn_blocking({
                 let encrypted_archive_path = encrypted_archive_path.clone();
                 move || sha256_file_hex(&encrypted_archive_path)
@@ -345,17 +563,31 @@ impl crate::ServerState {
             })
             .await
             .map_err(|e| format!("restore decrypt worker failed: {e}"))??;
+            let _ = tokio::fs::remove_file(&encrypted_archive_path).await;
 
-            crate::extract_zstd_archive(&archive_path, &extract_dir)?;
-            let data_root = app_runtime_data_paths(&self.runtime.data_dir, app).root;
-            let _lifecycle = app_ref.lifecycle_gate.write().await;
-            self.cold_start.mark_failed(app, "restoring_backup");
-            self.workflows.stop(app, Duration::from_secs(120)).await;
-            self.app_manager
-                .stop_app_locked(&app_ref)
-                .await
-                .map_err(|error| format!("Stop failed before restore: {error}"))?;
-            let swap = restore_data_tree(&extract_dir, &data_root)?;
+            // Each kind has its own archive layout; never apply one as another.
+            let staged = match info.kind {
+                BackupKind::Full => {
+                    crate::extract_zstd_archive(&archive_path, &extract_dir)?;
+                    StagedRestore::Full
+                }
+                BackupKind::Databases => {
+                    // The originals stay on disk as the rollback copy until the
+                    // app restarts, so the extracted databases need free space
+                    // of their own.
+                    let budget = super::release_artifacts::available_bytes(&work_dir)?
+                        .saturating_sub(DISK_RESERVE_BYTES);
+                    let databases = tokio::task::spawn_blocking({
+                        let archive_path = archive_path.clone();
+                        let extract_dir = extract_dir.clone();
+                        move || extract_database_snapshot(&archive_path, &extract_dir, budget)
+                    })
+                    .await
+                    .map_err(|e| format!("restore extract worker failed: {e}"))??;
+                    StagedRestore::Databases(databases)
+                }
+            };
+            let _ = tokio::fs::remove_file(&archive_path).await;
 
             let release_path = release_app_path(&self.runtime.data_dir, &config);
             let runtime_bin_path =
@@ -363,39 +595,233 @@ impl crate::ServerState {
                     .await
                     .ok()
                     .flatten();
-            let restarted = async {
-                ensure_app_runtime_data_dirs(&self.runtime.data_dir, app)?;
-                if self.is_draining() { return Err("Server began draining during restore".to_string()); }
-                self.try_sync_app_workflows(app, &release_path, runtime_bin_path.as_deref()).await
-                    .map_err(|error| format!("Restart workflows after restore: {error}"))?;
-                if config.min_instances > 0 {
-                    self.app_manager.start_app_locked(&app_ref).await
-                        .map_err(|error| format!("Restart failed after restore: {error}"))?;
+            let restart = || {
+                self.restart_after_restore(
+                    app,
+                    &app_ref,
+                    &config,
+                    &release_path,
+                    runtime_bin_path.as_deref(),
+                )
+            };
+            let _lifecycle = app_ref.lifecycle_gate.write().await;
+            self.cold_start.mark_failed(app, "restoring_backup");
+            // Workflow workers, including those of a replaced release still
+            // finishing runs, and the workflow store hold
+            // tako/workflows.sqlite; both restore kinds may replace it.
+            let closed = match self.workflows.close_store(app, WORKFLOW_STOP_TIMEOUT).await {
+                Ok(closed) => closed,
+                Err(error) => {
+                    let message = format!("Stop workflows before restore: {error}");
+                    return Err(match restart().await {
+                        Ok(()) => {
+                            self.finish_restart(app, &app_ref, &config);
+                            format!("{message}; original data kept and app restarted")
+                        }
+                        Err(restart) => {
+                            self.leave_stopped(
+                                app,
+                                &app_ref,
+                                format!(
+                                    "{message}; original data kept, but restart failed: {restart}"
+                                ),
+                            )
+                            .await
+                        }
+                    });
                 }
-                Ok::<(), String>(())
-            }.await;
-            if let Err(error) = restarted {
-                self.workflows.stop(app, Duration::from_secs(120)).await;
-                // Never swap files underneath a process whose stop failed.
-                self.app_manager.stop_app_locked(&app_ref).await
-                    .map_err(|stop| format!("{error}; could not stop restored app: {stop}; original data retained for recovery"))?;
-                swap.rollback().map_err(|rollback| format!("{error}; {rollback}"))?;
-                return Err(format!("{error}; original data restored, app left stopped"));
+            };
+            self.app_manager
+                .stop_app_locked(&app_ref)
+                .await
+                .map_err(|error| format!("Stop failed before restore: {error}"))?;
+            let swapped = match staged {
+                // The closure owns the rollback directory until the swap is
+                // done, even if this future is dropped meanwhile.
+                StagedRestore::Full => off_runtime({
+                    let extract_dir = extract_dir.clone();
+                    let data_root = data_root.clone();
+                    move || restore_data_tree(&extract_dir, &data_root)
+                })
+                .await
+                // A panic dropped the rollback directory, which abandoned it.
+                .unwrap_or_else(|message| {
+                    Err(SwapError {
+                        message,
+                        originals_intact: false,
+                    })
+                })
+                .map(|swap| (RestoreSwap::Tree(swap), None)),
+                StagedRestore::Databases(databases) => swap_databases_off_runtime(
+                    extract_dir.join(DATABASE_SNAPSHOT_ARCHIVE_ROOT),
+                    databases,
+                    data_root.clone(),
+                    RESTORE_WORKER_TIMEOUT,
+                )
+                .await
+                .map(|swap| {
+                    let summary = swap.summary().clone();
+                    (RestoreSwap::Databases(swap), Some(summary))
+                }),
+            };
+            drop(closed);
+            let (swap, databases) = match swapped {
+                Ok(swapped) => swapped,
+                // Never start the app on partially restored data.
+                Err(SwapError {
+                    message,
+                    originals_intact: false,
+                }) => {
+                    self.note_unresolved_restore(app, &app_ref);
+                    return Err(format!("{message}; app left stopped"));
+                }
+                Err(SwapError { message, .. }) => {
+                    return Err(match restart().await {
+                        Ok(()) => {
+                            self.finish_restart(app, &app_ref, &config);
+                            format!("{message}; original data kept and app restarted")
+                        }
+                        Err(restart) => {
+                            self.leave_stopped(
+                                app,
+                                &app_ref,
+                                format!(
+                                    "{message}; original data kept, but restart failed: {restart}"
+                                ),
+                            )
+                            .await
+                        }
+                    });
+                }
+            };
+
+            if let Err(error) = restart().await {
+                // Never swap files underneath a process whose stop failed:
+                // give up and leave both copies for the operator.
+                let closed = match self.workflows.close_store(app, WORKFLOW_STOP_TIMEOUT).await {
+                    Ok(closed) => closed,
+                    Err(stop) => {
+                        let message = format!("{error}; could not stop restored workflows: {stop}");
+                        let kept = swap.abandon(&message);
+                        return Err(format!(
+                            "{message}; restored data left live, original data kept in {}",
+                            kept.display()
+                        ));
+                    }
+                };
+                if let Err(stop) = self.app_manager.stop_app_locked(&app_ref).await {
+                    let message = format!("{error}; could not stop restored app: {stop}");
+                    let kept = swap.abandon(&message);
+                    return Err(format!(
+                        "{message}; restored data left live, original data kept in {}",
+                        kept.display()
+                    ));
+                }
+                if let Err(rollback) = off_runtime(move || swap.rollback())
+                    .await
+                    .and_then(|rolled_back| rolled_back)
+                {
+                    self.note_unresolved_restore(app, &app_ref);
+                    return Err(format!("{error}; {rollback}; app left stopped"));
+                }
+                drop(closed);
+                return Err(match restart().await {
+                    Ok(()) => {
+                        self.finish_restart(app, &app_ref, &config);
+                        format!("{error}; original data restored and app restarted")
+                    }
+                    Err(restart) => {
+                        self.leave_stopped(
+                            app,
+                            &app_ref,
+                            format!(
+                                "{error}; original data restored, but restart failed: {restart}"
+                            ),
+                        )
+                        .await
+                    }
+                });
             }
-            if config.min_instances == 0 {
-                app_ref.set_state(crate::socket::AppState::Idle);
-            }
-            self.cold_start.reset(app);
-            if let Err(error) = swap.commit() {
-                tracing::warn!(app, "Restore succeeded but previous data cleanup failed: {error}");
+            self.finish_restart(app, &app_ref, &config);
+            // A full commit removes the whole original tree.
+            if let Err(error) = off_runtime(move || swap.commit())
+                .await
+                .and_then(|committed| committed)
+            {
+                tracing::warn!(
+                    app,
+                    "Restore succeeded but previous data cleanup failed: {error}"
+                );
             }
 
-            Ok(info)
+            Ok(BackupRestoreResponse {
+                backup: info,
+                databases,
+            })
         }
         .await;
 
         let _ = tokio::fs::remove_dir_all(&work_dir).await;
         result
+    }
+
+    async fn restart_after_restore(
+        &self,
+        app: &str,
+        app_ref: &std::sync::Arc<crate::instances::App>,
+        config: &crate::instances::AppConfig,
+        release_path: &std::path::Path,
+        runtime_bin_path: Option<&str>,
+    ) -> Result<(), String> {
+        // Also repairs ownership and modes of restored files for the app user.
+        ensure_app_runtime_data_dirs(&self.runtime.data_dir, app)?;
+        if self.is_draining() {
+            return Err("Server began draining during restore".to_string());
+        }
+        self.try_sync_app_workflows(app, release_path, runtime_bin_path)
+            .await
+            .map_err(|error| format!("Restart workflows after restore: {error}"))?;
+        if config.min_instances > 0 {
+            self.app_manager
+                .start_app_locked(app_ref)
+                .await
+                .map_err(|error| format!("Restart failed after restore: {error}"))?;
+        }
+        Ok(())
+    }
+
+    fn finish_restart(
+        &self,
+        app: &str,
+        app_ref: &crate::instances::App,
+        config: &crate::instances::AppConfig,
+    ) {
+        if config.min_instances == 0 {
+            app_ref.set_state(crate::socket::AppState::Idle);
+        }
+        self.cold_start.reset(app);
+    }
+
+    /// A stopped app whose restore left its data partly restored: status
+    /// says why it stays stopped.
+    fn note_unresolved_restore(&self, app: &str, app_ref: &crate::instances::App) {
+        if let Some(reason) = self.unresolved_restore_block(app) {
+            app_ref.set_last_error(reason);
+        }
+    }
+
+    /// Stop whatever a failed restart left running. Cold starts stay blocked.
+    async fn leave_stopped(
+        &self,
+        app: &str,
+        app_ref: &std::sync::Arc<crate::instances::App>,
+        error: String,
+    ) -> String {
+        self.workflows.stop(app, WORKFLOW_STOP_TIMEOUT).await;
+        match self.app_manager.stop_app_locked(app_ref).await {
+            Ok(()) => format!("{error}; app left stopped"),
+            Err(stop) => format!("{error}; could not stop app: {stop}"),
+        }
     }
 
     async fn find_backup(
@@ -419,6 +845,158 @@ impl crate::ServerState {
             .or_default()
             .clone()
     }
+
+    /// Take the app's backup lock without waiting.
+    fn acquire_backup_lock(&self, app: &str) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
+        self.backup_operation_lock(app)
+            .try_lock_owned()
+            .map_err(|_| format!("A backup operation is already in progress for {app}."))
+    }
+
+    /// Take the app's backup lock, or, while an hourly database snapshot
+    /// holds it, queue a full archive for the scheduler to run as soon as
+    /// the snapshot releases it. `Ok(None)` means queued.
+    pub(super) fn acquire_backup_lock_or_queue(
+        &self,
+        app: &str,
+    ) -> Result<Option<tokio::sync::OwnedMutexGuard<()>>, String> {
+        let lock = self.backup_operation_lock(app);
+        // Under the state map's lock a database snapshot holds the backup
+        // lock exactly while it is marked running, and its scheduler task
+        // checks the queue only after releasing both.
+        let mut states = self.database_snapshots.write();
+        if let Ok(guard) = lock.try_lock_owned() {
+            return Ok(Some(guard));
+        }
+        let state = states.entry(app.to_string()).or_default();
+        if !state.running {
+            return Err(format!(
+                "A backup operation is already in progress for {app}."
+            ));
+        }
+        state.post_deploy_backup_queued = true;
+        Ok(None)
+    }
+}
+
+/// Who started a full archive, which decides how it takes the deploy lock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FullBackupStart {
+    /// Waits for the deploy lock.
+    Operator,
+    /// Never waits, and yields the deploy lock to operator operations.
+    Scheduled,
+}
+
+fn full_backup_preflight(data_bytes: u64, available_bytes: u64) -> Result<(), String> {
+    let required = data_bytes
+        .saturating_mul(FULL_BACKUP_DISK_COPIES)
+        .saturating_add(DISK_RESERVE_BYTES);
+    if available_bytes < required {
+        return Err(format!(
+            "Not enough free disk space for a full backup: needs {required} bytes, {available_bytes} available."
+        ));
+    }
+    Ok(())
+}
+
+fn enabled_backup_status(
+    app: &str,
+    retention_days: u16,
+    backups: &[BackupInfo],
+    schedule: &DatabaseSnapshotState,
+    now: i64,
+) -> BackupStatusResponse {
+    let latest_of = |kind| latest_backup(backups.iter().filter(|backup| backup.kind == kind));
+    let last_backup = latest_of(BackupKind::Full).cloned();
+    let last_backup_failure = schedule.failure().cloned();
+    let next_backup_at_unix_secs = last_backup
+        .as_ref()
+        .map(|backup| {
+            backup
+                .created_at_unix_secs
+                .saturating_add(BACKUP_INTERVAL_SECS)
+        })
+        .or(Some(now))
+        .map(|due| {
+            // A failed attempt is retried no earlier than its backoff allows.
+            last_backup_failure
+                .as_ref()
+                .map_or(due, |failure| due.max(failure.retry_at_unix_secs))
+        });
+    BackupStatusResponse {
+        app: app.to_string(),
+        enabled: true,
+        retention_days: Some(retention_days),
+        last_backup,
+        next_backup_at_unix_secs,
+        last_database_snapshot_at_unix_secs: latest_of(BackupKind::Databases)
+            .map(|backup| backup.created_at_unix_secs),
+        last_database_snapshot_skip: schedule.skip.clone(),
+        last_backup_failure,
+    }
+}
+
+/// A downloaded and extracted backup, before it touches live data.
+enum StagedRestore {
+    Full,
+    /// Relative paths of the extracted databases.
+    Databases(Vec<std::path::PathBuf>),
+}
+
+/// Live data replaced by a restore, with the originals kept until restart.
+enum RestoreSwap {
+    Tree(RestoredData),
+    Databases(DatabaseSwap),
+}
+
+impl RestoreSwap {
+    fn commit(self) -> Result<(), String> {
+        match self {
+            Self::Tree(swap) => swap.commit(),
+            Self::Databases(swap) => swap.commit(),
+        }
+    }
+
+    fn rollback(self) -> Result<(), String> {
+        match self {
+            Self::Tree(swap) => swap.rollback(),
+            Self::Databases(swap) => swap.rollback(),
+        }
+    }
+
+    /// Give up while the server keeps running; returns where the originals are.
+    fn abandon(self, reason: &str) -> std::path::PathBuf {
+        match self {
+            Self::Tree(swap) => swap.abandon(reason),
+            Self::Databases(swap) => swap.abandon(reason),
+        }
+    }
+}
+
+/// Run restore file work on the blocking pool. The closure owns what it
+/// works on, so dropping the caller never drops it while the work runs.
+async fn off_runtime<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, String> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|error| format!("restore file worker failed: {error}"))
+}
+
+/// A database snapshot restore holds the encrypted object and its decrypted
+/// archive at once, each about the object's size, before extraction checks
+/// its own budget.
+fn restore_download_preflight(size_bytes: u64, available_bytes: u64) -> Result<(), String> {
+    let required = size_bytes
+        .saturating_mul(2)
+        .saturating_add(DISK_RESERVE_BYTES);
+    if available_bytes < required {
+        return Err(format!(
+            "Not enough free disk space to restore the database snapshot: needs {required} bytes, {available_bytes} available."
+        ));
+    }
+    Ok(())
 }
 
 async fn create_private_work_dir(path: &std::path::Path) -> Result<(), String> {
@@ -462,4 +1040,969 @@ pub(super) fn now_unix_secs() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(id: &str, kind: BackupKind, created_at_unix_secs: i64) -> BackupInfo {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "app": "demo", "environment": "production", "server": "local",
+            "created_at_unix_secs": created_at_unix_secs, "size_bytes": 1, "sha256_hex": "",
+            "archive_key": "", "manifest_key": "",
+            "encryption": {"algorithm": "", "key_id": "", "nonce_base64": "", "tag_base64": ""},
+            "kind": kind,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn status_separates_full_archives_from_database_snapshots() {
+        let skip = tako_core::BackupSkip {
+            at_unix_secs: 400,
+            reason: tako_core::BackupSkipReason::Unchanged,
+            message: "unchanged".into(),
+        };
+        let backups = [
+            entry("d2", BackupKind::Databases, 300),
+            entry("b1", BackupKind::Full, 100),
+            entry("d1", BackupKind::Databases, 200),
+        ];
+        let schedule = DatabaseSnapshotState {
+            skip: Some(skip.clone()),
+            ..Default::default()
+        };
+        let status = enabled_backup_status("demo/production", 30, &backups, &schedule, 500);
+        assert_eq!(status.last_backup.unwrap().id, "b1");
+        assert_eq!(
+            status.next_backup_at_unix_secs,
+            Some(100 + BACKUP_INTERVAL_SECS)
+        );
+        assert_eq!(status.last_database_snapshot_at_unix_secs, Some(300));
+        assert_eq!(status.last_database_snapshot_skip, Some(skip));
+
+        let status = enabled_backup_status(
+            "demo/production",
+            30,
+            &backups[..1],
+            &DatabaseSnapshotState::default(),
+            500,
+        );
+        assert!(status.last_backup.is_none());
+        assert_eq!(status.next_backup_at_unix_secs, Some(500));
+        assert!(status.last_backup_failure.is_none());
+
+        // A failing full archive reports why and when it is retried.
+        let mut schedule = DatabaseSnapshotState::default();
+        schedule.record_full_failure(450, BackupFailureReason::Failed, "upload timed out".into());
+        let status = enabled_backup_status("demo/production", 30, &backups[..1], &schedule, 500);
+        let failure = status.last_backup_failure.unwrap();
+        assert_eq!(failure.message, "upload timed out");
+        assert_eq!(
+            status.next_backup_at_unix_secs,
+            Some(failure.retry_at_unix_secs)
+        );
+    }
+
+    #[test]
+    fn full_backup_preflight_counts_three_copies_of_the_data() {
+        let mib = 1024 * 1024;
+        let needed = 3 * 100 * mib + DISK_RESERVE_BYTES;
+        assert!(full_backup_preflight(100 * mib, needed).is_ok());
+        let error = full_backup_preflight(100 * mib, needed - 1).unwrap_err();
+        assert!(
+            error.starts_with("Not enough free disk space for a full backup"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn measure_data_tree_counts_files_without_transient_stores() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("data");
+        std::fs::create_dir_all(data.join("app/nested")).unwrap();
+        std::fs::create_dir_all(data.join("tako")).unwrap();
+        std::fs::write(data.join("app/nested/a"), vec![0; 100]).unwrap();
+        std::fs::write(data.join("tako/workflows.sqlite"), vec![0; 20]).unwrap();
+        std::fs::write(data.join("tako/channels.sqlite"), vec![0; 1000]).unwrap();
+        std::os::unix::fs::symlink("/etc/hostname", data.join("app/link")).unwrap();
+        let entry = snapshot::ARCHIVE_ENTRY_BYTES;
+        let block = snapshot::DISK_BLOCK_BYTES;
+        // Two files of a block each, the link, and three directories, each
+        // with an archive entry.
+        assert_eq!(
+            snapshot::measure_data_tree(temp.path(), std::path::Path::new("data")).unwrap(),
+            2 * (block + entry) + entry + 3 * (block + entry)
+        );
+    }
+
+    /// Many small files cost far more than their bytes: a disk block for
+    /// each copy and an archive header for each entry.
+    #[test]
+    fn measure_data_tree_counts_the_overhead_of_small_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("data");
+        std::fs::create_dir_all(data.join("app")).unwrap();
+        for index in 0..1000 {
+            std::fs::write(data.join(format!("app/{index}")), b"x").unwrap();
+        }
+        let measured =
+            snapshot::measure_data_tree(temp.path(), std::path::Path::new("data")).unwrap();
+        assert!(measured >= 1000 * (4096 + 512), "{measured}");
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_index_runs_no_backup_and_status_says_why() {
+        let mut fixture = RestoreFixture::new();
+        let index_key = backup_index_key(&fixture.app, &fixture.state);
+        fixture
+            .objects
+            .insert(index_key.clone(), b"{ not json".to_vec());
+        // Only the scheduler's index read: no snapshot, no upload.
+        let server = fixture.serve(1);
+        fixture.state.run_due_backups().await;
+        assert_eq!(server.await.unwrap(), [format!("GET {index_key}")]);
+        let schedule = fixture.state.backup_schedule_state(&fixture.app);
+        assert!(schedule.full_failures.failure().is_none());
+        assert_eq!(
+            schedule.failure().unwrap().reason,
+            BackupFailureReason::IndexUnreadable
+        );
+        // The next tick does not read the index again before the backoff.
+        fixture.state.run_due_backups().await;
+        assert_eq!(
+            fixture.state.backup_schedule_state(&fixture.app).failure(),
+            schedule.failure()
+        );
+
+        let server = fixture.serve(1);
+        let status = fixture
+            .state
+            .backup_status_inner(&fixture.app)
+            .await
+            .unwrap();
+        server.await.unwrap();
+        let failure = status.last_backup_failure.unwrap();
+        assert_eq!(failure.reason, BackupFailureReason::IndexUnreadable);
+        assert!(failure.message.starts_with("Failed to read backup index"));
+        assert_eq!(
+            failure.retry_at_unix_secs,
+            schedule.failure().unwrap().retry_at_unix_secs
+        );
+    }
+
+    #[test]
+    fn database_restore_preflight_counts_the_object_and_its_archive() {
+        let mib = 1024 * 1024;
+        let needed = 2 * 100 * mib + DISK_RESERVE_BYTES;
+        assert!(restore_download_preflight(100 * mib, needed).is_ok());
+        let error = restore_download_preflight(100 * mib, needed - 1).unwrap_err();
+        assert!(error.starts_with("Not enough free disk space"), "{error}");
+    }
+
+    const KEY_ID: &str = "backup-key-0123456789abcdef";
+    const KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+
+    fn test_state(data_dir: &std::path::Path) -> std::sync::Arc<crate::ServerState> {
+        std::sync::Arc::new(
+            crate::ServerState::new(
+                data_dir.into(),
+                std::sync::Arc::new(crate::tls::CertManager::new(
+                    crate::tls::CertManagerConfig {
+                        cert_dir: data_dir.join("certs"),
+                        ..Default::default()
+                    },
+                )),
+                None,
+                std::sync::Arc::new(parking_lot::RwLock::new(Default::default())),
+            )
+            .unwrap(),
+        )
+    }
+
+    fn sqlite(path: &std::path::Path, value: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let db = rusqlite::Connection::open(path).unwrap();
+        db.execute_batch("CREATE TABLE IF NOT EXISTS items(value TEXT); DELETE FROM items;")
+            .unwrap();
+        db.execute("INSERT INTO items VALUES (?1)", [value])
+            .unwrap();
+    }
+
+    fn sqlite_value(path: &std::path::Path) -> String {
+        rusqlite::Connection::open(path)
+            .unwrap()
+            .query_row("SELECT value FROM items", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    struct RestoreFixture {
+        temp: crate::isolation::fixture::TestDataDir,
+        state: std::sync::Arc<crate::ServerState>,
+        app: String,
+        data: std::path::PathBuf,
+        info: BackupInfo,
+        objects: std::collections::HashMap<String, Vec<u8>>,
+    }
+
+    impl RestoreFixture {
+        /// A registered app whose data changed after a database snapshot.
+        fn new() -> Self {
+            let temp = crate::isolation::fixture::TestDataDir::new().unwrap();
+            let state = test_state(temp.path());
+            let config = crate::instances::AppConfig {
+                name: "demo".into(),
+                environment: "production".into(),
+                version: "v1".into(),
+                min_instances: 0,
+                ..Default::default()
+            };
+            let app = config.deployment_id();
+            let release = release_app_path(temp.path(), &config);
+            std::fs::create_dir_all(&release).unwrap();
+            std::fs::write(
+                release.join("app.json"),
+                r#"{"protocol_version":0,"runtime":"node","main":"index.js","idle_timeout":300,"start":["/bin/sh","-lc","sleep 600"]}"#,
+            )
+            .unwrap();
+            state.app_manager.register_app(crate::instances::AppConfig {
+                path: release,
+                ..config.clone()
+            });
+            state.state_store.upsert_app(&config, &[]).unwrap();
+
+            let data = app_runtime_data_paths(temp.path(), &app).root;
+            sqlite(&data.join("app/data.sqlite"), "snapshot");
+            sqlite(&data.join("tako/workflows.sqlite"), "snapshot runs");
+            std::fs::write(data.join("app/upload.bin"), b"upload").unwrap();
+
+            let work = tempfile::tempdir().unwrap();
+            let snapshot = work.path().join("snapshot");
+            snapshot_database_tree(&data, std::path::Path::new(""), &snapshot).unwrap();
+            let archive = work.path().join("databases.tar.zst");
+            snapshot::create_database_snapshot_archive(&snapshot, &archive).unwrap();
+            let encrypted = work.path().join("databases.tar.zst.enc");
+            let key = tako_core::BackupKeyBinding {
+                id: KEY_ID.into(),
+                key_base64: KEY.into(),
+            };
+            let encryption = encrypt_backup_file(&archive, &encrypted, &key).unwrap();
+            let bytes = std::fs::read(&encrypted).unwrap();
+
+            let (app_name, environment) = requested_deployment_identity(&app);
+            let prefix =
+                backup_object_prefix(&app_name, &environment, &state.backup_server_label());
+            let id = "d1800000000-abcdefgh".to_string();
+            let info = BackupInfo {
+                archive_key: format!("{prefix}/{id}.databases.tar.zst.enc"),
+                manifest_key: format!("{prefix}/{id}.json"),
+                id,
+                app: app_name,
+                environment,
+                server: state.backup_server_label(),
+                created_at_unix_secs: 1_800_000_000,
+                size_bytes: bytes.len() as u64,
+                sha256_hex: sha256_file_hex(&encrypted).unwrap(),
+                encryption,
+                kind: BackupKind::Databases,
+                database_digest: Some("unused".into()),
+                databases: vec!["app/data.sqlite".into(), "tako/workflows.sqlite".into()],
+            };
+            let index = serde_json::to_vec(&serde_json::json!({
+                "version": 1, "backups": [info],
+            }))
+            .unwrap();
+            let objects = std::collections::HashMap::from([
+                (backup_index_key(&app, &state), index),
+                (info.archive_key.clone(), bytes),
+            ]);
+
+            // Newer live state than the snapshot.
+            sqlite(&data.join("app/data.sqlite"), "live");
+            std::fs::write(data.join("app/data.sqlite-wal"), b"newer wal").unwrap();
+            std::fs::write(data.join("app/data.sqlite-shm"), b"newer shm").unwrap();
+            sqlite(&data.join("tako/workflows.sqlite"), "live runs");
+            sqlite(&data.join("app/other.sqlite"), "other");
+            std::fs::write(data.join("app/upload.bin"), b"changed upload").unwrap();
+            Self {
+                temp,
+                state,
+                app,
+                data,
+                info,
+                objects,
+            }
+        }
+
+        fn serve(&self, requests: usize) -> tokio::task::JoinHandle<Vec<String>> {
+            let (endpoint, fixture) =
+                objects::failure_tests::object_fixture(self.objects.clone(), requests);
+            let backup = serde_json::from_value(serde_json::json!({
+                "storage": {"provider": "s3", "bucket": "fixture", "endpoint": endpoint,
+                    "region": "local", "access_key_id": "fixture", "secret_access_key": "fixture",
+                    "force_path_style": true},
+                "backup_keys": [{"id": KEY_ID, "key_base64": KEY}]
+            }))
+            .unwrap();
+            self.state
+                .state_store
+                .set_backup(&self.app, Some(&backup))
+                .unwrap();
+            fixture
+        }
+
+        fn previous_dirs(&self) -> usize {
+            let app_root = self.data.parent().unwrap();
+            std::fs::read_dir(app_root)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".data-restore-prev-")
+                })
+                .count()
+        }
+    }
+
+    #[tokio::test]
+    async fn restoring_a_database_snapshot_replaces_only_its_databases() {
+        let fixture = RestoreFixture::new();
+        let server = fixture.serve(2);
+        let restored = fixture
+            .state
+            .restore_backup_inner(&fixture.app, &fixture.info.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            server.await.unwrap(),
+            [
+                format!("GET {}", backup_index_key(&fixture.app, &fixture.state)),
+                format!("GET {}", fixture.info.archive_key),
+            ]
+        );
+        assert_eq!(restored.backup, fixture.info);
+        assert_eq!(
+            restored.databases,
+            Some(tako_core::RestoredDatabases {
+                replaced: vec!["app/data.sqlite".into(), "tako/workflows.sqlite".into()],
+                created: Vec::new(),
+                untouched: vec!["app/other.sqlite".into()],
+            })
+        );
+
+        let data = &fixture.data;
+        assert_eq!(sqlite_value(&data.join("app/data.sqlite")), "snapshot");
+        assert_eq!(
+            sqlite_value(&data.join("tako/workflows.sqlite")),
+            "snapshot runs"
+        );
+        assert!(!data.join("app/data.sqlite-wal").exists());
+        assert!(!data.join("app/data.sqlite-shm").exists());
+        assert_eq!(sqlite_value(&data.join("app/other.sqlite")), "other");
+        assert_eq!(
+            std::fs::read(data.join("app/upload.bin")).unwrap(),
+            b"changed upload"
+        );
+        assert_eq!(fixture.previous_dirs(), 0);
+        assert!(
+            std::fs::read_dir(fixture.temp.path().join("tmp/restore"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_stops_a_retired_workflow_runtime_before_swapping() {
+        let fixture = RestoreFixture::new();
+        let workflows = &fixture.state.workflows;
+        let ready = fixture.temp.path().join("worker-ready");
+        let spec = |command: &str| tako_workflows::WorkerSpec {
+            app: fixture.app.clone(),
+            workers: 0,
+            concurrency: 1,
+            idle_timeout_ms: 0,
+            command: vec!["/bin/sh".into(), "-c".into(), command.into()],
+            cwd: fixture.temp.path().into(),
+            env: Default::default(),
+            secrets: Default::default(),
+            storages: Default::default(),
+            log_sink: None,
+            isolation: None,
+            lanes: Vec::new(),
+        };
+        // A release whose worker ignores SIGTERM while it finishes a run.
+        let stubborn = format!("trap '' TERM; touch {}; exec sleep 60", ready.display());
+        workflows
+            .ensure(&fixture.app, None, |_| spec(&stubborn))
+            .await
+            .unwrap();
+        let retired = workflows.supervisor_for(&fixture.app).unwrap();
+        retired.wake().unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !ready.exists() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        workflows
+            .ensure(&fixture.app, None, |_| spec("exec sleep 60"))
+            .await
+            .unwrap();
+
+        let server = fixture.serve(2);
+        fixture
+            .state
+            .restore_backup_inner(&fixture.app, &fixture.info.id)
+            .await
+            .unwrap();
+        server.await.unwrap();
+        assert!(
+            !retired.is_running(),
+            "the replaced release's worker outlived the restore"
+        );
+        assert_eq!(
+            sqlite_value(&fixture.data.join("tako/workflows.sqlite")),
+            "snapshot runs"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_restart_puts_the_original_databases_and_sidecars_back() {
+        let fixture = RestoreFixture::new();
+        let release = fixture
+            .state
+            .app_manager
+            .get_app(&fixture.app)
+            .unwrap()
+            .config
+            .read()
+            .path
+            .clone();
+        std::fs::remove_file(release.join("app.json")).unwrap();
+        let server = fixture.serve(2);
+        let error = fixture
+            .state
+            .restore_backup_inner(&fixture.app, &fixture.info.id)
+            .await
+            .unwrap_err();
+        server.await.unwrap();
+        assert!(
+            error.starts_with("Restart workflows after restore:")
+                && error.contains("original data restored, but restart failed")
+                && error.ends_with("app left stopped"),
+            "{error}"
+        );
+
+        // Sidecars first: opening a database may discard a log it rejects.
+        let data = &fixture.data;
+        assert_eq!(
+            std::fs::read(data.join("app/data.sqlite-wal")).unwrap(),
+            b"newer wal"
+        );
+        assert_eq!(
+            std::fs::read(data.join("app/data.sqlite-shm")).unwrap(),
+            b"newer shm"
+        );
+        assert_eq!(sqlite_value(&data.join("app/data.sqlite")), "live");
+        assert_eq!(
+            sqlite_value(&data.join("tako/workflows.sqlite")),
+            "live runs"
+        );
+        assert_eq!(sqlite_value(&data.join("app/other.sqlite")), "other");
+        assert_eq!(fixture.previous_dirs(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_refused_database_restore_keeps_live_data_and_restarts_the_app() {
+        let fixture = RestoreFixture::new();
+        let data = &fixture.data;
+        std::fs::remove_file(data.join("app/data.sqlite")).unwrap();
+        std::fs::write(data.join("app/data.sqlite"), b"not a database").unwrap();
+        let server = fixture.serve(2);
+        let error = fixture
+            .state
+            .restore_backup_inner(&fixture.app, &fixture.info.id)
+            .await
+            .unwrap_err();
+        server.await.unwrap();
+        assert!(
+            error.starts_with("Cannot restore app/data.sqlite:")
+                && error.ends_with("original data kept and app restarted"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read(data.join("app/data.sqlite")).unwrap(),
+            b"not a database"
+        );
+        assert_eq!(
+            sqlite_value(&data.join("tako/workflows.sqlite")),
+            "live runs"
+        );
+        let app = fixture.state.app_manager.get_app(&fixture.app).unwrap();
+        assert_eq!(app.state(), crate::socket::AppState::Idle);
+        assert_eq!(fixture.previous_dirs(), 0);
+    }
+
+    /// A directory a restore left beside the fixture's data, with a record
+    /// saying what the live data is, or without one.
+    fn leave_restore(
+        fixture: &RestoreFixture,
+        state: Option<journal::IntentState>,
+    ) -> std::path::PathBuf {
+        let dir = fixture
+            .data
+            .with_file_name(".data-restore-abandoned-unresolved");
+        std::fs::create_dir(&dir).unwrap();
+        if let Some(state) = state {
+            let mut intent = journal::RestoreIntent::full(&fixture.data, true);
+            intent.state = state;
+            journal::write_intent(&dir, &intent).unwrap();
+        }
+        dir
+    }
+
+    /// An app whose data a restore left partly restored is started by no
+    /// one, and says why, until the operator removes the directory; whole
+    /// data, original or restored, does not keep it stopped.
+    #[tokio::test]
+    async fn an_app_stays_stopped_while_a_restore_left_its_data_partly_restored() {
+        use journal::IntentState;
+        for (state, blocked) in [
+            (Some(IntentState::Swapping), true),
+            (Some(IntentState::Original), false),
+            (Some(IntentState::Restored), false),
+            (None, false),
+        ] {
+            let fixture = RestoreFixture::new();
+            let dir = leave_restore(&fixture, state);
+            let state = &fixture.state;
+            state.restore_from_state_store().await.unwrap();
+            let app = state.app_manager.get_app(&fixture.app).unwrap();
+            if !blocked {
+                assert_eq!(app.state(), crate::socket::AppState::Idle);
+                assert!(
+                    app.last_error().is_none(),
+                    "whole data must not block the app"
+                );
+                continue;
+            }
+            assert_eq!(app.state(), crate::socket::AppState::Stopped);
+            let names_dir = |message: &str| {
+                message.contains(&dir.display().to_string())
+                    && message.contains(journal::UNFINISHED_RESTORE_DOCS)
+            };
+            assert!(
+                app.last_error().is_some_and(|error| names_dir(&error)),
+                "status must name the directory and the docs"
+            );
+            let cold_start = crate::proxy::resolve_app_backend(
+                &state.load_balancer,
+                &state.cold_start,
+                &state.drain_requested,
+                &state.spawn_gate,
+                &fixture.app,
+            )
+            .await;
+            assert!(
+                matches!(cold_start, crate::proxy::BackendResolution::Unavailable),
+                "a request must not cold start a blocked app"
+            );
+            for response in [
+                state.scale_app(&fixture.app, Some(1), None, false).await,
+                state.update_secrets(&fixture.app, Default::default()).await,
+            ] {
+                assert!(
+                    matches!(&response, Response::Error { message, .. } if names_dir(message)),
+                    "an operator start must be refused with the same message"
+                );
+            }
+            assert_eq!(app.state(), crate::socket::AppState::Stopped);
+            assert!(app.get_instances().is_empty());
+
+            // Resolved: the next start serves the app again.
+            std::fs::remove_dir_all(&dir).unwrap();
+            state.restore_from_state_store().await.unwrap();
+            let app = state.app_manager.get_app(&fixture.app).unwrap();
+            assert_eq!(app.state(), crate::socket::AppState::Idle);
+            assert!(
+                state.refuse_unresolved_restore(&fixture.app).is_none(),
+                "the block must clear once the directory is gone"
+            );
+        }
+    }
+
+    /// A standby that takes over stops its running apps whose data a
+    /// restore of the dead primary left partly restored.
+    #[tokio::test]
+    async fn a_promoted_standby_stops_apps_a_restore_left_partly_restored() {
+        let fixture = RestoreFixture::new();
+        let app = fixture.state.app_manager.get_app(&fixture.app).unwrap();
+        app.set_state(crate::socket::AppState::Running);
+        leave_restore(&fixture, Some(journal::IntentState::Swapping));
+        fixture.state.stop_apps_with_unresolved_restores().await;
+        assert_eq!(app.state(), crate::socket::AppState::Stopped);
+        assert!(app.last_error().is_some(), "status must say why");
+    }
+
+    #[tokio::test]
+    async fn database_snapshots_download_as_their_own_object() {
+        let fixture = RestoreFixture::new();
+        let server = fixture.serve(2);
+        let download = fixture
+            .state
+            .backup_download_url_inner(&fixture.app, &fixture.info.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            download.backup.archive_file_name().unwrap(),
+            "d1800000000-abcdefgh.databases.tar.zst.enc"
+        );
+        let body = objects::backup_http_client(Duration::from_secs(5))
+            .unwrap()
+            .get(&download.url)
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert_eq!(body.as_ref(), fixture.objects[&fixture.info.archive_key]);
+        server.await.unwrap();
+    }
+
+    /// Backups configured against storage that refuses connections, so a
+    /// full backup runs its local steps and fails at the upload.
+    fn unreachable_storage(fixture: &RestoreFixture) {
+        let backup = serde_json::from_value(serde_json::json!({
+            "storage": {"provider": "s3", "bucket": "fixture", "endpoint": "https://127.0.0.1:1",
+                "region": "local", "access_key_id": "fixture", "secret_access_key": "fixture",
+                "force_path_style": true},
+            "backup_keys": [{"id": KEY_ID, "key_base64": KEY}]
+        }))
+        .unwrap();
+        fixture
+            .state
+            .state_store
+            .set_backup(&fixture.app, Some(&backup))
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn post_deploy_backup_is_queued_behind_a_database_snapshot_without_waiting() {
+        let fixture = RestoreFixture::new();
+        unreachable_storage(&fixture);
+        let (state, app) = (&fixture.state, fixture.app.as_str());
+
+        let snapshot = state.lock_for_database_snapshot(app).unwrap();
+        let outcome = tokio::time::timeout(Duration::from_secs(1), state.backup_after_deploy(app))
+            .await
+            .expect("finalize must not wait for a database snapshot");
+        assert!(
+            matches!(outcome, Some(PostDeployBackup::Queued)),
+            "{outcome:?}"
+        );
+        assert!(state.backup_schedule_state(app).post_deploy_backup_queued);
+        drop(snapshot);
+
+        // The scheduler runs it once the snapshot released the lock; its
+        // failure is visible in status like any other full archive.
+        state.run_queued_post_deploy_backup(app).await;
+        let schedule = state.backup_schedule_state(app);
+        assert!(!schedule.post_deploy_backup_queued);
+        let failure = schedule.failure().unwrap();
+        assert_eq!(failure.reason, BackupFailureReason::Failed);
+        // Nothing queued: nothing runs.
+        state.run_queued_post_deploy_backup(app).await;
+        assert_eq!(state.backup_schedule_state(app).failure(), Some(failure));
+
+        // A queued backup that finds the lock taken again gives up visibly.
+        let snapshot = state.lock_for_database_snapshot(app).unwrap();
+        state.backup_after_deploy(app).await;
+        let full = state.backup_operation_lock(app);
+        drop(snapshot);
+        let _held = full.try_lock_owned().unwrap();
+        state.run_queued_post_deploy_backup(app).await;
+        let failure = state.backup_schedule_state(app).failure().cloned().unwrap();
+        assert!(
+            failure.message.starts_with(
+                "The post-deploy backup queued behind a database snapshot could not start"
+            ),
+            "{}",
+            failure.message
+        );
+    }
+
+    /// The deploy reported the backup as queued, so a restart before the
+    /// snapshot finished must not drop it.
+    #[tokio::test]
+    async fn a_queued_post_deploy_backup_survives_a_restart() {
+        let fixture = RestoreFixture::new();
+        unreachable_storage(&fixture);
+        let (state, app) = (&fixture.state, fixture.app.as_str());
+        let snapshot = state.lock_for_database_snapshot(app).unwrap();
+        assert!(matches!(
+            state.backup_after_deploy(app).await,
+            Some(PostDeployBackup::Queued)
+        ));
+        drop(snapshot);
+        // A restart forgets everything in memory.
+        state.database_snapshots.write().clear();
+        state.run_queued_post_deploy_backup(app).await;
+        let schedule = state.backup_schedule_state(app);
+        assert_eq!(
+            schedule.failure().map(|failure| failure.reason),
+            Some(BackupFailureReason::Failed),
+            "the queued backup did not run"
+        );
+        // It ran once; it is not queued again.
+        state.database_snapshots.write().clear();
+        state.run_queued_post_deploy_backup(app).await;
+        assert!(state.backup_schedule_state(app).failure().is_none());
+    }
+
+    /// A marker that cannot be removed queues no further archives: one
+    /// archive ran for it, and the server remembers that.
+    #[tokio::test]
+    async fn a_queued_backup_marker_that_cannot_be_removed_runs_one_archive() {
+        let fixture = RestoreFixture::new();
+        unreachable_storage(&fixture);
+        let (state, app) = (&fixture.state, fixture.app.as_str());
+        // As a restart finds it, and no unlink can remove it.
+        std::fs::create_dir_all(state.post_deploy_backup_marker(app).join("busy")).unwrap();
+        state.run_queued_post_deploy_backup(app).await;
+        assert!(
+            state.backup_schedule_state(app).failure().is_some(),
+            "the queued backup must run once"
+        );
+        for _ in 0..2 {
+            if let Some(schedule) = state.database_snapshots.write().get_mut(app) {
+                schedule.full_failures = Default::default();
+            }
+            state.run_queued_post_deploy_backup(app).await;
+            assert!(
+                state.backup_schedule_state(app).failure().is_none(),
+                "a marker that cannot be removed must not run the backup again"
+            );
+        }
+    }
+
+    /// An app deleted and created again with the same name starts with a
+    /// clean schedule.
+    #[tokio::test]
+    async fn deleting_an_app_forgets_its_backup_schedule() {
+        let fixture = RestoreFixture::new();
+        let (state, app) = (&fixture.state, fixture.app.as_str());
+        {
+            let mut states = state.database_snapshots.write();
+            let schedule = states.entry(app.to_string()).or_default();
+            schedule.post_deploy_backup_queued = true;
+            schedule.record_full_failure(now_unix_secs(), BackupFailureReason::Failed, "x".into());
+        }
+        let response = state.delete_app(app).await;
+        assert!(response.is_ok(), "{response:?}");
+        let schedule = state.backup_schedule_state(app);
+        assert!(!schedule.post_deploy_backup_queued);
+        assert!(schedule.failure().is_none());
+    }
+
+    #[tokio::test]
+    async fn post_deploy_backup_runs_at_once_when_the_lock_is_free_and_fails_fast_otherwise() {
+        let fixture = RestoreFixture::new();
+        unreachable_storage(&fixture);
+        let (state, app) = (&fixture.state, fixture.app.as_str());
+
+        // Free lock: the backup runs in finalize, as before.
+        let outcome = state.backup_after_deploy(app).await;
+        assert!(
+            matches!(outcome, Some(PostDeployBackup::Failed(_))),
+            "{outcome:?}"
+        );
+        assert!(!state.backup_schedule_state(app).post_deploy_backup_queued);
+        assert!(state.backup_schedule_state(app).failure().is_some());
+
+        // A full backup or restore holding the lock: busy, nothing queued.
+        let full = state.backup_operation_lock(app).try_lock_owned().unwrap();
+        let Some(PostDeployBackup::Failed(error)) = state.backup_after_deploy(app).await else {
+            panic!("expected a busy error");
+        };
+        assert_eq!(
+            error,
+            "A backup operation is already in progress for demo/production."
+        );
+        assert!(!state.backup_schedule_state(app).post_deploy_backup_queued);
+        assert!(state.lock_for_database_snapshot(app).is_none());
+        drop(full);
+    }
+
+    /// A waiter that finds the backup lock taken reads the running flag to
+    /// tell a database snapshot from a full backup or restore. The flag must
+    /// never be raised for a snapshot attempt that cannot take the lock.
+    #[test]
+    fn a_database_snapshot_is_marked_running_only_while_it_holds_the_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _entered = runtime.enter();
+        let state = test_state(temp.path());
+        let app = "demo/production";
+        let full = state.backup_operation_lock(app).try_lock_owned().unwrap();
+        let done = std::sync::atomic::AtomicBool::new(false);
+        let seen = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                for _ in 0..20_000 {
+                    assert!(state.lock_for_database_snapshot(app).is_none());
+                }
+                done.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+            let mut seen = false;
+            while !done.load(std::sync::atomic::Ordering::SeqCst) {
+                seen |= state.database_snapshot_running(app);
+            }
+            seen
+        });
+        assert!(!seen, "a waiter would wait behind a full backup or restore");
+        drop(full);
+    }
+
+    #[tokio::test]
+    async fn database_snapshots_skip_a_running_deploy_without_waiting() {
+        let fixture = RestoreFixture::new();
+        // Only the index is read before the deploy lock check.
+        let server = fixture.serve(1);
+        let deploy = fixture.state.get_deploy_lock(&fixture.app).await;
+        let _deploying = deploy.lock().await;
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(10),
+            fixture.state.database_snapshot_now(&fixture.app),
+        )
+        .await
+        .expect("a database snapshot must not wait for a deploy")
+        .unwrap();
+        assert!(
+            matches!(
+                &outcome,
+                databases::DatabaseSnapshotOutcome::Skipped(skip)
+                    if skip.reason == tako_core::BackupSkipReason::DeployInProgress
+            ),
+            "{outcome:?}"
+        );
+        assert!(!fixture.state.database_snapshot_running(&fixture.app));
+        server.await.unwrap();
+    }
+
+    /// The deploy lock is free, no background holder is recorded, and native
+    /// recovery's claim window is closed.
+    async fn assert_deploy_lock_released(state: &crate::ServerState, app: &str) {
+        let lock = state.get_deploy_lock(app).await;
+        let held = lock.try_lock().expect("the deploy lock leaked");
+        // An operator that finds the lock held by anyone but background work
+        // is turned away at once, with the generic message.
+        let error = state
+            .lock_deploy_for_operator(app, &lock)
+            .await
+            .unwrap_err();
+        assert!(error.starts_with("Deploy already in progress"), "{error}");
+        drop(held);
+        let app_ref = state.app_manager.get_app(app).unwrap();
+        assert!(!*app_ref.recovery_claims_open.lock());
+    }
+
+    #[tokio::test]
+    async fn scheduled_backups_yield_the_deploy_lock_to_an_operator_and_run_on_a_later_tick() {
+        let fixture = RestoreFixture::new();
+        let (state, app) = (&fixture.state, fixture.app.as_str());
+        let index_key = backup_index_key(app, state);
+        let update_secrets = || state.update_secrets(app, std::collections::HashMap::new());
+
+        // An operator turned away by a scheduled backup opens its window.
+        let held = state
+            .try_lock_deploy_for_scheduled_backup(app, std::time::Instant::now())
+            .await
+            .unwrap();
+        let response = update_secrets().await;
+        assert!(
+            matches!(&response, Response::Error { message, .. } if message.starts_with("A scheduled backup of")),
+            "operator must receive a scheduled backup contention error"
+        );
+        drop(held);
+
+        // While it is open, the hourly snapshot skips without waiting.
+        let server = fixture.serve(1);
+        let outcome = state.database_snapshot_now(app).await.unwrap();
+        assert!(
+            matches!(
+                &outcome,
+                databases::DatabaseSnapshotOutcome::Skipped(skip)
+                    if skip.reason == tako_core::BackupSkipReason::DeployInProgress
+            ),
+            "{outcome:?}"
+        );
+        assert_eq!(server.await.unwrap(), [format!("GET {index_key}")]);
+
+        // So do a due full archive and a queued post-deploy archive: neither
+        // counts as a failure, and the queued one stays queued.
+        state
+            .database_snapshots
+            .write()
+            .entry(app.to_string())
+            .or_default()
+            .post_deploy_backup_queued = true;
+        let server = fixture.serve(1);
+        state.run_due_backups().await;
+        assert_eq!(server.await.unwrap(), [format!("GET {index_key}")]);
+        let schedule = state.backup_schedule_state(app);
+        assert!(schedule.failure().is_none(), "{:?}", schedule.failure());
+        assert!(schedule.post_deploy_backup_queued);
+        assert_deploy_lock_released(state, app).await;
+
+        // The operator's retry gets the lock and closes the window.
+        let response = update_secrets().await;
+        assert!(
+            response.is_ok(),
+            "operator retry must succeed after a backup"
+        );
+
+        // Its marker, as a restart would keep it.
+        state.record_post_deploy_backup_queued(app, true);
+        // The next tick runs one archive, which is both the due one and the
+        // queued one. The fixture refuses uploads, so it fails at its upload,
+        // and the lock is released all the same.
+        let server = fixture.serve(3);
+        state.run_due_backups().await;
+        let served = server.await.unwrap();
+        assert_eq!(served.len(), 3);
+        assert!(
+            served[2].starts_with("PUT "),
+            "the archive must reach its upload"
+        );
+        // A second archive would have failed to connect once the fixture
+        // closed, after the first one's refused upload.
+        assert!(
+            state
+                .backup_schedule_state(app)
+                .failure()
+                .is_some_and(|failure| failure.message.contains("404")),
+            "only one archive may run for a due and a queued backup"
+        );
+        assert!(!state.post_deploy_backup_marker(app).exists());
+        let schedule = state.backup_schedule_state(app);
+        assert_eq!(
+            schedule.failure().unwrap().reason,
+            BackupFailureReason::Failed
+        );
+        assert!(!schedule.post_deploy_backup_queued);
+        assert_deploy_lock_released(state, app).await;
+
+        // A database snapshot that fails after its capture leaks nothing either.
+        let server = fixture.serve(3);
+        let error = state.database_snapshot_now(app).await.unwrap_err();
+        assert!(error.contains("returned 404"), "{error}");
+        assert_eq!(server.await.unwrap().len(), 3);
+        assert!(!state.database_snapshot_running(app));
+        assert_deploy_lock_released(state, app).await;
+    }
 }

@@ -3,6 +3,10 @@ use std::fs::{File, OpenOptions};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 
+/// Every server process that serves app data holds a shared lease on this
+/// file, beside `state.sqlite`, until it drains or retires.
+const DRAIN_ACTIVITY_LOCK_FILE: &str = "drain-activity.lock";
+
 pub(crate) struct DrainLease(File);
 
 impl DrainLease {
@@ -44,6 +48,16 @@ impl DrainLease {
         } else {
             Err(io_error(error))
         }
+    }
+}
+
+impl DrainLease {
+    /// The exclusive lease on the data directory `data_dir`, unless a server
+    /// process that serves it holds a shared one.
+    pub(crate) fn try_exclusive_in(
+        data_dir: &std::path::Path,
+    ) -> Result<Option<Self>, StateStoreError> {
+        Self::try_acquire(&data_dir.join(DRAIN_ACTIVITY_LOCK_FILE), true)
     }
 }
 
@@ -98,7 +112,10 @@ impl SqliteStateStore {
         &self,
         exclusive: bool,
     ) -> Result<Option<DrainLease>, StateStoreError> {
-        DrainLease::try_acquire(&self.path.with_file_name("drain-activity.lock"), exclusive)
+        DrainLease::try_acquire(
+            &self.path.with_file_name(DRAIN_ACTIVITY_LOCK_FILE),
+            exclusive,
+        )
     }
 
     pub(crate) fn try_drain_operation(&self) -> Result<Option<DrainLease>, StateStoreError> {

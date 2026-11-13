@@ -19,7 +19,10 @@ percent-encoding = "2.3"
 postgres = "0.19"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+# Publish params arrive as JSON numbers and subscribe params as query text;
+# both must parse to the same f64 or they select different streams.
+serde_json = { version = "1.0", features = ["float_roundtrip"] }
+tako-core = { path = "../tako-core" }
 tako-sqlite = { path = "../tako-sqlite" }
 thiserror = "2"
 tokio = { version = "1", features = ["rt", "sync", "macros", "time"] }

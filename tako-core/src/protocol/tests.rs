@@ -42,6 +42,42 @@ fn test_command_serialization() {
 }
 
 #[test]
+fn app_status_recovery_is_omitted_when_empty_and_roundtrips() {
+    let quiet = serde_json::json!({
+        "name": "my-app/production",
+        "version": "v1",
+        "instances": [],
+        "builds": [],
+        "state": "running",
+        "last_error": null,
+    });
+    let status: AppStatus = serde_json::from_value(quiet.clone()).unwrap();
+    assert!(status.recovery.is_none());
+    assert_eq!(serde_json::to_value(&status).unwrap(), quiet);
+
+    let mut recovering = quiet;
+    recovering["recovery"] = serde_json::json!({
+        "restart_count": 3,
+        "last_exit": {"reason": "failed_to_start", "exit_code": 1, "at_unix_secs": 1_778_220_000},
+        "next_restart_at_unix_secs": 1_778_220_004_i64,
+    });
+    let status: AppStatus = serde_json::from_value(recovering.clone()).unwrap();
+    let recovery = status.recovery.as_ref().unwrap();
+    assert_eq!(recovery.restart_count, 3);
+    let exit = recovery.last_exit.as_ref().unwrap();
+    assert_eq!(exit.reason, InstanceExitReason::FailedToStart);
+    assert_eq!((exit.exit_code, exit.signal), (Some(1), None));
+    assert_eq!(serde_json::to_value(&status).unwrap(), recovering);
+
+    for (reason, wire) in [
+        (InstanceExitReason::Crashed, "crashed"),
+        (InstanceExitReason::Unhealthy, "unhealthy"),
+    ] {
+        assert_eq!(serde_json::to_value(reason).unwrap(), wire);
+    }
+}
+
+#[test]
 fn management_auth_message_includes_context_and_body() {
     // CodeQL[rust/hard-coded-cryptographic-value]: fixed nonce keeps this protocol fixture deterministic.
     let message = management_auth_message("1778220000", "abc123", br#"{"command":"list"}"#);
@@ -236,10 +272,15 @@ fn backup_info_serializes_encryption_metadata() {
             nonce_base64: "nonce".to_string(),
             tag_base64: "tag".to_string(),
         },
+        kind: BackupKind::Full,
+        database_digest: None,
+        databases: Vec::new(),
     };
 
     let json = serde_json::to_string(&info).unwrap();
     assert!(json.contains(r#""algorithm":"aes-256-gcm""#));
+    assert!(json.contains(r#""kind":"full""#));
+    assert!(!json.contains("database_digest"));
     assert!(json.contains(r#""key_id":"backup-key-0123456789abcdef""#));
     let parsed: BackupInfo = serde_json::from_str(&json).unwrap();
     assert_eq!(
@@ -263,6 +304,116 @@ fn backup_info_requires_encryption_metadata() {
     }"#;
 
     assert!(serde_json::from_str::<BackupInfo>(json).is_err());
+}
+
+#[test]
+fn backup_info_without_kind_reads_as_full_archive() {
+    let json = r#"{
+        "id":"b1", "app":"demo", "environment":"production", "server":"la",
+        "created_at_unix_secs":1778220000, "size_bytes":123, "sha256_hex":"abc",
+        "archive_key":"a", "manifest_key":"m",
+        "encryption":{"algorithm":"aes-256-gcm","key_id":"k","nonce_base64":"n","tag_base64":"t"}
+    }"#;
+    let parsed: BackupInfo = serde_json::from_str(json).unwrap();
+    assert_eq!(parsed.kind, BackupKind::Full);
+    assert_eq!(parsed.database_digest, None);
+
+    let mut snapshot = parsed;
+    snapshot.kind = BackupKind::Databases;
+    snapshot.database_digest = Some("digest".into());
+    let json = serde_json::to_value(&snapshot).unwrap();
+    assert_eq!(json["kind"], "databases");
+    assert_eq!(json["database_digest"], "digest");
+    assert!(json.get("databases").is_none());
+
+    snapshot.databases = vec!["app/data.sqlite".into(), "tako/workflows.sqlite".into()];
+    let json = serde_json::to_value(&snapshot).unwrap();
+    assert_eq!(
+        json["databases"],
+        serde_json::json!(["app/data.sqlite", "tako/workflows.sqlite"])
+    );
+}
+
+/// The download is saved in the current directory under this name, so it
+/// never comes from the storage index, which anyone with bucket write
+/// access can edit.
+#[test]
+fn backup_archive_file_name_is_built_from_the_validated_id_and_kind() {
+    let mut info: BackupInfo = serde_json::from_value(serde_json::json!({
+        "id": "d1800000000-abc_DEF-9", "app": "demo", "environment": "production", "server": "la",
+        "created_at_unix_secs": 1, "size_bytes": 1, "sha256_hex": "",
+        "archive_key": "_tako/backups/demo/production/la/.envrc",
+        "manifest_key": "m", "kind": "databases",
+        "encryption": {"algorithm": "", "key_id": "", "nonce_base64": "", "tag_base64": ""}
+    }))
+    .unwrap();
+    assert_eq!(
+        info.archive_file_name().unwrap(),
+        "d1800000000-abc_DEF-9.databases.tar.zst.enc"
+    );
+    info.kind = BackupKind::Full;
+    info.id = "b1800000000-abcdefgh".into();
+    assert_eq!(
+        info.archive_file_name().unwrap(),
+        "b1800000000-abcdefgh.tar.zst.enc"
+    );
+    for id in [
+        "", "Makefile", "b", "b-abc", "b1-", "b1abc", "b1-../x", "b1-a/b", "b1-a.b", "x1-abc",
+        // The kind letter must match the kind.
+        "d1-abc", "b1-abc\n",
+    ] {
+        info.id = id.into();
+        assert!(info.archive_file_name().is_err(), "{id:?}");
+    }
+}
+
+#[test]
+fn backup_restore_response_reports_database_changes_only_for_snapshots() {
+    let backup: BackupInfo = serde_json::from_value(serde_json::json!({
+        "id": "b1", "app": "demo", "environment": "production", "server": "la",
+        "created_at_unix_secs": 1, "size_bytes": 1, "sha256_hex": "",
+        "archive_key": "a", "manifest_key": "m",
+        "encryption": {"algorithm": "", "key_id": "", "nonce_base64": "", "tag_base64": ""}
+    }))
+    .unwrap();
+    let full = BackupRestoreResponse {
+        backup: backup.clone(),
+        databases: None,
+    };
+    let json = serde_json::to_value(&full).unwrap();
+    assert!(json.get("databases").is_none());
+    assert_eq!(json["backup"]["id"], "b1");
+
+    let restored = BackupRestoreResponse {
+        backup,
+        databases: Some(RestoredDatabases {
+            replaced: vec!["app/data.sqlite".into()],
+            created: vec!["app/new.sqlite".into()],
+            untouched: vec!["app/other.sqlite".into()],
+        }),
+    };
+    let parsed: BackupRestoreResponse =
+        serde_json::from_value(serde_json::to_value(&restored).unwrap()).unwrap();
+    assert_eq!(parsed, restored);
+}
+
+#[test]
+fn backup_status_reads_database_snapshot_fields_with_defaults() {
+    let status: BackupStatusResponse =
+        serde_json::from_str(r#"{"app":"demo/production","enabled":true}"#).unwrap();
+    assert_eq!(status.last_database_snapshot_at_unix_secs, None);
+    assert_eq!(status.last_database_snapshot_skip, None);
+
+    let status: BackupStatusResponse = serde_json::from_value(serde_json::json!({
+        "app": "demo/production", "enabled": true,
+        "last_database_snapshot_at_unix_secs": 10,
+        "last_database_snapshot_skip": {"at_unix_secs": 20, "reason": "too_large", "message": "too big"}
+    }))
+    .unwrap();
+    assert_eq!(status.last_database_snapshot_at_unix_secs, Some(10));
+    let skip = status.last_database_snapshot_skip.unwrap();
+    assert_eq!(skip.reason, BackupSkipReason::TooLarge);
+    assert_eq!(skip.at_unix_secs, 20);
 }
 
 #[test]
@@ -428,6 +579,41 @@ fn test_list_releases_command_serialization() {
 }
 
 #[test]
+fn release_info_reports_the_recorded_sdk() {
+    let release = ReleaseInfo {
+        version: "abc1234".to_string(),
+        current: true,
+        deployed_at_unix_secs: Some(1_700_000_000),
+        commit_message: None,
+        description: None,
+        git_dirty: None,
+        sdk: Some(ReleaseSdk {
+            language: "go".to_string(),
+            name: "tako.sh".to_string(),
+            version: "v0.4.1".to_string(),
+        }),
+    };
+    let json = serde_json::to_value(&release).unwrap();
+    assert_eq!(
+        json["sdk"],
+        serde_json::json!({"language":"go","name":"tako.sh","version":"v0.4.1"})
+    );
+    assert_eq!(
+        serde_json::from_value::<ReleaseInfo>(json).unwrap(),
+        release
+    );
+
+    // A release without a detectable SDK reports null, and a response that
+    // omits the field reads the same way.
+    let unknown: ReleaseInfo = serde_json::from_str(
+        r#"{"version":"abc1234","current":false,"deployed_at_unix_secs":null}"#,
+    )
+    .unwrap();
+    assert_eq!(unknown.sdk, None);
+    assert!(serde_json::to_value(&unknown).unwrap()["sdk"].is_null());
+}
+
+#[test]
 fn test_rollback_command_serialization() {
     let cmd = Command::Rollback {
         app: "my-app".to_string(),
@@ -478,6 +664,61 @@ fn test_response_error() {
     let response = Response::error("Something went wrong");
     assert!(!response.is_ok());
     assert_eq!(response.error_message(), Some("Something went wrong"));
+    assert_eq!(response.error_code(), None);
+}
+
+#[test]
+fn error_reply_omits_code_when_unclassified() {
+    let json = serde_json::to_value(Response::error("app not found")).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({"status": "error", "message": "app not found"})
+    );
+    let parsed: Response =
+        serde_json::from_value(serde_json::json!({"status": "error", "message": "x"})).unwrap();
+    assert!(matches!(parsed, Response::Error { code: None, .. }));
+}
+
+#[test]
+fn error_reply_carries_a_readable_code() {
+    let response = Response::coded_error(
+        crate::ErrorCode::RunNotOwned,
+        "heartbeat failed: stale worker: run is no longer owned by this worker",
+    );
+    let json = serde_json::to_value(&response).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "status": "error",
+            "message": "heartbeat failed: stale worker: run is no longer owned by this worker",
+            "code": "run_not_owned"
+        })
+    );
+    let parsed: Response = serde_json::from_value(json).unwrap();
+    assert_eq!(parsed.error_code(), Some(crate::ErrorCode::RunNotOwned));
+    assert_eq!(
+        Response::from(crate::SocketError::new(
+            crate::ErrorCode::ChannelClosed,
+            "closed"
+        ))
+        .error_code(),
+        Some(crate::ErrorCode::ChannelClosed)
+    );
+}
+
+#[test]
+fn error_reply_reads_an_unknown_code_as_unclassified() {
+    for code in [
+        serde_json::json!("from_a_newer_server"),
+        serde_json::Value::Null,
+    ] {
+        let parsed: Response = serde_json::from_value(
+            serde_json::json!({"status": "error", "message": "x", "code": code}),
+        )
+        .unwrap();
+        assert_eq!(parsed.error_code(), None);
+        assert_eq!(parsed.error_message(), Some("x"));
+    }
 }
 
 #[test]
@@ -719,5 +960,263 @@ fn test_server_runtime_info_pid_roundtrip() {
     assert_eq!(
         parsed.server_identity.as_deref(),
         Some("SHA256:testidentity")
+    );
+}
+
+#[test]
+fn channel_close_command_roundtrip() {
+    let wire = serde_json::json!({
+        "command": "channel_close",
+        "app": "app/production",
+        "channel": "chat",
+        "params": {"room": "a"},
+        "build": "v1",
+        "lifecycle": {"replayWindowMs": 1000}
+    });
+    let command: Command = serde_json::from_value(wire.clone()).unwrap();
+    let Command::ChannelClose {
+        app,
+        channel,
+        params,
+        build,
+        lifecycle,
+    } = &command
+    else {
+        panic!("expected channel_close, got {command:?}");
+    };
+    assert_eq!(
+        (app.as_str(), channel.as_str(), build.as_deref()),
+        ("app/production", "chat", Some("v1"))
+    );
+    assert_eq!(params, &serde_json::json!({"room": "a"}));
+    assert_eq!(
+        lifecycle,
+        &Some(serde_json::json!({"replayWindowMs": 1000}))
+    );
+    assert_eq!(serde_json::to_value(&command).unwrap(), wire);
+    // Params, build and lifecycle are optional, as for channel_publish.
+    let bare: Command = serde_json::from_value(serde_json::json!({
+        "command": "channel_close", "app": "app", "channel": "chat"
+    }))
+    .unwrap();
+    assert!(matches!(
+        bare,
+        Command::ChannelClose {
+            params: serde_json::Value::Null,
+            build: None,
+            lifecycle: None,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn workflow_run_operator_commands_roundtrip() {
+    let list: Command = serde_json::from_str(
+        r#"{"command":"list_workflow_runs","app":"my-app/production","status":"dead","name":"send-email","limit":10}"#,
+    )
+    .unwrap();
+    match &list {
+        Command::ListWorkflowRuns {
+            app,
+            status,
+            name,
+            limit,
+        } => {
+            assert_eq!(app, "my-app/production");
+            assert_eq!(*status, Some(WorkflowRunStatus::Dead));
+            assert_eq!(name.as_deref(), Some("send-email"));
+            assert_eq!(*limit, Some(10));
+        }
+        _ => panic!("expected ListWorkflowRuns"),
+    }
+    let json = serde_json::to_value(&list).unwrap();
+    assert_eq!(json["command"], "list_workflow_runs");
+    assert_eq!(json["status"], "dead");
+
+    let defaults: Command =
+        serde_json::from_str(r#"{"command":"list_workflow_runs","app":"a/b"}"#).unwrap();
+    assert!(matches!(
+        defaults,
+        Command::ListWorkflowRuns {
+            status: None,
+            name: None,
+            limit: None,
+            ..
+        }
+    ));
+    assert!(
+        serde_json::from_str::<Command>(
+            r#"{"command":"list_workflow_runs","app":"a/b","status":"failed"}"#
+        )
+        .is_err()
+    );
+
+    for (name, command) in [
+        (
+            "get_workflow_run",
+            Command::GetWorkflowRun {
+                app: "a/b".into(),
+                id: "run-1".into(),
+            },
+        ),
+        (
+            "retry_workflow_run",
+            Command::RetryWorkflowRun {
+                app: "a/b".into(),
+                id: "run-1".into(),
+            },
+        ),
+        (
+            "cancel_workflow_run",
+            Command::CancelWorkflowRun {
+                app: "a/b".into(),
+                id: "run-1".into(),
+            },
+        ),
+    ] {
+        let json = serde_json::to_value(&command).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"command": name, "app": "a/b", "id": "run-1"})
+        );
+        let parsed: Command = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            std::mem::discriminant(&parsed),
+            std::mem::discriminant(&command)
+        );
+    }
+    // The worker-scoped cancel still requires its claim owner.
+    assert!(
+        serde_json::from_str::<Command>(r#"{"command":"cancel_run","app":"a/b","id":"run-1"}"#)
+            .is_err()
+    );
+}
+
+#[test]
+fn workflow_run_operator_responses_roundtrip() {
+    let summary = WorkflowRunSummary {
+        id: "run-1".into(),
+        name: "send-email".into(),
+        status: WorkflowRunStatus::Pending,
+        attempts: 0,
+        max_attempts: 3,
+        created_at_ms: 1,
+        run_at_ms: None,
+        finished_at_ms: None,
+        last_error: Some("boom".into()),
+        last_error_truncated: true,
+    };
+    let list = ListWorkflowRunsResponse {
+        app: "a/b".into(),
+        store: WorkflowStoreKind::Postgres,
+        runs: vec![summary],
+        has_more: false,
+    };
+    let json = serde_json::to_value(&list).unwrap();
+    assert_eq!(json["store"], "postgres");
+    assert_eq!(json["runs"][0]["status"], "pending");
+    assert!(json["runs"][0]["run_at_ms"].is_null());
+    assert_eq!(
+        serde_json::from_value::<ListWorkflowRunsResponse>(json).unwrap(),
+        list
+    );
+
+    let truncated = CappedJson {
+        value: serde_json::Value::Null,
+        truncated: true,
+        bytes: 40_000,
+        preview: Some("{\"a\":".into()),
+    };
+    let detail = GetWorkflowRunResponse {
+        app: "a/b".into(),
+        store: WorkflowStoreKind::Sqlite,
+        run: Some(WorkflowRunDetail {
+            id: "run-1".into(),
+            name: "send-email".into(),
+            status: WorkflowRunStatus::Succeeded,
+            attempts: 1,
+            max_attempts: 3,
+            created_at_ms: 1,
+            run_at_ms: Some(1),
+            finished_at_ms: Some(2),
+            lease_until_ms: None,
+            worker_id: None,
+            last_error: None,
+            last_error_truncated: false,
+            payload: truncated.clone(),
+            result: Some(CappedJson {
+                value: serde_json::json!(null),
+                truncated: false,
+                bytes: 4,
+                preview: None,
+            }),
+            steps: vec![WorkflowRunStep {
+                name: "charge".into(),
+                completed_at_ms: 2,
+                result: truncated,
+            }],
+            steps_total: 150,
+            waits: vec![WorkflowRunWait {
+                step_name: "approval".into(),
+                event_name: "approval".into(),
+                expires_at_ms: None,
+            }],
+        }),
+    };
+    let json = serde_json::to_value(&detail).unwrap();
+    assert!(json["run"]["result"].get("preview").is_none());
+    assert_eq!(json["run"]["payload"]["preview"], "{\"a\":");
+    assert_eq!(
+        serde_json::from_value::<GetWorkflowRunResponse>(json).unwrap(),
+        detail
+    );
+
+    let transition = WorkflowRunTransition {
+        app: "a/b".into(),
+        store: WorkflowStoreKind::Sqlite,
+        id: "run-1".into(),
+        previous_status: WorkflowRunStatus::Dead,
+        status: WorkflowRunStatus::Pending,
+    };
+    let json = serde_json::to_string(&transition).unwrap();
+    assert_eq!(
+        serde_json::from_str::<WorkflowRunTransition>(&json).unwrap(),
+        transition
+    );
+    for status in [
+        WorkflowRunStatus::Pending,
+        WorkflowRunStatus::Running,
+        WorkflowRunStatus::Succeeded,
+        WorkflowRunStatus::Cancelled,
+        WorkflowRunStatus::Dead,
+    ] {
+        assert_eq!(status.as_str().parse::<WorkflowRunStatus>(), Ok(status));
+        assert_eq!(
+            serde_json::to_value(status).unwrap(),
+            serde_json::json!(status.as_str())
+        );
+    }
+}
+
+#[test]
+fn register_schedules_carries_an_optional_retry_budget() {
+    let command: Command = serde_json::from_value(serde_json::json!({
+        "command": "register_schedules",
+        "app": "a",
+        "schedules": [
+            {"name": "nightly", "cron": "0 0 * * *", "max_attempts": 5},
+            {"name": "hourly", "cron": "0 * * * *"},
+        ],
+    }))
+    .unwrap();
+    let Command::RegisterSchedules { schedules, .. } = command else {
+        panic!("not register_schedules");
+    };
+    assert_eq!(schedules[0].max_attempts, Some(5));
+    assert_eq!(schedules[1].max_attempts, None);
+    assert_eq!(
+        serde_json::to_value(&schedules[1]).unwrap(),
+        serde_json::json!({"name": "hourly", "cron": "0 * * * *"})
     );
 }

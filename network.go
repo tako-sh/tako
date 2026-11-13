@@ -92,7 +92,11 @@ func Enqueue(ctx context.Context, address string, payload any, options NetworkEn
 }
 
 // Publish delivers a message to a channel owned by an app on this private network.
-// It acknowledges publication; it does not wait for subscribers to process it.
+// params select the recipient channel's stream: only subscribers bound to the
+// same flat string, number, or boolean params receive the message. Nil params
+// select the unparameterized stream; a nil value inside params is rejected, so
+// leave an unset param out. It acknowledges publication; it does not
+// wait for subscribers to process it.
 func Publish(ctx context.Context, address string, params any, messageType string, data any) (json.RawMessage, error) {
 	if params == nil {
 		params = map[string]any{}
@@ -142,12 +146,14 @@ func callNetwork(ctx context.Context, address string, request any) (data json.Ra
 	var response struct {
 		Status string          `json:"status"`
 		Data   json.RawMessage `json:"data"`
+		Code   string          `json:"code"`
 	}
 	if err := json.Unmarshal(line, &response); err != nil {
 		return nil, err
 	}
 	if response.Status != "ok" {
-		return nil, errors.New("tako: network primitive call failed")
+		// The diagnostic may carry the recipient's internals; the code is safe.
+		return nil, &ServerError{Code: response.Code, Message: "network primitive call failed"}
 	}
 	return response.Data, nil
 }

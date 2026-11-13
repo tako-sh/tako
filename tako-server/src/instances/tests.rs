@@ -163,6 +163,30 @@ fn request_finished_updates_idle_clock_only_when_instance_becomes_idle() {
 }
 
 #[test]
+fn long_lived_requests_are_counted_in_flight_but_not_short() {
+    let instance = Instance::new("test-1".to_string(), "v1".to_string(), noop_log_handle());
+    instance.last_request_ms.store(1, Ordering::Relaxed);
+
+    instance.request_started();
+    instance.request_started();
+    instance.request_became_long_lived();
+    assert_eq!(instance.in_flight(), 2);
+    assert_eq!(instance.short_in_flight(), 1);
+    assert_eq!(instance.long_lived_in_flight(), 1);
+
+    instance.request_finished();
+    assert_eq!(instance.in_flight(), 1);
+    assert_eq!(instance.short_in_flight(), 0);
+    assert_eq!(instance.last_request_ms.load(Ordering::Relaxed), 1);
+
+    instance.long_lived_request_finished();
+    assert_eq!(instance.in_flight(), 0);
+    assert_eq!(instance.short_in_flight(), 0);
+    assert_eq!(instance.long_lived_in_flight(), 0);
+    assert!(instance.last_request_ms.load(Ordering::Relaxed) > 1);
+}
+
+#[test]
 fn test_app_allocate_instances() {
     let (tx, _rx) = mpsc::channel(16);
     let config = AppConfig {

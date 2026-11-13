@@ -8,8 +8,12 @@ use std::{
         unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     },
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
-use tako_channels::{ChannelAuthResponse, ChannelMessage, ChannelPublishPayload, PresenceMember};
+use tako_channels::{
+    ChannelAuthResponse, ChannelLifecycle, ChannelMessage, ChannelPublishPayload, PresenceMember,
+};
 use tako_network::AppEnv;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite},
@@ -37,6 +41,10 @@ pub(super) enum Request {
         channel: String,
         payload: ChannelPublishPayload,
         ephemeral: bool,
+        /// The definition's lifecycle, applied with the append so a publish
+        /// rejected by a closed stream does not touch it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lifecycle: Option<ChannelLifecycle>,
     },
     SyncChannel {
         app: AppEnv,
@@ -61,7 +69,16 @@ pub(super) enum Request {
         channel: String,
         connection_id: String,
     },
+    /// Asks which optional request fields the broker understands. A broker from
+    /// an earlier release does not know this kind and drops the connection
+    /// unanswered; nothing is queued or committed either way.
+    Features,
 }
+/// The broker applies `Publish.lifecycle` with the append.
+pub(super) const PUBLISH_LIFECYCLE: &str = "publish_lifecycle";
+/// How long a publisher trusts a probe that found an earlier broker before it
+/// asks again, so a restarted network agent is noticed without a server restart.
+const PREVIOUS_BROKER_RECHECK: Duration = Duration::from_secs(60);
 fn serialize_auth<S: serde::Serializer>(
     auth: &ChannelAuthResponse,
     serializer: S,
@@ -113,7 +130,45 @@ pub(super) enum Response {
     Presence {
         members: Vec<PresenceMember>,
     },
+    /// The publish targets a stream with a retained close marker.
+    StreamClosed,
+    /// The publish would start a stream beyond the app's stream limit.
+    StreamLimit,
     Rejected,
+    Features {
+        features: Vec<String>,
+    },
+}
+
+/// The broker refused a publish because its stream is closed: a final answer,
+/// not an unavailable broker.
+#[derive(Debug, thiserror::Error)]
+#[error("channel stream is closed")]
+pub struct StreamClosed;
+
+pub fn is_stream_closed(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<StreamClosed>())
+}
+
+/// The broker refused a publish that would start a stream beyond the app's
+/// stream limit: the store is full for now, not unreachable.
+#[derive(Debug, thiserror::Error)]
+#[error("channel stream limit reached")]
+pub struct StreamLimit;
+
+/// The channel error a refused publish reports to its publisher, when the
+/// broker answered with a reason rather than failing.
+pub fn publish_refusal(error: &io::Error) -> Option<tako_channels::ChannelError> {
+    let inner = error.get_ref()?;
+    if inner.is::<StreamClosed>() {
+        Some(tako_channels::ChannelError::StreamClosed)
+    } else if inner.is::<StreamLimit>() {
+        Some(tako_channels::ChannelError::StreamLimit)
+    } else {
+        None
+    }
 }
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -129,6 +184,9 @@ pub(super) enum Reply {
 #[derive(Clone)]
 pub struct Client {
     socket: PathBuf,
+    /// Whether the broker takes the lifecycle with a publish, and when an
+    /// answer of "no" was observed. A "yes" holds for the client's lifetime.
+    publish_lifecycle: Arc<Mutex<Option<(bool, Instant)>>>,
 }
 impl Client {
     pub(crate) async fn sign_invocation(
@@ -153,7 +211,74 @@ impl Client {
         }
     }
     pub fn new(socket: PathBuf) -> Self {
-        Self { socket }
+        Self {
+            socket,
+            publish_lifecycle: Arc::default(),
+        }
+    }
+    /// Whether `Publish.lifecycle` reaches this broker. The network agent is a
+    /// separate process that a server upgrade does not restart, so a broker from
+    /// the previous release may still serve this socket; it rejects the unknown
+    /// field, and the publisher then syncs the lifecycle before the publish.
+    async fn carries_publish_lifecycle(&self) -> io::Result<bool> {
+        let known = *self
+            .publish_lifecycle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match known {
+            Some((true, _)) => return Ok(true),
+            Some((false, at)) if at.elapsed() < PREVIOUS_BROKER_RECHECK => return Ok(false),
+            _ => (),
+        }
+        let mut unanswered = false;
+        let supported = loop {
+            match self.request(Request::Features).await {
+                Ok((_, Response::Features { features })) => {
+                    break features.iter().any(|feature| feature == PUBLISH_LIFECYCLE);
+                }
+                Ok(_) => break false,
+                // The previous broker reads the whole frame, fails to parse it,
+                // and closes the connection without an answer. A current broker
+                // that is busy or stopping can drop it the same way, so only a
+                // second drop, on a fresh connection, means the previous one.
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::UnexpectedEof | io::ErrorKind::ConnectionReset
+                    ) =>
+                {
+                    if unanswered {
+                        break false;
+                    }
+                    unanswered = true;
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        *self
+            .publish_lifecycle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some((supported, Instant::now()));
+        Ok(supported)
+    }
+    /// Pretend the cached probe answer was observed `by` earlier.
+    #[cfg(test)]
+    pub(super) fn age_feature_probe(&self, by: Duration) {
+        if let Some((_, at)) = self
+            .publish_lifecycle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+        {
+            *at -= by;
+        }
+    }
+    #[cfg(test)]
+    pub(super) fn cached_publish_lifecycle(&self) -> Option<bool> {
+        self.publish_lifecycle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .map(|(supported, _)| supported)
     }
     async fn request(&self, request: Request) -> io::Result<(UnixStream, Response)> {
         tokio::time::timeout(IO_TIMEOUT, async {
@@ -167,6 +292,12 @@ impl Client {
                 .value;
             if matches!(response, Response::Rejected) {
                 return Err(error("channel broker rejected request"));
+            }
+            if matches!(response, Response::StreamClosed) {
+                return Err(io::Error::other(StreamClosed));
+            }
+            if matches!(response, Response::StreamLimit) {
+                return Err(io::Error::other(StreamLimit));
             }
             Ok((stream, response))
         })
@@ -196,13 +327,23 @@ impl Client {
         channel: String,
         payload: ChannelPublishPayload,
         ephemeral: bool,
+        mut lifecycle: Option<ChannelLifecycle>,
     ) -> io::Result<ChannelMessage> {
+        if lifecycle.is_some() && !self.carries_publish_lifecycle().await? {
+            // The previous sequence: the lifecycle is applied even when the
+            // publish is then refused.
+            if let Some(lifecycle) = lifecycle.take() {
+                self.sync_channel(app.clone(), channel.clone(), lifecycle.auth())
+                    .await?;
+            }
+        }
         match self
             .request(Request::Publish {
                 app,
                 channel,
                 payload,
                 ephemeral,
+                lifecycle,
             })
             .await?
             .1
@@ -340,6 +481,13 @@ where
                 Err(_) => Response::Rejected,
             },
             None => Response::Rejected,
+        };
+        let _admission = tokio::time::timeout_at(deadline, replies.wait(wire::MAX_FRAME)).await??;
+        return tokio::time::timeout_at(deadline, wire::write(&mut stream, &response)).await?;
+    }
+    if matches!(request.value, Request::Features) {
+        let response = Response::Features {
+            features: vec![PUBLISH_LIFECYCLE.into()],
         };
         let _admission = tokio::time::timeout_at(deadline, replies.wait(wire::MAX_FRAME)).await??;
         return tokio::time::timeout_at(deadline, wire::write(&mut stream, &response)).await?;

@@ -1,4 +1,7 @@
-//! Bound synchronous storage operations before dispatching them off the runtime.
+//! Bound synchronous storage operations before dispatching them off the runtime,
+//! and keep blocking destructors off it too.
+
+use std::ops::{Deref, DerefMut};
 
 use tokio::sync::Semaphore;
 
@@ -16,18 +19,21 @@ pub(crate) async fn run<T: Send + 'static>(
 
 pub(crate) async fn run_network<T: Send + 'static>(
     operation: impl FnOnce() -> T + Send + 'static,
-) -> Result<T, String> {
+) -> Result<T, tako_core::SocketError> {
     // A handler may recursively call another handler through this pool.
     // Waiting for a permit can deadlock every ancestor; reject overload now.
-    let permit = NETWORK_OPERATIONS
-        .try_acquire()
-        .map_err(|_| "Network call capacity exceeded".to_owned())?;
+    let permit = NETWORK_OPERATIONS.try_acquire().map_err(|_| {
+        tako_core::SocketError::new(
+            tako_core::ErrorCode::Unavailable,
+            "Network call capacity exceeded",
+        )
+    })?;
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         operation()
     })
     .await
-    .map_err(|error| error.to_string())
+    .map_err(|error| tako_core::SocketError::unclassified(error.to_string()))
 }
 
 async fn run_with<T: Send + 'static>(
@@ -45,6 +51,45 @@ async fn run_with<T: Send + 'static>(
     .await
 }
 
+/// Owns a value whose destructor blocks, such as the synchronous Postgres
+/// client: it closes its connection with `block_on`, which panics on a
+/// runtime thread. Stores are released from async code (stop, retire,
+/// replacement, a metrics scrape holding the last handle), so the value is
+/// moved to a plain thread when it is dropped inside a runtime. A plain
+/// thread, not the blocking pool, also works while the runtime shuts down.
+pub(crate) struct ReleaseOffRuntime<T: Send + 'static>(Option<T>);
+
+impl<T: Send + 'static> ReleaseOffRuntime<T> {
+    pub(crate) fn new(value: T) -> Self {
+        Self(Some(value))
+    }
+}
+
+impl<T: Send + 'static> Deref for ReleaseOffRuntime<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.0.as_ref().expect("value is present until drop")
+    }
+}
+
+impl<T: Send + 'static> DerefMut for ReleaseOffRuntime<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.0.as_mut().expect("value is present until drop")
+    }
+}
+
+impl<T: Send + 'static> Drop for ReleaseOffRuntime<T> {
+    fn drop(&mut self) {
+        let Some(value) = self.0.take() else {
+            return;
+        };
+        if tokio::runtime::Handle::try_current().is_ok() {
+            std::thread::spawn(move || drop(value));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -52,7 +97,9 @@ mod tests {
     #[tokio::test]
     async fn network_overload_fails_without_blocking_recipient_storage() {
         let permits = NETWORK_OPERATIONS.acquire_many(64).await.unwrap();
-        assert!(run_network(|| 1).await.unwrap_err().contains("capacity"));
+        let refused = run_network(|| 1).await.unwrap_err();
+        assert!(refused.message.contains("capacity"));
+        assert_eq!(refused.code, Some(tako_core::ErrorCode::Unavailable));
         assert_eq!(run(|| 2).await.unwrap(), 2);
         drop(permits);
         assert_eq!(run_network(|| 3).await.unwrap(), 3);

@@ -38,7 +38,7 @@ pub(super) fn parse_existing_routes_response(
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default()),
-        Response::Error { message } => Err(format!("tako-server error (routes): {}", message)),
+        Response::Error { message, .. } => Err(format!("tako-server error (routes): {}", message)),
     }
 }
 
@@ -160,7 +160,7 @@ where
 fn release_response_result(response: Response) -> Result<serde_json::Value, String> {
     match response {
         Response::Ok { data } => Ok(data),
-        Response::Error { message } => Err(message
+        Response::Error { message, .. } => Err(message
             .strip_prefix("Deploy failed: ")
             .unwrap_or(&message)
             .to_string()),
@@ -459,6 +459,7 @@ async fn finish_deploy_housekeeping(
     use_spinner: bool,
     task_tree: Option<&DeployTaskTreeController>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut finalized = serde_json::Value::Null;
     let finalize = async {
         let response = client
             .send(&Command::FinalizeRelease {
@@ -466,7 +467,8 @@ async fn finish_deploy_housekeeping(
                 version: config.version.clone(),
             })
             .await?;
-        release_response_result(response).map_err(management_http::ManagementError::Message)?;
+        finalized =
+            release_response_result(response).map_err(management_http::ManagementError::Message)?;
         Ok::<(), management_http::ManagementError>(())
     };
 
@@ -476,11 +478,67 @@ async fn finish_deploy_housekeeping(
         run_deploy_step("Finalizing…", "Finalized", use_spinner, finalize).await?;
     }
 
+    let backup = post_deploy_backup_note(&finalized);
+    if let Some(note) = &backup {
+        match note {
+            PostDeployBackupNote::Queued => {
+                tracing::info!(
+                    "[{server_name}] Post-deploy backup queued behind a database snapshot"
+                )
+            }
+            PostDeployBackupNote::Failed(message) => {
+                tracing::warn!("[{server_name}] Post-deploy backup failed: {message}")
+            }
+        }
+    }
     if let Some(task_tree) = task_tree {
-        task_tree.succeed_deploy_target(server_name, None);
+        task_tree.succeed_deploy_target(server_name, backup.as_ref().map(|note| note.detail()));
+    } else {
+        match &backup {
+            Some(PostDeployBackupNote::Queued) => output::hint(
+                "Post-deploy backup queued; it starts when the running database snapshot finishes",
+            ),
+            Some(PostDeployBackupNote::Failed(message)) => {
+                output::warning(&format!("Post-deploy backup failed: {message}"))
+            }
+            None => {}
+        }
     }
 
     Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum PostDeployBackupNote {
+    /// The server runs it as soon as an hourly database snapshot finishes.
+    Queued,
+    Failed(String),
+}
+
+impl PostDeployBackupNote {
+    fn detail(&self) -> String {
+        match self {
+            Self::Queued => "backup queued".to_string(),
+            Self::Failed(_) => "backup failed".to_string(),
+        }
+    }
+}
+
+/// What the finalize response says about the post-deploy backup, when it
+/// deserves a mention. A created or disabled backup does not.
+fn post_deploy_backup_note(finalized: &serde_json::Value) -> Option<PostDeployBackupNote> {
+    let backup = finalized.get("backup")?;
+    match backup.get("status")?.as_str()? {
+        "queued" => Some(PostDeployBackupNote::Queued),
+        "failed" => Some(PostDeployBackupNote::Failed(
+            backup
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown error")
+                .to_string(),
+        )),
+        _ => None,
+    }
 }
 
 fn should_cleanup_release_after_deploy_error(

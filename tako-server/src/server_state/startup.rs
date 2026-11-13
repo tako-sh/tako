@@ -125,7 +125,9 @@ impl ServerState {
         // Server-side channel `.publish()` writes straight to the channel
         // store for the deployed app id via the shared internal socket.
         // Stores are opened lazily and cached so repeated publishes reuse
-        // the same SQLite connection.
+        // the same SQLite connection. The proxy shares the registry, so
+        // publish params are checked against what subscribers are checked with.
+        let channel_registry = Arc::new(crate::channels::registry::ChannelRegistry::new());
         {
             let native_publisher = native_channel_client(&data_dir)?
                 .map(crate::native_channel_client::BlockingPublisher::new)
@@ -133,30 +135,26 @@ impl ServerState {
                 .map_err(|error| StateStoreError::InvalidData(error.to_string()))?;
             let data_dir = data_dir.clone();
             let state_store = state_store.clone();
+            let registry = channel_registry.clone();
             let stores: parking_lot::RwLock<HashMap<String, Arc<tako_channels::ChannelStore>>> =
                 parking_lot::RwLock::new(HashMap::new());
             workflows.set_channel_publisher(std::sync::Arc::new(
-                move |app: &str, channel: &str, payload: serde_json::Value| {
+                move |request: tako_workflows::ChannelPublishRequest<'_>| {
+                    let app = request.app;
+                    let publication = crate::channels::trusted_publication(&registry, request)?;
                     if let Some(publisher) = &native_publisher {
                         let postgres_url = state_store
                             .get_runtime_credentials(app)
-                            .map_err(|_| "channel credentials unavailable".to_string())?
+                            .map_err(|_| {
+                                tako_core::SocketError::new(
+                                    tako_core::ErrorCode::Unavailable,
+                                    "channel credentials unavailable",
+                                )
+                            })?
                             .get("postgres_url")
                             .cloned();
-                        return publisher.publish(app, channel, payload, postgres_url);
+                        return publisher.publish(app, &publication, postgres_url);
                     }
-                    let channel = tako_channels::live_store::publication_channel(channel, &payload)
-                        .map_err(|error| error.to_string())?;
-                    let channel = channel.as_str();
-                    let lifecycle = payload
-                        .get("lifecycle")
-                        .cloned()
-                        .map(serde_json::from_value::<tako_channels::ChannelLifecycle>)
-                        .transpose()
-                        .map_err(|e| format!("invalid channel lifecycle: {e}"))?;
-                    let typed: tako_channels::ChannelPublishPayload =
-                        serde_json::from_value(payload)
-                            .map_err(|e| format!("invalid payload: {e}"))?;
 
                     let store = if let Some(existing) = stores.read().get(app) {
                         existing.clone()
@@ -182,38 +180,10 @@ impl ServerState {
                             opened
                         }
                     };
-
-                    if lifecycle
-                        .as_ref()
-                        .is_some_and(|lifecycle| lifecycle.ephemeral)
-                    {
-                        return store
-                            .publish_ephemeral(channel, &typed)
-                            .map(|msg| serde_json::to_value(msg).unwrap())
-                            .map_err(|e| e.to_string());
-                    }
-                    if let Some(lifecycle) = lifecycle {
-                        store
-                            .sync_channel(
-                                channel,
-                                &tako_channels::ChannelAuthResponse {
-                                    ok: true,
-                                    subject: None,
-                                    transport: None,
-                                    ephemeral: lifecycle.ephemeral,
-                                    replay_window_ms: lifecycle.replay_window_ms,
-                                    inactivity_ttl_ms: lifecycle.inactivity_ttl_ms,
-                                    keepalive_interval_ms: lifecycle.keepalive_interval_ms,
-                                    max_connection_lifetime_ms: lifecycle
-                                        .max_connection_lifetime_ms,
-                                },
-                            )
-                            .map_err(|e| e.to_string())?;
-                    }
                     store
-                        .append(channel, &typed)
+                        .publish_trusted(&publication)
                         .map(|msg| serde_json::to_value(msg).unwrap_or(serde_json::Value::Null))
-                        .map_err(|e| e.to_string())
+                        .map_err(tako_core::SocketError::from)
                 },
             ));
         }
@@ -241,7 +211,10 @@ impl ServerState {
                         )
                         .await
                     else {
-                        return tako_core::Response::error("destination app unavailable");
+                        return tako_core::Response::coded_error(
+                            tako_core::ErrorCode::Unavailable,
+                            "destination app unavailable",
+                        );
                     };
                     crate::proxy::invoke_network_backend(backend, target, &invocation).await
                 })
@@ -264,8 +237,10 @@ impl ServerState {
             management_lock: Arc::new(tokio::sync::Mutex::new(())),
             spawn_gate,
             channel_credentials_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            channel_registry,
             deploy_locks: AsyncRwLock::new(HashMap::new()),
             backup_locks: SyncRwLock::new(HashMap::new()),
+            database_snapshots: SyncRwLock::new(HashMap::new()),
             prepared_deploy_ssl: AsyncRwLock::new(HashMap::new()),
             cold_start,
             state_store,

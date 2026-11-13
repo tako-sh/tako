@@ -1,0 +1,20 @@
+{
+  "data": {
+    "attempts": 2,
+    "id": "run-1",
+    "max_attempts": 5,
+    "name": "send-email",
+    "payload": {
+      "to": "a@example.com"
+    },
+    "run_at_ms": 1767225600000,
+    "status": "running",
+    "step_state": {
+      "fetch-user": {
+        "id": "u1"
+      }
+    },
+    "worker_id": "claim-7"
+  },
+  "status": "ok"
+}

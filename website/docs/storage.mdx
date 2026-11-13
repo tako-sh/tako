@@ -5,16 +5,16 @@ description: "Configure local and S3-compatible Tako storage bindings, issue sig
 
 Storage bindings let an app issue upload and download URLs without exposing storage credentials to the browser. Bind an app-facing name such as `uploads` to a storage resource, then access `tako.storages.uploads` from server-side JavaScript or TypeScript.
 
-The signed-URL helpers below are currently JavaScript/TypeScript APIs. Go and Rust do not provide equivalent storage-signing helpers. Native apps in all three languages can use the app-owned data directory shown below; a storage binding is a separate facility.
+The signed-URL helpers below are currently JavaScript/TypeScript APIs. Go and Rust do not provide equivalent storage-signing helpers. Native and container apps in all three languages can use the app-owned data directory shown below; a storage binding is a separate facility.
 
 ## Choose where data lives
 
-| Need                                    | Use                                              | Boundary                                                                          |
-| --------------------------------------- | ------------------------------------------------ | --------------------------------------------------------------------------------- |
-| Files uploaded or downloaded by clients | A local or S3-compatible storage binding         | Local storage requires a single production server.                                |
-| App-owned local files or SQLite         | `tako.dataDir` / `TAKO_DATA_DIR` in a native app | Data is per server; container HTTP instances do not receive this directory in v0. |
-| Recover the deployed app data tree      | [Backups](/backups/)                             | A backup destination is a separate private S3 resource.                           |
-| Disposable computed JSON                | [Cache](/cache/)                                 | Cache entries are excluded from app backups.                                      |
+| Need                                    | Use                                      | Boundary                                                                      |
+| --------------------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------- |
+| Files uploaded or downloaded by clients | A local or S3-compatible storage binding | Local storage requires a single production server.                            |
+| App-owned local files or SQLite         | `tako.dataDir` / `TAKO_DATA_DIR`         | Data is per server; container releases receive the same directory as a mount. |
+| Recover the deployed app data tree      | [Backups](/backups/)                     | A backup destination is a separate private S3 resource.                       |
+| Disposable computed JSON                | [Cache](/cache/)                         | Cache entries are excluded from app backups.                                  |
 
 An application database and Tako's shared runtime-state Postgres credential are separate choices. A storage binding does not provision a database.
 
@@ -59,7 +59,7 @@ fn database_path() -> io::Result<PathBuf> {
 
 </CodeGroup>
 
-Pass the path to your database or filesystem library; these snippets do not open a database. Files remain local to that server. Container HTTP instances do not receive this directory in v0; see [Docker](/docker/).
+Pass the path to your database or filesystem library; these snippets do not open a database. Files remain local to that server. Container releases receive the same directory as a mount, at `/tako/data` by default, and `TAKO_DATA_DIR` names the path inside the container; see [Docker](/docker/).
 
 ## Bind local development storage
 

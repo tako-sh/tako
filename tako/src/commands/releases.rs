@@ -170,6 +170,9 @@ async fn list_releases(
                         entry.description = release.description.clone();
                     }
                     entry.git_dirty = merge_git_dirty(entry.git_dirty, release.git_dirty);
+                    if entry.sdk.is_none() {
+                        entry.sdk = release.sdk.clone();
+                    }
                 }
             }
             Err(error) => output::warning(&format!(
@@ -375,14 +378,14 @@ fn parse_release_list_response(response: Response) -> Result<Vec<ReleaseInfo>, S
                 .map_err(|e| format!("invalid list_releases response: {}", e))?;
             Ok(parsed.releases)
         }
-        Response::Error { message } => Err(message),
+        Response::Error { message, .. } => Err(message),
     }
 }
 
 fn parse_ok_response(response: Response) -> Result<(), String> {
     match response {
         Response::Ok { .. } => Ok(()),
-        Response::Error { message } => Err(message),
+        Response::Error { message, .. } => Err(message),
     }
 }
 
@@ -455,7 +458,7 @@ fn format_release_description_line(release: &ReleaseInfo) -> String {
     format!("{} [{}]", description, cleanliness)
 }
 
-fn local_offset() -> UtcOffset {
+pub(crate) fn local_offset() -> UtcOffset {
     *LOCAL_OFFSET.get_or_init(|| UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC))
 }
 
@@ -464,7 +467,10 @@ fn format_unix_timestamp_local(unix_secs: i64) -> Option<String> {
         .or_else(|| format_unix_timestamp_with_offset(unix_secs, local_offset()))
 }
 
-fn format_unix_timestamp_with_offset(unix_secs: i64, offset: UtcOffset) -> Option<String> {
+pub(crate) fn format_unix_timestamp_with_offset(
+    unix_secs: i64,
+    offset: UtcOffset,
+) -> Option<String> {
     let dt = OffsetDateTime::from_unix_timestamp(unix_secs)
         .ok()?
         .to_offset(offset);
@@ -587,6 +593,7 @@ mod tests {
             commit_message: None,
             description: None,
             git_dirty: None,
+            sdk: None,
         };
         assert_eq!(format_release_head(&release), "abc1234 [current]");
     }
@@ -600,6 +607,7 @@ mod tests {
             commit_message: None,
             description: None,
             git_dirty: None,
+            sdk: None,
         };
         assert_eq!(format_release_deployed(&release), "deployed: -");
     }
@@ -613,6 +621,7 @@ mod tests {
             commit_message: Some("feat: add rollback".to_string()),
             description: Some("Fix reconnect handling".to_string()),
             git_dirty: Some(true),
+            sdk: None,
         };
         assert_eq!(
             format_release_description_line(&release),

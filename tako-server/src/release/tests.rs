@@ -289,13 +289,60 @@ fn release_manifest_metadata_preserves_custom_description_and_source() {
         .to_string(),
     )
     .unwrap();
+    let metadata = read_release_manifest_metadata(&path);
     assert_eq!(
-        read_release_manifest_metadata(&path),
-        (
-            Some("feat: live stores".to_string()),
-            Some(true),
-            Some("Fix reconnect handling".to_string()),
+        metadata,
+        ReleaseManifestMetadata {
+            commit_message: Some("feat: live stores".to_string()),
+            description: Some("Fix reconnect handling".to_string()),
+            git_dirty: Some(true),
+            sdk: None,
+        }
+    );
+}
+
+#[test]
+fn release_manifest_metadata_reports_the_recorded_sdk() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("app.json");
+    let write = |sdk: serde_json::Value| {
+        std::fs::write(
+            &path,
+            serde_json::json!({ "description": "Ship it", "sdk": sdk }).to_string(),
         )
+        .unwrap();
+    };
+
+    write(serde_json::json!({
+        "language": "javascript",
+        "name": "tako.sh",
+        "version": "1.4.2",
+    }));
+    assert_eq!(
+        read_release_manifest_metadata(&path).sdk,
+        Some(tako_core::ReleaseSdk {
+            language: "javascript".to_string(),
+            name: "tako.sh".to_string(),
+            version: "1.4.2".to_string(),
+        })
+    );
+
+    // The field is informational: an entry this server cannot read is
+    // unknown, and the rest of the metadata is still reported.
+    for unreadable in [
+        serde_json::json!("tako.sh@1.4.2"),
+        serde_json::json!({ "name": "tako.sh" }),
+        serde_json::Value::Null,
+    ] {
+        write(unreadable);
+        let metadata = read_release_manifest_metadata(&path);
+        assert_eq!(metadata.sdk, None);
+        assert_eq!(metadata.description.as_deref(), Some("Ship it"));
+    }
+
+    assert_eq!(
+        read_release_manifest_metadata(&temp.path().join("missing.json")),
+        ReleaseManifestMetadata::default()
     );
 }
 

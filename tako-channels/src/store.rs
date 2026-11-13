@@ -6,15 +6,36 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::stream::close_payload;
 use crate::{
-    ChannelAuthResponse, ChannelError, ChannelMessage, ChannelPublishPayload, ReplayCursor,
+    CLOSE_MESSAGE_TYPE, ChannelAuthResponse, ChannelError, ChannelLifecycle, ChannelMessage,
+    ChannelPublishPayload, ReplayCursor, ReplayFrom,
 };
 use postgres::PostgresChannelStore;
 use sqlite::SqliteChannelStore;
 pub use sqlite::SqliteReplayLimits;
 
 const CHANNELS_DB_FILENAME: &str = "channels.sqlite";
+/// A connection may outlive its lifetime by the time its last frames take.
+const IDLE_STREAM_GRACE_MS: i64 = 60_000;
 pub const POSTGRES_CHANNELS_SCHEMA: &str = "tako_channels";
+/// Most streams one app keeps bookkeeping for. Each distinct params binding is
+/// a stream, so without a bound a client choosing new values could grow the
+/// metadata maintenance scans without limit. It matches the default total
+/// replay budget (`SqliteReplayLimits::max_messages`): every stream holding a
+/// message fits, and the rest is headroom for streams with subscribers only.
+pub const MAX_STREAMS: i64 = 100_000;
+
+/// A new stream refused by [`MAX_STREAMS`]. Logged here, where every path
+/// that starts a stream (subscribe, publish, mesh ingest) meets it.
+fn stream_limit_error(channel: &str) -> ChannelError {
+    tracing::warn!(
+        stream = channel,
+        limit = MAX_STREAMS,
+        "channel stream limit reached; refusing to start a new stream"
+    );
+    ChannelError::StreamLimit
+}
 use crate::mesh::{DeliveryState, notify_committed};
 use crate::{ChannelEvent, ChannelPublication, RemoteIngest};
 
@@ -173,9 +194,10 @@ impl ChannelStore {
 
     /// Subscribe before reading replay so changes racing with the read remain visible.
     pub fn changes(&self, channel: &str) -> tokio::sync::watch::Receiver<Option<i64>> {
-        self.delivery
-            .changes
-            .lock()
+        let mut changes = self.delivery.changes.lock();
+        // Readers without a maintenance worker release finished streams here.
+        changes.retain(|_, sender| sender.receiver_count() > 0);
+        changes
             .entry(channel.to_owned())
             .or_insert_with(|| tokio::sync::watch::channel(None).0)
             .subscribe()
@@ -211,6 +233,28 @@ impl ChannelStore {
         let channel = channel.to_owned();
         self.run(move |store| store.replay_cursor(&channel, after))
             .await
+    }
+
+    pub async fn close_marker_async(
+        self: &Arc<Self>,
+        channel: &str,
+    ) -> Result<Option<ChannelMessage>, ChannelError> {
+        let channel = channel.to_owned();
+        self.run(move |store| store.close_marker(&channel)).await
+    }
+
+    /// Resolve where a reader starts. `None` means every retained message:
+    /// retention may already have dropped the beginning, which is no reset.
+    pub async fn replay_from_async(
+        self: &Arc<Self>,
+        channel: &str,
+        from: ReplayFrom,
+    ) -> Result<Option<ReplayCursor>, ChannelError> {
+        match from {
+            ReplayFrom::Head => self.replay_cursor_async(channel, None).await,
+            ReplayFrom::After(cursor) => self.replay_cursor_async(channel, Some(cursor)).await,
+            ReplayFrom::Start => Ok(None),
+        }
     }
 
     pub async fn sync_channel_async(
@@ -402,7 +446,7 @@ impl ChannelStore {
         channel: &str,
         payload: &ChannelPublishPayload,
     ) -> Result<ChannelMessage, ChannelError> {
-        self.publish(channel, payload, true)
+        self.publish(channel, payload, true, None)
     }
 
     pub fn append(
@@ -410,28 +454,64 @@ impl ChannelStore {
         channel: &str,
         payload: &ChannelPublishPayload,
     ) -> Result<ChannelMessage, ChannelError> {
-        self.publish(channel, payload, false)
+        self.publish(channel, payload, false, None)
     }
 
+    /// Append to a durable stream and apply the lifecycle its definition
+    /// declares in the same write, after the close check: a publish rejected
+    /// because the stream is closed changes neither the stream's lifecycle
+    /// nor its activity. Without a lifecycle this is [`Self::append`].
+    pub fn append_with_lifecycle(
+        &self,
+        channel: &str,
+        payload: &ChannelPublishPayload,
+        lifecycle: Option<&ChannelLifecycle>,
+    ) -> Result<ChannelMessage, ChannelError> {
+        self.publish(channel, payload, false, lifecycle)
+    }
+
+    /// Close a stream durably by appending its terminal marker. Later
+    /// publishes fail with [`ChannelError::StreamClosed`] while the marker is
+    /// retained. Closing a closed stream returns its existing marker.
+    pub fn close(&self, channel: &str) -> Result<ChannelMessage, ChannelError> {
+        self.append(channel, &close_payload())
+    }
+
+    /// Appending a close marker closes the stream; see [`Self::close`].
     fn publish(
         &self,
         channel: &str,
         payload: &ChannelPublishPayload,
         ephemeral: bool,
+        lifecycle: Option<&ChannelLifecycle>,
     ) -> Result<ChannelMessage, ChannelError> {
         self.ensure_writable()?;
+        if ephemeral && payload.r#type == CLOSE_MESSAGE_TYPE {
+            return Err(ChannelError::BadRequest(
+                "ephemeral channel streams cannot be closed".into(),
+            ));
+        }
         let _publication = self.delivery.publish.lock();
         let (message, publication) = match self.backend.as_ref() {
             ChannelStoreBackend::Sqlite(store) => {
-                let (message, event) = store.publish(channel, payload, ephemeral)?;
+                let (message, event) = store.publish(channel, payload, ephemeral, lifecycle)?;
+                // An already closed stream returns its marker; nothing new to deliver.
+                let Some(event) = event else {
+                    return Ok(message);
+                };
                 (message, ChannelPublication::Event(event))
             }
             ChannelStoreBackend::Postgres(store) => {
                 if ephemeral {
                     return Err(crate::ephemeral::unsupported());
                 }
+                let (message, appended) = store.append(channel, payload, lifecycle)?;
+                let message = scope_postgres_id(channel, message)?;
+                if !appended {
+                    return Ok(message);
+                }
                 (
-                    store.append(channel, payload)?,
+                    message,
                     ChannelPublication::Wake {
                         channel: channel.into(),
                     },
@@ -468,7 +548,9 @@ impl ChannelStore {
         self.delivery.publications.subscribe()
     }
 
-    /// Ingest authenticated, app-scoped events in FIFO order per origin. Never republishes.
+    /// Ingest authenticated, app-scoped events in FIFO order per origin. Never
+    /// republishes. An event its stream cannot take is acknowledged and
+    /// dropped ([`RemoteIngest::Dropped`]), so it does not read as a gap.
     pub fn ingest_remote(&self, event: &ChannelEvent) -> Result<RemoteIngest, ChannelError> {
         self.ensure_writable()?;
         let _publication = self.delivery.publish.lock();
@@ -477,11 +559,15 @@ impl ChannelStore {
                 "PostgreSQL delivery accepts wake hints, not remote events".into(),
             ));
         };
-        let Some(message) = store.ingest_remote(event, || self.signal_gap(None))? else {
-            return Ok(RemoteIngest::Duplicate);
-        };
-        self.deliver(&message, event.ephemeral);
-        Ok(RemoteIngest::Applied)
+        match store.ingest_remote(event, || self.signal_gap(None))? {
+            sqlite::Ingested::Duplicate => Ok(RemoteIngest::Duplicate),
+            sqlite::Ingested::Dropped => Ok(RemoteIngest::Dropped),
+            sqlite::Ingested::StreamLimit => Ok(RemoteIngest::StreamLimit),
+            sqlite::Ingested::Applied(message) => {
+                self.deliver(&message, event.ephemeral);
+                Ok(RemoteIngest::Applied)
+            }
+        }
     }
 
     /// Wake a stream after a PostgreSQL peer commit without inserting another row.
@@ -532,11 +618,29 @@ impl ChannelStore {
     ) -> Result<Vec<ChannelMessage>, ChannelError> {
         match self.backend.as_ref() {
             ChannelStoreBackend::Sqlite(store) => store.read_after(channel, after, limit),
-            ChannelStoreBackend::Postgres(store) => store.read_after(
-                channel,
-                after.map(ReplayCursor::pg_position).transpose()?,
-                limit,
-            ),
+            ChannelStoreBackend::Postgres(store) => store
+                .read_after(
+                    channel,
+                    after
+                        .map(|cursor| cursor.pg_position(channel))
+                        .transpose()?,
+                    limit,
+                )?
+                .into_iter()
+                .map(|message| scope_postgres_id(channel, message))
+                .collect(),
+        }
+    }
+
+    /// The retained terminal marker of a closed stream. Messages a reader
+    /// has not seen up to this marker are still delivered before it.
+    pub fn close_marker(&self, channel: &str) -> Result<Option<ChannelMessage>, ChannelError> {
+        match self.backend.as_ref() {
+            ChannelStoreBackend::Sqlite(store) => store.close_marker(channel),
+            ChannelStoreBackend::Postgres(store) => store
+                .close_marker(channel)?
+                .map(|message| scope_postgres_id(channel, message))
+                .transpose(),
         }
     }
 
@@ -550,9 +654,11 @@ impl ChannelStore {
             ChannelStoreBackend::Postgres(store) => store
                 .replay_cursor(
                     channel,
-                    requested.map(ReplayCursor::pg_position).transpose()?,
+                    requested
+                        .map(|cursor| cursor.pg_position(channel))
+                        .transpose()?,
                 )
-                .map(|cursor| cursor.map(ReplayCursor::postgres)),
+                .map(|cursor| cursor.map(|position| ReplayCursor::postgres(channel, position))),
         }
     }
 
@@ -573,10 +679,19 @@ impl ChannelStore {
 }
 
 pub(super) fn now_unix_ms() -> i64 {
-    SystemTime::now()
+    let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis() as i64
+        .as_millis() as i64;
+    #[cfg(test)]
+    let now = now + SERVER_CLOCK_SKEW_MS.get();
+    now
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How far this test thread's server clock runs ahead of the real one.
+    pub(super) static SERVER_CLOCK_SKEW_MS: std::cell::Cell<i64> = const { std::cell::Cell::new(0) };
 }
 
 pub(super) fn resolve_replay_cursor(
@@ -591,6 +706,19 @@ pub(super) fn resolve_replay_cursor(
         return Err(ChannelError::StaleCursor);
     }
     Ok(Some(requested))
+}
+
+/// PostgreSQL rows carry bare positions; clients get stream-bound cursors.
+fn scope_postgres_id(
+    channel: &str,
+    mut message: ChannelMessage,
+) -> Result<ChannelMessage, ChannelError> {
+    let position = message
+        .id
+        .parse::<i64>()
+        .map_err(|e| ChannelError::Storage(e.to_string()))?;
+    message.id = ReplayCursor::postgres(channel, position).to_string();
+    Ok(message)
 }
 
 pub(super) fn channel_message_from_row(
@@ -637,6 +765,8 @@ mod ordering_tests {
                     data: 2.into(),
                 },
                 ephemeral: false,
+                lifecycle: None,
+                created_at_unix_ms: None,
             })
         });
         // The held watch borrow pauses signal_gap while it owns the reset map.
@@ -679,6 +809,31 @@ mod ordering_tests {
 #[cfg(test)]
 mod notification_tests {
     use super::*;
+
+    #[test]
+    fn fanout_state_is_released_with_the_last_subscriber_of_a_stream() {
+        // Readers of a broker-owned database run no maintenance worker.
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("channels.sqlite");
+        let _writer = ChannelStore::open(&path).unwrap();
+        let reader = ChannelStore::open_reader_config(ChannelStoreConfig::sqlite(&path)).unwrap();
+        let streams: Vec<crate::ChannelStream> = (0..100)
+            .map(|n| crate::ChannelStream::new("chat", &serde_json::json!({ "room": n })))
+            .collect();
+        let held = (reader.changes("kept"), reader.resets("kept"));
+        for stream in &streams {
+            let _subscriber = (
+                reader.changes(stream.key()),
+                reader.resets(stream.key()),
+                reader.subscribe_ephemeral(stream.key()).unwrap(),
+            );
+        }
+        // The next subscription releases every stream nobody listens to.
+        let _next = (reader.changes("next"), reader.resets("next"));
+        assert_eq!(reader.delivery.changes.lock().len(), 2);
+        assert_eq!(reader.delivery.resets.lock().len(), 2);
+        drop(held);
+    }
 
     #[test]
     fn delayed_poll_or_publisher_cannot_regress_the_committed_head() {

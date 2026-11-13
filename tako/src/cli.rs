@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 
 use crate::commands::{
     self, backups, credentials, delete, releases, scale, secret, server, storage, upgrade,
+    workflows,
 };
 use clap::CommandFactory;
 
@@ -199,6 +200,10 @@ pub enum Commands {
     #[command(subcommand)]
     Releases(releases::ReleaseCommands),
 
+    /// Inspect, retry, and cancel workflow runs of a deployed environment
+    #[command(subcommand)]
+    Workflows(workflows::WorkflowCommands),
+
     /// Upgrade the local tako CLI to the latest version
     Upgrade,
 
@@ -332,6 +337,7 @@ fn telemetry_command(command: &Commands) -> &'static str {
         Commands::Backups(_) => "backups",
         Commands::Credentials { .. } => "credentials",
         Commands::Releases(_) => "releases",
+        Commands::Workflows(_) => "workflows",
         Commands::Upgrade => "upgrade",
         Commands::Completions { .. } => "completions",
         Commands::Uninstall { .. } => "uninstall",
@@ -508,6 +514,7 @@ impl Cli {
                     Ok(())
                 }
             }
+            Commands::Workflows(cmd) => workflows::run(cmd, self.config.as_deref()),
             Commands::Upgrade => {
                 upgrade::run()?;
                 json_success(json, "upgrade")

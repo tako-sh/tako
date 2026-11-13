@@ -1,36 +1,35 @@
 //! Channel support for `tako dev`, backed by in-memory `tako-channels` stores.
 //!
-//! No auth in dev mode — all operations are allowed. Production uses
-//! `tako-server/src/proxy/service.rs` with per-request authorization.
+//! Subscribe and connect are authorized by the running app exactly as in
+//! production (`tako-server/src/proxy/service/channels.rs`): the proxy has
+//! already woken the app and waited for its port, the app's registry supplies
+//! the params schema and auth scheme, and its `/channels/authorize` answer
+//! supplies the subject, transport and lifecycle the stream is served with.
 
 use pingora_core::Result;
 use pingora_http::ResponseHeader;
 use pingora_proxy::Session;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use tako_channels::authorize::{
+    AppAuthorizer, RequestCredentials, authorize_first_frame, request_credentials,
+    require_websocket_grant,
+};
 use tako_channels::live_store::{
     STORE_CHANNEL_PREFIX, authorize_store, load_store, parse_store_route, serve_store_events,
     store_scope, valid_store_name,
 };
+use tako_channels::params::ParamsError;
 use tako_channels::{
-    ChannelAuthResponse, ChannelError, ChannelPublishPayload, ChannelStore, ReplayCursor,
-    parse_channel_route, parse_message_id_cursor,
+    ChannelAuthResponse, ChannelDefinitionMeta, ChannelError, ChannelOperation, ChannelStore,
+    ChannelStream, ChannelTransport, ReplayFrom, TrustedPublication, parse_channel_route,
+    parse_message_id_cursor, parse_replay_from, parse_ws_last_message_id,
 };
 
-/// Default auth response for dev mode — permissive, no subject, SSE transport.
-fn dev_auth_response() -> ChannelAuthResponse {
-    ChannelAuthResponse {
-        ok: true,
-        subject: None,
-        transport: None,
-        ephemeral: false,
-        replay_window_ms: 10 * 60 * 1000,
-        inactivity_ttl_ms: 0,
-        keepalive_interval_ms: 25_000,
-        max_connection_lifetime_ms: 2 * 60 * 60 * 1000,
-    }
-}
+/// The dev proxy listens only on HTTPS, so a cookie-authenticated socket's
+/// `Origin` must be the `https://` origin of the requested host.
+const DEV_PROXY_IS_HTTPS: bool = true;
+const INTERNAL_TOKEN_HEADER: &str = "x-tako-internal-token";
 
 #[derive(Clone)]
 pub struct DevChannelStore {
@@ -65,37 +64,30 @@ impl DevChannelStore {
         store
     }
 
-    /// Append a message to `channel` and return the stored record. Used
-    /// from the internal socket's `Command::ChannelPublish` path (server-side
-    /// channel `.publish()` from app/workflow code).
+    /// Apply a server-side publication from the internal socket's
+    /// `Command::ChannelPublish` path (channel `.publish()` from app or
+    /// workflow code) to the stream its params select.
     pub fn publish(
         &self,
         app_id: &str,
-        channel: &str,
-        payload: &ChannelPublishPayload,
-        lifecycle: Option<tako_channels::ChannelLifecycle>,
+        publication: &TrustedPublication,
     ) -> Result<tako_channels::ChannelMessage, tako_channels::ChannelError> {
-        let store = self.store_for_app(app_id);
-        if lifecycle
-            .as_ref()
-            .is_some_and(|lifecycle| lifecycle.ephemeral)
-        {
-            return store.publish_ephemeral(channel, payload);
+        self.store_for_app(app_id).publish_trusted(publication)
+    }
+}
+
+/// Bind an internal-socket publish or close to its stream. A close appends
+/// the stream's terminal marker; ephemeral channels cannot be closed.
+pub fn trusted_publication(
+    request: tako_workflows::ChannelPublishRequest<'_>,
+) -> Result<TrustedPublication, ChannelError> {
+    match request.write {
+        tako_workflows::ChannelWrite::Publish(payload) => {
+            TrustedPublication::parse(request.channel, request.params, payload)
         }
-        if let Some(lifecycle) = lifecycle {
-            store.sync_channel(
-                channel,
-                &ChannelAuthResponse {
-                    ephemeral: lifecycle.ephemeral,
-                    replay_window_ms: lifecycle.replay_window_ms,
-                    inactivity_ttl_ms: lifecycle.inactivity_ttl_ms,
-                    keepalive_interval_ms: lifecycle.keepalive_interval_ms,
-                    max_connection_lifetime_ms: lifecycle.max_connection_lifetime_ms,
-                    ..dev_auth_response()
-                },
-            )?;
+        tako_workflows::ChannelWrite::Close { lifecycle } => {
+            TrustedPublication::close(request.channel, request.params, lifecycle)
         }
-        store.append(channel, payload)
     }
 }
 
@@ -111,44 +103,217 @@ pub async fn try_handle(
     let route = match parse_channel_route(path) {
         Ok(Some(r)) => r,
         Ok(None) => return Ok(false),
-        Err(_) => return write_json(session, 400, r#"{"error":"Invalid channel path"}"#).await,
+        Err(error) => return write_channel_error(session, target, error).await,
     };
 
     if method != "GET" {
         return write_json(session, 405, r#"{"error":"Method not allowed"}"#).await;
     }
     let Some(context) = &target.store_auth else {
-        return write_json(session, 503, r#"{"error":"Channel metadata unavailable"}"#).await;
+        return write_channel_error(session, target, ChannelError::AuthUnavailable).await;
     };
-    let definitions = tako_channels::live_store::internal_store_json(
-        &format!("127.0.0.1:{}", target.upstream_port),
-        &context.internal_host,
-        &context.token,
-        tako_channels::INTERNAL_CHANNEL_REGISTRY_PATH,
-        None,
-    )
-    .await;
-    let auth = match definitions.and_then(|value| {
-        serde_json::from_value::<Vec<tako_channels::ChannelDefinitionMeta>>(value)
-            .map_err(|e| tako_channels::ChannelError::BadRequest(e.to_string()))
-    }) {
-        Ok(definitions) => definitions
-            .iter()
-            .find(|meta| meta.channel == route.channel)
-            .map(|meta| meta.lifecycle_auth())
-            .unwrap_or_else(dev_auth_response),
-        Err(_) => {
-            return write_json(session, 503, r#"{"error":"Channel metadata unavailable"}"#).await;
+    let app = AppAuthorizer {
+        endpoint: format!("127.0.0.1:{}", target.upstream_port),
+        internal_host: context.internal_host.clone(),
+        internal_token_header: INTERNAL_TOKEN_HEADER,
+        internal_token: context.token.clone(),
+    };
+    let meta = match channel_definition(&app, &route.channel).await {
+        Ok(meta) => meta,
+        Err(error) => return write_channel_error(session, target, error).await,
+    };
+    // Params are validated and coerced as in production, so dev subscribers
+    // bind the same stream a server-side publish with the same params reaches.
+    let query = tako_channels::params::channel_params_query(session.req_header().uri.query());
+    let params = match tako_channels::params::validate_query(&meta.params_schema, &query) {
+        Ok(params) => params,
+        Err(ParamsError::Invalid(message)) => {
+            let error = ChannelError::BadRequest(format!("invalid channel params: {message}"));
+            return write_channel_error(session, target, error).await;
         }
+        Err(ParamsError::InvalidSchema(message)) => {
+            let error = ChannelError::Storage(format!("invalid channel schema: {message}"));
+            return write_channel_error(session, target, error).await;
+        }
+    };
+    let stream = ChannelStream::new(&route.channel, &params);
+    let from_start = match parse_replay_from(session.req_header().uri.query()) {
+        Ok(from_start) => from_start,
+        Err(error) => return write_channel_error(session, target, error).await,
+    };
+    let websocket = session.as_downstream().is_upgrade_req();
+    let RequestCredentials {
+        header,
+        cookie,
+        first_frame,
+    } = match request_credentials(
+        session.req_header(),
+        &meta.auth,
+        websocket,
+        DEV_PROXY_IS_HTTPS,
+    ) {
+        Ok(credentials) => credentials,
+        Err(error) => return write_channel_error(session, target, error).await,
+    };
+
+    if websocket {
+        if meta.transport != Some(ChannelTransport::Ws) {
+            return write_channel_error(session, target, ChannelError::Unsupported).await;
+        }
+        // As in production, a query cursor wins over `from`; the shared
+        // session loop resolves it and signals a stale cursor or a close.
+        let requested = match parse_ws_last_message_id(session.req_header().uri.query()) {
+            Ok(cursor) => ReplayFrom::new(cursor, from_start),
+            Err(error) => return write_channel_error(session, target, error).await,
+        };
+        let auth = if first_frame {
+            DevSocketAuth::FirstFrame { app, cookie }
+        } else {
+            let auth = match app
+                .authorize(
+                    ChannelOperation::Connect,
+                    &route.channel,
+                    params.clone(),
+                    header,
+                    cookie,
+                )
+                .await
+                .and_then(|auth| require_websocket_grant(&auth).map(|()| auth))
+            {
+                Ok(auth) => auth,
+                Err(error) => return write_channel_error(session, target, error).await,
+            };
+            DevSocketAuth::Authorized(auth)
+        };
+        return serve_websocket(session, dev_store, target, &stream, params, requested, auth).await;
+    }
+
+    let auth = match app
+        .authorize(
+            ChannelOperation::Subscribe,
+            &route.channel,
+            params,
+            header,
+            cookie,
+        )
+        .await
+    {
+        Ok(auth) => auth,
+        Err(error) => return write_channel_error(session, target, error).await,
     };
     serve_sse(
         session,
         dev_store,
         &target.channel_store_key,
-        &route.channel,
+        &stream,
+        from_start,
         auth,
     )
     .await
+}
+
+/// The app's definition of `channel`, read from its registry on every request
+/// so a hot reload's new definitions apply at once.
+async fn channel_definition(
+    app: &AppAuthorizer,
+    channel: &str,
+) -> std::result::Result<ChannelDefinitionMeta, ChannelError> {
+    let definitions = tako_channels::live_store::internal_store_json(
+        &app.endpoint,
+        &app.internal_host,
+        &app.internal_token,
+        tako_channels::INTERNAL_CHANNEL_REGISTRY_PATH,
+        None,
+    )
+    .await?;
+    serde_json::from_value::<Vec<ChannelDefinitionMeta>>(definitions)
+        .map_err(|_| ChannelError::AuthUnavailable)?
+        .into_iter()
+        .find(|meta| meta.channel == channel)
+        .ok_or(ChannelError::NotDefined)
+}
+
+enum DevSocketAuth {
+    Authorized(ChannelAuthResponse),
+    /// Header auth arrives in the socket's first `tako.auth` frame.
+    FirstFrame {
+        app: AppAuthorizer,
+        cookie: Option<String>,
+    },
+}
+
+async fn serve_websocket(
+    session: &mut Session,
+    dev_store: &DevChannelStore,
+    target: &crate::proxy::RouteTarget,
+    stream: &ChannelStream,
+    params: serde_json::Value,
+    requested: ReplayFrom,
+    auth: DevSocketAuth,
+) -> Result<bool> {
+    let store = store_for(dev_store, &target.channel_store_key).await?;
+    let header =
+        match tako_channels::websocket::build_websocket_upgrade_response(session.req_header()) {
+            Ok(header) => header,
+            Err(error) => return write_channel_error(session, target, error).await,
+        };
+    session
+        .write_response_header(Box::new(header), false)
+        .await?;
+    let mut reader = tako_channels::websocket::WebSocketFrameReader::default();
+    let (auth, requested) = match auth {
+        DevSocketAuth::Authorized(auth) => (auth, requested),
+        DevSocketAuth::FirstFrame { app, cookie } => match authorize_first_frame(
+            session,
+            &mut reader,
+            &app,
+            stream.channel(),
+            params.clone(),
+            cookie,
+            requested,
+        )
+        .await?
+        {
+            Some(authorized) => authorized,
+            None => return Ok(true),
+        },
+    };
+    tako_channels::websocket::serve(session, &store, stream, requested, auth, params, reader).await
+}
+
+async fn store_for(dev_store: &DevChannelStore, app_id: &str) -> Result<Arc<ChannelStore>> {
+    let dev_store = dev_store.clone();
+    let app_id = app_id.to_owned();
+    tokio::task::spawn_blocking(move || dev_store.store_for_app(&app_id))
+        .await
+        .map_err(|error| {
+            pingora_core::Error::explain(pingora_core::ErrorType::InternalError, error.to_string())
+        })
+}
+
+/// Production's status and body for a failed channel request. When the app
+/// cannot answer, say so: the browser only sees the 503.
+async fn write_channel_error(
+    session: &mut Session,
+    target: &crate::proxy::RouteTarget,
+    error: ChannelError,
+) -> Result<bool> {
+    match &error {
+        ChannelError::AuthUnavailable => tracing::warn!(
+            app = %target.app_id,
+            port = target.upstream_port,
+            "channel authorization unavailable: the app did not answer its internal channel endpoints"
+        ),
+        ChannelError::Storage(message) => tracing::error!("dev channel storage error: {message}"),
+        _ => {}
+    }
+    let (status, mut body) = tako_channels::authorize::error_response(&error);
+    if matches!(error, ChannelError::AuthUnavailable) {
+        body = serde_json::json!({
+            "error": "Channel authorization unavailable: the app did not answer its channel registry or authorize endpoint"
+        });
+    }
+    write_json(session, status, &body.to_string()).await
 }
 
 /// Stores use app authorization even in local dev, including schema coercion
@@ -220,13 +385,7 @@ pub async fn try_handle_store(
             Err(error) => write_store_error(session, error).await,
         };
     }
-    let app_id = target.channel_store_key.clone();
-    let dev_store = dev_store.clone();
-    let store = tokio::task::spawn_blocking(move || dev_store.store_for_app(&app_id))
-        .await
-        .map_err(|error| {
-            pingora_core::Error::explain(pingora_core::ErrorType::InternalError, error.to_string())
-        })?;
+    let store = store_for(dev_store, &target.channel_store_key).await?;
     serve_store_events(session, &store, &store_scope(&channel, &params), &auth).await
 }
 
@@ -254,60 +413,29 @@ async fn serve_sse(
     session: &mut Session,
     dev_store: &DevChannelStore,
     app_id: &str,
-    channel: &str,
+    stream: &ChannelStream,
+    from_start: bool,
     auth: ChannelAuthResponse,
 ) -> Result<bool> {
-    let dev_store = dev_store.clone();
-    let app_id = app_id.to_owned();
-    let store = tokio::task::spawn_blocking(move || dev_store.store_for_app(&app_id))
-        .await
-        .map_err(|error| {
-            pingora_core::Error::explain(pingora_core::ErrorType::InternalError, error.to_string())
-        })?;
-    if session.as_downstream().is_upgrade_req() {
-        let params = match tako_channels::params::validate_query(
-            &serde_json::json!({"type":"object"}),
-            session.req_header().uri.query().unwrap_or_default(),
-        ) {
-            Ok(params) => params,
-            Err(_) => {
-                return write_json(session, 400, r#"{"error":"Invalid presence params"}"#).await;
-            }
-        };
-        let header =
-            tako_channels::websocket::build_websocket_upgrade_response(session.req_header())
-                .map_err(|e| {
-                    pingora_core::Error::explain(
-                        pingora_core::ErrorType::InvalidHTTPHeader,
-                        e.to_string(),
-                    )
-                })?;
-        session
-            .write_response_header(Box::new(header), false)
-            .await?;
-        return tako_channels::websocket::serve(
-            session,
-            &store,
-            channel,
-            None,
-            auth,
-            params,
-            Default::default(),
-        )
-        .await;
-    }
-
+    let store = store_for(dev_store, app_id).await?;
     let ephemeral = if auth.ephemeral {
-        Some(store.subscribe_ephemeral(channel).map_err(|e| {
+        Some(store.subscribe_ephemeral(stream.key()).map_err(|e| {
             pingora_core::Error::explain(pingora_core::ErrorType::InternalError, e.to_string())
         })?)
     } else {
         None
     };
-    let mut resets = store.resets(channel);
-    let mut after = if auth.ephemeral {
+    let resets = store.resets(stream.key());
+    let after = if auth.ephemeral {
         None
     } else {
+        // Start the stream's bookkeeping before resolving its head, as
+        // production does: a stream first created by a later publish would
+        // otherwise reset this subscriber's cursor.
+        if let Err(e) = store.sync_channel_async(stream.key(), &auth).await {
+            let msg = format!(r#"{{"error":"Failed to sync channel: {e}"}}"#);
+            return write_json(session, 500, &msg).await;
+        }
         let requested = match parse_message_id_cursor(
             session
                 .req_header()
@@ -321,7 +449,10 @@ async fn serve_sse(
                 return write_json(session, 400, r#"{"error":"Invalid replay cursor"}"#).await;
             }
         };
-        match store.replay_cursor_async(channel, requested).await {
+        match store
+            .replay_from_async(stream.key(), ReplayFrom::new(requested, from_start))
+            .await
+        {
             Ok(cursor) => cursor,
             Err(ChannelError::StaleCursor) => {
                 return write_json(session, 410, r#"{"error":"Replay history expired"}"#).await;
@@ -333,9 +464,6 @@ async fn serve_sse(
         }
     };
 
-    let keepalive_interval = Duration::from_millis(auth.keepalive_interval_ms.max(1));
-    let max_connection_lifetime = Duration::from_millis(auth.max_connection_lifetime_ms.max(1));
-
     let mut header = ResponseHeader::build(200, None)?;
     header.insert_header("Content-Type", "text/event-stream")?;
     header.insert_header("Cache-Control", "no-store")?;
@@ -346,105 +474,9 @@ async fn serve_sse(
         .await?;
 
     if let Some(events) = ephemeral {
-        return tako_channels::ephemeral::serve_events(session, events, &auth).await;
+        return tako_channels::ephemeral::serve_events(session, events, &auth, stream).await;
     }
-    let started = tokio::time::Instant::now();
-    let mut next_keepalive = started + keepalive_interval;
-    let mut changes = store.changes(channel);
-    let mut read_replay = true;
-
-    loop {
-        if resets.has_changed().unwrap_or(true) {
-            session
-                .write_response_body(Some("id:\nevent: tako.reset\ndata: {}\n\n".into()), true)
-                .await?;
-            return Ok(true);
-        }
-        if read_replay {
-            changes.borrow_and_update();
-            match store.read_after_async(channel, after, 100).await {
-                Ok(messages) => {
-                    read_replay = messages.len() == 100;
-                    if !messages.is_empty() {
-                        for message in messages {
-                            if resets.has_changed().unwrap_or(true) {
-                                session
-                                    .write_response_body(
-                                        Some("id:\nevent: tako.reset\ndata: {}\n\n".into()),
-                                        true,
-                                    )
-                                    .await?;
-                                return Ok(true);
-                            }
-                            let encoded = serde_json::to_string(&message).unwrap_or_default();
-                            let frame = format!("id: {}\ndata: {}\n\n", message.id, encoded);
-                            if session
-                                .write_response_body(Some(frame.into_bytes().into()), false)
-                                .await
-                                .is_err()
-                            {
-                                return Ok(true);
-                            }
-                            after = Some(
-                                message
-                                    .id
-                                    .parse::<ReplayCursor>()
-                                    .expect("stored channel cursor is valid"),
-                            );
-                        }
-                        next_keepalive = tokio::time::Instant::now() + keepalive_interval;
-                    }
-                }
-                Err(ChannelError::StaleCursor) => {
-                    session
-                        .write_response_body(
-                            Some("id:\nevent: tako.reset\ndata: {}\n\n".into()),
-                            true,
-                        )
-                        .await?;
-                    return Ok(true);
-                }
-                Err(error) => {
-                    return Err(pingora_core::Error::explain(
-                        pingora_core::ErrorType::InternalError,
-                        error.to_string(),
-                    ));
-                }
-            }
-        }
-
-        if started.elapsed() >= max_connection_lifetime {
-            session.write_response_body(None, true).await?;
-            return Ok(true);
-        }
-
-        let now = tokio::time::Instant::now();
-        if now >= next_keepalive {
-            if session
-                .write_response_body(
-                    Some(": keepalive\n\n".to_string().into_bytes().into()),
-                    false,
-                )
-                .await
-                .is_err()
-            {
-                return Ok(true);
-            }
-            next_keepalive = now + keepalive_interval;
-        }
-
-        if read_replay {
-            continue;
-        }
-        tokio::select! {
-            _ = resets.changed() => {
-                session.write_response_body(Some("id:\nevent: tako.reset\ndata: {}\n\n".into()), true).await?;
-                return Ok(true);
-            },
-            _ = changes.changed() => read_replay = true,
-            _ = tokio::time::sleep_until(next_keepalive.min(started + max_connection_lifetime)) => {}
-        }
-    }
+    tako_channels::sse::serve_events(session, &store, stream, after, &auth, resets).await
 }
 
 async fn write_json(session: &mut Session, status: u16, body: &str) -> Result<bool> {
@@ -462,15 +494,37 @@ async fn write_json(session: &mut Session, status: u16, body: &str) -> Result<bo
 }
 
 #[cfg(test)]
+mod test_app;
+
+#[cfg(test)]
+mod auth_tests;
+
+#[cfg(test)]
 mod store_tests;
 
 #[cfg(test)]
 mod ephemeral_tests;
 
 #[cfg(test)]
+mod stream_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use tako_channels::parse_channel_route;
+    use tako_channels::{ChannelPublishPayload, parse_channel_route};
+
+    fn lifecycle() -> ChannelAuthResponse {
+        ChannelAuthResponse {
+            ok: true,
+            subject: None,
+            transport: None,
+            ephemeral: false,
+            replay_window_ms: 10 * 60 * 1000,
+            inactivity_ttl_ms: 0,
+            keepalive_interval_ms: 25_000,
+            max_connection_lifetime_ms: 2 * 60 * 60 * 1000,
+        }
+    }
 
     #[test]
     fn parse_subscribe_path() {
@@ -508,7 +562,7 @@ mod tests {
         let store = dev_store.store_for_app("demo");
 
         // Sync the channel first.
-        store.sync_channel("test", &dev_auth_response()).unwrap();
+        store.sync_channel("test", &lifecycle()).unwrap();
 
         let msg = store
             .append(
@@ -533,7 +587,7 @@ mod tests {
         let dev_store = DevChannelStore::new();
         let store = dev_store.store_for_app("demo");
 
-        store.sync_channel("ch", &dev_auth_response()).unwrap();
+        store.sync_channel("ch", &lifecycle()).unwrap();
 
         let p = ChannelPublishPayload {
             r#type: "message".to_string(),
@@ -547,17 +601,12 @@ mod tests {
     #[test]
     fn dev_channel_store_keeps_apps_in_separate_dbs() {
         let dev_store = DevChannelStore::new();
-        let payload = ChannelPublishPayload {
-            r#type: "message".to_string(),
-            data: serde_json::json!({"text": "hello"}),
-        };
+        let payload = serde_json::json!({"type": "message", "data": {"text": "hello"}});
 
-        let first = dev_store
-            .publish("app/one", "chat", &payload, None)
-            .unwrap();
-        let second = dev_store
-            .publish("app/two", "chat", &payload, None)
-            .unwrap();
+        let publication =
+            TrustedPublication::parse("chat", &serde_json::Value::Null, payload).unwrap();
+        let first = dev_store.publish("app/one", &publication).unwrap();
+        let second = dev_store.publish("app/two", &publication).unwrap();
 
         assert_eq!(position(&first.id), 1);
         assert_eq!(position(&second.id), 1);

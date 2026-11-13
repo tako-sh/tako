@@ -11,6 +11,7 @@ import { installConsoleBridge } from "../console-bridge";
 import { installErrorHooks } from "../error-hooks";
 import { installStdioBridge } from "../stdio-bridge";
 import { initBootstrapFromFd, readBootstrapData } from "../secrets-fd";
+import { createGracefulShutdown } from "../shutdown";
 
 installStdioBridge("app");
 installErrorHooks("app");
@@ -27,8 +28,12 @@ if (import.meta.main) {
     return server.port;
   });
 
-  process.on("SIGTERM", () => {
-    setDraining();
-    void server?.stop(true);
-  });
+  process.on(
+    "SIGTERM",
+    createGracefulShutdown({
+      setDraining,
+      stopServer: () => server?.stop(),
+      forceClose: () => void server?.stop(true),
+    }),
+  );
 }

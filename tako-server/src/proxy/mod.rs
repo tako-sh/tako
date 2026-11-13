@@ -87,7 +87,7 @@ pub struct TakoProxy {
     /// Cloudflare proxy CIDRs used for app-level source IP modes.
     cloudflare_ips: CloudflareIpRanges,
     /// Channel metadata cache hydrated from app internal endpoints.
-    channel_registry: ChannelRegistry,
+    channel_registry: Arc<ChannelRegistry>,
 }
 
 pub(crate) type ChannelPostgresUrlResolver =
@@ -129,7 +129,7 @@ impl TakoProxy {
             channel_credentials_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             ip_tracker: IpRequestTracker::new(),
             cloudflare_ips,
-            channel_registry: ChannelRegistry::new(),
+            channel_registry: Arc::new(ChannelRegistry::new()),
         }
     }
 
@@ -166,7 +166,7 @@ impl TakoProxy {
             channel_credentials_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             ip_tracker: IpRequestTracker::new(),
             cloudflare_ips,
-            channel_registry: ChannelRegistry::new(),
+            channel_registry: Arc::new(ChannelRegistry::new()),
         }
     }
 

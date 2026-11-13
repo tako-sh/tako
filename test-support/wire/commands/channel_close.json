@@ -1,0 +1,15 @@
+{
+  "app": "demo",
+  "build": "v7",
+  "channel": "reply",
+  "command": "channel_close",
+  "lifecycle": {
+    "inactivityTtlMs": 0,
+    "keepaliveIntervalMs": 25000,
+    "maxConnectionLifetimeMs": 7200000,
+    "replayWindowMs": 600000
+  },
+  "params": {
+    "requestId": "r1"
+  }
+}

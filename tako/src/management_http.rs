@@ -415,6 +415,10 @@ fn management_rpc_timeout_for_command(command: &Command) -> Duration {
         | Command::GetSecretsHash { .. }
         | Command::EnqueueRun { .. }
         | Command::Signal { .. }
+        | Command::ListWorkflowRuns { .. }
+        | Command::GetWorkflowRun { .. }
+        | Command::RetryWorkflowRun { .. }
+        | Command::CancelWorkflowRun { .. }
         | Command::RegisterSchedules { .. }
         | Command::ClaimRun { .. }
         | Command::HeartbeatRun { .. }
@@ -426,7 +430,8 @@ fn management_rpc_timeout_for_command(command: &Command) -> Duration {
         | Command::DeferRun { .. }
         | Command::WaitForEvent { .. }
         | Command::NetworkCall { .. }
-        | Command::ChannelPublish { .. } => MANAGEMENT_RPC_TIMEOUT,
+        | Command::ChannelPublish { .. }
+        | Command::ChannelClose { .. } => MANAGEMENT_RPC_TIMEOUT,
     }
 }
 
@@ -574,7 +579,7 @@ where
                 "Invalid remote management {context} response: {error}"
             ))
         }),
-        Response::Error { message } => Err(ManagementError::Message(message)),
+        Response::Error { message, .. } => Err(ManagementError::Message(message)),
     }
 }
 

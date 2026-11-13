@@ -1,0 +1,84 @@
+{
+  "description": "A fresh run executes both steps, saves each result, and completes with the handler's result.",
+  "drive": "run",
+  "workflows": ["steps"],
+  "steps": [
+    {
+      "expect": {
+        "command": "claim_run",
+        "app": "scenario-app",
+        "worker_id": {
+          "$var": "process_worker",
+          "is": {
+            "$type": "string"
+          }
+        },
+        "names": ["steps"],
+        "lease_ms": {
+          "$var": "lease_ms",
+          "is": {
+            "$positive": true
+          }
+        }
+      },
+      "reply": {
+        "status": "ok",
+        "data": {
+          "id": "run-1",
+          "worker_id": "claim-1",
+          "name": "steps",
+          "payload": {},
+          "status": "running",
+          "attempts": 1,
+          "max_attempts": 3,
+          "run_at_ms": 1700000000000,
+          "step_state": {}
+        }
+      }
+    },
+    {
+      "expect": {
+        "command": "save_step",
+        "app": "scenario-app",
+        "id": "run-1",
+        "worker_id": "claim-1",
+        "step_name": "a",
+        "result": "a-done"
+      },
+      "reply": {
+        "status": "ok",
+        "data": {}
+      }
+    },
+    {
+      "expect": {
+        "command": "save_step",
+        "app": "scenario-app",
+        "id": "run-1",
+        "worker_id": "claim-1",
+        "step_name": "b",
+        "result": 2
+      },
+      "reply": {
+        "status": "ok",
+        "data": {}
+      }
+    },
+    {
+      "expect": {
+        "command": "complete_run",
+        "app": "scenario-app",
+        "id": "run-1",
+        "worker_id": "claim-1",
+        "result": {
+          "a": "a-done",
+          "b": 2
+        }
+      },
+      "reply": {
+        "status": "ok",
+        "data": {}
+      }
+    }
+  ]
+}

@@ -1,0 +1,71 @@
+{
+  "description": "Using a step name twice in one execution fails the run immediately, skipping the remaining retry budget.",
+  "drive": "run",
+  "workflows": ["duplicate"],
+  "steps": [
+    {
+      "expect": {
+        "command": "claim_run",
+        "app": "scenario-app",
+        "worker_id": {
+          "$var": "process_worker",
+          "is": {
+            "$type": "string"
+          }
+        },
+        "names": ["duplicate"],
+        "lease_ms": {
+          "$var": "lease_ms",
+          "is": {
+            "$positive": true
+          }
+        }
+      },
+      "reply": {
+        "status": "ok",
+        "data": {
+          "id": "run-1",
+          "worker_id": "claim-1",
+          "name": "duplicate",
+          "payload": {},
+          "status": "running",
+          "attempts": 1,
+          "max_attempts": 3,
+          "run_at_ms": 1700000000000,
+          "step_state": {}
+        }
+      }
+    },
+    {
+      "expect": {
+        "command": "save_step",
+        "app": "scenario-app",
+        "id": "run-1",
+        "worker_id": "claim-1",
+        "step_name": "a",
+        "result": 1
+      },
+      "reply": {
+        "status": "ok",
+        "data": {}
+      }
+    },
+    {
+      "expect": {
+        "command": "fail_run",
+        "app": "scenario-app",
+        "id": "run-1",
+        "worker_id": "claim-1",
+        "error": {
+          "$contains": "\"a\" was used more than once in this run"
+        },
+        "next_run_at_ms": null,
+        "finalize": true
+      },
+      "reply": {
+        "status": "ok",
+        "data": {}
+      }
+    }
+  ]
+}

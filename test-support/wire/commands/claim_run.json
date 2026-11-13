@@ -1,0 +1,7 @@
+{
+  "app": "demo",
+  "command": "claim_run",
+  "lease_ms": 30000,
+  "names": ["send-email", "nightly-report"],
+  "worker_id": "worker-1"
+}

@@ -28,14 +28,15 @@ pub use dispatcher::{DispatchSignal, WorkDispatcher};
 pub use enqueue::{DEFAULT_RETENTION_MS, POSTGRES_WORKFLOWS_SCHEMA, RunsDb, WorkflowStoreConfig};
 #[allow(unused_imports)]
 pub use enqueue_socket::{
-    AppHandlers, AppLookup, ChannelPublishFn, EnqueueSocketHandle, HealthCheck, OnClaimed,
-    OnEnqueue, PeerAuthFn, spawn as spawn_enqueue_socket,
+    AppHandlers, AppLookup, ChannelPublishFn, ChannelPublishRequest, ChannelWrite,
+    EnqueueSocketHandle, HealthCheck, OnClaimed, OnEnqueue, PeerAuthFn,
+    spawn as spawn_enqueue_socket,
 };
 #[allow(unused_imports)]
 pub use in_flight::InFlightLimiter;
 #[allow(unused_imports)]
 pub use manager::{
-    WorkflowManager, WorkflowManagerError, internal_socket_path, worker_spec_for_bun,
+    ClosedStore, WorkflowManager, WorkflowManagerError, internal_socket_path, worker_spec_for_bun,
     worker_spec_for_command,
 };
 #[allow(unused_imports)]

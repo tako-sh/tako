@@ -267,6 +267,10 @@ fn invalidation_rejects_malformed_denied_oversized_and_stalled_responses() {
             b"{\"status\":\"error\",\"message\":\"secret\"}\n".to_vec(),
             "denied",
         ),
+        (
+            b"{\"status\":\"error\",\"message\":\"secret\",\"code\":\"unavailable\"}\n".to_vec(),
+            "coded",
+        ),
         (b"not json\n".to_vec(), "malformed"),
         (vec![b'x'; MAX_STORE_BYTES + 1], "large"),
         (Vec::new(), "closed"),
@@ -284,7 +288,11 @@ fn invalidation_rejects_malformed_denied_oversized_and_stalled_responses() {
         }
         .invalidate_at(&path, "app", json!({}), Duration::from_secs(2));
         assert!(match expected {
-            "denied" => matches!(result, Err(StoreError::Rejected)),
+            "denied" => matches!(result, Err(StoreError::Rejected(None))),
+            "coded" => matches!(
+                result,
+                Err(StoreError::Rejected(Some(crate::ErrorCode::Unavailable)))
+            ),
             "large" => matches!(result, Err(StoreError::TooLarge)),
             _ => matches!(result, Err(StoreError::Protocol)),
         });

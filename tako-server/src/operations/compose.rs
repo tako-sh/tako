@@ -194,6 +194,7 @@ impl crate::ServerState {
         }
         let cleanup_error = (!cleanup_errors.is_empty()).then(|| cleanup_errors.join("; "));
         app.set_state(AppState::Running);
+        app.reset_recovery();
         if let Some(error) = &cleanup_error {
             app.set_last_error(format!(
                 "Deployment activated; old container cleanup pending: {error}"

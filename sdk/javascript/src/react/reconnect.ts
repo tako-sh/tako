@@ -9,6 +9,7 @@ export function channelIdentity(
     baseUrl?: string;
     headers?: Record<string, string>;
     authorization?: string;
+    from?: string;
   },
 ): string {
   return JSON.stringify(
@@ -19,6 +20,7 @@ export function channelIdentity(
       options.baseUrl ?? globalThis.location?.origin,
       Object.fromEntries(new Headers(options.headers)),
       options.authorization,
+      options.from,
     ],
     (_key, value: unknown) =>
       value && typeof value === "object" && !Array.isArray(value)

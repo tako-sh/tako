@@ -44,11 +44,18 @@ type EnqueueResult struct {
 	Deduplicated bool
 }
 
-// Enqueue dispatches a run of the named workflow.
+// Enqueue dispatches a run of the named workflow. When this process
+// registered the workflow with WithMaxAttempts and opts.MaxAttempts is nil,
+// the registered budget is stored on the run.
 func Enqueue(ctx context.Context, name string, payload any, opts EnqueueOpts) (*EnqueueResult, error) {
 	client, err := ClientFromEnv()
 	if err != nil {
 		return nil, err
+	}
+	if opts.MaxAttempts == nil {
+		if registered := registeredMaxAttempts(name); registered != 0 {
+			opts.MaxAttempts = &registered
+		}
 	}
 	return client.Enqueue(ctx, name, payload, opts)
 }
@@ -107,6 +114,10 @@ func (c *Client) Enqueue(ctx context.Context, name string, payload any, opts Enq
 
 // RegisterSchedules sends the list of cron schedules to the server.
 func (c *Client) RegisterSchedules(ctx context.Context, schedules []ScheduleSpec) error {
+	if schedules == nil {
+		// The server requires a list: an empty one removes every schedule.
+		schedules = []ScheduleSpec{}
+	}
 	_, err := c.call(ctx, map[string]any{
 		"command":   "register_schedules",
 		"app":       c.app,
@@ -121,6 +132,9 @@ type ScheduleSpec struct {
 	Name string `json:"name"`
 	// Cron is a 5-field cron expression.
 	Cron string `json:"cron"`
+	// MaxAttempts is the attempt budget of the runs this schedule creates.
+	// Zero uses the server default.
+	MaxAttempts uint32 `json:"max_attempts,omitempty"`
 }
 
 // Run is the server-returned run payload from ClaimRun.
@@ -176,21 +190,20 @@ func (c *Client) Claim(ctx context.Context, workerID string, names []string, lea
 // ownership identifier returned in Run.WorkerID; if the lease was reclaimed by another
 // worker, the call returns an error.
 func (c *Client) Heartbeat(ctx context.Context, id, workerID string, leaseMs uint64) error {
-	_, err := c.call(ctx, map[string]any{
+	return c.workerWrite(ctx, map[string]any{
 		"command":   "heartbeat_run",
 		"app":       c.app,
 		"id":        id,
 		"worker_id": workerID,
 		"lease_ms":  leaseMs,
 	})
-	return err
 }
 
 // SaveStep persists a single completed step result. Guarded by `workerId`
 // so a stale worker (past its lease) can't scribble into a different
 // worker's run. First-write-wins on (run_id, step_name).
 func (c *Client) SaveStep(ctx context.Context, id, workerID, stepName string, result any) error {
-	_, err := c.call(ctx, map[string]any{
+	return c.workerWrite(ctx, map[string]any{
 		"command":   "save_step",
 		"app":       c.app,
 		"id":        id,
@@ -198,19 +211,60 @@ func (c *Client) SaveStep(ctx context.Context, id, workerID, stepName string, re
 		"step_name": stepName,
 		"result":    result,
 	})
-	return err
 }
 
-// Complete marks the run succeeded. Guarded by `workerId`.
-func (c *Client) Complete(ctx context.Context, id, workerID string) error {
-	_, err := c.call(ctx, map[string]any{
+// Complete marks the run succeeded and saves result (any JSON-encodable
+// value; nil saves null) as its retained outcome. Guarded by `workerId`.
+func (c *Client) Complete(ctx context.Context, id, workerID string, result any) error {
+	return c.workerWrite(ctx, map[string]any{
 		"command":   "complete_run",
-		"result":    nil,
+		"result":    result,
 		"app":       c.app,
 		"id":        id,
 		"worker_id": workerID,
 	})
-	return err
+}
+
+// RunResult is the retained outcome of a workflow run.
+type RunResult struct {
+	// Status is pending, running, succeeded, cancelled, or dead.
+	Status string `json:"status"`
+	// Result is the JSON value the handler set; null until the run succeeds.
+	Result json.RawMessage `json:"result"`
+	// Error is the stored failure or cancellation reason, if any.
+	Error string `json:"error"`
+}
+
+// Result reads the current outcome of a run owned by the named workflow.
+// It returns nil when the run does not exist or is no longer retained.
+// It does not wait: poll pending and running runs with your own deadline.
+func (c *Client) Result(ctx context.Context, name, id string) (*RunResult, error) {
+	data, err := c.call(ctx, map[string]any{
+		"command": "get_run_result",
+		"app":     c.app,
+		"name":    name,
+		"id":      id,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 || string(data) == "null" {
+		return nil, nil
+	}
+	var state RunResult
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, fmt.Errorf("tako: parse run result: %w", err)
+	}
+	return &state, nil
+}
+
+// Result is a top-level convenience that uses the client from env.
+func Result(ctx context.Context, name, id string) (*RunResult, error) {
+	c, err := ClientFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	return c.Result(ctx, name, id)
 }
 
 // Cancel ends the run cleanly as `cancelled` (no retries). Guarded.
@@ -225,8 +279,7 @@ func (c *Client) Cancel(ctx context.Context, id, workerID string, reason *string
 	if reason != nil {
 		body["reason"] = *reason
 	}
-	_, err := c.call(ctx, body)
-	return err
+	return c.workerWrite(ctx, body)
 }
 
 // Defer parks the run for later. nil wakeAt = parked indefinitely.
@@ -242,8 +295,7 @@ func (c *Client) Defer(ctx context.Context, id, workerID string, wakeAt *time.Ti
 	if wakeAt != nil {
 		body["wake_at_ms"] = wakeAt.UnixMilli()
 	}
-	_, err := c.call(ctx, body)
-	return err
+	return c.workerWrite(ctx, body)
 }
 
 // WaitForEvent parks the run on a named event. Resumes when a matching
@@ -263,8 +315,7 @@ func (c *Client) WaitForEvent(
 	if timeoutAt != nil {
 		body["timeout_at_ms"] = timeoutAt.UnixMilli()
 	}
-	_, err := c.call(ctx, body)
-	return err
+	return c.workerWrite(ctx, body)
 }
 
 // Signal delivers an event payload, waking every parked WaitForEvent with
@@ -316,8 +367,7 @@ func (c *Client) Fail(
 	} else {
 		body["next_run_at_ms"] = nil
 	}
-	_, err := c.call(ctx, body)
-	return err
+	return c.workerWrite(ctx, body)
 }
 
 func optsToWire(o EnqueueOpts) map[string]any {
@@ -338,6 +388,7 @@ type wireResponse struct {
 	Status  string          `json:"status"`
 	Data    json.RawMessage `json:"data,omitempty"`
 	Message string          `json:"message,omitempty"`
+	Code    string          `json:"code,omitempty"`
 }
 
 func (c *Client) call(ctx context.Context, cmd map[string]any) (json.RawMessage, error) {
@@ -376,7 +427,36 @@ func (c *Client) call(ctx context.Context, cmd map[string]any) (json.RawMessage,
 		if msg == "" {
 			msg = "rpc failed"
 		}
-		return nil, errors.New("tako: " + msg)
+		return nil, &ServerError{Code: resp.Code, Message: msg}
 	}
 	return resp.Data, nil
+}
+
+// workerWrite sends a write only the run's current claim may make. Only its
+// run_not_owned rejection means the claim lost the run: the same code on any
+// other reply, or that text in any message, does not.
+func (c *Client) workerWrite(ctx context.Context, cmd map[string]any) error {
+	_, err := c.call(ctx, cmd)
+	if errors.Is(err, ErrRunNotOwned) {
+		return &staleOwnerError{message: err.Error(), err: err}
+	}
+	return err
+}
+
+// staleOwnerError reports a worker write rejected because the claim no
+// longer owns the run: an operator cancelled it, or its lease expired and the
+// run was reclaimed. Retrying cannot succeed; the attempt must stop.
+type staleOwnerError struct {
+	message string
+	// err is the server's rejection, when the server reported it.
+	err error
+}
+
+func (e *staleOwnerError) Error() string { return e.message }
+
+func (e *staleOwnerError) Unwrap() error { return e.err }
+
+func isStaleOwner(err error) bool {
+	var stale *staleOwnerError
+	return errors.As(err, &stale)
 }

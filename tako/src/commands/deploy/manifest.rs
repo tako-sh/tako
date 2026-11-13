@@ -53,6 +53,9 @@ pub(super) struct DeployArchiveManifest {
     pub(super) compose: Option<tako_core::compose::ComposeConfig>,
     #[serde(default)]
     pub(super) container_options: tako_core::container::ContainerOptions,
+    /// The Tako SDK the app is built against. Omitted when none is detected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) sdk: Option<tako_core::ReleaseSdk>,
 }
 
 fn default_workflow_retention_ms() -> Option<i64> {
@@ -277,6 +280,7 @@ pub(super) fn build_deploy_archive_manifest(
         container_image: None,
         compose: None,
         container_options: Default::default(),
+        sdk: None,
     }
 }
 
@@ -333,7 +337,24 @@ pub(super) fn build_container_deploy_archive_manifest(
         container_image: None,
         compose: None,
         container_options: Default::default(),
+        sdk: None,
     }
+}
+
+/// The Tako SDK the app in `app_dir` depends on, when its dependency files
+/// reveal one. Recorded in the manifest for reporting only.
+pub(super) fn detect_release_sdk(
+    runtime_name: &str,
+    app_dir: &Path,
+    source_root: &Path,
+) -> Option<tako_core::ReleaseSdk> {
+    let sdk = tako_runtime::detect_app_sdk(runtime_name, app_dir, source_root)?;
+    tracing::debug!("Tako SDK: {} {} ({})", sdk.name, sdk.version, sdk.language);
+    Some(tako_core::ReleaseSdk {
+        language: sdk.language.to_string(),
+        name: sdk.name,
+        version: sdk.version,
+    })
 }
 
 pub(super) fn decrypt_deploy_secrets(
@@ -530,6 +551,45 @@ mod tests {
             Some(&"production".to_string())
         );
         assert_eq!(manifest.env_vars.get("APP_ENV"), Some(&"prod".to_string()));
+    }
+
+    #[test]
+    fn manifest_records_the_detected_sdk_and_omits_an_unknown_one() {
+        let temp = TempDir::new().unwrap();
+        let mut manifest = build_container_deploy_archive_manifest(
+            "my-app",
+            "production",
+            "v123",
+            "Dockerfile",
+            300,
+            None,
+            None,
+            None,
+            HashMap::new(),
+            None,
+            tako_images::ImagesConfig::default(),
+            String::new(),
+            None,
+            None,
+        );
+        manifest.sdk = detect_release_sdk("container", temp.path(), temp.path());
+        assert_eq!(manifest.sdk, None);
+        let json = serde_json::to_value(&manifest).unwrap();
+        assert!(json.get("sdk").is_none());
+
+        std::fs::write(
+            temp.path().join("go.mod"),
+            "module app\n\nrequire tako.sh v0.4.1\n",
+        )
+        .unwrap();
+        manifest.sdk = detect_release_sdk("go", temp.path(), temp.path());
+        let json = serde_json::to_value(&manifest).unwrap();
+        assert_eq!(
+            json["sdk"],
+            serde_json::json!({"language":"go","name":"tako.sh","version":"v0.4.1"})
+        );
+        let parsed: DeployArchiveManifest = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed, manifest);
     }
 
     #[test]

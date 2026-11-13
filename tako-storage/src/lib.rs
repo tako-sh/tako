@@ -51,6 +51,13 @@ fn create_directory(path: &Path) -> std::io::Result<()> {
 
 /// Build an S3 backend using only the explicit binding, never ambient credentials.
 pub fn s3(binding: &StorageBinding) -> Result<AmazonS3, String> {
+    s3_builder(binding)?
+        .build()
+        .map_err(|e| format!("configure s3 storage: {e}"))
+}
+
+/// Apply Tako's explicit credentials and bounded retries before client customization.
+pub fn s3_builder(binding: &StorageBinding) -> Result<AmazonS3Builder, String> {
     if binding.provider != StorageProvider::S3 {
         return Err("storage binding is not configured for s3".into());
     }
@@ -80,7 +87,7 @@ pub fn s3(binding: &StorageBinding) -> Result<AmazonS3, String> {
             .set_host(Some(&host))
             .map_err(|_| "invalid bucket host")?;
     }
-    AmazonS3Builder::new()
+    Ok(AmazonS3Builder::new()
         .with_bucket_name(bucket)
         .with_endpoint(endpoint_url.as_str().trim_end_matches('/'))
         .with_region(required(&binding.region, "region")?)
@@ -97,9 +104,7 @@ pub fn s3(binding: &StorageBinding) -> Result<AmazonS3, String> {
             ClientOptions::new()
                 .with_timeout(Duration::from_secs(60))
                 .with_connect_timeout(Duration::from_secs(5)),
-        )
-        .build()
-        .map_err(|e| format!("configure s3 storage: {e}"))
+        ))
 }
 
 /// Open a configured binding. Local paths are relative to a Tako-managed root.

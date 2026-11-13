@@ -35,7 +35,7 @@ impl crate::ServerState {
         validate_backup_binding(backup)?;
         super::objects::with_deadline(super::objects::METADATA_TIMEOUT, async {
             let key = backup_index_key(app, self);
-            let store = tako_storage::s3(&backup.storage)?;
+            let store = super::objects::backup_store(&backup.storage)?;
             let key = ObjectPath::parse(key).map_err(|e| e.to_string())?;
             let result = match store.get(&key).await {
                 Ok(result) => result,

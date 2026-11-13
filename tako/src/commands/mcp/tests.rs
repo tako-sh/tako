@@ -93,6 +93,14 @@ fn bundled_docs_and_skills_are_discoverable_and_searchable() {
     assert!(topics.contains("docs/index: # Documentation"));
     assert!(topics.contains("docs/tako-toml: # tako.toml Reference"));
     assert!(topics.contains("skills/tako: # Working with Tako"));
+    assert!(topics.contains("schemas/tako-toml.json: tako.toml JSON Schema"));
+    let schema: serde_json::Value =
+        serde_json::from_str(docs::content("schemas/tako-toml.json").unwrap()).unwrap();
+    assert_eq!(schema["$id"], "https://tako.sh/schemas/tako-toml.json");
+    assert!(docs::resources().iter().any(|resource| {
+        resource.uri == "tako://schemas/tako-toml.json"
+            && resource.mime_type.as_deref() == Some("application/schema+json")
+    }));
     for topic in [
         "nextjs",
         "tanstack-start",
@@ -286,4 +294,74 @@ async fn cancelling_subprocess_prevents_later_child_side_effects() {
     let _ = task.await;
     tokio::time::sleep(Duration::from_millis(1200)).await;
     assert!(!dir.path().join("unexpected").exists());
+}
+
+#[test]
+fn workflow_tools_follow_cli_definitions_with_read_and_write_annotations() {
+    let catalog = catalog::catalog();
+    let annotations = |name: &str| catalog[name].tool.annotations.clone().unwrap();
+    for name in ["tako_workflows_list", "tako_workflows_show"] {
+        assert_eq!(annotations(name).read_only_hint, Some(true), "{name}");
+        assert_eq!(annotations(name).destructive_hint, Some(false), "{name}");
+    }
+    assert_eq!(
+        annotations("tako_workflows_retry").read_only_hint,
+        Some(false)
+    );
+    assert_eq!(
+        annotations("tako_workflows_retry").destructive_hint,
+        Some(false)
+    );
+    assert_eq!(
+        annotations("tako_workflows_cancel").read_only_hint,
+        Some(false)
+    );
+    assert_eq!(
+        annotations("tako_workflows_cancel").destructive_hint,
+        Some(true)
+    );
+
+    let list = &catalog["tako_workflows_list"];
+    assert_eq!(
+        list.tool.input_schema["properties"]["status"]["enum"],
+        json!(["pending", "running", "succeeded", "cancelled", "dead"])
+    );
+    assert_eq!(
+        list.tool.input_schema["properties"]["limit"]["type"],
+        "integer"
+    );
+    assert_eq!(
+        list.arguments(
+            json!({"env":"staging","status":"dead","limit":10})
+                .as_object()
+                .unwrap()
+        )
+        .unwrap(),
+        [
+            "workflows",
+            "list",
+            "--env=staging",
+            "--status=dead",
+            "--limit=10"
+        ]
+    );
+    assert!(
+        list.arguments(json!({"limit":201}).as_object().unwrap())
+            .is_err()
+    );
+    assert!(
+        list.arguments(json!({"status":"failed"}).as_object().unwrap())
+            .is_err()
+    );
+    assert_eq!(
+        catalog["tako_workflows_cancel"]
+            .arguments(json!({"run_id":"run_1","yes":true}).as_object().unwrap())
+            .unwrap(),
+        ["workflows", "cancel", "--yes", "--", "run_1"]
+    );
+    assert!(
+        catalog["tako_workflows_retry"]
+            .arguments(&Default::default())
+            .is_err()
+    );
 }

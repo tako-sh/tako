@@ -13,6 +13,33 @@ pub(super) const DOWNLOAD_URL_EXPIRES_SECONDS: u32 = 15 * 60;
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 pub(super) const METADATA_TIMEOUT: Duration = Duration::from_secs(30);
 
+pub(super) fn backup_store(
+    binding: &tako_core::StorageBinding,
+) -> Result<object_store::aws::AmazonS3, String> {
+    let builder = tako_storage::s3_builder(binding)?;
+    #[cfg(test)]
+    let builder = builder.with_client_options(
+        object_store::ClientOptions::new()
+            .with_timeout(Duration::from_secs(60))
+            .with_connect_timeout(Duration::from_secs(5))
+            .with_root_certificate(failure_tests::fixture_store_certificate()),
+    );
+    builder
+        .build()
+        .map_err(|e| format!("configure backup storage: {e}"))
+}
+
+#[cfg(test)]
+pub(super) fn backup_http_client(timeout: Duration) -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .tls_certs_merge([failure_tests::fixture_root_certificate()])
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| e.to_string())
+}
+
 pub(super) async fn with_deadline<T>(
     timeout: Duration,
     operation: impl Future<Output = Result<T, String>>,
@@ -104,8 +131,17 @@ pub(super) async fn download_object(
 }
 
 pub(super) fn queue_retention(index: &mut BackupIndex, retention_days: u16) {
-    let cutoff = now_unix_secs().saturating_sub(i64::from(retention_days) * 24 * 60 * 60);
+    queue_retention_at(index, retention_days, now_unix_secs());
+}
+
+pub(super) fn queue_retention_at(index: &mut BackupIndex, retention_days: u16, now: i64) {
+    let full_cutoff = now.saturating_sub(i64::from(retention_days) * 24 * 60 * 60);
+    let database_cutoff = now.saturating_sub(super::databases::DATABASE_SNAPSHOT_RETENTION_SECS);
     index.backups.retain(|backup| {
+        let cutoff = match backup.kind {
+            tako_core::BackupKind::Full => full_cutoff,
+            tako_core::BackupKind::Databases => database_cutoff,
+        };
         if backup.created_at_unix_secs < cutoff {
             index.pending_deletions.push(backup.clone());
             false
@@ -141,7 +177,7 @@ pub(super) async fn prune_retention(store: &dyn ObjectStore, index: &mut BackupI
 }
 
 #[cfg(test)]
-mod failure_tests;
+pub(super) mod failure_tests;
 
 #[cfg(test)]
 mod tests {

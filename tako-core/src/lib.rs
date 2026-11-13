@@ -9,10 +9,15 @@
 pub mod bootstrap;
 pub mod compose;
 pub mod container;
+mod error_code;
+mod error_codes;
 pub mod instance_env;
 pub mod network;
 mod protocol;
 pub mod storage;
+#[cfg(test)]
+mod wire_fixtures;
 
+pub use error_code::{ErrorCode, SocketError};
 pub use protocol::*;
 pub use storage::*;

@@ -5,7 +5,10 @@ pub fn install(state: &Arc<Mutex<State>>, workflows: &tako_workflows::WorkflowMa
     let state = Arc::downgrade(state);
     workflows.set_network_router(Arc::new(move |_caller, target, invocation| {
         let Some(state) = state.upgrade() else {
-            return tako_core::Response::error("dev server unavailable");
+            return tako_core::Response::coded_error(
+                tako_core::ErrorCode::Unavailable,
+                "dev server unavailable",
+            );
         };
         let selected = {
             let state = state.lock().unwrap();
@@ -29,7 +32,10 @@ pub fn install(state: &Arc<Mutex<State>>, workflows: &tako_workflows::WorkflowMa
                 .wait_for_active_port(&format!("reg:{key}"), std::time::Duration::from_secs(20))
                 .await
             else {
-                return tako_core::Response::error("destination app unavailable");
+                return tako_core::Response::coded_error(
+                    tako_core::ErrorCode::Unavailable,
+                    "destination app unavailable",
+                );
             };
             tako_workflows::network::invoke_http(
                 &format!("http://127.0.0.1:{port}/network"),

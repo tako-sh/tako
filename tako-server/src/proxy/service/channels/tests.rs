@@ -1,4 +1,7 @@
 use super::*;
+use crate::channels::{ChannelAuthScheme, ChannelHeaderValue};
+use pingora_http::RequestHeader;
+use std::collections::HashMap;
 use tako_channels::websocket::is_websocket_auth_payload;
 
 #[test]
