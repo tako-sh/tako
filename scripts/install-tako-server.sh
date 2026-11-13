@@ -955,7 +955,7 @@ install_native_network() {
     cp "$native_source" "$tmp_extract/native-helper.py"
     native_source="$tmp_extract/native-helper.py"
   else
-    native_expected="b87660b7ddfb8bd3be459ae92689888c0f8cc152716ed8f6aef144bc499d4213"
+    native_expected="bd918d5e5a6a553de3986af9e03b4c2a3e104f70b9a9cad41eaeb4061dad0f77"
     native_source="$tmp_extract/scripts/tako-network-helper.py"
     if [ ! -f "$native_source" ] || [ -L "$native_source" ]; then
       native_source="$tmp_extract/native-helper.py"
@@ -971,7 +971,8 @@ import os
 import pwd
 uid = pwd.getpwnam('tako').pw_uid
 gid = pwd.getpwnam('tako').pw_gid
-for path in ('/opt/tako/networks', '/var/lib/tako-network-helper', '/var/lib/tako-network-helper/docker', '/etc/ssh/tako-network'):
+for path in ('/opt/tako/networks', '/var/lib/tako-network-helper', '/var/lib/tako-network-helper/docker',
+             '/etc/ssh/tako-network', '/etc/wireguard/tako'):
     fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
     try:
         for part in path.split('/')[1:]:

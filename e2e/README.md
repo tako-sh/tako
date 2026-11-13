@@ -79,6 +79,8 @@ For `on_demand_integration` and `rolling_update_integration`, an installed dispo
 
 On disposable GitHub Actions runners, `e2e/prepare-ci-host.sh` loads the host's WireGuard module and verifies interface creation and IPv6 addressing in a temporary network namespace. It also permits DAC reads in the host's `unix-chkpwd` AppArmor profile. That host profile attaches to AlmaLinux's PAM helper inside privileged containers, where the mode-000 shadow file needs this permission. The fixture check verifies sudo before and after the correction; production PAM policy, shadow permissions, and server capabilities are unchanged.
 
+The native host jobs also boot Ubuntu and AlmaLinux fixtures with systemd and run `e2e/docker/server/verify-native-helper.py`. This checks the installed helper's real socket, restricted service permissions, WireGuard configuration, IPv6 addressing, repeated reconciliation, isolation, removal, and temporary key-file cleanup before the Rust build finishes. WireGuard temporary configuration lives in the root-only `/etc/wireguard/tako` directory accepted by Ubuntu's default `wg` AppArmor profile.
+
 For a focused installed-isolation check after building the glibc server:
 
 ```bash

@@ -161,7 +161,11 @@ class DiagnosticTests(unittest.TestCase):
              'Error: Unknown device type. private-secret', 'host kernel does not support WireGuard interfaces'),
             (('nft', '-f', '-'), 'Operation not permitted: private-secret',
              'network firewall configuration failed (permission denied)'),
-            (('wg', 'pubkey'), 'invalid key private-secret', 'wg failed (exit 1)'),
+            (('wg', 'pubkey'), 'invalid key private-secret', 'WireGuard public key derivation failed (exit 1)'),
+            (('wg', 'syncconf', 'test', '/private/path'), 'fopen: Permission denied: private-secret',
+             'WireGuard configuration file access denied; check host security policy'),
+            (('wg', 'show', 'all', 'listen-port'), 'Operation not permitted: private-secret',
+             'WireGuard inventory failed (permission denied)'),
         ]:
             with self.subTest(command=command):
                 process = Mock(returncode=1, stdout='private-secret', stderr=stderr)
@@ -270,6 +274,7 @@ class ReconcileTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.addCleanup(patch.stopall)
         patch.object(helper, 'STATE', Path(self.tmp.name)).start()
+        patch.object(helper, 'WIREGUARD', Path(self.tmp.name)).start()
         self.runner = FakeRunner()
         self.saved = None
         self.ssh = ''
@@ -492,6 +497,7 @@ class ReconcileTests(unittest.TestCase):
         self.runner.fail = ('wg', 'syncconf')
         with self.assertRaises(helper.Rejected):
             self.apply()
+        self.assertEqual(list(Path(self.tmp.name).glob('.wg-*')), [])
         self.assertEqual(self.runner.links[0]['operstate'], 'down')
         self.runner.fail = None
         self.apply()

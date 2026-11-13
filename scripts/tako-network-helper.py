@@ -21,6 +21,7 @@ from pathlib import Path
 
 NETWORKS = Path('/opt/tako/networks')
 STATE = Path('/var/lib/tako-network-helper')
+WIREGUARD = Path('/etc/wireguard/tako')
 SSH = Path('/etc/ssh/tako-network')
 SOCKET = Path('/run/tako-network-helper.sock')
 TABLE = 'tako_network'
@@ -221,6 +222,12 @@ class Runner:
             ('ip', '-6', 'route'): 'IPv6 route configuration',
             ('nft', '-f', '-'): 'network firewall configuration',
         }.get(args[:3], args[0])
+        if args[0] == 'wg':
+            label = {
+                'show': 'WireGuard inventory',
+                'pubkey': 'WireGuard public key derivation',
+                'syncconf': 'WireGuard configuration',
+            }.get(args[1], 'wg')
         try:
             result = subprocess.run(args, input=input, text=True, capture_output=True,
                                     env=ENV, cwd='/', timeout=30, check=False)
@@ -230,6 +237,8 @@ class Runner:
             # Classify known errors without echoing arguments, stdin, or stderr.
             if args[:3] == ('ip', 'link', 'add') and 'Unknown device type' in result.stderr:
                 raise Rejected('host kernel does not support WireGuard interfaces')
+            if args[:2] == ('wg', 'syncconf') and result.stderr.startswith('fopen: Permission denied'):
+                raise Rejected('WireGuard configuration file access denied; check host security policy')
             denied = any(message in result.stderr for message in ('Operation not permitted', 'Permission denied'))
             reason = 'permission denied' if denied else f'exit {result.returncode}'
             raise Rejected(f'{label} failed ({reason})')
@@ -667,7 +676,9 @@ class Host:
                 lines.extend(['[Peer]', 'PublicKey = ' + peer['public_key'], 'AllowedIPs = ' + peer['address']])
                 if 'endpoint' in peer:
                     lines.extend(['Endpoint = ' + peer['endpoint'], 'PersistentKeepalive = 25'])
-            with tempfile.NamedTemporaryFile(mode='w', dir=STATE, prefix='.wg-', delete=True) as secret:
+            # Ubuntu's wg AppArmor profile permits configuration reads beneath
+            # /etc/wireguard. Keep the temporary key file in our root-only directory.
+            with tempfile.NamedTemporaryFile(mode='w', dir=WIREGUARD, prefix='.wg-', delete=True) as secret:
                 os.chmod(secret.name, 0o600)
                 secret.write('\n'.join(lines) + '\n')
                 secret.flush()
@@ -723,7 +734,7 @@ def operation(args):
     require(os.geteuid() == 0, 'root required')
     ident, action = request_args(args)
     os.umask(0o077)
-    with directory(STATE) as fd, directory(SSH) as sshfd:
+    with directory(STATE) as fd, directory(SSH) as sshfd, directory(WIREGUARD):
         lock = os.open('lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=fd)
         with os.fdopen(lock, 'w') as stream:
             info = os.fstat(stream.fileno())

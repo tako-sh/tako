@@ -202,3 +202,8 @@ complete. Commit and push each coherent milestone to the same branch.
   before testing restricted native services. The helper journals its redacted
   failures, distinguishing missing kernel support and denied host operations
   without logging private inputs or raw command output.
+- Ubuntu 26.04 confines `wg` configuration reads to `/etc/wireguard`; root and
+  NET_ADMIN do not bypass that AppArmor rule. Temporary configuration now uses
+  a validated root-only directory there and is removed after use. Both native
+  host fixtures exercise the installed helper through its real restricted
+  systemd service, independently of the Rust build and full deployment suite.

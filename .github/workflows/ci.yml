@@ -20,17 +20,21 @@ env:
 
 jobs:
   alma-fixture:
-    name: AlmaLinux fixture
+    name: Native host (${{ matrix.os }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu, alma]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Verify fixture sudo account
         run: |
-          docker build -f e2e/docker/server/alma.Dockerfile -t tako-alma-fixture .
-          if ! docker run --rm --privileged tako-alma-fixture sh -ec '
+          docker build -f e2e/docker/server/${{ matrix.os }}.Dockerfile -t tako-host-fixture .
+          if ! docker run --rm --privileged tako-host-fixture sh -ec '
             echo "tako:tako-e2e" | chpasswd
             su -s /bin/sh tako -c "sudo -n -l"
           '; then
@@ -39,11 +43,25 @@ jobs:
           sh e2e/prepare-ci-host.sh
           docker run --rm --privileged \
             -v "$PWD/e2e/docker/server/verify-sudo-context.sh:/opt/e2e/verify-sudo-context.sh:ro" \
-            tako-alma-fixture sh -ec '
+            tako-host-fixture sh -ec '
             echo "tako:tako-e2e" | chpasswd
             su -s /bin/sh tako -c "sudo -n -l"
             sh /opt/e2e/verify-sudo-context.sh
           '
+
+      - name: Verify installed native helper
+        run: |
+          set -euo pipefail
+          fixture=$(docker run --detach --privileged --cgroupns=private --stop-signal SIGRTMIN+3 \
+            -v "$PWD/e2e/docker/server/verify-native-helper.py:/opt/e2e/verify-native-helper.py:ro" \
+            tako-host-fixture /sbin/init)
+          cleanup() {
+            docker exec "$fixture" journalctl --no-pager --lines=50 -u tako-network-helper.service || true
+            docker rm --force "$fixture" >/dev/null
+          }
+          trap cleanup EXIT
+          docker exec "$fixture" timeout 30 systemctl is-system-running --wait || true
+          docker exec "$fixture" python3 /opt/e2e/verify-native-helper.py
 
   detect-changes:
     name: Detect changes
