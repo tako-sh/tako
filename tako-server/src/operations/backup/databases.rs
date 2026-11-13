@@ -214,7 +214,7 @@ impl crate::ServerState {
         let backup_id = format!("d{now}-{}", nanoid::nanoid!(8));
         let work_dir = tmp_root.join(&backup_id);
         let backup_key = active_backup_key(&backup)?.clone();
-        create_private_work_dir(&work_dir).await?;
+        let _work = create_private_work_dir(&work_dir).await?;
 
         let result: Result<DatabaseSnapshotOutcome, String> = async {
             let data_dir = self.runtime.data_dir.clone();

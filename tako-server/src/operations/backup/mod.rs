@@ -284,7 +284,7 @@ impl crate::ServerState {
         let encrypted_archive_path = work_dir.join("data.tar.zst.enc");
         let backup_key = active_backup_key(&backup)?.clone();
 
-        create_private_work_dir(&work_dir).await?;
+        let _work = create_private_work_dir(&work_dir).await?;
 
         let result: Result<BackupInfo, String> = async {
             let archive_result = tokio::task::spawn_blocking({
@@ -569,7 +569,7 @@ impl crate::ServerState {
         let archive_path = work_dir.join("data.tar.zst");
         let encrypted_archive_path = work_dir.join("data.tar.zst.enc");
         let extract_dir = work_dir.join("extracted");
-        create_private_work_dir(&work_dir).await?;
+        let _work = create_private_work_dir(&work_dir).await?;
 
         let result: Result<BackupRestoreResponse, String> = async {
             if info.kind == BackupKind::Databases {
@@ -1060,12 +1060,19 @@ fn restore_download_preflight(size_bytes: u64, available_bytes: u64) -> Result<(
     Ok(())
 }
 
-async fn create_private_work_dir(path: &std::path::Path) -> Result<(), String> {
+/// The work directory of a backup or restore, locked until the returned
+/// file is dropped, so that no start of another server process removes it
+/// while the work runs.
+async fn create_private_work_dir(path: &std::path::Path) -> Result<std::fs::File, String> {
     tokio::fs::DirBuilder::new()
         .mode(0o700)
         .create(path)
         .await
-        .map_err(|e| format!("create backup work dir {}: {e}", path.display()))
+        .map_err(|e| format!("create backup work dir {}: {e}", path.display()))?;
+    journal::lock_work_dir(path).map_err(|e| {
+        let _ = std::fs::remove_dir_all(path);
+        format!("lock backup work dir {}: {e}", path.display())
+    })
 }
 
 fn validate_backup_binding(backup: &tako_core::BackupBinding) -> Result<(), String> {

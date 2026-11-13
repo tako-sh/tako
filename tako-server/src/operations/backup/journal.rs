@@ -36,6 +36,9 @@ pub(super) const FINISHED_DIR_PREFIX: &str = ".data-restore-done-";
 const INTENT_FILE: &str = "restore.json";
 const INTENT_TMP_FILE: &str = "restore.json.tmp";
 const LOCK_FILE: &str = "restore.lock";
+/// In the work directory of a backup or restore, below `tmp/backups/` or
+/// `tmp/restore/`, locked for as long as its work runs.
+const WORK_LOCK_FILE: &str = "work.lock";
 const INTENT_VERSION: u32 = 2;
 /// Names the server generation: a new one at every start that serves apps.
 const GENERATION_FILE: &str = "restore-generation";
@@ -695,8 +698,9 @@ pub(crate) enum RecoveryMode {
     /// Rolls nothing back, and marks abandoned every record whose lock is
     /// free, so that no later start rolls one back even if this start
     /// cannot record its generation; a record whose restore still runs is
-    /// left as it is. Then starts a new generation, so records of the
-    /// server it replaces are only reported at later starts.
+    /// left as it is. Removes what finished restores left. Then starts a
+    /// new generation, so records of the server it replaces are only
+    /// reported at later starts.
     Successor,
     /// A standby beside a running primary. Changes nothing, and its own
     /// restores are never rolled back automatically.
@@ -773,7 +777,12 @@ pub(super) enum Recovery {
 fn recover_restore_dirs(data_dir: &Path, mode: RecoveryMode, eligible: Option<&str>) {
     let primary = mode == RecoveryMode::Primary;
     for dir in restore_dirs(data_dir) {
-        let recovered = recover_restore_dir(&dir, primary, eligible);
+        let recovered = if mode == RecoveryMode::Successor && has_prefix(&dir, FINISHED_DIR_PREFIX)
+        {
+            remove_finished(&dir)
+        } else {
+            recover_restore_dir(&dir, primary, eligible)
+        };
         // No record stays where a later start could roll it back: the
         // generation this start records may never reach the disk. A
         // directory whose lock another process still holds is not renamed:
@@ -846,9 +855,7 @@ pub(super) fn recover_restore_dir(
         if !primary {
             return Ok(Recovery::Deferred);
         }
-        super::mounts::remove_tree(dir)
-            .map_err(|error| format!("remove previous data {}: {error}", dir.display()))?;
-        return Ok(Recovery::Cleaned);
+        return remove_finished(dir);
     }
     if has_prefix(dir, ABANDONED_DIR_PREFIX) {
         return Ok(Recovery::Left(
@@ -905,6 +912,14 @@ pub(super) fn recover_restore_dir(
     }
     roll_back(dir)?;
     Ok(Recovery::RolledBack)
+}
+
+/// Remove what a finished restore left in `dir`, which nothing needs. Safe
+/// while another process removes it too.
+fn remove_finished(dir: &Path) -> Result<Recovery, String> {
+    super::mounts::remove_tree(dir)
+        .map_err(|error| format!("remove previous data {}: {error}", dir.display()))?;
+    Ok(Recovery::Cleaned)
 }
 
 fn has_prefix(dir: &Path, prefix: &str) -> bool {
@@ -967,14 +982,67 @@ pub(super) fn recover_rollback_dir(dir: &Path) -> Result<Recovery, String> {
     recover_restore_dir(dir, true, Some(&current_generation()))
 }
 
-/// Remove backup and restore work directories a previous server process
-/// left behind. Call only when no other server process can be using them.
-pub(crate) fn sweep_backup_work_dirs(data_dir: &Path) {
+/// Lock the new, empty work directory `dir` of a backup or restore for as
+/// long as the returned file is open: [`sweep_backup_work_dirs`] leaves it.
+pub(super) fn lock_work_dir(dir: &Path) -> io::Result<File> {
+    let lock = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(dir.join(WORK_LOCK_FILE))?;
+    rustix::fs::flock(&lock, FlockOperation::NonBlockingLockExclusive).map_err(io::Error::from)?;
+    Ok(lock)
+}
+
+/// The lock of the work directory `dir`, once its work has ended; `None`
+/// while its work runs. A directory without a lock file is an older
+/// server's, or one whose creation stopped part way.
+fn ended_work_lock(dir: &Path) -> io::Result<Option<File>> {
+    let lock = std::fs::OpenOptions::new()
+        .write(true)
+        .open(dir.join(WORK_LOCK_FILE))?;
+    match rustix::fs::flock(&lock, FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => Ok(Some(lock)),
+        Err(rustix::io::Errno::WOULDBLOCK) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Remove the backup and restore work directories whose work has ended.
+/// Only a normal start, which no other server process runs beside, also
+/// removes those without a lock it can check.
+pub(crate) fn sweep_backup_work_dirs(data_dir: &Path, mode: RecoveryMode) {
     for kind in ["backups", "restore"] {
         let root = data_dir.join("tmp").join(kind);
         for entry in std::fs::read_dir(&root).into_iter().flatten().flatten() {
             let path = entry.path();
-            let removed = if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            let is_dir = entry.file_type().is_ok_and(|kind| kind.is_dir());
+            let lock = if is_dir {
+                ended_work_lock(&path)
+            } else {
+                Err(io::ErrorKind::NotFound.into())
+            };
+            // Held until the directory is gone.
+            let _lock = match lock {
+                Ok(Some(lock)) => Some(lock),
+                Ok(None) => {
+                    tracing::info!(
+                        path = %path.display(),
+                        "Left a backup work directory whose work still runs"
+                    );
+                    continue;
+                }
+                Err(_) if mode == RecoveryMode::Primary => None,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        "Left a backup work directory whose lock cannot be checked: {error}"
+                    );
+                    continue;
+                }
+            };
+            let removed = if is_dir {
                 std::fs::remove_dir_all(&path)
             } else {
                 std::fs::remove_file(&path)
@@ -1290,7 +1358,7 @@ mod tests {
             restore_dirs(temp.path())
         );
         recover_as_next_start(temp.path());
-        sweep_backup_work_dirs(temp.path());
+        sweep_backup_work_dirs(temp.path(), RecoveryMode::Primary);
         assert!(!unused_path.exists());
         // Marked abandoned, so no later start guesses at it either.
         let legacy = renamed(&legacy, ABANDONED_DIR_PREFIX);
@@ -1302,6 +1370,56 @@ mod tests {
             assert_eq!(std::fs::read_dir(root).unwrap().count(), 0, "{kind}");
         }
         running.finish().unwrap();
+    }
+
+    /// A backup or restore holds the lock in its work directory while it
+    /// runs: every start but a standby's removes the work directories whose
+    /// work has ended, keeps those whose work runs, and only a normal start,
+    /// beside no other server process, removes one without a lock.
+    #[test]
+    fn starts_sweep_only_the_work_dirs_whose_work_has_ended() {
+        for mode in [RecoveryMode::Primary, RecoveryMode::Successor] {
+            let temp = tempfile::tempdir().unwrap();
+            let work = |path: &str| {
+                let dir = temp.path().join(path);
+                std::fs::create_dir_all(dir.join("snapshot")).unwrap();
+                dir
+            };
+            let running = work("tmp/backups/b1-running");
+            let _running = lock_work_dir(&running).unwrap();
+            let ended = work("tmp/restore/restore-ended");
+            drop(lock_work_dir(&ended).unwrap());
+            let unlocked = work("tmp/backups/b0-unlocked");
+
+            sweep_backup_work_dirs(temp.path(), mode);
+            assert!(running.exists(), "work that runs must be kept");
+            assert!(!ended.exists(), "work that ended must be removed");
+            assert!(
+                unlocked.exists() == (mode != RecoveryMode::Primary),
+                "only a normal start may remove a work directory without a lock"
+            );
+        }
+    }
+
+    /// What a finished restore left is never needed: every start but a
+    /// standby's removes it.
+    #[test]
+    fn starts_beside_other_server_processes_remove_finished_restores() {
+        for (mode, removed) in [
+            (RecoveryMode::Successor, true),
+            (RecoveryMode::Standby, false),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let finished = temp
+                .path()
+                .join(format!("apps/demo/production/{FINISHED_DIR_PREFIX}abc"));
+            std::fs::create_dir_all(finished.join("data/app")).unwrap();
+            recover_restores_in(temp.path(), mode);
+            assert!(
+                finished.exists() != removed,
+                "a finished restore must be removed by every start but a standby's"
+            );
+        }
     }
 
     #[test]
