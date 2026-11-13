@@ -387,6 +387,19 @@ impl ChannelStore {
         }
     }
 
+    /// A shared Postgres store whose maintenance runs only when a test asks.
+    #[cfg(test)]
+    pub(crate) fn open_postgres_without_maintenance(url: &str, schema: &str, app_id: &str) -> Self {
+        Self {
+            backend: Arc::new(ChannelStoreBackend::Postgres(Box::new(
+                PostgresChannelStore::open(url, schema, app_id).unwrap(),
+            ))),
+            delivery: Arc::default(),
+            _lifetime: Arc::new(()),
+            read_only: false,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn sqlite_conn(&self) -> parking_lot::MutexGuard<'_, rusqlite::Connection> {
         match self.backend.as_ref() {
