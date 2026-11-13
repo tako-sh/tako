@@ -11,6 +11,7 @@ cwd = "../../../sdk/javascript"
 [[build_stages]]
 name = "app"
 run = "bun run build"
+exclude = ["website/src/assets/**", "website/public/**"]
 
 [envs.development]
 routes = ["demo.test", "*.demo.test"]
