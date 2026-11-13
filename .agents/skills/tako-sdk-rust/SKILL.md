@@ -82,7 +82,8 @@ channel routes. tako-server rejects params the schema does not declare under
 `.params_schema(...)` a space takes no params. The schema must be one object
 schema with every param under its top-level `properties` (no top-level `$ref`, and
 a top-level `allOf`, `anyOf`, `oneOf`, `not`, or `if` may only add constraints such
-as `required`); tako-server reports any other shape as an invalid schema.
+as `required` or a `const` on a declared property); tako-server reports any other
+shape as an invalid schema.
 
 `router_with_presence(app, registry)` wraps a custom Axum loop. Both presence
 adapter helpers preserve status probes and protect internal registry/auth routes

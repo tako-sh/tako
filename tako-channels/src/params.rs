@@ -124,21 +124,32 @@ fn combinator_subschemas(schema: &Map<String, Value>) -> Vec<(&'static str, &Val
 }
 
 /// The keyword through which a combinator subschema, or one nested in it,
-/// declares params. `additionalProperties: false` only constrains.
-fn declaring_keyword(subschema: &Value) -> Option<&'static str> {
+/// declares params, with the param it names that `declared` (the top-level
+/// `properties`) lacks when the keyword is `properties`. Only constraints
+/// pass: `additionalProperties: false`, and `properties` that names declared
+/// params alone, such as a `const` that tells `oneOf` branches apart.
+fn declaring_keyword<'a>(
+    subschema: &'a Value,
+    declared: Option<&Map<String, Value>>,
+) -> Option<(&'static str, Option<&'a str>)> {
     let subschema = subschema.as_object()?;
-    DECLARING_KEYWORDS
-        .iter()
-        .copied()
-        .find(|keyword| match subschema.get(*keyword) {
-            None | Some(Value::Bool(false)) => false,
-            Some(_) => true,
-        })
-        .or_else(|| {
-            combinator_subschemas(subschema)
-                .into_iter()
-                .find_map(|(_, nested)| declaring_keyword(nested))
-        })
+    for keyword in DECLARING_KEYWORDS {
+        match (*keyword, subschema.get(*keyword)) {
+            (_, None | Some(Value::Bool(false))) => {}
+            ("properties", Some(Value::Object(named))) => {
+                if let Some(param) = named
+                    .keys()
+                    .find(|param| !declared.is_some_and(|declared| declared.contains_key(*param)))
+                {
+                    return Some(("properties", Some(param)));
+                }
+            }
+            (keyword, Some(_)) => return Some((keyword, None)),
+        }
+    }
+    combinator_subschemas(subschema)
+        .into_iter()
+        .find_map(|(_, nested)| declaring_keyword(nested, declared))
 }
 
 /// A channel or presence params schema is one object schema with its params
@@ -157,13 +168,17 @@ fn require_flat_object(schema: &Value) -> Result<(), ParamsError> {
             } else if schema.get("properties").is_some_and(|p| !p.is_object()) {
                 Some("has a `properties` that is not an object".to_owned())
             } else {
+                let declared = schema.get("properties").and_then(Value::as_object);
                 combinator_subschemas(schema)
                     .into_iter()
                     .find_map(|(combinator, subschema)| {
-                        declaring_keyword(subschema).map(|keyword| {
-                            format!(
+                        declaring_keyword(subschema, declared).map(|(keyword, param)| match param {
+                            Some(param) => format!(
+                                "declares param `{param}` through `{keyword}` inside `{combinator}` and not under the top-level `properties` (combinators may only add constraints over the params declared there)"
+                            ),
+                            None => format!(
                                 "declares params through `{keyword}` inside `{combinator}` (combinators may only add constraints such as `required` over the top-level `properties`)"
-                            )
+                            ),
                         })
                     })
             }
@@ -429,6 +444,50 @@ mod tests {
         }
         for schema in [&one_of, &if_then, &not, &dependent] {
             check_params_schema(schema).unwrap();
+        }
+    }
+
+    #[test]
+    fn combinators_may_constrain_declared_params_through_properties() {
+        let ids = json!({"kind": {"enum": ["user", "team"]},
+            "userId": {"type": "string"}, "teamId": {"type": "string"}});
+        let if_then = json!({"type": "object", "properties": ids,
+            "if": {"properties": {"kind": {"const": "team"}}},
+            "then": {"required": ["teamId"]}});
+        check_params_schema(&if_then).unwrap();
+        validate_query(&if_then, "kind=team&teamId=t").unwrap();
+        validate_query(&if_then, "kind=user").unwrap();
+        assert!(matches!(
+            validate_query(&if_then, "kind=team"),
+            Err(ParamsError::Invalid(_))
+        ));
+
+        let union = json!({"type": "object", "properties": ids, "oneOf": [
+            {"properties": {"kind": {"const": "user"}}, "required": ["kind", "userId"]},
+            {"properties": {"kind": {"const": "team"}}, "required": ["kind", "teamId"]}
+        ]});
+        check_params_schema(&union).unwrap();
+        validate_query(&union, "kind=user&userId=u").unwrap();
+        validate_value(&union, &json!({"kind": "team", "teamId": "t"})).unwrap();
+        assert!(matches!(
+            validate_query(&union, "kind=team&userId=u"),
+            Err(ParamsError::Invalid(_))
+        ));
+
+        // A param only a combinator names is rejected by name, at any depth.
+        for schema in [
+            json!({"type": "object", "properties": ids,
+                "if": {"properties": {"other": {"const": 1}}}, "then": {"required": ["teamId"]}}),
+            json!({"type": "object", "properties": ids,
+                "anyOf": [{"allOf": [{"properties": {"kind": {"const": "team"}, "other": {}}}]}]}),
+        ] {
+            let error = check_params_schema(&schema).unwrap_err();
+            assert!(
+                matches!(&error, ParamsError::InvalidSchema(message)
+                    if message.contains("param `other` through `properties`")
+                        && message.contains("top-level `properties`")),
+                "a param only a combinator declares must be rejected by name"
+            );
         }
     }
 

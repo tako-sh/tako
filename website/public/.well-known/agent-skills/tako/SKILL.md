@@ -168,7 +168,7 @@ requested room or tenant. Channel params are flat scalars and cannot be named
 requests reject params the schema does not declare, so a definition without a
 params schema takes none. A params schema is one object schema with every param
 under its top-level `properties`; unions, intersections, and `$ref` are rejected, while a top-level
-`oneOf`/`anyOf`/`allOf`/`not`/`if` that only adds constraints such as `required` is allowed. JavaScript server code
+`oneOf`/`anyOf`/`allOf`/`not`/`if` that only adds constraints such as `required` or a `const` on a declared param is allowed. JavaScript server code
 can `close()` a durable stream; readers subscribing with `from: "start"` replay
 its retained messages, then stop for good at the close. Use this for output that
 must survive a refresh, such as LLM replies, and keep the finished result in the
