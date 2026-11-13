@@ -420,28 +420,38 @@ run_channels_workflows_checks() {
   local route_host=$2
   local caller_host=${3:-$route_host}
   local events_file="$TMP_ROOT/channels-events-${server_host}.txt"
-  local headers_file="$TMP_ROOT/channels-headers-${server_host}.txt"
-  local stderr_file="$TMP_ROOT/channels-curl-${server_host}.err"
+  local ready_file="$TMP_ROOT/channels-ready-${server_host}.txt"
+  local stderr_file="$TMP_ROOT/channels-client-${server_host}.err"
   local direct_message="direct-${server_host}-$(date +%s%N)"
   local workflow_message="workflow-${server_host}-$(date +%s%N)"
   local sse_pid
 
   echo "Running channel/workflow SSE checks for route: $route_host on $server_host"
 
-  rm -f "$events_file" "$headers_file" "$stderr_file"
-  curl -sS -N \
-    --http1.1 \
-    --connect-timeout 3 \
-    --max-time 30 \
-    -H "Host: ${route_host}" \
-    -H "X-Forwarded-Proto: https" \
-    -H "Forwarded: proto=https" \
-    -H "Authorization: Bearer e2e" \
-    -H "Accept: text/event-stream" \
-    -D "$headers_file" \
-    -o "$events_file" \
-    "http://${server_host}:8080/_tako/channels/demo" \
-    2>"$stderr_file" &
+  rm -f "$events_file" "$ready_file" "$stderr_file"
+  # A newly deployed peer can legitimately reset replay when it first receives
+  # an origin's later event. Exercise the SDK's reconnect/replay contract rather
+  # than a one-shot curl connection that stops on that control event.
+  (
+    cd "$PROJECT_DIR"
+    exec bun - "$server_host" "$route_host" "$events_file" "$ready_file" <<'JS'
+import { appendFileSync, writeFileSync } from "node:fs";
+import { Channel } from "tako.sh/client";
+
+const [server, route, events, ready] = process.argv.slice(2);
+const subscription = new Channel("demo").subscribe({
+  baseUrl: `http://${server}:8080`,
+  from: "start",
+  authorization: "e2e",
+  headers: { Host: route, "X-Forwarded-Proto": "https", Forwarded: "proto=https" },
+  onRecovery(reason) { console.error(`Channel recovery: ${reason}`); },
+  onError(error) { console.error(error); process.exit(1); },
+});
+subscription.raw.addEventListener("open", () => writeFileSync(ready, "ready\n"));
+subscription.raw.addEventListener("message", (event) => appendFileSync(events, `${event.data}\n`));
+setTimeout(() => { subscription.close(); process.exit(1); }, 30_000);
+JS
+  ) 2>"$stderr_file" &
   sse_pid=$!
 
   cleanup_sse() {
@@ -450,12 +460,11 @@ run_channels_workflows_checks() {
   }
 
   for _ in $(seq 1 40); do
-    if [[ -f "$headers_file" ]] && grep -qi "content-type: text/event-stream" "$headers_file"; then
+    if [[ -f "$ready_file" ]]; then
       break
     fi
     if ! kill -0 "$sse_pid" >/dev/null 2>&1; then
       echo "SSE connection exited before opening" >&2
-      [[ -f "$headers_file" ]] && cat "$headers_file" >&2 || true
       [[ -f "$stderr_file" ]] && cat "$stderr_file" >&2 || true
       cleanup_sse
       exit 1
@@ -463,9 +472,8 @@ run_channels_workflows_checks() {
     sleep 0.25
   done
 
-  if ! grep -qi "content-type: text/event-stream" "$headers_file"; then
-    echo "SSE connection did not return text/event-stream headers" >&2
-    [[ -f "$headers_file" ]] && cat "$headers_file" >&2 || true
+  if [[ ! -f "$ready_file" ]]; then
+    echo "SSE connection did not open" >&2
     [[ -f "$stderr_file" ]] && cat "$stderr_file" >&2 || true
     cleanup_sse
     exit 1
@@ -477,10 +485,12 @@ run_channels_workflows_checks() {
   jq -e --arg id "$workflow_message" '.runId == $id' "$TMP_ROOT/post_body.tmp" >/dev/null
 
   if ! wait_for_file_text "$events_file" "$direct_message" "direct channel publish SSE event"; then
+    cat "$stderr_file" >&2
     cleanup_sse
     exit 1
   fi
   if ! wait_for_file_text "$events_file" "$workflow_message" "workflow channel publish SSE event"; then
+    cat "$stderr_file" >&2
     cleanup_sse
     exit 1
   fi
