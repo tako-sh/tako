@@ -18,8 +18,8 @@ tako logs --env production --days 1 --json
 ## Native server maintenance
 
 ```bash
-tako network drain edge-a --network production --timeout 120 --json
-tako network resume edge-a --network production --json
+tako network server drain edge-a --network production --timeout 120 --json
+tako network server resume edge-a --network production --json
 ```
 
 Use a unique server member name or device ID. The timeout defaults to 120 seconds.

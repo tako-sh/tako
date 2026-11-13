@@ -3,7 +3,7 @@ title: "tako.toml Reference"
 description: "Look up Tako project configuration for identity, runtimes, builds, routes, variables, storage, backups, images, workflows, and deployment targets."
 ---
 
-`tako.toml` describes one app: identity, runtime, build, routes, variables, storage bindings, backups, SSL provider, source-IP policy, workflows, and target servers. App secrets, storage credentials, and provider credentials are encrypted in `.tako/secrets.json`, not stored in this file.
+`tako.toml` describes one app: identity, runtime, build, routes, variables, storage bindings, backups, SSL provider, source-IP policy, workflows, and target servers. App secrets, storage credentials, and provider credentials are encrypted in ignored `.tako/secrets.local.json` and encrypted network state, not stored in this file.
 
 App-scoped commands use `./tako.toml` by default. `-c path/to/config` selects another config file and treats that file's parent directory as the app directory.
 
@@ -183,7 +183,7 @@ force_path_style = false
 public_base_url = "https://cdn.example.com/uploads"
 ```
 
-Top-level storage resources store non-secret metadata. S3 resources require `bucket`, `endpoint`, and `region`; endpoints and public base URLs must use HTTPS. Set `force_path_style = true` when your S3-compatible provider needs path-style bucket URLs instead of virtual-hosted bucket URLs. Credentials are set by `tako storages add` or `tako storages credentials` and stored encrypted in `.tako/secrets.json`.
+Top-level storage resources store non-secret metadata. S3 resources require `bucket`, `endpoint`, and `region`; endpoints and public base URLs must use HTTPS. Set `force_path_style = true` when your S3-compatible provider needs path-style bucket URLs instead of virtual-hosted bucket URLs. Credentials are set by `tako storages add` or `tako storages credentials` and stored encrypted in ignored `.tako/secrets.local.json` and encrypted network state.
 
 `local` is a built-in resource name. Bind to it with `storages = { uploads = "local" }`; do not declare `[storages.local]`. Local storage deploys only to single-server environments. In `development`, undeclared storage resources default to local storage.
 
@@ -214,7 +214,7 @@ Set provider credentials with:
 tako credentials set ssl.cloudflare --env production
 ```
 
-Provider credentials are encrypted in `.tako/secrets.json`, not stored in `tako.toml`.
+Provider credentials are encrypted in ignored `.tako/secrets.local.json` and encrypted network state, not stored in `tako.toml`.
 
 ## Workflows
 

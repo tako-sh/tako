@@ -94,7 +94,7 @@ export default function fetch(request: Request) {
 | `tako.build`    | Build identifier (from `TAKO_BUILD`)                                               |
 | `tako.dataDir`  | Persistent app-owned data directory — writes survive restarts                      |
 | `tako.appDir`   | Directory the app is running from (equivalent to `process.cwd()`)                  |
-| `tako.secrets`  | Typed secret bag (interface regenerated from `.tako/secrets.json`)                 |
+| `tako.secrets`  | Typed secret bag (interface regenerated from the local secret state and published cache)                 |
 | `tako.storages` | Typed storage bag (interface regenerated from `tako.toml`)                         |
 | `tako.cache`    | SQLite-backed server-side key/value cache                                          |
 | `tako.logger`   | Structured JSON logger (`tako.logger.info(...)`)                                   |
@@ -110,7 +110,7 @@ export default function fetch(request: Request) {
 - Reads from a mutable store populated via fd 3 at startup (before user module is imported)
 - Individual access works: `tako.secrets.MY_KEY` returns the string value
 - Resists bulk serialization: `toString()`, `toJSON()` return `"[REDACTED]"`
-- Is typed — the `TakoSecrets` interface augmentation in `tako.d.ts` lists every key present in `.tako/secrets.json`
+- Is typed — the `TakoSecrets` interface augmentation in `tako.d.ts` lists every key present in the local secret state and published cache
 
 The generated declaration file is type-only and is not imported by app code. In the browser, use `tako.sh/client` for realtime clients, or `tako.sh/react` for hooks.
 

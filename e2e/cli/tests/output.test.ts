@@ -73,7 +73,7 @@ describe("servers ls (warning output)", () => {
       'name = "test-app"\nruntime = "node"\n\n[envs.production]\nroute = "test.example.com"\n',
     );
 
-    const { term, screen, exitCode } = await run(["servers", "ls"], {
+    const { term, screen, exitCode } = await run(["network", "server", "ls"], {
       cwd: tempDir,
       env: { HOME: tempDir, TAKO_HOME: takoHome },
     });
@@ -105,16 +105,16 @@ describe("servers ls (warning output)", () => {
       'name = "test-app"\nruntime = "node"\n\n[envs.production]\nroute = "test.example.com"\n',
     );
 
-    const { term, screen } = await run(["servers", "ls"], {
+    const { term, screen } = await run(["network", "server", "ls"], {
       cwd: tempDir,
       env: { HOME: tempDir, TAKO_HOME: takoHome },
     });
 
-    // "Run tako servers add" hint should be present
-    expect(screen).toContain("tako servers add");
+    // "Run tako network server add" hint should be present
+    expect(screen).toContain("tako network server add");
 
     // The hint row should have dim or colored text (not default)
-    const hintRow = findRowContaining(term, "tako servers add");
+    const hintRow = findRowContaining(term, "tako network server add");
     if (hintRow !== null) {
       // Check that at least some cells on this row are non-default fg
       const cell = term.cell(hintRow, 4);
@@ -135,13 +135,13 @@ describe("--ci vs normal mode", () => {
     );
 
     // Normal mode (PTY = colors enabled)
-    const normal = await run(["servers", "ls"], {
+    const normal = await run(["network", "server", "ls"], {
       cwd: tempDir,
       env: { HOME: tempDir, TAKO_HOME: takoHome },
     });
 
     // CI mode (no colors)
-    const ci = await run(["--ci", "servers", "ls"], {
+    const ci = await run(["--ci", "network", "server", "ls"], {
       cwd: tempDir,
       env: { HOME: tempDir, TAKO_HOME: takoHome },
     });
@@ -167,7 +167,7 @@ describe("--verbose mode", () => {
       'name = "test-app"\nruntime = "node"\n\n[envs.production]\nroute = "test.example.com"\n',
     );
 
-    const { term, screen: _screen } = await run(["-v", "servers", "ls"], {
+    const { term, screen: _screen } = await run(["-v", "network", "server", "ls"], {
       cwd: tempDir,
       env: { HOME: tempDir, TAKO_HOME: takoHome },
     });
@@ -217,7 +217,7 @@ describe("terminal width handling", () => {
     );
 
     // Spawn with narrow terminal
-    const { screen } = await run(["servers", "ls"], {
+    const { screen } = await run(["network", "server", "ls"], {
       cols: 40,
       rows: 10,
       cwd: tempDir,

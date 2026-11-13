@@ -81,7 +81,7 @@ tako storages add uploads --env production --resource prod_uploads \
 tako generate
 ```
 
-This writes non-secret resource metadata and the environment binding to `tako.toml`, and encrypts credentials in `.tako/secrets.json`:
+This writes non-secret resource metadata and the environment binding to `tako.toml`, and encrypts credentials in ignored `.tako/secrets.local.json` and encrypted network state:
 
 ```toml
 [envs.production]

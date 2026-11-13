@@ -342,7 +342,7 @@
     },
     "StorageResourceConfig": {
       "additionalProperties": false,
-      "description": "S3-compatible storage resource from [storages.*]. Credentials are stored\nencrypted in `.tako/secrets.json`, not here.",
+      "description": "S3-compatible storage resource from [storages.*]. Credentials are stored\nencrypted in ignored local state and shared network records, not here.",
       "properties": {
         "bucket": {
           "description": "Bucket name. Required for `s3`.",

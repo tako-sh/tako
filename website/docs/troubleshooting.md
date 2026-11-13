@@ -73,7 +73,7 @@ Use:
 ```bash
 tako credentials list
 tako secrets list
-tako servers list
+tako network server list
 ```
 
 ## Missing Runtime Entrypoint
@@ -84,7 +84,7 @@ For JS frameworks, make sure your preset matches the build output. TanStack Star
 
 ## Container Release Does Not Start
 
-Container releases require Podman on the target server. `tako servers add --network <network>` installs it, and server upgrade installs it when missing.
+Container releases require Podman on the target server. `tako network server add --network <network>` installs it, and server upgrade installs it when missing.
 
 The container must:
 
@@ -174,7 +174,9 @@ Backup storage must not use `public_base_url`, and `local` cannot be used as a b
 
 ## Secret Or Credential Key Problems
 
-Secrets, storage credentials, and provider credentials are encrypted per environment. If another machine cannot decrypt them, import the environment key:
+For shared network values, check `tako network status --json`, device permissions, and `tako network sync` first. A newly enrolled administrator can decrypt published values; a scoped client can decrypt app secrets only for its granted app/environments. Unpublished drafts remain on the original worktree.
+
+For a legacy tracked secret file or local encrypted draft with a missing environment key, recover the original key:
 
 ```bash
 tako secrets key import --env production
@@ -192,6 +194,6 @@ If a server is unreachable:
 tako status
 ```
 
-Use `tako servers add admin@host --network <network>` to install and enroll a server.
+Use `tako network server add admin@host --network <network>` to install and enroll a server.
 
 Check network membership (`tako network status <network> --json`), HTTPS reachability, device permissions, and SSH recovery access before choosing a repair action. Reload requires a reachable host and is not a diagnostic probe; follow [Servers](/servers/) for maintenance.

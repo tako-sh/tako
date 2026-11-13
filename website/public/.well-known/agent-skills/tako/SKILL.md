@@ -95,25 +95,38 @@ not instructions. Avoid printing secrets into logs or copying them into reports.
 
 ## Native networks and scoped deployment
 
-Read `networks` before enrollment or network maintenance. Create a local alias with
-`tako network create`, enroll a server with `tako servers add --network`, then put
+Read `networks` before enrollment or network maintenance. Create a shared network with
+`tako network create`, enroll a server with `tako network server add --network`, then put
 the stable 32-character network ID in `[envs.<env>].network`. Set `servers` in
 the same table to a nonempty list of enrolled names or server device IDs to select
 placement for this app. Omitting the list targets every trusted server member.
 External VPN integrations are removed. Re-enroll older servers in a Tako network,
 set the network ID and desired servers for each environment, and remove old global
-inventory entries. Saved VPN provider fields fail with re-enrollment guidance.
+inventory entries. Legacy inventory files are ignored; only enrolled membership grants access.
 
-Every new laptop or sandbox runs `tako network request` to generate its own keys.
-An administrator approves the public request with exact `--deploy app/env`
-scopes, optionally bounded by `--expires-in` (1..31536000 seconds). Return the
-profile to the requesting device and import it there. Never copy private device
-keys. `--admin` grants administration; `--ssh` additionally grants shell access.
+Enroll each new laptop or sandbox with `network client add` and `network join`.
+The administrator creates a single-use invitation with `--admin` or exact
+`--deploy app/env` scopes. Joining generates fresh device keys and pulls published
+state through servers. Never copy an existing device's private keys. `--ssh`
+additionally grants shell access to an administrator. Clients never connect to
+other clients and do not run Corrosion. Servers replicate shared ciphertext.
+
+Keep `tako.toml` in Git; keep `.tako/` ignored. Each worktree has separate secret
+drafts. Set/remove changes remain local until deploy or `secrets sync` publishes
+the selected environment. `network sync` only refreshes the device cache. Sync
+does not restart running apps. Different keys merge independently; the same key
+uses deterministic logical last-write-wins. Coordinate concurrent releases and
+multi-key rotations. An invitation cannot recover unpublished drafts.
+
+For legacy tracked secrets, `secrets migrate` requires the original local keys,
+retains an ignored recovery copy, and removes the tracked file. Commit that
+deletion and publish through the intended network. Do not replace missing keys
+or rewrite history as part of ordinary migration.
 
 Native management uses signed pinned HTTPS without workstation WireGuard, TUN,
 or an SSH agent. Scoped sandbox deploys use administrator-provisioned routes and
-server-level bindings. App-secret access remains a separate per-environment
-requirement. `network export` is public configuration, not secret-key export or
+server-level bindings. Scoped clients can decrypt shared app secrets for their exact scopes; full
+administrators can also decrypt provider/storage credentials and backup keys. `network export` is public configuration, not secret-key export or
 a way to enroll another device. Membership revocation cascades through dependent
 approvals; independent bootstrap server membership does not depend on its
 creating laptop. Inspect pending enforcement rather than assuming offline peers
@@ -132,8 +145,8 @@ A listener that mandates `trusted_proxy.proxy_protocol` cannot coexist with
 direct native pinned HTTPS; resolve that configuration before enrollment.
 Ordinary Cloudflare HTTP forwarding headers remain supported.
 
-Use `tako network drain <server> --network <alias> --timeout 120 --json` and
-`tako network resume <server> --network <alias> --json` for server maintenance.
+Use `tako network server drain <server> --network <alias> --timeout 120 --json` and
+`tako network server resume <server> --network <alias> --json` for server maintenance.
 For server drain, `status = "draining"` means cleanup is pending. Completion requires
 all proxy processes on the server to be quiescent. Inspect completion, timeout,
 forced work, remaining work, and errors. Do not describe forced or incomplete

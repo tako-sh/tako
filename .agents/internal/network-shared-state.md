@@ -151,3 +151,17 @@ publication is verified.
 
 The PR remains a draft until implementation and required verification are
 complete. Commit and push each coherent milestone to the same branch.
+
+## Implementation decisions confirmed
+
+- Network names are immutable in this version; all devices read the descriptor's name.
+- Enrollment and device key files move to version 2 to bind a separate encryption key.
+  Older native identities require fresh enrollment, with existing app data and
+  environment keys preserved. There is no rolling or in-place identity migration.
+- Invitation lifetime defaults to one hour and is capped at 24 hours.
+- Shared history is bounded at 10,000 records / 8 MiB, including grants and tombstones;
+  automatic compaction remains outside this version.
+- The real HTTPS integration test runs separate CLI processes for enrollment,
+  permission checks, independent secret edits, lost responses, pending deletions,
+  new worktrees, and revocation. A SQLite-backed Corrosion transport test exercises
+  pagination, idempotent writes, conflicting payloads, and corrupt records.

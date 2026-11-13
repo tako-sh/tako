@@ -16,11 +16,9 @@ bun run dev
 
 The `dev` script runs `tako dev bunx --bun vite dev`, so it wraps Vite in the real Tako path: workflows are enqueued through the internal socket, events flow through the actual `mission-log` channel, and base artwork is served through `/_tako/image`.
 
-Import demo development secrets:
-
-```bash
-printf '%s\n' 'eyJ2ZXJzaW9uIjoxLCJpZCI6IjlhYzhkYjk1N2MwZTQwNjEiLCJrZXkiOiI2WjhwazZnWElsN1A2ZGlNaTVDRFN0cEdXWmhUQVI5Tnp0RWR6RXZPUWxZPSJ9' | tako secrets key import --env development
-```
+Secret values are not stored in Git. Set development values using
+`tako secrets set NAME --env development`. To access published production values,
+enroll this machine with a network invitation and run `tako network sync`.
 
 ## Build
 

@@ -51,7 +51,7 @@ Create a native network and enroll a supported Linux server:
 
 ```bash
 tako network create production
-tako servers add admin@203.0.113.10 --network production --name edge-a --wireguard-endpoint 203.0.113.10:51820
+tako network server add admin@203.0.113.10 --network production --name edge-a --wireguard-endpoint 203.0.113.10:51820
 tako network list --json
 ```
 

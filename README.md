@@ -41,18 +41,18 @@ Set up a deployment host:
 
 ```bash
 tako network create production
-tako servers add ubuntu@203.0.113.10 --network production --name edge
+tako network server add ubuntu@203.0.113.10 --network production --name edge
 tako network list --json
 # Set [envs.production].network in tako.toml to the stable network ID.
 # Custom public ports:
-tako servers add ubuntu@203.0.113.10 --network production --http-port 8080 --https-port 8443
+tako network server add ubuntu@203.0.113.10 --network production --http-port 8080 --https-port 8443
 ```
 
 Deploy your app:
 
 ```bash
 tako init    # prompts for app name + route, offers wildcard HTTPS setup, writes tako.toml
-tako servers add my-server
+tako network server add my-server
 # Optional: Let’s Encrypt wildcard certificates via Cloudflare DNS-01; traffic can stay DNS-only/direct.
 # Use a user or account API token with Zone Read and DNS Write for the matching Cloudflare zone.
 tako credentials set ssl.cloudflare --env production --expires-on "in 90 days"
