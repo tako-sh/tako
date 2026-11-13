@@ -178,6 +178,21 @@ fn remote_cleanup_previous_binary_command() -> String {
     SshClient::run_as_root("/usr/local/bin/tako-server-service cleanup-upgrade")
 }
 
+async fn refresh_upgrade_companions(ssh: &SshClient) -> Result<(), String> {
+    let command = SshClient::run_as_root("/usr/local/bin/tako-server-service upgrade-companions");
+    let output = ssh
+        .exec(&command)
+        .await
+        .map_err(|error| error.to_string())?;
+    if !output.success() {
+        return Err(format!(
+            "Failed to restart upgrade companions: {}",
+            output.combined().trim()
+        ));
+    }
+    Ok(())
+}
+
 pub(super) async fn upgrade_servers(
     name: Option<&str>,
     force: bool,
@@ -430,6 +445,8 @@ async fn run_server_upgrade(
         let version_after_install = ssh.tako_version().await.ok().flatten();
         if version_after_install.as_deref() == running_version {
             tracing::debug!("Binary unchanged, skipping reload");
+            // An earlier upgrade may have left these on an older binary.
+            refresh_upgrade_companions(ssh).await?;
             ssh.tako_exit_upgrading_allow_incompatible(&owner, force)
                 .await
                 .map_err(|error| format!("Failed to exit upgrading mode: {error}"))?;
@@ -470,6 +487,8 @@ async fn run_server_upgrade(
 
         check_remote_protocol_compatibility(ssh, &info.data_dir, force).await?;
 
+        refresh_upgrade_companions(ssh).await?;
+
         ssh.tako_exit_upgrading_allow_incompatible(&owner, force)
             .await
             .map_err(|error| format!("Failed to exit upgrading mode: {error}"))?;
@@ -494,6 +513,7 @@ async fn run_server_upgrade(
                     ssh.tako_restart()
                         .await
                         .map_err(|error| format!("restart previous binary: {error}"))?;
+                    refresh_upgrade_companions(ssh).await?;
                     if let Some(pid) = rollback_from_pid {
                         wait_for_primary_ready(ssh, UPGRADE_SOCKET_WAIT_TIMEOUT, pid, name, force)
                             .await

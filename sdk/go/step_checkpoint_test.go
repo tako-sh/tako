@@ -119,6 +119,9 @@ func TestWaitThatParksDoesNotConsumeItsNameForTheNextExecution(t *testing.T) {
 	if err := api.WaitFor("approval", nil, 0); !errors.As(err, &parked) {
 		t.Fatalf("expected the run to park, got %v", err)
 	}
+	if parked.timeoutAt != nil {
+		t.Fatalf("zero duration must wait indefinitely: %v", parked.timeoutAt)
+	}
 	api.state["approval"] = map[string]any{"approved": true}
 	var decision struct {
 		Approved bool `json:"approved"`

@@ -134,14 +134,40 @@ pub(super) fn format_status_line(server_name: &str, status: &BackupStatusRespons
         .last_database_snapshot_skip
         .as_ref()
         .map(|skip| {
+            let activity = if skip.reason == tako_core::BackupSkipReason::UnfinishedRestore {
+                "scheduled backups paused"
+            } else {
+                "database snapshot skipped"
+            };
             format!(
-                ", database snapshot skipped at {}: {}",
+                ", {activity} at {}: {}",
                 format_backup_time(skip.at_unix_secs),
                 skip.message
             )
         })
         .unwrap_or_default();
     format!("{server_name}: enabled, {last}, next {next}, {retention}, {databases}{skipped}")
+}
+
+pub(super) fn format_status_restores(
+    server_name: &str,
+    status: &BackupStatusResponse,
+) -> Vec<String> {
+    status
+        .unfinished_restores
+        .iter()
+        .map(|restore| {
+            let state = match restore.state {
+                tako_core::BackupRestoreState::InProgress => "in progress",
+                tako_core::BackupRestoreState::Unfinished => "unfinished",
+                tako_core::BackupRestoreState::Abandoned => "abandoned",
+            };
+            format!(
+                "{server_name}: restore {state} at {}. {}",
+                restore.path, restore.message
+            )
+        })
+        .collect()
 }
 
 /// Why scheduled backups on this server are failing, if they are.
@@ -203,6 +229,7 @@ mod tests {
             last_database_snapshot_at_unix_secs: None,
             last_database_snapshot_skip: None,
             last_backup_failure: None,
+            unfinished_restores: Vec::new(),
         };
         assert_eq!(format_status_line("prod", &status), "prod: disabled");
     }
@@ -218,6 +245,7 @@ mod tests {
             last_database_snapshot_at_unix_secs: None,
             last_database_snapshot_skip: None,
             last_backup_failure: None,
+            unfinished_restores: Vec::new(),
         };
         let line = format_status_line("prod", &status);
         assert!(
@@ -240,6 +268,10 @@ mod tests {
             "{line}"
         );
         assert_eq!(format_status_failure("prod", &status), None);
+
+        status.last_database_snapshot_skip.as_mut().unwrap().reason =
+            tako_core::BackupSkipReason::UnfinishedRestore;
+        assert!(format_status_line("prod", &status).contains("scheduled backups paused"));
 
         status.last_backup_failure = Some(tako_core::BackupFailure {
             at_unix_secs: 0,

@@ -287,7 +287,7 @@ impl Broker {
         deadline: tokio::time::Instant,
     ) -> io::Result<Reply> {
         let response = match request {
-            Request::SignInvocation { .. } | Request::Features => Response::Rejected,
+            Request::SignInvocation { .. } => Response::Rejected,
             Request::UpdatePresence {
                 app,
                 channel,

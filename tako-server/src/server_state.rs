@@ -127,6 +127,10 @@ pub struct ServerState {
     pub(crate) server_mode: AsyncRwLock<UpgradeMode>,
     pub(crate) drain_requested: Arc<AtomicBool>,
     pub(crate) drain_activity: parking_lot::Mutex<Option<crate::state_store::DrainLease>>,
+    /// A standby's shared lease on the standby lock, held for as long as
+    /// this process may run app instances; a restore refuses while any
+    /// standby holds one.
+    pub(crate) standby_lock: parking_lot::Mutex<Option<crate::state_store::DrainLease>>,
     pub(crate) drain_observer_started: AtomicBool,
     pub(crate) proxy_requests: Arc<crate::request_drain::RequestDrain>,
     pub(crate) runtime: ServerRuntimeConfig,

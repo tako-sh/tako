@@ -113,7 +113,7 @@ set -eu
 
 action="${1:-}"
 case "$action" in
-  reload|restart|rollback|cleanup-upgrade|implode)
+  reload|restart|upgrade-companions|rollback|cleanup-upgrade|implode)
     [ "$#" -eq 1 ] || { echo "error: expected one maintenance action" >&2; exit 1; }
     ;;
   configure)
@@ -144,6 +144,17 @@ if [ -r /usr/local/libexec/tako/vpn-provider ]; then
 fi
 
 case "$action" in
+  upgrade-companions)
+    # These processes execute the same binary as the primary. Refresh them
+    # after its successful handoff (and after rollback), while upgrades still
+    # block restores. Keep an intentionally stopped standby stopped.
+    for service in tako-network-agent tako-server-standby; do
+      if [ -f "/etc/systemd/system/$service.service" ]; then
+        systemctl try-restart "$service"
+      fi
+    done
+    exit 0
+    ;;
   rollback)
     [ -f /usr/local/bin/tako-server.prev ] || { echo "error: previous tako-server binary not found" >&2; exit 1; }
     install -m 0755 /usr/local/bin/tako-server.prev /usr/local/bin/tako-server
@@ -226,7 +237,7 @@ EOF
   cat > /etc/sudoers.d/tako <<EOF
 # Managed by Tako install-server.
 # Fixed root-owned helpers validate their arguments; no arbitrary root shell.
-$TAKO_USER ALL=(root) NOPASSWD: /usr/local/bin/tako-provision-app *, $TAKO_SERVER_INSTALL_REFRESH_HELPER *, $TAKO_SERVER_SERVICE_HELPER reload, $TAKO_SERVER_SERVICE_HELPER restart, $TAKO_SERVER_SERVICE_HELPER configure *, $TAKO_SERVER_SERVICE_HELPER rollback, $TAKO_SERVER_SERVICE_HELPER cleanup-upgrade, $TAKO_SERVER_SERVICE_HELPER implode
+$TAKO_USER ALL=(root) NOPASSWD: /usr/local/bin/tako-provision-app *, $TAKO_SERVER_INSTALL_REFRESH_HELPER *, $TAKO_SERVER_SERVICE_HELPER reload, $TAKO_SERVER_SERVICE_HELPER restart, $TAKO_SERVER_SERVICE_HELPER upgrade-companions, $TAKO_SERVER_SERVICE_HELPER configure *, $TAKO_SERVER_SERVICE_HELPER rollback, $TAKO_SERVER_SERVICE_HELPER cleanup-upgrade, $TAKO_SERVER_SERVICE_HELPER implode
 EOF
   chmod 0440 /etc/sudoers.d/tako
 

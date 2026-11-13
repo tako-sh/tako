@@ -35,6 +35,20 @@ async function reuseError(call: Promise<unknown>): Promise<string> {
   return (signal as FailSignal).error.message;
 }
 
+test("an explicit zero wait timeout expires now; an omitted timeout waits indefinitely", async () => {
+  const before = Date.now();
+  const immediate = await checkpointFixture()
+    .api.waitFor("now", { timeout: 0 })
+    .catch((error: unknown) => error);
+  expect(immediate).toBeInstanceOf(WaitSignal);
+  expect((immediate as WaitSignal).timeoutAt!.getTime()).toBeGreaterThanOrEqual(before);
+  expect((immediate as WaitSignal).timeoutAt!.getTime()).toBeLessThanOrEqual(Date.now());
+  const indefinite = await checkpointFixture()
+    .api.waitFor("later")
+    .catch((error: unknown) => error);
+  expect((indefinite as WaitSignal).timeoutAt).toBeNull();
+});
+
 test("retrying a failed checkpoint cannot return an unpersisted cached result", async () => {
   const fixture = checkpointFixture();
   let executions = 0;

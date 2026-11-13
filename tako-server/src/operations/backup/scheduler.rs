@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tako_core::{
-    BACKUP_INTERVAL_SECS, BackupFailure, BackupFailureReason, BackupInfo, BackupKind,
+    BACKUP_INTERVAL_SECS, BackupFailure, BackupFailureReason, BackupInfo, BackupKind, BackupSkip,
     BackupSkipReason,
 };
 
@@ -195,6 +195,10 @@ impl crate::ServerState {
     /// or an operator operation has the deploy lock, it stays queued for the
     /// next tick.
     pub(super) async fn run_queued_post_deploy_backup(&self, app: &str) {
+        // It stays queued until the restore is resolved.
+        if self.skip_unresolved_restore(app) {
+            return;
+        }
         let (queued, stale) = {
             let mut states = self.database_snapshots.write();
             let state = states.entry(app.to_string()).or_default();
@@ -288,6 +292,9 @@ impl crate::ServerState {
                     continue;
                 }
             };
+            if self.skip_unresolved_restore(&app) {
+                continue;
+            }
             let now = now_unix_secs();
             let state = self.backup_schedule_state(&app);
             if state.index_failures.waiting(now) {
@@ -334,6 +341,30 @@ impl crate::ServerState {
             }
             self.run_queued_post_deploy_backup(&app).await;
         }
+    }
+
+    /// Whether an unfinished restore keeps `app` stopped, which pauses its
+    /// scheduled backups: an archive would copy its partly restored data,
+    /// and the retention every upload applies deletes database snapshots
+    /// after 48 hours, perhaps the one the operator restores from. Status
+    /// says why.
+    fn skip_unresolved_restore(&self, app: &str) -> bool {
+        let Some(reason) = self.unresolved_restore_block(app) else {
+            return false;
+        };
+        let message =
+            format!("Scheduled backups are paused while the app is kept stopped. {reason}");
+        tracing::warn!(app, "{message}");
+        self.database_snapshots
+            .write()
+            .entry(app.to_string())
+            .or_default()
+            .skip = Some(BackupSkip {
+            at_unix_secs: now_unix_secs(),
+            reason: BackupSkipReason::UnfinishedRestore,
+            message,
+        });
+        true
     }
 
     /// A due full archive that does not get the deploy lock is still due on

@@ -510,16 +510,90 @@ fn local_proxy_url_uses_app_host_for_tls_sni() {
     assert_eq!(url, "https://app.test:47831/api");
 }
 
+#[tokio::test]
+async fn tunneled_channel_and_presence_websockets_use_the_trusted_proxy() {
+    use openssl::{
+        pkey::PKey,
+        ssl::{SslAcceptor, SslMethod},
+        x509::X509,
+    };
+    use std::io::{Read, Write};
+    let ca = tako::dev::LocalCA::generate().unwrap();
+    let cert = ca.generate_leaf_cert("app.test").unwrap();
+    let mut acceptor = SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
+    acceptor
+        .set_certificate(&X509::from_pem(cert.cert_pem.as_bytes()).unwrap())
+        .unwrap();
+    acceptor
+        .set_private_key(&PKey::private_key_from_pem(cert.key_pem.as_bytes()).unwrap())
+        .unwrap();
+    let acceptor = acceptor.build();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    let paths = [
+        "/_tako/channels/chat?room=lobby",
+        "/_tako/presence/online?room=lobby",
+    ];
+    let server = tokio::task::spawn_blocking(move || {
+        for path in paths {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut stream = acceptor.accept(stream).unwrap();
+            let mut headers = Vec::new();
+            while !headers.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                headers.push(byte[0]);
+            }
+            let headers = String::from_utf8(headers).unwrap();
+            assert!(
+                headers.starts_with(&format!("GET {path} HTTP/1.1\r\n")),
+                "{headers}"
+            );
+            assert!(
+                headers.to_lowercase().contains("host: app.test:"),
+                "{headers}"
+            );
+            // The proxy owns authorization; preserve its rejection to the browser.
+            stream
+                .write_all(
+                    b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+        }
+    });
+    let client = local_proxy_client_with_root("app.test", &address, ca.ca_cert_pem()).unwrap();
+    for path in paths {
+        let url = local_proxy_url("app.test", &address, path).unwrap();
+        let (outbound, mut responses) = mpsc::channel(4);
+        let (_sender, receiver) = mpsc::channel(4);
+        relay_local_websocket(
+            &client,
+            &url,
+            TunnelWebSocketOpenMessage {
+                id: "test".into(),
+                path: path.into(),
+                headers: vec![],
+            },
+            &outbound,
+            receiver,
+        )
+        .await
+        .unwrap();
+        let bytes = responses.recv().await.unwrap();
+        assert!(
+            matches!(rmp_serde::from_slice::<ClientMessage>(&bytes).unwrap(), ClientMessage::WebSocketResponse(response) if response.status == 403)
+        );
+    }
+    server.await.unwrap();
+}
+
 #[test]
 fn local_proxy_url_normalizes_paths() {
     let url = local_proxy_url("app.test", "127.0.0.1:47831", "api").unwrap();
     assert_eq!(url, "https://app.test:47831/api");
-}
-
-#[test]
-fn local_websocket_url_uses_upstream_port() {
-    let url = local_websocket_url(5173, "/@vite/client").unwrap();
-    assert_eq!(url, "ws://127.0.0.1:5173/@vite/client");
 }
 
 #[test]
@@ -617,7 +691,14 @@ async fn local_websocket_open_forwards_initial_text_frame() {
 
     let (_to_local, from_tunnel) = mpsc::channel(8);
     let task = tokio::spawn(async move {
-        relay_local_websocket(upstream_port, open, &outbound, from_tunnel).await
+        relay_local_websocket(
+            &reqwest::Client::new(),
+            &format!("http://127.0.0.1:{upstream_port}{}", open.path),
+            open,
+            &outbound,
+            from_tunnel,
+        )
+        .await
     });
     let ready = tokio::time::timeout(Duration::from_secs(1), inbound.recv())
         .await
@@ -691,7 +772,8 @@ async fn local_websocket_may_accept_without_selecting_an_offered_protocol() {
     let (outbound, mut inbound) = mpsc::channel(8);
     let (_sender, receiver) = mpsc::channel(8);
     relay_local_websocket(
-        port,
+        &reqwest::Client::new(),
+        &format!("http://127.0.0.1:{port}/"),
         TunnelWebSocketOpenMessage {
             id: "no-protocol".into(),
             path: "/".into(),
@@ -728,7 +810,8 @@ async fn local_websocket_rejection_preserves_status_and_headers() {
     let (outbound, mut incoming) = mpsc::channel(4);
     let (_sender, receiver) = mpsc::channel(8);
     relay_local_websocket(
-        upstream_port,
+        &reqwest::Client::new(),
+        &format!("http://127.0.0.1:{upstream_port}/"),
         TunnelWebSocketOpenMessage {
             id: "rejected".into(),
             path: "/".into(),

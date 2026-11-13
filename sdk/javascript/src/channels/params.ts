@@ -182,27 +182,45 @@ function combinatorSubschemas(schema: Record<string, unknown>): Array<[string, u
 
 /**
  * The keyword through which a combinator subschema, or one nested in it,
- * declares params. `additionalProperties: false` only constrains.
+ * declares params, with the param it names that `declared` (the top-level
+ * `properties`) lacks when the keyword is `properties`. Only constraints
+ * pass: `additionalProperties: false`, and `properties` that names declared
+ * params alone, such as a `const` that tells `oneOf` branches apart.
  */
-function declaringKeyword(subschema: unknown): string | undefined {
+function declaringKeyword(
+  subschema: unknown,
+  declared: Record<string, unknown> | undefined,
+): [keyword: string, param: string | undefined] | undefined {
   if (!isSchemaObject(subschema)) return undefined;
-  const keyword = DECLARING_KEYWORDS.find(
-    (name) => name in subschema && subschema[name] !== false && subschema[name] !== undefined,
-  );
-  if (keyword !== undefined) return keyword;
+  for (const keyword of DECLARING_KEYWORDS) {
+    const value = subschema[keyword];
+    if (!(keyword in subschema) || value === false || value === undefined) continue;
+    if (keyword === "properties" && isSchemaObject(value)) {
+      const param = Object.keys(value)
+        .sort()
+        .find((name) => declared === undefined || !Object.hasOwn(declared, name));
+      if (param !== undefined) return [keyword, param];
+      continue;
+    }
+    return [keyword, undefined];
+  }
   for (const [, nested] of combinatorSubschemas(subschema)) {
-    const found = declaringKeyword(nested);
+    const found = declaringKeyword(nested, declared);
     if (found !== undefined) return found;
   }
   return undefined;
 }
 
 function combinatorProblem(schema: Record<string, unknown>): string | undefined {
+  const properties = schema["properties"];
+  const declared = isSchemaObject(properties) ? properties : undefined;
   for (const [combinator, subschema] of combinatorSubschemas(schema)) {
-    const keyword = declaringKeyword(subschema);
-    if (keyword !== undefined) {
-      return `declares params through '${keyword}' inside '${combinator}' (combinators may only add constraints such as 'required' over the top-level 'properties')`;
-    }
+    const found = declaringKeyword(subschema, declared);
+    if (found === undefined) continue;
+    const [keyword, param] = found;
+    return param !== undefined
+      ? `declares param '${param}' through '${keyword}' inside '${combinator}' and not under the top-level 'properties' (combinators may only add constraints over the params declared there)`
+      : `declares params through '${keyword}' inside '${combinator}' (combinators may only add constraints such as 'required' over the top-level 'properties')`;
   }
   return undefined;
 }
@@ -212,14 +230,16 @@ function combinatorProblem(schema: Record<string, unknown>): string | undefined 
  *
  * Top-level combinators (`allOf`, `anyOf`, `oneOf`, `not`, `if`/`then`/`else`,
  * `dependentSchemas`) may add constraints such as `required` over the declared
- * params, but may not declare params themselves.
+ * params, including `properties` that name only declared params (a `const`
+ * that tells `oneOf` branches apart), but may not declare params themselves.
  *
  * @throws {TypeError} If the schema is not one object schema with its params
  * under top-level `properties` (for example `t.Intersect`, `t.Union`, or
- * `t.Ref`), a combinator declares `properties`, `patternProperties`,
- * `additionalProperties` (other than `false`) or a `$ref`, a declared property
- * type is `object` or `array`, or a property uses a reserved name (`from`,
- * `last_message_id`).
+ * `t.Ref`), a combinator names a param in `properties` that the top-level
+ * `properties` does not declare or uses `patternProperties`,
+ * `additionalProperties` (other than `false`), `$ref` or `$dynamicRef`, a
+ * declared property type is `object` or `array`, or a property uses a reserved
+ * name (`from`, `last_message_id`).
  */
 export function assertFlatChannelParamsSchema(channel: string, schema: object): void {
   const { type: schemaType, properties } = schema as { type?: unknown; properties?: unknown };

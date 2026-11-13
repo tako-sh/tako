@@ -282,6 +282,28 @@ func TestChannelRegistrationRejectsParamsSchemasThatAreNotOneFlatObject(t *testi
 	})
 }
 
+func TestChannelRegistrationAcceptsCombinatorPropertiesThatNameOnlyDeclaredParams(t *testing.T) {
+	ids := `"type":"object","properties":{"kind":{"enum":["user","team"]},"userId":{"type":"string"},"teamId":{"type":"string"}}`
+	for _, constraint := range []string{
+		`"if":{"properties":{"kind":{"const":"team"}}},"then":{"required":["teamId"]}`,
+		`"oneOf":[{"properties":{"kind":{"const":"user"}},"required":["kind","userId"]},{"properties":{"kind":{"const":"team"}},"required":["kind","teamId"]}]`,
+	} {
+		schema := json.RawMessage(`{` + ids + `,` + constraint + `}`)
+		NewChannelRegistry().Register("scoped", ChannelDefinition{ParamsSchema: schema})
+		RegisterPresence("scoped", PresenceDefinition{ParamsSchema: schema})
+	}
+	// A param only a combinator names is rejected by name, at any depth.
+	for _, constraint := range []string{
+		`"if":{"properties":{"other":{"const":1}}},"then":{"required":["teamId"]}`,
+		`"anyOf":[{"allOf":[{"properties":{"kind":{"const":"team"},"other":{}}}]}]`,
+	} {
+		problem := nonFlatParamsSchema(json.RawMessage(`{` + ids + `,` + constraint + `}`))
+		if !strings.Contains(problem, `param "other" through "properties"`) || !strings.Contains(problem, `top-level "properties"`) {
+			t.Fatal("a param only a combinator declares must be rejected by name")
+		}
+	}
+}
+
 func TestChannelRegistrationAcceptsTopLevelCombinatorsThatOnlyConstrainParams(t *testing.T) {
 	ids := `"type":"object","properties":{"userId":{"type":"string"},"teamId":{"type":"string"}}`
 	for _, constraint := range []string{

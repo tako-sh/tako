@@ -690,7 +690,8 @@ fn postgres_refuses_new_streams_beyond_the_app_limit_and_bounds_maintenance() {
         return;
     };
     let schema = format!("channel_limit_{}", std::process::id());
-    let store = ChannelStore::open_postgres_with_schema(&url, &schema, "app").unwrap();
+    // Only the explicit tick below releases streams.
+    let store = ChannelStore::open_postgres_without_maintenance(&url, &schema, "app");
     let other_app = ChannelStore::open_postgres_with_schema(&url, &schema, "other").unwrap();
     let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
     let lifecycle = auth(json!({"ok": true}));
@@ -723,7 +724,13 @@ fn postgres_refuses_new_streams_beyond_the_app_limit_and_bounds_maintenance() {
         .sync_channel(room("new").key(), &lifecycle)
         .unwrap();
 
-    // Every filler stream is idle: one tick releases at most 1,000 of them.
+    // Every filler stream goes idle: one tick releases at most 1,000 of them.
+    client
+        .batch_execute(&format!(
+            "UPDATE {schema}.channel_metadata SET last_activity_unix_ms = 1
+             WHERE app_id = 'app' AND channel LIKE 'tako.stream:filler%'"
+        ))
+        .unwrap();
     let count = |client: &mut postgres::Client| -> i64 {
         client
             .query_one(
@@ -734,7 +741,7 @@ fn postgres_refuses_new_streams_beyond_the_app_limit_and_bounds_maintenance() {
             .get(0)
     };
     let before = count(&mut client);
-    store.prune_at(now() + 7_200_000 + 60_000 + 2_000);
+    store.prune_at(now());
     assert_eq!(before - count(&mut client), 1_000);
     drop((store, other_app));
     client
@@ -807,8 +814,15 @@ fn postgres_stream_counter_stays_exact_across_creation_release_and_concurrency()
     }
     check(83);
 
-    // Releasing idle streams counts down; only messages' streams remain.
-    first.prune_at(now() + 7_200_000 + 60_000 + 2_000);
+    // Once every stream has gone idle and its messages have aged out,
+    // releasing them counts down to zero.
+    client_for_migration(&url)
+        .batch_execute(&format!(
+            "UPDATE {schema}.channel_metadata SET last_activity_unix_ms = 1 WHERE app_id = 'app';
+             UPDATE {schema}.channel_messages SET created_at_unix_ms = 1 WHERE app_id = 'app';"
+        ))
+        .unwrap();
+    first.prune_at(now());
     check(0);
     first.sync_channel(room("again").key(), &lifecycle).unwrap();
     check(1);

@@ -100,7 +100,9 @@ tako backups now --env production --server la
 tako backups list --env production --server la --json
 ```
 
-`backups now` creates a full archive. `backups list` shows every entry, newest first, with its kind. In `--json` output each entry includes `id`, `kind` (`full` or `databases`), `created_at_unix_secs`, `size_bytes`, and the encryption metadata; database snapshots also list their `databases` as paths relative to the data directory, such as `app/data.sqlite` or `tako/workflows.sqlite`. `backups status --json` includes `last_backup` (the latest full archive), `next_backup_at_unix_secs`, `retention_days`, `last_database_snapshot_at_unix_secs`, `last_database_snapshot_skip` with `at_unix_secs`, `reason` (`unchanged`, `no_databases`, `too_large`, `insufficient_disk`, `deploy_in_progress`, or `backup_in_progress`), and `message`, and `last_backup_failure` with `at_unix_secs`, `reason` (`failed`, `insufficient_disk`, or `index_unreadable`), `message`, and `retry_at_unix_secs` while full archives are failing or the index cannot be read.
+`backups now` creates a full archive. `backups list` shows every entry, newest first, with its kind. In `--json` output each entry includes `id`, `kind` (`full` or `databases`), `created_at_unix_secs`, `size_bytes`, and the encryption metadata; database snapshots also list their `databases` as paths relative to the data directory, such as `app/data.sqlite` or `tako/workflows.sqlite`. `backups status --json` includes `last_backup` (the latest full archive), `next_backup_at_unix_secs`, `retention_days`, `last_database_snapshot_at_unix_secs`, `last_database_snapshot_skip` with `at_unix_secs`, `reason` (`unchanged`, `no_databases`, `too_large`, `insufficient_disk`, `deploy_in_progress`, `backup_in_progress`, or `unfinished_restore`), and `message`, and `last_backup_failure` with `at_unix_secs`, `reason` (`failed`, `insufficient_disk`, or `index_unreadable`), `message`, and `retry_at_unix_secs` while full archives are failing or the index cannot be read.
+
+`backups status` also lists active, unfinished, and abandoned restores, even when backups are disabled or the remote index is unreadable. JSON includes `unfinished_restores` with each record's `path`, `state` (`in_progress`, `unfinished`, or `abandoned`), `blocks_app`, and recovery `message`. A blocked app has no next scheduled backup. Status only reads these records; resolve them before attempting another restore.
 
 Use explicit environment and server names when selecting recovery data. Download an archive by the ID returned by the list:
 
@@ -126,6 +128,16 @@ tako backups restore <backup-id> --env production --server la
 ```
 
 The confirmation says what the selected backup replaces. Restore verifies the archive checksum and decrypts it, stops app and workflow processes, replaces data, then synchronizes workflows and resumes the app according to its desired instance state. It replaces data and can interrupt service; it is not a merge or a code rollback. An agent must establish authorization for the selected restore before using a confirmation-skipping flag.
+
+The optional hot standby (`tako-server-standby.service`) serves every app from the same data directory with its own instances, which a restore cannot stop. While it runs, restore refuses before it changes anything and says so. Stop it first, restore, then start it again:
+
+```bash
+sudo systemctl stop tako-server-standby
+tako backups restore <backup-id> --env production --server la
+sudo systemctl start tako-server-standby
+```
+
+A standby that starts while a restore runs waits for the restore to end before it starts any app. If the restore outlasts that wait, the start fails and systemd starts the standby again.
 
 Restoring a **full** archive replaces the whole data tree.
 
@@ -157,13 +169,26 @@ stopped for inspection.
 
 Each restore first writes a record of what it will change. If the server process
 dies in the middle of a restore, the next normal server start puts the original
-data back before any app starts, logs it, and removes leftover backup and restore
-work directories. The recovery point of that restore is not applied; run it again.
+data back before any app starts and logs it. The recovery point of that restore is
+not applied; run it again. Another server start meanwhile, such as the standby's,
+waits for this recovery to finish instead of failing.
+
 A standby, an upgrade reload, a promotion, and a normal start while another server
 process (such as a hot standby) serves the same data directory never put data
-back; they only log an unfinished restore. A normal start renames every
-unfinished restore it does not put back to `.data-restore-abandoned-<id>/`, so no
-later start puts it back over data written since.
+back; they log an unfinished restore. Every start except a standby's then renames
+an unfinished restore it does not put back to `.data-restore-abandoned-<id>/`, so
+no later start puts it back over data written since. The exception is a restore
+that another server process still runs, which keeps its
+`.data-restore-prev-<id>/` name: a normal start waits 10 seconds for that process,
+then removes the directory's `restore.lock` file, which also keeps every later
+start from putting it back; a start beside another server process leaves it as it
+is.
+
+Every start except a standby's also removes the backup and restore work
+directories (in `tmp/backups/` and `tmp/restore/`) of backups and restores that
+no longer run; a backup or restore that still runs holds a lock in its work
+directory. Only a normal start, beside no other server process, also removes a
+work directory without a lock file, such as one an older server version left.
 
 When the server gives up on a restore and keeps running (it could not stop the
 restored app, could not put the original data back, or could not record the
@@ -172,7 +197,7 @@ restore as finished), it renames the directory to
 directory: whatever is live stays live. While an unfinished or abandoned restore
 directory exists, a new restore of the app refuses and names it. Server starts
 log every such directory until it is removed. If the live data may be partly
-restored, the app also stays stopped; see
+restored, the app also stays stopped and its backups pause; see
 [Resolve an unfinished restore](#resolve-an-unfinished-restore).
 
 Restore moves files with rename, so the app data directory must be on the same
@@ -197,9 +222,14 @@ and a record, `restore.json`, whose `state` says what the live data is:
   The live data is the restored data. Nothing to do beyond removing the directory.
 - `"swapping"`, or a record Tako cannot read: the live data may be partly
   restored, with some databases restored and others original. Tako keeps the app
-  stopped: server starts do not start it or its workflows, requests do not cold
-  start it, `tako status` shows the reason as its error, and deploys, release
-  commands, `tako scale`, and secret updates are refused with the same message.
+  stopped: server starts do not start it or its workflows, a running standby
+  stops it within seconds, requests do not cold start it, `tako status` shows the
+  reason as its error, and deploys, release commands, `tako scale`, secret
+  updates, and `tako backups now` are refused with the same message. Scheduled
+  backups skip the app, so none copies the mixed data and retention deletes no
+  database snapshot you may want to restore from; `tako backups status` shows the
+  skip with the reason `unfinished_restore`, and a post-deploy backup queued
+  before stays queued until the directory is resolved.
 
 A directory without `restore.json` means the live data is whole, either the
 original or the restored data; remove it.
@@ -220,8 +250,11 @@ work as the user that owns the app data:
 2. For a **full** restore, the directory holds the original data tree as `data/`
    (and, if Tako began to put it back, the restored tree as `restored/`). Move the
    live `apps/<app>/<env>/data` aside, then move `<directory>/data` to
-   `apps/<app>/<env>/data`. If `<directory>/data` is missing, the original tree
-   is already live.
+   `apps/<app>/<env>/data`. If `<directory>/data` is missing and `restore.json`
+   says `"had_data": true`, the original tree is already live. With
+   `"had_data": false` the app had no data before the restore, so there is no
+   original tree: a live `data` is the restored one. Move it aside to go back to
+   no data; the next start creates an empty one.
 
 To keep the restored data instead, run the restore again after removing the
 directory. Either way, then remove the leftover directory and start the app with

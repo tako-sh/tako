@@ -219,7 +219,7 @@ describe("defineChannel params schemas are one flat object", () => {
       expect(() => defineChannel("room", { paramsSchema })).toThrow(
         keyword === "$ref"
           ? `Channel 'room' params schema uses '${keyword}'`
-          : `Channel 'room' params schema declares params through 'properties' inside '${keyword}'`,
+          : `Channel 'room' params schema declares param 'a' through 'properties' inside '${keyword}'`,
       );
       expect(() => definePresence("room", { paramsSchema })).toThrow("t.Composite");
     }
@@ -261,6 +261,47 @@ describe("defineChannel params schemas are one flat object", () => {
     }
   });
 
+  test("combinator properties that name only declared params constrain them", () => {
+    const ids = (t: T, options: object) =>
+      t.Object(
+        {
+          kind: t.Optional(t.Union([t.Literal("user"), t.Literal("team")])),
+          userId: t.Optional(t.String()),
+          teamId: t.Optional(t.String()),
+        },
+        options,
+      );
+    for (const constraint of [
+      // oxlint-disable-next-line unicorn/no-thenable -- JSON Schema's if/then keywords
+      { if: { properties: { kind: { const: "team" } } }, then: { required: ["teamId"] } },
+      {
+        oneOf: [
+          { properties: { kind: { const: "user" } }, required: ["kind", "userId"] },
+          { properties: { kind: { const: "team" } }, required: ["kind", "teamId"] },
+        ],
+      },
+    ]) {
+      const scoped = defineChannel("scoped", { paramsSchema: (t) => ids(t, constraint) });
+      const presence = definePresence("scoped", { paramsSchema: (t) => ids(t, constraint) });
+      for (const definition of [scoped.definition, presence.definition]) {
+        expect(definition.paramsSchema).toMatchObject(constraint);
+      }
+    }
+    // A param only a combinator names is rejected by name, at any depth.
+    for (const constraint of [
+      // oxlint-disable-next-line unicorn/no-thenable -- JSON Schema's if/then keywords
+      { if: { properties: { other: { const: 1 } } }, then: { required: ["teamId"] } },
+      { anyOf: [{ allOf: [{ properties: { kind: { const: "team" }, other: {} } }] }] },
+    ]) {
+      for (const define of [
+        () => defineChannel("room", { paramsSchema: (t) => ids(t, constraint) }),
+        () => definePresence("room", { paramsSchema: (t) => ids(t, constraint) }),
+      ]) {
+        expect(define).toThrow("declares param 'other' through 'properties' inside");
+      }
+    }
+  });
+
   test("a combinator that declares params is rejected wherever it nests", () => {
     for (const [keyword, combinator, constraint] of [
       ["properties", "allOf", { allOf: [{ properties: { teamId: { type: "string" } } }] }],
@@ -283,7 +324,7 @@ describe("defineChannel params schemas are one flat object", () => {
         () => defineChannel("room", { paramsSchema }),
         () => definePresence("room", { paramsSchema }),
       ]) {
-        expect(define).toThrow(`declares params through '${keyword}' inside '${combinator}'`);
+        expect(define).toThrow(`through '${keyword}' inside '${combinator}'`);
       }
     }
     expect(() =>

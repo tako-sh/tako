@@ -205,7 +205,7 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     // restore that the previous server's death interrupted is rolled back to
     // the original data. A standby, an upgrade reload, a promotion child, and
     // a normal start while another server process (such as a hot standby)
-    // serves this data directory only report unfinished restores.
+    // serves this data directory never roll one back.
     let (recovery_mode, recovery_lease) = startup_recovery_mode(
         &data_dir,
         if standby {
@@ -217,9 +217,10 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         },
     );
     crate::operations::recover_interrupted_restores(&data_dir, recovery_mode);
-    if recovery_mode == crate::operations::RecoveryMode::Primary {
-        // Only this process can be using backup work directories now.
-        crate::operations::sweep_backup_work_dirs(&data_dir);
+    if recovery_mode != crate::operations::RecoveryMode::Standby {
+        // A backup or restore that still runs, in another server process,
+        // holds the lock in its work directory.
+        crate::operations::sweep_backup_work_dirs(&data_dir, recovery_mode);
     }
     // This process takes its own shared lease below.
     drop(recovery_lease);
@@ -313,6 +314,7 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if standby {
+        state.clone().start_unresolved_restore_watch(rt.handle());
         spawn_standby_monitor(
             &rt,
             StandbyPromotionConfig {

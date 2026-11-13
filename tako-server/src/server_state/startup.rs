@@ -60,6 +60,12 @@ impl ServerState {
         runtime: ServerRuntimeConfig,
         expected_upgrade_owner: Option<&str>,
     ) -> Result<Self, StateStoreError> {
+        // Before anything that may start app instances.
+        let standby_lock = if runtime.standby {
+            Some(standby_lock_at_start(&data_dir)?)
+        } else {
+            None
+        };
         let app_manager = Arc::new(AppManager::new(data_dir.clone()));
         let load_balancer = Arc::new(LoadBalancer::new(app_manager.clone()));
         let device_key = load_or_create_device_key(&data_dir.join("secret.key"))?;
@@ -68,13 +74,7 @@ impl ServerState {
             device_key,
         ));
         state_store.init()?;
-        let activity = state_store.try_drain_activity(false)?;
-        let requested = state_store.drain_requested()?;
-        if activity.is_none() && !requested {
-            return Err(StateStoreError::InvalidData(
-                "server drain completion in progress; retry startup".into(),
-            ));
-        }
+        let (activity, requested) = drain_activity_at_start(&state_store)?;
         let drain_requested = Arc::new(AtomicBool::new(requested));
         let drain_activity = parking_lot::Mutex::new(if requested { None } else { activity });
         let proxy_requests = crate::request_drain::RequestDrain::default();
@@ -97,7 +97,10 @@ impl ServerState {
             }
             None => false,
         };
-        if !preserve_upgrade_mode {
+        // A companion restart during a primary upgrade must not release the
+        // primary's persisted upgrade lock. Only a primary start owns recovery
+        // of that state; a standby has its own local mode until promotion.
+        if !preserve_upgrade_mode && !runtime.standby {
             if persisted_mode != UpgradeMode::Normal {
                 state_store.set_server_mode(UpgradeMode::Normal)?;
             }
@@ -246,6 +249,7 @@ impl ServerState {
             state_store,
             drain_requested,
             drain_activity,
+            standby_lock: parking_lot::Mutex::new(standby_lock),
             drain_observer_started: AtomicBool::new(false),
             proxy_requests,
             server_mode: AsyncRwLock::new(server_mode),
@@ -253,6 +257,59 @@ impl ServerState {
             workflows,
         })
     }
+}
+
+/// How long a start waits for a lease another server process holds
+/// exclusively: a restore's standby lock, or the drain activity lease of a
+/// normal start that recovers backup restores.
+const STARTUP_LEASE_WAIT: Duration = if cfg!(test) {
+    Duration::from_secs(2)
+} else {
+    Duration::from_secs(5 * 60)
+};
+
+/// A standby runs the apps of the data directory, so it never starts while
+/// a restore holds the standby lock: it waits for the restore to end, up to
+/// [`STARTUP_LEASE_WAIT`], then fails its start.
+fn standby_lock_at_start(
+    data_dir: &std::path::Path,
+) -> Result<crate::state_store::DrainLease, StateStoreError> {
+    crate::state_store::wait_for_lease(
+        STARTUP_LEASE_WAIT,
+        "a backup restore on this data directory to finish before this standby runs apps",
+        || crate::state_store::DrainLease::try_standby_in(data_dir, false),
+    )?
+    .ok_or_else(|| {
+        StateStoreError::InvalidData(format!(
+            "a backup restore on this data directory still runs after {} s, and a standby never runs apps during a restore; retry startup once the restore has finished",
+            STARTUP_LEASE_WAIT.as_secs()
+        ))
+    })
+}
+
+/// The shared drain activity lease, and whether a drain is requested, in
+/// which case this start takes no lease. A normal start holds the lease
+/// exclusively while it recovers backup restores and sweeps work
+/// directories, which can take minutes, and a drain holds it briefly when
+/// it finishes: wait for either, up to [`STARTUP_LEASE_WAIT`].
+fn drain_activity_at_start(
+    state_store: &SqliteStateStore,
+) -> Result<(Option<crate::state_store::DrainLease>, bool), StateStoreError> {
+    crate::state_store::wait_for_lease(
+        STARTUP_LEASE_WAIT,
+        "another server process to finish recovering this data directory",
+        || {
+            let activity = state_store.try_drain_activity(false)?;
+            let requested = state_store.drain_requested()?;
+            Ok((activity.is_some() || requested).then_some((activity, requested)))
+        },
+    )?
+    .ok_or_else(|| {
+        StateStoreError::InvalidData(format!(
+            "another server process held the drain activity lease exclusively for {} s (a normal start recovering backup restores on this data directory, or a server drain finishing); retry startup",
+            STARTUP_LEASE_WAIT.as_secs()
+        ))
+    })
 }
 
 pub(crate) fn native_channel_client(

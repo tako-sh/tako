@@ -36,6 +36,11 @@ async fn main() -> std::io::Result<()> {
 }
 ```
 
+The `serve*` helpers handle SIGTERM and SIGINT by stopping new connections,
+finishing in-flight requests, and returning for application cleanup. Tako
+enforces the process shutdown grace period. Router and listener helpers leave
+signal handling to the application's own server loop.
+
 ## Custom Servers
 
 Use `tako::std_listener()` or `tako::listener().await` with the `tokio` feature
@@ -82,7 +87,8 @@ channel routes. tako-server rejects params the schema does not declare under
 `.params_schema(...)` a space takes no params. The schema must be one object
 schema with every param under its top-level `properties` (no top-level `$ref`, and
 a top-level `allOf`, `anyOf`, `oneOf`, `not`, or `if` may only add constraints such
-as `required`); tako-server reports any other shape as an invalid schema.
+as `required` or a `const` on a declared property); tako-server reports any other
+shape as an invalid schema.
 
 `router_with_presence(app, registry)` wraps a custom Axum loop. Both presence
 adapter helpers preserve status probes and protect internal registry/auth routes

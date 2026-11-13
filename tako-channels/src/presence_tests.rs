@@ -144,3 +144,63 @@ fn postgres_presence_is_shared_and_scoped_by_app_when_configured() {
     assert_eq!(reader.presence(&scope, now).unwrap(), vec![member]);
     writer.remove_presence(&scope, "tab").unwrap();
 }
+
+#[test]
+fn postgres_presence_ignores_each_servers_clock() {
+    let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
+        return;
+    };
+    let app = format!(
+        "presence-clock/{}-{}",
+        std::process::id(),
+        crate::store::now_unix_ms()
+    );
+    let writer = ChannelStore::open_postgres(&url, &app).unwrap();
+    let reader = ChannelStore::open_postgres(&url, &app).unwrap();
+    let member = PresenceMember {
+        connection_id: "tab".into(),
+        subject: None,
+        data: json!({}),
+    };
+    writer.update_presence("lobby", &member, 0).unwrap();
+    reader.prune_at(i64::MAX);
+    assert_eq!(
+        reader.presence("lobby", i64::MAX).unwrap(),
+        vec![member.clone()]
+    );
+    writer.update_presence("lobby", &member, i64::MAX).unwrap();
+    let mut db = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    db.execute(
+        "UPDATE tako_channels.presence SET expires_at = $2 WHERE app_id = $1",
+        &[&app, &i64::MAX],
+    )
+    .unwrap();
+    writer.prune_at(0);
+    let remaining: i64 = db
+        .query_one(
+            "SELECT expires_at - (extract(epoch from now()) * 1000)::BIGINT
+             FROM tako_channels.presence WHERE app_id = $1",
+            &[&app],
+        )
+        .unwrap()
+        .get(0);
+    assert!(
+        (0..=45_000).contains(&remaining),
+        "old lease kept for {remaining} ms"
+    );
+    db.execute(
+        "UPDATE tako_channels.presence SET expires_at = 0 WHERE app_id = $1",
+        &[&app],
+    )
+    .unwrap();
+    assert!(reader.presence("lobby", 0).unwrap().is_empty());
+    writer.prune_at(0);
+    let count: i64 = db
+        .query_one(
+            "SELECT COUNT(*) FROM tako_channels.presence WHERE app_id = $1",
+            &[&app],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(count, 0);
+}

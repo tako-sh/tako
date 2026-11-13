@@ -68,13 +68,16 @@ pub(super) fn valid_local_websocket_upgrade(
 }
 
 pub(super) async fn relay_local_websocket(
-    upstream_port: u16,
+    client: &reqwest::Client,
+    url: &str,
     open: TunnelWebSocketOpenMessage,
     outbound: &mpsc::Sender<Vec<u8>>,
     mut from_tunnel: mpsc::Receiver<Message>,
 ) -> Result<(), String> {
     let id = open.id;
-    let mut request = local_websocket_url(upstream_port, &open.path)?
+    let mut request = url
+        .replacen("https://", "wss://", 1)
+        .replacen("http://", "ws://", 1)
         .into_client_request()
         .map_err(|error| format!("invalid local websocket request: {error}"))?;
     for (name, value) in forwarded_websocket_headers(&open.headers) {
@@ -92,13 +95,6 @@ pub(super) async fn relay_local_websocket(
     // Use the existing HTTP client for the upgrade. Tungstenite's HTTP client
     // rejects a valid 101 with no selected subprotocol when one was offered.
     // RFC 6455 allows the app to decline all offered protocols.
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .http1_only()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|error| error.to_string())?;
-    let url = request.uri().to_string().replacen("ws://", "http://", 1);
     let response = match tokio::time::timeout(
         TUNNEL_CONNECT_TIMEOUT,
         client.get(url).headers(request.headers().clone()).send(),
@@ -148,18 +144,6 @@ pub(super) async fn relay_local_websocket(
         }
     }
     Ok(())
-}
-
-pub(super) fn local_websocket_url(upstream_port: u16, path: &str) -> Result<String, String> {
-    if upstream_port == 0 {
-        return Err("app has no active upstream port".to_string());
-    }
-    let path = if path.starts_with('/') {
-        path.to_string()
-    } else {
-        format!("/{path}")
-    };
-    Ok(format!("ws://127.0.0.1:{upstream_port}{path}"))
 }
 
 pub(super) fn forwarded_websocket_headers(headers: &[(String, String)]) -> Vec<(String, String)> {

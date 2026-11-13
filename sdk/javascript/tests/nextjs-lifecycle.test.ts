@@ -132,6 +132,34 @@ describe("managed Next.js lifecycle", () => {
     expect(await pids()).toEqual([]);
   });
 
+  test("SIGTERM leaves time for application cleanup after Next exits", async () => {
+    const cleanup = path.join(directory, "app-cleaned");
+    const driver = path.join(directory, "driver.ts");
+    await writeFile(
+      driver,
+      `
+      import { createNextjsFetchHandler } from ${JSON.stringify(path.resolve(import.meta.dir, "../src/nextjs/fetch-handler.ts"))};
+      import { writeFileSync } from "node:fs";
+      const handler = createNextjsFetchHandler(${JSON.stringify(entry)}, {argv: [${JSON.stringify(pidFile)}, "ready"]});
+      await handler.ready();
+      const alive = setInterval(() => {}, 1000);
+      process.on("SIGTERM", () => {
+        clearInterval(alive);
+        setTimeout(() => writeFileSync(${JSON.stringify(cleanup)}, "done"), 400);
+      });
+      process.kill(process.pid, "SIGTERM");
+    `,
+    );
+    const child = Bun.spawn([process.execPath, driver], { stdout: "pipe", stderr: "pipe" });
+    try {
+      expect(await child.exited).toBe(0);
+      expect(await readFile(cleanup, "utf8")).toBe("done");
+      expect((await pids()).filter(alive)).toEqual([]);
+    } finally {
+      child.kill();
+    }
+  }, 12_000);
+
   test("shutdown waits for SIGKILL when a child ignores SIGTERM", async () => {
     const fetch = handler("ignore-term");
     await fetch.ready!();

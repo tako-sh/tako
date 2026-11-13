@@ -27,6 +27,7 @@ pub(super) fn local_proxy_client_with_trusted_root(
     }
     let mut client_builder = reqwest::Client::builder()
         .no_proxy()
+        .http1_only()
         .redirect(reqwest::redirect::Policy::none())
         .resolve_to_addrs(local_host, &[listen_addr]);
     if let Some(pem) = trusted_root_pem {

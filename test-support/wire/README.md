@@ -41,3 +41,19 @@ TAKO_UPDATE_WIRE_FIXTURES=1 cargo test -p tako-core --lib wire_fixtures
 Run `bun run fmt` on the files, then every SDK's tests, and update each SDK
 whose test fails. One file per message keeps each change to the contract
 visible in its own diff.
+
+## SDK decisions
+
+- A nil/undefined enqueue payload is JSON `null`, never an empty object.
+- Store invalidations omit lifecycle settings, preserving the stream settings
+  established by subscribers. Every SDK sends `build` when `TAKO_BUILD` is set,
+  allowing the server to validate against that release's cached registry.
+- Unknown error codes are unclassified in every SDK. Go retains the raw text
+  in `ServerError.Code`; JS `reason` and Rust `ErrorCode` expose only known values.
+  The shared unknown-code reply pins this intentional API difference.
+- JS `waitFor` uses an omitted timeout for indefinite waiting and explicit zero
+  for immediate expiry. Go's required duration argument uses zero for indefinite
+  waiting. Step tests pin these language-specific calling conventions; both send
+  a nullable absolute deadline on the wire.
+- Public RPC errors redact server diagnostics. Workflow workers retain the
+  server's diagnostic in the stored run error, including unclassified rejections.

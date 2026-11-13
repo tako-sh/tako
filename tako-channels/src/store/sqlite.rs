@@ -295,31 +295,37 @@ impl SqliteChannelStore {
         // raced it is dropped instead of landing after the marker, and a
         // second marker changes nothing. An event made once the marker had
         // expired is no race: its server had reopened the stream, so this
-        // copy reopens too, whether or not it has pruned the marker yet. The
-        // check reads the origin's own, unclamped clock: that is the clock its
-        // server judged its marker by when it reopened.
+        // copy reopens too, whether or not it has pruned the marker yet.
+        // Events from one server arrive in the order it made them, so a later
+        // event from the marker's own server proves it reopened, however late
+        // the marker arrived here. Another server's event is judged by its
+        // creation time as sent, never later than this node's clock allows,
+        // so a fast clock cannot pass a race off as a reopen.
         let closed = if event.ephemeral {
             false
         } else {
             match retained_marker(&tx, &event.channel)? {
                 None => false,
-                Some((marker, closed_at)) => {
-                    let reopened = match event.created_at_unix_ms {
-                        Some(created) => marker_expired_at(
-                            &tx,
-                            &event.channel,
-                            event.lifecycle.as_ref(),
-                            closed_at,
-                            created,
-                        )?,
-                        // A peer that sends no creation time keeps close-wins.
-                        None => false,
-                    };
+                Some((marker, closed_at, marker_origin)) => {
+                    let from_closer = marker_origin.as_deref() == Some(event.id.origin.as_str());
+                    let reopened = from_closer
+                        || match event.created_at_unix_ms {
+                            Some(created) => marker_expired_at(
+                                &tx,
+                                &event.channel,
+                                event.lifecycle.as_ref(),
+                                closed_at,
+                                created.min(now_unix_ms().saturating_add(MESH_CLOCK_SKEW_MS)),
+                            )?,
+                            // A peer that sends no creation time keeps close-wins.
+                            None => false,
+                        };
                     if reopened {
-                        // Deleting the closed history raises the stream's
-                        // replay floor past the marker (the delete trigger),
-                        // so a reader paging through it is reset instead of
-                        // continuing into the new life without the close.
+                        // Deleting the closed history sets the stream's
+                        // replay floor to the marker (the delete trigger), so
+                        // a reader paging through it is reset instead of
+                        // continuing into the new life without the close; one
+                        // at the marker already got the close and continues.
                         tx.execute(
                             "DELETE FROM channel_messages WHERE channel = ?1 AND id <= ?2",
                             rusqlite::params![event.channel, marker],
@@ -552,32 +558,44 @@ fn expired_floor(
 /// one server's event time with another's close marker.
 const MESH_CLOCK_SKEW_MS: i64 = 2_000;
 
-/// Id and origin creation time of a stream's first retained close marker,
-/// through the partial marker index.
+/// Id, stored creation time and origin server of a stream's first retained
+/// close marker, through the partial marker index.
 fn retained_marker(
     conn: &rusqlite::Connection,
     channel: &str,
-) -> Result<Option<(i64, i64)>, ChannelError> {
-    Ok(conn
+) -> Result<Option<(i64, i64, Option<String>)>, ChannelError> {
+    let Some((id, created_at, event_json)) = conn
         .query_row(
             &format!(
-                "SELECT id, created_at_unix_ms FROM channel_messages
+                "SELECT id, created_at_unix_ms,
+                    (SELECT event_json FROM channel_message_events WHERE message_id = channel_messages.id)
+                 FROM channel_messages
                  WHERE channel = ?1 AND type = '{CLOSE_MESSAGE_TYPE}' ORDER BY id LIMIT 1"
             ),
             [channel],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get::<_, Option<String>>(2)?)),
         )
-        .optional()?)
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    let origin = event_json
+        .map(|json| serde_json::from_str::<ChannelEventId>(&json))
+        .transpose()
+        .map_err(storage_err)?
+        .map(|id| id.origin);
+    Ok(Some((id, created_at, origin)))
 }
 
 /// Whether a close marker made at `closed_at` had expired by `at`, by the
 /// rules readers apply: the replay window (and store age cap) by message age,
 /// or inactivity counted from the close, the last activity every server saw.
-/// The rules are those of `lifecycle`, the one the event was made under, when
-/// it carries one, and the stream's stored ones otherwise. The margin keeps
-/// one server's slightly slow clock from turning a publish it made after
-/// reopening into a race; an event made before the close is a race however
-/// short the window.
+/// It has expired when it has under the rules of `lifecycle`, the one the
+/// event was made under, or under the stream's stored ones: a deploy that
+/// changed the window leaves the event's server judging its marker by either.
+/// The margin keeps one server's slightly slow clock from turning a publish
+/// it made after reopening into a race; an event made before the close is a
+/// race however short the window.
 fn marker_expired_at(
     conn: &rusqlite::Connection,
     channel: &str,
@@ -588,26 +606,26 @@ fn marker_expired_at(
     if at <= closed_at {
         return Ok(false);
     }
-    let lifecycle = match lifecycle {
-        Some(lifecycle) => Some((
-            lifecycle.replay_window_ms as i64,
-            lifecycle.inactivity_ttl_ms as i64,
-        )),
-        None => stream_lifecycle(conn, channel)?
-            .map(|(replay_window_ms, inactivity_ttl_ms, _)| (replay_window_ms, inactivity_ttl_ms)),
-    }
-    .map(|(replay_window_ms, inactivity_ttl_ms)| (replay_window_ms, inactivity_ttl_ms, closed_at));
-    Ok(
-        match age_cutoff(
-            load_limits(conn)?,
-            lifecycle,
-            at.saturating_add(MESH_CLOCK_SKEW_MS),
-        ) {
+    let limits = load_limits(conn)?;
+    let expired_under = |lifecycle: Option<(i64, i64)>| {
+        let lifecycle = lifecycle.map(|(replay_window_ms, inactivity_ttl_ms)| {
+            (replay_window_ms, inactivity_ttl_ms, closed_at)
+        });
+        match age_cutoff(limits, lifecycle, at.saturating_add(MESH_CLOCK_SKEW_MS)) {
             None => false,
             Some(AgeCutoff::Everything) => true,
             Some(AgeCutoff::Before(created)) => closed_at < created,
-        },
-    )
+        }
+    };
+    let made_under = lifecycle.map(|lifecycle| {
+        (
+            lifecycle.replay_window_ms as i64,
+            lifecycle.inactivity_ttl_ms as i64,
+        )
+    });
+    let stored = stream_lifecycle(conn, channel)?
+        .map(|(replay_window_ms, inactivity_ttl_ms, _)| (replay_window_ms, inactivity_ttl_ms));
+    Ok(expired_under(made_under) || expired_under(stored))
 }
 
 fn replay_epoch(conn: &rusqlite::Connection) -> Result<[u8; 16], ChannelError> {
@@ -665,11 +683,14 @@ fn append_event(
     // every node at once, within bounds: never in this node's future, never
     // more than the tolerated skew in its past, and never before the stream's
     // newest row. Creation times then grow with ids in every stream, which
-    // the expired floor and age pruning rely on.
+    // the expired floor and age pruning rely on. A newest row stamped in this
+    // node's future (stored before stamps were bounded, or under a clock that
+    // stepped back since) only lifts the stamp to now: inheriting it would
+    // keep every later row, a marker too, from ever aging out.
     let created = match event.created_at_unix_ms {
         Some(origin) => origin
             .clamp(now.saturating_sub(MESH_CLOCK_SKEW_MS), now)
-            .max(newest_created_at(tx, &event.channel)?),
+            .max(newest_created_at(tx, &event.channel)?.min(now)),
         None => now,
     };
     tx.execute("INSERT INTO channel_messages (channel, type, data_json, created_at_unix_ms) VALUES (?1, ?2, ?3, ?4)",
@@ -1154,7 +1175,28 @@ fn init_connection(
             [serde_json::to_string(&limits).map_err(storage_err)?],
         )?;
     }
-    prune_replay(conn, load_limits(conn)?, now_unix_ms())?;
+    let now = now_unix_ms();
+    // Old releases trusted remote clocks. Repair retained future stamps on
+    // open, also covering a local clock that stepped back since the last run.
+    // Preserve timestamp order by ID too: newer rows may already have been
+    // bounded after an old future row. Otherwise an expired newer row would
+    // advance the replay floor past an older row that still looks live.
+    conn.execute(
+        "WITH bounded AS MATERIALIZED (
+            SELECT id, MIN(?1, MIN(created_at_unix_ms) OVER (
+                PARTITION BY channel ORDER BY id ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING
+            )) AS stamp FROM channel_messages
+         )
+         UPDATE channel_messages SET created_at_unix_ms = bounded.stamp
+         FROM bounded WHERE channel_messages.id = bounded.id
+           AND channel_messages.created_at_unix_ms > bounded.stamp",
+        [now],
+    )?;
+    conn.execute(
+        "UPDATE channel_metadata SET last_activity_unix_ms = ?1 WHERE last_activity_unix_ms > ?1",
+        [now],
+    )?;
+    prune_replay(conn, load_limits(conn)?, now)?;
     let saved: Vec<u8> = conn.query_row(
         "SELECT epoch FROM channel_store_state WHERE singleton = 1",
         [],

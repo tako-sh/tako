@@ -6,7 +6,10 @@ use crate::{
     ChannelPublishPayload,
 };
 
-use super::{IDLE_STREAM_GRACE_MS, channel_message_from_row, now_unix_ms, resolve_replay_cursor};
+#[cfg(test)]
+use super::now_unix_ms;
+use super::presence::LEASE_MS;
+use super::{IDLE_STREAM_GRACE_MS, channel_message_from_row, resolve_replay_cursor};
 
 /// Newest allocated message id. A stream is born caught up with the store, so a
 /// cursor issued before earlier bookkeeping was released is stale.
@@ -88,14 +91,13 @@ impl PostgresChannelStore {
             return Err(ChannelError::StreamClosed);
         }
         self.admit_stream(&mut tx, channel)?;
-        let now = now_unix_ms();
         match lifecycle {
-            Some(lifecycle) => self.upsert_stream(&mut tx, channel, lifecycle, now)?,
+            Some(lifecycle) => self.upsert_stream(&mut tx, channel, lifecycle)?,
             None => {
                 let defaults = ChannelLifecycle::default();
                 tx.execute(&format!(
                     "INSERT INTO {schema}.channel_metadata (app_id, channel, replay_window_ms, inactivity_ttl_ms, keepalive_interval_ms, max_connection_lifetime_ms, last_activity_unix_ms, latest_message_id, highest_deleted_message_id)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, {born}, {born})
+                     VALUES ($1, $2, $3, $4, $5, $6, {DATABASE_NOW_MS}, {born}, {born})
                      ON CONFLICT(app_id, channel) DO UPDATE SET last_activity_unix_ms = excluded.last_activity_unix_ms",
                     schema = self.schema, born = self.born_at(),
                 ), &[
@@ -105,7 +107,6 @@ impl PostgresChannelStore {
                     &(defaults.inactivity_ttl_ms as i64),
                     &(defaults.keepalive_interval_ms as i64),
                     &(defaults.max_connection_lifetime_ms as i64),
-                    &now,
                 ]).map_err(|e| ChannelError::Storage(e.to_string()))?;
             }
         }
@@ -278,14 +279,13 @@ impl PostgresChannelStore {
         auth: &ChannelAuthResponse,
     ) -> Result<(), ChannelError> {
         let mut client = self.client.lock();
-        let now = now_unix_ms();
         client
             .execute(
                 &format!(
-                    "DELETE FROM {}.presence WHERE app_id = $1 AND expires_at <= $2",
+                    "DELETE FROM {}.presence WHERE app_id = $1 AND expires_at <= {DATABASE_NOW_MS}",
                     self.schema
                 ),
-                &[&self.app_id, &now],
+                &[&self.app_id],
             )
             .map_err(|e| ChannelError::Storage(e.to_string()))?;
         // Without the publish lock, concurrent subscribers on several servers
@@ -301,7 +301,6 @@ impl PostgresChannelStore {
                 keepalive_interval_ms: auth.keepalive_interval_ms,
                 max_connection_lifetime_ms: auth.max_connection_lifetime_ms,
             },
-            now,
         )?;
 
         Ok(())
@@ -323,8 +322,9 @@ impl PostgresChannelStore {
     /// and at most that many idle streams are released. Cursors outside the
     /// replay window are refused, and expired rows hidden, by the floor readers
     /// compute (`expired_floor_sql`), so pruning a stream a few ticks late never
-    /// serves expired history to a `from=start` or resumed reader.
-    pub(super) fn prune(&self, now: i64) -> Result<(), ChannelError> {
+    /// serves expired history to a `from=start` or resumed reader. History age
+    /// and idle release, including presence leases, follow the database clock.
+    pub(super) fn prune(&self, _now: i64) -> Result<(), ChannelError> {
         let mut client = self.client.lock();
         let mut cursor = self.prune_cursor.lock();
         let mut tx = client
@@ -335,12 +335,28 @@ impl PostgresChannelStore {
             &[&format!("{}:{}", self.schema, self.app_id)],
         )
         .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        // Older servers could leave a far-future lease behind. Bound it to
+        // one normal lease so a disconnected member cannot survive an upgrade
+        // indefinitely; a live member will renew against the database clock.
+        // Renewals do not take our advisory lock, so use the current database
+        // time rather than this transaction's potentially older start time.
+        let lease_ceiling =
+            format!("(extract(epoch from clock_timestamp()) * 1000)::BIGINT + {LEASE_MS}");
         tx.execute(
             &format!(
-                "DELETE FROM {}.presence WHERE app_id = $1 AND expires_at <= $2",
+                "UPDATE {}.presence SET expires_at = {lease_ceiling}
+                 WHERE app_id = $1 AND expires_at > {lease_ceiling}",
                 self.schema
             ),
-            &[&self.app_id, &now],
+            &[&self.app_id],
+        )
+        .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        tx.execute(
+            &format!(
+                "DELETE FROM {}.presence WHERE app_id = $1 AND expires_at <= {DATABASE_NOW_MS}",
+                self.schema
+            ),
+            &[&self.app_id],
         )
         .map_err(|e| ChannelError::Storage(e.to_string()))?;
         let batch: Vec<String> = tx
@@ -356,15 +372,17 @@ impl PostgresChannelStore {
             .into_iter()
             .map(|row| row.get(0))
             .collect();
+        // Rows and activity are stamped by the database clock, so their age is
+        // judged by it too, whatever this server's clock reads.
         tx.execute(
             &format!(
                 "WITH deleted AS (
                     DELETE FROM {schema}.channel_messages AS messages
                     USING {schema}.channel_metadata AS metadata
-                    WHERE messages.app_id = $1 AND messages.channel = ANY($3)
+                    WHERE messages.app_id = $1 AND messages.channel = ANY($2)
                       AND metadata.app_id = messages.app_id AND metadata.channel = messages.channel
-                      AND ((metadata.replay_window_ms > 0 AND messages.created_at_unix_ms < ($2 - metadata.replay_window_ms))
-                        OR (metadata.inactivity_ttl_ms > 0 AND metadata.last_activity_unix_ms < ($2 - metadata.inactivity_ttl_ms)))
+                      AND ((metadata.replay_window_ms > 0 AND messages.created_at_unix_ms < ({DATABASE_NOW_MS} - metadata.replay_window_ms))
+                        OR (metadata.inactivity_ttl_ms > 0 AND metadata.last_activity_unix_ms < ({DATABASE_NOW_MS} - metadata.inactivity_ttl_ms)))
                     RETURNING messages.app_id, messages.channel, messages.id
                  ), floors AS (
                     SELECT app_id, channel, MAX(id) AS id FROM deleted GROUP BY app_id, channel
@@ -374,7 +392,7 @@ impl PostgresChannelStore {
                  FROM floors WHERE metadata.app_id = floors.app_id AND metadata.channel = floors.channel",
                 schema = self.schema,
             ),
-            &[&self.app_id, &now, &batch],
+            &[&self.app_id, &batch],
         )
         .map_err(|e| ChannelError::Storage(e.to_string()))?;
         // Release the bookkeeping of streams that retain no messages and can
@@ -382,11 +400,7 @@ impl PostgresChannelStore {
         // and ends within the stream's connection lifetime, on any server.
         tx.execute(
             &release_idle_sql(&self.schema),
-            &[
-                &self.app_id,
-                &(now - IDLE_STREAM_GRACE_MS),
-                &MAINTENANCE_BATCH,
-            ],
+            &[&self.app_id, &MAINTENANCE_BATCH],
         )
         .map_err(|e| ChannelError::Storage(e.to_string()))?;
         tx.commit()
@@ -400,14 +414,14 @@ impl PostgresChannelStore {
     }
 
     /// Start or update a stream's bookkeeping with `lifecycle` and record
-    /// activity. The stored connection lifetime only grows: idle cleanup must
-    /// outwait the longest connection any grant allowed on this stream.
+    /// activity at the database's time, the clock that judges it. The stored
+    /// connection lifetime only grows: idle cleanup must outwait the longest
+    /// connection any grant allowed on this stream.
     fn upsert_stream(
         &self,
         client: &mut impl ::postgres::GenericClient,
         channel: &str,
         lifecycle: &ChannelLifecycle,
-        now: i64,
     ) -> Result<(), ChannelError> {
         client
             .execute(
@@ -422,7 +436,7 @@ impl PostgresChannelStore {
                         last_activity_unix_ms,
                         latest_message_id,
                         highest_deleted_message_id
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, {born}, {born})
+                    ) VALUES ($1, $2, $3, $4, $5, $6, {DATABASE_NOW_MS}, {born}, {born})
                     ON CONFLICT(app_id, channel) DO UPDATE SET
                         replay_window_ms = excluded.replay_window_ms,
                         inactivity_ttl_ms = excluded.inactivity_ttl_ms,
@@ -441,7 +455,6 @@ impl PostgresChannelStore {
                     &(lifecycle.inactivity_ttl_ms as i64),
                     &(lifecycle.keepalive_interval_ms as i64),
                     &(lifecycle.max_connection_lifetime_ms as i64),
-                    &now,
                 ],
             )
             .map_err(|e| ChannelError::Storage(e.to_string()))?;
@@ -482,9 +495,10 @@ impl PostgresChannelStore {
 }
 
 /// The database's current time in Unix milliseconds: the clock that stamps
-/// every row, whichever server inserted it. `now()` is fixed for a
-/// transaction, so every statement of a read judges expiry at one moment.
-const DATABASE_NOW_MS: &str = "(extract(epoch from now()) * 1000)::BIGINT";
+/// every row and every stream's activity, whichever server wrote it, and that
+/// judges their age. `now()` is fixed for a transaction, so every statement
+/// of a read or a maintenance tick judges expiry at one moment.
+pub(super) const DATABASE_NOW_MS: &str = "(extract(epoch from now()) * 1000)::BIGINT";
 
 /// Highest expired position of the stream `$2` of app `$1`, including rows
 /// maintenance has not deleted yet: by inactivity every row, otherwise rows
@@ -509,20 +523,22 @@ fn expired_floor_sql(schema: &str) -> String {
 }
 
 /// Streams that retain nothing, longest idle first, through
-/// `idx_channel_metadata_idle`; `$2` is the activity cutoff before the grace.
+/// `idx_channel_metadata_idle`, released by the database clock that stamps
+/// their activity; `$2` is the most to release.
 fn release_idle_sql(schema: &str) -> String {
     format!(
         "DELETE FROM {schema}.channel_metadata
          WHERE app_id = $1 AND channel IN (
              SELECT channel FROM {schema}.channel_metadata AS metadata
              WHERE metadata.app_id = $1
-               AND metadata.last_activity_unix_ms + metadata.max_connection_lifetime_ms < $2
+               AND metadata.last_activity_unix_ms + metadata.max_connection_lifetime_ms
+                   < {DATABASE_NOW_MS} - {IDLE_STREAM_GRACE_MS}
                AND NOT EXISTS (
                    SELECT 1 FROM {schema}.channel_messages AS messages
                    WHERE messages.app_id = metadata.app_id
                      AND messages.channel = metadata.channel)
              ORDER BY metadata.last_activity_unix_ms + metadata.max_connection_lifetime_ms
-             LIMIT $3)"
+             LIMIT $2)"
     )
 }
 
@@ -822,6 +838,90 @@ mod integration_tests {
     }
 
     #[test]
+    fn postgres_streams_age_by_the_database_clock_whatever_each_server_clock_reads() {
+        let db = Database::new();
+        // Past every window, TTL and connection lifetime used here.
+        let skew = 30 * 60 * 1000;
+        let lifecycle = ChannelLifecycle {
+            ephemeral: false,
+            replay_window_ms: 60_000,
+            inactivity_ttl_ms: 60_000,
+            keepalive_interval_ms: 25_000,
+            max_connection_lifetime_ms: 10_000,
+        };
+        let auth: ChannelAuthResponse = serde_json::from_value(serde_json::json!({
+            "ok": true, "replayWindowMs": 60_000, "inactivityTtlMs": 60_000,
+            "maxConnectionLifetimeMs": 10_000
+        }))
+        .unwrap();
+        let clock = |ms: i64| super::super::SERVER_CLOCK_SKEW_MS.set(ms);
+        // How far the clocks of the publishing server, of the server running
+        // maintenance (prune and idle release), and of the reading server run
+        // ahead of the database.
+        for (n, (writer, maintenance, reader)) in [
+            (skew, skew, skew),
+            (-skew, -skew, -skew),
+            (skew, 0, 0),
+            (-skew, 0, 0),
+            (0, skew, 0),
+            (0, -skew, 0),
+            (0, 0, skew),
+            (0, 0, -skew),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let store = db.open(&format!("clock{n}"));
+            clock(writer);
+            for channel in ["live", "a", "b"] {
+                store.sync_channel(channel, &auth).unwrap();
+            }
+            let live = store.replay_cursor("live", None).unwrap();
+            let before = store.replay_cursor("a", None).unwrap();
+            let publish = |channel: &str, r#type: &str, lifecycle: Option<&ChannelLifecycle>| {
+                let payload = ChannelPublishPayload {
+                    r#type: r#type.into(),
+                    data: serde_json::Value::Null,
+                };
+                store.append(channel, &payload, lifecycle).unwrap().0
+            };
+            let a = publish("a", "event", Some(&lifecycle));
+            let b = publish("b", "event", None);
+            let marker = publish("c", CLOSE_MESSAGE_TYPE, Some(&lifecycle));
+            clock(maintenance);
+            store.prune(now_unix_ms()).unwrap();
+            clock(reader);
+            // Readers see exactly what they see when every clock agrees.
+            assert_eq!(
+                store.read_after("a", before, 10).unwrap(),
+                vec![a.clone()],
+                "a live cursor must read the new message"
+            );
+            assert_eq!(
+                store.read_after("a", None, 10).unwrap(),
+                vec![a],
+                "a reader from the start must see the retained message"
+            );
+            assert_eq!(
+                store.read_after("b", None, 10).unwrap(),
+                vec![b],
+                "a message published without a lifecycle must be retained"
+            );
+            assert_eq!(
+                store.close_marker("c").unwrap(),
+                Some(marker),
+                "the close must stay visible"
+            );
+            assert_eq!(
+                store.replay_cursor("live", live).unwrap(),
+                live,
+                "a stream with a fresh subscriber must not be released"
+            );
+            clock(0);
+        }
+    }
+
+    #[test]
     fn postgres_maintenance_scans_can_seek_their_indexes() {
         let mut database = Database::new();
         let _store = database.open("app");
@@ -842,7 +942,7 @@ mod integration_tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
-        let idle = plan(&release_idle_sql(&schema), &[&"app", &0i64, &1_000i64]);
+        let idle = plan(&release_idle_sql(&schema), &[&"app", &1_000i64]);
         assert!(idle.contains("idx_channel_metadata_idle"), "{idle}");
         let age = plan(
             &format!(

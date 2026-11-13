@@ -191,6 +191,42 @@ fn store_invalidation_matches_wire_fixture() {
 }
 
 #[test]
+fn store_invalidation_with_build_matches_wire_fixture() {
+    if std::env::var("TAKO_BUILD").as_deref() != Ok("v7") {
+        assert!(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "wire_fixtures::store_invalidation_with_build_matches_wire_fixture"
+                ])
+                .env("TAKO_BUILD", "v7")
+                .status()
+                .unwrap()
+                .success()
+        );
+        return;
+    }
+    let socket = WireSocket::serve(&["replies/ok.json"]);
+    StoreRegistry::new()
+        .register(
+            "messages",
+            StoreDefinition::new(|_| async { Ok(Value::Null) }),
+        )
+        .unwrap()
+        .invalidate_at(
+            socket.path(),
+            APP,
+            json!({"chatId":"chat-a"}),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+    assert_commands(
+        socket.received(),
+        &["channel_publish-store_invalidate-build"],
+    );
+}
+
+#[test]
 fn error_reply_fixtures_map_to_error_codes() {
     let expected = [
         ("error.json", None),

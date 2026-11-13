@@ -322,21 +322,48 @@ func combinatorSubschemas(schema map[string]json.RawMessage) []combinatorSubsche
 }
 
 // declaringKeyword returns the keyword through which a combinator subschema,
-// or one nested in it, declares params. "additionalProperties": false only
-// constrains.
-func declaringKeyword(subschema json.RawMessage) string {
+// or one nested in it, declares params, and for "properties" the param it
+// names that declared (the top-level "properties") lacks. Only constraints
+// pass: "additionalProperties": false, and "properties" that names declared
+// params alone, such as a "const" that tells "oneOf" branches apart.
+func declaringKeyword(subschema json.RawMessage, declared map[string]json.RawMessage) (string, string) {
 	var parsed map[string]json.RawMessage
 	if json.Unmarshal(subschema, &parsed) != nil {
-		return ""
+		return "", ""
 	}
 	for _, keyword := range declaringKeywords {
-		if raw, ok := parsed[keyword]; ok && strings.TrimSpace(string(raw)) != "false" {
-			return keyword
+		raw, ok := parsed[keyword]
+		if !ok || strings.TrimSpace(string(raw)) == "false" {
+			continue
 		}
+		var named map[string]json.RawMessage
+		if keyword == "properties" && json.Unmarshal(raw, &named) == nil && named != nil {
+			if param := undeclaredParam(named, declared); param != "" {
+				return keyword, param
+			}
+			continue
+		}
+		return keyword, ""
 	}
 	for _, nested := range combinatorSubschemas(parsed) {
-		if keyword := declaringKeyword(nested.schema); keyword != "" {
-			return keyword
+		if keyword, param := declaringKeyword(nested.schema, declared); keyword != "" {
+			return keyword, param
+		}
+	}
+	return "", ""
+}
+
+// undeclaredParam returns the first name in named, in sorted order, that
+// declared lacks, or "".
+func undeclaredParam(named, declared map[string]json.RawMessage) string {
+	names := make([]string, 0, len(named))
+	for name := range named {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if _, ok := declared[name]; !ok {
+			return name
 		}
 	}
 	return ""
@@ -361,14 +388,18 @@ func nonFlatParamsSchema(schema json.RawMessage) string {
 	if kind, ok := parsed["type"]; ok && string(kind) != `"object"` {
 		return "has type " + string(kind)
 	}
+	var declared map[string]json.RawMessage
 	if properties, ok := parsed["properties"]; ok {
-		var fields map[string]json.RawMessage
-		if json.Unmarshal(properties, &fields) != nil {
+		if json.Unmarshal(properties, &declared) != nil {
 			return "has \"properties\" that is not an object"
 		}
 	}
 	for _, subschema := range combinatorSubschemas(parsed) {
-		if keyword := declaringKeyword(subschema.schema); keyword != "" {
+		keyword, param := declaringKeyword(subschema.schema, declared)
+		if param != "" {
+			return "declares param " + strconv.Quote(param) + " through " + strconv.Quote(keyword) + " inside " + strconv.Quote(subschema.combinator) + " and not under the top-level \"properties\" (combinators may only add constraints over the params declared there)"
+		}
+		if keyword != "" {
 			return "declares params through " + strconv.Quote(keyword) + " inside " + strconv.Quote(subschema.combinator) + " (combinators may only add constraints such as \"required\" over the top-level \"properties\")"
 		}
 	}

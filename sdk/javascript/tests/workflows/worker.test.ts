@@ -472,6 +472,24 @@ describe("Worker", () => {
     expect(mock.commands.slice(first, last)).toContain("heartbeat_run");
   });
 
+  test("an unclassified server rejection retains its diagnostic in the run", async () => {
+    const rejection = JSON.parse(
+      await Bun.file(
+        new URL("../../../../test-support/wire/replies/error.json", import.meta.url),
+      ).text(),
+    ) as { message: string };
+    mock.replies.set("enqueue_run", rejection);
+    const id = mock.seed({ name: "job", retries: 0 });
+    const worker = new Worker({
+      client,
+      workerId: "w1",
+      registry: registry({ job: () => client.enqueue("other", null) }),
+    });
+    await worker.processOnce();
+    expect(mock.find(id)?.status).toBe("dead");
+    expect(mock.find(id)?.lastError).toBe(rejection.message);
+  });
+
   test("failing handler exhausts retries and dies", async () => {
     const worker = new Worker({
       client,

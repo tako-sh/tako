@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{TcpListener, TcpStream, UnixListener};
+use tokio::net::{TcpStream, UnixListener};
 use tokio::sync::Mutex;
 
 use crate::control::{CONTROL_SOCKET_PATH, ProxyCommand, ProxyResponse};
