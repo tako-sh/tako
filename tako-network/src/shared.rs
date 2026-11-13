@@ -19,7 +19,7 @@ pub const MAX_SHARED_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_SHARED_RECORD_BYTES: usize = 128 * 1024;
 
 pub const SHARED_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS tako_shared_records (\n\
-    kind TEXT NOT NULL, record_id TEXT NOT NULL, digest TEXT NOT NULL, payload TEXT NOT NULL,\n\
+    kind TEXT NOT NULL, record_id TEXT NOT NULL, digest TEXT NOT NULL, payload TEXT NOT NULL DEFAULT '',\n\
     PRIMARY KEY (kind, record_id, digest)\n\
 );";
 

@@ -27,11 +27,11 @@ services:
     build:
       secrets: [proxy_ca]
     volumes:
-      - ${E2E_PROXY_CA}:/run/e2e-proxy-ca.pem:ro
+      - ${E2E_PROXY_CA}:/etc/tako-e2e-proxy-ca.pem:ro
     environment:
-      SSL_CERT_FILE: /run/e2e-proxy-ca.pem
-      CURL_CA_BUNDLE: /run/e2e-proxy-ca.pem
-      NODE_EXTRA_CA_CERTS: /run/e2e-proxy-ca.pem
+      SSL_CERT_FILE: /etc/tako-e2e-proxy-ca.pem
+      CURL_CA_BUNDLE: /etc/tako-e2e-proxy-ca.pem
+      NODE_EXTRA_CA_CERTS: /etc/tako-e2e-proxy-ca.pem
   server-alma: *trusted
   runner: *trusted
 secrets:
@@ -84,7 +84,11 @@ cleanup() {
   if [[ $exit_code -ne 0 ]]; then
     "${COMPOSE[@]}" logs --no-color --tail=200 server-ubuntu server-alma runner || true
   fi
-  "${COMPOSE[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
+  if [[ $exit_code -ne 0 && "${E2E_KEEP_FAILED:-0}" == 1 ]]; then
+    echo "Keeping failed E2E servers for inspection (E2E_KEEP_FAILED=1)." >&2
+  else
+    "${COMPOSE[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
+  fi
   if [[ -n "$TRUST_OVERRIDE" ]]; then rm -f "$TRUST_OVERRIDE"; fi
   if [[ -n "$CACHE_OVERRIDE" ]]; then rm -f "$CACHE_OVERRIDE"; fi
 }

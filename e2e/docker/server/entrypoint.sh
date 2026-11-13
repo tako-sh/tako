@@ -23,14 +23,14 @@ fi
 python3 - <<'PY'
 import os
 import shlex
-with open('/run/tako-e2e-env', 'w') as output:
+with open('/etc/tako-e2e.env', 'w') as output:
     for name in ('HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy',
                  'SSL_CERT_FILE', 'CURL_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS'):
         if name in os.environ:
             output.write(f'{name}={shlex.quote(os.environ[name])}\n')
 PY
-chown tako:tako /run/tako-e2e-env
-chmod 0600 /run/tako-e2e-env
+chown tako:tako /etc/tako-e2e.env
+chmod 0600 /etc/tako-e2e.env
 
 # A separate engine and systemd exercise the same native-agent service lifecycle
 # as production. Never mount the executor's Docker socket or host cgroup tree.
@@ -38,7 +38,7 @@ cat > /etc/systemd/system/e2e-docker.service <<'UNIT'
 [Unit]
 After=network.target
 [Service]
-EnvironmentFile=/run/tako-e2e-env
+EnvironmentFile=/etc/tako-e2e.env
 ExecStart=/usr/local/bin/dockerd --storage-driver=vfs --host=unix:///var/run/docker.sock --group=tako
 Delegate=yes
 Restart=on-failure
@@ -89,7 +89,7 @@ fi
 mkdir -p /etc/systemd/system/tako-server.service.d
 cat > /etc/systemd/system/tako-server.service.d/e2e.conf <<'UNIT'
 [Service]
-EnvironmentFile=/run/tako-e2e-env
+EnvironmentFile=/etc/tako-e2e.env
 Environment=RUST_LOG=info
 StandardOutput=append:/tmp/tako-server.log
 StandardError=append:/tmp/tako-server.log
@@ -125,9 +125,12 @@ python3 - <<'PY'
 import json
 import os
 with open('/etc/ssh/sshd_config', 'a') as output:
-    for name in ('HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'SSL_CERT_FILE', 'CURL_CA_BUNDLE'):
-        if name in os.environ:
-            output.write('SetEnv ' + json.dumps(f'{name}={os.environ[name]}') + '\n')
+    # OpenSSH uses the first SetEnv directive, so keep all entries on one line.
+    entries = [json.dumps(f'{name}={os.environ[name]}')
+               for name in ('HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'SSL_CERT_FILE', 'CURL_CA_BUNDLE')
+               if name in os.environ]
+    if entries:
+        output.write('SetEnv ' + ' '.join(entries) + '\n')
 PY
 
 cat > /etc/systemd/system/e2e-sshd.service <<'UNIT'
