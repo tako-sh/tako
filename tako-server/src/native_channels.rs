@@ -21,7 +21,7 @@ use std::{
 use tako_network::{DeviceId, LocalDeviceKeys, NodeConfig, RegistrySnapshot};
 use tokio::{
     net::{TcpListener, TcpSocket},
-    sync::{mpsc, watch},
+    sync::watch,
     task::JoinSet,
 };
 
@@ -70,7 +70,7 @@ pub async fn run(
         .id
         .address(&keys.wg_public_key().map_err(|_| error("invalid WG key"))?);
     let (local_listener, socket_guard) = ipc::bind(&directory).await?;
-    let (commands, receiver) = mpsc::channel(128);
+    let (commands, receiver) = broker::commands(128);
     let inbound = wire::Budget::new(8 * wire::MAX_FRAME);
     let outbound = wire::Budget::new(16 * wire::MAX_FRAME);
     let replies = wire::Budget::new(8 * wire::MAX_FRAME);

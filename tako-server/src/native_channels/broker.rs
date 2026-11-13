@@ -1,3 +1,5 @@
+mod commands;
+mod live;
 mod presence;
 #[cfg(test)]
 use super::IO_TIMEOUT;
@@ -7,6 +9,8 @@ use super::{
     peer::Frame,
     wire,
 };
+pub(super) use commands::{Commands, CommandsReceiver, commands};
+use parking_lot::Mutex;
 use std::{collections::BTreeMap, io, path::PathBuf, sync::Arc};
 use tako_channels::{ChannelMessage, ChannelPublication, ChannelStore, RemoteIngest};
 use tako_network::{AppEnv, DeviceId};
@@ -29,6 +33,7 @@ pub(super) enum Command {
     Remote {
         peer: DeviceId,
         generation: u64,
+        session: Arc<()>,
         frame: wire::Received<Frame>,
     },
 }
@@ -38,6 +43,44 @@ pub(super) struct Control {
     pub losses: BTreeMap<DeviceId, u64>,
 }
 pub(super) async fn run(
+    broker: Broker,
+    commands: CommandsReceiver,
+    control: watch::Receiver<Control>,
+    shutdown: watch::Receiver<bool>,
+) -> io::Result<()> {
+    let live = broker.live.clone();
+    let (stop, mut stopped) = watch::channel(false);
+    let mut live_shutdown = shutdown.clone();
+    let live_control = control.clone();
+    let mut ephemeral = commands.ephemeral;
+    let ordered = async {
+        let result = run_ordered(broker, commands.durable, control, shutdown).await;
+        stop.send_replace(true);
+        result
+    };
+    let transient = async {
+        loop {
+            if *live_shutdown.borrow() || *stopped.borrow() {
+                break;
+            }
+            tokio::select! {
+                biased;
+                _ = live_shutdown.changed() => break,
+                _ = stopped.changed() => break,
+                command = ephemeral.recv() => match command {
+                    Some(command) => live.lock().handle(command, live_control.borrow().generation),
+                    None => break,
+                },
+            }
+        }
+    };
+    // Do not cancel an in-flight durable commit on shutdown: the caller keeps
+    // the exclusive broker lock until both workers have stopped.
+    let (result, ()) = tokio::join!(ordered, transient);
+    result
+}
+
+async fn run_ordered(
     mut broker: Broker,
     mut commands: mpsc::Receiver<Command>,
     mut control: watch::Receiver<Control>,
@@ -56,11 +99,11 @@ pub(super) async fn run(
                 if changed.is_err() { break; }
                 let next = control.borrow_and_update().clone();
                 if next.generation != seen.generation {
-                    broker.peers.clear();
+                    broker.peers.lock().clear();
                     broker.generation = next.generation;
                 } else {
                     for (id, count) in &next.losses {
-                        if seen.losses.get(id) != Some(count) { broker.peers.remove(id); }
+                        if seen.losses.get(id) != Some(count) { broker.peers.lock().remove(id); }
                     }
                 }
                 broker.fence().await?;
@@ -73,7 +116,7 @@ pub(super) async fn run(
             }
         }
     }
-    broker.peers.clear();
+    broker.peers.lock().clear();
     broker.fence().await
 }
 pub(super) struct Application {
@@ -81,7 +124,7 @@ pub(super) struct Application {
     local_file: Option<crate::channels::LocalChannelFile>,
     pub(super) postgres_url: Option<Zeroizing<String>>,
     publications: broadcast::Receiver<ChannelPublication>,
-    pub(super) subscribers: Vec<wire::Sender>,
+    pub(super) subscribers: live::Subscribers,
     presence: super::presence::Leases,
     presence_queried: std::collections::BTreeSet<DeviceId>,
     stream_limit: StreamLimitWarning,
@@ -113,17 +156,32 @@ impl StreamLimitWarning {
 pub(super) struct Broker {
     apps_root: PathBuf,
     pub apps: BTreeMap<AppEnv, Application>,
-    pub peers: BTreeMap<DeviceId, wire::Sender>,
+    pub peers: live::Peers,
+    live: Arc<Mutex<live::Live>>,
     pub generation: u64,
     notifications: wire::Budget,
     local: DeviceId,
 }
 impl Broker {
+    fn refresh_live(&self, app: &AppEnv) {
+        if let Some(application) = self.apps.get(app) {
+            self.live.lock().apps.insert(
+                app.clone(),
+                live::Application {
+                    store: application.store.clone(),
+                    subscribers: application.subscribers.clone(),
+                },
+            );
+        }
+    }
     pub fn new(apps_root: PathBuf, notifications: wire::Budget, local: DeviceId) -> Self {
+        let live = Arc::new(Mutex::new(live::Live::default()));
+        let peers = live.lock().peers.clone();
         Self {
             apps_root,
             apps: BTreeMap::new(),
-            peers: BTreeMap::new(),
+            peers,
+            live,
             generation: 0,
             notifications,
             local,
@@ -151,24 +209,29 @@ impl Broker {
                 reply,
             } => {
                 let accepted = generation == self.generation
-                    && !self.peers.contains_key(&peer)
+                    && !self.peers.lock().contains_key(&peer)
                     && !sender.closed()
                     && !reply.is_closed();
                 if accepted {
-                    self.peers.insert(peer, sender);
+                    self.peers.lock().insert(peer, sender);
                 }
                 let _ = reply.send(accepted);
             }
             Command::Remote {
                 peer,
                 generation,
+                session,
                 frame,
             } => {
                 if generation == self.generation
-                    && self.peers.contains_key(&peer)
+                    && self
+                        .peers
+                        .lock()
+                        .get(&peer)
+                        .is_some_and(|sender| sender.is_session(&session))
                     && self.remote(&peer, frame.value).await.is_err()
                 {
-                    self.peers.remove(&peer);
+                    self.peers.lock().remove(&peer);
                     self.fence().await?;
                 }
             }
@@ -258,22 +321,24 @@ impl Broker {
             application.publications = publications;
             application.presence.clear_remote(&self.local);
             application.presence_queried.clear();
+            self.refresh_live(&app);
             self.notify(&app, Notification::Gap);
             return Ok(());
         }
         self.apps.insert(
-            app,
+            app.clone(),
             Application {
                 store,
                 local_file,
                 postgres_url,
                 publications,
-                subscribers: Vec::new(),
+                subscribers: Arc::default(),
                 presence: Default::default(),
                 presence_queried: Default::default(),
                 stream_limit: Default::default(),
             },
         );
+        self.refresh_live(&app);
         Ok(())
     }
     #[cfg(test)]
@@ -286,6 +351,18 @@ impl Broker {
         request: Request,
         deadline: tokio::time::Instant,
     ) -> io::Result<Reply> {
+        if let Request::Publish {
+            app,
+            channel,
+            payload,
+            ephemeral: true,
+            ..
+        } = &request
+        {
+            return Ok(Reply::Response(
+                self.live.lock().publish(app, channel, payload),
+            ));
+        }
         let response = match request {
             Request::SignInvocation { .. } => Response::Rejected,
             Request::UpdatePresence {
@@ -328,12 +405,15 @@ impl Broker {
             Request::Subscribe { app } => {
                 // Leave connection capacity available for publishers and registration.
                 for application in self.apps.values_mut() {
-                    application.subscribers.retain(|sender| !sender.closed());
+                    application
+                        .subscribers
+                        .lock()
+                        .retain(|sender| !sender.closed());
                 }
                 if self
                     .apps
                     .values()
-                    .map(|a| a.subscribers.len())
+                    .map(|a| a.subscribers.lock().len())
                     .sum::<usize>()
                     >= super::MAX_SUBSCRIPTIONS
                 {
@@ -342,12 +422,15 @@ impl Broker {
                 let Some(application) = self.apps.get_mut(&app) else {
                     return Ok(Reply::Response(Response::Rejected));
                 };
-                application.subscribers.retain(|sender| !sender.closed());
-                if application.subscribers.len() >= super::MAX_CONNECTIONS {
+                application
+                    .subscribers
+                    .lock()
+                    .retain(|sender| !sender.closed());
+                if application.subscribers.lock().len() >= super::MAX_CONNECTIONS {
                     return Ok(Reply::Response(Response::Rejected));
                 }
                 let (sender, receiver) = wire::queue(self.notifications.clone());
-                application.subscribers.push(sender);
+                application.subscribers.lock().push(sender);
                 return Ok(Reply::Subscription(receiver));
             }
             Request::SyncChannel { app, channel, auth } => {
@@ -382,11 +465,7 @@ impl Broker {
                 let result = application
                     .store
                     .run(move |store| {
-                        if ephemeral {
-                            store.publish_ephemeral(&channel, &payload)
-                        } else {
-                            store.append_with_lifecycle(&channel, &payload, lifecycle.as_ref())
-                        }
+                        store.append_with_lifecycle(&channel, &payload, lifecycle.as_ref())
                     })
                     .await;
                 match result {
@@ -447,7 +526,7 @@ impl Broker {
             return false;
         };
         let mut complete = true;
-        self.peers.retain(|_, peer| {
+        self.peers.lock().retain(|_, peer| {
             let sent = peer.send_bytes(bytes.clone()).is_ok();
             complete &= sent;
             sent
@@ -459,11 +538,11 @@ impl Broker {
             return true;
         };
         let Ok(bytes) = wire::encode(&Notice::Notification { notification }) else {
-            application.subscribers.clear();
+            application.subscribers.lock().clear();
             return false;
         };
         let mut complete = true;
-        application.subscribers.retain(|subscriber| {
+        application.subscribers.lock().retain(|subscriber| {
             if subscriber.closed() {
                 return false;
             }
@@ -498,6 +577,11 @@ impl Broker {
     pub(super) async fn remote(&mut self, peer: &DeviceId, frame: Frame) -> io::Result<()> {
         match frame {
             Frame::Publication { app, publication } => {
+                if let ChannelPublication::Event(event) = &publication {
+                    if event.ephemeral {
+                        return self.live.lock().remote(&app, event);
+                    }
+                }
                 let Some(application) = self.apps.get(&app) else {
                     return Ok(());
                 };

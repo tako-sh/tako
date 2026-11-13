@@ -9,7 +9,7 @@ use tako_network::{
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpStream,
-    sync::{mpsc, oneshot},
+    sync::oneshot,
 };
 
 pub(super) const NAMESPACE: &str = "tako-channel-peer-v1";
@@ -179,7 +179,7 @@ pub(super) async fn serve(
     roster: &Roster,
     expected: Option<&DeviceId>,
     generation: u64,
-    commands: mpsc::Sender<Command>,
+    commands: super::broker::Commands,
     inbound: wire::Budget,
     outbound: wire::Budget,
 ) -> SessionEnd {
@@ -212,7 +212,7 @@ pub(super) async fn serve_stream<S: AsyncRead + AsyncWrite + Unpin>(
     remote_ip: IpAddr,
     expected: Option<&DeviceId>,
     generation: u64,
-    commands: mpsc::Sender<Command>,
+    commands: super::broker::Commands,
     inbound: wire::Budget,
     outbound: wire::Budget,
 ) -> SessionEnd {
@@ -234,6 +234,7 @@ pub(super) async fn serve_stream<S: AsyncRead + AsyncWrite + Unpin>(
     // From this point onward, even admission timeout is a delivery gap; bad signatures are not.
     let result = async {
         let (sender, receiver) = wire::queue(outbound);
+        let session = sender.session();
         let (reply, receive) = oneshot::channel();
         tokio::time::timeout(
             IO_TIMEOUT,
@@ -252,7 +253,10 @@ pub(super) async fn serve_stream<S: AsyncRead + AsyncWrite + Unpin>(
         {
             return Err(error("stale channel membership"));
         }
-        pump(stream, peer, generation, commands, inbound, receiver).await
+        pump(
+            stream, peer, generation, session, commands, inbound, receiver,
+        )
+        .await
     }
     .await;
     SessionEnd {
@@ -265,9 +269,10 @@ pub(super) async fn pump<S: AsyncRead + AsyncWrite + Unpin>(
     stream: S,
     peer: DeviceId,
     generation: u64,
-    commands: mpsc::Sender<Command>,
+    session: std::sync::Arc<()>,
+    commands: super::broker::Commands,
     inbound: wire::Budget,
-    mut outgoing: mpsc::Receiver<wire::Packet>,
+    mut outgoing: wire::Receiver,
 ) -> io::Result<()> {
     let (mut reader, mut writer) = tokio::io::split(stream);
     let read = async {
@@ -276,11 +281,23 @@ pub(super) async fn pump<S: AsyncRead + AsyncWrite + Unpin>(
             if matches!(frame.value, Frame::Keepalive) {
                 continue;
             }
+            let frame = if matches!(&frame.value, Frame::Publication {
+                publication: ChannelPublication::Event(event), ..
+            } if event.ephemeral)
+            {
+                match frame.into_ephemeral(&inbound) {
+                    Ok(frame) => frame,
+                    Err(_) => continue, // Drop live overload without disconnecting the peer.
+                }
+            } else {
+                frame
+            };
             tokio::time::timeout(
                 IO_TIMEOUT,
                 commands.send(Command::Remote {
                     peer: peer.clone(),
                     generation,
+                    session: session.clone(),
                     frame,
                 }),
             )
