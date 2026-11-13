@@ -371,12 +371,17 @@ impl StoreHandle {
         {
             return Err(StoreError::ScopeTooLarge);
         }
-        let mut bytes = serde_json::to_vec(&json!({
+        let mut command = json!({
             "command":"channel_publish", "app":app,
             "channel":format!("{STORE_CHANNEL_PREFIX}{}", self.name),
             "payload":{"type":"tako.store.invalidate", "data":{}, "scopeParams":params},
-        }))
-        .map_err(|_| StoreError::Protocol)?;
+        });
+        if let Ok(build) = std::env::var("TAKO_BUILD")
+            && !build.is_empty()
+        {
+            command["build"] = build.into();
+        }
+        let mut bytes = serde_json::to_vec(&command).map_err(|_| StoreError::Protocol)?;
         if bytes.len() >= MAX_STORE_BYTES {
             return Err(StoreError::TooLarge);
         }

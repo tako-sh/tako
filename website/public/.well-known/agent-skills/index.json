@@ -27,7 +27,7 @@
       "type": "framework",
       "description": "tako.sh Rust SDK: bootstrap secrets, listener binding, and Axum serving with Tako internal status handling, authenticated presence, and live Stores with cached offline reads.",
       "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-rust/SKILL.md",
-      "sha256": "d168c2e60f963deebf9d0ac5e4d51d0ba623ac4984caf905c2a6e80dede30e8c"
+      "sha256": "810d4b5cc45594475b6324f19140e4f7e71e2e3fc76872dc44d3be1d19e63f63"
     }
   ]
 }

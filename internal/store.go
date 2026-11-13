@@ -47,8 +47,7 @@ type StoreDefinition struct {
 
 // Store is an invalidation handle for a registered store.
 type Store struct {
-	name      string
-	lifecycle ChannelLifecycleConfig
+	name string
 }
 
 // Name is the public name passed to RegisterStore.
@@ -72,7 +71,7 @@ func (s *Store) Invalidate(ctx context.Context, params any) error {
 	if len(scope) > maxStoreParamsBytes {
 		return errors.New("tako: store params must be at most 16 KiB")
 	}
-	return publishStoreInvalidation(ctx, s.name, scope, s.lifecycle)
+	return publishStoreInvalidation(ctx, s.name, scope)
 }
 
 var stores = struct {
@@ -139,7 +138,7 @@ func RegisterStore(name string, definition StoreDefinition) *Store {
 	stores.Lock()
 	stores.definitions[name] = definition
 	stores.Unlock()
-	return &Store{name: name, lifecycle: lifecycle.withDefaults()}
+	return &Store{name: name}
 }
 
 func isJSONObject(value []byte) bool {

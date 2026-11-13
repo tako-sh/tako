@@ -135,6 +135,10 @@ func TestWorkflowCommandsMatchWireFixtures(t *testing.T) {
 		reply   string
 		send    func() error
 	}{
+		{"enqueue_run-null_payload", "replies/enqueue_run.json", func() error {
+			_, err := client.Enqueue(ctx, "send-email", nil, EnqueueOpts{})
+			return err
+		}},
 		{"enqueue_run", "replies/enqueue_run.json", func() error {
 			_, err := client.Enqueue(ctx, "send-email", payload, EnqueueOpts{
 				RunAt: at(0), MaxAttempts: ptr(uint32(5)), ID: ptr("order-42"),

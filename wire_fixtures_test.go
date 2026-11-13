@@ -190,16 +190,13 @@ func TestStoreInvalidationMatchesWireFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := socket.take()
-	// Known gap: the Go SDK adds the store's channel lifecycle to the payload;
-	// the JS and Rust SDKs send none, and the server accepts both. Which one
-	// store invalidations should carry is unsettled, so the fixture describes
-	// the payload without it and this check drops it.
-	payload, _ := got["payload"].(map[string]any)
-	if _, ok := payload["lifecycle"]; !ok {
-		t.Fatalf("known gap closed: the Go store invalidation no longer sends a lifecycle; remove this exception")
-	}
-	delete(payload, "lifecycle")
+
 	socket.expect("channel_publish-store_invalidate", got)
+	t.Setenv("TAKO_BUILD", "v7")
+	if err := store.Invalidate(ctx, map[string]any{"chatId": "chat-a"}); err != nil {
+		t.Fatal(err)
+	}
+	socket.expect("channel_publish-store_invalidate-build", socket.take())
 }
 
 func TestErrorRepliesFromWireFixturesMapToSentinels(t *testing.T) {

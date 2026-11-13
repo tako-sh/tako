@@ -116,6 +116,7 @@ describe("workflow commands match the wire fixtures", () => {
         ),
     ],
     ["enqueue_run-defaults", () => client.enqueue("send-email", { to: "a@example.com" })],
+    ["enqueue_run-null_payload", () => client.enqueue("send-email", null)],
     ["get_run_result", () => client.result("send-email", "order-42")],
     [
       "register_schedules",
@@ -201,6 +202,9 @@ describe("channel, store, and network commands match the wire fixtures", () => {
     });
     await messages.invalidate({ chatId: "chat-a" });
     expect(socket.take()).toEqual(fixture("commands/channel_publish-store_invalidate.json"));
+    process.env[BUILD_ENV] = "v7";
+    await messages.invalidate({ chatId: "chat-a" });
+    expect(socket.take()).toEqual(fixture("commands/channel_publish-store_invalidate-build.json"));
   });
 
   test("channel_close", async () => {

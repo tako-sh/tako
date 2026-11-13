@@ -36,6 +36,11 @@ async fn main() -> std::io::Result<()> {
 }
 ```
 
+The `serve*` helpers handle SIGTERM and SIGINT by stopping new connections,
+finishing in-flight requests, and returning for application cleanup. Tako
+enforces the process shutdown grace period. Router and listener helpers leave
+signal handling to the application's own server loop.
+
 ## Custom Servers
 
 Use `tako::std_listener()` or `tako::listener().await` with the `tokio` feature

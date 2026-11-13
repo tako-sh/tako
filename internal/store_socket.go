@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-func publishStoreInvalidation(ctx context.Context, name string, params json.RawMessage, lifecycle ChannelLifecycleConfig) error {
+func publishStoreInvalidation(ctx context.Context, name string, params json.RawMessage) error {
 	socketPath, app := os.Getenv("TAKO_INTERNAL_SOCKET"), os.Getenv("TAKO_APP_NAME")
 	if socketPath == "" || app == "" {
 		return errors.New("tako: store invalidation requires TAKO_INTERNAL_SOCKET and TAKO_APP_NAME")
@@ -22,16 +22,15 @@ func publishStoreInvalidation(ctx context.Context, name string, params json.RawM
 		Command string `json:"command"`
 		App     string `json:"app"`
 		Channel string `json:"channel"`
+		Build   string `json:"build,omitempty"`
 		Payload struct {
-			Type        string                 `json:"type"`
-			Data        struct{}               `json:"data"`
-			ScopeParams json.RawMessage        `json:"scopeParams"`
-			Lifecycle   ChannelLifecycleConfig `json:"lifecycle"`
+			Type        string          `json:"type"`
+			Data        struct{}        `json:"data"`
+			ScopeParams json.RawMessage `json:"scopeParams"`
 		} `json:"payload"`
-	}{Command: "channel_publish", App: app, Channel: storeChannelPrefix + name}
+	}{Command: "channel_publish", App: app, Channel: storeChannelPrefix + name, Build: os.Getenv("TAKO_BUILD")}
 	command.Payload.Type = "tako.store.invalidate"
 	command.Payload.ScopeParams = params
-	command.Payload.Lifecycle = lifecycle
 	body, err := json.Marshal(command)
 	if err != nil {
 		return fmt.Errorf("tako: encode store invalidation: %w", err)

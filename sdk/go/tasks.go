@@ -88,9 +88,6 @@ func ClientFromEnv() (*Client, error) {
 
 // Enqueue dispatches a run of the named workflow through this client.
 func (c *Client) Enqueue(ctx context.Context, name string, payload any, opts EnqueueOpts) (*EnqueueResult, error) {
-	if payload == nil {
-		payload = struct{}{}
-	}
 	cmd := map[string]any{
 		"command": "enqueue_run",
 		"app":     c.app,

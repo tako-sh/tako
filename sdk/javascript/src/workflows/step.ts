@@ -55,6 +55,7 @@ export interface StepWaitOptions {
   /**
    * Timeout in ms. After this elapses without a matching signal, the step
    * resolves to `null`.
+   * Explicit zero expires immediately; omit the option to wait indefinitely.
    * @defaultValue Infinity (parked indefinitely)
    */
   timeout?: number;

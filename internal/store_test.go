@@ -283,15 +283,14 @@ func TestStoreInvalidationUsesScopedTrustedSocketCommand(t *testing.T) {
 		t.Fatalf("unexpected socket command: %s", mustJSON(t, command))
 	}
 	var payload struct {
-		Type        string                 `json:"type"`
-		Data        map[string]any         `json:"data"`
-		ScopeParams map[string]any         `json:"scopeParams"`
-		Lifecycle   ChannelLifecycleConfig `json:"lifecycle"`
+		Type        string         `json:"type"`
+		Data        map[string]any `json:"data"`
+		ScopeParams map[string]any `json:"scopeParams"`
 	}
 	if err := json.Unmarshal(command["payload"], &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.Type != "tako.store.invalidate" || payload.Data == nil || len(payload.Data) != 0 || payload.ScopeParams["chatId"] != "private" || payload.ScopeParams["page"] != float64(2) || payload.Lifecycle.MaxConnectionLifetimeMs <= 0 {
+	if payload.Type != "tako.store.invalidate" || payload.Data == nil || len(payload.Data) != 0 || payload.ScopeParams["chatId"] != "private" || payload.ScopeParams["page"] != float64(2) {
 		t.Fatalf("unexpected publication payload: %#v", payload)
 	}
 }

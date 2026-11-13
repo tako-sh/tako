@@ -14,6 +14,7 @@
 import { createLogger, type Logger } from "../logger";
 import { expBackoffMs } from "./backoff";
 import { isStaleOwnerError, type WorkflowsClient } from "./rpc-client";
+import { TakoError } from "../tako/error";
 import {
   BailSignal,
   createStepAPI,
@@ -434,7 +435,13 @@ export class Worker {
       }
 
       // Regular error → run-level retry path.
-      const message = err instanceof Error ? err.message : String(err);
+      // The public RPC message is redacted for HTTP callers. A run's private
+      // diagnostic must retain the server rejection so an operator can act on it.
+      const diagnostic =
+        err instanceof TakoError && err.code === "TAKO_RPC_ERROR" && err.cause instanceof Error
+          ? err.cause
+          : err;
+      const message = diagnostic instanceof Error ? diagnostic.message : String(diagnostic);
       const maxAttempts = run.retries + 1;
       const finalize = run.attempts >= maxAttempts;
       const base = reg.retry?.backoff?.base ?? this.baseBackoffMs;

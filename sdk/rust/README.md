@@ -25,6 +25,10 @@ async fn main() -> std::io::Result<()> {
 
 `tako::axum::serve` binds the listener, reports readiness when Tako provides
 fd 4, and handles Tako's internal `/status` probe.
+All `serve*` helpers stop accepting connections on SIGTERM or SIGINT, wait for
+in-flight requests, then return so the application can finish its cleanup.
+Tako enforces the process's shutdown grace period. The `router*` and listener
+helpers leave signal handling to the application's own server loop.
 
 ## Presence
 

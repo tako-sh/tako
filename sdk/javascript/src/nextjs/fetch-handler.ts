@@ -3,6 +3,7 @@ import { access } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createGracefulShutdown } from "../tako/shutdown";
 
 import type { FetchHandler, ReadyableFetchHandler } from "../types";
 import type { ManagedNextjsServer, ManagedNextjsStartup, NextjsFetchHandlerOptions } from "./types";
@@ -216,12 +217,12 @@ function registerCleanupHandlers(): void {
     void shutdownManagedNextjsServers();
   };
   process.once("exit", shutdown);
-  process.once("SIGINT", () => {
-    void shutdownManagedNextjsServers().finally(() => process.exit(130));
+  const onSignal = createGracefulShutdown({
+    setDraining: () => {},
+    stopServer: shutdownManagedNextjsServers,
   });
-  process.once("SIGTERM", () => {
-    void shutdownManagedNextjsServers().finally(() => process.exit(143));
-  });
+  process.once("SIGINT", onSignal);
+  process.once("SIGTERM", onSignal);
 }
 
 async function waitForServerReady(

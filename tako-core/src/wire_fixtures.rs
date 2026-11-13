@@ -124,6 +124,15 @@ fn commands() -> Vec<Fixture> {
             },
         ),
         command(
+            "enqueue_run-null_payload",
+            Command::EnqueueRun {
+                app: APP.into(),
+                name: WORKFLOW.into(),
+                payload: Value::Null,
+                opts: EnqueueOpts::default(),
+            },
+        ),
+        command(
             "get_run_result",
             Command::GetRunResult {
                 app: APP.into(),
@@ -288,7 +297,8 @@ fn commands() -> Vec<Fixture> {
             },
         ),
         // Stores publish on their reserved channel; the scope travels in the
-        // payload, so the command has no params and no build.
+        // payload. Invalidations preserve the subscriber's lifecycle. Build
+        // metadata is optional, but when set validates the publisher's registry.
         command(
             "channel_publish-store_invalidate",
             Command::ChannelPublish {
@@ -301,6 +311,16 @@ fn commands() -> Vec<Fixture> {
                     "data": {},
                     "scopeParams": {"chatId": "chat-a"},
                 }),
+            },
+        ),
+        command(
+            "channel_publish-store_invalidate-build",
+            Command::ChannelPublish {
+                app: APP.into(),
+                channel: "tako.store:messages".into(),
+                params: Value::Null,
+                build: Some("v7".into()),
+                payload: json!({"type":"tako.store.invalidate", "data":{}, "scopeParams":{"chatId":"chat-a"}}),
             },
         ),
         command(

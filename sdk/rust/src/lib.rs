@@ -6,6 +6,8 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
+#[cfg(all(test, unix, feature = "axum"))]
+mod axum_shutdown_tests;
 pub mod error;
 pub mod network;
 pub mod presence;
@@ -245,10 +247,37 @@ pub mod axum {
     }
 
     pub async fn serve(router: Router) -> io::Result<()> {
+        serve_router(self::router(router)).await
+    }
+
+    async fn serve_router(router: Router) -> io::Result<()> {
+        // Register before reporting readiness. Router/listener-only adapters
+        // leave signal ownership to the application's own server loop.
+        let shutdown = shutdown_signal()?;
         let listener = crate::listener().await?;
-        ::axum::serve(listener, self::router(router))
+        ::axum::serve(listener, router)
+            .with_graceful_shutdown(shutdown)
             .await
             .map_err(io::Error::other)
+    }
+
+    fn shutdown_signal() -> io::Result<impl Future<Output = ()> + Send> {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+            let mut terminate = signal(SignalKind::terminate())?;
+            let mut interrupt = signal(SignalKind::interrupt())?;
+            Ok(async move {
+                tokio::select! {
+                    _ = terminate.recv() => {},
+                    _ = interrupt.recv() => {},
+                }
+            })
+        }
+        #[cfg(not(unix))]
+        Ok(async {
+            let _ = tokio::signal::ctrl_c().await;
+        })
     }
 
     /// Install authenticated presence discovery and authorization alongside status probes.
@@ -269,10 +298,7 @@ pub mod axum {
         router: Router,
         registry: Arc<crate::PresenceRegistry>,
     ) -> io::Result<()> {
-        let listener = crate::listener().await?;
-        ::axum::serve(listener, router_with_presence(router, registry))
-            .await
-            .map_err(io::Error::other)
+        serve_router(router_with_presence(router, registry)).await
     }
 
     /// Install authenticated Store discovery, authorization, and loader endpoints.
@@ -321,10 +347,7 @@ pub mod axum {
         router: Router,
         stores: Arc<crate::StoreRegistry>,
     ) -> io::Result<()> {
-        let listener = crate::listener().await?;
-        ::axum::serve(listener, router_with_stores(router, stores))
-            .await
-            .map_err(io::Error::other)
+        serve_router(router_with_stores(router, stores)).await
     }
 
     pub async fn serve_with_realtime(
@@ -332,10 +355,7 @@ pub mod axum {
         presence: Arc<crate::PresenceRegistry>,
         stores: Arc<crate::StoreRegistry>,
     ) -> io::Result<()> {
-        let listener = crate::listener().await?;
-        ::axum::serve(listener, router_with_realtime(router, presence, stores))
-            .await
-            .map_err(io::Error::other)
+        serve_router(router_with_realtime(router, presence, stores)).await
     }
 
     async fn status_middleware(request: Request<Body>, next: Next) -> Response {
