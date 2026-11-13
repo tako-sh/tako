@@ -145,7 +145,7 @@ Readers receive every message before the marker, then the terminal signal, then 
 
 The JavaScript SDK's `channel(params).close()` sends `channel_close` with params normalized as for `channel_publish`, `build` when `TAKO_BUILD` is set, and the definition's lifecycle; params and build are omitted when empty or unset, as for publish. It rejects ephemeral definitions and runs only in the server runtime. Its `from: "start"` subscribe/connect option sends `from=start` only when no cursor is given. The SDK treats SSE `tako.close` and WebSocket 4200 as final, calling `close()` on a custom `EventSource`, and never delivers the marker as an application message. JavaScript `defineChannel` and Go `Channels.Register` reject channel and presence params schemas that declare `from` or `last_message_id`; Store params travel as JSON and are not affected. Go has no server-side channel publish or close, network `publish` has no close operation, and neither Go nor Rust has a channel subscribe client.
 
-On native networks the channel writer is the network agent's broker, a separate process that `tako servers upgrade` does not restart, so an upgraded server can talk to the previous release's broker until the agent restarts. Before the first publish or close that carries a lifecycle, the server asks the broker over its local socket which optional fields it understands; a broker that does not answer the question is the previous release, and the server then syncs the lifecycle and publishes as that release expects, asking again after a minute. Publishes and closes keep working, with that release's semantics: a publish rejected by a closed stream still refreshes the stream's lifecycle and activity time, and a broker from before closable streams stores a close as an ordinary message (readers on the upgraded server still end there) and accepts later publishes to the stream. Restarting the network agent restores the full behavior.
+SQLite writer opens clamp previously stored future message and activity timestamps to the current local time, preserving message order and allowing old rows to age out without changing message IDs. On native networks the channel writer is the network agent's broker. It accepts lifecycle settings atomically with each publish; transport failures never select a weaker publish path. Server upgrades restart the running network agent and standby before releasing upgrade mode, including when the primary binary is already current.
 
 ## Presence
 
@@ -157,7 +157,7 @@ Server snapshots are `{ "type": "tako.presence", "connectionId": "...", "members
 
 Membership is scoped by deployed app/environment, wire name, and canonical validated params. Every authorized connection within one scope sees the same members. Params are serialized with recursively sorted object keys, then the wire name and params tuple is hashed with SHA-256 to produce a fixed-size storage key; query ordering does not create separate spaces. Each connection gets a server-generated ID, including separate tabs for one subject.
 
-The client renews a 45-second lease with an update every 15 seconds. Disconnect cleanup removes its record; expiry covers network loss and process crashes. Snapshots poll shared state at approximately one-second intervals. SQLite and Postgres store leases separately from replay, with Postgres keyed by app ID for cross-server visibility. Local dev uses the same WebSocket session loop and an in-memory store, and authorizes connections through the app as production does.
+The client renews a 45-second lease with an update every 15 seconds. Disconnect cleanup removes its record; expiry covers network loss and process crashes. Snapshots poll shared state at approximately one-second intervals. SQLite and Postgres store leases separately from replay, with Postgres keyed by app ID for cross-server visibility. Postgres stamps, reads, and expires presence leases using the database clock, so skewed server clocks cannot hide live members or retain them indefinitely. Maintenance bounds old future-stamped leases to one normal lease. Local dev uses the same WebSocket session loop and an in-memory store, and authorizes connections through the app as production does.
 
 ## Stores
 
@@ -200,7 +200,7 @@ intermediate database-state replay is promised.
 
 Development uses the same Store validation and authorization as production,
 with in-memory notification storage. Production uses existing channel storage;
-cross-server notifications require shared Postgres. Store invalidation is
+cross-server notifications require shared Postgres. Invalidations omit lifecycle settings to preserve subscriber settings and include `build` when `TAKO_BUILD` is set. Store invalidation is
 separate from the application database transaction. Durable commit-and-notify
 requires an application-owned outbox.
 

@@ -6,7 +6,10 @@ use crate::{
     ChannelPublishPayload,
 };
 
-use super::{IDLE_STREAM_GRACE_MS, channel_message_from_row, now_unix_ms, resolve_replay_cursor};
+#[cfg(test)]
+use super::now_unix_ms;
+use super::presence::LEASE_MS;
+use super::{IDLE_STREAM_GRACE_MS, channel_message_from_row, resolve_replay_cursor};
 
 /// Newest allocated message id. A stream is born caught up with the store, so a
 /// cursor issued before earlier bookkeeping was released is stale.
@@ -276,15 +279,13 @@ impl PostgresChannelStore {
         auth: &ChannelAuthResponse,
     ) -> Result<(), ChannelError> {
         let mut client = self.client.lock();
-        // Presence leases are stamped and read by the servers' own clocks.
-        let now = now_unix_ms();
         client
             .execute(
                 &format!(
-                    "DELETE FROM {}.presence WHERE app_id = $1 AND expires_at <= $2",
+                    "DELETE FROM {}.presence WHERE app_id = $1 AND expires_at <= {DATABASE_NOW_MS}",
                     self.schema
                 ),
-                &[&self.app_id, &now],
+                &[&self.app_id],
             )
             .map_err(|e| ChannelError::Storage(e.to_string()))?;
         // Without the publish lock, concurrent subscribers on several servers
@@ -322,9 +323,8 @@ impl PostgresChannelStore {
     /// replay window are refused, and expired rows hidden, by the floor readers
     /// compute (`expired_floor_sql`), so pruning a stream a few ticks late never
     /// serves expired history to a `from=start` or resumed reader. History age
-    /// and idle release follow the database clock; `now`, this server's clock,
-    /// only expires presence leases, which servers stamp by their own clocks.
-    pub(super) fn prune(&self, now: i64) -> Result<(), ChannelError> {
+    /// and idle release, including presence leases, follow the database clock.
+    pub(super) fn prune(&self, _now: i64) -> Result<(), ChannelError> {
         let mut client = self.client.lock();
         let mut cursor = self.prune_cursor.lock();
         let mut tx = client
@@ -335,12 +335,28 @@ impl PostgresChannelStore {
             &[&format!("{}:{}", self.schema, self.app_id)],
         )
         .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        // Older servers could leave a far-future lease behind. Bound it to
+        // one normal lease so a disconnected member cannot survive an upgrade
+        // indefinitely; a live member will renew against the database clock.
+        // Renewals do not take our advisory lock, so use the current database
+        // time rather than this transaction's potentially older start time.
+        let lease_ceiling =
+            format!("(extract(epoch from clock_timestamp()) * 1000)::BIGINT + {LEASE_MS}");
         tx.execute(
             &format!(
-                "DELETE FROM {}.presence WHERE app_id = $1 AND expires_at <= $2",
+                "UPDATE {}.presence SET expires_at = {lease_ceiling}
+                 WHERE app_id = $1 AND expires_at > {lease_ceiling}",
                 self.schema
             ),
-            &[&self.app_id, &now],
+            &[&self.app_id],
+        )
+        .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        tx.execute(
+            &format!(
+                "DELETE FROM {}.presence WHERE app_id = $1 AND expires_at <= {DATABASE_NOW_MS}",
+                self.schema
+            ),
+            &[&self.app_id],
         )
         .map_err(|e| ChannelError::Storage(e.to_string()))?;
         let batch: Vec<String> = tx
@@ -482,7 +498,7 @@ impl PostgresChannelStore {
 /// every row and every stream's activity, whichever server wrote it, and that
 /// judges their age. `now()` is fixed for a transaction, so every statement
 /// of a read or a maintenance tick judges expiry at one moment.
-const DATABASE_NOW_MS: &str = "(extract(epoch from now()) * 1000)::BIGINT";
+pub(super) const DATABASE_NOW_MS: &str = "(extract(epoch from now()) * 1000)::BIGINT";
 
 /// Highest expired position of the stream `$2` of app `$1`, including rows
 /// maintenance has not deleted yet: by inactivity every row, otherwise rows

@@ -1175,7 +1175,28 @@ fn init_connection(
             [serde_json::to_string(&limits).map_err(storage_err)?],
         )?;
     }
-    prune_replay(conn, load_limits(conn)?, now_unix_ms())?;
+    let now = now_unix_ms();
+    // Old releases trusted remote clocks. Repair retained future stamps on
+    // open, also covering a local clock that stepped back since the last run.
+    // Preserve timestamp order by ID too: newer rows may already have been
+    // bounded after an old future row. Otherwise an expired newer row would
+    // advance the replay floor past an older row that still looks live.
+    conn.execute(
+        "WITH bounded AS MATERIALIZED (
+            SELECT id, MIN(?1, MIN(created_at_unix_ms) OVER (
+                PARTITION BY channel ORDER BY id ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING
+            )) AS stamp FROM channel_messages
+         )
+         UPDATE channel_messages SET created_at_unix_ms = bounded.stamp
+         FROM bounded WHERE channel_messages.id = bounded.id
+           AND channel_messages.created_at_unix_ms > bounded.stamp",
+        [now],
+    )?;
+    conn.execute(
+        "UPDATE channel_metadata SET last_activity_unix_ms = ?1 WHERE last_activity_unix_ms > ?1",
+        [now],
+    )?;
+    prune_replay(conn, load_limits(conn)?, now)?;
     let saved: Vec<u8> = conn.query_row(
         "SELECT epoch FROM channel_store_state WHERE singleton = 1",
         [],

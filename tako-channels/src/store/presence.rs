@@ -1,7 +1,8 @@
+use super::postgres::DATABASE_NOW_MS;
 use super::{ChannelStore, ChannelStoreBackend};
 use crate::{ChannelError, PresenceMember};
 
-const LEASE_MS: i64 = 45_000;
+pub(super) const LEASE_MS: i64 = 45_000;
 
 fn storage_error(error: impl std::fmt::Display) -> ChannelError {
     ChannelError::Storage(error.to_string())
@@ -22,20 +23,19 @@ impl ChannelStore {
             ));
         }
         let encoded = serde_json::to_string(member).map_err(storage_error)?;
-        let expires = now + LEASE_MS;
         match self.backend.as_ref() {
             ChannelStoreBackend::Sqlite(store) => {
                 store.conn.lock().execute(
                     "INSERT INTO presence (channel, connection_id, member_json, expires_at) VALUES (?1, ?2, ?3, ?4)
                      ON CONFLICT(channel, connection_id) DO UPDATE SET member_json = excluded.member_json, expires_at = excluded.expires_at",
-                    rusqlite::params![channel, member.connection_id, encoded, expires],
+                    rusqlite::params![channel, member.connection_id, encoded, now.saturating_add(LEASE_MS)],
                 ).map_err(storage_error)?;
             }
             ChannelStoreBackend::Postgres(store) => {
                 store.client.lock().execute(&format!(
-                    "INSERT INTO {}.presence (app_id, channel, connection_id, member_json, expires_at) VALUES ($1, $2, $3, $4, $5)
+                    "INSERT INTO {}.presence (app_id, channel, connection_id, member_json, expires_at) VALUES ($1, $2, $3, $4, {DATABASE_NOW_MS} + {LEASE_MS})
                      ON CONFLICT(app_id, channel, connection_id) DO UPDATE SET member_json = excluded.member_json, expires_at = excluded.expires_at", store.schema),
-                    &[&store.app_id, &channel, &member.connection_id, &encoded, &expires],
+                    &[&store.app_id, &channel, &member.connection_id, &encoded],
                 ).map_err(storage_error)?;
             }
         }
@@ -54,8 +54,8 @@ impl ChannelStore {
             }
             ChannelStoreBackend::Postgres(store) => {
                 store.client.lock().query(&format!(
-                    "SELECT member_json FROM {}.presence WHERE app_id = $1 AND channel = $2 AND expires_at > $3 ORDER BY connection_id", store.schema),
-                    &[&store.app_id, &channel, &now],
+                    "SELECT member_json FROM {}.presence WHERE app_id = $1 AND channel = $2 AND expires_at > {DATABASE_NOW_MS} ORDER BY connection_id", store.schema),
+                    &[&store.app_id, &channel],
                 ).map_err(storage_error)?.into_iter().map(|row| row.get(0)).collect()
             }
         };

@@ -1082,6 +1082,43 @@ fn a_row_stamped_in_the_future_before_the_upgrade_is_not_inherited() {
     store.append("feed", &payload(json!(3))).unwrap();
 }
 
+#[test]
+fn reopening_a_store_repairs_old_future_rows_and_they_expire() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("channels.sqlite");
+    let store = ChannelStore::open(&path).unwrap();
+    store.append("feed", &payload(json!(1))).unwrap();
+    store.raw_execute(
+        "UPDATE channel_messages SET created_at_unix_ms = ?1",
+        [now() + 86_400_000],
+    );
+    store.append("feed", &payload(json!(2))).unwrap();
+    let marker = store.close("feed").unwrap();
+    store.raw_execute(
+        "UPDATE channel_metadata SET last_activity_unix_ms = ?1",
+        [now() + 86_400_000],
+    );
+    drop(store);
+    let store = ChannelStore::open(&path).unwrap();
+    assert!(stamps(&store, "feed").iter().all(|stamp| *stamp <= now()));
+    assert!(
+        stamps(&store, "feed")
+            .windows(2)
+            .all(|pair| pair[0] <= pair[1])
+    );
+    assert_eq!(store.close_marker("feed").unwrap().unwrap().id, marker.id);
+    assert!(
+        store.raw_query_i64(
+            "SELECT last_activity_unix_ms FROM channel_metadata WHERE channel = ?1",
+            ["feed"],
+        ) <= now()
+    );
+    store.prune_at(now() + DEFAULT_WINDOW_MS + 1_000);
+    assert_eq!(retained_markers(&store, "feed"), 0);
+    assert!(stamps(&store, "feed").is_empty());
+    store.append("feed", &payload(json!(2))).unwrap();
+}
+
 fn window(replay_window_ms: u64) -> ChannelLifecycle {
     ChannelLifecycle {
         ephemeral: false,
