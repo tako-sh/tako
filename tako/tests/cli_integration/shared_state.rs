@@ -374,6 +374,202 @@ impl Drop for ApiServer {
 }
 
 #[test]
+fn cached_network_secrets_do_not_block_legacy_key_recovery() {
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+
+    let server = ApiServer::new();
+    let publisher = server.project("publisher");
+    server.ok(
+        &server.owner_home,
+        &publisher,
+        &["secrets", "set", "REMOTE", "--env", "production"],
+        Some("published"),
+    );
+    server.ok(
+        &server.owner_home,
+        &publisher,
+        &["secrets", "sync", "--env", "production"],
+        None,
+    );
+    for (name, passphrase, explicit_env) in [
+        ("exported", false, true),
+        ("inferred", false, false),
+        ("passphrase", true, true),
+    ] {
+        let project = server.project(name);
+        let config = fs::read(project.join("tako.toml")).unwrap();
+        // Model a pre-migration checkout with a key originally stored elsewhere.
+        fs::write(
+            project.join("tako.toml"),
+            "name='demo'\n[envs.production]\nroute='demo.example.test'\n",
+        )
+        .unwrap();
+        if passphrase {
+            server.ok(
+                &server.owner_home,
+                &project,
+                &[
+                    "secrets",
+                    "key",
+                    "import",
+                    "--passphrase",
+                    "--env",
+                    "production",
+                ],
+                Some("recovery-test-passphrase"),
+            );
+        }
+        server.ok(
+            &server.owner_home,
+            &project,
+            &["secrets", "set", "LEGACY", "--env", "production"],
+            Some("recovered-local"),
+        );
+        let local = project.join(".tako/secrets.local.json");
+        let state: serde_json::Value = serde_json::from_slice(&fs::read(&local).unwrap()).unwrap();
+        let values = &state["values"];
+        let key_id = values["production"]["key_id"].as_str().unwrap();
+        let key_path = server.owner_home.join("keys").join(key_id);
+        let key = fs::read_to_string(&key_path).unwrap();
+        let bundle = URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1, "id": key_id, "key": key.trim(),
+            }))
+            .unwrap(),
+        );
+        let legacy = serde_json::to_vec(values).unwrap();
+        fs::write(project.join(".tako/secrets.json"), &legacy).unwrap();
+        fs::remove_file(local).unwrap();
+        fs::remove_file(&key_path).unwrap();
+        fs::write(project.join("tako.toml"), config).unwrap();
+
+        let mut args = vec!["secrets", "key", "import"];
+        if passphrase {
+            args.push("--passphrase");
+        }
+        if explicit_env {
+            args.extend(["--env", "production"]);
+        }
+        server.ok(
+            &server.owner_home,
+            &project,
+            &args,
+            Some(if passphrase {
+                "recovery-test-passphrase"
+            } else {
+                &bundle
+            }),
+        );
+        assert!(key_path.is_file());
+        assert_eq!(
+            fs::read(project.join(".tako/secrets.json")).unwrap(),
+            legacy
+        );
+        server.ok(&server.owner_home, &project, &["secrets", "migrate"], None);
+        server.ok(
+            &server.owner_home,
+            &project,
+            &["secrets", "sync", "--env", "production"],
+            None,
+        );
+        let migrated: serde_json::Value =
+            serde_json::from_slice(&fs::read(project.join(".tako/secrets.local.json")).unwrap())
+                .unwrap();
+        let env = &migrated["values"]["production"];
+        let local_key = fs::read_to_string(
+            server
+                .owner_home
+                .join("keys")
+                .join(env["key_id"].as_str().unwrap()),
+        )
+        .unwrap();
+        for (name, expected) in [("LEGACY", "recovered-local"), ("REMOTE", "published")] {
+            let ciphertext = env["app"][name]["value"].as_str().unwrap();
+            assert!(
+                super::secret_commands::decrypt_test_secret(ciphertext, &local_key) == expected
+            );
+        }
+    }
+}
+
+#[test]
+fn deploy_and_secret_commands_materialize_the_selected_config() {
+    let server = ApiServer::new();
+    for (app, key) in [("demo", "DEFAULT_ONLY"), ("alternate", "ALTERNATE_ONLY")] {
+        let publisher = server.project(app);
+        let config = fs::read_to_string(publisher.join("tako.toml"))
+            .unwrap()
+            .replace("name='demo'", &format!("name='{app}'"));
+        fs::write(publisher.join("tako.toml"), config).unwrap();
+        server.ok(
+            &server.owner_home,
+            &publisher,
+            &["secrets", "set", key, "--env", "production"],
+            Some("fixture-value"),
+        );
+        server.ok(
+            &server.owner_home,
+            &publisher,
+            &["secrets", "sync", "--env", "production"],
+            None,
+        );
+    }
+    for command in ["deploy", "secrets"] {
+        let project = server.project(command);
+        fs::write(project.join("alternate.toml"), format!(
+            "name='alternate'\nimage='example/alternate:latest'\n[envs.production]\nnetwork='{}'\nroute='alternate.example.test'\nservers=['missing']\n",
+            server.network,
+        )).unwrap();
+        let args = if command == "deploy" {
+            vec![
+                "--config",
+                "alternate.toml",
+                "deploy",
+                "--env",
+                "production",
+            ]
+        } else {
+            vec!["--config", "alternate.toml", "secrets", "list"]
+        };
+        let result = server.run(&server.owner_home, &project, &args, None);
+        if command == "deploy" {
+            // Stop safely at invalid placement, after config/cache loading, without deploying.
+            assert!(!result.status.success());
+            assert!(
+                stderr_str(&result).contains("Server 'missing' is not a trusted server"),
+                "{}",
+                stderr_str(&result)
+            );
+        } else {
+            assert!(result.status.success(), "{}", stderr_str(&result));
+        }
+        let state: serde_json::Value =
+            serde_json::from_slice(&fs::read(project.join(".tako/secrets.local.json")).unwrap())
+                .unwrap();
+        let secrets = &state["values"]["production"]["app"];
+        assert!(secrets.get("ALTERNATE_ONLY").is_some());
+        assert!(secrets.get("DEFAULT_ONLY").is_none());
+        // Actual bindings remain protected when a different config is selected later.
+        let wrong = server.run(&server.owner_home, &project, &["secrets", "list"], None);
+        assert!(!wrong.status.success());
+        assert!(stderr_str(&wrong).contains("bound to another app or network"));
+        server.ok(
+            &server.owner_home,
+            &project,
+            &[
+                "--config",
+                "alternate.toml",
+                "secrets",
+                "sync",
+                "--env",
+                "production",
+            ],
+            None,
+        );
+    }
+}
+
+#[test]
 fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
     let server = ApiServer::new();
     let owner = server.project("owner-checkout");

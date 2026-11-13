@@ -128,7 +128,7 @@ mod tests {
         let fixture = crate::network::tests::fixture();
         crate::network::store_keys(&fixture.profile.request().request_id, &fixture.keys).unwrap();
         let alias = crate::network::save_profile(&fixture.profile).unwrap();
-        let entries = native_server_entries(&alias, &fixture.profile).unwrap();
+        let entries = native_server_entries(&alias, &fixture.profile, &alias.name).unwrap();
         assert!(entries[0].1.key_path.is_none());
         let tako_network::MemberKind::Server(info) =
             &crate::network::server_members(&fixture.profile).unwrap()[&fixture.server].kind
@@ -148,7 +148,7 @@ mod tests {
         // Refreshing public membership must not erase workstation-local SSH choices.
         crate::network::save_profile(&fixture.profile).unwrap();
         let refreshed = crate::network::load_profile(&alias).unwrap();
-        let entries = native_server_entries(&alias, &refreshed).unwrap();
+        let entries = native_server_entries(&alias, &refreshed, &alias.name).unwrap();
         let config = crate::ssh::SshConfig::from_entry(&entries[0].1);
         let expected = std::env::current_dir().unwrap().join(relative);
         assert_eq!(config.key_path.as_ref(), Some(&expected));
@@ -169,11 +169,13 @@ mod tests {
         crate::network::server_access::save(&alias, &fixture.server, "new-ssh.private", None)
             .unwrap();
         assert_eq!(
-            native_server_entries(&alias, &refreshed).unwrap()[0].1.host,
+            native_server_entries(&alias, &refreshed, &alias.name).unwrap()[0]
+                .1
+                .host,
             "new-ssh.private"
         );
         assert!(
-            native_server_entries(&alias, &refreshed).unwrap()[0]
+            native_server_entries(&alias, &refreshed, &alias.name).unwrap()[0]
                 .1
                 .key_path
                 .is_none()
@@ -232,7 +234,7 @@ mod tests {
         let fixture = crate::network::tests::fixture();
         crate::network::store_keys(&fixture.profile.request().request_id, &fixture.keys).unwrap();
         let alias = crate::network::save_profile(&fixture.profile).unwrap();
-        let entries = native_server_entries(&alias, &fixture.profile).unwrap();
+        let entries = native_server_entries(&alias, &fixture.profile, &alias.name).unwrap();
         let public_host = entries[0].1.host.clone();
         crate::network::write_json(
             &alias
@@ -243,7 +245,7 @@ mod tests {
             false,
         )
         .unwrap();
-        let entries = native_server_entries(&alias, &fixture.profile).unwrap();
+        let entries = native_server_entries(&alias, &fixture.profile, &alias.name).unwrap();
         let config = crate::ssh::SshConfig::from_entry(&entries[0].1);
         assert_eq!(config.host, public_host);
         assert_eq!(
@@ -461,7 +463,7 @@ pub(crate) async fn load_management_servers(
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| error.to_string())?
     } else {
-        aliases.networks.into_values().collect()
+        aliases.networks.values().cloned().collect()
     };
     if env.is_some_and(|env| {
         project
@@ -476,6 +478,7 @@ pub(crate) async fn load_management_servers(
     let targeted = project.is_some();
     for alias in selected {
         let network = alias.name.clone();
+        let namespace = aliases.server_namespace(&alias);
         let entries = tokio::task::spawn_blocking(move || {
             let profile = match if refresh {
                 crate::network::client::refresh(&alias)
@@ -498,7 +501,7 @@ pub(crate) async fn load_management_servers(
                 },
                 Err(error) => return Err(error.to_string()),
             };
-            native_server_entries(&alias, &profile)
+            native_server_entries(&alias, &profile, &namespace)
         })
         .await
         .map_err(|error| error.to_string())?;
@@ -517,7 +520,7 @@ pub(crate) async fn load_management_servers(
     Ok(servers)
 }
 
-fn warn_network(message: &str) {
+pub(crate) fn warn_network(message: &str) {
     if output::is_pretty() {
         output::warning(message);
     } else {
@@ -528,6 +531,7 @@ fn warn_network(message: &str) {
 pub(crate) fn native_server_entries(
     alias: &crate::config::LocalNetwork,
     profile: &crate::network::Profile,
+    namespace: &str,
 ) -> Result<Vec<(String, crate::config::ServerEntry)>, String> {
     let members = crate::network::server_members(profile).map_err(|error| error.to_string())?;
     let mut names = std::collections::BTreeMap::new();
@@ -543,9 +547,9 @@ pub(crate) fn native_server_entries(
                 unreachable!()
             };
             let name = if names[&member.request.name.to_string()] == 1 {
-                format!("{}/{}", alias.name, member.request.name)
+                format!("{namespace}/{}", member.request.name)
             } else {
-                format!("{}/{}/{}", alias.name, member.request.name, server_id)
+                format!("{namespace}/{}/{}", member.request.name, server_id)
             };
             let access = crate::network::server_access::load(alias, &server_id)
                 .map_err(|error| error.to_string())?;

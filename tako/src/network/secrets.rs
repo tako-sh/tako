@@ -71,6 +71,14 @@ fn write_workspace(project: &Path, state: &Workspace) -> Result<()> {
 }
 
 pub(crate) fn load_local(project: &Path) -> Result<SecretsStore> {
+    let config = TakoToml::load_from_dir(project).ok();
+    load_local_with_config(project, config.as_ref())
+}
+
+pub(crate) fn load_local_with_config(
+    project: &Path,
+    config: Option<&TakoToml>,
+) -> Result<SecretsStore> {
     let _lock = if crate::output::is_dry_run() {
         None
     } else {
@@ -80,17 +88,19 @@ pub(crate) fn load_local(project: &Path) -> Result<SecretsStore> {
     let mut materialized = false;
     // A new worktree starts from the machine's authenticated shared cache. It
     // never reads another checkout's unpublished values.
-    if let Ok(config) = TakoToml::load_from_dir(project)
+    if let Some(config) = config
         && let Some(app) = config.name.as_deref()
     {
         let networks = LocalNetworks::load()?;
         for (env, spec) in &config.envs {
-            if state.environments.contains_key(env) {
-                continue;
-            }
             let Some(id) = spec.network.as_deref() else {
                 continue;
             };
+            let scope: AppEnv = format!("{app}/{env}").parse()?;
+            if state.environments.contains_key(env) {
+                bind(&mut state, env, &scope, &id.parse()?)?;
+                continue;
+            }
             let Ok(alias) = networks.select(Some(id)) else {
                 continue;
             };
@@ -98,7 +108,6 @@ pub(crate) fn load_local(project: &Path) -> Result<SecretsStore> {
                 continue;
             };
             let profile = super::load_profile(alias)?;
-            let scope: AppEnv = format!("{app}/{env}").parse()?;
             merge_remote(&mut state, env, &scope, &profile, &cache)?;
             materialized = true;
         }

@@ -3,8 +3,7 @@ use crate::output;
 pub(super) async fn list_secrets(
     context: &crate::commands::project_context::ProjectContext,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use crate::config::SecretsStore;
-    let secrets = SecretsStore::load_from_dir(&context.project_dir)?;
+    let secrets = context.load_secrets()?;
 
     if secrets.is_empty() {
         if output::is_json() {

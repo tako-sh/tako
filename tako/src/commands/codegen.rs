@@ -73,7 +73,8 @@ pub fn run(
                 false,
                 update_schemas,
             )?;
-            written |= build::go::write_secret_accessors(&ctx.project_dir)?;
+            written |=
+                build::go::write_secret_accessors_with_config(&ctx.project_dir, &tako_config)?;
             if written {
                 output::success("Generated Go types, secret accessors, and tako-schema.json");
             } else {

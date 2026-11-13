@@ -143,7 +143,7 @@ pub(super) async fn export_key(
     context: &crate::commands::project_context::ProjectContext,
     env: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let secrets = crate::config::SecretsStore::load_from_dir(&context.project_dir)?;
+    let secrets = crate::config::SecretsStore::load_for_key_recovery(&context.project_dir)?;
     let key_id = secrets
         .get_key_id(env)
         .ok_or_else(|| format!("No secrets configured for environment '{}'.", env))?;
@@ -178,7 +178,7 @@ async fn import_exported_key(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let input = read_key_bundle()?;
     let (key_id, key) = decode_key_bundle(&input)?;
-    let mut secrets = crate::config::SecretsStore::load_from_dir(&context.project_dir)?;
+    let mut secrets = crate::config::SecretsStore::load_for_key_recovery(&context.project_dir)?;
     let mut secrets_changed = false;
     let env = if let Some(env) = requested_env {
         crate::config::validate_environment_name(env)?;
@@ -222,7 +222,7 @@ async fn import_passphrase_key(
     }
 
     let env = resolve_secret_environment(context, requested_env, "Key environment")?;
-    let mut secrets = crate::config::SecretsStore::load_from_dir(&context.project_dir)?;
+    let mut secrets = crate::config::SecretsStore::load_for_key_recovery(&context.project_dir)?;
     let key_id = secrets.ensure_env_key_id(&env)?;
     let key = read_passphrase_key_for_env(&secrets, &env, &key_id)?;
 

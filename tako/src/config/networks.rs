@@ -131,6 +131,20 @@ impl LocalNetworks {
             )),
         }
     }
+
+    /// Keep inventory selectors unique even when shared network names collide.
+    pub(crate) fn server_namespace(&self, local: &LocalNetwork) -> String {
+        if self
+            .networks
+            .values()
+            .any(|other| other.name == local.name && other.id != local.id)
+        {
+            format!("{}/{}", local.name, local.id)
+        } else {
+            local.name.clone()
+        }
+    }
+
     pub fn save_identity(local: &LocalNetwork) -> Result<()> {
         local.validate()?;
         let path = index_path()?;

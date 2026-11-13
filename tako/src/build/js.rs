@@ -68,8 +68,12 @@ fn read_env_names(project_dir: &Path) -> Vec<String> {
 /// Falls back to all secret names across all environments if no development
 /// environment exists. Returns an empty vec if the file doesn't exist or is
 /// malformed.
-fn read_secret_names(project_dir: &Path) -> Vec<String> {
-    let Ok(store) = crate::config::SecretsStore::load_from_dir(project_dir) else {
+fn read_secret_names(project_dir: &Path, config: Option<&TakoToml>) -> Vec<String> {
+    let store = match config {
+        Some(config) => crate::config::SecretsStore::load_with_config(project_dir, config),
+        None => crate::config::SecretsStore::load_from_dir(project_dir),
+    };
+    let Ok(store) = store else {
         return vec![];
     };
     if let Some(development) = store.get_env("development") {
@@ -374,6 +378,22 @@ pub fn write_tako_declarations_for_adapter(
     write_tako_declarations_for_adapter_and_app_root(project_dir, adapter, &app_root)
 }
 
+pub fn write_tako_declarations_with_config(
+    project_dir: &Path,
+    adapter: BuildAdapter,
+    config: &TakoToml,
+) -> std::io::Result<bool> {
+    write_tako_declarations_with_network_options(
+        project_dir,
+        adapter,
+        config.js_app_root(),
+        &|| Command::new("bun"),
+        Some(config),
+        false,
+    )
+    .map(|result| result.wrote_declarations || result.wrote_contracts)
+}
+
 pub fn write_tako_declarations_for_adapter_and_app_root(
     project_dir: &Path,
     adapter: BuildAdapter,
@@ -409,7 +429,7 @@ fn write_tako_declarations_with_network_options(
     config: Option<&TakoToml>,
     update: bool,
 ) -> std::io::Result<JsGeneratedFilesResult> {
-    let secret_names = read_secret_names(project_dir);
+    let secret_names = read_secret_names(project_dir, config);
     let storage_names = read_storage_names(project_dir);
     let env_names = read_env_names(project_dir);
     let var_names = read_var_names(project_dir);

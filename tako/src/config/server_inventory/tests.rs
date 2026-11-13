@@ -1,6 +1,50 @@
 use super::*;
 
 #[test]
+fn cached_inventory_preserves_same_named_networks_and_skips_inactive_unselected_profiles() {
+    use crate::network::tests::{TestHome, fixture};
+    let _home = TestHome::new();
+    let mut first = fixture();
+    let second = fixture();
+    let locals = [&first, &second].map(|fixture| {
+        crate::network::store_keys(&fixture.profile.request().request_id, &fixture.keys).unwrap();
+        crate::network::save_profile(&fixture.profile).unwrap()
+    });
+    let inventory = ServerInventory::load(None).unwrap();
+    assert_eq!(inventory.servers.len(), 2);
+    for local in &locals {
+        let name = format!("test/{}/server", local.id);
+        assert!(inventory.contains(&name));
+        assert!(
+            ServerInventory::load(Some(&local.id))
+                .unwrap()
+                .contains(&name)
+        );
+    }
+    let crate::network::Profile::Active { profile } = &mut first.profile else {
+        panic!()
+    };
+    let own = profile.snapshot.network.initial_admin.clone();
+    profile
+        .snapshot
+        .members
+        .iter_mut()
+        .find(|member| member.device_id == own)
+        .unwrap()
+        .expires_at = Some(1);
+    crate::network::write_json(&locals[0].profile_path().unwrap(), &first.profile, true).unwrap();
+    assert_eq!(ServerInventory::load(None).unwrap().servers.len(), 1);
+    assert!(ServerInventory::load(Some(&locals[0].id)).is_err());
+    assert_eq!(
+        ServerInventory::load(Some(&locals[1].id))
+            .unwrap()
+            .servers
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn test_target_normalization_accepts_common_aliases() {
     assert_eq!(
         ServerTarget::normalize_arch("amd64").as_deref(),

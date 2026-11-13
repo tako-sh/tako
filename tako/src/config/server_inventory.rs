@@ -132,14 +132,32 @@ impl ServerEntry {
 impl ServerInventory {
     /// Resolve the last authenticated membership cached on this machine.
     /// Commands that change remote state refresh it before selecting targets.
-    pub fn load() -> Result<Self> {
+    pub fn load(network: Option<&str>) -> Result<Self> {
         let mut inventory = Self::default();
-        for local in super::LocalNetworks::load()?.networks.into_values() {
-            let profile = crate::network::load_profile(&local)
-                .map_err(|error| ConfigError::Validation(error.to_string()))?;
+        let networks = super::LocalNetworks::load()?;
+        let selected = match network {
+            Some(network) => vec![networks.select(Some(network))?],
+            None => networks.networks.values().collect(),
+        };
+        for local in selected {
+            let profile = match crate::network::load_profile(local) {
+                Ok(profile) => profile,
+                Err(error) if network.is_none() => {
+                    crate::commands::helpers::warn_network(&format!(
+                        "Skipping network {}: {error}",
+                        local.name
+                    ));
+                    continue;
+                }
+                Err(error) => return Err(ConfigError::Validation(error.to_string())),
+            };
             inventory.servers.extend(
-                crate::commands::helpers::native_server_entries(&local, &profile)
-                    .map_err(ConfigError::Validation)?,
+                crate::commands::helpers::native_server_entries(
+                    local,
+                    &profile,
+                    &networks.server_namespace(local),
+                )
+                .map_err(ConfigError::Validation)?,
             );
         }
         Ok(inventory)

@@ -166,6 +166,26 @@ impl Fixture {
         .unwrap();
     }
 
+    fn install_network(&self, other: &Self) {
+        let profile_path = self
+            .tako_home
+            .join(other.profile_path.strip_prefix(&other.tako_home).unwrap());
+        fs::create_dir_all(profile_path.parent().unwrap()).unwrap();
+        fs::copy(&other.profile_path, profile_path).unwrap();
+        let key = PathBuf::from("network-keys")
+            .join(format!("{}.json", other.profile.request.request_id));
+        fs::copy(other.tako_home.join(&key), self.tako_home.join(&key)).unwrap();
+        let index_path = self.tako_home.join("networks/identities.json");
+        let mut index: Vec<serde_json::Value> =
+            serde_json::from_slice(&fs::read(&index_path).unwrap()).unwrap();
+        let other_index: Vec<serde_json::Value> = serde_json::from_slice(
+            &fs::read(other.tako_home.join("networks/identities.json")).unwrap(),
+        )
+        .unwrap();
+        index.extend(other_index);
+        fs::write(index_path, serde_json::to_vec(&index).unwrap()).unwrap();
+    }
+
     fn status(&self) -> serde_json::Value {
         let output = run_tako_with_env(
             &["--dry-run", "--json", "status"],
@@ -175,6 +195,116 @@ impl Fixture {
         );
         assert!(output.status.success(), "{}", stderr_str(&output));
         serde_json::from_slice(&output.stdout).unwrap()
+    }
+}
+
+#[test]
+fn same_named_networks_keep_distinct_servers_and_lifecycle_selectors() {
+    let first = Fixture::with_servers(&["edge"]);
+    let second = Fixture::with_servers(&["edge"]);
+    first.install_network(&second);
+    let status = first.status();
+    let servers = status["servers"].as_array().unwrap();
+    assert_eq!(servers.len(), 2);
+    for fixture in [&first, &second] {
+        let expected = format!("fleet/{}/edge", fixture.profile.snapshot.network.id);
+        assert!(servers.iter().any(|server| server["name"] == expected));
+        // Project selection uses the network ID and the same unique selector.
+        fs::write(first.directory.path().join("tako.toml"), format!(
+            "name='demo'\nimage='example/demo:latest'\n[envs.production]\nnetwork='{}'\nroute='demo.example.test'\n",
+            fixture.profile.snapshot.network.id,
+        )).unwrap();
+        let selected = run_tako_with_env(
+            &[
+                "--ci",
+                "--dry-run",
+                "backups",
+                "now",
+                "--env",
+                "production",
+                "--server",
+                &expected,
+            ],
+            first.directory.path(),
+            &first.home,
+            &first.tako_home,
+        );
+        assert!(selected.status.success(), "{}", stderr_str(&selected));
+    }
+    let ambiguous = run_tako_with_env(
+        &[
+            "--ci",
+            "--dry-run",
+            "network",
+            "server",
+            "uninstall",
+            "fleet/edge",
+            "--yes",
+        ],
+        first.directory.path(),
+        &first.home,
+        &first.tako_home,
+    );
+    assert!(!ambiguous.status.success());
+    assert!(
+        stderr_str(&ambiguous).contains("not found"),
+        "{}",
+        stderr_str(&ambiguous)
+    );
+}
+
+#[test]
+fn deploy_ignores_unrelated_inactive_networks_but_rejects_a_selected_inactive_network() {
+    for revoked in [false, true] {
+        let healthy = Fixture::with_servers(&["edge"]);
+        let mut stale = Fixture::with_servers(&["edge"]);
+        let own = stale.profile.snapshot.network.initial_admin.clone();
+        if revoked {
+            let revocation = stale
+                .profile
+                .snapshot
+                .plan_revocation(
+                    tako_network::RevocationId::random().unwrap(),
+                    &own,
+                    &own,
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                )
+                .unwrap();
+            stale.profile.snapshot.revocations.push(revocation);
+        } else {
+            stale
+                .profile
+                .snapshot
+                .members
+                .iter_mut()
+                .find(|member| member.device_id == own)
+                .unwrap()
+                .expires_at = Some(1);
+        }
+        stale.save();
+        healthy.install_network(&stale);
+        for (fixture, reaches_placement) in [(&healthy, true), (&stale, false)] {
+            fs::write(healthy.directory.path().join("tako.toml"), format!(
+                "name='demo'\nimage='example/demo:latest'\n[envs.production]\nnetwork='{}'\nroute='demo.example.test'\nservers=['missing']\n",
+                fixture.profile.snapshot.network.id,
+            )).unwrap();
+            let output = run_tako_with_env(
+                &["--ci", "--dry-run", "deploy", "--env", "production"],
+                healthy.directory.path(),
+                &healthy.home,
+                &healthy.tako_home,
+            );
+            assert!(!output.status.success());
+            assert_eq!(
+                stderr_str(&output).contains("Server 'missing' is not a trusted server"),
+                reaches_placement,
+                "{}",
+                stderr_str(&output)
+            );
+        }
     }
 }
 

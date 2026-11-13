@@ -8,6 +8,11 @@ pub struct ProjectContext {
 }
 
 impl ProjectContext {
+    pub fn load_secrets(&self) -> crate::config::Result<crate::config::SecretsStore> {
+        let config = crate::config::TakoToml::load_from_file(&self.config_path)?;
+        crate::config::SecretsStore::load_with_config(&self.project_dir, &config)
+    }
+
     pub fn config_key(&self) -> String {
         std::fs::canonicalize(&self.config_path)
             .unwrap_or_else(|_| self.config_path.clone())

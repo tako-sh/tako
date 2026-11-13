@@ -32,14 +32,11 @@ fn refresh_generated_files_after_secret_change(project_dir: &Path, config_path: 
         .unwrap_or_else(|| detect_build_adapter(project_dir));
     match adapter.preset_group() {
         PresetGroup::Js => {
-            let _ = build::js::write_tako_declarations_for_adapter_and_app_root(
-                project_dir,
-                adapter,
-                tako_config.js_app_root(),
-            );
+            let _ =
+                build::js::write_tako_declarations_with_config(project_dir, adapter, &tako_config);
         }
         PresetGroup::Go => {
-            let _ = build::go::write_secret_accessors(project_dir);
+            let _ = build::go::write_secret_accessors_with_config(project_dir, &tako_config);
         }
         PresetGroup::Unknown => {}
     }
@@ -311,7 +308,7 @@ pub(crate) fn resolve_secret_environment(
     }
 
     let tako_config = crate::config::TakoToml::load_from_file(&context.config_path)?;
-    let secrets = crate::config::SecretsStore::load_from_dir(&context.project_dir)?;
+    let secrets = crate::config::SecretsStore::load_for_key_recovery(&context.project_dir)?;
     let mut wizard = output::Wizard::new().with_fields(&[("Environment", false), ("Name", true)]);
 
     let choice = wizard.select(
@@ -449,7 +446,7 @@ fn resolve_secret_set_input(
     name: &str,
     requested_expires_on: Option<String>,
 ) -> Result<Option<SecretSetInput>, Box<dyn std::error::Error>> {
-    let secrets = crate::config::SecretsStore::load_from_dir(&context.project_dir)?;
+    let secrets = context.load_secrets()?;
     let requested_expires_on = requested_expires_on
         .map(|value| crate::config::normalize_secret_expires_on(&value))
         .transpose()?;
@@ -677,12 +674,11 @@ async fn set_secret(
     value: &str,
     expires_on: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use crate::config::SecretsStore;
     use crate::crypto::encrypt;
 
     // Load secrets and ensure environment has an in-memory key_id. Do not write
     // local state until every prompt in this flow has completed.
-    let mut secrets = SecretsStore::load_from_dir(&context.project_dir)?;
+    let mut secrets = context.load_secrets()?;
     secrets.ensure_env_key_id(env)?;
 
     let exists = secrets.contains(env, name);
@@ -720,8 +716,7 @@ async fn remove_secret(
     env: Option<&str>,
     assume_yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use crate::config::SecretsStore;
-    let mut secrets = SecretsStore::load_from_dir(&context.project_dir)?;
+    let mut secrets = context.load_secrets()?;
 
     if let Some(env) = env {
         // Remove from specific environment

@@ -1,6 +1,6 @@
 use crate::support::*;
 
-fn decrypt_test_secret(encrypted: &str, key_b64: &str) -> String {
+pub(super) fn decrypt_test_secret(encrypted: &str, key_b64: &str) -> String {
     use aes_gcm::{
         Aes256Gcm, Nonce,
         aead::{Aead, KeyInit},

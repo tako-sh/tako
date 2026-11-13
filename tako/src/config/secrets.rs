@@ -189,6 +189,18 @@ impl SecretsStore {
             .map_err(|error| ConfigError::Validation(error.to_string()))
     }
 
+    /// Materialize the shared cache for the configuration chosen by the caller.
+    pub fn load_with_config(project_dir: &Path, config: &super::TakoToml) -> Result<Self> {
+        crate::network::secrets::load_local_with_config(project_dir, Some(config))
+            .map_err(|error| ConfigError::Validation(error.to_string()))
+    }
+
+    /// Read existing encrypted values without requiring keys or binding a cache.
+    pub fn load_for_key_recovery(project_dir: &Path) -> Result<Self> {
+        crate::network::secrets::load_local_with_config(project_dir, None)
+            .map_err(|error| ConfigError::Validation(error.to_string()))
+    }
+
     /// Load secrets from a specific file
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let content = fs::read_to_string(path.as_ref())

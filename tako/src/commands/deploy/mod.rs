@@ -198,10 +198,14 @@ async fn run_async(
             let _t = output::timed("Configuration validation");
             let tako_config =
                 TakoToml::load_from_file(&context.config_path).map_err(|e| e.to_string())?;
-            let servers = ServerInventory::load().map_err(|e| e.to_string())?;
-            let secrets = SecretsStore::load_from_dir(&project_dir).map_err(|e| e.to_string())?;
-
             let env = resolve_deploy_environment(requested_env, &tako_config)?;
+            let network = tako_config
+                .envs
+                .get(&env)
+                .and_then(|env| env.network.as_deref());
+            let servers = ServerInventory::load(network).map_err(|e| e.to_string())?;
+            let secrets = SecretsStore::load_with_config(&project_dir, &tako_config)
+                .map_err(|e| e.to_string())?;
 
             let config_result = validate_full_config(&tako_config, &servers, Some(&env));
             if config_result.has_errors() {
