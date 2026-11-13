@@ -1495,33 +1495,35 @@ mod tests {
         let standby =
             crate::state_store::DrainLease::try_standby_in(fixture.temp.path(), false).unwrap();
         assert!(standby.is_some(), "a standby holds a shared lease");
-        let server = fixture.serve(0);
-        let error = fixture
+        // Storage that accepts no request.
+        drop(fixture.serve(0));
+        let refused = fixture
             .state
             .restore_backup_inner(&fixture.app, &fixture.info.id)
-            .await
-            .expect_err("a restore must refuse while a standby runs");
+            .await;
         assert!(
-            server.await.unwrap().is_empty(),
-            "a refused restore must download nothing"
-        );
-        assert!(
-            error.contains("tako-server-standby") && error.contains("Stop the standby first"),
-            "the refusal must name the standby service and say to stop it"
+            refused.is_err_and(|error| error.contains("tako-server-standby")
+                && error.contains("Stop the standby first")),
+            "a restore must refuse, name the standby service and say to stop it"
         );
         let data = &fixture.data;
-        assert_eq!(sqlite_value(&data.join("app/data.sqlite")), "live");
-        assert_eq!(fixture.previous_dirs(), 0);
+        assert!(
+            sqlite_value(&data.join("app/data.sqlite")) == "live" && fixture.previous_dirs() == 0,
+            "a refused restore must change nothing"
+        );
 
         drop(standby);
         let server = fixture.serve(2);
-        fixture
+        let restored = fixture
             .state
             .restore_backup_inner(&fixture.app, &fixture.info.id)
-            .await
-            .expect("a restore must run once no standby runs");
+            .await;
+        assert!(restored.is_ok(), "a restore must run once no standby runs");
         server.await.unwrap();
-        assert_eq!(sqlite_value(&data.join("app/data.sqlite")), "snapshot");
+        assert!(
+            sqlite_value(&data.join("app/data.sqlite")) == "snapshot",
+            "the restore must replace the database"
+        );
         assert!(
             crate::state_store::DrainLease::try_standby_in(fixture.temp.path(), false)
                 .unwrap()
@@ -1778,21 +1780,20 @@ mod tests {
             .start_unresolved_restore_watch(&tokio::runtime::Handle::current());
         let original = leave_restore(&fixture, Some(journal::IntentState::Original));
         tokio::time::sleep(UNRESOLVED_RESTORE_CHECK * 4).await;
-        assert_eq!(
-            app.state(),
-            crate::socket::AppState::Running,
+        assert!(
+            app.state() == crate::socket::AppState::Running,
             "whole data must not stop the app"
         );
         std::fs::remove_dir_all(original).unwrap();
 
         leave_restore(&fixture, Some(journal::IntentState::Swapping));
-        tokio::time::timeout(Duration::from_secs(10), async {
+        let stopped = tokio::time::timeout(Duration::from_secs(10), async {
             while app.state() != crate::socket::AppState::Stopped {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
-        .await
-        .expect("the standby must stop the app");
+        .await;
+        assert!(stopped.is_ok(), "the standby must stop the app");
         assert!(app.last_error().is_some(), "status must say why");
     }
 

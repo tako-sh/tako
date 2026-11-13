@@ -113,9 +113,9 @@ fn a_standby_start_waits_for_a_running_restore_and_then_locks_restores_out() {
     drop(standby);
     assert!(restoring(true).is_some(), "a stopped standby holds nothing");
 
-    let primary = start_state(tmp.path(), false).unwrap();
+    let primary = start_state(tmp.path(), false);
     assert!(
-        restoring(true).is_some(),
+        primary.is_ok() && restoring(true).is_some(),
         "only a standby holds the standby lock"
     );
     drop(primary);

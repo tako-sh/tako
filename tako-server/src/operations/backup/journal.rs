@@ -1610,7 +1610,10 @@ mod tests {
         std::fs::create_dir_all(data_dir.join(GENERATION_TMP_FILE).join("busy")).unwrap();
 
         recover_restores_in(data_dir, RecoveryMode::Successor);
-        assert_eq!(read_generation(data_dir), Ok(Some("gA".into())));
+        assert!(
+            read_generation(data_dir) == Ok(Some("gA".into())),
+            "the generation write must have failed"
+        );
         assert!(
             !free.exists() && renamed(&free, ABANDONED_DIR_PREFIX).exists(),
             "a record no running process holds must be marked abandoned"
@@ -1619,7 +1622,10 @@ mod tests {
             held.join(LOCK_FILE).exists() && read_intent(&held).is_ok_and(|i| i.is_some()),
             "a record a running process holds must be left as it is"
         );
-        assert!(marker(&held_root) == b"restored");
+        assert!(
+            marker(&held_root) == b"restored",
+            "a successor start must roll nothing back"
+        );
 
         std::fs::remove_dir_all(data_dir.join(GENERATION_TMP_FILE)).unwrap();
         recover_restores_in(data_dir, RecoveryMode::Primary);
