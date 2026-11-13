@@ -880,6 +880,8 @@ pub enum BackupSkipReason {
     InsufficientDisk,
     DeployInProgress,
     BackupInProgress,
+    /// An unfinished restore keeps the app stopped; no scheduled backup runs.
+    UnfinishedRestore,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

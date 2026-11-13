@@ -175,6 +175,10 @@ impl crate::ServerState {
     /// Create a full archive for an operator unless another backup operation
     /// holds the lock.
     async fn backup_app_now(&self, app: &str) -> Result<BackupInfo, String> {
+        // As scheduled backups skip it.
+        if let Some(reason) = self.unresolved_restore_block(app) {
+            return Err(reason);
+        }
         let backup = self.acquire_backup_lock(app)?;
         self.operator_full_backup_with_lock(app, backup).await
     }
@@ -1790,6 +1794,56 @@ mod tests {
         .await
         .expect("the standby must stop the app");
         assert!(app.last_error().is_some(), "status must say why");
+    }
+
+    /// A backup of an app an unfinished restore keeps stopped would copy its
+    /// partly restored data, and the retention of each upload deletes old
+    /// database snapshots, perhaps the one the operator restores from: the
+    /// scheduler skips the app and says why in status, a queued post-deploy
+    /// archive waits, and an operator archive is refused.
+    #[tokio::test]
+    async fn backups_skip_an_app_an_unfinished_restore_keeps_stopped() {
+        let fixture = RestoreFixture::new();
+        let (state, app) = (&fixture.state, fixture.app.as_str());
+        // Any request to the storage fails and is recorded as a failure.
+        drop(fixture.serve(0));
+        leave_restore(&fixture, Some(journal::IntentState::Swapping));
+        state.record_post_deploy_backup_queued(app, true);
+        state
+            .database_snapshots
+            .write()
+            .entry(app.to_string())
+            .or_default()
+            .post_deploy_backup_queued = true;
+
+        state.run_due_backups().await;
+        state.run_queued_post_deploy_backup(app).await;
+        let schedule = state.backup_schedule_state(app);
+        assert!(
+            schedule.failure().is_none(),
+            "no backup of a blocked app may reach its storage"
+        );
+        let block = state.unresolved_restore_block(app).unwrap();
+        assert!(
+            schedule.skip.as_ref().is_some_and(|skip| {
+                skip.reason == tako_core::BackupSkipReason::UnfinishedRestore
+                    && skip.message.contains(&block)
+            }),
+            "status must say why backups are skipped"
+        );
+        assert!(
+            schedule.post_deploy_backup_queued && state.post_deploy_backup_marker(app).exists(),
+            "a queued post-deploy backup must wait until the restore is resolved"
+        );
+        let refused = state.backup_app_now(app).await;
+        assert!(
+            refused.is_err_and(|error| error == block),
+            "an operator backup must be refused with the block message"
+        );
+        assert!(
+            state.backup_schedule_state(app).failure().is_none(),
+            "a refused operator backup must not run"
+        );
     }
 
     #[tokio::test]
