@@ -761,6 +761,7 @@ fn prepare_build_phase_packages_container_release_without_native_entrypoint() {
         "production".to_string(),
         tako_config,
         crate::config::SecretsStore::default(),
+        true,
         "javascript/vite".to_string(),
         BuildAdapter::Unknown,
         vec![(
@@ -820,6 +821,7 @@ fn prepare_build_phase_packages_native_artifact_with_start_without_runtime() {
             "production".to_string(),
             tako_config.clone(),
             crate::config::SecretsStore::default(),
+            true,
             "unknown".to_string(),
             BuildAdapter::Unknown,
             vec![(
@@ -908,6 +910,7 @@ dev = ["vite", "dev"]
         "production".to_string(),
         tako_config,
         crate::config::SecretsStore::default(),
+        true,
         format!("javascript/vite@{branch_sha}"),
         BuildAdapter::Node,
         vec![(
@@ -975,4 +978,26 @@ fn container_release_sdk_is_detected_only_for_sdk_containers_built_from_source()
     let mut plain = dockerfile.clone();
     plain.container_options.sdk = false;
     assert_eq!(detect(&plain), None);
+}
+
+#[test]
+fn scoped_build_uses_provisioned_bindings_without_requiring_admin_credentials() {
+    let project = TempDir::new().unwrap();
+    let config = toml::from_str::<TakoToml>(
+        r#"
+name="app"
+[envs.production]
+routes=["*.example.test"]
+ssl="cloudflare"
+"#,
+    )
+    .unwrap();
+    let secrets = crate::config::SecretsStore::default();
+    assert!(deployment_bindings(&config, &secrets, "production", project.path(), true).is_err());
+    let bindings =
+        deployment_bindings(&config, &secrets, "production", project.path(), false).unwrap();
+    assert_eq!(bindings.ssl.provider, config.get_ssl_provider("production"));
+    assert!(bindings.ssl.cloudflare_api_token.is_none());
+    assert!(bindings.runtime_credentials.is_empty() && bindings.storages.is_empty());
+    assert!(bindings.backup.is_none());
 }

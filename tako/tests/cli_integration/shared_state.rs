@@ -389,6 +389,12 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
         &["secrets", "set", "BETA", "--env", "production"],
         Some("initial-beta"),
     );
+    server.ok(
+        &server.owner_home,
+        &owner,
+        &["credentials", "set", "postgres_url", "--env", "production"],
+        Some("postgres://fixture:example@db.example.test/app"),
+    );
     assert!(server.store.0.lock().unwrap().1.secrets.is_empty());
     server.ok(
         &server.owner_home,
@@ -478,6 +484,46 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
         .unwrap();
     assert_eq!(alpha.revision, 2);
     assert_eq!(beta.revision, 2);
+    // Removing a draft after an uncertain write must publish a tombstone after
+    // recovering that write, rather than resurrecting the acknowledged value.
+    server.ok(
+        &client_home,
+        &client,
+        &["secrets", "set", "GAMMA", "--env", "production"],
+        Some("uncertain"),
+    );
+    server.drop_publication.store(true, Ordering::Relaxed);
+    assert!(
+        !server
+            .run(
+                &client_home,
+                &client,
+                &["secrets", "sync", "--env", "production"],
+                None
+            )
+            .status
+            .success()
+    );
+    server.ok(
+        &client_home,
+        &client,
+        &["secrets", "rm", "GAMMA", "--env", "production", "--yes"],
+        None,
+    );
+    server.ok(
+        &client_home,
+        &client,
+        &["secrets", "sync", "--env", "production"],
+        None,
+    );
+    let state = server.store.0.lock().unwrap().1.clone();
+    let latest = state.latest().unwrap();
+    let gamma = latest
+        .values()
+        .find(|record| record.address.name == "GAMMA")
+        .unwrap();
+    assert!(gamma.value.is_none());
+    assert_eq!(gamma.revision, 2);
     let untouched = server.project("new-worktree");
     server.ok(&client_home, &untouched, &["secrets", "list"], None);
     server.ok(
@@ -490,6 +536,80 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
         server.store.0.lock().unwrap().1.secrets.len(),
         state.secrets.len()
     );
+    let scoped_invitation = server.ok(
+        &server.owner_home,
+        &owner,
+        &[
+            "network",
+            "client",
+            "add",
+            "--network",
+            "fleet",
+            "--deploy",
+            "demo/production",
+        ],
+        None,
+    )["invitation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let scoped_home = server.directory.path().join("scoped-home");
+    let scoped_project = server.project("scoped-checkout");
+    server.ok(
+        &scoped_home,
+        &scoped_project,
+        &["network", "join", "--name", "scoped", "--invitation-stdin"],
+        Some(&scoped_invitation),
+    );
+    let devices = fs::read_dir(
+        scoped_home
+            .join("networks")
+            .join(server.network.to_string()),
+    )
+    .unwrap();
+    let device = devices
+        .map(|entry| entry.unwrap())
+        .find(|entry| entry.path().is_dir())
+        .unwrap();
+    let cache: SharedSnapshot =
+        serde_json::from_slice(&fs::read(device.path().join("secrets.json")).unwrap()).unwrap();
+    assert!(
+        cache
+            .secrets
+            .iter()
+            .all(|record| record.address.kind == tako_network::shared::SecretKind::App)
+    );
+    server.ok(
+        &scoped_home,
+        &scoped_project,
+        &["secrets", "set", "SCOPED", "--env", "production"],
+        Some("allowed"),
+    );
+    server.ok(
+        &scoped_home,
+        &scoped_project,
+        &["secrets", "sync", "--env", "production"],
+        None,
+    );
+    let count = server.store.0.lock().unwrap().1.secrets.len();
+    server.ok(
+        &scoped_home,
+        &scoped_project,
+        &["credentials", "set", "postgres_url", "--env", "production"],
+        Some("postgres://fixture:example@db.example.test/forbidden"),
+    );
+    assert!(
+        !server
+            .run(
+                &scoped_home,
+                &scoped_project,
+                &["secrets", "sync", "--env", "production"],
+                None
+            )
+            .status
+            .success()
+    );
+    assert_eq!(server.store.0.lock().unwrap().1.secrets.len(), count);
     server.ok(
         &server.owner_home,
         &owner,

@@ -343,9 +343,12 @@ async fn transition(
     command: Command,
     action: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let server = servers
-        .get(&found.server)
-        .ok_or_else(|| format!("Server '{}' not found in config.toml", found.server))?;
+    let server = servers.get(&found.server).ok_or_else(|| {
+        format!(
+            "Server '{}' not found in enrolled network membership",
+            found.server
+        )
+    })?;
     if !output::is_json() {
         warn_unreachable(&found.errors);
     }

@@ -38,7 +38,7 @@ pub enum NetworkCommands {
     Request {
         #[arg(long)]
         name: Option<String>,
-        /// Optional network ID or a locally configured alias
+        /// Optional network ID or shared name
         #[arg(long)]
         network: Option<String>,
         #[arg(long, value_name = "FILE")]
@@ -80,7 +80,7 @@ pub enum NetworkCommands {
         #[arg(long, value_name = "FILE")]
         output: PathBuf,
     },
-    /// List this machine's network aliases and stable IDs
+    /// List this machine's networks and stable IDs
     #[command(visible_alias = "ls")]
     List,
 }

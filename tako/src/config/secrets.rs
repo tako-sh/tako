@@ -119,7 +119,7 @@ pub fn current_unix_timestamp() -> i64 {
     OffsetDateTime::now_utc().unix_timestamp()
 }
 
-/// Secrets storage from .tako/secrets.json
+/// Decrypted metadata and encrypted values for local secret state.
 ///
 /// Format:
 /// ```json
@@ -178,7 +178,7 @@ impl PartialEq for SecretsStore {
 }
 
 impl SecretsStore {
-    /// Get the default path for secrets (.tako/secrets.json in project root)
+    /// Get the default path for ignored local secrets in this worktree
     pub fn default_path<P: AsRef<Path>>(project_dir: P) -> PathBuf {
         project_dir.as_ref().join(".tako").join(SECRETS_FILE_NAME)
     }

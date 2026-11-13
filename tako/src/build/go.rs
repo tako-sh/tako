@@ -139,7 +139,7 @@ pub fn write_secret_accessors_with_secrets(
     Ok(true)
 }
 
-/// Read secret names from `.tako/secrets.json`.
+/// Read secret names from the local drafts and published cache.
 ///
 /// Prefers "development" env, falls back to union of all envs.
 fn read_secret_names(project_dir: &Path) -> Vec<String> {

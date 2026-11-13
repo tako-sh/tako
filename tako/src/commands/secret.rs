@@ -73,6 +73,10 @@ pub enum SecretCommands {
         /// Environment to remove from (or all if not specified)
         #[arg(long)]
         env: Option<String>,
+
+        /// Confirm removal of the local draft without prompting
+        #[arg(short = 'y', long)]
+        yes: bool,
     },
 
     /// List all secrets
@@ -236,18 +240,10 @@ async fn run_async(
             else {
                 return Ok(());
             };
-            set_secret(
-                &context,
-                &name,
-                &input.env,
-                &input.value,
-                input.expires_on,
-                false,
-            )
-            .await
+            set_secret(&context, &name, &input.env, &input.value, input.expires_on).await
         }
-        SecretCommands::Rm { name, env } => {
-            remove_secret(&context, &name, env.as_deref(), false).await
+        SecretCommands::Rm { name, env, yes } => {
+            remove_secret(&context, &name, env.as_deref(), yes).await
         }
         SecretCommands::List => list_secrets(&context).await,
         SecretCommands::Sync { env } => sync_secrets(&context, env.as_deref()).await,
@@ -680,20 +676,19 @@ async fn set_secret(
     env: &str,
     value: &str,
     expires_on: Option<String>,
-    do_sync: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::config::SecretsStore;
     use crate::crypto::encrypt;
 
     // Load secrets and ensure environment has an in-memory key_id. Do not write
-    // secrets.json until every prompt in this flow has completed.
+    // local state until every prompt in this flow has completed.
     let mut secrets = SecretsStore::load_from_dir(&context.project_dir)?;
     secrets.ensure_env_key_id(env)?;
 
     let exists = secrets.contains(env, name);
 
     // Get or create the local encryption key only after the value prompt
-    // succeeds, so cancelled wizards do not touch secrets.json or key files.
+    // succeeds, so cancelled wizards do not touch local state or key files.
     let key = load_or_create_key_for_set(env, &secrets, Some(&context.project_dir))?;
 
     // Encrypt and store
@@ -716,10 +711,6 @@ async fn set_secret(
         ));
     }
 
-    if do_sync {
-        sync_secrets(context, Some(env)).await?;
-    }
-
     Ok(())
 }
 
@@ -727,7 +718,7 @@ async fn remove_secret(
     context: &crate::commands::project_context::ProjectContext,
     name: &str,
     env: Option<&str>,
-    do_sync: bool,
+    assume_yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::config::SecretsStore;
     let mut secrets = SecretsStore::load_from_dir(&context.project_dir)?;
@@ -738,14 +729,15 @@ async fn remove_secret(
             return Err(format!("Secret '{}' not found in environment '{}'", name, env).into());
         }
 
-        let confirm = crate::output::confirm(
-            &format!(
-                "Remove secret {} from {}?",
-                output::strong(name),
-                output::strong(env)
-            ),
-            false,
-        )?;
+        let confirm = assume_yes
+            || crate::output::confirm(
+                &format!(
+                    "Remove secret {} from {}?",
+                    output::strong(name),
+                    output::strong(env)
+                ),
+                false,
+            )?;
 
         if !confirm {
             output::operation_cancelled();
@@ -760,13 +752,14 @@ async fn remove_secret(
         ));
     } else {
         // Remove from all environments
-        let confirm = crate::output::confirm(
-            &format!(
-                "Remove secret {} from ALL environments?",
-                output::strong(name)
-            ),
-            false,
-        )?;
+        let confirm = assume_yes
+            || crate::output::confirm(
+                &format!(
+                    "Remove secret {} from ALL environments?",
+                    output::strong(name)
+                ),
+                false,
+            )?;
 
         if !confirm {
             output::operation_cancelled();
@@ -783,11 +776,6 @@ async fn remove_secret(
 
     secrets.save_to_dir(&context.project_dir)?;
     refresh_generated_files_after_secret_change(&context.project_dir, &context.config_path);
-
-    if do_sync {
-        // Sync to the specific env if provided, otherwise all environments
-        sync_secrets(context, env).await?;
-    }
 
     Ok(())
 }

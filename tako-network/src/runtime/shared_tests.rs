@@ -39,7 +39,12 @@ fn secret_mutation(
         )
         .unwrap()
     });
-    SecretMutation { id, address, value }
+    SecretMutation {
+        id,
+        address,
+        value,
+        observed_revision: 0,
+    }
 }
 
 #[test]
@@ -294,4 +299,81 @@ fn secret_tampering_and_operation_reuse_fail_without_publishing() {
             .is_err()
     );
     assert_eq!(fixture.store.0.borrow().shared.secrets.len(), 1);
+}
+
+#[test]
+fn client_observation_orders_edits_after_a_revision_missing_on_this_server() {
+    use crate::shared::SecretKind;
+    let fixture = Fixture::new();
+    let mut runtime = fixture.open();
+    let mut mutation = secret_mutation(
+        &fixture,
+        "shop/production",
+        SecretKind::App,
+        "TOKEN",
+        Some("causally-later"),
+    );
+    mutation.observed_revision = 40;
+    let RpcResponse::SecretPublished(record) = fixture
+        .call(
+            &mut runtime,
+            &fixture.admin,
+            RpcRequest::PublishSecret(Box::new(mutation.clone())),
+            10,
+        )
+        .unwrap()
+    else {
+        panic!("publication expected")
+    };
+    assert_eq!(record.revision, 41);
+    // A retry after restart retains revision 41, even if another write won.
+    let newer = secret_mutation(
+        &fixture,
+        "shop/production",
+        SecretKind::App,
+        "TOKEN",
+        Some("newer"),
+    );
+    let RpcResponse::SecretPublished(newer) = fixture
+        .call(
+            &mut runtime,
+            &fixture.admin,
+            RpcRequest::PublishSecret(Box::new(newer)),
+            11,
+        )
+        .unwrap()
+    else {
+        panic!("publication expected")
+    };
+    assert_eq!(newer.revision, 42);
+    drop(runtime);
+    let mut runtime = fixture.open();
+    let RpcResponse::SecretPublished(retry) = fixture
+        .call(
+            &mut runtime,
+            &fixture.admin,
+            RpcRequest::PublishSecret(Box::new(mutation.clone())),
+            12,
+        )
+        .unwrap()
+    else {
+        panic!("publication expected")
+    };
+    assert_eq!(retry, record);
+    let mut overflow = secret_mutation(&fixture, "shop/production", SecretKind::App, "TOKEN", None);
+    overflow.observed_revision = u64::MAX;
+    assert!(
+        fixture
+            .call(
+                &mut runtime,
+                &fixture.admin,
+                RpcRequest::PublishSecret(Box::new(overflow)),
+                13
+            )
+            .is_err()
+    );
+    assert_eq!(
+        fixture.store.0.borrow().shared.latest().unwrap()[&mutation.address],
+        &newer
+    );
 }

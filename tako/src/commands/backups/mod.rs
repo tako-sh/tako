@@ -423,9 +423,12 @@ async fn download_backup(
         &target.server_names,
         "Pass --server to choose a backup source.",
     )?;
-    let server = servers
-        .get(&server_name)
-        .ok_or_else(|| format!("Server '{}' not found in config.toml", server_name))?;
+    let server = servers.get(&server_name).ok_or_else(|| {
+        format!(
+            "Server '{}' not found in enrolled network membership",
+            server_name
+        )
+    })?;
     output::section("Backups");
     output::info(&format!(
         "{} ({}) from {}",
@@ -503,9 +506,12 @@ async fn restore_backup(
         &target.server_names,
         "Pass --server to choose where to restore.",
     )?;
-    let server = servers
-        .get(&server_name)
-        .ok_or_else(|| format!("Server '{}' not found in config.toml", server_name))?;
+    let server = servers.get(&server_name).ok_or_else(|| {
+        format!(
+            "Server '{}' not found in enrolled network membership",
+            server_name
+        )
+    })?;
 
     if output::is_interactive() && !assume_yes {
         // The confirmation says what this backup's kind replaces. Dry runs

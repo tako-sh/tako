@@ -87,7 +87,11 @@ async fn run_async(
     let mut tasks = Vec::new();
     for server_name in &server_names {
         let Some(entry) = servers.get(server_name) else {
-            return Err(format!("Server '{}' not found in config.toml", server_name).into());
+            return Err(format!(
+                "Server '{}' not found in enrolled network membership",
+                server_name
+            )
+            .into());
         };
         let server_name = server_name.clone();
         let entry = entry.clone();
@@ -228,7 +232,11 @@ fn resolve_scale_server_names(
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     if let Some(server_name) = server {
         if !servers.contains(server_name) {
-            return Err(format!("Server '{}' not found in config.toml", server_name).into());
+            return Err(format!(
+                "Server '{}' not found in enrolled network membership",
+                server_name
+            )
+            .into());
         }
         if let Some(env_name) = env
             && let Some(tako_config) = project_tako

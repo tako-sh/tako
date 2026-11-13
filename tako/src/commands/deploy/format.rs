@@ -280,7 +280,7 @@ pub(super) fn format_no_global_servers_error() -> String {
 
 pub(super) fn format_server_not_found_error(server_name: &str) -> String {
     format!(
-        "Server '{}' not found in config.toml [[servers]]. Run 'tako network server add --name {} <host>'.",
+        "Server '{}' not found in enrolled network membership. Run 'tako network server add --name {} <host>'.",
         server_name, server_name
     )
 }

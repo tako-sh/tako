@@ -4,6 +4,7 @@ use tako_network::shared::SecretRecord;
 
 fn published(profile: &Profile, name: &str, value: Option<&str>, revision: u64) -> SecretRecord {
     let mutation = SecretMutation {
+        observed_revision: 0,
         id: RequestId::random().unwrap(),
         address: SecretAddress {
             scope: "demo/production".parse().unwrap(),

@@ -81,6 +81,7 @@ fn record(
 ) -> SecretRecord {
     SecretRecord::encrypt(
         &SecretMutation {
+            observed_revision: 0,
             id: RequestId::random().unwrap(),
             address: address(name),
             value: None,
@@ -178,6 +179,7 @@ fn new_members_receive_key_grants_and_revocation_excludes_future_values() {
     registry.revocations.push(denial);
     let new = SecretRecord::encrypt(
         &SecretMutation {
+            observed_revision: 0,
             id: RequestId::random().unwrap(),
             address: address("API_KEY"),
             value: None,

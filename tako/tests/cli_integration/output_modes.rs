@@ -212,7 +212,7 @@ fn json_servers_list_outputs_servers_array() {
     assert!(output.status.success(), "{}", stderr_str(&output));
     let value: serde_json::Value = serde_json::from_str(stdout_str(&output).trim()).unwrap();
     assert_eq!(value["ok"], true);
-    assert_eq!(value["command"], "servers");
+    assert_eq!(value["command"], "network server list");
     assert_eq!(value["servers"].as_array().unwrap().len(), 0);
 }
 

@@ -63,7 +63,7 @@ fn read_env_names(project_dir: &Path) -> Vec<String> {
     names.into_iter().collect()
 }
 
-/// Read secret names from `.tako/secrets.json` for the "development" environment.
+/// Read secret names from the local drafts and published cache for the "development" environment.
 ///
 /// Falls back to all secret names across all environments if no development
 /// environment exists. Returns an empty vec if the file doesn't exist or is

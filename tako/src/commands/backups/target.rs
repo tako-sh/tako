@@ -24,7 +24,11 @@ pub(crate) fn resolve_backup_target(
     let mut server_names = match requested_server {
         Some(server_name) => {
             if !servers.contains(server_name) {
-                return Err(format!("Server '{}' not found in config.toml", server_name).into());
+                return Err(format!(
+                    "Server '{}' not found in enrolled network membership",
+                    server_name
+                )
+                .into());
             }
             let mapped = if tako_config
                 .envs

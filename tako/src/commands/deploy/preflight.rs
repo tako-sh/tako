@@ -23,9 +23,12 @@ pub(super) async fn run_server_preflight_checks(
     let mut check_set = tokio::task::JoinSet::new();
 
     for server_name in &server_names {
-        let server = servers
-            .get(server_name)
-            .ok_or_else(|| format!("Server '{}' not found in servers.toml", server_name))?;
+        let server = servers.get(server_name).ok_or_else(|| {
+            format!(
+                "Server '{}' not found in enrolled network membership",
+                server_name
+            )
+        })?;
         let name = server_name.clone();
         let task_tree_for_task = task_tree.clone();
         let check_name = name.clone();

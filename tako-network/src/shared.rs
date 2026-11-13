@@ -105,6 +105,8 @@ impl SecretAddress {
 #[serde(deny_unknown_fields)]
 pub struct SecretMutation {
     pub id: RequestId,
+    /// Highest published revision this writer has observed for the address.
+    pub observed_revision: u64,
     pub address: SecretAddress,
     pub value: Option<SealedValue>,
 }

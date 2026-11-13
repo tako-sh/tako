@@ -3,7 +3,7 @@ use crate::output;
 
 /// Resolve which servers to target for a given environment.
 ///
-/// Uses trusted native network membership or explicit legacy server mappings.
+/// Uses trusted native network membership and project placement selectors.
 pub fn resolve_servers_for_env(
     tako_config: &TakoToml,
     servers: &ServerInventory,
@@ -104,11 +104,14 @@ pub(crate) fn format_environment_notice(env: &str) -> String {
     format!("Using {env} environment")
 }
 
-/// Validate that all resolved server names exist in the global servers config.
+/// Validate that all resolved server names exist in enrolled network membership.
 pub fn validate_server_names(names: &[String], servers: &ServerInventory) -> Result<(), String> {
     for name in names {
         if !servers.contains(name) {
-            return Err(format!("Server '{}' not found in config.toml", name));
+            return Err(format!(
+                "Server '{}' not found in enrolled network membership",
+                name
+            ));
         }
     }
     Ok(())

@@ -343,6 +343,7 @@ fn publish_changes(
             || record.address != pending.mutation.address
             || record.issuer != pending.issuer
             || record.author != profile.request().device_id_for(network)?
+            || record.revision <= pending.mutation.observed_revision
         {
             return Err("Secret publication response does not match the pending command".into());
         }
@@ -390,6 +391,9 @@ fn publish_changes(
         .transpose()?
         .map(|store| store.load_key())
         .transpose()?;
+    let observed_cache =
+        read_cache(alias)?.unwrap_or_else(|| SharedSnapshot::empty(network.clone()));
+    let observed = observed_cache.latest()?;
     for row_key in dirty {
         let id = RequestId::random()?;
         let address = SecretAddress {
@@ -397,6 +401,7 @@ fn publish_changes(
             kind: row_key.kind,
             name: row_key.name.clone(),
         };
+        let observed_revision = observed.get(&address).map_or(0, |record| record.revision);
         let value = current
             .get(&row_key)
             .map(|row| -> Result<_> {
@@ -412,7 +417,12 @@ fn publish_changes(
             .transpose()?;
         bind(state, env, scope, network)?.pending.push(Pending {
             issuer: issuer.clone(),
-            mutation: SecretMutation { id, address, value },
+            mutation: SecretMutation {
+                id,
+                address,
+                value,
+                observed_revision,
+            },
             local: current.get(&row_key).cloned(),
         });
     }

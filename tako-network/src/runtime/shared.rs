@@ -91,12 +91,10 @@ impl<S: RegistryStore> ServerRuntime<S> {
             let revision = state
                 .latest()?
                 .get(&mutation.address)
-                .map_or(Ok(1), |previous| {
-                    previous
-                        .revision
-                        .checked_add(1)
-                        .ok_or(RuntimeError::Capacity("secret revision"))
-                })?;
+                .map_or(0, |previous| previous.revision)
+                .max(mutation.observed_revision)
+                .checked_add(1)
+                .ok_or(RuntimeError::Capacity("secret revision"))?;
             let plaintext = mutation
                 .value
                 .as_ref()

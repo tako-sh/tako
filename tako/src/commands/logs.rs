@@ -488,7 +488,7 @@ fn pager_program_names(pager: &str) -> impl Iterator<Item = &str> {
 
 fn server_not_found_error(name: &str) -> Box<dyn std::error::Error> {
     format!(
-        "Server '{}' not found in config.toml [[servers]]. Run 'tako network server add --name {} <host>'.",
+        "Server '{}' not found in enrolled network membership. Run 'tako network server add --name {} <host>'.",
         name, name
     )
     .into()

@@ -136,6 +136,11 @@ fn remove_entry(
     if let Some(target) = &entry.native {
         tokio::task::block_in_place(|| {
             crate::network::revocation::run(&target.network, &target.server_id.to_string())?;
+            if let Err(error) = crate::network::secrets::pull(&target.network, None) {
+                output::hint(&format!(
+                    "Membership changed; refresh the secret cache with `tako network sync`: {error}"
+                ));
+            }
             Ok(())
         })
     } else {
@@ -150,7 +155,7 @@ pub(super) async fn list_servers() -> Result<(), Box<dyn std::error::Error>> {
         if output::is_json() {
             return output::json_result(serde_json::json!({
                 "ok": true,
-                "command": "servers",
+                "command": "network server list",
                 "servers": [],
             }));
         }
@@ -210,7 +215,7 @@ pub(super) async fn list_servers() -> Result<(), Box<dyn std::error::Error>> {
             .collect::<Vec<_>>();
         return output::json_result(serde_json::json!({
             "ok": true,
-            "command": "servers",
+            "command": "network server list",
             "servers": listed,
         }));
     }

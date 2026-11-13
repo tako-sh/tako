@@ -129,3 +129,125 @@ impl CorrosionStore {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        DeviceKind, LocalDeviceKeys, NetworkDescriptor, NetworkId, RequestId,
+        shared::{SHARED_SCHEMA, SecretAddress, SecretKind},
+    };
+    use std::cell::RefCell;
+    thread_local! { static DB: RefCell<rusqlite::Connection> = RefCell::new(rusqlite::Connection::open_in_memory().unwrap()); }
+    fn transport(path: &str, body: &serde_json::Value) -> RuntimeResult<Vec<u8>> {
+        DB.with_borrow(|db| {
+            if path == "/v1/transactions" {
+                let mut results = Vec::new();
+                for statement in body.as_array().unwrap() {
+                    let args: Vec<_> = statement[1]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|v| v.as_str().unwrap())
+                        .collect();
+                    let count = db
+                        .execute(
+                            statement[0].as_str().unwrap(),
+                            rusqlite::params_from_iter(args),
+                        )
+                        .unwrap();
+                    results.push(json!({"rows_affected":count}));
+                }
+                return Ok(serde_json::to_vec(&json!({"results":results})).unwrap());
+            }
+            assert_eq!(path, "/v1/queries");
+            let args: Vec<_> = body[1]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect();
+            let mut statement = db.prepare(body[0].as_str().unwrap()).unwrap();
+            let columns = statement
+                .column_names()
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            let rows = statement
+                .query_map(rusqlite::params_from_iter(args), |row| {
+                    (0..4)
+                        .map(|i| row.get::<_, String>(i))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .unwrap();
+            let mut lines = vec![json!({"columns":columns}).to_string()];
+            for (index, row) in rows.enumerate() {
+                lines.push(json!({"row":[index,row.unwrap()]}).to_string());
+            }
+            lines.push(json!({"eoq":{}}).to_string());
+            Ok(lines.join("\n").into_bytes())
+        })
+    }
+    #[test]
+    fn shared_sql_paginates_retries_and_rejects_conflicting_or_corrupt_records() {
+        DB.with_borrow(|db| db.execute_batch(SHARED_SCHEMA).unwrap());
+        let network = NetworkId::random().unwrap();
+        let id = LocalDeviceKeys::generate()
+            .unwrap()
+            .device_id(&network, DeviceKind::Server)
+            .unwrap();
+        let mut store = CorrosionStore::new(
+            "http://127.0.0.1:9834",
+            super::super::BearerToken::new("fixture-token-not-a-credential".into()).unwrap(),
+            NetworkDescriptor {
+                id: network,
+                name: "test".parse().unwrap(),
+                initial_admin: id.clone(),
+            },
+        )
+        .unwrap();
+        store.transport = Some(transport);
+        let mut last = None;
+        for revision in 1..=65 {
+            let record = SecretRecord {
+                id: RequestId::random().unwrap(),
+                address: SecretAddress {
+                    scope: "app/production".parse().unwrap(),
+                    kind: SecretKind::App,
+                    name: "TOKEN".into(),
+                },
+                revision,
+                issuer: id.clone(),
+                author: id.clone(),
+                value: None,
+                keys: Default::default(),
+            };
+            SharedStore::append_secret(&mut store, &record).unwrap();
+            last = Some(record);
+        }
+        let record = last.unwrap();
+        SharedStore::append_secret(&mut store, &record).unwrap();
+        let snapshot = SharedStore::shared_snapshot(&mut store).unwrap();
+        assert_eq!(snapshot.secrets.len(), 65);
+        assert_eq!(snapshot.latest().unwrap()[&record.address].revision, 65);
+        let mut conflict = record.clone();
+        conflict.revision += 1;
+        assert!(SharedStore::append_secret(&mut store, &conflict).is_err());
+        // Corrosion can merge two immutable payloads for one operation; fail closed.
+        let payload = serde_json::to_string(&conflict).unwrap();
+        let digest = hex::encode(openssl::sha::sha256(payload.as_bytes()));
+        DB.with_borrow(|db| {
+            db.execute(
+                "INSERT INTO tako_shared_records VALUES ('secret',?,?,?)",
+                rusqlite::params![record.id.to_string(), digest, payload],
+            )
+            .unwrap()
+        });
+        assert!(SharedStore::shared_snapshot(&mut store).is_err());
+        DB.with_borrow(|db| {
+            db.execute("UPDATE tako_shared_records SET payload='{}'", [])
+                .unwrap()
+        });
+        assert!(SharedStore::shared_snapshot(&mut store).is_err());
+    }
+}
