@@ -198,3 +198,7 @@ complete. Commit and push each coherent milestone to the same branch.
   Failed deployment fixtures collect the native service journal before cleanup.
   Secret-validation test assertions use fixed failure messages rather than
   dumping secret-derived diagnostics into CI logs.
+- CI loads and probes the host WireGuard module in an isolated network namespace
+  before testing restricted native services. The helper journals its redacted
+  failures, distinguishing missing kernel support and denied host operations
+  without logging private inputs or raw command output.

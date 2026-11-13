@@ -77,7 +77,7 @@ When running these tests inside a container, its temporary project paths and loo
 
 For `on_demand_integration` and `rolling_update_integration`, an installed disposable Linux host can set `TAKO_E2E_DISPOSABLE_HOST=1` and `TAKO_TEST_SERVER_WRAPPER=/workspace/e2e/docker/server/test-wrapper.sh`. Run the test executables as root with `--test-threads=1`, with Bun installed in a path accessible to app users. The wrapper installs the test binary with production capabilities, points the real isolation helper at each temporary data directory, and starts the service as `tako`. The fixture uploader reproduces the ownership of an SSH upload. The wrapper refuses to run outside a root Docker test container.
 
-On disposable GitHub Actions runners, `e2e/prepare-ci-host.sh` permits DAC reads in the host's `unix-chkpwd` AppArmor profile. That host profile also attaches to AlmaLinux's PAM helper inside privileged containers, where the mode-000 shadow file needs this permission. The fixture check verifies sudo before and after the correction; production PAM policy, shadow permissions, and server capabilities are unchanged.
+On disposable GitHub Actions runners, `e2e/prepare-ci-host.sh` loads the host's WireGuard module and verifies interface creation and IPv6 addressing in a temporary network namespace. It also permits DAC reads in the host's `unix-chkpwd` AppArmor profile. That host profile attaches to AlmaLinux's PAM helper inside privileged containers, where the mode-000 shadow file needs this permission. The fixture check verifies sudo before and after the correction; production PAM policy, shadow permissions, and server capabilities are unchanged.
 
 For a focused installed-isolation check after building the glibc server:
 

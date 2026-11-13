@@ -1,15 +1,15 @@
 import base64
-import copy
 import contextlib
-import io
+import copy
 import importlib.util
+import io
 import json
 import os
-from pathlib import Path
 import struct
 import tempfile
 import unittest
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import Mock, patch
 
 
 SOURCE = Path(__file__).resolve().parents[1] / 'tako-network-helper.py'
@@ -152,6 +152,35 @@ class FilesystemTests(unittest.TestCase):
                     helper.read_file(fd, 'desired.json', (os.getuid(),))
             finally:
                 os.close(fd)
+
+
+class DiagnosticTests(unittest.TestCase):
+    def test_command_failure_redacts_private_inputs_and_output(self):
+        for command, stderr, expected in [
+            (('ip', 'link', 'add', 'dev', 'test', 'type', 'wireguard'),
+             'Error: Unknown device type. private-secret', 'host kernel does not support WireGuard interfaces'),
+            (('nft', '-f', '-'), 'Operation not permitted: private-secret',
+             'network firewall configuration failed (permission denied)'),
+            (('wg', 'pubkey'), 'invalid key private-secret', 'wg failed (exit 1)'),
+        ]:
+            with self.subTest(command=command):
+                process = Mock(returncode=1, stdout='private-secret', stderr=stderr)
+                with patch.object(helper.subprocess, 'run', return_value=process), \
+                        self.assertRaises(helper.Rejected) as raised:
+                    helper.Runner().run(*command, input='private-secret')
+                self.assertEqual(str(raised.exception), expected)
+
+    def test_service_journal_keeps_only_redacted_failure(self):
+        connection = Mock()
+        diagnostic = io.StringIO()
+        with patch.object(helper, 'peer_uid', return_value=0), \
+                patch.object(helper, 'receive', return_value=f'{ID} apply\n'.encode()), \
+                patch.object(helper, 'operation', side_effect=ValueError('private-secret')), \
+                contextlib.redirect_stderr(diagnostic):
+            helper.handle_connection(connection, 1000)
+        expected = {'ok': False, 'error': 'invalid or unavailable host state'}
+        self.assertEqual(json.loads(diagnostic.getvalue()), expected)
+        self.assertEqual(json.loads(connection.sendall.call_args.args[0]), expected)
 
 
 class FakeRunner:
