@@ -127,6 +127,34 @@ fn a_standby_start_waits_for_a_running_restore_and_then_locks_restores_out() {
     );
 }
 
+/// A normal start holds the drain activity lease exclusively while it
+/// recovers backup restores, which can take longer than a service manager
+/// allows for quick restarts: another start waits for it instead of failing
+/// at once, and fails only once the wait runs out.
+#[test]
+fn a_start_waits_while_another_start_recovers_the_data_directory() {
+    use crate::state_store::DrainLease;
+    let tmp = tempfile::tempdir().unwrap();
+    let recovering = DrainLease::try_exclusive_in(tmp.path()).unwrap().unwrap();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        drop(recovering);
+    });
+    let standby = start_state(tmp.path(), true);
+    release.join().unwrap();
+    assert!(
+        standby.is_ok(),
+        "a start must wait for another start's recovery"
+    );
+    drop(standby);
+
+    let _recovering = DrainLease::try_exclusive_in(tmp.path()).unwrap().unwrap();
+    assert!(
+        start_state(tmp.path(), false).is_err_and(|error| error.contains("retry startup")),
+        "a start must fail once the wait runs out"
+    );
+}
+
 /// A normal start never rolls back a restore while another server process
 /// (a hot standby serving the same apps) holds the drain activity lease,
 /// and none can start serving app data while a normal start recovers.

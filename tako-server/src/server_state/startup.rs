@@ -74,13 +74,7 @@ impl ServerState {
             device_key,
         ));
         state_store.init()?;
-        let activity = state_store.try_drain_activity(false)?;
-        let requested = state_store.drain_requested()?;
-        if activity.is_none() && !requested {
-            return Err(StateStoreError::InvalidData(
-                "server drain completion in progress; retry startup".into(),
-            ));
-        }
+        let (activity, requested) = drain_activity_at_start(&state_store)?;
         let drain_requested = Arc::new(AtomicBool::new(requested));
         let drain_activity = parking_lot::Mutex::new(if requested { None } else { activity });
         let proxy_requests = crate::request_drain::RequestDrain::default();
@@ -263,7 +257,8 @@ impl ServerState {
 }
 
 /// How long a start waits for a lease another server process holds
-/// exclusively, such as a restore's standby lock.
+/// exclusively: a restore's standby lock, or the drain activity lease of a
+/// normal start that recovers backup restores.
 const STARTUP_LEASE_WAIT: Duration = if cfg!(test) {
     Duration::from_secs(2)
 } else {
@@ -284,6 +279,31 @@ fn standby_lock_at_start(
     .ok_or_else(|| {
         StateStoreError::InvalidData(format!(
             "a backup restore on this data directory still runs after {} s, and a standby never runs apps during a restore; retry startup once the restore has finished",
+            STARTUP_LEASE_WAIT.as_secs()
+        ))
+    })
+}
+
+/// The shared drain activity lease, and whether a drain is requested, in
+/// which case this start takes no lease. A normal start holds the lease
+/// exclusively while it recovers backup restores and sweeps work
+/// directories, which can take minutes, and a drain holds it briefly when
+/// it finishes: wait for either, up to [`STARTUP_LEASE_WAIT`].
+fn drain_activity_at_start(
+    state_store: &SqliteStateStore,
+) -> Result<(Option<crate::state_store::DrainLease>, bool), StateStoreError> {
+    crate::state_store::wait_for_lease(
+        STARTUP_LEASE_WAIT,
+        "another server process to finish recovering this data directory",
+        || {
+            let activity = state_store.try_drain_activity(false)?;
+            let requested = state_store.drain_requested()?;
+            Ok((activity.is_some() || requested).then_some((activity, requested)))
+        },
+    )?
+    .ok_or_else(|| {
+        StateStoreError::InvalidData(format!(
+            "another server process held the drain activity lease exclusively for {} s (a normal start recovering backup restores on this data directory, or a server drain finishing); retry startup",
             STARTUP_LEASE_WAIT.as_secs()
         ))
     })
