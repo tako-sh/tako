@@ -97,6 +97,7 @@
         "tako-sh-gen-network-types": "./dist/gen-network-types.mjs",
         "tako-sh-gen-store-types": "./dist/gen-store-types.mjs",
         "tako-worker": "./dist/entrypoints/bun-worker.mjs",
+        "tako.sh": "./dist/cli.mjs",
       },
       "dependencies": {
         "@microsoft/fetch-event-source": "^2.0.1",
