@@ -132,6 +132,7 @@ fn init_template_includes_reference_link_and_option_examples() {
 #[test]
 fn init_template_starts_with_the_schema_directive_and_parses() {
     let assets = vec!["public".to_string()];
+    let excludes = vec!["**/*.map".to_string(), "tests/**".to_string()];
     for params in [
         TemplateParams {
             app_name: "demo-app",
@@ -143,7 +144,7 @@ fn init_template_starts_with_the_schema_directive_and_parses() {
             package_manager: Some("pnpm"),
             preset_ref: Some("tanstack-start"),
             assets: &assets,
-            excludes: &[],
+            excludes: &excludes,
         },
         TemplateParams {
             app_name: "demo-go",
@@ -165,7 +166,8 @@ fn init_template_starts_with_the_schema_directive_and_parses() {
         );
         assert_eq!(rendered.matches("#:schema").count(), 1);
         // Parsing in tests also validates against the tako.toml JSON Schema.
-        crate::config::TakoToml::parse(&rendered).unwrap();
+        let config = crate::config::TakoToml::parse(&rendered).unwrap();
+        assert_eq!(config.build.exclude, params.excludes);
     }
 }
 

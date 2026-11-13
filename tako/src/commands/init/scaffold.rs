@@ -230,6 +230,11 @@ app_root = "{}"
             .collect();
         format!("exclude = [{}]", items.join(", "))
     };
+    let build_header = if excludes.is_empty() {
+        "# [build]"
+    } else {
+        "[build]"
+    };
     format!(
         r#"{schema_directive}
 # Tako configuration
@@ -251,7 +256,7 @@ name = "{app_name}"
 {assets_line}
 
 # Build configuration.
-# [build]
+{build_header}
 # run = "bun run build"
 # install = "bun install"
 # include = ["dist/**", ".output/**"]
