@@ -52,16 +52,13 @@ impl ChannelWriter for LocalChannelWriter {
         payload: &ChannelPublishPayload,
         ephemeral: bool,
     ) -> Result<ChannelMessage, ChannelError> {
+        if ephemeral {
+            return self.0.publish_ephemeral(channel, payload);
+        }
         let channel = channel.to_owned();
         let payload = payload.clone();
         self.0
-            .run(move |store| {
-                if ephemeral {
-                    store.publish_ephemeral(&channel, &payload)
-                } else {
-                    store.append(&channel, &payload)
-                }
-            })
+            .run(move |store| store.append(&channel, &payload))
             .await
     }
 

@@ -197,7 +197,6 @@ impl SqliteChannelStore {
         &self,
         channel: &str,
         payload: &ChannelPublishPayload,
-        ephemeral: bool,
         lifecycle: Option<&ChannelLifecycle>,
     ) -> Result<(ChannelMessage, Option<ChannelEvent>), ChannelError> {
         let mut conn = self.conn.lock();
@@ -205,7 +204,7 @@ impl SqliteChannelStore {
         // A marker closes the stream until retention deletes it. One that has
         // expired but awaits maintenance still closes: the stream reopens only
         // once its history is gone, never under a stale marker.
-        if !ephemeral && let Some(marker) = close_marker(&tx, replay_epoch(&tx)?, channel, 0)? {
+        if let Some(marker) = close_marker(&tx, replay_epoch(&tx)?, channel, 0)? {
             if payload.r#type == CLOSE_MESSAGE_TYPE {
                 return Ok((marker, None));
             }
@@ -224,9 +223,9 @@ impl SqliteChannelStore {
             },
             channel: channel.into(),
             payload: payload.clone(),
-            ephemeral,
+            ephemeral: false,
             lifecycle: None,
-            created_at_unix_ms: (!ephemeral).then(now_unix_ms),
+            created_at_unix_ms: Some(now_unix_ms()),
         };
         let message = append_event(&tx, replay_epoch(&tx)?, &event, lifecycle)?;
         let event = ChannelEvent {

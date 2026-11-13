@@ -81,6 +81,7 @@ pub(crate) struct DeliveryState {
     pub(crate) changes: Arc<Mutex<StreamChanges>>,
     pub(crate) resets: Mutex<HashMap<String, watch::Sender<u64>>>,
     pub(crate) publications: broadcast::Sender<ChannelPublication>,
+    pub(crate) ephemeral_publications: broadcast::Sender<ChannelEvent>,
     // Allocation, commit and publication must have the same order across handles.
     pub(crate) publish: Mutex<()>,
 }
@@ -92,6 +93,7 @@ impl Default for DeliveryState {
             changes: Arc::default(),
             resets: Mutex::default(),
             publications: broadcast::channel(256).0,
+            ephemeral_publications: broadcast::channel(64).0,
             publish: Mutex::new(()),
         }
     }
