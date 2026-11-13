@@ -187,6 +187,25 @@ pub(super) async fn register_app(
         );
         s.routes
             .set_store_auth(&route_id, format!("{}.tako", app_name), bootstrap_token);
+        s.routes.set_local_storage(
+            &route_id,
+            tako_storage::local_http::LocalStorage {
+                bindings: app_storages.clone(),
+                root: {
+                    use sha2::{Digest, Sha256};
+                    let config = Path::new(&config_path)
+                        .strip_prefix(Path::new(&project_dir))
+                        .unwrap_or_else(|_| Path::new(&config_path));
+                    let identity =
+                        format!("{}\n{}", config.display(), variant.as_deref().unwrap_or(""));
+                    Path::new(&project_dir)
+                        .join(".tako/data/tako/storages")
+                        .join(hex::encode(Sha256::digest(identity.as_bytes())))
+                        .join("objects")
+                },
+                legacy_root: Path::new(&project_dir).join(".tako/data/app"),
+            },
+        );
         if let Some(ref mut mdns) = s.mdns {
             for host in &old_hosts {
                 mdns.unpublish(split_route_pattern(host).0);

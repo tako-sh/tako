@@ -95,11 +95,15 @@ fn fixture_tls() -> &'static FixtureTls {
 
 /// The authority behind every storage fixture's certificate. Unit-test
 /// clients trust it; certificate validation stays on.
+pub(super) fn fixture_store_certificate() -> object_store::Certificate {
+    object_store::Certificate::from_pem(fixture_tls().ca_pem.as_bytes()).unwrap()
+}
+
 pub(in crate::operations::backup) fn fixture_root_certificate() -> reqwest::Certificate {
     reqwest::Certificate::from_pem(fixture_tls().ca_pem.as_bytes()).unwrap()
 }
 
-fn tls_listener() -> (std::net::TcpListener, String, openssl::ssl::SslAcceptor) {
+pub(super) fn tls_listener() -> (std::net::TcpListener, String, openssl::ssl::SslAcceptor) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let endpoint = format!("https://{}", listener.local_addr().unwrap());
@@ -117,7 +121,7 @@ fn tls_listener() -> (std::net::TcpListener, String, openssl::ssl::SslAcceptor) 
     (listener, endpoint, acceptor.build())
 }
 
-fn accept(
+pub(super) fn accept(
     listener: &std::net::TcpListener,
     acceptor: &openssl::ssl::SslAcceptor,
 ) -> openssl::ssl::SslStream<std::net::TcpStream> {
@@ -148,7 +152,7 @@ fn accept(
 /// Read one whole request, body included. Answering and closing while the
 /// client is still sending its body resets the connection, and the client
 /// then reports a transport error instead of the fixture's response.
-fn read_request(stream: &mut impl Read) -> Vec<u8> {
+pub(super) fn read_request(stream: &mut impl Read) -> Vec<u8> {
     fn fill(stream: &mut impl Read, bytes: &mut Vec<u8>) {
         let mut chunk = [0; 4096];
         let size = stream.read(&mut chunk).unwrap();
@@ -238,52 +242,55 @@ fn the_fixture_reads_a_request_to_the_end_of_its_body() {
     }
 }
 
+pub(super) fn storage_binding(endpoint: &str) -> tako_core::StorageBinding {
+    serde_json::from_value(serde_json::json!({
+        "provider": "s3", "bucket": "fixture", "endpoint": endpoint,
+        "region": "local", "access_key_id": "fixture", "secret_access_key": "fixture",
+        "force_path_style": true
+    }))
+    .unwrap()
+}
+
 fn storage_fixture(
     statuses: Vec<u16>,
-) -> (
-    tako_core::StorageBinding,
-    reqwest::Client,
-    tokio::task::JoinHandle<()>,
-) {
+) -> (object_store::aws::AmazonS3, tokio::task::JoinHandle<()>) {
     let (listener, endpoint, acceptor) = tls_listener();
     let fixture = tokio::task::spawn_blocking(move || {
         for status in statuses {
             let mut stream = accept(&listener, &acceptor);
             let bytes = read_request(&mut stream);
-            assert!(bytes.starts_with(b"DELETE "));
-            write!(
-                stream,
-                "HTTP/1.1 {status} Fixture\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-            )
-            .unwrap();
+            assert!(bytes.starts_with(b"POST "), "expected S3 bulk delete");
+            let request = std::str::from_utf8(&bytes).unwrap();
+            let key = request
+                .split_once("<Key>")
+                .unwrap()
+                .1
+                .split_once("</Key>")
+                .unwrap()
+                .0;
+            let (status, body) = if status == 204 {
+                (
+                    200,
+                    format!("<DeleteResult><Deleted><Key>{key}</Key></Deleted></DeleteResult>"),
+                )
+            } else {
+                (status, String::new())
+            };
+            write!(stream, "HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
         }
     });
-    let storage = serde_json::from_value(serde_json::json!({
-        "provider": "s3", "bucket": "fixture", "endpoint": endpoint,
-        "region": "local", "access_key_id": "fixture", "secret_access_key": "fixture",
-        "force_path_style": true
-    }))
-    .unwrap();
-    let client = reqwest::Client::builder()
-        .tls_certs_merge([fixture_root_certificate()])
-        .no_proxy()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .unwrap();
-    (storage, client, fixture)
+    (backup_store(&storage_binding(&endpoint)).unwrap(), fixture)
 }
 
 #[tokio::test]
 async fn backup_clients_validate_the_storage_certificate() {
     // Trusted: the fixture's authority issued its certificate for 127.0.0.1.
     let (endpoint, fixture) = object_fixture(Default::default(), 1);
-    let response = backup_http_client(Duration::from_secs(5))
+    let result = backup_store(&storage_binding(&endpoint))
         .unwrap()
-        .get(format!("{endpoint}/fixture/missing"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+        .get(&ObjectPath::from("missing"))
+        .await;
+    assert!(matches!(result, Err(object_store::Error::NotFound { .. })));
     fixture.await.unwrap();
 
     // Not trusted: a client without that authority refuses the same server.
@@ -305,26 +312,21 @@ async fn backup_clients_validate_the_storage_certificate() {
             }
         }
     });
-    let error = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(5))
-        .build()
+    let result = tako_storage::s3(&storage_binding(&endpoint))
         .unwrap()
-        .get(format!("{endpoint}/fixture/missing"))
-        .send()
-        .await
-        .unwrap_err();
-    assert!(error.is_connect(), "{error:?}");
+        .get(&ObjectPath::from("missing"))
+        .await;
+    assert!(result.is_err());
     server.await.unwrap();
 }
 
 #[tokio::test]
 async fn retention_retries_failed_object_deletes() {
     for status in [403, 500] {
-        let (storage, client, fixture) = storage_fixture(vec![status, status]);
+        let (storage, fixture) = storage_fixture(vec![status, status]);
         let mut index = old_index();
         queue_retention(&mut index, 1);
-        prune_retention(&client, &storage, &mut index).await;
+        prune_retention(&storage, &mut index).await;
         fixture.await.unwrap();
         assert!(
             index.backups.is_empty(),
@@ -339,8 +341,8 @@ async fn retention_retries_failed_object_deletes() {
         // Retry from a persisted index, including an already-removed object.
         let mut index: BackupIndex =
             serde_json::from_slice(&serde_json::to_vec(&index).unwrap()).unwrap();
-        let (storage, client, fixture) = storage_fixture(vec![204, 404]);
-        prune_retention(&client, &storage, &mut index).await;
+        let (storage, fixture) = storage_fixture(vec![204, 404]);
+        prune_retention(&storage, &mut index).await;
         fixture.await.unwrap();
         assert!(index.pending_deletions.is_empty());
     }
@@ -348,10 +350,10 @@ async fn retention_retries_failed_object_deletes() {
 
 #[tokio::test]
 async fn partial_delete_retains_cleanup_intent() {
-    let (storage, client, fixture) = storage_fixture(vec![204, 500]);
+    let (storage, fixture) = storage_fixture(vec![204, 500]);
     let mut index = old_index();
     queue_retention(&mut index, 1);
-    prune_retention(&client, &storage, &mut index).await;
+    prune_retention(&storage, &mut index).await;
     fixture.await.unwrap();
     assert!(index.backups.is_empty());
     assert_eq!(index.pending_deletions.len(), 1);
@@ -376,13 +378,22 @@ async fn backup_request_deadline_covers_a_stalled_response_body() {
             .unwrap();
         let _ = stream.read(&mut [0]).await;
     });
-    let client = backup_http_client(Duration::from_millis(100)).unwrap();
-    let response = client.get(url).send().await.unwrap();
-    let error = tokio::time::timeout(Duration::from_secs(2), response.bytes())
-        .await
+    let store = tako_storage::s3_builder(&storage_binding("https://localhost"))
         .unwrap()
-        .unwrap_err();
-    assert!(error.is_timeout());
+        .with_endpoint(url)
+        .with_allow_http(true)
+        .build()
+        .unwrap();
+    let error = with_deadline(Duration::from_millis(100), async {
+        let result = store
+            .get(&ObjectPath::from("stalled"))
+            .await
+            .map_err(|e| e.to_string())?;
+        result.bytes().await.map_err(|e| e.to_string())
+    })
+    .await
+    .unwrap_err();
+    assert!(error.contains("timed out"), "{error}");
     fixture.abort();
 }
 

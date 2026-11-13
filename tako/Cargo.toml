@@ -29,6 +29,7 @@ tako-compose = { path = "../tako-compose" }
 tako-images = { path = "../tako-images" }
 tako-runtime = { path = "../tako-runtime" }
 tako-socket = { path = "../tako-socket" }
+tako-storage = { path = "../tako-storage" }
 tako-spawn = { path = "../tako-spawn" }
 tako-workflows = { path = "../tako-workflows" }
 clap = { version = "4.6", features = ["derive", "env"] }

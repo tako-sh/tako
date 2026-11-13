@@ -9,7 +9,7 @@ use crate::release::{app_runtime_data_paths, requested_deployment_identity};
 
 use super::encryption::{active_backup_key, database_digest_key, encrypt_backup_file};
 use super::index::{BackupIndex, backup_object_prefix, latest_backup};
-use super::s3::{TRANSFER_TIMEOUT, backup_http_client, put_json_object, queue_retention};
+use super::objects::{backup_store, put_json_object, queue_retention};
 use super::snapshot::{create_database_snapshot_archive, database_digest, sha256_file_hex};
 use super::worker::run_worker;
 use super::{create_private_work_dir, now_unix_secs, validate_backup_binding};
@@ -352,16 +352,9 @@ impl crate::ServerState {
             return;
         }
         let result = async {
-            let client = backup_http_client(TRANSFER_TIMEOUT)?;
-            put_json_object(
-                &client,
-                &backup.storage,
-                &super::backup_index_key(app, self),
-                &index,
-            )
-            .await?;
-            self.prune_queued_retention(&client, backup, app, &mut index)
-                .await;
+            let store = backup_store(&backup.storage)?;
+            put_json_object(&store, &super::backup_index_key(app, self), &index).await?;
+            self.prune_queued_retention(&store, app, &mut index).await;
             Ok::<(), String>(())
         }
         .await;

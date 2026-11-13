@@ -6,18 +6,19 @@ use tako_core::{
     Response,
 };
 
-use crate::object_storage::{S3Method, presign_s3_url};
 use crate::release::{
     app_runtime_data_paths, ensure_app_runtime_data_dirs, release_app_path,
     requested_deployment_identity, resolve_release_runtime_bin,
 };
+use object_store::{ObjectStore, path::Path as ObjectPath, signer::Signer};
+use std::sync::Arc;
 
 mod databases;
 mod encryption;
 mod index;
 mod journal;
 mod mounts;
-mod s3;
+mod objects;
 mod scheduler;
 mod snapshot;
 mod worker;
@@ -36,9 +37,9 @@ use journal::{
 pub(crate) use journal::{
     RecoveryMode, recover_interrupted_restores, run_restore_worker, sweep_backup_work_dirs,
 };
-use s3::{
-    DOWNLOAD_URL_EXPIRES_SECONDS, S3_URL_EXPIRES_SECONDS, TRANSFER_TIMEOUT, backup_http_client,
-    download_object, prune_retention, put_json_object, queue_retention, upload_file,
+use objects::{
+    DOWNLOAD_URL_EXPIRES_SECONDS, backup_store, download_object, prune_retention, put_json_object,
+    queue_retention, upload_file,
 };
 pub(crate) use scheduler::PostDeployBackup;
 use snapshot::{
@@ -339,16 +340,15 @@ impl crate::ServerState {
         info: &BackupInfo,
         encrypted_archive_path: &std::path::Path,
     ) -> Result<(), String> {
-        let client = backup_http_client(TRANSFER_TIMEOUT)?;
+        let store: Arc<dyn ObjectStore> = Arc::new(backup_store(&backup.storage)?);
         let mut index = self.read_backup_index(backup, app).await?;
         upload_file(
-            &client,
-            &backup.storage,
+            Arc::clone(&store),
             &info.archive_key,
             encrypted_archive_path,
         )
         .await?;
-        put_json_object(&client, &backup.storage, &info.manifest_key, info).await?;
+        put_json_object(store.as_ref(), &info.manifest_key, info).await?;
 
         index.backups.retain(|existing| existing.id != info.id);
         index.backups.push(info.clone());
@@ -358,35 +358,26 @@ impl crate::ServerState {
                 .then_with(|| b.id.cmp(&a.id))
         });
         queue_retention(&mut index, backup.retention_days);
-        put_json_object(
-            &client,
-            &backup.storage,
-            &backup_index_key(app, self),
-            &index,
-        )
-        .await?;
+        put_json_object(store.as_ref(), &backup_index_key(app, self), &index).await?;
 
         // Persist the new backup and deletion intent before deleting any
         // objects. A failed final index write leaves safe, retryable work.
-        self.prune_queued_retention(&client, backup, app, &mut index)
+        self.prune_queued_retention(store.as_ref(), app, &mut index)
             .await;
         Ok(())
     }
 
     async fn prune_queued_retention(
         &self,
-        client: &reqwest::Client,
-        backup: &tako_core::BackupBinding,
+        store: &dyn ObjectStore,
         app: &str,
         index: &mut index::BackupIndex,
     ) {
         if index.pending_deletions.is_empty() {
             return;
         }
-        prune_retention(client, &backup.storage, index).await;
-        if let Err(error) =
-            put_json_object(client, &backup.storage, &backup_index_key(app, self), index).await
-        {
+        prune_retention(store, index).await;
+        if let Err(error) = put_json_object(store, &backup_index_key(app, self), index).await {
             tracing::warn!(
                 app,
                 "Failed to acknowledge backup retention cleanup: {error}"
@@ -474,12 +465,15 @@ impl crate::ServerState {
             .map_err(|error| format!("read backup config: {error}"))?
             .ok_or_else(|| format!("Backups are not configured for {app}."))?;
         let info = self.find_backup(&backup, app, backup_id).await?;
-        let url = presign_s3_url(
-            &backup.storage,
-            &info.archive_key,
-            S3Method::Get,
-            DOWNLOAD_URL_EXPIRES_SECONDS,
-        )?;
+        let url = backup_store(&backup.storage)?
+            .signed_url(
+                http::Method::GET,
+                &ObjectPath::parse(&info.archive_key).map_err(|e| e.to_string())?,
+                Duration::from_secs(u64::from(DOWNLOAD_URL_EXPIRES_SECONDS)),
+            )
+            .await
+            .map_err(|e| format!("sign backup download URL: {e}"))?
+            .to_string();
         Ok(BackupDownloadUrlResponse {
             backup: info,
             url,
@@ -541,14 +535,8 @@ impl crate::ServerState {
                     super::release_artifacts::available_bytes(&work_dir)?,
                 )?;
             }
-            let client = backup_http_client(TRANSFER_TIMEOUT)?;
-            download_object(
-                &client,
-                &backup.storage,
-                &info.archive_key,
-                &encrypted_archive_path,
-            )
-            .await?;
+            let store: Arc<dyn ObjectStore> = Arc::new(backup_store(&backup.storage)?);
+            download_object(store.as_ref(), &info.archive_key, &encrypted_archive_path).await?;
             let actual_sha256 = tokio::task::spawn_blocking({
                 let encrypted_archive_path = encrypted_archive_path.clone();
                 move || sha256_file_hex(&encrypted_archive_path)
@@ -1348,7 +1336,8 @@ mod tests {
         }
 
         fn serve(&self, requests: usize) -> tokio::task::JoinHandle<Vec<String>> {
-            let (endpoint, fixture) = s3::tests::object_fixture(self.objects.clone(), requests);
+            let (endpoint, fixture) =
+                objects::failure_tests::object_fixture(self.objects.clone(), requests);
             let backup = serde_json::from_value(serde_json::json!({
                 "storage": {"provider": "s3", "bucket": "fixture", "endpoint": endpoint,
                     "region": "local", "access_key_id": "fixture", "secret_access_key": "fixture",
@@ -1673,7 +1662,7 @@ mod tests {
             download.backup.archive_file_name().unwrap(),
             "d1800000000-abcdefgh.databases.tar.zst.enc"
         );
-        let body = s3::backup_http_client(Duration::from_secs(5))
+        let body = objects::backup_http_client(Duration::from_secs(5))
             .unwrap()
             .get(&download.url)
             .send()
@@ -2011,7 +2000,7 @@ mod tests {
         // A database snapshot that fails after its capture leaks nothing either.
         let server = fixture.serve(3);
         let error = state.database_snapshot_now(app).await.unwrap_err();
-        assert!(error.contains("returned 404"), "{error}");
+        assert!(error.contains("404"), "{error}");
         assert_eq!(server.await.unwrap().len(), 3);
         assert!(!state.database_snapshot_running(app));
         assert_deploy_lock_released(state, app).await;

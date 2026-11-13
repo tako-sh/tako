@@ -36,6 +36,10 @@ pingora-prometheus = "0.9"
 openssl.workspace = true
 rusqlite.workspace = true
 tako-sqlite = { path = "../tako-sqlite" }
+tako-storage = { path = "../tako-storage" }
+object_store = { version = "=0.14.2", default-features = false, features = ["fs", "aws"] }
+futures-util = "0.3"
+http = "1"
 thiserror = "2.0"
 dashmap = "6.2"
 parking_lot = "0.13"
@@ -74,6 +78,7 @@ landlock = "0.4.7"
 rusqlite = { workspace = true, features = ["backup"] }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 toml.workspace = true
 h2 = "0.4"
 filetime = "=0.2.29"

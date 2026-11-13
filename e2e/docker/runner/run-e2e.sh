@@ -226,6 +226,25 @@ fetch_route_path() {
     "http://${server_host}:8080${route_path}"
 }
 
+run_local_storage_checks() {
+  local server_host=$1 route_host=$2 status upload download
+  local body_file="$TMP_ROOT/storage-urls.json"
+  status=$(fetch_route_path "$server_host" "$route_host" /storage/urls "$TMP_ROOT/storage-headers" "$body_file")
+  if [[ "$status" != 200 ]]; then echo "Storage URL creation failed ($status)" >&2; exit 1; fi
+  upload=$(jq -er '.upload' "$body_file")
+  download=$(jq -er '.download' "$body_file")
+  status=$(curl -sS --connect-timeout 3 --max-time 10 -o "$TMP_ROOT/storage-put" -w '%{http_code}' \
+    -H "Host: $route_host" -H 'X-Forwarded-Proto: https' -H 'Forwarded: proto=https' -H 'Connection: close' \
+    -X PUT --data-binary 'object-storage-roundtrip' "http://${server_host}:8080${upload}")
+  if [[ "$status" != 204 ]]; then echo "Rust local storage upload failed ($status)" >&2; exit 1; fi
+  status=$(fetch_route_path "$server_host" "$route_host" "$download" "$TMP_ROOT/storage-headers" "$TMP_ROOT/storage-get")
+  if [[ "$status" != 200 || "$(cat "$TMP_ROOT/storage-get")" != object-storage-roundtrip ]]; then
+    echo "Rust local storage download did not match upload ($status)" >&2; exit 1
+  fi
+  status=$(fetch_route_path "$server_host" "$route_host" "${download%%\?*}" "$TMP_ROOT/storage-headers" "$TMP_ROOT/storage-unsigned")
+  if [[ "$status" != 403 ]]; then echo "Unsigned local storage request was not rejected ($status)" >&2; exit 1; fi
+}
+
 require_http_ok() {
   local server_host=$1
   local route_host=$2
@@ -1092,6 +1111,9 @@ CFG
 
   run_universal_http_checks "$server" "$ROUTE_HOST" "$APP_RELEASE_DIR"
   run_secret_checks "$server" "$ROUTE_HOST"
+  if [[ "$FIXTURE_REL" == "e2e/fixtures/javascript/node" ]]; then
+    run_local_storage_checks "$server" "$ROUTE_HOST"
+  fi
   if [[ "$FIXTURE_REL" == "e2e/fixtures/javascript/channels-workflows" ]]; then
     run_channels_workflows_checks "$server" "$ROUTE_HOST"
     run_network_primitive_checks "$server"

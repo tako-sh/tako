@@ -6,6 +6,8 @@ mod image;
 mod native;
 mod policy;
 mod static_handler;
+#[cfg(test)]
+mod storage_tests;
 
 pub(crate) use backend::{BackendResolution, resolve_app_backend};
 pub(crate) use native::invoke_network_backend;

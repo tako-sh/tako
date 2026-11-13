@@ -80,6 +80,14 @@ Container release artifacts carry `container_options`, including the container p
 
 Compose releases carry `release_kind = "compose"` and the shared `ComposeConfig`. They represent one project on one server and use plain HTTP ingress health checks. The server prepares immutable service images without persisting interpolated secrets. Project identity is derived from the persistent app data path, independent of release version. Production creates immutable service generations with stable network aliases and resources; fingerprints compare resolved configuration and image IDs. Unchanged containers are adopted. The selected stateless HTTP service defaults to start-first replacement with readiness and draining; writable persistent volumes and other services default to stop-first. `deploy.update_config.order` and `monitor` control per-service updates. A pending marker precedes mutations; active release, routes, and encrypted credentials commit atomically. Recovery reconciles the committed release and cleans abandoned generations. HTTP instance cleanup owns only its container, while explicit app stop owns the project. Named volumes survive stop and deletion and remain outside Tako app-data backups. Referenced release files are protected from pruning. `AppStatus.services` reports original service names, state, health, and exit codes; `services_error` reports query failures.
 
+## Local object storage
+
+The Rust development and production proxies own signed `/_tako/storages/<binding>/<key>` GET/PUT routes. The SDK only signs URLs; it does not handle these requests or read/write local storage files. Proxies select the application from its matched route, then validate that app's binding and HMAC before opening storage. The signed payload is `METHOD\nBINDING\nENCODED_KEY\nEXPIRES` using the binding's signing key and HMAC-SHA256.
+
+`tako-storage` delegates object operations to Apache `object_store`. Local roots are in the application's private Tako data area; app-owned data is only a capability-confined migration source. Development roots also include a stable hash of the registration/config identity. Object and directory writes are synced before acknowledgment. Local uploads share the production 128 MiB request-body limit. Storage requests do not require a running app worker.
+
+Local binding paths and logical object keys use `object_store::path` encoding in the private filesystem, including during legacy imports. This keeps literal `%`, `#`, and backslash characters distinct from backend staging names. Signed URLs continue to encode the original logical key.
+
 ## Health probes
 
 The server probes `GET /status` with `Host: <app>.tako` and an `X-Tako-Internal-Token` header. Tako SDK adapters own this internal endpoint. A healthy response must be successful and echo the token header so an unrelated public `/status` route cannot satisfy the probe.

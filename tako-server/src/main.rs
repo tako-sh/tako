@@ -35,7 +35,6 @@ mod native_management_policy;
 mod native_proxy;
 mod native_services;
 mod network_bootstrap;
-mod object_storage;
 mod operations;
 mod paths;
 mod process_output;

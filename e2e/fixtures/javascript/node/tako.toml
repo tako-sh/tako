@@ -4,3 +4,4 @@ package_manager = "bun"
 
 [envs.production]
 route = "node-e2e.example.com"
+storages = { uploads = "local" }

@@ -36,7 +36,10 @@ fn identity_of_dir(dir: &File) -> std::io::Result<MountIdentity> {
     let stat = fs::fstat(dir)?;
     Ok(MountIdentity {
         device: stat.st_dev as u64,
+        #[cfg(target_os = "linux")]
         mount_id: mount_id(dir, "", AtFlags::EMPTY_PATH),
+        #[cfg(not(target_os = "linux"))]
+        mount_id: None,
     })
 }
 

@@ -120,6 +120,10 @@ Return the appropriate URL to the authorized browser. Upload with `PUT` and, for
 
 S3 URLs target the storage provider. Local storage returns a relative signed `/_tako/storages/<binding>/<key>` URL, served by Tako. Use the app's origin to resolve it. A signed URL grants the matching operation until it expires; the application must enforce ownership before issuing one. Configure the S3 provider's CORS policy separately for direct browser uploads.
 
+Local uploads and downloads are served by the Rust proxy in development and production, even when no app worker is running. The JavaScript SDK only creates signed URLs. Tako uses Apache `object_store` for atomic local publication and enables file and directory fsync before acknowledging an upload. Uploads are streamed and limited to 128 MiB.
+
+Local objects live in Tako's private data area, separately from `tako.dataDir`. Development storage is scoped to the registered config; production storage is scoped to the deployed app and environment. Existing SDK-managed files are copied into the private area on first use; the original files remain untouched. Migration rejects symbolic links, hard links, and special files. Local filesystem key restrictions still apply. Production app-data backups include the private storage area; local objects remain tied to that server unless backed up elsewhere.
+
 ## Public files and images
 
 Set `public_base_url` on an S3 resource only when objects are intentionally public. `createDownloadUrl(key, { public: true })` returns the public URL instead of signing it. Setting this field does not change bucket permissions or create a CDN.

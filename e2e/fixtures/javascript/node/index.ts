@@ -1,5 +1,16 @@
+import { tako } from "tako.sh";
+
 export default async function fetch(request: Request) {
   const url = new URL(request.url);
+  if (url.pathname === "/storage/urls") {
+    const storage = tako.storages.uploads;
+    if (!storage) return new Response("Missing storage", { status: 500 });
+    const key = "e2e%/report#123";
+    return Response.json({
+      upload: await storage.createUploadUrl(key),
+      download: await storage.createDownloadUrl(key),
+    });
+  }
   if (url.pathname === "/") {
     return new Response("<!doctype html><html><body><h1>Tako app</h1></body></html>", {
       headers: {

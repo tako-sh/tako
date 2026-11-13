@@ -1,0 +1,20 @@
+terse-litestream
+Copyright 2026 TerseAI
+
+This project ports the embedded SQLite replication algorithms and storage layout
+of Litestream, by Ben Johnson and the Litestream contributors, under Apache-2.0.
+Upstream: https://github.com/benbjohnson/litestream
+Version: v0.5.17
+Revision: ccd326c175b583b5e82893a6078f06dcef5fba3f
+
+src/wal.rs, src/database.rs and src/replica.rs adapt upstream WAL validation,
+checkpoint coordination, transaction recovery and restore behavior into Rust.
+They are rewritten implementations with the differences described in README.md.
+
+The three files in tests/fixtures/wal/ are unmodified upstream test fixtures:
+  valid.wal: testdata/wal-reader/ok/wal
+  salt-mismatch.wal: testdata/wal-reader/salt-mismatch/wal
+  checksum-mismatch.wal: testdata/wal-reader/frame-checksum-mismatch/wal
+
+The complete upstream Apache-2.0 license is included as LICENSE.
+The terse-ltx dependency is separately licensed under Apache-2.0.
