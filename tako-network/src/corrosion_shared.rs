@@ -358,7 +358,40 @@ mod tests {
             record.id.to_string(),
             serde_json::to_string(&record).unwrap(),
         );
+        // Legacy grants were individually bounded, so a valid value can fold
+        // into a record larger than the old 128 KiB per-row limit.
+        for _ in 0..800 {
+            let extra_keys = LocalDeviceKeys::generate().unwrap();
+            let extra_id = extra_keys.device_id(&network, DeviceKind::Laptop).unwrap();
+            let context = serde_json::to_vec(&(
+                "tako-shared-secret-key-v1",
+                &network,
+                &record.address,
+                &record.id,
+                &extra_id,
+                hex::encode(openssl::sha::sha256(
+                    &serde_json::to_vec(&record.value).unwrap(),
+                )),
+            ))
+            .unwrap();
+            let key = crate::sealed::SealedValue::seal(
+                &extra_keys.encryption_public_key().unwrap(),
+                &content_key[..],
+                &context,
+            )
+            .unwrap();
+            insert(
+                "grant",
+                format!("{}:{}:{}", record.id, extra_id, id),
+                json!({"record": record.id, "issuer": id, "recipient": extra_id, "key": key})
+                    .to_string(),
+            );
+        }
         let state = store.shared_snapshot().unwrap();
+        assert_eq!(state.secrets[0].keys.len(), 802);
+        assert!(serde_json::to_vec(&state.secrets[0]).unwrap().len() > 128 * 1024);
+        // Read the newly compacted row back through the Corrosion payload limit.
+        assert_eq!(store.shared_snapshot().unwrap(), state);
         assert_eq!(
             &*state.secrets[0]
                 .decrypt(&state, &recipient, &recipient_id)

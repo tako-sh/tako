@@ -10,15 +10,20 @@ use crate::{
     sealed::{Ciphertext, SealedValue, random_content_key},
 };
 
+#[path = "shared/store.rs"]
 mod store;
 #[cfg(test)]
+#[path = "shared/tests.rs"]
 mod tests;
 
 pub const MAX_SHARED_RECORDS: usize = 10_000;
 /// Published commands can be retried for seven days, independently of value retention.
 pub const SECRET_RETRY_SECONDS: u64 = 7 * 86400;
 pub const MAX_SHARED_BYTES: usize = 8 * 1024 * 1024;
-pub const MAX_SHARED_RECORD_BYTES: usize = 128 * 1024;
+// A current value now includes recipient keys that used to occupy separate
+// grant records. Allow those keys to use the existing shared-state budget;
+// ciphertext sizes remain independently bounded by Ciphertext::validate.
+pub const MAX_SHARED_RECORD_BYTES: usize = MAX_SHARED_BYTES;
 
 pub const SHARED_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS tako_shared_records (\n\
     kind TEXT NOT NULL, record_id TEXT NOT NULL, digest TEXT NOT NULL, payload TEXT NOT NULL DEFAULT '',\n\

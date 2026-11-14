@@ -458,10 +458,10 @@ pub(crate) fn record_key(row: &[Value]) -> RuntimeResult<(String, String, String
 }
 
 fn record_limit(kind: &str) -> usize {
-    if kind == "revocation" {
-        MAX_REVOCATION_BYTES
-    } else {
-        MAX_RECORD_BYTES
+    match kind {
+        "revocation" => MAX_REVOCATION_BYTES,
+        "secret" => crate::shared::MAX_SHARED_RECORD_BYTES,
+        _ => MAX_RECORD_BYTES,
     }
 }
 

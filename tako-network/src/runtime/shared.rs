@@ -41,9 +41,7 @@ impl<S: RegistryStore> ServerRuntime<S> {
                     "secret" => {
                         let record: SecretRecord = serde_json::from_str(&payload)?;
                         seen_ids.insert(record.id.clone());
-                        let mut addition = SharedSnapshot::empty(observed.network.clone());
-                        addition.secrets.push(record);
-                        observed.merge(&addition)?;
+                        observed.secrets.push(record);
                     }
                     "grant" => legacy_grants.push((
                         row.get::<_, String>(1)?,
@@ -61,8 +59,13 @@ impl<S: RegistryStore> ServerRuntime<S> {
         observed.validate()?;
         // Repair with the durable current value if replication is temporarily
         // missing it. This cache is one record per address, not a value history.
+        let replicated: BTreeMap<_, _> = snapshot
+            .secrets
+            .iter()
+            .map(|record| (&record.id, record))
+            .collect();
         for record in &observed.secrets {
-            if !snapshot.secrets.contains(record) {
+            if replicated.get(&record.id).copied() != Some(record) {
                 self.store.append_secret(record)?;
             }
         }

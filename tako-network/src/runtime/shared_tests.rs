@@ -1,6 +1,131 @@
 use crate::shared::SecretReceipt;
 
 #[test]
+fn observed_secrets_retain_large_folded_recipient_maps_after_restart() {
+    use crate::shared::{SecretContent, SecretKind};
+    let fixture = Fixture::new();
+    let mut runtime = fixture.open();
+    let mutation = secret_mutation(
+        &fixture,
+        "shop/production",
+        SecretKind::App,
+        "TOKEN",
+        Some("retained"),
+    );
+    fixture
+        .call(
+            &mut runtime,
+            &fixture.admin,
+            RpcRequest::PublishSecret(Box::new(mutation)),
+            10,
+        )
+        .unwrap();
+    {
+        let mut store = fixture.store.0.borrow_mut();
+        let record = &mut store.shared.secrets[0];
+        let key = record.keys[&fixture.config.server_id].clone();
+        // Other recipient envelopes are opaque to this reader; preserve them
+        // while verifying that the administrator's own key remains usable.
+        for i in 0..800 {
+            record
+                .keys
+                .insert(format!("{i:064x}").parse().unwrap(), key.clone());
+        }
+        assert!(serde_json::to_vec(record).unwrap().len() > 128 * 1024);
+    }
+    for now in [11, 12] {
+        let RpcResponse::Secrets(snapshot) = fixture
+            .call(
+                &mut runtime,
+                &fixture.admin,
+                RpcRequest::PullSecrets { scope: None },
+                now,
+            )
+            .unwrap()
+        else {
+            panic!("secrets expected");
+        };
+        assert_eq!(snapshot.secrets[0].keys.len(), 802);
+        let plaintext = snapshot.secrets[0]
+            .decrypt(
+                &snapshot,
+                &fixture.admin,
+                &fixture.config.network.initial_admin,
+            )
+            .unwrap()
+            .unwrap();
+        let content: SecretContent = serde_json::from_slice(&plaintext).unwrap();
+        assert_eq!(&*content.value, "retained");
+        drop(runtime);
+        runtime = fixture.open();
+    }
+}
+
+#[test]
+fn populated_observed_secrets_compact_and_repair_in_one_snapshot() {
+    use crate::shared::{SecretAddress, SecretKind, SecretRecord, SharedSnapshot};
+    let fixture = Fixture::new();
+    let mut runtime = fixture.open();
+    let secrets: Vec<_> = (0..2000)
+        .map(|i| SecretRecord {
+            id: RequestId::random().unwrap(),
+            address: SecretAddress {
+                scope: "shop/production".parse().unwrap(),
+                kind: SecretKind::App,
+                name: format!("TOKEN_{i:04}"),
+            },
+            revision: 2,
+            issuer: fixture.config.server_id.clone(),
+            author: fixture.config.network.initial_admin.clone(),
+            value: None,
+            keys: BTreeMap::new(),
+        })
+        .collect();
+    let expected = SharedSnapshot {
+        network: fixture.config.network.id.clone(),
+        secrets,
+    };
+    let mut stale = expected.secrets[0].clone();
+    stale.id = RequestId::random().unwrap();
+    stale.revision = 1;
+    {
+        let tx = runtime.db.transaction().unwrap();
+        // Old caches can contain multiple revisions of the same address.
+        for record in expected.secrets.iter().chain(std::iter::once(&stale)) {
+            tx.execute(
+                "INSERT INTO shared_observed VALUES ('secret',?1,?2)",
+                params![record.id.to_string(), serde_json::to_string(record).unwrap()],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+        let mut store = fixture.store.0.borrow_mut();
+        store.shared = expected.clone();
+        store.shared.secrets[0] = stale;
+    }
+    for now in [10, 11] {
+        let RpcResponse::Secrets(snapshot) = fixture
+            .call(
+                &mut runtime,
+                &fixture.admin,
+                RpcRequest::PullSecrets { scope: None },
+                now,
+            )
+            .unwrap()
+        else {
+            panic!("secrets expected");
+        };
+        assert_eq!(snapshot, expected);
+        assert_eq!(fixture.store.0.borrow().shared, expected);
+        let count: i64 = runtime
+            .db
+            .query_row("SELECT count(*) FROM shared_observed", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 2000);
+    }
+}
+
+#[test]
 fn publication_window_tolerates_authenticated_client_clock_skew() {
     let fixture = Fixture::new();
     let mut runtime = fixture.open();
