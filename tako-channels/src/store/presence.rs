@@ -32,7 +32,7 @@ impl ChannelStore {
                 ).map_err(storage_error)?;
             }
             ChannelStoreBackend::Postgres(store) => {
-                store.client.lock().execute(&format!(
+                store.client()?.execute(&format!(
                     "INSERT INTO {}.presence (app_id, channel, connection_id, member_json, expires_at) VALUES ($1, $2, $3, $4, {DATABASE_NOW_MS} + {LEASE_MS})
                      ON CONFLICT(app_id, channel, connection_id) DO UPDATE SET member_json = excluded.member_json, expires_at = excluded.expires_at", store.schema),
                     &[&store.app_id, &channel, &member.connection_id, &encoded],
@@ -53,7 +53,7 @@ impl ChannelStore {
                     .map_err(storage_error)?.collect::<Result<Vec<_>, _>>().map_err(storage_error)?
             }
             ChannelStoreBackend::Postgres(store) => {
-                store.client.lock().query(&format!(
+                store.client()?.query(&format!(
                     "SELECT member_json FROM {}.presence WHERE app_id = $1 AND channel = $2 AND expires_at > {DATABASE_NOW_MS} ORDER BY connection_id", store.schema),
                     &[&store.app_id, &channel],
                 ).map_err(storage_error)?.into_iter().map(|row| row.get(0)).collect()
@@ -78,7 +78,7 @@ impl ChannelStore {
                     .map_err(storage_error)?;
             }
             ChannelStoreBackend::Postgres(store) => {
-                store.client.lock().execute(&format!("DELETE FROM {}.presence WHERE app_id = $1 AND channel = $2 AND connection_id = $3", store.schema),
+                store.client()?.execute(&format!("DELETE FROM {}.presence WHERE app_id = $1 AND channel = $2 AND connection_id = $3", store.schema),
                     &[&store.app_id, &channel, &connection_id]).map_err(storage_error)?;
             }
         }
