@@ -190,7 +190,7 @@ export type SseRecoveryReason = "reconnecting" | "history-expired";
 export interface ChannelConnectOptions {
   /** Shared WebSocket by default; dedicated opens a separate channel socket. */
   connection?: "shared" | "dedicated";
-  /** Cancel only this subscription. */
+  /** Cancel only this subscription, including React hook retries. Pass a new signal to restart. */
   signal?: AbortSignal;
   /** Override the base URL. Required outside the browser. */
   baseUrl?: string;

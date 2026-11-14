@@ -309,6 +309,30 @@ test("reopening a logical socket sends only its own replay cursor", async () => 
   expect((second.raw as { readyState: number }).readyState).toBe(1);
 });
 
+test("unserializable publishes never send a malformed command to the shared connection", async () => {
+  const first = connect("page");
+  const sibling = connect("layout");
+  const socket = Socket.all[0]!;
+  socket.open();
+  await tick();
+  for (const frame of socket.sent) socket.ready(frame.id);
+  const before = socket.sent.length;
+  for (const value of [undefined, () => {}, Symbol("event"), { toJSON: () => undefined }]) {
+    expect(() => first.send(value)).toThrow(/JSON/);
+  }
+  expect(socket.sent).toHaveLength(before);
+  expect(socket.closed).toBe(false);
+  let serializations = 0;
+  sibling.send({
+    toJSON: () => {
+      serializations++;
+      return { type: "message", data: "ok" };
+    },
+  });
+  expect(serializations).toBe(1);
+  expect(socket.sent.at(-1)?.data).toEqual({ type: "message", data: "ok" });
+});
+
 test("an AbortSignal disposes only its page subscription", async () => {
   const controller = new AbortController();
   const first = connect("a", { signal: controller.signal });

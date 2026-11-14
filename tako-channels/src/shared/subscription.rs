@@ -186,7 +186,9 @@ async fn authorize(
         .into_iter()
         .find(|meta| meta.channel == spec.channel)
         .ok_or(ChannelError::NotDefined)?;
-    if spec.channel.starts_with(STORE_CHANNEL_PREFIX) {
+    if spec.channel.starts_with(STORE_CHANNEL_PREFIX)
+        || meta.transport != Some(crate::ChannelTransport::Ws)
+    {
         return Err(ChannelError::Unsupported);
     }
     let params = crate::params::validate_query(&meta.params_schema, &spec.query)

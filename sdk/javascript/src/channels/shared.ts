@@ -85,7 +85,7 @@ export class SharedChannel extends EventTarget {
   send(data: unknown): void {
     if (this.readyState !== 1) throw new Error("Channel subscription is not open.");
     const value = typeof data === "string" ? (JSON.parse(data) as unknown) : data;
-    this.connection.send({ type: "send", id: this.id, data: value });
+    this.connection.publish(this.id, value);
   }
 
   close(code = 1000, reason = "unsubscribed"): void {
@@ -212,7 +212,19 @@ class SharedConnection {
   }
 
   send(command: unknown): void {
-    const encoded = JSON.stringify(command);
+    this.sendEncoded(JSON.stringify(command));
+  }
+
+  publish(id: string, data: unknown): void {
+    // JSON.stringify omits undefined, functions, symbols, or a toJSON result of
+    // undefined. Reject them before they can remove the required data field and
+    // turn an application error into a connection-wide protocol error.
+    const encoded = JSON.stringify(data);
+    if (encoded === undefined) throw new TypeError("Channel messages must be JSON-serializable.");
+    this.sendEncoded(`{"type":"send","id":${JSON.stringify(id)},"data":${encoded}}`);
+  }
+
+  private sendEncoded(encoded: string): void {
     const bytes = encoder.encode(encoded).byteLength;
     if (bytes > MAX_FRAME_BYTES) {
       throw new SendError("Channel command exceeds 64 KiB; send smaller events.", 1009);

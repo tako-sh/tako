@@ -2,7 +2,7 @@ import { useCallback, useEffect, useInsertionEffect, useRef, useState } from "re
 import { Channel } from "../channels";
 import { PRESENCE_CHANNEL_PREFIX, type PresenceMember, type PresenceSnapshot } from "../presence";
 import type { ChannelConnectOptions } from "../types";
-import { reconnectDelay, scheduleReconnect } from "./reconnect";
+import { reconnectDelay, scheduleReconnect, subscriptionAbortError } from "./reconnect";
 
 function encodePresenceData(data: unknown): string {
   const encoded = JSON.stringify(data);
@@ -72,13 +72,14 @@ export function usePresence<T>(
     let cancelReconnect: (() => void) | undefined;
     let heartbeat: ReturnType<typeof setInterval> | undefined;
     let attempt = 0;
+    const signal = optionsRef.current.signal;
     setMembers([]);
     setConnectionId(null);
     setStatus("connecting");
     setError(null);
 
     const connect = () => {
-      if (disposed) return;
+      if (disposed || signal?.aborted) return;
       const current = optionsRef.current;
       try {
         const connection = new Channel(
@@ -86,6 +87,10 @@ export function usePresence<T>(
           "ws",
           current.params,
         ).connect(current);
+        if (disposed || signal?.aborted) {
+          connection.close();
+          return;
+        }
         const target = connection.raw as EventTarget;
         let ready = false;
         const send = () => {
@@ -158,19 +163,37 @@ export function usePresence<T>(
           connection.close();
         };
       } catch (err) {
+        if (disposed) return;
         setError(err instanceof Error ? err : new Error(String(err)));
         cancelReconnect = scheduleReconnect(connect, reconnectDelay(attempt++));
       }
     };
-    connect();
-    return () => {
+    const abort = () => {
+      if (disposed || !signal) return;
+      setMembers([]);
+      setConnectionId(null);
+      setStatus("connecting");
+      setError(subscriptionAbortError(signal));
       disposed = true;
       if (activeKeyRef.current === connectionKey) activeKeyRef.current = null;
       cancelReconnect?.();
       clearInterval(heartbeat);
       close?.();
     };
-  }, [name, connectionKey]);
+    if (signal?.aborted) abort();
+    else {
+      signal?.addEventListener("abort", abort, { once: true });
+      connect();
+    }
+    return () => {
+      disposed = true;
+      signal?.removeEventListener("abort", abort);
+      if (activeKeyRef.current === connectionKey) activeKeyRef.current = null;
+      cancelReconnect?.();
+      clearInterval(heartbeat);
+      close?.();
+    };
+  }, [name, connectionKey, options.signal]);
 
   const update = useCallback(
     (data: T) => {

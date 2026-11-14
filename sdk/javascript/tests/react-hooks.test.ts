@@ -11,8 +11,9 @@ afterAll(async () => {
   await GlobalRegistrator.unregister();
 });
 import { useChannel, usePresence } from "../src/react";
+import { Channel } from "../src/channels";
 import { createElement, startTransition, Suspense, useLayoutEffect, useState } from "react";
-import type { ChannelMessage } from "../src/types";
+import type { ChannelConnectOptions, ChannelMessage } from "../src/types";
 import { configureChannels, resetChannelsConfig } from "../src/channels/configure";
 
 class MockEventSource extends EventTarget {
@@ -200,6 +201,134 @@ test("shared hooks reconnect with independent cursors and discard incomplete mes
   first.unmount();
   second.unmount();
 });
+
+test("a full shared connection reports a hook error and recovers when a slot opens", async () => {
+  const sockets: MockWebSocket[] = [];
+  class SharedSocket extends MockWebSocket {
+    constructor(url: string) {
+      super(url);
+      sockets.push(this);
+    }
+  }
+  configureChannels({
+    connection: "shared",
+    websocket: SharedSocket as unknown as typeof WebSocket,
+  });
+  const channels = Array.from({ length: 32 }, (_, i) =>
+    new Channel(`layout-${i}`, "ws").connect({ baseUrl: "http://test" }),
+  );
+  const { result } = renderHook(() =>
+    useChannel("page", { transport: "ws", baseUrl: "http://test" }),
+  );
+  expect(result.current.error?.message).toContain("32 subscriptions");
+  await act(async () => {
+    sockets[0]!.emitOpen();
+    await Promise.resolve();
+    channels[0]!.close();
+    globalThis.dispatchEvent(new Event("online"));
+    await Promise.resolve();
+  });
+  expect(sockets).toHaveLength(1);
+  const joins = sockets[0]!.sent
+    .map((sent) => JSON.parse(String(sent)))
+    .filter((frame) => frame.type === "subscribe");
+  expect(joins).toHaveLength(33);
+  act(() => sockets[0]!.emitMessage({ type: "subscribed", id: joins.at(-1).id }));
+  expect(result.current.status).toBe("open");
+  expect(result.current.error).toBeNull();
+  channels.forEach((channel) => channel.close());
+});
+
+for (const connection of ["shared", "dedicated"] as const) {
+  for (const { name, useSubscription } of [
+    {
+      name: "useChannel",
+      useSubscription: (options: ChannelConnectOptions) =>
+        useChannel("page", { ...options, transport: "ws" }),
+    },
+    {
+      name: "usePresence",
+      useSubscription: (options: ChannelConnectOptions) =>
+        usePresence("page", { ...options, data: {} }),
+    },
+  ]) {
+    test(`${name} does not connect with an already aborted signal (${connection})`, () => {
+      const controller = new AbortController();
+      controller.abort();
+      let connections = 0;
+      const { result } = renderHook(() =>
+        useSubscription({
+          connection,
+          signal: controller.signal,
+          baseUrl: "http://test",
+          webSocketFactory: (url) => {
+            connections++;
+            return new MockWebSocket(url);
+          },
+        }),
+      );
+      expect(connections).toBe(0);
+      expect(result.current.error?.name).toBe("AbortError");
+    });
+
+    test(`${name} abort cancels live and pending reconnects, and a new signal can restart (${connection})`, async () => {
+      const sockets: MockWebSocket[] = [];
+      const factory = (url: string) => {
+        const socket = new MockWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      };
+      const controller = new AbortController();
+      const { result, rerender } = renderHook(
+        ({ signal }) =>
+          useSubscription({
+            connection,
+            signal,
+            baseUrl: "http://test",
+            webSocketFactory: factory,
+          }),
+        { initialProps: { signal: controller.signal } },
+      );
+      await act(async () => {
+        const socket = sockets[0]!;
+        socket.emitOpen();
+        await Promise.resolve();
+        const id = connection === "shared" ? JSON.parse(String(socket.sent[0])).id : undefined;
+        if (id) socket.emitMessage({ type: "subscribed", id });
+        if (name === "usePresence") {
+          for (const message of [
+            { type: "tako.presence.ready" },
+            { type: "tako.presence", connectionId: "page", members: [] },
+          ]) {
+            socket.emitMessage(
+              id ? { type: "data", id, data: JSON.stringify(message), end: true } : message,
+            );
+          }
+        }
+      });
+      expect(result.current.status).toBe("open");
+      await act(async () => {
+        controller.abort();
+        globalThis.dispatchEvent(new Event("online"));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(sockets).toHaveLength(1);
+      expect(result.current.error?.name).toBe("AbortError");
+
+      const next = new AbortController();
+      rerender({ signal: next.signal });
+      expect(sockets).toHaveLength(2);
+      act(() => sockets[1]!.emitClose(1006));
+      await act(async () => {
+        next.abort();
+        globalThis.dispatchEvent(new Event("online"));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(sockets).toHaveLength(2);
+      expect(result.current.error?.name).toBe("AbortError");
+    });
+  }
+}
 
 describe("useChannel (sse)", () => {
   let es: MockEventSource | null = null;

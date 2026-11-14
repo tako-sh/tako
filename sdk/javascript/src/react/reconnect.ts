@@ -1,6 +1,12 @@
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 
+export function subscriptionAbortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new DOMException("Channel subscription aborted.", "AbortError");
+}
+
 export function channelIdentity(
   name: string,
   options: {

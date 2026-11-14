@@ -52,6 +52,8 @@ impl Fixture {
                                 json!([
                                     {"channel":"news", "paramsSchema":schema, "auth":false, "transport":"ws"},
                                     {"channel":"announcements", "paramsSchema":schema, "auth":false},
+                                    {"channel":"read-only", "paramsSchema":schema, "auth":false},
+                                    {"channel":"no-ws-grant", "paramsSchema":schema, "auth":false, "transport":"ws"},
                                     {"channel":"chat", "paramsSchema":schema, "auth":false, "transport":"ws"},
                                     {"channel":"private", "paramsSchema":schema, "auth":{"headerName":"Authorization"}, "transport":"ws"},
                                     {"channel":"api-key", "paramsSchema":schema, "auth":{"headerName":"X-API-Key"}, "transport":"ws"},
@@ -64,7 +66,7 @@ impl Fixture {
                                     json!({"ok":false})
                                 } else {
                                     let mut auth = json!({"ok":true,"subject":"trusted", "maxConnectionLifetimeMs":60000});
-                                    if request["operation"] == "connect" && request["channel"] != "announcements" { auth["transport"] = "ws".into(); }
+                                    if request["operation"] == "connect" && request["channel"] != "announcements" && request["channel"] != "no-ws-grant" { auth["transport"] = "ws".into(); }
                                     auth
                                 }
                             }.to_string();
@@ -250,6 +252,22 @@ async fn authorization_and_publish_permissions_are_per_subscription() {
     )
     .await;
     assert_eq!(data(&mut client, "allowed").await["data"], 43);
+}
+
+#[tokio::test]
+async fn registry_and_auth_must_both_allow_websocket_subscriptions() {
+    let fixture = Fixture::start().await;
+    let mut client = fixture.connect().await;
+    for channel in ["read-only", "no-ws-grant"] {
+        send(&mut client, subscribe(channel, channel, "a")).await;
+        let closed = frame(&mut client).await;
+        assert_eq!(closed["type"], "closed", "{channel}: {closed}");
+        assert_eq!(closed["code"], 4403, "{channel}: {closed}");
+    }
+    send(&mut client, subscribe("allowed", "news", "a")).await;
+    assert_eq!(frame(&mut client).await["type"], "subscribed");
+    fixture.publish("news", "a", json!("still live"));
+    assert_eq!(data(&mut client, "allowed").await["data"], "still live");
 }
 
 #[tokio::test]

@@ -65,12 +65,13 @@ import {
   type ChannelSubscribeOptions,
   type SseRecoveryReason,
 } from "./channels";
-import type { ChannelConnectOptions, ChannelMessage } from "./types";
+import type { ChannelConnectOptions, ChannelMessage, ChannelSocket } from "./types";
 
 import {
   channelIdentity,
   reconnectDelay,
   scheduleReconnect,
+  subscriptionAbortError,
   terminalClose,
 } from "./react/reconnect";
 export { usePresence, type UsePresenceOptions, type PresenceConnection } from "./react/presence";
@@ -282,19 +283,32 @@ export function useChannel<T = unknown>(
     };
 
     if (transport === "ws") {
+      const signal = currentOptions.signal;
       let close: (() => void) | undefined;
       let cancelReconnect: (() => void) | undefined;
       let attempt = 0;
       const connect = () => {
-        if (!active()) return;
-        const channel = new Channel(name, "ws", currentOptions.params ?? {});
-        const { lastMessageId: _initial, ...connectionOptions } =
-          currentOptions as ChannelConnectOptions;
-        const connection = channel.connect({
-          ...connectionOptions,
-          ...(lastMessageId !== undefined && { lastMessageId }),
-          onClose: closeStream,
-        });
+        if (!active() || signal?.aborted) return;
+        let connection: ChannelSocket;
+        try {
+          const channel = new Channel(name, "ws", currentOptions.params ?? {});
+          const { lastMessageId: _initial, ...connectionOptions } =
+            currentOptions as ChannelConnectOptions;
+          connection = channel.connect({
+            ...connectionOptions,
+            ...(lastMessageId !== undefined && { lastMessageId }),
+            onClose: closeStream,
+          });
+        } catch (error) {
+          if (!active()) return;
+          update("connecting", error instanceof Error ? error : new Error(String(error)));
+          cancelReconnect = scheduleReconnect(connect, reconnectDelay(attempt++));
+          return;
+        }
+        if (!active() || signal?.aborted) {
+          connection.close();
+          return;
+        }
         const target = connection.raw as EventTarget;
         let connected = true;
         socketRef.current = { identity, send: connection.send };
@@ -342,9 +356,21 @@ export function useChannel<T = unknown>(
           connection.close();
         };
       };
-      connect();
+      const abort = () => {
+        if (!active() || !signal) return;
+        update("connecting", subscriptionAbortError(signal));
+        disposed = true;
+        cancelReconnect?.();
+        close?.();
+      };
+      if (signal?.aborted) abort();
+      else {
+        signal?.addEventListener("abort", abort, { once: true });
+        connect();
+      }
       return () => {
         disposed = true;
+        signal?.removeEventListener("abort", abort);
         cancelReconnect?.();
         close?.();
       };
@@ -381,7 +407,7 @@ export function useChannel<T = unknown>(
       target.removeEventListener("error", onError);
       subscription.close();
     };
-  }, [identity, name, transport]);
+  }, [identity, name, transport, options.signal]);
 
   const clear = useCallback(() => {
     if (latestIdentity.current === identity)
