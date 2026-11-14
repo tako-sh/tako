@@ -124,9 +124,9 @@ async fn closed_streams_replay_from_start_and_end_readers_as_in_production() {
         Err(ChannelError::BadRequest(_))
     ));
 
-    let request = |query: &str, headers: &str| {
+    let request = |transport: &str, query: &str, headers: &str| {
         let request = format!(
-            "GET /_tako/channels/sse/feed?{query} HTTP/1.1\r\nHost: app.test\r\n{headers}Connection: close\r\n\r\n"
+            "GET /_tako/channels/{transport}/feed?{query} HTTP/1.1\r\nHost: app.test\r\n{headers}Connection: close\r\n\r\n"
         );
         async move {
             let mut client = tokio::net::TcpStream::connect(endpoint).await.unwrap();
@@ -148,7 +148,7 @@ async fn closed_streams_replay_from_start_and_end_readers_as_in_production() {
             .map(|data| serde_json::from_str(data).unwrap())
             .collect()
     };
-    let replay = request("id=1&from=start", "").await;
+    let replay = request("sse", "id=1&from=start", "").await;
     let text = String::from_utf8_lossy(&replay).into_owned();
     assert_eq!(
         data(&replay)
@@ -168,11 +168,11 @@ async fn closed_streams_replay_from_start_and_end_readers_as_in_production() {
         ),
         ("id=1", String::new(), 1),
     ] {
-        let response = request(query, &headers).await;
+        let response = request("sse", query, &headers).await;
         assert_eq!(data(&response).len(), count, "{query}");
         assert!(String::from_utf8_lossy(&response).contains(&close_event));
     }
-    let invalid = request("id=1&from=end", "").await;
+    let invalid = request("sse", "id=1&from=end", "").await;
     assert!(invalid.starts_with(b"HTTP/1.1 400"));
 
     // WebSocket readers end with the stream-closed close frame.
@@ -185,7 +185,7 @@ async fn closed_streams_replay_from_start_and_end_readers_as_in_production() {
         (format!("id=1&from=start&last_message_id={}", first.id), 1),
         ("id=1".to_owned(), 0),
     ] {
-        let response = request(&query, upgrade).await;
+        let response = request("ws", &query, upgrade).await;
         assert!(
             response.starts_with(b"HTTP/1.1 101"),
             "closed stream reader must upgrade to WebSocket"
