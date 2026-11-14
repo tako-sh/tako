@@ -80,14 +80,6 @@ pub async fn implode_server(
 
     if server.native.is_some() {
         output::hint("Offline peers enforce the revocation when they reconnect.");
-    } else {
-        let mut servers = crate::config::ServersToml::load()?;
-        servers.remove(server_name)?;
-        servers.save()?;
-        output::success(&format!(
-            "Removed {} from local server list",
-            output::strong(server_name)
-        ));
     }
 
     Ok(())

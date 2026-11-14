@@ -45,8 +45,13 @@ sdk-go:
     for dir in examples/go/*/; do echo "Building $dir..." && (cd "$dir" && go build -o /dev/null .); done
 
 cli:
+    cargo build -p tako-network --example cli-fixture
     cargo build -p tako-cli --bin tako
     TAKO_BIN="$(pwd)/target/debug/tako" bun test --cwd e2e/cli
+
+# Set CORROSION_BIN to Tako's checksum-verified Corrosion executable.
+corrosion:
+    python3 e2e/network/corrosion-state.py
 
 e2e fixture="":
     #!/usr/bin/env bash

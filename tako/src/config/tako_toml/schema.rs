@@ -217,7 +217,7 @@ pub struct BackupConfig {
 }
 
 /// S3-compatible storage resource from [storages.*]. Credentials are stored
-/// encrypted in `.tako/secrets.json`, not here.
+/// encrypted in ignored local state and shared network records, not here.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]

@@ -6,7 +6,7 @@ description: "Compare AWS Elastic Beanstalk with Tako: app environments, rolling
 image: 2384f5f7a318
 ---
 
-> **Networking update.** The Tailscale and NetBird integrations and older setup commands described here have been retired. For new installations, see [native WireGuard networks](/blog/native-wireguard-networks-for-vps-apps/). For an existing Tailscale or NetBird host, follow the [migration guide](/blog/migrate-tailscale-to-tako-wireguard/).
+> **Update, November 14, 2026:** This article describes an earlier Tako release. Published encrypted secrets now live on network servers, with ignored drafts in each worktree; see [secret storage and migration](/docs/secrets/). The Tailscale and NetBird integrations described below have been retired; follow [current native network setup](/docs/networks/). Read [the new network and secrets workflow](/blog/sync-deployment-secrets-with-tako-networks/).
 
 [AWS Elastic Beanstalk](https://aws.amazon.com/elasticbeanstalk/) is the AWS service you reach for when you want a managed app environment instead of assembling EC2, load balancers, health checks, deployment policies, and logs yourself.
 

@@ -7,6 +7,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { networkFixture } from "../helpers/network";
 import { TakoTerminal, run } from "../helpers/terminal";
 import { mkdtemp, realpath, writeFile, rm, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -14,6 +15,7 @@ import { join } from "node:path";
 
 let tempDir: string;
 let takoHome: string;
+let networkId: string;
 
 beforeEach(async () => {
   // Network persistence rejects symlink ancestors, including macOS /var.
@@ -39,21 +41,11 @@ async function setupProject(
 
   let takoToml = `name = "dry-run-app"\nruntime = "node"\npreset = "node"\nmain = "index.ts"\n\n[envs.${envName}]\nroute = "dry-run-app.example.com"\n`;
   if (serverNames.length > 0) {
-    takoToml += `servers = [${serverNames.map((n) => `"${n}"`).join(", ")}]\n`;
+    const network = networkFixture(takoHome, serverEntries);
+    networkId = network;
+    takoToml += `network = "${network}"\nservers = [${serverNames.map((n) => `"${n}"`).join(", ")}]\n`;
   }
   await writeFile(join(tempDir, "tako.toml"), takoToml);
-  await writeFile(join(tempDir, "index.ts"), "export default {}");
-
-  // Create config.toml in TAKO_HOME (server inventory uses [[servers]] array)
-  // Each server entry includes arch/libc target metadata (required by deploy).
-  if (serverNames.length > 0) {
-    await mkdir(takoHome, { recursive: true });
-    let configToml = "";
-    for (const [name, entry] of Object.entries(serverEntries)) {
-      configToml += `[[servers]]\nname = "${name}"\nhost = "${entry.host}"\nport = ${entry.port ?? 22}\narch = "x86_64"\nlibc = "glibc"\n\n`;
-    }
-    await writeFile(join(takoHome, "config.toml"), configToml);
-  }
 }
 
 describe("--dry-run appears in help", () => {
@@ -189,9 +181,16 @@ describe("deploy --dry-run", () => {
 
 describe("servers add --dry-run", () => {
   test("shows skip message without writing config", async () => {
-    expect((await run(["network", "create", "fleet"], { cwd: tempDir, env: { HOME: tempDir, TAKO_HOME: takoHome } })).exitCode).toBe(0);
+    expect(
+      (
+        await run(["network", "create", "fleet"], {
+          cwd: tempDir,
+          env: { HOME: tempDir, TAKO_HOME: takoHome },
+        })
+      ).exitCode,
+    ).toBe(0);
     const { screen, exitCode } = await run(
-      ["--dry-run", "servers", "add", "fake.server.com", "--name", "test-srv"],
+      ["--dry-run", "network", "server", "add", "fake.server.com", "--name", "test-srv"],
       {
         cwd: tempDir,
         env: { HOME: tempDir, TAKO_HOME: takoHome },
@@ -244,9 +243,16 @@ describe("backups --dry-run", () => {
 
 describe("--dry-run --ci", () => {
   test("produces plain dry-run output without colors", async () => {
-    expect((await run(["network", "create", "fleet"], { cwd: tempDir, env: { HOME: tempDir, TAKO_HOME: takoHome } })).exitCode).toBe(0);
+    expect(
+      (
+        await run(["network", "create", "fleet"], {
+          cwd: tempDir,
+          env: { HOME: tempDir, TAKO_HOME: takoHome },
+        })
+      ).exitCode,
+    ).toBe(0);
     const { term, exitCode } = await run(
-      ["--dry-run", "--ci", "servers", "add", "fake.server.com", "--name", "test-srv"],
+      ["--dry-run", "--ci", "network", "server", "add", "fake.server.com", "--name", "test-srv"],
       {
         cwd: tempDir,
         env: { HOME: tempDir, TAKO_HOME: takoHome },
@@ -291,6 +297,7 @@ file = "compose.yaml"
 service = "web"
 port = 80
 [envs.production]
+network = "${networkId}"
 route = "compose.example.com"
 servers = ["prod"]
 `,
@@ -315,6 +322,7 @@ sdk = false
 port = 80
 health_path = "/"
 [envs.production]
+network = "${networkId}"
 route = "image.example.com"
 servers = ["prod"]
 `,

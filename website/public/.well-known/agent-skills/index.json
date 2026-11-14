@@ -6,21 +6,21 @@
       "type": "framework",
       "description": "Build, run, deploy, and debug Tako applications. Use for projects with tako.toml, tako.sh imports, the Tako Go or Rust SDK, or tasks involving Tako local HTTPS, deployments, logs, routing, typed HTTP contracts, secrets, storage, channels, presence, stores, and workflows.",
       "url": "https://tako.sh/.well-known/agent-skills/tako/SKILL.md",
-      "sha256": "325de6bf7d4c0dcf5685c736141f7f853e05bb589597e70e66cb94b6eaaa80f4"
+      "sha256": "15a993ce540ac38d4cdcf0cbe7d94e6585837566dca9104722ca6cbb9517fac9"
     },
     {
       "name": "tako-sdk-go",
       "type": "framework",
       "description": "tako.sh Go SDK: ListenAndServe for http.Handler, Listener for custom servers, typed secrets via tako generate, authenticated presence and live Stores with cached offline reads.",
       "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-go/SKILL.md",
-      "sha256": "8623bfc0576410d20a7f5e596b8e78dd774ef0a81c1604219e5ad1419394dbf1"
+      "sha256": "068178f7633feed112596b291f0d228baaa998e3d9a43e9f86a5cbc12fd7b5d9"
     },
     {
       "name": "tako-sdk-js",
       "type": "framework",
       "description": "tako.sh SDK: fetch handler interface, tako runtime object, generated tako.d.ts type augmentation, defineChannel/definePresence/defineStore/defineWorkflow, replay recovery, live data and offline reads, Vite and Next.js adapters.",
       "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-js/SKILL.md",
-      "sha256": "3719f60eae68d2439e7ba1869d4322225ee4842a357fb84a8f64a3a871b09dac"
+      "sha256": "a79a66325aab5d9585a5bbeac617033a92b75a9003d7b8440f649706b23e9529"
     },
     {
       "name": "tako-sdk-rust",

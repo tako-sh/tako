@@ -1,8 +1,9 @@
 use clap::{Parser, Subcommand};
 
+#[cfg(test)]
+use crate::commands::server;
 use crate::commands::{
-    self, backups, credentials, delete, releases, scale, secret, server, storage, upgrade,
-    workflows,
+    self, backups, credentials, delete, releases, scale, secret, storage, upgrade, workflows,
 };
 use clap::CommandFactory;
 
@@ -153,10 +154,6 @@ pub enum Commands {
 
     /// Show deployment status across configured servers
     Status,
-
-    /// Server management commands
-    #[command(subcommand)]
-    Servers(server::ServerCommands),
 
     /// Private network membership and portable configuration
     #[command(subcommand)]
@@ -327,7 +324,6 @@ fn telemetry_command(command: &Commands) -> &'static str {
         Commands::Dev { .. } => "dev",
         Commands::Doctor => "doctor",
         Commands::Status => "status",
-        Commands::Servers(_) => "servers",
         Commands::Network(_) => "network",
         Commands::Connect { .. } => "connect",
         Commands::Disconnect { .. } => "disconnect",
@@ -437,19 +433,6 @@ impl Cli {
             Commands::Doctor => {
                 let rt = tokio::runtime::Runtime::new()?;
                 rt.block_on(commands::doctor::run())
-            }
-            Commands::Servers(cmd) => {
-                let emit_generic = json
-                    && !matches!(
-                        &cmd,
-                        server::ServerCommands::List | server::ServerCommands::Add { .. }
-                    );
-                server::run(cmd, self.config.as_deref())?;
-                if emit_generic {
-                    json_success(true, "servers")
-                } else {
-                    Ok(())
-                }
             }
             Commands::Network(cmd) => commands::network::run(cmd, self.config.as_deref()),
             Commands::Connect { network } => {

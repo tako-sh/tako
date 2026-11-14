@@ -63,42 +63,33 @@ fn read_env_names(project_dir: &Path) -> Vec<String> {
     names.into_iter().collect()
 }
 
-/// Read secret names from `.tako/secrets.json` for the "development" environment.
+/// Read secret names from the local drafts and published cache for the "development" environment.
 ///
 /// Falls back to all secret names across all environments if no development
 /// environment exists. Returns an empty vec if the file doesn't exist or is
 /// malformed.
-fn read_secret_names(project_dir: &Path) -> Vec<String> {
-    let secrets_path = project_dir.join(".tako").join("secrets.json");
-    let Ok(content) = fs::read_to_string(&secrets_path) else {
-        return Vec::new();
-    };
-
-    let Ok(parsed): Result<serde_json::Value, _> = serde_json::from_str(&content) else {
-        return Vec::new();
-    };
-
-    let Some(envs) = parsed.as_object() else {
-        return Vec::new();
-    };
-
-    if let Some(dev) = envs.get("development")
-        && let Some(secrets) = dev.get("app").and_then(|s| s.as_object())
-    {
-        let mut names: Vec<String> = secrets.keys().cloned().collect();
-        names.sort();
-        return names;
-    }
-
-    let mut names_set = std::collections::BTreeSet::new();
-    for env_value in envs.values() {
-        if let Some(secrets) = env_value.get("app").and_then(|s| s.as_object()) {
-            for name in secrets.keys() {
-                names_set.insert(name.clone());
-            }
+fn read_secret_names(
+    project_dir: &Path,
+    config: Option<&TakoToml>,
+    environment: Option<&str>,
+) -> Vec<String> {
+    let store = match (config, environment) {
+        (Some(config), Some(env)) => {
+            crate::config::SecretsStore::load_for_environment(project_dir, config, env)
         }
+        (Some(config), None) => crate::config::SecretsStore::load_with_config(project_dir, config),
+        (None, _) => crate::config::SecretsStore::load_from_dir(project_dir),
+    };
+    let Ok(store) = store else {
+        return vec![];
+    };
+    if let Some(development) = store.get_env("development") {
+        let mut names: Vec<_> = development.keys().cloned().collect();
+        names.sort();
+        names
+    } else {
+        store.all_secret_names()
     }
-    names_set.into_iter().collect()
 }
 
 /// Read storage binding names from `tako.toml` environment assignments.
@@ -223,12 +214,12 @@ fn secret_example_binding(name: &str) -> String {
 
 fn build_secrets_block(names: &[String]) -> String {
     if names.is_empty() {
-        return "  /**\n   * Project-specific secret keys from `.tako/secrets.json`.\n   *\n   * No secrets are currently configured for this project. After you add one,\n   * this interface is regenerated with typed readonly keys.\n   */\n  export interface TakoSecrets {}\n\n".to_string();
+        return "  /**\n   * Project-specific secret keys from the local network cache and worktree drafts.\n   *\n   * No secrets are currently configured for this project. After you add one,\n   * this interface is regenerated with typed readonly keys.\n   */\n  export interface TakoSecrets {}\n\n".to_string();
     }
 
     let example_name = names.first().map(String::as_str).unwrap_or("MY_SECRET");
     let mut out = format!(
-        "  /**\n   * Project-specific secret keys from `.tako/secrets.json`.\n   *\n   * Values are injected by Tako at runtime and redacted during bulk serialization.\n   * App code reads individual values from `tako.secrets` imported from `tako.sh`.\n   *\n   * @example\n   * ```ts\n   * import {{ tako }} from \"tako.sh\";\n   *\n   * const {} = {};\n   * ```\n   */\n",
+        "  /**\n   * Project-specific secret keys from the local network cache and worktree drafts.\n   *\n   * Values are injected by Tako at runtime and redacted during bulk serialization.\n   * App code reads individual values from `tako.secrets` imported from `tako.sh`.\n   *\n   * @example\n   * ```ts\n   * import {{ tako }} from \"tako.sh\";\n   *\n   * const {} = {};\n   * ```\n   */\n",
         secret_example_binding(example_name),
         ts_secret_accessor(example_name)
     );
@@ -394,6 +385,24 @@ pub fn write_tako_declarations_for_adapter(
     write_tako_declarations_for_adapter_and_app_root(project_dir, adapter, &app_root)
 }
 
+pub fn write_tako_declarations_with_config(
+    project_dir: &Path,
+    adapter: BuildAdapter,
+    config: &TakoToml,
+    environment: Option<&str>,
+) -> std::io::Result<bool> {
+    write_tako_declarations_with_network_options(
+        project_dir,
+        adapter,
+        config.js_app_root(),
+        &|| Command::new("bun"),
+        Some(config),
+        environment,
+        false,
+    )
+    .map(|result| result.wrote_declarations || result.wrote_contracts)
+}
+
 pub fn write_tako_declarations_for_adapter_and_app_root(
     project_dir: &Path,
     adapter: BuildAdapter,
@@ -417,6 +426,7 @@ fn write_tako_declarations_with_codegen_command(
         app_root,
         codegen_command,
         None,
+        None,
         false,
     )
 }
@@ -427,9 +437,10 @@ fn write_tako_declarations_with_network_options(
     app_root: &str,
     codegen_command: &impl Fn() -> Command,
     config: Option<&TakoToml>,
+    environment: Option<&str>,
     update: bool,
 ) -> std::io::Result<JsGeneratedFilesResult> {
-    let secret_names = read_secret_names(project_dir);
+    let secret_names = read_secret_names(project_dir, config, environment);
     let storage_names = read_storage_names(project_dir);
     let env_names = read_env_names(project_dir);
     let var_names = read_var_names(project_dir);
@@ -640,6 +651,7 @@ pub fn write_generated_files_with_schemas(
     project_dir: &Path,
     adapter: BuildAdapter,
     config: &TakoToml,
+    environment: Option<&str>,
     update: bool,
 ) -> std::io::Result<JsGeneratedFilesResult> {
     let wrote_scaffolds = ensure_js_definition_scaffolds(project_dir, config.js_app_root())?;
@@ -649,6 +661,7 @@ pub fn write_generated_files_with_schemas(
         config.js_app_root(),
         &|| Command::new("bun"),
         Some(config),
+        environment,
         update,
     )?;
     result.wrote_scaffolds = wrote_scaffolds;

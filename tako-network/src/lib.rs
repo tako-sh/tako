@@ -10,13 +10,16 @@ mod challenge;
 pub mod corrosion;
 mod enrollment;
 mod error;
+pub mod invitation;
 mod keys;
 pub mod node_config;
 mod profile;
 mod registry;
 pub mod runtime;
+pub mod sealed;
 mod server_identity;
 pub mod services;
+pub mod shared;
 mod types;
 
 pub use bootstrap::{BootstrapRequest, BootstrapResponse, MAX_BOOTSTRAP_BYTES};

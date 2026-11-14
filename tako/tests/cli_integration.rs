@@ -33,3 +33,6 @@ mod agents;
 
 #[path = "cli_integration/native_management.rs"]
 mod native_management;
+
+#[path = "cli_integration/shared_state.rs"]
+mod shared_state;

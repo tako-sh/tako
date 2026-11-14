@@ -9,9 +9,9 @@ use std::time::{Duration, Instant};
 use sha2::{Digest, Sha256};
 
 use super::Result;
-use crate::config::NetworkAlias;
+use crate::config::LocalNetwork;
 
-pub(super) fn lock(alias: &NetworkAlias, name: &str) -> Result<File> {
+pub(super) fn lock(alias: &LocalNetwork, name: &str) -> Result<File> {
     let directory = alias.profile_path()?.parent().unwrap().join("wireguard");
     super::private_directory(&directory)?;
     super::private_file(&directory.join(name), true)
@@ -24,7 +24,7 @@ fn control_directory() -> Result<PathBuf> {
     Ok(directory)
 }
 
-fn prefix(alias: &NetworkAlias) -> String {
+fn prefix(alias: &LocalNetwork) -> String {
     hex::encode(Sha256::digest(format!("{}:{}", alias.id, alias.device)))[..24].to_string()
 }
 
@@ -47,7 +47,7 @@ fn control(path: &std::path::Path, operation: &str) -> Result<std::process::Outp
 
 /// Called with connection.lock held. Existing foreground sessions must finish
 /// before switching from their userspace transport to a system interface.
-pub(super) fn prepare_connect(alias: &NetworkAlias) -> Result<File> {
+pub(super) fn prepare_connect(alias: &LocalNetwork) -> Result<File> {
     let sessions = lock(alias, "ssh-sessions.lock")?;
     sessions
         .try_lock()
@@ -68,7 +68,7 @@ pub(super) fn prepare_connect(alias: &NetworkAlias) -> Result<File> {
     }
 }
 
-pub(super) fn stop_masters(alias: &NetworkAlias) -> Result<()> {
+pub(super) fn stop_masters(alias: &LocalNetwork) -> Result<()> {
     let prefix = format!("{}-", prefix(alias));
     for entry in fs::read_dir(control_directory()?)? {
         let entry = entry?;
@@ -82,7 +82,7 @@ pub(super) fn stop_masters(alias: &NetworkAlias) -> Result<()> {
 }
 
 pub(crate) fn run(
-    alias: &NetworkAlias,
+    alias: &LocalNetwork,
     server: &str,
     base: &Command,
     destination: &str,
@@ -165,7 +165,7 @@ mod tests {
     #[ignore = "requires the isolated OpenSSH server in e2e/cli/rootless-ssh.py"]
     fn multiplex_and_connect_exclusion() {
         assert_ne!(unsafe { libc::geteuid() }, 0);
-        let alias = NetworkAlias {
+        let alias = LocalNetwork {
             name: "test".into(),
             id: "11".repeat(16),
             device: "22".repeat(32),

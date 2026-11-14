@@ -4,8 +4,16 @@ use super::*;
 fn servers_add_rejects_removed_provider_flags() {
     for value in ["tailscale", "netbird"] {
         assert!(
-            Cli::try_parse_from(["tako", "servers", "add", "edge.internal", "--vpn", value])
-                .is_err()
+            Cli::try_parse_from([
+                "tako",
+                "network",
+                "server",
+                "add",
+                "edge.internal",
+                "--vpn",
+                value
+            ])
+            .is_err()
         );
     }
 }
@@ -14,18 +22,21 @@ fn servers_add_rejects_removed_provider_flags() {
 fn servers_add_accepts_native_endpoint_with_automatic_network_selection() {
     let cli = Cli::try_parse_from([
         "tako",
-        "servers",
+        "network",
+        "server",
         "add",
         "admin@edge.internal",
         "--wireguard-endpoint",
         "192.0.2.1:51820",
     ])
     .unwrap();
-    let Commands::Servers(server::ServerCommands::Add {
-        network,
-        wireguard_endpoint,
-        ..
-    }) = cli.command.unwrap()
+    let Commands::Network(commands::network::NetworkCommands::Server(
+        server::ServerCommands::Add {
+            network,
+            wireguard_endpoint,
+            ..
+        },
+    )) = cli.command.unwrap()
     else {
         panic!("expected add")
     };
@@ -35,8 +46,10 @@ fn servers_add_accepts_native_endpoint_with_automatic_network_selection() {
 
 #[test]
 fn servers_add_defaults_to_tako_user() {
-    let cli = Cli::try_parse_from(["tako", "servers", "add", "example.com"]).unwrap();
-    let Commands::Servers(server::ServerCommands::Add { host, .. }) = cli.command.expect("command")
+    let cli = Cli::try_parse_from(["tako", "network", "server", "add", "example.com"]).unwrap();
+    let Commands::Network(commands::network::NetworkCommands::Server(
+        server::ServerCommands::Add { host, .. },
+    )) = cli.command.expect("command")
     else {
         panic!("expected Servers::Add");
     };
@@ -45,8 +58,10 @@ fn servers_add_defaults_to_tako_user() {
 
 #[test]
 fn servers_add_without_host_parses_for_wizard() {
-    let cli = Cli::try_parse_from(["tako", "servers", "add"]).unwrap();
-    let Commands::Servers(server::ServerCommands::Add { host, .. }) = cli.command.expect("command")
+    let cli = Cli::try_parse_from(["tako", "network", "server", "add"]).unwrap();
+    let Commands::Network(commands::network::NetworkCommands::Server(
+        server::ServerCommands::Add { host, .. },
+    )) = cli.command.expect("command")
     else {
         panic!("expected Servers::Add");
     };
@@ -55,8 +70,11 @@ fn servers_add_without_host_parses_for_wizard() {
 
 #[test]
 fn servers_add_accepts_admin_user_host_shorthand() {
-    let cli = Cli::try_parse_from(["tako", "servers", "add", "ubuntu@example.com"]).unwrap();
-    let Commands::Servers(server::ServerCommands::Add { host, .. }) = cli.command.expect("command")
+    let cli =
+        Cli::try_parse_from(["tako", "network", "server", "add", "ubuntu@example.com"]).unwrap();
+    let Commands::Network(commands::network::NetworkCommands::Server(
+        server::ServerCommands::Add { host, .. },
+    )) = cli.command.expect("command")
     else {
         panic!("expected Servers::Add");
     };
@@ -67,7 +85,8 @@ fn servers_add_accepts_admin_user_host_shorthand() {
 fn servers_add_rejects_admin_user_flag() {
     let result = Cli::try_parse_from([
         "tako",
-        "servers",
+        "network",
+        "server",
         "add",
         "example.com",
         "--name",
@@ -84,7 +103,8 @@ fn servers_add_rejects_admin_user_flag() {
 fn servers_add_install_conflicts_with_no_test() {
     let res = Cli::try_parse_from([
         "tako",
-        "servers",
+        "network",
+        "server",
         "add",
         "example.com",
         "--name",
@@ -97,7 +117,15 @@ fn servers_add_install_conflicts_with_no_test() {
 
 #[test]
 fn servers_add_rejects_user_flag() {
-    let res = Cli::try_parse_from(["tako", "servers", "add", "example.com", "--user", "root"]);
+    let res = Cli::try_parse_from([
+        "tako",
+        "network",
+        "server",
+        "add",
+        "example.com",
+        "--user",
+        "root",
+    ]);
     match res {
         Ok(_) => panic!("expected parse failure"),
         Err(err) => assert!(
@@ -109,8 +137,10 @@ fn servers_add_rejects_user_flag() {
 
 #[test]
 fn servers_remove_parses() {
-    let cli = Cli::try_parse_from(["tako", "servers", "remove", "prod"]).unwrap();
-    let Commands::Servers(server::ServerCommands::Remove { name }) = cli.command.expect("command")
+    let cli = Cli::try_parse_from(["tako", "network", "server", "remove", "prod"]).unwrap();
+    let Commands::Network(commands::network::NetworkCommands::Server(
+        server::ServerCommands::Remove { name },
+    )) = cli.command.expect("command")
     else {
         panic!("expected Servers::Remove");
     };
@@ -119,15 +149,19 @@ fn servers_remove_parses() {
 
 #[test]
 fn servers_remove_aliases_parse() {
-    let cli = Cli::try_parse_from(["tako", "servers", "rm", "prod"]).unwrap();
-    let Commands::Servers(server::ServerCommands::Remove { name }) = cli.command.expect("command")
+    let cli = Cli::try_parse_from(["tako", "network", "server", "rm", "prod"]).unwrap();
+    let Commands::Network(commands::network::NetworkCommands::Server(
+        server::ServerCommands::Remove { name },
+    )) = cli.command.expect("command")
     else {
         panic!("expected Servers::Remove");
     };
     assert_eq!(name.as_deref(), Some("prod"));
 
-    let cli = Cli::try_parse_from(["tako", "servers", "delete", "prod"]).unwrap();
-    let Commands::Servers(server::ServerCommands::Remove { name }) = cli.command.expect("command")
+    let cli = Cli::try_parse_from(["tako", "network", "server", "delete", "prod"]).unwrap();
+    let Commands::Network(commands::network::NetworkCommands::Server(
+        server::ServerCommands::Remove { name },
+    )) = cli.command.expect("command")
     else {
         panic!("expected Servers::Remove");
     };
@@ -136,8 +170,10 @@ fn servers_remove_aliases_parse() {
 
 #[test]
 fn servers_remove_without_name_parses_for_selector() {
-    let cli = Cli::try_parse_from(["tako", "servers", "remove"]).unwrap();
-    let Commands::Servers(server::ServerCommands::Remove { name }) = cli.command.expect("command")
+    let cli = Cli::try_parse_from(["tako", "network", "server", "remove"]).unwrap();
+    let Commands::Network(commands::network::NetworkCommands::Server(
+        server::ServerCommands::Remove { name },
+    )) = cli.command.expect("command")
     else {
         panic!("expected Servers::Remove");
     };
@@ -147,7 +183,11 @@ fn servers_remove_without_name_parses_for_selector() {
 #[test]
 fn servers_help_shows_remove_as_primary_command() {
     let mut cmd = Cli::command();
-    let servers = cmd.find_subcommand_mut("servers").unwrap();
+    let servers = cmd
+        .find_subcommand_mut("network")
+        .unwrap()
+        .find_subcommand_mut("server")
+        .unwrap();
     let mut help = Vec::new();
     servers.write_help(&mut help).unwrap();
     let help = String::from_utf8(help).unwrap();
@@ -168,25 +208,30 @@ fn servers_help_shows_remove_as_primary_command() {
 
 #[test]
 fn servers_list_parses() {
-    let cli = Cli::try_parse_from(["tako", "servers", "list"]).unwrap();
-    let Commands::Servers(server::ServerCommands::List) = cli.command.expect("command") else {
+    let cli = Cli::try_parse_from(["tako", "network", "server", "list"]).unwrap();
+    let Commands::Network(commands::network::NetworkCommands::Server(server::ServerCommands::List)) =
+        cli.command.expect("command")
+    else {
         panic!("expected Servers::List");
     };
 }
 
 #[test]
 fn servers_ls_alias_parses() {
-    let cli = Cli::try_parse_from(["tako", "servers", "ls"]).unwrap();
-    let Commands::Servers(server::ServerCommands::List) = cli.command.expect("command") else {
+    let cli = Cli::try_parse_from(["tako", "network", "server", "ls"]).unwrap();
+    let Commands::Network(commands::network::NetworkCommands::Server(server::ServerCommands::List)) =
+        cli.command.expect("command")
+    else {
         panic!("expected Servers::List");
     };
 }
 
 #[test]
 fn servers_reload_parses_without_force() {
-    let cli = Cli::try_parse_from(["tako", "servers", "reload", "prod"]).unwrap();
-    let Commands::Servers(server::ServerCommands::Reload { name, force }) =
-        cli.command.expect("command")
+    let cli = Cli::try_parse_from(["tako", "network", "server", "reload", "prod"]).unwrap();
+    let Commands::Network(commands::network::NetworkCommands::Server(
+        server::ServerCommands::Reload { name, force },
+    )) = cli.command.expect("command")
     else {
         panic!("expected Servers::Reload");
     };
@@ -196,9 +241,11 @@ fn servers_reload_parses_without_force() {
 
 #[test]
 fn servers_reload_parses_with_force() {
-    let cli = Cli::try_parse_from(["tako", "servers", "reload", "prod", "--force"]).unwrap();
-    let Commands::Servers(server::ServerCommands::Reload { name, force }) =
-        cli.command.expect("command")
+    let cli =
+        Cli::try_parse_from(["tako", "network", "server", "reload", "prod", "--force"]).unwrap();
+    let Commands::Network(commands::network::NetworkCommands::Server(
+        server::ServerCommands::Reload { name, force },
+    )) = cli.command.expect("command")
     else {
         panic!("expected Servers::Reload");
     };
@@ -208,9 +255,10 @@ fn servers_reload_parses_with_force() {
 
 #[test]
 fn servers_upgrade_parses_without_name() {
-    let cli = Cli::try_parse_from(["tako", "servers", "upgrade"]).unwrap();
-    let Commands::Servers(server::ServerCommands::Upgrade { name, force }) =
-        cli.command.expect("command")
+    let cli = Cli::try_parse_from(["tako", "network", "server", "upgrade"]).unwrap();
+    let Commands::Network(commands::network::NetworkCommands::Server(
+        server::ServerCommands::Upgrade { name, force },
+    )) = cli.command.expect("command")
     else {
         panic!("expected Servers::Upgrade");
     };
@@ -220,9 +268,10 @@ fn servers_upgrade_parses_without_name() {
 
 #[test]
 fn servers_upgrade_parses_with_name() {
-    let cli = Cli::try_parse_from(["tako", "servers", "upgrade", "prod"]).unwrap();
-    let Commands::Servers(server::ServerCommands::Upgrade { name, force }) =
-        cli.command.expect("command")
+    let cli = Cli::try_parse_from(["tako", "network", "server", "upgrade", "prod"]).unwrap();
+    let Commands::Network(commands::network::NetworkCommands::Server(
+        server::ServerCommands::Upgrade { name, force },
+    )) = cli.command.expect("command")
     else {
         panic!("expected Servers::Upgrade");
     };
@@ -232,9 +281,11 @@ fn servers_upgrade_parses_with_name() {
 
 #[test]
 fn servers_upgrade_parses_force() {
-    let cli = Cli::try_parse_from(["tako", "servers", "upgrade", "prod", "--force"]).unwrap();
-    let Commands::Servers(server::ServerCommands::Upgrade { name, force }) =
-        cli.command.expect("command")
+    let cli =
+        Cli::try_parse_from(["tako", "network", "server", "upgrade", "prod", "--force"]).unwrap();
+    let Commands::Network(commands::network::NetworkCommands::Server(
+        server::ServerCommands::Upgrade { name, force },
+    )) = cli.command.expect("command")
     else {
         panic!("expected Servers::Upgrade");
     };

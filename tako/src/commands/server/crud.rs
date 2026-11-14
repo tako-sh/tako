@@ -33,7 +33,7 @@ pub(super) async fn remove_server(name: Option<&str>) -> Result<(), Box<dyn std:
         output::error("No servers configured.");
         output::hint(&format!(
             "Run {} to add a server.",
-            output::strong("tako servers add")
+            output::strong("tako network server add")
         ));
         return Ok(());
     }
@@ -63,7 +63,7 @@ pub(super) async fn remove_server(name: Option<&str>) -> Result<(), Box<dyn std:
 
     if !output::is_interactive() {
         return Err(
-            "No server name provided and selection requires an interactive terminal. Run 'tako servers remove <name>'."
+            "No server name provided and selection requires an interactive terminal. Run 'tako network server remove <name>'."
                 .into(),
         );
     }
@@ -136,13 +136,15 @@ fn remove_entry(
     if let Some(target) = &entry.native {
         tokio::task::block_in_place(|| {
             crate::network::revocation::run(&target.network, &target.server_id.to_string())?;
+            if let Err(error) = crate::network::secrets::pull(&target.network, None) {
+                output::hint(&format!(
+                    "Membership changed; refresh the secret cache with `tako network sync`: {error}"
+                ));
+            }
             Ok(())
         })
     } else {
-        let mut servers = crate::config::ServersToml::load()?;
-        servers.remove(name)?;
-        servers.save()?;
-        Ok(())
+        Err("Server is not enrolled in a network".into())
     }
 }
 
@@ -153,7 +155,7 @@ pub(super) async fn list_servers() -> Result<(), Box<dyn std::error::Error>> {
         if output::is_json() {
             return output::json_result(serde_json::json!({
                 "ok": true,
-                "command": "servers",
+                "command": "network server list",
                 "servers": [],
             }));
         }
@@ -161,7 +163,7 @@ pub(super) async fn list_servers() -> Result<(), Box<dyn std::error::Error>> {
         output::warning("No servers configured");
         output::hint(&format!(
             "Run {} to add a server.",
-            output::strong("tako servers add")
+            output::strong("tako network server add")
         ));
         return Ok(());
     }
@@ -213,7 +215,7 @@ pub(super) async fn list_servers() -> Result<(), Box<dyn std::error::Error>> {
             .collect::<Vec<_>>();
         return output::json_result(serde_json::json!({
             "ok": true,
-            "command": "servers",
+            "command": "network server list",
             "servers": listed,
         }));
     }

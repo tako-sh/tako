@@ -12,6 +12,14 @@ Requires the `tako` binary to be built first (`cargo build -p tako-cli`).
 
 Focused native-network tests live in `e2e/cli/`. Run `cargo test -p tako-cli --bin tako network::` for configuration, identity, ownership, resolver cleanup, SSH configuration, and transport unit tests.
 
+To verify the schemas against the actual Corrosion engine, use the checksum-verified executable installed by Tako:
+
+```bash
+CORROSION_BIN=/usr/local/libexec/tako/corrosion just test corrosion
+```
+
+This starts two temporary loopback agents, loads all three production schemas, and checks that independent records and conflicting operation variants survive replication. It catches Corrosion-specific schema restrictions that plain SQLite tests cannot check. It requires no root access and removes its processes and temporary state afterward.
+
 The following scripts must run inside disposable privileged Linux containers, with the checkout mounted read-only. They reject execution outside a container. Install Python, iproute2, ping, wireguard-tools, wireguard-go, OpenSSH client/server, systemd-resolved, D-Bus, and the CLI's libvips runtime dependencies in the test image:
 
 ```bash
@@ -25,6 +33,8 @@ Use the test executable reported by `cargo test -p tako-cli --bin tako --no-run`
 ## Native Image Dependency
 
 Run `mise bootstrap` to install the repository toolchain, native libvips dependencies, and package dependencies. Full E2E also requires a running Docker engine with Compose support.
+
+The Docker host kernel must support WireGuard interfaces. Privileged containers cannot supply a missing kernel module; an `ip link add ... type wireguard` failure prevents native enrollment. The loopback Corrosion check and pinned HTTPS CLI integration tests can run independently of that requirement.
 
 Homebrew's `vips` formula includes the codec libraries Tako needs for JPEG, PNG, WebP, and AVIF transforms. Debian/Ubuntu split the AVIF encoder into `libheif-plugin-aomenc`, so install that alongside `libvips-dev`.
 
@@ -44,14 +54,14 @@ just e2e examples/compose/bun-redis
 
 This runs the global e2e harness in `e2e/run.sh` against the fixture path.
 The runner disables CLI telemetry so local and CI test runs do not send usage stats.
-The harness generates an ephemeral SSH keypair per run inside a disposable Docker volume, starts real `tako-server` binaries on an Ubuntu test host, and starts AlmaLinux too when the current server binary's runtime libraries are available there. It never uses `~/.ssh`.
-Server containers run privileged with private cgroup namespaces so the production cgroup limits can be exercised. Their entrypoints move init into a control subgroup and enable CPU, memory, and process controllers within that container only. No host cgroup filesystem is bind-mounted. The entrypoint installs the mounted build as root before SSH starts; the runner then uses the installed restricted sudo policy.
+The harness generates an ephemeral SSH keypair per run inside a disposable Docker volume and enrolls both Ubuntu and AlmaLinux test hosts through `tako network server add`. It uses the mounted binaries, real Corrosion replication, and pinned HTTPS management. It never uses the developer's SSH keys.
+Server containers run systemd with privileged access and private cgroup namespaces so the production service lifecycle and cgroup limits can be exercised. No host cgroup filesystem is bind-mounted. A separate disposable administrator account performs bootstrap; app checks use the production `tako` account and its restricted sudo policy.
 
 Each test host also runs its own Docker Engine for Compose releases. The executor's Docker socket is not mounted into the test hosts. `E2E_PROXY_CA` optionally supplies a CA bundle for build and runtime downloads; in managed cloud sessions it defaults to `CODEX_PROXY_CERT`. Build trust is mounted through BuildKit secrets, with certificate verification enabled.
 
 The staged JavaScript fixtures receive the runner's proxy and CA settings as explicit production variables so isolated dependency installs can access the registry. The committed fixtures are unchanged.
 
-The AlmaLinux image includes libvips and freezes DNF metadata after installing system dependencies. Startup still runs the real installer against those installed packages; app dependency installs and runtime downloads continue to use the network.
+The AlmaLinux image includes libvips and freezes DNF metadata after installing system dependencies. Enrollment runs the real installer against those installed packages; app dependency installs and runtime downloads continue to use the network.
 
 The Bun + Redis example checks first deployment, service status, logs, code updates, server restart, explicit rollback, and recovery after a failed HTTP health check. The Redis counter must increase across every transition. `just test e2e` includes this example after the native fixtures.
 
@@ -67,7 +77,9 @@ When running these tests inside a container, its temporary project paths and loo
 
 For `on_demand_integration` and `rolling_update_integration`, an installed disposable Linux host can set `TAKO_E2E_DISPOSABLE_HOST=1` and `TAKO_TEST_SERVER_WRAPPER=/workspace/e2e/docker/server/test-wrapper.sh`. Run the test executables as root with `--test-threads=1`, with Bun installed in a path accessible to app users. The wrapper installs the test binary with production capabilities, points the real isolation helper at each temporary data directory, and starts the service as `tako`. The fixture uploader reproduces the ownership of an SSH upload. The wrapper refuses to run outside a root Docker test container.
 
-On disposable GitHub Actions runners, `e2e/prepare-ci-host.sh` permits DAC reads in the host's `unix-chkpwd` AppArmor profile. That host profile also attaches to AlmaLinux's PAM helper inside privileged containers, where the mode-000 shadow file needs this permission. The fixture check verifies sudo before and after the correction; production PAM policy, shadow permissions, and server capabilities are unchanged.
+On disposable GitHub Actions runners, `e2e/prepare-ci-host.sh` loads the host's WireGuard module and verifies interface creation and IPv6 addressing in a temporary network namespace. It also permits DAC reads in the host's `unix-chkpwd` AppArmor profile. That host profile attaches to AlmaLinux's PAM helper inside privileged containers, where the mode-000 shadow file needs this permission. The fixture check verifies sudo before and after the correction; production PAM policy, shadow permissions, and server capabilities are unchanged.
+
+The native host jobs also boot Ubuntu and AlmaLinux fixtures with systemd and run `e2e/docker/server/verify-native-helper.py`. This checks the installed helper's real socket, restricted service permissions, WireGuard configuration, IPv6 addressing, repeated reconciliation, isolation, removal, and temporary key-file cleanup before the Rust build finishes. WireGuard temporary configuration lives in the root-only `/etc/wireguard/tako` directory accepted by Ubuntu's default `wg` AppArmor profile.
 
 For a focused installed-isolation check after building the glibc server:
 
@@ -97,14 +109,16 @@ Set `E2E_USE_PREBUILT=1` to reuse existing binaries and all three test images wi
 
 `E2E_BUN_CACHE_DIR=/absolute/path/to/bun/cache` optionally shares a writable Bun package cache with the runner. Fixture installs prefer cached packages and reuse the repository lockfile, with bounded retries for missing downloads.
 
+Set `E2E_KEEP_FAILED=1` to retain failed test hosts for inspection. The next run removes them before starting new hosts. Normal runs always clean up their containers and SSH-key volume.
+
 After deploy, it runs universal runtime checks:
 
 - App health endpoint responds with valid JSON.
 - App root responds with valid HTML or JSON.
 - Static/public files (if present in release) are fetched over HTTP.
 - Compiled static assets (if present or referenced by HTML) are fetched over HTTP.
-- Fixtures with production secrets import the example passphrase and verify a
-  secret-backed response.
+- Fixtures with production secrets seed synthetic local drafts, publish them on
+  deployment, and verify a secret-backed response.
 - The `channels-workflows` fixture additionally opens a real SSE stream,
   verifies direct channel publish delivery, enqueues a workflow with a supplied
   run ID, verifies the workflow-published event arrives on the same stream, and

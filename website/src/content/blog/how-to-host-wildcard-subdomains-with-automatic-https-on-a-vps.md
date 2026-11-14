@@ -6,7 +6,7 @@ description: "Run tenant-style wildcard subdomains on a VPS with Tako routes, Cl
 image: ca44ba6463d9
 ---
 
-> **Networking update.** The server setup described here uses Tako’s legacy VPN integration. For new installations, see [native WireGuard networks](/blog/native-wireguard-networks-for-vps-apps/). For an existing Tailscale or NetBird host, follow the [migration guide](/blog/migrate-tailscale-to-tako-wireguard/).
+> **Update, November 14, 2026:** This article describes an earlier Tako release. Server commands now use `tako network server`, with inventory supplied by native network membership. See the [current enrollment instructions](/docs/networks/). Published encrypted secrets now live on network servers, with ignored drafts in each worktree; see [secret storage and migration](/docs/secrets/). The Tailscale and NetBird integrations described below have been retired; follow [current native network setup](/docs/networks/). Read [the new network and secrets workflow](/blog/sync-deployment-secrets-with-tako-networks/).
 
 Wildcard subdomains are where a simple VPS setup usually starts to feel less simple.
 

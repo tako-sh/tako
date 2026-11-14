@@ -5,7 +5,7 @@ description: "Compare Vercel's hosted Next.js path with Tako's open-source VPS p
 image: 0feaccc1b663
 ---
 
-> **Networking update.** The Tailscale and NetBird integrations and older setup commands described here have been retired. For new installations, see [native WireGuard networks](/blog/native-wireguard-networks-for-vps-apps/). For an existing Tailscale or NetBird host, follow the [migration guide](/blog/migrate-tailscale-to-tako-wireguard/).
+> **Update, November 14, 2026:** This article describes an earlier Tako release. `tako secrets set` now edits only the current worktree; secret sync or deploy publishes those edits. Tailscale is no longer the management prerequisite described below: enroll a native network and deploy over pinned HTTPS. See [current network setup](/docs/networks/) and [secret publication](/docs/secrets/). Read [the new network and secrets workflow](/blog/sync-deployment-secrets-with-tako-networks/).
 
 Vercel is the obvious answer for Next.js because it is a very good answer. The framework and the platform grew up together. You push to Git, get preview URLs, merge to production, and the deployment model understands Next.js deeply.
 

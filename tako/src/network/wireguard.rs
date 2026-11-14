@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 use tako_network::{DeviceId, LocalDeviceKeys, MemberKind, NetworkId};
 
 use super::{Profile, Result};
-use crate::config::NetworkAlias;
+use crate::config::LocalNetwork;
 use crate::output;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -15,13 +15,13 @@ use backend::Operation;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use backend::{HELPER_COMMAND, helper_main};
 
-pub(crate) fn lifecycle_lock(alias: &NetworkAlias) -> Result<fs::File> {
+pub(crate) fn lifecycle_lock(alias: &LocalNetwork) -> Result<fs::File> {
     let lock = super::ssh_session::lock(alias, "lifecycle.lock")?;
     lock.lock()?;
     Ok(lock)
 }
 
-pub(crate) fn connect(alias: &NetworkAlias, profile: &Profile) -> Result<()> {
+pub(crate) fn connect(alias: &LocalNetwork, profile: &Profile) -> Result<()> {
     connect_with(
         alias,
         profile,
@@ -31,7 +31,7 @@ pub(crate) fn connect(alias: &NetworkAlias, profile: &Profile) -> Result<()> {
 }
 
 fn connect_with(
-    alias: &NetworkAlias,
+    alias: &LocalNetwork,
     profile: &Profile,
     authorize: impl FnOnce() -> Result<()>,
     mut execute: impl FnMut(Operation) -> Result<Option<String>>,
@@ -97,7 +97,7 @@ fn connect_with(
     Ok(())
 }
 
-pub(crate) fn disconnect(alias: &NetworkAlias, profile: &Profile) -> Result<()> {
+pub(crate) fn disconnect(alias: &LocalNetwork, profile: &Profile) -> Result<()> {
     disconnect_with(
         alias,
         profile,
@@ -107,7 +107,7 @@ pub(crate) fn disconnect(alias: &NetworkAlias, profile: &Profile) -> Result<()> 
 }
 
 fn disconnect_with(
-    alias: &NetworkAlias,
+    alias: &LocalNetwork,
     profile: &Profile,
     authorize: impl FnOnce() -> Result<()>,
     mut execute: impl FnMut(Operation) -> Result<Option<String>>,
@@ -240,7 +240,7 @@ fn configuration(profile: &Profile, keys: &LocalDeviceKeys) -> Result<String> {
     Ok(value)
 }
 
-fn configuration_path(alias: &NetworkAlias, profile: &Profile) -> Result<PathBuf> {
+fn configuration_path(alias: &LocalNetwork, profile: &Profile) -> Result<PathBuf> {
     let id: NetworkId = alias.id.parse()?;
     let device: DeviceId = alias.device.parse()?;
     if id != profile.snapshot().network.id || device != profile.request().device_id_for(&id)? {
@@ -380,7 +380,7 @@ mod tests {
         let home = TestHome::new();
         let fixture = fixture();
         network::store_keys(&fixture.profile.request().request_id, &fixture.keys).unwrap();
-        let alias = network::save_profile("test", &fixture.profile).unwrap();
+        let alias = network::save_profile(&fixture.profile).unwrap();
         let mut events = Vec::new();
         connect_with(
             &alias,
@@ -473,7 +473,7 @@ mod tests {
         let _home = TestHome::new();
         let fixture = fixture();
         network::store_keys(&fixture.profile.request().request_id, &fixture.keys).unwrap();
-        let alias = network::save_profile("test", &fixture.profile).unwrap();
+        let alias = network::save_profile(&fixture.profile).unwrap();
         let path = configuration_path(&alias, &fixture.profile).unwrap();
         assert!(
             connect_with(

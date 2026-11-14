@@ -217,6 +217,7 @@ fn add_storage(input: StorageAddInput<'_>) -> Result<(), Box<dyn std::error::Err
     if matches!(input.provider, StorageProviderArg::S3) {
         write_storage_credentials(
             input.project_dir,
+            &TakoToml::load_from_file(input.config_path)?,
             &input.env,
             resource_name,
             input.access_key_id,
@@ -253,6 +254,7 @@ fn set_storage_credentials(
 
     write_storage_credentials(
         input.project_dir,
+        &config,
         &input.env,
         &input.resource,
         input.access_key_id,
@@ -271,13 +273,14 @@ fn set_storage_credentials(
 
 fn write_storage_credentials(
     project_dir: &Path,
+    config: &TakoToml,
     env: &str,
     resource_name: &str,
     access_key_id: Option<String>,
     secret_access_key: Option<String>,
     expires_on: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut secrets = crate::config::SecretsStore::load_from_dir(project_dir)?;
+    let mut secrets = crate::config::SecretsStore::load_for_environment(project_dir, config, env)?;
     secrets.ensure_env_key_id(env)?;
     let key =
         crate::commands::secret::load_or_create_key_for_set(env, &secrets, Some(project_dir))?;

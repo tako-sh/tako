@@ -29,6 +29,64 @@ use local_build::{
 use local_build::{local_build_cache_root, persist_local_build_caches, restore_local_build_caches};
 use packaging::{build_container_target_artifacts, build_target_artifacts};
 
+#[derive(Default)]
+struct DeploymentBindings {
+    runtime_credentials: HashMap<String, String>,
+    storages: HashMap<String, tako_core::StorageBinding>,
+    backup: Option<tako_core::BackupBinding>,
+    ssl: tako_core::SslBinding,
+}
+
+fn deployment_bindings(
+    config: &TakoToml,
+    secrets: &crate::config::SecretsStore,
+    env: &str,
+    project: &Path,
+    configure: bool,
+) -> Result<DeploymentBindings, String> {
+    let provider = config.get_ssl_provider(env);
+    if !configure {
+        // The server checks routes/provider and retains its provisioned secrets.
+        return Ok(DeploymentBindings {
+            ssl: tako_core::SslBinding {
+                provider,
+                cloudflare_api_token: None,
+            },
+            ..Default::default()
+        });
+    }
+    Ok(DeploymentBindings {
+        runtime_credentials: crate::commands::credentials::decrypt_runtime_credentials(
+            env,
+            secrets,
+            Some(project),
+        )
+        .map_err(|e| e.to_string())?,
+        storages: crate::commands::storage::decrypt_storage_bindings(
+            env,
+            config,
+            secrets,
+            Some(project),
+        )
+        .map_err(|e| e.to_string())?,
+        backup: crate::commands::storage::decrypt_backup_binding(
+            env,
+            config,
+            secrets,
+            Some(project),
+        )
+        .map_err(|e| e.to_string())?,
+        ssl: crate::commands::credentials::decrypt_ssl_binding(
+            env,
+            provider,
+            &config.get_routes(env).unwrap_or_default(),
+            secrets,
+            Some(project),
+        )
+        .map_err(|e| e.to_string())?,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn prepare_build_phase(
     project_dir: PathBuf,
@@ -38,6 +96,7 @@ pub(super) async fn prepare_build_phase(
     env: String,
     tako_config: TakoToml,
     secrets: crate::config::SecretsStore,
+    configure_bindings: bool,
     preset_ref: String,
     runtime_adapter: BuildAdapter,
     server_targets: Vec<(String, crate::config::ServerTarget)>,
@@ -117,36 +176,18 @@ pub(super) async fn prepare_build_phase(
         }
         let deploy_secrets = decrypt_deploy_secrets(&env, &secrets, Some(&project_dir))
             .map_err(|e| e.to_string())?;
-        let deploy_runtime_credentials = crate::commands::credentials::decrypt_runtime_credentials(
-            &env,
-            &secrets,
-            Some(&project_dir),
-        )
-        .map_err(|e| e.to_string())?;
-        let deploy_storages = crate::commands::storage::decrypt_storage_bindings(
-            &env,
+        let DeploymentBindings {
+            runtime_credentials: deploy_runtime_credentials,
+            storages: deploy_storages,
+            backup: deploy_backup,
+            ssl: deploy_ssl,
+        } = deployment_bindings(
             &tako_config,
             &secrets,
-            Some(&project_dir),
-        )
-        .map_err(|e| e.to_string())?;
-        let deploy_backup = crate::commands::storage::decrypt_backup_binding(
             &env,
-            &tako_config,
-            &secrets,
-            Some(&project_dir),
-        )
-        .map_err(|e| e.to_string())?;
-        let routes = tako_config.get_routes(&env).unwrap_or_default();
-        let ssl_provider = tako_config.get_ssl_provider(&env);
-        let deploy_ssl = crate::commands::credentials::decrypt_ssl_binding(
-            &env,
-            ssl_provider,
-            &routes,
-            &secrets,
-            Some(&project_dir),
-        )
-        .map_err(|e| e.to_string())?;
+            &project_dir,
+            configure_bindings,
+        )?;
 
         let app_json_bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
         let artifacts_by_target = build_container_target_artifacts(
@@ -297,36 +338,18 @@ pub(super) async fn prepare_build_phase(
     manifest.sdk = detect_release_sdk(runtime_adapter.id(), &eff_app_dir, &source_root);
     let deploy_secrets =
         decrypt_deploy_secrets(&env, &secrets, Some(&project_dir)).map_err(|e| e.to_string())?;
-    let deploy_runtime_credentials = crate::commands::credentials::decrypt_runtime_credentials(
-        &env,
-        &secrets,
-        Some(&project_dir),
-    )
-    .map_err(|e| e.to_string())?;
-    let deploy_storages = crate::commands::storage::decrypt_storage_bindings(
-        &env,
+    let DeploymentBindings {
+        runtime_credentials: deploy_runtime_credentials,
+        storages: deploy_storages,
+        backup: deploy_backup,
+        ssl: deploy_ssl,
+    } = deployment_bindings(
         &tako_config,
         &secrets,
-        Some(&project_dir),
-    )
-    .map_err(|e| e.to_string())?;
-    let deploy_backup = crate::commands::storage::decrypt_backup_binding(
         &env,
-        &tako_config,
-        &secrets,
-        Some(&project_dir),
-    )
-    .map_err(|e| e.to_string())?;
-    let routes = tako_config.get_routes(&env).unwrap_or_default();
-    let ssl_provider = tako_config.get_ssl_provider(&env);
-    let deploy_ssl = crate::commands::credentials::decrypt_ssl_binding(
-        &env,
-        ssl_provider,
-        &routes,
-        &secrets,
-        Some(&project_dir),
-    )
-    .map_err(|e| e.to_string())?;
+        &project_dir,
+        configure_bindings,
+    )?;
 
     let app_json_bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
 

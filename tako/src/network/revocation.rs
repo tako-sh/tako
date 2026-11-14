@@ -6,12 +6,12 @@ use tako_network::{
 };
 
 use super::{Profile, Result};
-use crate::config::NetworkAlias;
+use crate::config::LocalNetwork;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Journal {
-    alias: NetworkAlias,
+    alias: LocalNetwork,
     network: NetworkDescriptor,
     request: EnrollmentRequest,
     issuer: DeviceId,
@@ -23,7 +23,7 @@ struct Journal {
 impl Journal {
     fn validate(
         &self,
-        alias: &NetworkAlias,
+        alias: &LocalNetwork,
         profile: &Profile,
         keys: &LocalDeviceKeys,
     ) -> Result<()> {
@@ -141,7 +141,7 @@ fn target<'a>(
 }
 
 /// Local projection only; does not create a journal or contact a server.
-pub(crate) fn project(alias: &NetworkAlias, device: &str) -> Result<Revocation> {
+pub(crate) fn project(alias: &LocalNetwork, device: &str) -> Result<Revocation> {
     let path = alias.profile_path()?;
     if let Some(journal) = read_journal(&path.with_file_name("revocation.json"))? {
         let profile: Profile = super::read_json(&path)?;
@@ -183,7 +183,7 @@ fn read_journal(path: &std::path::Path) -> Result<Option<Journal>> {
     }
 }
 
-pub(crate) fn run(alias: &NetworkAlias, device: &str) -> Result<Revocation> {
+pub(crate) fn run(alias: &LocalNetwork, device: &str) -> Result<Revocation> {
     run_with(
         alias,
         device,
@@ -194,9 +194,9 @@ pub(crate) fn run(alias: &NetworkAlias, device: &str) -> Result<Revocation> {
 }
 
 fn run_with(
-    alias: &NetworkAlias,
+    alias: &LocalNetwork,
     device: &str,
-    mut refresh: impl FnMut(&NetworkAlias) -> Result<Profile>,
+    mut refresh: impl FnMut(&LocalNetwork) -> Result<Profile>,
     mut send: impl FnMut(&ServerInfo, &SignedRequest) -> Result<RpcResponse>,
     mut now: impl FnMut() -> Result<u64>,
 ) -> Result<Revocation> {
@@ -285,7 +285,7 @@ fn run_with(
 }
 
 fn publish(
-    alias: &NetworkAlias,
+    alias: &LocalNetwork,
     path: &std::path::Path,
     mut journal: Journal,
     keys: &LocalDeviceKeys,

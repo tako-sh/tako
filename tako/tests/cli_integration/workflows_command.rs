@@ -123,7 +123,7 @@ fn workflows_reject_unknown_environments_and_servers() {
     );
     assert!(!output.status.success());
     assert!(
-        stderr_str(&output).contains("Server 'missing' not found in config.toml"),
+        stderr_str(&output).contains("Server 'missing' not found in enrolled network membership"),
         "{}",
         stderr_str(&output)
     );

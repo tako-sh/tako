@@ -117,7 +117,16 @@ pub(crate) fn detect_package_name(project_dir: &Path) -> String {
 /// Returns `true` if the file was written (created or updated),
 /// `false` if it already existed with the same content.
 pub fn write_secret_accessors(project_dir: &Path) -> std::io::Result<bool> {
-    let secret_names = read_secret_names(project_dir);
+    let secret_names = read_secret_names(project_dir, None, None);
+    write_secret_accessors_with_secrets(project_dir, &secret_names)
+}
+
+pub fn write_secret_accessors_with_config(
+    project_dir: &Path,
+    config: &crate::config::TakoToml,
+    environment: Option<&str>,
+) -> std::io::Result<bool> {
+    let secret_names = read_secret_names(project_dir, Some(config), environment);
     write_secret_accessors_with_secrets(project_dir, &secret_names)
 }
 
@@ -139,45 +148,30 @@ pub fn write_secret_accessors_with_secrets(
     Ok(true)
 }
 
-/// Read secret names from `.tako/secrets.json`.
+/// Read secret names from the local drafts and published cache.
 ///
 /// Prefers "development" env, falls back to union of all envs.
-fn read_secret_names(project_dir: &Path) -> Vec<String> {
-    let secrets_path = project_dir.join(".tako").join("secrets.json");
-    let content = match fs::read_to_string(&secrets_path) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-
-    let parsed: serde_json::Value = match serde_json::from_str(&content) {
-        Ok(v) => v,
-        Err(_) => return Vec::new(),
-    };
-
-    let obj = match parsed.as_object() {
-        Some(o) => o,
-        None => return Vec::new(),
-    };
-
-    if let Some(dev) = obj.get("development") {
-        extract_secret_names(dev)
-    } else {
-        let mut all: Vec<String> = obj.values().flat_map(extract_secret_names).collect();
-        all.sort();
-        all.dedup();
-        all
-    }
-}
-
-fn extract_secret_names(env_value: &serde_json::Value) -> Vec<String> {
-    let secrets = env_value.get("app").and_then(|s| s.as_object());
-    match secrets {
-        Some(map) => {
-            let mut names: Vec<String> = map.keys().cloned().collect();
-            names.sort();
-            names
+fn read_secret_names(
+    project_dir: &Path,
+    config: Option<&crate::config::TakoToml>,
+    environment: Option<&str>,
+) -> Vec<String> {
+    let store = match (config, environment) {
+        (Some(config), Some(env)) => {
+            crate::config::SecretsStore::load_for_environment(project_dir, config, env)
         }
-        None => Vec::new(),
+        (Some(config), None) => crate::config::SecretsStore::load_with_config(project_dir, config),
+        (None, _) => crate::config::SecretsStore::load_from_dir(project_dir),
+    };
+    let Ok(store) = store else {
+        return vec![];
+    };
+    if let Some(development) = store.get_env("development") {
+        let mut names: Vec<_> = development.keys().cloned().collect();
+        names.sort();
+        names
+    } else {
+        store.all_secret_names()
     }
 }
 
@@ -253,8 +247,8 @@ mod tests {
         let secrets_dir = dir.path().join(".tako");
         fs::create_dir_all(&secrets_dir).unwrap();
         fs::write(
-            secrets_dir.join("secrets.json"),
-            r#"{
+            secrets_dir.join("secrets.local.json"),
+            r#"{"values": {
                 "development": {
                     "key_id": "0123456789abcdef",
                     "app": {
@@ -262,7 +256,7 @@ mod tests {
                         "API_KEY": {"value": "encrypted"}
                     }
                 }
-            }"#,
+            }}"#,
         )
         .unwrap();
 

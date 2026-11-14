@@ -2,13 +2,13 @@ use serde::de::DeserializeOwned;
 use tako_core::{Command, Response};
 use tracing::Instrument;
 
-use crate::config::{ServerEntry, ServersToml};
+use crate::config::{ServerEntry, ServerInventory};
 use crate::management_http::ManagementClient;
 use crate::output;
 
 pub(crate) async fn send_typed_to_servers<T>(
     server_names: &[String],
-    servers: &ServersToml,
+    servers: &ServerInventory,
     command: Command,
     response_name: &'static str,
     progress: &str,

@@ -438,11 +438,9 @@ fn install_server_script_supports_explicit_stopped_bootstrap_install() {
     let script = super::tako::INSTALL_SERVER_SCRIPT;
 
     assert!(script.contains("OK installed tako-server service (not started)"));
-    assert!(
-        script.contains(
-            "Run `tako servers add <host>` from your workstation to start and verify it."
-        )
-    );
+    assert!(script.contains(
+        "Run `tako network server add <host>` from your workstation to start and verify it."
+    ));
 }
 
 #[test]

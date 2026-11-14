@@ -83,6 +83,7 @@ impl Fixture {
         let device = request.device_id_for(&self.network).unwrap();
         RegistrySnapshot {
             network: NetworkDescriptor {
+                name: "test".parse().unwrap(),
                 id: self.network.clone(),
                 initial_admin: device.clone(),
             },
@@ -191,8 +192,16 @@ fn prepare_answer_sign_install_and_retry_preserve_identity() {
 #[test]
 fn mandatory_proxy_protocol_is_rejected_before_identity_creation() {
     let f = Fixture::new();
-    fs::write(f.data.join("config.json"), br#"{"trusted_proxy":{"proxy_protocol":true,"trusted_cidrs":["10.0.0.0/8"]}}"#).unwrap();
-    let error = f.call(f.prepare_request()).err().expect("incompatible ingress must fail").to_string();
+    fs::write(
+        f.data.join("config.json"),
+        br#"{"trusted_proxy":{"proxy_protocol":true,"trusted_cidrs":["10.0.0.0/8"]}}"#,
+    )
+    .unwrap();
+    let error = f
+        .call(f.prepare_request())
+        .err()
+        .expect("incompatible ingress must fail")
+        .to_string();
     assert!(error.contains("direct TLS"));
     assert!(!f.data.join("networks").exists());
     fs::write(f.data.join("config.json"), b"{broken").unwrap();
@@ -316,11 +325,19 @@ fn installed_config_cannot_be_changed_or_repaired_implicitly() {
 fn installation_retry_accepts_new_members_without_replacing_bootstrap() {
     let f = Fixture::new();
     let mut snapshot = f.snapshot();
-    f.call(BootstrapRequest::Install { snapshot: snapshot.clone() }).unwrap();
+    f.call(BootstrapRequest::Install {
+        snapshot: snapshot.clone(),
+    })
+    .unwrap();
     let previous = fs::read(f.data.join(NODE_CONFIG_FILE)).unwrap();
-    let request = LocalDeviceKeys::generate().unwrap().enrollment_request(
-        Some(f.network.clone()), DeviceKind::Laptop, "new-laptop".parse().unwrap(),
-    ).unwrap();
+    let request = LocalDeviceKeys::generate()
+        .unwrap()
+        .enrollment_request(
+            Some(f.network.clone()),
+            DeviceKind::Laptop,
+            "new-laptop".parse().unwrap(),
+        )
+        .unwrap();
     snapshot.members.push(Member {
         network_id: f.network.clone(),
         device_id: request.device_id_for(&f.network).unwrap(),

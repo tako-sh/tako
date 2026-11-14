@@ -7,7 +7,7 @@ use crate::config::TakoToml;
 use crate::output;
 
 use super::generated::write_init_generated_file;
-use super::project::ensure_project_gitignore_tracks_secrets;
+use super::project::ensure_project_gitignore_ignores_state;
 use super::scaffold::{
     TemplateParams, detect_js_app_root, detect_local_runtime_version, generate_template,
     infer_default_main_entrypoint, preset_default_main, sanitize_route, sdk_install_command,
@@ -82,7 +82,7 @@ pub(super) fn run_non_interactive(
 
     let parsed_template = TakoToml::parse(&template)?;
     fs::write(tako_toml_path, template)?;
-    ensure_project_gitignore_tracks_secrets(project_dir)?;
+    ensure_project_gitignore_ignores_state(project_dir)?;
 
     if let Some(generated_file) =
         write_init_generated_file(project_dir, adapter, parsed_template.js_app_root())?

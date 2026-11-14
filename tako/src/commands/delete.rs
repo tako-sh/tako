@@ -3,7 +3,7 @@ use std::path::Path;
 
 use crate::app::require_app_name_from_config_path;
 use crate::commands::project_context;
-use crate::config::{ServerEntry, ServersToml, TakoToml};
+use crate::config::{ServerEntry, ServerInventory, TakoToml};
 use crate::management_http::ManagementClient;
 use crate::output;
 use tako_core::{Command, Response};
@@ -172,10 +172,12 @@ async fn run_async(
 }
 
 async fn discover_remote_deployments(
-    servers: &ServersToml,
+    servers: &ServerInventory,
 ) -> Result<Vec<RemoteDeployment>, Box<dyn std::error::Error>> {
     if servers.is_empty() {
-        return Err("No servers have been added. Run 'tako servers add <host>' first.".into());
+        return Err(
+            "No servers have been added. Run 'tako network server add <host>' first.".into(),
+        );
     }
 
     let mut names: Vec<String> = servers.names().into_iter().map(str::to_string).collect();
@@ -222,7 +224,7 @@ async fn discover_remote_deployments(
 }
 
 async fn discover_remote_deployments_with_progress(
-    servers: &ServersToml,
+    servers: &ServerInventory,
 ) -> Result<Vec<RemoteDeployment>, Box<dyn std::error::Error>> {
     if output::is_interactive() {
         let deployments = output::with_spinner_async(
@@ -564,7 +566,7 @@ fn format_ambiguous_delete_targets_error(
     }
 }
 
-fn validate_delete_server(server_name: &str, servers: &ServersToml) -> Result<(), String> {
+fn validate_delete_server(server_name: &str, servers: &ServerInventory) -> Result<(), String> {
     if servers.get(server_name).is_none() {
         return Err(format_server_not_found_error(server_name));
     }
@@ -645,7 +647,7 @@ fn format_delete_confirm_hint(app_name: &str, server_name: &str) -> String {
 
 fn format_server_not_found_error(server_name: &str) -> String {
     format!(
-        "Server '{}' not found in config.toml [[servers]]. Run 'tako servers add --name {} <host>'.",
+        "Server '{}' not found in enrolled network membership. Run 'tako network server add --name {} <host>'.",
         server_name, server_name
     )
 }

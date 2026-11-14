@@ -94,7 +94,7 @@ impl ConfigWatcher {
 
         watch_path(&debouncer, &self.config_path, RecursiveMode::NonRecursive)?;
 
-        // Watch .tako/ directory for secrets.json changes.
+        // Watch the directory because secret drafts are replaced atomically.
         let tako_dir = self.project_dir.join(".tako");
         if tako_dir.is_dir() {
             let _ = watch_path(&debouncer, &tako_dir, RecursiveMode::NonRecursive);
@@ -241,7 +241,7 @@ fn classify_path(
     {
         return Some(WatchChange::Channels);
     }
-    if path == project_dir.join(".tako").join("secrets.json") {
+    if path == crate::config::SecretsStore::default_path(project_dir) {
         return Some(WatchChange::Secrets);
     }
     let declaration_dirs = crate::build::js::generated_declaration_parent_dirs(project_dir);
@@ -537,7 +537,7 @@ mod tests {
                 &project_dir,
                 &app_root,
                 &config_path,
-                &project_dir.join(".tako").join("secrets.json"),
+                &crate::config::SecretsStore::default_path(&project_dir),
                 None
             ),
             Some(WatchChange::Secrets)

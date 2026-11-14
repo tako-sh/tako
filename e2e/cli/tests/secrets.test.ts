@@ -43,7 +43,9 @@ describe("secret expiry prompt", () => {
     await term.waitForText("Set API_KEY in production", { timeout: 5000 });
     expect(await term.waitForExit({ timeout: 5000 })).toBe(0);
 
-    const secrets = JSON.parse(await readFile(join(tempDir, ".tako", "secrets.json"), "utf8"));
+    const secrets = JSON.parse(
+      await readFile(join(tempDir, ".tako", "secrets.local.json"), "utf8"),
+    ).values;
     expect(secrets.production.app.API_KEY.expires_on).toBeUndefined();
   }, 15_000);
 });

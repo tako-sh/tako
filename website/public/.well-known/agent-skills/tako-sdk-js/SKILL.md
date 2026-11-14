@@ -94,7 +94,7 @@ export default function fetch(request: Request) {
 | `tako.build`    | Build identifier (from `TAKO_BUILD`)                                               |
 | `tako.dataDir`  | Persistent app-owned data directory — writes survive restarts                      |
 | `tako.appDir`   | Directory the app is running from (equivalent to `process.cwd()`)                  |
-| `tako.secrets`  | Typed secret bag (interface regenerated from `.tako/secrets.json`)                 |
+| `tako.secrets`  | Typed secret bag (interface regenerated from the local secret state and published cache)                 |
 | `tako.storages` | Typed storage bag (interface regenerated from `tako.toml`)                         |
 | `tako.cache`    | SQLite-backed server-side key/value cache                                          |
 | `tako.logger`   | Structured JSON logger (`tako.logger.info(...)`)                                   |
@@ -110,7 +110,7 @@ export default function fetch(request: Request) {
 - Reads from a mutable store populated via fd 3 at startup (before user module is imported)
 - Individual access works: `tako.secrets.MY_KEY` returns the string value
 - Resists bulk serialization: `toString()`, `toJSON()` return `"[REDACTED]"`
-- Is typed — the `TakoSecrets` interface augmentation in `tako.d.ts` lists every key present in `.tako/secrets.json`
+- Is typed — the `TakoSecrets` interface augmentation in `tako.d.ts` lists every key present in the local secret state and published cache
 
 The generated declaration file is type-only and is not imported by app code. In the browser, use `tako.sh/client` for realtime clients, or `tako.sh/react` for hooks.
 
@@ -439,9 +439,9 @@ response that ends without `tako.close` stay reconnectable.
 Native network brokers replicate bounded SQLite replay and fan out to trusted
 server peers. Replay gaps trigger quiet SDK resync, not business reset messages;
 reload authoritative state when history expires. This does not migrate durable
-workflows or databases. Legacy multi-server replay uses shared `postgres_url`.
-Native multi-server channel/presence/store delivery can use SQLite without that
-credential. Configured Postgres remains in use; credential failures stop deployment
+workflows or databases. Native multi-server durable channel/presence/store delivery
+can use SQLite without `postgres_url`; ephemeral channels use memory-only delivery.
+Configured Postgres remains in use; credential failures stop deployment
 rather than switching backends.
 Verify replay expiry, a current-state reload, async callback failure, and clean
 shutdown as well as ordinary delivery. See https://tako.sh/docs/channels/.
@@ -478,7 +478,7 @@ update({ typing: true });
 
 `members` contains `{ connectionId, subject?, data }`, including the current connection. Every hook call creates one connection; multiple tabs belonging to the same subject remain separate. Only the server controls identity; member data is untrusted client-provided JSON (up to 16 KiB). `data` supplies initial metadata; `update()` replaces it. The hook waits for authorization, sends heartbeats every 15 seconds, reconnects with current metadata, clears stale state on disconnect, and leaves on unmount. Authorization failures stop retries until connection options change. Membership converges within approximately one second. Connections without updates expire after 45 seconds, so a reconnect can briefly overlap its old connection. Presence has no durable replay. Validated params scope membership: different `chatId` values have separate member lists. Auth must verify access to the requested chat. Channel and presence names have separate namespaces.
 
-Single-server production uses SQLite. Native networks exchange expiring server-bound presence leases; legacy multi-server presence uses shared `postgres_url`. Native multi-server presence can use SQLite without that credential. Local dev uses an in-memory store and runs the same auth callbacks as production, as with channels. Use channels for durable events and presence for current membership.
+Single-server production uses SQLite. Native networks exchange expiring server-bound presence leases. Multi-server presence can use SQLite without a `postgres_url` credential; an explicitly configured Postgres backend remains in use. Local dev uses an in-memory store and runs the same auth callbacks as production, as with channels. Use durable channels for retained events and presence for current membership.
 
 ### Stores
 
@@ -564,9 +564,8 @@ write queue, or conflict-resolution engine is installed.
 
 Store names follow `^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$`; params are capped at
 16 KiB and complete read responses at 1 MiB. Native brokers fan out invalidations
-with bounded replay; legacy multi-server subscriptions require shared
-`postgres_url`. Native multi-server invalidation delivery can use SQLite without
-that credential; configured Postgres remains in use. See https://tako.sh/docs/stores/ for native backends and
+with bounded replay. Native multi-server invalidation delivery can use SQLite
+without `postgres_url`; configured Postgres remains in use. See https://tako.sh/docs/stores/ for native backends and
 the complete lifecycle. Verify scoped invalidation, reconnection, user switching,
 and offline expiry, not just the initial render.
 
@@ -699,7 +698,7 @@ export default defineWorkflow<{ userId: string; to: string }>("send-email", {
 });
 ```
 
-Use `local: true` only when per-server local queues and cron are intentional. Multi-server workflows require the encrypted `postgres_url` credential unless every JavaScript workflow is local. Native channel brokers support bounded replication separately from workflow storage. Native multi-server channels can use SQLite without `postgres_url`; legacy multi-server channels need it for shared replay.
+Use `local: true` only when per-server local queues and cron are intentional. Multi-server workflows require the encrypted `postgres_url` credential unless every JavaScript workflow is local. Native channel brokers support bounded replication separately from workflow storage. Native multi-server durable channels can use SQLite without `postgres_url`; ephemeral channels use memory-only delivery without replay.
 
 ### Enqueuing
 

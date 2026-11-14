@@ -17,7 +17,7 @@ use crate::app::require_app_name_from_config_path;
 use crate::commands::backups::client::{send_typed_to_server, send_typed_to_servers};
 use crate::commands::backups::target::{BackupTarget as Target, resolve_backup_target};
 use crate::commands::project_context;
-use crate::config::{ServersToml, TakoToml};
+use crate::config::{ServerInventory, TakoToml};
 use crate::output;
 
 mod merge;
@@ -187,7 +187,7 @@ fn warn_unreachable(errors: &[merge::ServerError]) {
 
 async fn list_runs(
     target: &Target,
-    servers: &ServersToml,
+    servers: &ServerInventory,
     status: Option<WorkflowRunStatus>,
     name: Option<String>,
     limit: Option<u32>,
@@ -237,7 +237,7 @@ async fn list_runs(
 /// Ask every target server for the run and pick the one that holds it.
 async fn find_run(
     target: &Target,
-    servers: &ServersToml,
+    servers: &ServerInventory,
     run_id: &str,
 ) -> Result<FoundRun, Box<dyn std::error::Error>> {
     let _t = output::timed(&format!("Find workflow run {run_id}"));
@@ -260,7 +260,7 @@ async fn find_run(
 
 async fn show_run(
     target: &Target,
-    servers: &ServersToml,
+    servers: &ServerInventory,
     run_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let found = find_run(target, servers, run_id).await?;
@@ -282,7 +282,7 @@ async fn show_run(
 
 async fn retry_run(
     target: &Target,
-    servers: &ServersToml,
+    servers: &ServerInventory,
     run_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let found = find_run(target, servers, run_id).await?;
@@ -295,7 +295,7 @@ async fn retry_run(
 
 async fn cancel_run(
     target: &Target,
-    servers: &ServersToml,
+    servers: &ServerInventory,
     run_id: &str,
     assume_yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -338,14 +338,17 @@ fn should_confirm_cancel(status: WorkflowRunStatus, assume_yes: bool, interactiv
 
 async fn transition(
     target: &Target,
-    servers: &ServersToml,
+    servers: &ServerInventory,
     found: &FoundRun,
     command: Command,
     action: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let server = servers
-        .get(&found.server)
-        .ok_or_else(|| format!("Server '{}' not found in config.toml", found.server))?;
+    let server = servers.get(&found.server).ok_or_else(|| {
+        format!(
+            "Server '{}' not found in enrolled network membership",
+            found.server
+        )
+    })?;
     if !output::is_json() {
         warn_unreachable(&found.errors);
     }

@@ -1,0 +1,189 @@
+fn invitation_grant(
+    _fixture: &Fixture,
+) -> (
+    crate::invitation::CreateInvitation,
+    crate::invitation::InvitationToken,
+) {
+    let token = crate::invitation::InvitationToken::random().unwrap();
+    (
+        crate::invitation::CreateInvitation {
+            id: RequestId::random().unwrap(),
+            token_hash: token.hash().unwrap(),
+            permissions: admin(),
+            expires_at: 200,
+            member_expires_at: None,
+        },
+        token,
+    )
+}
+
+#[test]
+fn invitation_claim_is_single_use_and_restart_retry_keeps_original_identity() {
+    use crate::invitation::ClaimInvitation;
+    let fixture = Fixture::new();
+    let mut runtime = fixture.open();
+    let (grant, token) = invitation_grant(&fixture);
+    fixture
+        .call(
+            &mut runtime,
+            &fixture.admin,
+            RpcRequest::CreateInvitation(Box::new(grant.clone())),
+            10,
+        )
+        .unwrap();
+    let keys = LocalDeviceKeys::generate().unwrap();
+    let request = keys
+        .enrollment_request(
+            Some(fixture.config.network.id.clone()),
+            DeviceKind::Laptop,
+            "new-machine".parse().unwrap(),
+        )
+        .unwrap();
+    let claim = ClaimInvitation {
+        id: grant.id.clone(),
+        token: token.clone(),
+        request: request.clone(),
+    };
+    let response = fixture
+        .call(
+            &mut runtime,
+            &keys,
+            RpcRequest::ClaimInvitation(Box::new(claim.clone())),
+            11,
+        )
+        .unwrap();
+    assert!(matches!(response, RpcResponse::Pending(_)));
+    drop(runtime);
+    let mut runtime = fixture.open();
+    assert_eq!(
+        response,
+        fixture
+            .call(
+                &mut runtime,
+                &keys,
+                RpcRequest::ClaimInvitation(Box::new(claim.clone())),
+                12
+            )
+            .unwrap()
+    );
+    let other = LocalDeviceKeys::generate().unwrap();
+    let mut stolen = claim.clone();
+    stolen.request = other
+        .enrollment_request(
+            Some(fixture.config.network.id.clone()),
+            DeviceKind::Laptop,
+            "other-machine".parse().unwrap(),
+        )
+        .unwrap();
+    assert!(matches!(
+        fixture.call(
+            &mut runtime,
+            &other,
+            RpcRequest::ClaimInvitation(Box::new(stolen)),
+            13
+        ),
+        Err(RuntimeError::Conflict(_))
+    ));
+    let approval = ApproveRequest {
+        pending_id: grant.id,
+        request,
+        kind: MemberKind::Laptop,
+        permissions: grant.permissions,
+        expires_at: grant.expires_at,
+        member_expires_at: None,
+    };
+    let complete = fixture.challenge(&mut runtime, &keys, &approval, 14);
+    assert!(matches!(
+        fixture.call(&mut runtime, &keys, complete, 15).unwrap(),
+        RpcResponse::Active(_)
+    ));
+    // Token is redacted and only its digest is persisted.
+    assert!(!format!("{claim:?}").contains(&serde_json::to_string(&token).unwrap()));
+    let payload: String = runtime
+        .db
+        .query_row("SELECT payload FROM invitations", [], |r| r.get(0))
+        .unwrap();
+    assert!(!payload.contains(serde_json::to_string(&token).unwrap().trim_matches('"')));
+}
+
+#[test]
+fn invitation_checks_token_expiry_signer_and_current_inviter_authority() {
+    use crate::invitation::{ClaimInvitation, InvitationToken};
+    let fixture = Fixture::new();
+    let mut runtime = fixture.open();
+    let (grant, token) = invitation_grant(&fixture);
+    fixture
+        .call(
+            &mut runtime,
+            &fixture.admin,
+            RpcRequest::CreateInvitation(Box::new(grant.clone())),
+            10,
+        )
+        .unwrap();
+    let keys = LocalDeviceKeys::generate().unwrap();
+    let request = keys
+        .enrollment_request(
+            Some(fixture.config.network.id.clone()),
+            DeviceKind::Laptop,
+            "new-machine".parse().unwrap(),
+        )
+        .unwrap();
+    let mut claim = ClaimInvitation {
+        id: grant.id,
+        token: InvitationToken::random().unwrap(),
+        request,
+    };
+    assert!(matches!(
+        fixture.call(
+            &mut runtime,
+            &keys,
+            RpcRequest::ClaimInvitation(Box::new(claim.clone())),
+            11
+        ),
+        Err(RuntimeError::Authentication)
+    ));
+    claim.token = token;
+    assert!(matches!(
+        fixture.call(
+            &mut runtime,
+            &fixture.admin,
+            RpcRequest::ClaimInvitation(Box::new(claim.clone())),
+            12
+        ),
+        Err(RuntimeError::Authentication)
+    ));
+    let snapshot = fixture.store.0.borrow().snapshot.clone();
+    let revocation = snapshot
+        .plan_revocation(
+            RevocationId::random().unwrap(),
+            &fixture.config.server_id,
+            &fixture.config.network.initial_admin,
+            13,
+        )
+        .unwrap();
+    fixture
+        .store
+        .0
+        .borrow_mut()
+        .snapshot
+        .revocations
+        .push(revocation);
+    assert!(matches!(
+        fixture.call(
+            &mut runtime,
+            &keys,
+            RpcRequest::ClaimInvitation(Box::new(claim.clone())),
+            13
+        ),
+        Err(RuntimeError::Denied)
+    ));
+    assert!(matches!(
+        fixture.call(
+            &mut runtime,
+            &keys,
+            RpcRequest::ClaimInvitation(Box::new(claim)),
+            200
+        ),
+        Err(RuntimeError::PendingUnavailable)
+    ));
+}

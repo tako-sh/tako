@@ -6,6 +6,8 @@ description: "Why we skip the Docker rebuild loop — and when containers still 
 image: 9970fc7ceab1
 ---
 
+> **Update, November 14, 2026:** This article describes an earlier Tako release. The SFTP transport and deployment timing examples below are historical. Native deployments now use pinned HTTPS; SSH is still used for server installation. Tako also supports container and Compose releases when an app needs them. See [current deployment behavior](/docs/deployment/) and [Docker support](/docs/docker/). Read [the new network and secrets workflow](/blog/sync-deployment-secrets-with-tako-networks/).
+
 You change one line of code. You run the deploy. Then you wait.
 
 The Docker image rebuilds. Layer cache misses because you touched `package.json`. The image pushes to a registry. The server pulls it back down. The container restarts. Three minutes later, your one-line fix is live.

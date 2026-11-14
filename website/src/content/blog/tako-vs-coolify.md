@@ -5,6 +5,8 @@ description: "Coolify gives you a full web UI and manages everything in Docker. 
 image: 99bfa6f22d08
 ---
 
+> **Update, November 14, 2026:** This article describes an earlier Tako release. The SFTP deployment path and inline secret-value command below are historical. Native deployments use pinned HTTPS; `tako secrets set KEY --env production` reads a masked prompt or stdin and keeps the edit local until publication. See [current deployment](/docs/deployment/) and [secret commands](/docs/secrets/). Read [the new network and secrets workflow](/blog/sync-deployment-secrets-with-tako-networks/).
+
 [Coolify](https://coolify.io) is the most popular open-source self-hosted PaaS — 52k+ GitHub stars and growing. If you've ever searched "self-hosted Heroku," it's probably the first result. It gives you a polished web dashboard, one-click services, database management, and Docker-based deployment all in one package.
 
 Tako takes a fundamentally different approach. No dashboard, no Docker, no bundled databases — just a CLI, native processes, and a [Pingora proxy](/blog/pingora-vs-caddy-vs-traefik/). Both get your app running on your own hardware, but the philosophies couldn't be more different.

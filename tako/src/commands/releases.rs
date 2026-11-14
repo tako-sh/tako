@@ -8,7 +8,7 @@ use time::{OffsetDateTime, UtcOffset};
 
 use crate::app::require_app_name_from_config_path;
 use crate::commands::project_context;
-use crate::config::{ServerEntry, ServersToml, TakoToml};
+use crate::config::{ServerEntry, ServerInventory, TakoToml};
 use crate::management_http::ManagementClient;
 use crate::output;
 use tako_core::{Command, ListReleasesResponse, ReleaseInfo, Response};
@@ -96,7 +96,7 @@ fn resolve_env_name(requested_env: Option<&str>, tako_config: &TakoToml) -> Resu
 
 fn resolve_server_names_for_env(
     tako_config: &TakoToml,
-    servers: &ServersToml,
+    servers: &ServerInventory,
     env: &str,
 ) -> Result<Vec<String>, String> {
     let mut resolved = super::helpers::resolve_servers_for_env(tako_config, servers, env)?;
@@ -110,7 +110,7 @@ async fn list_releases(
     app_name: &str,
     env: &str,
     server_names: &[String],
-    servers: &ServersToml,
+    servers: &ServerInventory,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let remote_app_name = tako_core::deployment_app_id(app_name, env);
     output::section("Releases");
@@ -222,7 +222,7 @@ async fn rollback_release(
     env: &str,
     assume_yes: bool,
     server_names: &[String],
-    servers: &ServersToml,
+    servers: &ServerInventory,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let remote_app_name = tako_core::deployment_app_id(app_name, env);
     if should_confirm_production_rollback(env, assume_yes, output::is_interactive()) {

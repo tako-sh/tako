@@ -122,6 +122,8 @@ pub enum RpcRequest {
         action: ManagementAction,
     },
     Approve(Box<ApproveRequest>),
+    CreateInvitation(Box<crate::invitation::CreateInvitation>),
+    ClaimInvitation(Box<crate::invitation::ClaimInvitation>),
     Begin {
         pending_id: RequestId,
     },
@@ -131,6 +133,10 @@ pub enum RpcRequest {
         proof: WgProof,
     },
     Snapshot,
+    PullSecrets {
+        scope: Option<AppEnv>,
+    },
+    PublishSecret(Box<crate::shared::SecretMutation>),
     Revoke {
         id: RevocationId,
         target: DeviceId,
@@ -141,10 +147,14 @@ impl RpcRequest {
     pub fn path(&self) -> &'static str {
         match self {
             Self::Authorize { .. } => "/v1/network/authorize",
+            Self::CreateInvitation(_) => "/v1/network/invitation/create",
+            Self::ClaimInvitation(_) => "/v1/network/invitation/claim",
             Self::Approve(_) => "/v1/network/approve",
             Self::Begin { .. } => "/v1/network/begin",
             Self::Complete { .. } => "/v1/network/complete",
             Self::Snapshot => "/v1/network/snapshot",
+            Self::PullSecrets { .. } => "/v1/network/secrets/pull",
+            Self::PublishSecret(_) => "/v1/network/secrets/publish",
             Self::Revoke { .. } => "/v1/network/revoke",
         }
     }
@@ -256,6 +266,9 @@ pub enum RpcResponse {
         permissions: Permissions,
         action: ManagementAction,
     },
+    InvitationCreated {
+        id: RequestId,
+    },
     Pending(PendingApprovalProfile),
     Challenge {
         challenge_id: RequestId,
@@ -263,6 +276,8 @@ pub enum RpcResponse {
     },
     Active(NetworkPublicProfile),
     Snapshot(RegistrySnapshot),
+    Secrets(crate::shared::SharedSnapshot),
+    SecretPublished(crate::shared::SecretRecord),
     Revoked(Revocation),
 }
 

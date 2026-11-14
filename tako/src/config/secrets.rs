@@ -14,7 +14,7 @@ mod tests;
 use backup_keys::validate_encrypted_backup_key_value;
 pub use backup_keys::{EncryptedBackupKey, validate_backup_key_id};
 
-const SECRETS_FILE_NAME: &str = "secrets.json";
+const SECRETS_FILE_NAME: &str = "secrets.local.json";
 pub const SSL_CLOUDFLARE_CREDENTIAL_NAME: &str = "ssl.cloudflare";
 pub const POSTGRES_CREDENTIAL_NAME: &str = "postgres_url";
 
@@ -119,7 +119,7 @@ pub fn current_unix_timestamp() -> i64 {
     OffsetDateTime::now_utc().unix_timestamp()
 }
 
-/// Secrets storage from .tako/secrets.json
+/// Decrypted metadata and encrypted values for local secret state.
 ///
 /// Format:
 /// ```json
@@ -162,27 +162,53 @@ pub fn current_unix_timestamp() -> i64 {
 /// backup keys, storage credentials, and provider credentials are encrypted
 /// with AES-256-GCM.
 /// Keys are random per environment and stored locally under the environment key id.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SecretsStore {
     /// Map of environment name to environment secrets
     #[serde(flatten)]
     pub environments: HashMap<String, EnvironmentSecrets>,
+    #[serde(skip)]
+    pub(crate) loaded: Option<HashMap<String, EnvironmentSecrets>>,
+}
+
+impl PartialEq for SecretsStore {
+    fn eq(&self, other: &Self) -> bool {
+        self.environments == other.environments
+    }
 }
 
 impl SecretsStore {
-    /// Get the default path for secrets (.tako/secrets.json in project root)
+    /// Get the default path for ignored local secrets in this worktree
     pub fn default_path<P: AsRef<Path>>(project_dir: P) -> PathBuf {
         project_dir.as_ref().join(".tako").join(SECRETS_FILE_NAME)
     }
 
     /// Load secrets from a project directory
     pub fn load_from_dir<P: AsRef<Path>>(project_dir: P) -> Result<Self> {
-        let path = Self::default_path(&project_dir);
-        if path.exists() {
-            Self::load_from_file(&path)
-        } else {
-            Ok(Self::default())
-        }
+        crate::network::secrets::load_local(project_dir.as_ref())
+            .map_err(|error| ConfigError::Validation(error.to_string()))
+    }
+
+    /// Materialize the shared cache for the configuration chosen by the caller.
+    pub fn load_with_config(project_dir: &Path, config: &super::TakoToml) -> Result<Self> {
+        crate::network::secrets::load_local_with_config(project_dir, Some(config), None)
+            .map_err(|error| ConfigError::Validation(error.to_string()))
+    }
+
+    /// Load cached values only for the environment this command will use.
+    pub fn load_for_environment(
+        project_dir: &Path,
+        config: &super::TakoToml,
+        env: &str,
+    ) -> Result<Self> {
+        crate::network::secrets::load_local_with_config(project_dir, Some(config), Some(env))
+            .map_err(|error| ConfigError::Validation(error.to_string()))
+    }
+
+    /// Read existing encrypted values without requiring keys or binding a cache.
+    pub fn load_for_key_recovery(project_dir: &Path) -> Result<Self> {
+        crate::network::secrets::load_local_with_config(project_dir, None, None)
+            .map_err(|error| ConfigError::Validation(error.to_string()))
     }
 
     /// Load secrets from a specific file
@@ -243,8 +269,8 @@ impl SecretsStore {
 
     /// Save secrets to a project directory
     pub fn save_to_dir<P: AsRef<Path>>(&self, project_dir: P) -> Result<()> {
-        let path = Self::default_path(&project_dir);
-        self.save_to_file(&path)
+        crate::network::secrets::save_local(project_dir.as_ref(), self)
+            .map_err(|error| ConfigError::Validation(error.to_string()))
     }
 
     /// Save secrets to a specific file

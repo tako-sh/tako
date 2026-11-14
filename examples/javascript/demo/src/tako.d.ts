@@ -33,7 +33,7 @@ declare module "tako.sh" {
   }
 
   /**
-   * Project-specific secret keys from `.tako/secrets.json`.
+   * Project-specific secret keys from `local secret state and published cache`.
    *
    * Values are injected by Tako at runtime and redacted during bulk serialization.
    * App code reads individual values from `tako.secrets` imported from `tako.sh`.

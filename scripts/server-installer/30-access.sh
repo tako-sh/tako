@@ -13,7 +13,7 @@ if [ -z "$TAKO_VPN" ] && [ -r /usr/local/libexec/tako/vpn-provider ]; then
 fi
 TAKO_VPN="${TAKO_VPN:-native}"
 if [ "$TAKO_VPN" != native ]; then
-  echo "error: only native Tako networking is supported; re-enroll with tako servers add admin@host --network <network>" >&2
+  echo "error: only native Tako networking is supported; re-enroll with tako network server add admin@host --network <network>" >&2
   exit 1
 fi
 

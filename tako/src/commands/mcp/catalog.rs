@@ -106,10 +106,8 @@ fn exposed(argument: &clap::Arg, path: &[String]) -> bool {
 
 fn supports_dry_run(path: &[String]) -> bool {
     matches!(path[0].as_str(), "deploy" | "delete")
-        || (path[0] == "servers"
-            && path
-                .last()
-                .is_some_and(|name| matches!(name.as_str(), "add" | "rm")))
+        || path[0] == "network"
+        || path == ["secrets", "migrate"]
         || (path[0] == "backups"
             && path
                 .last()
@@ -178,7 +176,7 @@ fn schema(command: &Command, path: &[String]) -> Map<String, Value> {
         }
         properties.insert(name.to_string(), property);
     }
-    properties.insert("stdin".into(), json!({"type":"string","description":"Input for non-interactive secret/credential setters or scripts. Never place secret values in command arguments."}));
+    properties.insert("stdin".into(), json!({"type":"string","description":"Input for non-interactive secret/credential setters, network invitations, or scripts. Never place secret values in command arguments."}));
     properties.insert("timeout_seconds".into(), json!({"type":"integer","minimum":1,"maximum":1800,"default":120,"description":"Maximum local execution time. Remote work may continue after timeout; inspect status before retrying."}));
     json!({"type":"object","properties":properties,"required":required,"additionalProperties":false}).as_object().unwrap().clone()
 }

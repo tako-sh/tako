@@ -12,7 +12,7 @@ fn ci_flag_disables_ansi_colors() {
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_tako"));
     cmd.env_remove("RUST_LOG");
-    cmd.args(["--ci", "servers", "list"])
+    cmd.args(["--ci", "network", "server", "list"])
         .current_dir(project_dir)
         .env("HOME", project_dir)
         .env("TAKO_HOME", &tako_dir)
@@ -43,7 +43,7 @@ fn verbose_flag_produces_timestamped_output() {
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_tako"));
     cmd.env_remove("RUST_LOG");
-    cmd.args(["--verbose", "servers", "list"])
+    cmd.args(["--verbose", "network", "server", "list"])
         .current_dir(project_dir)
         .env("HOME", project_dir)
         .env("TAKO_HOME", &tako_dir)
@@ -78,7 +78,7 @@ fn ci_and_verbose_combined() {
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_tako"));
     cmd.env_remove("RUST_LOG");
-    cmd.args(["--ci", "--verbose", "servers", "list"])
+    cmd.args(["--ci", "--verbose", "network", "server", "list"])
         .current_dir(project_dir)
         .env("HOME", project_dir)
         .env("TAKO_HOME", &tako_dir)
@@ -117,7 +117,7 @@ fn verbose_output_goes_to_stderr() {
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_tako"));
     cmd.env_remove("RUST_LOG");
-    cmd.args(["--verbose", "servers", "list"])
+    cmd.args(["--verbose", "network", "server", "list"])
         .current_dir(project_dir)
         .env("HOME", project_dir)
         .env("TAKO_HOME", &tako_dir)
@@ -203,7 +203,7 @@ fn json_servers_list_outputs_servers_array() {
     fs::write(tako_home.join("config.toml"), "").unwrap();
 
     let output = run_tako_with_env(
-        &["--json", "servers", "list"],
+        &["--json", "network", "server", "list"],
         project_dir,
         project_dir,
         &tako_home,
@@ -212,7 +212,7 @@ fn json_servers_list_outputs_servers_array() {
     assert!(output.status.success(), "{}", stderr_str(&output));
     let value: serde_json::Value = serde_json::from_str(stdout_str(&output).trim()).unwrap();
     assert_eq!(value["ok"], true);
-    assert_eq!(value["command"], "servers");
+    assert_eq!(value["command"], "network server list");
     assert_eq!(value["servers"].as_array().unwrap().len(), 0);
 }
 

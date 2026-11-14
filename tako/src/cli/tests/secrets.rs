@@ -90,7 +90,6 @@ fn secrets_set_parses_expiry() {
         name,
         env,
         expires_on,
-        sync,
     })) = cli.command
     else {
         panic!("expected Secrets::Set");
@@ -99,7 +98,6 @@ fn secrets_set_parses_expiry() {
     assert_eq!(name, "API_KEY");
     assert_eq!(env.as_deref(), Some("production"));
     assert_eq!(expires_on.as_deref(), Some("2099-01-01"));
-    assert!(!sync);
 }
 
 #[test]

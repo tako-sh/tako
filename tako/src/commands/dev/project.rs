@@ -230,7 +230,9 @@ pub(super) fn inject_dev_data_dir(
 pub(super) fn load_dev_secrets(
     project_dir: &Path,
 ) -> Result<std::collections::HashMap<String, String>, Box<dyn std::error::Error>> {
-    let secrets = crate::config::SecretsStore::load_from_dir(project_dir)?;
+    let config = crate::config::TakoToml::load_from_dir(project_dir)?;
+    let secrets =
+        crate::config::SecretsStore::load_for_environment(project_dir, &config, "development")?;
 
     let encrypted = match secrets.get_env("development") {
         Some(map) if !map.is_empty() => map,

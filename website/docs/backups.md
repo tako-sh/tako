@@ -43,6 +43,7 @@ The server snapshots `/opt/tako/apps/<app>/<env>/data/`:
 | Symlink targets outside the data tree                      | No; symlinks themselves are preserved.                         |
 | External databases, shared Postgres, or S3 object contents | Not copied by the app-data snapshot; protect them separately.  |
 | Release code and dependencies                              | Not part of the data snapshot; releases have separate history. |
+| Network membership, shared secret records, and device keys | No; protect network state and keys separately.                |
 
 A release rollback preserves the current backup target and encryption keys. Each server backs up its own local data.
 
@@ -76,7 +77,7 @@ is due at that check anyway also counts as the queued one. Any other busy or fai
 deploy output without failing the deploy. A database snapshot never waits for a
 deploy; it holds the app's deployment lock only while it copies the databases
 locally, and scheduled remote transfers release that lock after the local snapshot is
-ready. A deploy, release command, or `tako secrets sync` that arrives while a scheduled
+ready. A deploy or release command that arrives while a scheduled
 backup holds that lock waits up to 2 seconds, then can fail with `A scheduled backup of
 <app> is in progress; retry in a moment.`; retry it, because scheduled backups then
 leave the lock to the retry for about a minute and run on a later check. Failed retention deletions remain queued for a later backup attempt; expired

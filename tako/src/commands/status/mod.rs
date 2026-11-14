@@ -3,7 +3,7 @@ mod render;
 mod time;
 
 use crate::commands::server;
-use crate::config::ServersToml;
+use crate::config::ServerInventory;
 use crate::output;
 use crate::ui::{TaskIcon, TaskItemState, TaskState, TaskTreeSession, TreeNode};
 use serde::Serialize;
@@ -86,7 +86,7 @@ pub async fn run(
 }
 
 async fn run_global_status(
-    servers: &ServersToml,
+    servers: &ServerInventory,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if servers.is_empty() {
@@ -101,7 +101,7 @@ async fn run_global_status(
             tracing::warn!("No servers configured.");
             output::hint(&format!(
                 "Run {} to add one.",
-                output::strong("tako servers add")
+                output::strong("tako network server add")
             ));
         }
         return Ok(());
@@ -120,7 +120,7 @@ async fn run_global_status(
 }
 
 fn render_global_status_json(
-    servers: &ServersToml,
+    servers: &ServerInventory,
     server_names: &[String],
     server_results: &HashMap<String, GlobalServerStatusResult>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -157,14 +157,14 @@ fn render_global_status_json(
     }))
 }
 
-fn sorted_server_names(servers: &ServersToml) -> Vec<String> {
+fn sorted_server_names(servers: &ServerInventory) -> Vec<String> {
     let mut server_names: Vec<String> = servers.names().into_iter().map(str::to_string).collect();
     server_names.sort();
     server_names
 }
 
 async fn collect_global_status_results(
-    servers: &ServersToml,
+    servers: &ServerInventory,
     server_names: &[String],
     show_task_tree: bool,
 ) -> Result<HashMap<String, GlobalServerStatusResult>, Box<dyn std::error::Error>> {

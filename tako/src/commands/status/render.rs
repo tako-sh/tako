@@ -1,7 +1,7 @@
 use super::remote::{display_server_version, sort_global_apps};
 use super::time::{format_deployed_at, format_duration_human};
 use super::{GlobalServerStatusResult, ServerStatusResult};
-use crate::config::ServersToml;
+use crate::config::ServerInventory;
 use crate::output;
 use tako_core::{AppState, InstanceState, RecoveryStatus};
 
@@ -22,7 +22,7 @@ fn colorize(text: &str, color: Option<StatusColor>) -> String {
 }
 
 pub(super) fn render_global_status(
-    servers: &ServersToml,
+    servers: &ServerInventory,
     server_names: &[String],
     server_results: &mut std::collections::HashMap<String, GlobalServerStatusResult>,
 ) {

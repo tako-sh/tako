@@ -686,3 +686,67 @@ async fn received_upload_cannot_publish_after_authority_is_withdrawn() {
         0
     );
 }
+
+#[test]
+fn scoped_deploy_preserves_backup_without_disclosing_keys_to_client() {
+    let (dir, state) = state();
+    let scope: AppEnv = "demo/production".parse().unwrap();
+    let release = dir.path().join("apps/demo/production/releases/v1");
+    std::fs::create_dir_all(&release).unwrap();
+    let routes = vec!["demo.example".into()];
+    state
+        .state_store
+        .upsert_app(
+            &crate::instances::AppConfig {
+                name: "demo".into(),
+                environment: "production".into(),
+                version: "v1".into(),
+                ..Default::default()
+            },
+            &routes,
+        )
+        .unwrap();
+    let backup: tako_core::BackupBinding = serde_json::from_value(serde_json::json!({
+        "storage":{"provider":"s3","bucket":"private","endpoint":"https://storage.example.test","access_key_id":"key-id","secret_access_key":"server-only"},
+        "backup_keys":[{"id":"key-1","key_base64":"server-only-key"}],"retention_days":7
+    })).unwrap();
+    state
+        .state_store
+        .set_backup(scope.as_str(), Some(&backup))
+        .unwrap();
+    let mut command = Command::Deploy {
+        app: scope.as_str().into(),
+        version: "v1".into(),
+        path: release.to_str().unwrap().into(),
+        routes,
+        ssl: Default::default(),
+        source_ip: Default::default(),
+        runtime_credentials: None,
+        storages: None,
+        backup: None,
+        secrets: None,
+        force: false,
+    };
+    inherit_scoped_backup(&state, &scoped(), Some(&scope), &mut command).unwrap();
+    assert!(matches!(&command, Command::Deploy {backup:Some(value),..} if value.as_ref()==&backup));
+    authorize_command(&state, &scoped(), Some(&scope), &command).unwrap();
+    if let Command::Deploy {
+        backup: Some(value),
+        ..
+    } = &mut command
+    {
+        value.retention_days = 1;
+    }
+    inherit_scoped_backup(&state, &scoped(), Some(&scope), &mut command).unwrap();
+    assert!(authorize_command(&state, &scoped(), Some(&scope), &command).is_err());
+    if let Command::Deploy { backup, .. } = &mut command {
+        *backup = None;
+    }
+    let admin = Permissions {
+        server_admin: true,
+        network_admin: true,
+        ..Default::default()
+    };
+    inherit_scoped_backup(&state, &admin, Some(&scope), &mut command).unwrap();
+    assert!(matches!(command, Command::Deploy { backup: None, .. }));
+}

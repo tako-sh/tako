@@ -6,12 +6,14 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::{
-    DeviceId, DeviceKind, DeviceName, ENROLLMENT_NAMESPACE, ENROLLMENT_VERSION, EnrollmentRequest,
-    NetworkId, RequestId, Result, SshPublicKey, WgPublicKey, error::invalid,
+    DeviceId, DeviceKind, DeviceName, ENROLLMENT_NAMESPACE, ENROLLMENT_VERSION,
+    EncryptionPublicKey, EnrollmentRequest, NetworkId, RequestId, Result, SshPublicKey,
+    WgPublicKey, error::invalid,
 };
 
 pub struct LocalDeviceKeys {
     pub(crate) wg: PKey<Private>,
+    pub(crate) encryption: PKey<Private>,
     ssh: ssh_key::PrivateKey,
 }
 
@@ -21,12 +23,14 @@ struct SecretFile {
     version: u32,
     ssh_private_key: Zeroizing<String>,
     wg_private_key: Zeroizing<String>,
+    encryption_private_key: Zeroizing<String>,
 }
 
 impl LocalDeviceKeys {
     pub fn generate() -> Result<Self> {
         Ok(Self {
             wg: PKey::generate_x25519()?,
+            encryption: PKey::generate_x25519()?,
             ssh: ssh_key::PrivateKey::random(
                 &mut ssh_key::rand_core::OsRng,
                 ssh_key::Algorithm::Ed25519,
@@ -47,6 +51,15 @@ impl LocalDeviceKeys {
         let mut public = self.ssh.public_key().clone();
         public.set_comment("");
         public.to_openssh()?.parse()
+    }
+
+    pub fn encryption_public_key(&self) -> Result<EncryptionPublicKey> {
+        EncryptionPublicKey::from_bytes(
+            self.encryption
+                .raw_public_key()?
+                .try_into()
+                .map_err(|_| invalid("encryption public key", "expected 32 bytes"))?,
+        )
     }
 
     pub fn device_id(&self, network: &NetworkId, kind: DeviceKind) -> Result<DeviceId> {
@@ -104,6 +117,7 @@ impl LocalDeviceKeys {
             name,
             wg_public_key: self.wg_public_key()?,
             ssh_public_key: self.ssh_public_key()?,
+            encryption_public_key: self.encryption_public_key()?,
             expires_at,
             proof: String::new(),
         };
@@ -116,9 +130,12 @@ impl LocalDeviceKeys {
     /// Atomically publishes a new 0600 key file without replacing any existing path.
     pub fn save_new(&self, path: &Path) -> Result<()> {
         let payload = SecretFile {
-            version: 1,
+            version: 2,
             ssh_private_key: self.ssh_private_key()?,
             wg_private_key: self.wireguard_private_key()?,
+            encryption_private_key: Zeroizing::new(
+                STANDARD.encode(Zeroizing::new(self.encryption.raw_private_key()?).as_slice()),
+            ),
         };
         let bytes = Zeroizing::new(serde_json::to_vec(&payload)?);
         secure_file::save_new(path, &bytes)
@@ -128,7 +145,7 @@ impl LocalDeviceKeys {
         let bytes = secure_file::load(path)?;
         let payload: SecretFile =
             serde_json::from_slice(&bytes).map_err(|_| invalid("key file", "invalid encoding"))?;
-        if payload.version != 1 {
+        if payload.version != 2 {
             return Err(invalid("key file", "unsupported version"));
         }
         let ssh = ssh_key::PrivateKey::from_openssh(payload.ssh_private_key.as_bytes())?;
@@ -149,12 +166,29 @@ impl LocalDeviceKeys {
         {
             return Err(invalid("WG private key", "invalid 32-byte key"));
         }
+        let encryption_raw = Zeroizing::new(
+            STANDARD
+                .decode(payload.encryption_private_key.as_bytes())
+                .map_err(|_| invalid("encryption private key", "invalid base64"))?,
+        );
+        if encryption_raw.len() != 32
+            || STANDARD.encode(encryption_raw.as_slice()) != *payload.encryption_private_key
+            || encryption_raw.iter().all(|b| *b == 0)
+            || encryption_raw.as_slice() == raw.as_slice()
+        {
+            return Err(invalid(
+                "encryption private key",
+                "expected a separate 32-byte key",
+            ));
+        }
         let keys = Self {
             ssh,
             wg: PKey::private_key_from_raw_bytes(&raw, Id::X25519)?,
+            encryption: PKey::private_key_from_raw_bytes(&encryption_raw, Id::X25519)?,
         };
         keys.wg_public_key()?;
         keys.ssh_public_key()?;
+        keys.encryption_public_key()?;
         Ok(keys)
     }
 }

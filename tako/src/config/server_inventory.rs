@@ -1,13 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use super::error::{ConfigError, Result};
 
-/// Legacy configuration and resolved native server inventory.
+/// Server inventory resolved from authenticated network membership.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct ServersToml {
+pub struct ServerInventory {
     /// Map of server name to server entry
     #[serde(default)]
     pub servers: HashMap<String, ServerEntry>,
@@ -130,135 +129,38 @@ impl ServerEntry {
     }
 }
 
-impl ServersToml {
-    /// Get the default path for global config.
-    pub fn default_path() -> Result<PathBuf> {
-        let config_dir = crate::paths::tako_config_dir().map_err(|e| {
-            ConfigError::Validation(format!("Could not determine tako config directory: {}", e))
-        })?;
-        Ok(config_dir.join("config.toml"))
-    }
-
-    fn load_from_paths(config_path: &Path) -> Result<Self> {
-        if config_path.exists() {
-            return Self::load_from_file(config_path);
+impl ServerInventory {
+    /// Resolve the last authenticated membership cached on this machine.
+    /// Commands that change remote state refresh it before selecting targets.
+    pub fn load(network: Option<&str>) -> Result<Self> {
+        let mut inventory = Self::default();
+        let networks = super::LocalNetworks::load()?;
+        let selected = match network {
+            Some(network) => vec![networks.select(Some(network))?],
+            None => networks.networks.values().collect(),
+        };
+        for local in selected {
+            let profile = match crate::network::load_profile(local) {
+                Ok(profile) => profile,
+                Err(error) if network.is_none() => {
+                    crate::commands::helpers::warn_network(&format!(
+                        "Skipping network {}: {error}",
+                        local.name
+                    ));
+                    continue;
+                }
+                Err(error) => return Err(ConfigError::Validation(error.to_string())),
+            };
+            inventory.servers.extend(
+                crate::commands::helpers::native_server_entries(
+                    local,
+                    &profile,
+                    &networks.server_namespace(local),
+                )
+                .map_err(ConfigError::Validation)?,
+            );
         }
-
-        Ok(Self::default())
-    }
-
-    /// Load server inventory from the default location.
-    pub fn load() -> Result<Self> {
-        let config_path = Self::default_path()?;
-        Self::load_from_paths(&config_path)
-    }
-
-    /// Load server inventory from a specific file.
-    pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let content = fs::read_to_string(path.as_ref())
-            .map_err(|e| ConfigError::FileRead(path.as_ref().to_path_buf(), e))?;
-        Self::parse(&content)
-    }
-
-    /// Parse server inventory TOML (`[[servers]]` array).
-    pub fn parse(content: &str) -> Result<Self> {
-        if content.trim().is_empty() {
-            return Ok(Self::default());
-        }
-
-        // Parse only the [[servers]] array and ignore unrelated top-level config.
-        let raw: toml::Value = toml::from_str(content)?;
-
-        let mut config = ServersToml::default();
-
-        if let Some(servers_array) = raw.get("servers")
-            && let Some(array) = servers_array.as_array()
-        {
-            for server_value in array {
-                // Each server must have a name field
-                let name = server_value
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        ConfigError::Validation("Server entry must have a 'name' field".to_string())
-                    })?;
-
-                if server_value.get("vpn").is_some() {
-                    return Err(ConfigError::Validation(format!(
-                        "Server '{name}' uses a removed VPN provider. Enroll it with `tako servers add admin@host --network <network>`, then remove its old [[servers]] entry."
-                    )));
-                }
-                let host = server_value
-                    .get("host")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        ConfigError::Validation(format!(
-                            "Server '{}' must have a 'host' field",
-                            name
-                        ))
-                    })?;
-
-                let port = parse_port_field(server_value, name, "port", default_ssh_port())?;
-                let http_port =
-                    parse_port_field(server_value, name, "http_port", default_http_port())?;
-                let https_port =
-                    parse_port_field(server_value, name, "https_port", default_https_port())?;
-
-                let description = server_value
-                    .get("description")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-
-                let key_path =
-                    parse_string_field(server_value, name, "key_path")?.map(PathBuf::from);
-                let arch = parse_string_field(server_value, name, "arch")?;
-                let libc = parse_string_field(server_value, name, "libc")?;
-
-                let entry = ServerEntry {
-                    native: None,
-                    host: host.to_string(),
-                    port,
-                    http_port,
-                    https_port,
-                    description,
-                    key_path,
-                };
-
-                // Check for duplicate names
-                if config.servers.contains_key(name) {
-                    return Err(ConfigError::DuplicateServerName(name.to_string()));
-                }
-
-                // Check for duplicate hosts
-                if config.servers.values().any(|e| e.host == host) {
-                    return Err(ConfigError::DuplicateServerHost(host.to_string()));
-                }
-
-                config.servers.insert(name.to_string(), entry);
-
-                match (arch, libc) {
-                    (Some(arch), Some(libc)) => {
-                        let normalized = ServerTarget::normalized(arch, libc).map_err(|e| {
-                            ConfigError::Validation(format!(
-                                "Invalid target metadata for server '{}': {}",
-                                name, e
-                            ))
-                        })?;
-                        config.server_targets.insert(name.to_string(), normalized);
-                    }
-                    (None, None) => {}
-                    _ => {
-                        return Err(ConfigError::Validation(format!(
-                            "Server '{}' must set both `arch` and `libc` together inside [[servers]]",
-                            name
-                        )));
-                    }
-                }
-            }
-        }
-
-        config.validate()?;
-        Ok(config)
+        Ok(inventory)
     }
 
     /// Validate the configuration
@@ -314,79 +216,6 @@ impl ServersToml {
         Ok(())
     }
 
-    /// Save server inventory to the default global config path.
-    pub fn save(&self) -> Result<()> {
-        let path = Self::default_path()?;
-        self.save_to_file(&path)
-    }
-
-    /// Save server inventory to a specific TOML file, preserving unrelated sections.
-    pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
-        let path = path.as_ref();
-
-        let mut names: Vec<&str> = self.servers.keys().map(|k| k.as_str()).collect();
-        names.sort_unstable();
-
-        let mut servers_array = Vec::with_capacity(names.len());
-        for name in names {
-            let entry = self.servers.get(name).ok_or_else(|| {
-                ConfigError::Validation(format!("Missing server entry '{}'", name))
-            })?;
-
-            if entry.native.is_some() {
-                continue;
-            }
-            let mut table = toml::map::Map::new();
-            table.insert("name".to_string(), toml::Value::String(name.to_string()));
-            table.insert("host".to_string(), toml::Value::String(entry.host.clone()));
-            if entry.port != default_ssh_port() {
-                table.insert("port".to_string(), toml::Value::Integer(entry.port as i64));
-            }
-            if entry.http_port != default_http_port() {
-                table.insert(
-                    "http_port".to_string(),
-                    toml::Value::Integer(entry.http_port as i64),
-                );
-            }
-            if entry.https_port != default_https_port() {
-                table.insert(
-                    "https_port".to_string(),
-                    toml::Value::Integer(entry.https_port as i64),
-                );
-            }
-            if let Some(description) = &entry.description
-                && !description.trim().is_empty()
-            {
-                table.insert(
-                    "description".to_string(),
-                    toml::Value::String(description.clone()),
-                );
-            }
-            if let Some(key_path) = &entry.key_path {
-                table.insert(
-                    "key_path".to_string(),
-                    toml::Value::String(key_path.to_string_lossy().into_owned()),
-                );
-            }
-            if let Some(target) = self.server_targets.get(name) {
-                table.insert("arch".to_string(), toml::Value::String(target.arch.clone()));
-                table.insert("libc".to_string(), toml::Value::String(target.libc.clone()));
-            }
-            servers_array.push(toml::Value::Table(table));
-        }
-
-        super::global::edit(path, |root| {
-            if servers_array.is_empty() {
-                root.remove("servers");
-            } else {
-                root.insert("servers".to_string(), toml::Value::Array(servers_array));
-            }
-            root.remove("server_targets");
-            Ok(())
-        })
-    }
-
-    /// Get a server by name
     pub fn get(&self, name: &str) -> Option<&ServerEntry> {
         self.servers.get(name)
     }
@@ -483,45 +312,6 @@ impl ServersToml {
     pub fn is_empty(&self) -> bool {
         self.servers.is_empty()
     }
-}
-
-fn parse_string_field<'a>(
-    server_value: &'a toml::Value,
-    server_name: &str,
-    field: &str,
-) -> Result<Option<&'a str>> {
-    match server_value.get(field) {
-        Some(value) => value.as_str().map(Some).ok_or_else(|| {
-            ConfigError::Validation(format!(
-                "Server '{}' field '{}' must be a string",
-                server_name, field
-            ))
-        }),
-        None => Ok(None),
-    }
-}
-
-fn parse_port_field(
-    server_value: &toml::Value,
-    server_name: &str,
-    field: &str,
-    default: u16,
-) -> Result<u16> {
-    let Some(value) = server_value.get(field) else {
-        return Ok(default);
-    };
-    let raw = value.as_integer().ok_or_else(|| {
-        ConfigError::Validation(format!(
-            "Server '{}' field '{}' must be an integer",
-            server_name, field
-        ))
-    })?;
-    u16::try_from(raw).map_err(|_| {
-        ConfigError::Validation(format!(
-            "Server '{}' field '{}' must be between 0 and 65535",
-            server_name, field
-        ))
-    })
 }
 
 /// Validate server name format

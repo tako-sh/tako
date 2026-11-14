@@ -5,9 +5,8 @@ use super::key::{
     environment_for_key_id, load_or_create_key_for_set, missing_secret_key_message,
     resolve_key_import_source, save_key_with_storage_choice, validate_passphrase_key_for_env,
 };
-use super::sync::resolve_secret_sync_server_names;
 use super::*;
-use crate::config::{ServerEntry, ServersToml, TakoToml};
+use crate::config::TakoToml;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as BASE64_URL};
 use std::ffi::OsString;
 use std::path::Path;
@@ -392,49 +391,4 @@ fn environment_for_key_id_matches_environment_key_id() {
         Some("development")
     );
     assert_eq!(environment_for_key_id(&secrets, "fedcba9876543210"), None);
-}
-
-#[test]
-fn resolve_secret_sync_server_names_uses_explicit_mapping() {
-    let tako_config = TakoToml::parse(
-        r#"
-[envs.production]
-route = "app.example.com"
-servers = ["solo"]
-"#,
-    )
-    .unwrap();
-    let mut servers = ServersToml::default();
-    servers.servers.insert(
-        "solo".to_string(),
-        ServerEntry {
-            host: "127.0.0.1".to_string(),
-            port: 22,
-            description: None,
-            ..Default::default()
-        },
-    );
-
-    let names = resolve_secret_sync_server_names("production", &tako_config, &servers)
-        .expect("should resolve");
-    assert_eq!(names, vec!["solo".to_string()]);
-}
-
-#[test]
-fn resolve_secret_sync_server_names_returns_empty_for_unmapped_non_production() {
-    let tako_config = TakoToml::default();
-    let mut servers = ServersToml::default();
-    servers.servers.insert(
-        "solo".to_string(),
-        ServerEntry {
-            host: "127.0.0.1".to_string(),
-            port: 22,
-            description: None,
-            ..Default::default()
-        },
-    );
-
-    let names =
-        resolve_secret_sync_server_names("staging", &tako_config, &servers).expect("should work");
-    assert!(names.is_empty());
 }

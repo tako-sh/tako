@@ -22,6 +22,7 @@ pub(crate) fn fixture() -> Fixture {
     let own = request.device_id_for(&network).unwrap();
     let mut snapshot = RegistrySnapshot {
         network: NetworkDescriptor {
+            name: "test".parse().unwrap(),
             id: network,
             initial_admin: own.clone(),
         },
@@ -237,7 +238,7 @@ fn stale_import_cannot_erase_a_revocation_or_corrupt_saved_state() {
         server,
     } = fixture();
     store_keys(&profile.request().request_id, &keys).unwrap();
-    let alias = save_profile("test", &profile).unwrap();
+    let alias = save_profile(&profile).unwrap();
     let mut revoked = profile.clone();
     let Profile::Active { profile: active } = &mut revoked else {
         panic!()
@@ -253,13 +254,13 @@ fn stale_import_cannot_erase_a_revocation_or_corrupt_saved_state() {
         .unwrap();
     active.snapshot.revocations.push(revocation.clone());
     active.trusted_servers.clear();
-    assert!(save_profile("test", &revoked).is_err());
+    assert!(save_profile(&revoked).is_err());
     assert!(load_profile(&alias).is_err());
-    assert!(save_profile("test", &profile).is_err());
+    assert!(save_profile(&profile).is_err());
     let saved: Profile = read_json(&alias.profile_path().unwrap()).unwrap();
     assert_eq!(saved.snapshot().revocations, vec![revocation]);
     fs::write(alias.profile_path().unwrap(), b"corrupt").unwrap();
-    assert!(save_profile("test", &profile).is_err());
+    assert!(save_profile(&profile).is_err());
     assert_eq!(fs::read(alias.profile_path().unwrap()).unwrap(), b"corrupt");
 }
 
@@ -268,7 +269,7 @@ fn revoked_local_identity_is_persisted_and_cannot_be_restored_by_stale_import() 
     let _home = TestHome::new();
     let Fixture { keys, profile, .. } = fixture();
     store_keys(&profile.request().request_id, &keys).unwrap();
-    let alias = save_profile("test", &profile).unwrap();
+    let alias = save_profile(&profile).unwrap();
     let mut revoked = profile.clone();
     let Profile::Active { profile: active } = &mut revoked else {
         panic!()
@@ -287,8 +288,8 @@ fn revoked_local_identity_is_persisted_and_cannot_be_restored_by_stale_import() 
     active.trusted_servers.clear();
     revoked.validate_for_storage(&keys).unwrap();
     assert!(revoked.validate(&keys).is_err());
-    assert!(save_profile("test", &revoked).is_err());
-    assert!(save_profile("test", &profile).is_err());
+    assert!(save_profile(&revoked).is_err());
+    assert!(save_profile(&profile).is_err());
     assert!(load_profile(&alias).is_err());
     let saved: Profile = read_json(&alias.profile_path().unwrap()).unwrap();
     assert_eq!(saved.snapshot().revocations, vec![revocation]);
@@ -344,7 +345,7 @@ fn expired_pending_state_does_not_block_a_bound_activation() {
             snapshot: active.snapshot.clone(),
         },
     };
-    let alias = save_profile("test", &pending).unwrap();
+    let alias = save_profile(&pending).unwrap();
     let Profile::Pending { profile: stored } = &mut pending else {
         panic!()
     };
@@ -358,7 +359,7 @@ fn expired_pending_state_does_not_block_a_bound_activation() {
         panic!()
     };
     assert!(expired.validate_for(&keys, now().unwrap()).is_err());
-    save_profile("test", &profile).unwrap();
+    save_profile(&profile).unwrap();
     load_profile(&alias).unwrap().validate(&keys).unwrap();
 }
 
@@ -445,14 +446,14 @@ fn expired_server_pins_are_pruned_on_load_and_import_without_extending_own_membe
     assert!(active.validate_for(&keys, now).is_err());
     profile.validate(&keys).unwrap();
     store_keys(&profile.request().request_id, &keys).unwrap();
-    let alias = NetworkAlias {
+    let alias = LocalNetwork {
         name: "test".into(),
         id: profile.snapshot().network.id.to_string(),
         device: own.to_string(),
     };
     private_directory(alias.profile_path().unwrap().parent().unwrap()).unwrap();
     write_json(&alias.profile_path().unwrap(), &profile, false).unwrap();
-    NetworksToml::save_alias(&alias).unwrap();
+    LocalNetworks::save_identity(&alias).unwrap();
     let Profile::Active { profile: loaded } = load_profile(&alias).unwrap() else {
         panic!()
     };
@@ -460,7 +461,7 @@ fn expired_server_pins_are_pruned_on_load_and_import_without_extending_own_membe
         loaded.trusted_servers.keys().collect::<Vec<_>>(),
         vec![&server]
     );
-    save_profile("test", &profile).unwrap();
+    save_profile(&profile).unwrap();
     let Profile::Active { profile: imported } = load_profile(&alias).unwrap() else {
         panic!()
     };
@@ -488,7 +489,7 @@ fn expired_server_pins_are_pruned_on_load_and_import_without_extending_own_membe
         },
     };
     pending.validate(&pending_keys).unwrap();
-    let pending_alias = save_profile("pending", &pending).unwrap();
+    let pending_alias = save_profile(&pending).unwrap();
     let Profile::Pending {
         profile: loaded_pending,
     } = load_profile(&pending_alias).unwrap()
@@ -511,7 +512,7 @@ fn expired_server_pins_are_pruned_on_load_and_import_without_extending_own_membe
     };
     missing.trusted_servers.remove(&server);
     assert!(missing_pin.validate(&keys).is_err());
-    assert!(save_profile("test", &missing_pin).is_err());
+    assert!(save_profile(&missing_pin).is_err());
     let Profile::Active {
         profile: expired_own,
     } = &mut profile
@@ -526,7 +527,7 @@ fn expired_server_pins_are_pruned_on_load_and_import_without_extending_own_membe
         .unwrap()
         .expires_at = Some(now - 1);
     assert!(profile.validate(&keys).is_err());
-    assert!(save_profile("test", &profile).is_err());
+    assert!(save_profile(&profile).is_err());
 }
 
 #[test]
@@ -539,7 +540,7 @@ fn recording_self_or_last_server_revocation_succeeds_and_is_idempotent() {
             server,
         } = fixture();
         store_keys(&profile.request().request_id, &keys).unwrap();
-        let alias = save_profile(if revoke_self { "self" } else { "server" }, &profile).unwrap();
+        let alias = save_profile(&profile).unwrap();
         let own = &profile.snapshot().network.initial_admin;
         let target = if revoke_self { own } else { &server };
         let revocation = profile
@@ -557,7 +558,7 @@ fn recording_self_or_last_server_revocation_succeeds_and_is_idempotent() {
         assert_eq!(saved.snapshot().revocations, vec![revocation.clone()]);
         saved.validate_for_storage(&keys).unwrap();
         assert!(load_profile(&alias).is_err());
-        assert!(save_profile(&alias.name, &profile).is_err());
+        assert!(save_profile(&profile).is_err());
         let before = fs::read(alias.profile_path().unwrap()).unwrap();
         let mut conflicting = revocation;
         conflicting.created_at += 1;

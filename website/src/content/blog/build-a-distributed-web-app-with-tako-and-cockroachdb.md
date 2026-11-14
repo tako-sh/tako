@@ -5,6 +5,8 @@ description: "Three VPS boxes, Tako for the app layer, CockroachDB for the data 
 image: f81c378820bd
 ---
 
+> **Update, November 14, 2026:** This article describes an earlier Tako release. The SFTP path below is historical: native deployments now use [pinned HTTPS management](/docs/deployment/). Read [the new network and secrets workflow](/blog/sync-deployment-secrets-with-tako-networks/).
+
 We've been telling the story of [building your own edge network on commodity hardware](/blog/build-your-own-edge-network-on-commodity-hardware/) — three VPS boxes, [one `tako.toml`](/blog/one-config-many-servers/), Cloudflare routing users to the nearest one. It's a nice story until your users start actually writing data. Because as soon as your database lives in one region, every query from Tokyo still round-trips to us-east-1 and the edge only got you halfway.
 
 The other half is a database that can live on all three boxes at once. CockroachDB is one of the nicest answers to that we've found, and it pairs neatly with Tako.

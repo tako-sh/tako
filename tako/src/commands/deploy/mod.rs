@@ -16,7 +16,7 @@ use std::time::Duration;
 use crate::app::require_app_name_from_config_path;
 use crate::build::{BuildAdapter, PresetGroup, js};
 use crate::commands::project_context;
-use crate::config::{SecretsStore, ServerEntry, ServerTarget, ServersToml, TakoToml};
+use crate::config::{SecretsStore, ServerEntry, ServerInventory, ServerTarget, TakoToml};
 use crate::output;
 use crate::validation::{
     validate_full_config, validate_secrets_for_deployment, validate_ssl_for_deployment,
@@ -109,7 +109,7 @@ struct BuildPhaseResult {
 
 struct ValidationResult {
     tako_config: TakoToml,
-    servers: ServersToml,
+    servers: ServerInventory,
     secrets: SecretsStore,
     env: String,
     warnings: Vec<String>,
@@ -150,6 +150,28 @@ impl DeployConfig {
     }
 }
 
+fn can_configure_bindings(
+    config: &TakoToml,
+    env: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let Some(id) = config.envs.get(env).and_then(|env| env.network.as_deref()) else {
+        return Ok(true);
+    };
+    let alias = crate::network::resolve_network(Some(id), None)?;
+    let profile = crate::network::load_profile(&alias)?;
+    let device = profile
+        .request()
+        .device_id_for(&profile.snapshot().network.id)?;
+    let members = profile
+        .snapshot()
+        .effective_members(crate::network::now()?)?;
+    Ok(members
+        .get(&device)
+        .ok_or("This device is not an active network member")?
+        .permissions
+        .server_admin)
+}
+
 pub fn run(
     env: Option<&str>,
     assume_yes: bool,
@@ -176,10 +198,14 @@ async fn run_async(
             let _t = output::timed("Configuration validation");
             let tako_config =
                 TakoToml::load_from_file(&context.config_path).map_err(|e| e.to_string())?;
-            let servers = ServersToml::load().map_err(|e| e.to_string())?;
-            let secrets = SecretsStore::load_from_dir(&project_dir).map_err(|e| e.to_string())?;
-
             let env = resolve_deploy_environment(requested_env, &tako_config)?;
+            let network = tako_config
+                .envs
+                .get(&env)
+                .and_then(|env| env.network.as_deref());
+            let servers = ServerInventory::load(network).map_err(|e| e.to_string())?;
+            let secrets = SecretsStore::load_for_environment(&project_dir, &tako_config, &env)
+                .map_err(|e| e.to_string())?;
 
             let config_result = validate_full_config(&tako_config, &servers, Some(&env));
             if config_result.has_errors() {
@@ -188,16 +214,7 @@ async fn run_async(
                     config_result.errors.join("\n  ")
                 ));
             }
-            let mut warnings = config_result.warnings.clone();
-
-            let secrets_result = validate_secrets_for_deployment(&secrets, &env);
-            if secrets_result.has_errors() {
-                return Err(format!(
-                    "Secret errors:\n  {}",
-                    secrets_result.errors.join("\n  ")
-                ));
-            }
-            warnings.extend(secrets_result.warnings.clone());
+            let warnings = config_result.warnings.clone();
 
             Ok(ValidationResult {
                 tako_config,
@@ -248,6 +265,7 @@ async fn run_async(
             &project_dir,
             preflight_runtime_adapter,
             &tako_config,
+            Some(&env),
             false,
         )?;
     }
@@ -281,17 +299,46 @@ async fn run_async(
             std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()).into()
         },
     )?;
+    let _deploy_lock = if output::is_dry_run() {
+        None
+    } else {
+        Some(
+            acquire_project_deploy_lock(&project_dir)
+                .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?,
+        )
+    };
+    if !output::is_dry_run() {
+        secrets = tokio::task::block_in_place(|| {
+            crate::network::secrets::sync_environment(
+                &project_dir,
+                &tako_config,
+                &app_name,
+                &env,
+                false,
+            )
+        })?;
+    }
+    let configure_bindings = can_configure_bindings(&tako_config, &env)?;
+    let secrets_result = validate_secrets_for_deployment(&secrets, &env);
+    if secrets_result.has_errors() {
+        return Err(format!("Secret errors: {}", secrets_result.errors.join("; ")).into());
+    }
+    for warning in secrets_result.warnings {
+        output::warning(&warning);
+    }
     let routes = required_env_routes(&tako_config, &env)
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
     let source_ip = tako_config.get_source_ip_mode(&env);
     let ssl_provider = tako_config.get_ssl_provider(&env);
 
-    let ssl_result = validate_ssl_for_deployment(&routes, ssl_provider, &secrets, &env);
-    if ssl_result.has_errors() {
-        return Err(format!("SSL errors:\n  {}", ssl_result.errors.join("\n  ")).into());
-    }
-    for warning in ssl_result.warnings {
-        output::warning(&format!("Validation: {}", warning));
+    if configure_bindings {
+        let ssl_result = validate_ssl_for_deployment(&routes, ssl_provider, &secrets, &env);
+        if ssl_result.has_errors() {
+            return Err(format!("SSL errors:\n  {}", ssl_result.errors.join("\n  ")).into());
+        }
+        for warning in ssl_result.warnings {
+            output::warning(&format!("Validation: {}", warning));
+        }
     }
 
     let server_names = if output::is_dry_run() {
@@ -314,36 +361,54 @@ async fn run_async(
         }
     }
 
+    if output::is_dry_run() {
+        output::dry_run_skip("Server checks");
+        output::dry_run_skip("Build");
+        for name in &server_names {
+            output::dry_run_skip(&format!("Deploy to {}", output::strong(name)));
+        }
+        if output::is_pretty() {
+            eprintln!();
+        }
+        let https_port = common_https_port_for_servers(&server_names, &servers);
+        print_deploy_summary_with_https_port("App", &app_name, &routes, https_port);
+        return Ok(());
+    }
+
     config::refresh_native_build_targets(&mut servers, &server_names).await?;
     let server_targets = resolve_deploy_server_targets(&servers, &server_names)
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
     tracing::debug!("{}", format_servers_summary(&server_names));
 
-    let runtime_state_storage_result = validate_runtime_state_storage_for_deploy(
-        &project_dir,
-        &tako_config,
-        &secrets,
-        &env,
-        server_names.len(),
-    );
-    if runtime_state_storage_result.has_errors() {
-        return Err(format!(
-            "Runtime state storage errors:\n  {}",
-            runtime_state_storage_result.errors.join("\n  ")
-        )
-        .into());
-    }
-    for warning in runtime_state_storage_result.warnings {
-        output::warning(&format!("Validation: {}", warning));
-    }
+    if configure_bindings {
+        let runtime_state_storage_result = validate_runtime_state_storage_for_deploy(
+            &project_dir,
+            &tako_config,
+            &secrets,
+            &env,
+            server_names.len(),
+        );
+        if runtime_state_storage_result.has_errors() {
+            return Err(format!(
+                "Runtime state storage errors:\n  {}",
+                runtime_state_storage_result.errors.join("\n  ")
+            )
+            .into());
+        }
+        for warning in runtime_state_storage_result.warnings {
+            output::warning(&format!("Validation: {}", warning));
+        }
 
-    let storage_result =
-        validate_storages_for_deployment(&tako_config, &secrets, &env, server_names.len());
-    if storage_result.has_errors() {
-        return Err(format!("Storage errors:\n  {}", storage_result.errors.join("\n  ")).into());
-    }
-    for warning in storage_result.warnings {
-        output::warning(&format!("Validation: {}", warning));
+        let storage_result =
+            validate_storages_for_deployment(&tako_config, &secrets, &env, server_names.len());
+        if storage_result.has_errors() {
+            return Err(
+                format!("Storage errors:\n  {}", storage_result.errors.join("\n  ")).into(),
+            );
+        }
+        for warning in storage_result.warnings {
+            output::warning(&format!("Validation: {}", warning));
+        }
     }
 
     let use_unified_js_target_process = is_container_release
@@ -360,12 +425,33 @@ async fn run_async(
     // the live viewport.
     if !output::is_dry_run() {
         crate::commands::secret::ensure_secret_key_available(&env, &secrets, Some(&project_dir))?;
-        crate::commands::storage::ensure_backup_keys_for_env(
-            &project_dir,
-            &env,
-            &tako_config,
-            &mut secrets,
-        )?;
+        if configure_bindings {
+            crate::commands::storage::ensure_backup_keys_for_env(
+                &project_dir,
+                &env,
+                &tako_config,
+                &mut secrets,
+            )?;
+        }
+    }
+
+    secrets = tokio::task::block_in_place(|| {
+        crate::network::secrets::sync_environment(&project_dir, &tako_config, &app_name, &env, true)
+    })?;
+    let final_validation = config::validate_release_secret_snapshot(
+        &project_dir,
+        &tako_config,
+        &secrets,
+        &env,
+        server_names.len(),
+        configure_bindings,
+    );
+    if final_validation.has_errors() {
+        return Err(format!(
+            "Secret errors after network synchronization:\n  {}",
+            final_validation.errors.join("\n  ")
+        )
+        .into());
     }
 
     let deploy_task_tree = should_use_deploy_task_tree()
@@ -374,23 +460,6 @@ async fn run_async(
     if let (Some(task_tree), Some(first_build_group)) = (&deploy_task_tree, build_groups.first()) {
         task_tree.mark_build_target_running(&format_build_plan_target_label(first_build_group));
     }
-
-    if output::is_dry_run() {
-        output::dry_run_skip("Server checks");
-        output::dry_run_skip("Build");
-        for name in &server_names {
-            output::dry_run_skip(&format!("Deploy to {}", output::strong(name)));
-        }
-        if output::is_pretty() {
-            eprintln!();
-        }
-        let https_port = common_https_port_for_servers(&server_names, &servers);
-        print_deploy_summary_with_https_port("App", &app_name, &routes, https_port);
-        return Ok(());
-    }
-
-    let _deploy_lock = acquire_project_deploy_lock(&project_dir)
-        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
     let use_per_server_spinners = deploy_task_tree.is_none()
         && should_use_per_server_spinners(server_names.len(), output::is_interactive());
@@ -412,6 +481,7 @@ async fn run_async(
         env.clone(),
         tako_config.clone(),
         secrets.clone(),
+        configure_bindings,
         preflight_preset_ref.clone(),
         preflight_runtime_adapter,
         server_targets.clone(),

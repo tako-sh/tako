@@ -6,7 +6,7 @@ use tako_network::api::{RpcRequest, RpcResponse, SignedRequest};
 use tako_network::{DeviceId, LocalDeviceKeys, NetworkPublicProfile, RegistrySnapshot, ServerInfo};
 
 use super::{Profile, Result};
-use crate::config::NetworkAlias;
+use crate::config::LocalNetwork;
 
 pub(crate) fn hostname(network: &tako_network::NetworkId, server: &DeviceId) -> String {
     format!(
@@ -134,12 +134,12 @@ fn prepare_request(
     Ok((http, request))
 }
 
-pub(crate) fn refresh(alias: &NetworkAlias) -> Result<Profile> {
+pub(crate) fn refresh(alias: &LocalNetwork) -> Result<Profile> {
     refresh_with(alias, call)
 }
 
 fn refresh_with(
-    alias: &NetworkAlias,
+    alias: &LocalNetwork,
     mut send: impl FnMut(&Profile, &DeviceId, RpcRequest) -> Result<RpcResponse>,
 ) -> Result<Profile> {
     let mut profile = super::load_profile(alias)?;
@@ -195,7 +195,7 @@ fn refresh_with(
         };
         let keys = LocalDeviceKeys::load(&super::keys_path(&profile.request().request_id)?)?;
         profile = accept_activation(&profile, active, &keys)?;
-        super::save_profile(&alias.name, &profile)?;
+        super::save_profile(&profile)?;
         profile = super::load_profile(alias)?;
     }
     let servers = trusted_servers(&profile)?;
@@ -204,7 +204,7 @@ fn refresh_with(
         match send(&profile, server, RpcRequest::Snapshot) {
             Ok(RpcResponse::Snapshot(snapshot)) => {
                 let refreshed = active_from_snapshot(&profile, snapshot)?;
-                super::save_profile(&alias.name, &refreshed)?;
+                super::save_profile(&refreshed)?;
                 return super::load_profile(alias);
             }
             Ok(_) => return Err("Unexpected network snapshot response".into()),
@@ -264,9 +264,7 @@ mod tests {
                 },
             };
             crate::network::store_keys(&pending.request().request_id, &fixture.keys).unwrap();
-            let alias =
-                crate::network::save_profile(if denied { "denied" } else { "active" }, &pending)
-                    .unwrap();
+            let alias = crate::network::save_profile(&pending).unwrap();
             let mut requests = 0;
             let result = refresh_with(&alias, |_, server, request| {
                 requests += 1;

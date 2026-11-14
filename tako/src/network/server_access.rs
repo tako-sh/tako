@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use tako_network::DeviceId;
 
 use super::Result;
-use crate::config::NetworkAlias;
+use crate::config::LocalNetwork;
 
 #[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -14,14 +14,14 @@ pub(crate) struct Access {
     pub(crate) key_path: Option<PathBuf>,
 }
 
-fn path(alias: &NetworkAlias, server: &DeviceId) -> Result<PathBuf> {
+fn path(alias: &LocalNetwork, server: &DeviceId) -> Result<PathBuf> {
     Ok(alias
         .profile_path()?
         .with_file_name(format!("ssh-{server}.json")))
 }
 
 pub(crate) fn save(
-    alias: &NetworkAlias,
+    alias: &LocalNetwork,
     server: &DeviceId,
     host: &str,
     key: Option<&Path>,
@@ -39,7 +39,7 @@ pub(crate) fn save(
     )
 }
 
-pub(crate) fn load(alias: &NetworkAlias, server: &DeviceId) -> Result<Access> {
+pub(crate) fn load(alias: &LocalNetwork, server: &DeviceId) -> Result<Access> {
     let access: Access = match super::read_json(&path(alias, server)?) {
         Ok(access) => access,
         Err(error)

@@ -1,12 +1,12 @@
-use crate::config::{ServersToml, TakoToml};
+use crate::config::{ServerInventory, TakoToml};
 use crate::output;
 
 /// Resolve which servers to target for a given environment.
 ///
-/// Uses trusted native network membership or explicit legacy server mappings.
+/// Uses trusted native network membership and project placement selectors.
 pub fn resolve_servers_for_env(
     tako_config: &TakoToml,
-    servers: &ServersToml,
+    servers: &ServerInventory,
     env: &str,
 ) -> Result<Vec<String>, String> {
     if let Some(config) = tako_config.envs.get(env)
@@ -25,7 +25,7 @@ pub fn resolve_servers_for_env(
 
     if servers.is_empty() {
         return Err(format!(
-            "No servers have been added. Run 'tako servers add <host>' first, \
+            "No servers have been added. Run 'tako network server add <host>' first, \
              then add it under [envs.{}].servers in tako.toml.",
             env
         ));
@@ -39,7 +39,7 @@ pub fn resolve_servers_for_env(
 }
 
 fn resolve_network_servers(
-    servers: &ServersToml,
+    servers: &ServerInventory,
     network: &str,
     selectors: &[String],
     env: &str,
@@ -104,11 +104,14 @@ pub(crate) fn format_environment_notice(env: &str) -> String {
     format!("Using {env} environment")
 }
 
-/// Validate that all resolved server names exist in the global servers config.
-pub fn validate_server_names(names: &[String], servers: &ServersToml) -> Result<(), String> {
+/// Validate that all resolved server names exist in enrolled network membership.
+pub fn validate_server_names(names: &[String], servers: &ServerInventory) -> Result<(), String> {
     for name in names {
         if !servers.contains(name) {
-            return Err(format!("Server '{}' not found in config.toml", name));
+            return Err(format!(
+                "Server '{}' not found in enrolled network membership",
+                name
+            ));
         }
     }
     Ok(())
@@ -124,8 +127,8 @@ mod tests {
         let _home = crate::network::tests::TestHome::new();
         let fixture = crate::network::tests::fixture();
         crate::network::store_keys(&fixture.profile.request().request_id, &fixture.keys).unwrap();
-        let alias = crate::network::save_profile("fleet", &fixture.profile).unwrap();
-        let entries = native_server_entries(&alias, &fixture.profile).unwrap();
+        let alias = crate::network::save_profile(&fixture.profile).unwrap();
+        let entries = native_server_entries(&alias, &fixture.profile, &alias.name).unwrap();
         assert!(entries[0].1.key_path.is_none());
         let tako_network::MemberKind::Server(info) =
             &crate::network::server_members(&fixture.profile).unwrap()[&fixture.server].kind
@@ -143,9 +146,9 @@ mod tests {
         )
         .unwrap();
         // Refreshing public membership must not erase workstation-local SSH choices.
-        crate::network::save_profile("fleet", &fixture.profile).unwrap();
+        crate::network::save_profile(&fixture.profile).unwrap();
         let refreshed = crate::network::load_profile(&alias).unwrap();
-        let entries = native_server_entries(&alias, &refreshed).unwrap();
+        let entries = native_server_entries(&alias, &refreshed, &alias.name).unwrap();
         let config = crate::ssh::SshConfig::from_entry(&entries[0].1);
         let expected = std::env::current_dir().unwrap().join(relative);
         assert_eq!(config.key_path.as_ref(), Some(&expected));
@@ -166,11 +169,13 @@ mod tests {
         crate::network::server_access::save(&alias, &fixture.server, "new-ssh.private", None)
             .unwrap();
         assert_eq!(
-            native_server_entries(&alias, &refreshed).unwrap()[0].1.host,
+            native_server_entries(&alias, &refreshed, &alias.name).unwrap()[0]
+                .1
+                .host,
             "new-ssh.private"
         );
         assert!(
-            native_server_entries(&alias, &refreshed).unwrap()[0]
+            native_server_entries(&alias, &refreshed, &alias.name).unwrap()[0]
                 .1
                 .key_path
                 .is_none()
@@ -182,7 +187,7 @@ mod tests {
         let _home = crate::network::tests::TestHome::new();
         let fixture = crate::network::tests::fixture();
         crate::network::store_keys(&fixture.profile.request().request_id, &fixture.keys).unwrap();
-        let alias = crate::network::save_profile("fleet", &fixture.profile).unwrap();
+        let alias = crate::network::save_profile(&fixture.profile).unwrap();
         let key = std::path::Path::new("/keys/custom-bootstrap-key");
         crate::network::server_access::save(
             &alias,
@@ -228,8 +233,8 @@ mod tests {
         let _home = crate::network::tests::TestHome::new();
         let fixture = crate::network::tests::fixture();
         crate::network::store_keys(&fixture.profile.request().request_id, &fixture.keys).unwrap();
-        let alias = crate::network::save_profile("fleet", &fixture.profile).unwrap();
-        let entries = native_server_entries(&alias, &fixture.profile).unwrap();
+        let alias = crate::network::save_profile(&fixture.profile).unwrap();
+        let entries = native_server_entries(&alias, &fixture.profile, &alias.name).unwrap();
         let public_host = entries[0].1.host.clone();
         crate::network::write_json(
             &alias
@@ -240,7 +245,7 @@ mod tests {
             false,
         )
         .unwrap();
-        let entries = native_server_entries(&alias, &fixture.profile).unwrap();
+        let entries = native_server_entries(&alias, &fixture.profile, &alias.name).unwrap();
         let config = crate::ssh::SshConfig::from_entry(&entries[0].1);
         assert_eq!(config.host, public_host);
         assert_eq!(
@@ -249,8 +254,8 @@ mod tests {
         );
     }
 
-    fn one_server_config() -> ServersToml {
-        let mut servers = ServersToml::default();
+    fn one_server_config() -> ServerInventory {
+        let mut servers = ServerInventory::default();
         servers.servers.insert(
             "solo".to_string(),
             ServerEntry {
@@ -266,7 +271,7 @@ mod tests {
     fn native_entry(network_id: &str, name: &str, id: &str) -> ServerEntry {
         ServerEntry {
             native: Some(crate::management_http::NativeTarget {
-                network: crate::config::NetworkAlias {
+                network: crate::config::LocalNetwork {
                     name: "fleet".into(),
                     id: network_id.into(),
                     device: "1".repeat(64),
@@ -354,7 +359,7 @@ mod tests {
     #[test]
     fn ambiguous_native_names_require_a_device_id() {
         let network = "a".repeat(32);
-        let mut servers = ServersToml::default();
+        let mut servers = ServerInventory::default();
         for key in ["1".repeat(64), "2".repeat(64)] {
             servers.servers.insert(
                 format!("fleet/edge/{key}"),
@@ -372,37 +377,6 @@ mod tests {
                 .unwrap(),
             [format!("fleet/edge/{key}")]
         );
-    }
-
-    #[test]
-    fn saving_inventory_never_persists_native_members_as_legacy_servers() {
-        let mut servers = one_server_config();
-        servers.servers.insert(
-            "fleet/node".into(),
-            native_entry(&"a".repeat(32), "node", &"2".repeat(64)),
-        );
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("config.toml");
-        std::fs::write(
-            &path,
-            format!(
-                "theme = 'dark'\n[[networks]]\nname = 'fleet'\nid = '{}'\ndevice = '{}'\n",
-                "a".repeat(32),
-                "1".repeat(64)
-            ),
-        )
-        .unwrap();
-        servers.save_to_file(&path).unwrap();
-        let saved = ServersToml::load_from_file(&path).unwrap();
-        assert_eq!(saved, one_server_config());
-        assert_eq!(
-            crate::config::NetworksToml::load_from_file(&path)
-                .unwrap()
-                .networks
-                .len(),
-            1
-        );
-        assert!(std::fs::read_to_string(path).unwrap().contains("dark"));
     }
 
     #[test]
@@ -435,7 +409,7 @@ mod tests {
     #[test]
     fn no_servers_at_all_errors() {
         let tako_config = TakoToml::default();
-        let servers = ServersToml::default();
+        let servers = ServerInventory::default();
 
         let err =
             resolve_servers_for_env(&tako_config, &servers, "production").expect_err("should fail");
@@ -474,9 +448,9 @@ mod tests {
 pub(crate) async fn load_management_servers(
     project: Option<&TakoToml>,
     env: Option<&str>,
-) -> Result<ServersToml, String> {
-    let mut servers = ServersToml::load().map_err(|error| error.to_string())?;
-    let aliases = crate::config::NetworksToml::load().map_err(|error| error.to_string())?;
+) -> Result<ServerInventory, String> {
+    let mut servers = ServerInventory::default();
+    let aliases = crate::config::LocalNetworks::load().map_err(|error| error.to_string())?;
     let selected = if let Some(project) = project {
         let ids: std::collections::BTreeSet<_> = project
             .envs
@@ -489,14 +463,14 @@ pub(crate) async fn load_management_servers(
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| error.to_string())?
     } else {
-        aliases.networks.into_values().collect()
+        aliases.networks.values().cloned().collect()
     };
     if env.is_some_and(|env| {
         project
             .and_then(|project| project.envs.get(env))
             .is_some_and(|env| env.network.is_some())
     }) {
-        servers = ServersToml::default();
+        servers = ServerInventory::default();
     }
     let refresh = !output::is_dry_run();
     // Without a project every configured network is only listed, so one
@@ -504,6 +478,7 @@ pub(crate) async fn load_management_servers(
     let targeted = project.is_some();
     for alias in selected {
         let network = alias.name.clone();
+        let namespace = aliases.server_namespace(&alias);
         let entries = tokio::task::spawn_blocking(move || {
             let profile = match if refresh {
                 crate::network::client::refresh(&alias)
@@ -526,7 +501,7 @@ pub(crate) async fn load_management_servers(
                 },
                 Err(error) => return Err(error.to_string()),
             };
-            native_server_entries(&alias, &profile)
+            native_server_entries(&alias, &profile, &namespace)
         })
         .await
         .map_err(|error| error.to_string())?;
@@ -545,7 +520,7 @@ pub(crate) async fn load_management_servers(
     Ok(servers)
 }
 
-fn warn_network(message: &str) {
+pub(crate) fn warn_network(message: &str) {
     if output::is_pretty() {
         output::warning(message);
     } else {
@@ -553,9 +528,10 @@ fn warn_network(message: &str) {
     }
 }
 
-fn native_server_entries(
-    alias: &crate::config::NetworkAlias,
+pub(crate) fn native_server_entries(
+    alias: &crate::config::LocalNetwork,
     profile: &crate::network::Profile,
+    namespace: &str,
 ) -> Result<Vec<(String, crate::config::ServerEntry)>, String> {
     let members = crate::network::server_members(profile).map_err(|error| error.to_string())?;
     let mut names = std::collections::BTreeMap::new();
@@ -571,9 +547,9 @@ fn native_server_entries(
                 unreachable!()
             };
             let name = if names[&member.request.name.to_string()] == 1 {
-                format!("{}/{}", alias.name, member.request.name)
+                format!("{namespace}/{}", member.request.name)
             } else {
-                format!("{}/{}/{}", alias.name, member.request.name, server_id)
+                format!("{namespace}/{}/{}", member.request.name, server_id)
             };
             let access = crate::network::server_access::load(alias, &server_id)
                 .map_err(|error| error.to_string())?;

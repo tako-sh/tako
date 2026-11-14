@@ -13,6 +13,7 @@ use std::{
 #[serde(deny_unknown_fields)]
 pub struct NetworkDescriptor {
     pub id: NetworkId,
+    pub name: crate::NetworkName,
     pub initial_admin: DeviceId,
 }
 
@@ -47,7 +48,7 @@ impl Permissions {
         self.deployments.contains(scope)
     }
 
-    fn can_delegate(&self, child: &Self) -> bool {
+    pub(crate) fn can_delegate(&self, child: &Self) -> bool {
         self.network_admin
             && (!child.server_admin || self.server_admin)
             && (child.ssh_user.is_none() || self.server_admin || child.ssh_user == self.ssh_user)

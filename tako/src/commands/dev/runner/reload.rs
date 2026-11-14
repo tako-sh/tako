@@ -69,6 +69,7 @@ pub(super) fn spawn_config_reload_loop(
                         &ctx.project_dir,
                         adapter,
                         &cfg,
+                        Some("development"),
                         false,
                     )
                 {
@@ -147,6 +148,7 @@ pub(super) fn spawn_config_reload_loop(
                     &ctx.project_dir,
                     adapter,
                     &cfg,
+                    Some("development"),
                     false,
                 )
             {

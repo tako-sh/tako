@@ -19,13 +19,15 @@ Use `tako <command> --help` or the connected MCP tool's schema for the exact arg
 | `-v`, `--verbose`               | Append-only transcript with timestamps, log levels, and debug diagnostics.                                                      |
 | `--ci`                          | Deterministic non-interactive output: no colors, spinners, raw mode, or prompts.                                                |
 | `--json`                        | Emit structured JSON on stdout. Progress, diagnostics, and errors stay on stderr.                                               |
-| `--dry-run`                     | Show side effects without performing them. Supported by deploy, servers add/remove, delete, and side-effecting backup commands. |
+| `--dry-run`                     | Show side effects without performing them. Supported by deploy, network server add/remove, delete, and side-effecting backup commands. |
 | `-c`, `--config <CONFIG>`       | Use an explicit config file. `.toml` is appended when omitted.                                                                  |
 | `--ssh-passphrase <PASSPHRASE>` | Use a passphrase for encrypted local SSH keys.                                                                                  |
 
 App-scoped commands that honor `-c`: `agents`, `mcp`, `init`, `dev`, `run`, `logs`, `deploy`, `releases`, `backups`, `delete`, `secrets`, `credentials`, `storages`, `generate`, and project-context `scale`.
 
-For finite commands, `--json` prints one final object. Commands without a specialized schema use `{"ok":true,"command":"<command>"}`. Failures print `{"ok":false,"error":{"message":"..."}}` on stdout and the human-readable error on stderr. Specialized objects: `status` includes `servers`; `doctor` includes paths, CA, dev server, apps, and proxy checks; `servers list`, `secrets list`, `credentials list`, `dev list`, `backups list`/`status`, and `releases list` include their collections; `backups download` and `backups restore` include the backup entry and what they wrote. Streaming exceptions keep stdout as JSONL until interrupted: `tako logs --tail --json` emits one log record per line, and `tako dev --json` emits a ready object, then log and event records, with no logo or TUI. `tako run` is also an exception: child stdout stays untouched and no JSON result object is appended.
+The config file's parent directory determines the project root and local `.tako/` state. Config files in the same directory share secret drafts; a bound environment cannot be reused for another app or network. See [alternate configurations](/secrets/#use-an-alternate-configuration).
+
+For finite commands, `--json` prints one final object. Commands without a specialized schema use `{"ok":true,"command":"<command>"}`. Failures print `{"ok":false,"error":{"message":"..."}}` on stdout and the human-readable error on stderr. Specialized objects: `status` includes `servers`; `doctor` includes paths, CA, dev server, apps, and proxy checks; `network server list`, `secrets list`, `credentials list`, `dev list`, `backups list`/`status`, and `releases list` include their collections; `backups download` and `backups restore` include the backup entry and what they wrote. Streaming exceptions keep stdout as JSONL until interrupted: `tako logs --tail --json` emits one log record per line, and `tako dev --json` emits a ready object, then log and event records, with no logo or TUI. `tako run` is also an exception: child stdout stays untouched and no JSON result object is appended.
 
 Installed CLIs send an anonymous event per command so we can count unique users and see which commands run. Set `TAKO_TELEMETRY=0` to opt out. See [Usage stats](#usage-stats).
 
@@ -209,20 +211,27 @@ Lists release/build history or rolls an environment back to a previous release. 
 
 ```bash
 tako network create <name>
-tako network request [--name <device>] [--network <id-or-alias>] --output <file>
-tako network approve <request-file> [--network <id-or-alias>] --output <file> [--deploy <app/env>] [--admin] [--ssh] [--expires-in <seconds>]
-tako network import <profile-file> [--name <local-alias>]
+tako network client add [--network <id-or-name>] [--admin | --deploy <app/env>] [--ssh] [--expires-in <seconds>]
+tako network client list [--network <id-or-name>]
+tako network client remove <device> [--network <id-or-name>]
+tako network join [--name <device>] [--invitation-stdin]
+tako network sync [network]
+tako network request [--name <device>] [--network <id-or-name>] --output <file>
+tako network approve <request-file> [--network <id-or-name>] --output <file> [--deploy <app/env>] [--admin] [--ssh] [--expires-in <seconds>]
+tako network import <profile-file>
 tako network export [network] --output <file>
 tako network list --json
 tako network status [network] --json
-tako network revoke <device> [--network <id-or-alias>]
-tako network drain <server> [--network <id-or-alias>] [--timeout <seconds>]
-tako network resume <server> [--network <id-or-alias>]
+tako network revoke <device> [--network <id-or-name>]
+tako network server drain <server> [--network <id-or-name>] [--timeout <seconds>]
+tako network server resume <server> [--network <id-or-name>]
 tako connect [network]
 tako disconnect [network]
 ```
 
-Each device generates and retains its own keys. Repeat `--deploy` for exact app/environment scopes; `--ssh` requires `--admin`. `--expires-in` accepts `1..31536000` seconds and limits membership lifetime, separately from the request's activation window. Import requires the original requesting device's keys. Export contains public network configuration, not private keys or app secrets.
+Invitations are single-use, expire after 3600 seconds by default (`client add --expires-in` accepts 60–86400), and are redeemed through their issuing server. `join` prompts for the invitation or reads stdin. `network sync` pulls published ciphertext without publishing worktree drafts. Network names are shared and currently immutable.
+
+Each device generates and retains its own keys. Repeat `--deploy` for exact app/environment scopes; `--ssh` requires `--admin`. `network approve --expires-in` accepts `1..31536000` seconds and limits membership lifetime, separately from the request's activation window. Import requires the original requesting device's keys. Export contains public network configuration, not private keys or app secrets.
 
 `drain` and `resume` require server administration and a unique member name or device ID. Drain defaults to 120 seconds and accepts `0..3600`; zero requests immediate force. Inspect the structured completion report, not only the drained intent. See [Native server maintenance](/operations/#native-server-maintenance).
 
@@ -231,38 +240,43 @@ Each device generates and retains its own keys. Repeat `--deploy` for exact app/
 ## Servers
 
 ```bash
-tako servers add [admin@host] [--network <id-or-alias>] [--name <name>] [--wireguard-endpoint <ip:udp-port>] [--port <ssh-port>] [--ssh-key <path>] [--http-port <port>] [--https-port <port>]
-tako servers list
-tako servers ls
+tako network server add [admin@host] [--network <id-or-name>] [--name <name>] [--wireguard-endpoint <ip:udp-port>] [--port <ssh-port>] [--ssh-key <path>] [--http-port <port>] [--https-port <port>]
+tako network server list
+tako network server ls
 tako status
-tako servers reload <name> [--force]
-tako servers upgrade [name] [--force]
-tako servers remove [name]
-tako servers rm [name]
-tako servers uninstall [name] [-y|--yes]
+tako network server reload <name> [--force]
+tako network server upgrade [name] [--force]
+tako network server remove [name]
+tako network server rm [name]
+tako network server uninstall [name] [-y|--yes]
 ```
 
-`servers add` bootstraps over administrator SSH and enrolls the server's own keys, HTTPS pins, and endpoint in a Tako network. No `[[servers]]` entry is written. Without `--network`, selection uses the project's production network (honoring `--config`) or the sole configured network. An explicit `--network` takes precedence. Create or import a network first; ambiguous selection requires `--network`.
+`network server add` bootstraps over administrator SSH and enrolls the server's own keys, HTTPS pins, and endpoint in a Tako network. No `[[servers]]` entry is written. Without `--network`, selection uses the project's production network (honoring `--config`) or the sole configured network. An explicit `--network` takes precedence. Create or import a network first; ambiguous selection requires `--network`.
 
 Without a host, an interactive terminal prompts for `admin@host`. An omitted SSH user defaults to `root`. Public HTTP and HTTPS ports default to `80` and `443`. `--ssh-key` selects a private key for bootstrap and saves its absolute path locally for SSH maintenance (reload, upgrade, uninstall). This selection stays on the workstation; normal HTTPS management uses the enrolled device identity. External VPN providers and the old `--vpn`, `--install`, `--no-test`, and server `--description` options are removed. See [Servers](/servers/#choose-the-vpn-provider) to replace an old setup.
 
 `status` prints a deployment snapshot grouped by server, with compact server summary, routes, and app rows. An app whose instances the server had to replace shows a `Restarts` row with the restart count, the last exit (crashed, unhealthy, or failed to start, with its exit code or signal), and when the next restart is due while restarts are backing off. `--json` reports the same under `recovery` in each app status.
 
-Use the `alias/server-name` shown by `servers list` for maintenance commands. `servers reload` performs a zero-downtime service reload by default. Its `--force` flag performs a full restart. `servers upgrade` checks the candidate protocol against the CLI and every active app before reload, checks again after readiness, and restores and restarts the previous binary if the upgrade fails. `servers upgrade --force` attempts an incompatible upgrade but keeps readiness and rollback checks enabled. `servers uninstall` publishes a revocation of native membership and delegated approvals before removing the remote service, binaries, data, and sockets. Revocation failure stops uninstall before deletion; cleanup failure after revocation reports uninstall as incomplete. Offline peers enforce the revocation when they reconnect. `--dry-run` performs neither revocation nor deletion. `servers remove` revokes network membership and delegated approvals without deleting app data.
+Use the exact selector shown by `network server list --json` for maintenance commands. Usually `network-name/server-name`, it includes network or server IDs when names collide; see [Server maintenance](/servers/#server-maintenance). `network server reload` performs a zero-downtime service reload by default. Its `--force` flag performs a full restart. `network server upgrade` checks the candidate protocol against the CLI and every active app before reload, checks again after readiness, and restores and restarts the previous binary if the upgrade fails. `network server upgrade --force` attempts an incompatible upgrade but keeps readiness and rollback checks enabled. `network server uninstall` publishes a revocation of native membership and delegated approvals before removing the remote service, binaries, data, and sockets. Revocation failure stops uninstall before deletion; cleanup failure after revocation reports uninstall as incomplete. Offline peers enforce the revocation when they reconnect. `--dry-run` performs neither revocation nor deletion. `network server remove` revokes network membership and delegated approvals without deleting app data.
 
 ## Secrets
 
 ```bash
-tako secrets set <NAME> [--env <env>] [--expires-on <when>] [--sync]
+tako secrets set <NAME> [--env <env>] [--expires-on <when>]
 tako secrets add <NAME> ...
-tako secrets rm <NAME> [--env <env>] [--sync]
+tako secrets rm <NAME> [--env <env>] [--yes]
 tako secrets list
 tako secrets sync [--env <env>]
+tako secrets migrate
 tako secrets key export [--env <env>]
 tako secrets key import [--env <env>] [--passphrase]
 ```
 
-Secrets are app-facing values delivered to SDKs. Values are encrypted in `.tako/secrets.json`; keys are stored outside the project. Interactive prompts accept pasted multiline values and ask before trimming surrounding whitespace; non-interactive commands read the full stdin stream. `--sync` sends updates to deployed servers and rolls fresh processes so they receive the new bootstrap envelope. If any secret in an environment fails to decrypt, that environment is not synced — a partial push would remove the failed secret from the server.
+Secrets are app-facing values delivered to SDKs. Values are encrypted in ignored worktree-local `.tako/secrets.local.json`; keys are stored outside the project. Interactive prompts accept pasted multiline values and ask before trimming surrounding whitespace; non-interactive commands read the full stdin stream. Set/remove commands only edit local drafts. Deploy and `secrets sync` pull published state, preserve local edits, and publish per-key changes for the selected environment. Sync does not restart running apps; deploy to apply values. Network-bound secrets, provider credentials, storage credentials, and backup keys are replicated as ciphertext between servers. Authorized clients cache them through HTTPS.
+
+`secrets migrate` validates the original environment keys, writes local state, and removes the old `.tako/secrets.json` after retaining an ignored recovery copy. Commit the tracked file's deletion. Historical commits remain unchanged. See [Secrets](/secrets/) for conflicts, worktrees, and recovery.
+
+`secrets key import` can recover the original environment key before local drafts are merged with cached shared values. It accepts an exported key through a masked prompt or stdin; use `--passphrase --env <env>` to derive the original key from its passphrase instead. It rejects keys that cannot decrypt existing values. An invitation restores access to published values, but does not recover unpublished drafts or legacy environment keys.
 
 Expiry accepts `YYYY-MM-DD` or `in N days`. Leave it blank for no expiry. Deploy fails on expired selected-environment secrets and warns when they expire within 30 days.
 
@@ -277,7 +291,7 @@ tako credentials list
 
 Running `tako credentials` without a subcommand lists credentials. Set and remove prompt for an environment when `--env` is omitted; non-interactive use requires `--env`.
 
-Provider credentials are Tako-owned runtime credentials, not app secrets. Supported names are `ssl.cloudflare` and `postgres_url`. They are encrypted in `.tako/secrets.json`, never exposed to app code, and not synced by `tako secrets sync`.
+Provider credentials are Tako-owned runtime credentials, not app secrets. Supported names are `ssl.cloudflare` and `postgres_url`. They are encrypted in local state and shared network records, never exposed to app code, and published by `tako secrets sync` or deploy. Running processes receive the new bindings on deploy.
 
 `ssl.cloudflare` powers Let's Encrypt DNS-01 and Cloudflare Origin CA. `postgres_url` enables shared channel replay, Presence membership, Store invalidation, and workflow state for multi-server deployments. It is a provider credential and is not exposed to app code.
 

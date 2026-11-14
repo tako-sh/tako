@@ -35,7 +35,7 @@ On the web, use [llms.txt](/llms.txt) to discover topics and the `.md` version o
 | Keep database reads current in the UI | [Stores](/stores/)       | Invalidate after committed writes; Tako does not detect database changes automatically. |
 | Execute background jobs or schedules  | [Workflows](/workflows/) | Checkpointed side effects still need idempotency.                                       |
 
-Native networks support bounded channel replication, presence leases, and store invalidation fanout. Native channel, presence, and store delivery can use SQLite across servers; legacy multi-server deployments require the shared `postgres_url` credential. Workflows support shared Postgres or intentional per-server execution; each primitive documents its requirements. Application databases, file storage, and caches are separate from this runtime state.
+Native networks support bounded channel replication, presence leases, and store invalidation fanout. Durable channel replay, presence, and store delivery can use SQLite across servers without Postgres; ephemeral channels use memory-only delivery. Workflows support shared Postgres or intentional per-server execution; each primitive documents its requirements. Application databases, file storage, and caches are separate from this runtime state.
 
 ## Deploy and operate
 

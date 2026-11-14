@@ -1,4 +1,4 @@
-use crate::config::{ConfigError, Result, ServersToml, TakoToml};
+use crate::config::{ConfigError, Result, ServerInventory, TakoToml};
 
 /// Validation result with warnings
 #[derive(Debug, Default)]
@@ -113,7 +113,7 @@ pub fn validate_tako_toml(config: &TakoToml) -> ValidationResult {
 }
 
 /// Validate global server inventory configuration.
-pub fn validate_servers_toml(config: &ServersToml) -> ValidationResult {
+pub fn validate_server_inventory(config: &ServerInventory) -> ValidationResult {
     let mut result = ValidationResult::new();
 
     // Check for empty host
@@ -134,7 +134,7 @@ pub fn validate_servers_toml(config: &ServersToml) -> ValidationResult {
 /// If `deploy_env` is set, only validates servers in that environment.
 pub fn validate_server_references(
     tako_config: &TakoToml,
-    servers_config: &ServersToml,
+    servers_config: &ServerInventory,
     deploy_env: Option<&str>,
 ) -> ValidationResult {
     let mut result = ValidationResult::new();
@@ -152,8 +152,8 @@ pub fn validate_server_references(
         for server_name in &env_config.servers {
             if !servers_config.contains(server_name) {
                 result.error(format!(
-                    "Server '{}' is configured in tako.toml but not found in config.toml [[servers]]. \
-                      Run 'tako servers add --name {} <host>' to add it.",
+                    "Server '{}' is configured in tako.toml but not found in enrolled network membership. Set this environment's network ID in tako.toml. \
+                      Run 'tako network server add --name {} <host>' to add it.",
                     server_name, server_name
                 ));
             }
@@ -166,13 +166,13 @@ pub fn validate_server_references(
 /// Full configuration validation
 pub fn validate_full_config(
     tako_config: &TakoToml,
-    servers_config: &ServersToml,
+    servers_config: &ServerInventory,
     deploy_env: Option<&str>,
 ) -> ValidationResult {
     let mut result = ValidationResult::new();
 
     result.merge(validate_tako_toml(tako_config));
-    result.merge(validate_servers_toml(servers_config));
+    result.merge(validate_server_inventory(servers_config));
     result.merge(validate_server_references(
         tako_config,
         servers_config,
@@ -185,7 +185,7 @@ pub fn validate_full_config(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{EnvConfig, ServerEntry, ServersToml, TakoToml};
+    use crate::config::{EnvConfig, ServerEntry, ServerInventory, TakoToml};
 
     #[test]
     fn validate_tako_toml_rejects_environment_without_routes() {
@@ -375,7 +375,7 @@ mod tests {
         );
 
         // Only prod-server is in global config
-        let mut servers_config = ServersToml::default();
+        let mut servers_config = ServerInventory::default();
         servers_config.servers.insert(
             "prod-server".to_string(),
             ServerEntry {

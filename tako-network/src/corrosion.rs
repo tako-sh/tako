@@ -20,6 +20,9 @@ use crate::{
     api::{RuntimeError, RuntimeResult},
 };
 
+#[path = "corrosion_shared.rs"]
+mod shared_store;
+
 pub const MAX_REGISTRY_ROWS: usize = 10_000;
 pub const MAX_REGISTRY_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_RECORD_BYTES: usize = 128 * 1024;
@@ -60,6 +63,18 @@ pub trait RegistryStore {
     fn append_member(&mut self, member: &Member) -> RuntimeResult<()>;
     fn append_revocation(&mut self, revocation: &Revocation) -> RuntimeResult<()>;
     fn append_ack(&mut self, ack: &Ack) -> RuntimeResult<()>;
+
+    fn shared_snapshot(&mut self) -> RuntimeResult<crate::shared::SharedSnapshot> {
+        Err(RuntimeError::Invalid("shared secret store unavailable"))
+    }
+
+    fn append_secret(&mut self, _record: &crate::shared::SecretRecord) -> RuntimeResult<()> {
+        Err(RuntimeError::Invalid("shared secret store unavailable"))
+    }
+
+    fn append_secret_grant(&mut self, _grant: &crate::shared::SecretGrant) -> RuntimeResult<()> {
+        Err(RuntimeError::Invalid("shared secret store unavailable"))
+    }
 }
 
 pub struct CorrosionStore {
@@ -67,7 +82,7 @@ pub struct CorrosionStore {
     pub(crate) transport: Option<TestTransport>,
     client: Client,
     endpoint: Url,
-    network: NetworkDescriptor,
+    pub(crate) network: NetworkDescriptor,
 }
 
 impl CorrosionStore {
@@ -257,6 +272,18 @@ impl CorrosionStore {
 }
 
 impl RegistryStore for CorrosionStore {
+    fn shared_snapshot(&mut self) -> RuntimeResult<crate::shared::SharedSnapshot> {
+        crate::shared::SharedStore::shared_snapshot(self)
+    }
+
+    fn append_secret(&mut self, record: &crate::shared::SecretRecord) -> RuntimeResult<()> {
+        crate::shared::SharedStore::append_secret(self, record)
+    }
+
+    fn append_secret_grant(&mut self, grant: &crate::shared::SecretGrant) -> RuntimeResult<()> {
+        crate::shared::SharedStore::append_secret_grant(self, grant)
+    }
+
     fn snapshot(&mut self) -> RuntimeResult<RegistrySnapshot> {
         self.read_rows()?.finish()
     }
@@ -356,7 +383,7 @@ fn ack_id(ack: &Ack) -> String {
     format!("{}:{}:{}", ack.revocation, ack.server, ack.boot)
 }
 
-fn parse_transaction(bytes: &[u8], expected: usize) -> RuntimeResult<()> {
+pub(crate) fn parse_transaction(bytes: &[u8], expected: usize) -> RuntimeResult<()> {
     let response: Value = serde_json::from_slice(bytes)?;
     let results = response
         .get("results")
@@ -375,7 +402,7 @@ fn parse_transaction(bytes: &[u8], expected: usize) -> RuntimeResult<()> {
     Ok(())
 }
 
-fn parse_query(bytes: &[u8]) -> RuntimeResult<Vec<Vec<Value>>> {
+pub(crate) fn parse_query(bytes: &[u8]) -> RuntimeResult<Vec<Vec<Value>>> {
     if bytes.len() > MAX_REGISTRY_BYTES {
         return Err(RuntimeError::Capacity("Corrosion response"));
     }
@@ -425,7 +452,7 @@ fn parse_query(bytes: &[u8]) -> RuntimeResult<Vec<Vec<Value>>> {
     Ok(rows)
 }
 
-fn record_key(row: &[Value]) -> RuntimeResult<(String, String, String)> {
+pub(crate) fn record_key(row: &[Value]) -> RuntimeResult<(String, String, String)> {
     if row.len() != 4 {
         return Err(RuntimeError::Corrosion("record width"));
     }
@@ -446,7 +473,7 @@ fn record_limit(kind: &str) -> usize {
     }
 }
 
-fn record_payload(row: &[Value]) -> RuntimeResult<&str> {
+pub(crate) fn record_payload(row: &[Value]) -> RuntimeResult<&str> {
     let payload = row
         .get(3)
         .and_then(Value::as_str)
@@ -627,6 +654,7 @@ mod tests {
     fn network() -> NetworkDescriptor {
         let id = NetworkId::random().unwrap();
         NetworkDescriptor {
+            name: "test".parse().unwrap(),
             initial_admin: LocalDeviceKeys::generate()
                 .unwrap()
                 .device_id(&id, DeviceKind::Laptop)

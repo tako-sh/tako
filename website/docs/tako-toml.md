@@ -3,7 +3,7 @@ title: "tako.toml Reference"
 description: "Look up Tako project configuration for identity, runtimes, builds, routes, variables, storage, backups, images, workflows, and deployment targets."
 ---
 
-`tako.toml` describes one app: identity, runtime, build, routes, variables, storage bindings, backups, SSL provider, source-IP policy, workflows, and target servers. App secrets, storage credentials, and provider credentials are encrypted in `.tako/secrets.json`, not stored in this file.
+`tako.toml` describes one app: identity, runtime, build, routes, variables, storage bindings, backups, SSL provider, source-IP policy, workflows, and target servers. App secrets, storage credentials, and provider credentials are encrypted in ignored `.tako/secrets.local.json` and encrypted network state, not stored in this file.
 
 App-scoped commands use `./tako.toml` by default. `-c path/to/config` selects another config file and treats that file's parent directory as the app directory.
 
@@ -183,7 +183,7 @@ force_path_style = false
 public_base_url = "https://cdn.example.com/uploads"
 ```
 
-Top-level storage resources store non-secret metadata. S3 resources require `bucket`, `endpoint`, and `region`; endpoints and public base URLs must use HTTPS. Set `force_path_style = true` when your S3-compatible provider needs path-style bucket URLs instead of virtual-hosted bucket URLs. Credentials are set by `tako storages add` or `tako storages credentials` and stored encrypted in `.tako/secrets.json`.
+Top-level storage resources store non-secret metadata. S3 resources require `bucket`, `endpoint`, and `region`; endpoints and public base URLs must use HTTPS. Set `force_path_style = true` when your S3-compatible provider needs path-style bucket URLs instead of virtual-hosted bucket URLs. Credentials are set by `tako storages add` or `tako storages credentials` and stored encrypted in ignored `.tako/secrets.local.json` and encrypted network state.
 
 `local` is a built-in resource name. Bind to it with `storages = { uploads = "local" }`; do not declare `[storages.local]`. Local storage deploys only to single-server environments. In `development`, undeclared storage resources default to local storage.
 
@@ -214,7 +214,7 @@ Set provider credentials with:
 tako credentials set ssl.cloudflare --env production
 ```
 
-Provider credentials are encrypted in `.tako/secrets.json`, not stored in `tako.toml`.
+Provider credentials are encrypted in ignored `.tako/secrets.local.json` and encrypted network state, not stored in `tako.toml`.
 
 ## Workflows
 
@@ -234,7 +234,7 @@ Production supervises one scale-to-zero lane per JavaScript worker group, select
 
 The parser accepts `run` in named worker groups. It accepts `workers` and `concurrency` in `[workflows]`, `[workflows.<group>]`, `[servers.<server>.workflows]`, and `[servers.<server>.workflows.<group>]`. Parsed count/concurrency precedence is defaults (`workers = 0`, `concurrency = 10`), app base, app group, server base, then server group. These parsed counts and overrides do not yet control production supervision; do not rely on them to tune running workers. `run` must be a non-empty array of non-empty strings. Group and server names follow the app-name rules.
 
-In multi-server environments, JS workflows require `postgres_url` unless every workflow opts into local per-server execution. Go workflow deployments require `postgres_url` for multi-server environments. Native networks support bounded channel replication, presence leases, and invalidation fanout separately from workflow storage. When the selected environment has `network`, channels, presence, and store notifications can use SQLite across servers without `postgres_url`. Configured Postgres credentials remain in use and must be valid. Legacy multi-server deployments need that shared credential; configure it explicitly for inline Go and Rust registrations, which preflight does not discover.
+In multi-server environments, JS workflows require `postgres_url` unless every workflow opts into local per-server execution. Go workflow deployments require `postgres_url` for multi-server environments. Native networks support bounded channel replication, presence leases, and invalidation fanout separately from workflow storage. Durable channel replay, presence, and store notifications can use SQLite across servers without `postgres_url`; ephemeral channels use memory-only delivery. Configured Postgres credentials remain in use and must be valid. See [Channels](/channels/#deploy-replay-storage) and [Workflows](/workflows/) for their separate storage requirements.
 
 ## Complete Example
 

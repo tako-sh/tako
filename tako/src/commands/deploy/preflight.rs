@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use crate::config::ServersToml;
+use crate::config::ServerInventory;
 use crate::management_http::{self, ManagementClient};
 use crate::output;
 use crate::validation::validate_no_route_conflicts;
@@ -13,7 +13,7 @@ use super::{PreflightPhaseResult, ServerCheck};
 
 pub(super) async fn run_server_preflight_checks(
     server_names: Vec<String>,
-    servers: ServersToml,
+    servers: ServerInventory,
     deploy_app_name: String,
     routes: Vec<String>,
     force: bool,
@@ -23,9 +23,12 @@ pub(super) async fn run_server_preflight_checks(
     let mut check_set = tokio::task::JoinSet::new();
 
     for server_name in &server_names {
-        let server = servers
-            .get(server_name)
-            .ok_or_else(|| format!("Server '{}' not found in servers.toml", server_name))?;
+        let server = servers.get(server_name).ok_or_else(|| {
+            format!(
+                "Server '{}' not found in enrolled network membership",
+                server_name
+            )
+        })?;
         let name = server_name.clone();
         let task_tree_for_task = task_tree.clone();
         let check_name = name.clone();
@@ -186,12 +189,12 @@ fn format_preflight_management_error(
     let message = error.to_string();
     if looks_like_management_auth_error(&message) {
         return format!(
-            "Management auth failed for {host}. Run `tako servers add {host}` again to enroll this machine, then try again."
+            "Management auth failed for {host}. Run `tako network server add {host}` again to enroll this machine, then try again."
         );
     }
     if looks_like_management_connection_error(&message) {
         return format!(
-            "tako-server is not reachable at {host}:{}. Run `tako servers add <admin-user>@{host}` to install it, or start the service, then try again.",
+            "tako-server is not reachable at {host}:{}. Run `tako network server add <admin-user>@{host}` to install it, or start the service, then try again.",
             management_http::MANAGEMENT_PORT
         );
     }
@@ -235,7 +238,7 @@ mod tests {
 
         assert_eq!(
             message,
-            "tako-server is not reachable at prod.example.com:9844. Run `tako servers add <admin-user>@prod.example.com` to install it, or start the service, then try again."
+            "tako-server is not reachable at prod.example.com:9844. Run `tako network server add <admin-user>@prod.example.com` to install it, or start the service, then try again."
         );
     }
 
@@ -247,7 +250,7 @@ mod tests {
 
         assert_eq!(
             message,
-            "Management auth failed for prod.example.com. Run `tako servers add prod.example.com` again to enroll this machine, then try again."
+            "Management auth failed for prod.example.com. Run `tako network server add prod.example.com` again to enroll this machine, then try again."
         );
     }
 

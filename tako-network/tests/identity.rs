@@ -47,6 +47,12 @@ fn signed_request_binds_network_kind_keys_and_name() {
     let mut changed = original.clone();
     changed.expires_at = Some(100);
     assert!(changed.verify().is_err());
+    let mut changed = original.clone();
+    changed.encryption_public_key = LocalDeviceKeys::generate()
+        .unwrap()
+        .encryption_public_key()
+        .unwrap();
+    assert!(changed.verify().is_err());
     let mut changed = original;
     changed.wg_public_key = LocalDeviceKeys::generate()
         .unwrap()

@@ -5,6 +5,8 @@ description: "How Tako's build stages let you deploy monorepo apps with shared p
 image: 676e890933c4
 ---
 
+> **Update, November 14, 2026:** This article describes an earlier Tako release. The SFTP path below is historical: native deployments now use [pinned HTTPS management](/docs/deployment/). Read [the new network and secrets workflow](/blog/sync-deployment-secrets-with-tako-networks/).
+
 You have a monorepo. A shared UI library in `packages/ui`, an API app in `apps/api`, a web frontend in `apps/web`. Everything shares types, components, maybe a design system. It works great locally.
 
 Then you try to deploy, and the fun stops.

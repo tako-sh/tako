@@ -1,6 +1,105 @@
 use super::*;
-use crate::config::{EnvConfig, ServerEntry, ServerTarget, ServersToml, TakoToml};
+use crate::config::{EnvConfig, ServerEntry, ServerInventory, ServerTarget, TakoToml};
 use tempfile::TempDir;
+
+#[test]
+fn release_snapshot_rechecks_expiry_after_a_valid_preflight_snapshot() {
+    let project = TempDir::new().unwrap();
+    let mut config = TakoToml::default();
+    config
+        .envs
+        .insert("production".into(), EnvConfig::default());
+    let mut secrets = SecretsStore::default();
+    secrets.ensure_env_key_id("production").unwrap();
+    secrets
+        .set("production", "API_KEY", "encrypted".into())
+        .unwrap();
+    let initial =
+        validate_release_secret_snapshot(project.path(), &config, &secrets, "production", 1, true);
+    assert!(
+        !initial.has_errors(),
+        "The initial snapshot should be valid"
+    );
+
+    // The final network sync can observe a concurrent change after preflight.
+    secrets
+        .environments
+        .get_mut("production")
+        .unwrap()
+        .app
+        .get_mut("API_KEY")
+        .unwrap()
+        .expires_on = Some("2000-01-01".into());
+    for configure in [false, true] {
+        let result = validate_release_secret_snapshot(
+            project.path(),
+            &config,
+            &secrets,
+            "production",
+            1,
+            configure,
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.contains("API_KEY") && error.contains("expired on 2000-01-01")),
+            "The final snapshot must reject an expired app secret"
+        );
+    }
+}
+
+#[test]
+fn release_snapshot_rechecks_removed_credentials_only_for_binding_administrators() {
+    let project = TempDir::new().unwrap();
+    let mut config = TakoToml::default();
+    config.envs.insert(
+        "production".into(),
+        EnvConfig {
+            route: Some("*.example.com".into()),
+            ..Default::default()
+        },
+    );
+    let mut secrets = SecretsStore::default();
+    secrets.ensure_env_key_id("production").unwrap();
+    secrets
+        .set_credential(
+            "production",
+            crate::config::SSL_CLOUDFLARE_CREDENTIAL_NAME,
+            crate::config::EncryptedSecretValue::new("encrypted".into(), None),
+        )
+        .unwrap();
+    let initial =
+        validate_release_secret_snapshot(project.path(), &config, &secrets, "production", 1, true);
+    assert!(
+        !initial.has_errors(),
+        "The initial snapshot should be valid"
+    );
+    secrets
+        .remove_credential("production", crate::config::SSL_CLOUDFLARE_CREDENTIAL_NAME)
+        .unwrap();
+    let result =
+        validate_release_secret_snapshot(project.path(), &config, &secrets, "production", 1, true);
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|error| error.contains("ssl.cloudflare")),
+        "The final snapshot must reject a removed SSL credential"
+    );
+    // Scoped deployment clients reuse the server's provisioned credentials.
+    assert!(
+        !validate_release_secret_snapshot(
+            project.path(),
+            &config,
+            &secrets,
+            "production",
+            1,
+            false,
+        )
+        .has_errors()
+    );
+}
 
 #[test]
 fn resolve_deploy_environment_prefers_explicit_env() {
@@ -304,7 +403,7 @@ fn resolve_deploy_servers_prefers_explicit_mapping() {
         },
     );
 
-    let mut servers = ServersToml::default();
+    let mut servers = ServerInventory::default();
     servers.servers.insert(
         "prod-1".to_string(),
         ServerEntry {
@@ -326,7 +425,7 @@ fn resolve_deploy_servers_require_explicit_mapping() {
         .envs
         .insert("production".to_string(), Default::default());
 
-    let mut servers = ServersToml::default();
+    let mut servers = ServerInventory::default();
     servers.servers.insert(
         "solo".to_string(),
         ServerEntry {
@@ -347,11 +446,11 @@ fn resolve_deploy_servers_errors_with_hint_when_no_global_servers_exist() {
     config
         .envs
         .insert("production".to_string(), Default::default());
-    let servers = ServersToml::default();
+    let servers = ServerInventory::default();
 
     let err = resolve_deploy_server_names(&config, &servers, "production").unwrap_err();
     assert!(err.contains("No servers have been added"));
-    assert!(err.contains("tako servers add <host>"));
+    assert!(err.contains("tako network server add <host>"));
 }
 
 #[test]
@@ -360,7 +459,7 @@ fn resolve_deploy_servers_errors_for_non_production_without_mapping() {
     config
         .envs
         .insert("staging".to_string(), Default::default());
-    let mut servers = ServersToml::default();
+    let mut servers = ServerInventory::default();
     servers.servers.insert(
         "solo".to_string(),
         ServerEntry {
@@ -415,7 +514,7 @@ async fn resolve_deploy_servers_with_setup_persists_single_server_mapping() {
         .collect(),
         ..Default::default()
     };
-    let mut servers = ServersToml::default();
+    let mut servers = ServerInventory::default();
     servers.servers.insert(
         "solo".to_string(),
         ServerEntry {
@@ -455,7 +554,7 @@ route = "app.example.com"
 #[tokio::test]
 async fn resolve_deploy_servers_with_setup_requires_interactive_selection_when_multiple_servers() {
     let config = TakoToml::default();
-    let mut servers = ServersToml::default();
+    let mut servers = ServerInventory::default();
     servers.servers.insert(
         "a".to_string(),
         ServerEntry {
@@ -489,7 +588,7 @@ async fn resolve_deploy_servers_with_setup_requires_interactive_selection_when_m
 
 #[test]
 fn resolve_deploy_server_targets_requires_metadata_for_each_server() {
-    let mut servers = ServersToml::default();
+    let mut servers = ServerInventory::default();
     servers.servers.insert(
         "prod-1".to_string(),
         ServerEntry {
@@ -508,7 +607,7 @@ fn resolve_deploy_server_targets_requires_metadata_for_each_server() {
 
 #[test]
 fn resolve_deploy_server_targets_rejects_invalid_values() {
-    let mut servers = ServersToml::default();
+    let mut servers = ServerInventory::default();
     servers.servers.insert(
         "prod-1".to_string(),
         ServerEntry {

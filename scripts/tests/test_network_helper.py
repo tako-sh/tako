@@ -1,15 +1,15 @@
 import base64
-import copy
 import contextlib
-import io
+import copy
 import importlib.util
+import io
 import json
 import os
-from pathlib import Path
 import struct
 import tempfile
 import unittest
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import Mock, patch
 
 
 SOURCE = Path(__file__).resolve().parents[1] / 'tako-network-helper.py'
@@ -154,6 +154,39 @@ class FilesystemTests(unittest.TestCase):
                 os.close(fd)
 
 
+class DiagnosticTests(unittest.TestCase):
+    def test_command_failure_redacts_private_inputs_and_output(self):
+        for command, stderr, expected in [
+            (('ip', 'link', 'add', 'dev', 'test', 'type', 'wireguard'),
+             'Error: Unknown device type. private-secret', 'host kernel does not support WireGuard interfaces'),
+            (('nft', '-f', '-'), 'Operation not permitted: private-secret',
+             'network firewall configuration failed (permission denied)'),
+            (('wg', 'pubkey'), 'invalid key private-secret', 'WireGuard public key derivation failed (exit 1)'),
+            (('wg', 'syncconf', 'test', '/private/path'), 'fopen: Permission denied: private-secret',
+             'WireGuard configuration file access denied; check host security policy'),
+            (('wg', 'show', 'all', 'listen-port'), 'Operation not permitted: private-secret',
+             'WireGuard inventory failed (permission denied)'),
+        ]:
+            with self.subTest(command=command):
+                process = Mock(returncode=1, stdout='private-secret', stderr=stderr)
+                with patch.object(helper.subprocess, 'run', return_value=process), \
+                        self.assertRaises(helper.Rejected) as raised:
+                    helper.Runner().run(*command, input='private-secret')
+                self.assertEqual(str(raised.exception), expected)
+
+    def test_service_journal_keeps_only_redacted_failure(self):
+        connection = Mock()
+        diagnostic = io.StringIO()
+        with patch.object(helper, 'peer_uid', return_value=0), \
+                patch.object(helper, 'receive', return_value=f'{ID} apply\n'.encode()), \
+                patch.object(helper, 'operation', side_effect=ValueError('private-secret')), \
+                contextlib.redirect_stderr(diagnostic):
+            helper.handle_connection(connection, 1000)
+        expected = {'ok': False, 'error': 'invalid or unavailable host state'}
+        self.assertEqual(json.loads(diagnostic.getvalue()), expected)
+        self.assertEqual(json.loads(connection.sendall.call_args.args[0]), expected)
+
+
 class FakeRunner:
     def __init__(self):
         self.calls = []
@@ -241,6 +274,7 @@ class ReconcileTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.addCleanup(patch.stopall)
         patch.object(helper, 'STATE', Path(self.tmp.name)).start()
+        patch.object(helper, 'WIREGUARD', Path(self.tmp.name)).start()
         self.runner = FakeRunner()
         self.saved = None
         self.ssh = ''
@@ -463,6 +497,7 @@ class ReconcileTests(unittest.TestCase):
         self.runner.fail = ('wg', 'syncconf')
         with self.assertRaises(helper.Rejected):
             self.apply()
+        self.assertEqual(list(Path(self.tmp.name).glob('.wg-*')), [])
         self.assertEqual(self.runner.links[0]['operstate'], 'down')
         self.runner.fail = None
         self.apply()

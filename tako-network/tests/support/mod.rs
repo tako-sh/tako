@@ -46,6 +46,7 @@ pub fn bootstrap() -> (RegistrySnapshot, LocalDeviceKeys, DeviceId) {
     let id = keys.device_id(&network, DeviceKind::Laptop).unwrap();
     let mut snapshot = RegistrySnapshot {
         network: NetworkDescriptor {
+            name: "test".parse().unwrap(),
             id: network,
             initial_admin: id.clone(),
         },

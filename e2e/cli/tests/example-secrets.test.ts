@@ -42,28 +42,21 @@ function runTako(args: string[], cwd: string, stdin = "") {
 }
 
 describe("Go example secrets", () => {
-  test("current example secret files import with the documented passphrase", async () => {
+  test("example secret names are generated from local drafts without tracked values", async () => {
     for (const name of EXAMPLE_DIRS) {
       const source = join(REPO_ROOT, "examples", "go", name);
       const projectDir = join(tempDir, basename(source));
       await cp(source, projectDir, { recursive: true });
 
       for (const envName of ["development", "production"]) {
-        const result = runTako(
-          [
-            "--config",
-            join(projectDir, "tako.toml"),
-            "secrets",
-            "key",
-            "import",
-            "--passphrase",
-            "--env",
-            envName,
-          ],
-          projectDir,
-          "tako-example\n",
-        );
-        expect(result.exitCode, `${name}/${envName}: ${result.stdout}${result.stderr}`).toBe(0);
+        for (const secret of SECRET_NAMES) {
+          const result = runTako(
+            ["--config", join(projectDir, "tako.toml"), "secrets", "set", secret, "--env", envName],
+            projectDir,
+            "example-value",
+          );
+          expect(result.exitCode, `${name}/${envName}: ${result.stdout}${result.stderr}`).toBe(0);
+        }
       }
 
       const list = runTako(

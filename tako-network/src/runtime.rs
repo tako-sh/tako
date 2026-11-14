@@ -12,6 +12,9 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
+mod invitation;
+mod shared;
+
 use crate::{
     Ack, Approval, BootId, DeviceId, DeviceKind, LocalDeviceKeys, Member, MemberKind,
     NetworkDescriptor, NetworkPublicProfile, PendingApprovalProfile, PendingWgChallenge,
@@ -172,7 +175,11 @@ impl<S: RegistryStore> ServerRuntime<S> {
             CREATE TABLE IF NOT EXISTS registry_failure (singleton INTEGER PRIMARY KEY CHECK(singleton=1));
             CREATE TABLE IF NOT EXISTS revocation_nonces (signer TEXT NOT NULL, nonce TEXT NOT NULL, expires INTEGER NOT NULL, PRIMARY KEY(signer, nonce));
             CREATE INDEX IF NOT EXISTS revocation_nonce_expiry ON revocation_nonces(expires);
-            CREATE TABLE IF NOT EXISTS pending_entitlements (id TEXT PRIMARY KEY, expires INTEGER NOT NULL, payload TEXT NOT NULL);")?;
+            CREATE TABLE IF NOT EXISTS pending_entitlements (id TEXT PRIMARY KEY, expires INTEGER NOT NULL, payload TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS invitations (id TEXT PRIMARY KEY, expires INTEGER NOT NULL, payload TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS shared_observed (kind TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(kind, id));
+            CREATE TABLE IF NOT EXISTS shared_commands (id TEXT PRIMARY KEY, payload TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS shared_grants (id TEXT PRIMARY KEY, payload TEXT NOT NULL);")?;
         let network = serde_json::to_string(&config.network)?;
         db.execute(
             "INSERT OR IGNORE INTO runtime_identity VALUES (1, ?1, ?2, 0, ?3)",
@@ -363,6 +370,14 @@ impl<S: RegistryStore> ServerRuntime<S> {
         }
         self.require_server(&snapshot, now)?;
         let entitlement = match &signed.request {
+            RpcRequest::ClaimInvitation(claim) => {
+                claim.request.verify()?;
+                if claim.request.device_id_for(&self.config.network.id)? != signed.signer {
+                    return Err(RuntimeError::Authentication);
+                }
+                signed.verify(&claim.request.ssh_public_key)?;
+                None
+            }
             RpcRequest::Begin { pending_id } | RpcRequest::Complete { pending_id, .. } => {
                 let entitlement = self.pending(pending_id, now)?;
                 if entitlement
@@ -382,7 +397,9 @@ impl<S: RegistryStore> ServerRuntime<S> {
                 signed.verify(&member.request.ssh_public_key)?;
                 if matches!(
                     signed.request,
-                    RpcRequest::Approve(_) | RpcRequest::Revoke { .. }
+                    RpcRequest::Approve(_)
+                        | RpcRequest::CreateInvitation(_)
+                        | RpcRequest::Revoke { .. }
                 ) && !member.permissions.network_admin
                 {
                     return Err(RuntimeError::Denied);
@@ -403,7 +420,17 @@ impl<S: RegistryStore> ServerRuntime<S> {
                     action,
                 })
             }
+            RpcRequest::CreateInvitation(grant) => {
+                self.create_invitation(*grant, signed.signer, snapshot, now)
+            }
+            RpcRequest::ClaimInvitation(claim) => self.claim_invitation(*claim, snapshot, now),
             RpcRequest::Snapshot => Ok(RpcResponse::Snapshot(snapshot)),
+            RpcRequest::PullSecrets { scope } => {
+                self.pull_secrets(&signed.signer, scope.as_ref(), &snapshot, now)
+            }
+            RpcRequest::PublishSecret(mutation) => {
+                self.publish_secret(*mutation, &signed.signer, &snapshot, now)
+            }
             RpcRequest::Approve(grant) => {
                 self.approve_pending(*grant, signed.signer, snapshot, now)
             }
@@ -918,15 +945,38 @@ mod tests {
     use crate::NetworkId;
     use std::{cell::RefCell, rc::Rc};
 
+    include!("runtime/shared_tests.rs");
+    include!("runtime/invitation_tests.rs");
+
     #[derive(Clone)]
     struct MemoryStore(Rc<RefCell<MemoryState>>);
     struct MemoryState {
         snapshot: RegistrySnapshot,
+        shared: crate::shared::SharedSnapshot,
+        fail_before_secret: bool,
+        fail_after_secret: bool,
         fail_before_member: bool,
         fail_after_member: bool,
         fail_ack: bool,
     }
     impl RegistryStore for MemoryStore {
+        fn shared_snapshot(&mut self) -> RuntimeResult<crate::shared::SharedSnapshot> {
+            Ok(self.0.borrow().shared.clone())
+        }
+        fn append_secret(&mut self, record: &crate::shared::SecretRecord) -> RuntimeResult<()> {
+            let mut state = self.0.borrow_mut();
+            if std::mem::take(&mut state.fail_before_secret) {
+                return Err(RuntimeError::Transport);
+            }
+            crate::shared::SharedStore::append_secret(&mut state.shared, record)?;
+            if std::mem::take(&mut state.fail_after_secret) {
+                return Err(RuntimeError::Transport);
+            }
+            Ok(())
+        }
+        fn append_secret_grant(&mut self, grant: &crate::shared::SecretGrant) -> RuntimeResult<()> {
+            crate::shared::SharedStore::append_secret_grant(&mut self.0.borrow_mut().shared, grant)
+        }
         fn snapshot(&mut self) -> RuntimeResult<RegistrySnapshot> {
             Ok(self.0.borrow().snapshot.clone())
         }
@@ -1096,6 +1146,7 @@ mod tests {
             let network = NetworkId::random().unwrap();
             let admin_id = admin_keys.device_id(&network, DeviceKind::Laptop).unwrap();
             let descriptor = NetworkDescriptor {
+                name: "test".parse().unwrap(),
                 id: network.clone(),
                 initial_admin: admin_id,
             };
@@ -1147,6 +1198,9 @@ mod tests {
             Self {
                 dir,
                 store: MemoryStore(Rc::new(RefCell::new(MemoryState {
+                    shared: crate::shared::SharedSnapshot::empty(snapshot.network.id.clone()),
+                    fail_before_secret: false,
+                    fail_after_secret: false,
                     snapshot,
                     fail_before_member: false,
                     fail_after_member: false,

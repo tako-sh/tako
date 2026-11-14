@@ -228,9 +228,10 @@ fn write_corrosion_at(
     directory.write(
         "corrosion.schema.sql",
         format!(
-            "{}\n{}\n",
+            "{}\n{}\n{}\n",
             tako_network::corrosion::CORROSION_SCHEMA,
-            tako_network::services::SERVICE_SCHEMA
+            tako_network::services::SERVICE_SCHEMA,
+            tako_network::shared::SHARED_SCHEMA
         )
         .as_bytes(),
     )?;

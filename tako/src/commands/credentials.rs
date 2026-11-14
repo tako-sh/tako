@@ -65,7 +65,7 @@ fn set_credential_command(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let name = resolve_credential_name(requested_name)?;
     let env = resolve_credential_environment(context, requested_env)?;
-    let secrets = crate::config::SecretsStore::load_from_dir(&context.project_dir)?;
+    let secrets = context.load_secrets_for_environment(Some(&env))?;
     if !confirm_credential_override(&secrets, &name, &env)? {
         return Ok(());
     }
@@ -73,7 +73,14 @@ fn set_credential_command(
     let expires_on =
         crate::commands::secret::read_secret_expires_on(requested_expires_on, "Expires on")?;
     let existed = secrets.contains_credential(&env, &name);
-    set_credential_value(&context.project_dir, &env, &name, &value, expires_on)?;
+    save_credential_value(
+        &context.project_dir,
+        secrets,
+        &env,
+        &name,
+        &value,
+        expires_on,
+    )?;
 
     if existed {
         output::success(&format!(
@@ -100,7 +107,7 @@ fn remove_credential_command(
     let name = normalize_credential_name(name);
     crate::config::validate_credential_name(&name)?;
     let env = resolve_credential_environment(context, requested_env)?;
-    let mut secrets = crate::config::SecretsStore::load_from_dir(&context.project_dir)?;
+    let mut secrets = context.load_secrets_for_environment(Some(&env))?;
     if !secrets.contains_credential(&env, &name) {
         return Err(format!("Credential '{name}' not found in environment '{env}'").into());
     }
@@ -218,7 +225,7 @@ fn resolve_credential_environment(
     }
 
     let tako_config = crate::config::TakoToml::load_from_file(&context.config_path)?;
-    let secrets = crate::config::SecretsStore::load_from_dir(&context.project_dir)?;
+    let secrets = crate::config::SecretsStore::load_for_key_recovery(&context.project_dir)?;
     let mut wizard = output::Wizard::new().with_fields(&[("Environment", false)]);
     wizard
         .select(
@@ -272,7 +279,7 @@ fn credential_status_rows(
 fn list_credentials(
     context: &crate::commands::project_context::ProjectContext,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let secrets = crate::config::SecretsStore::load_from_dir(&context.project_dir)?;
+    let secrets = context.load_secrets()?;
     let tako_config = crate::config::TakoToml::load_from_file(&context.config_path)?;
     let (all_envs, rows) = credential_status_rows(&tako_config, &secrets);
 
@@ -434,9 +441,20 @@ fn set_credential_value(
     value: &str,
     expires_on: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let secrets = crate::config::SecretsStore::load_from_dir(project_dir)?;
+    save_credential_value(project_dir, secrets, env, name, value, expires_on)
+}
+
+fn save_credential_value(
+    project_dir: &Path,
+    mut secrets: crate::config::SecretsStore,
+    env: &str,
+    name: &str,
+    value: &str,
+    expires_on: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let name = normalize_credential_name(name);
     crate::config::validate_credential_name(&name)?;
-    let mut secrets = crate::config::SecretsStore::load_from_dir(project_dir)?;
     secrets.ensure_env_key_id(env)?;
     let key =
         crate::commands::secret::load_or_create_key_for_set(env, &secrets, Some(project_dir))?;

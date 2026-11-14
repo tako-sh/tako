@@ -2,7 +2,6 @@ mod phase;
 mod transfer;
 
 pub use phase::PhaseSpinner;
-pub use transfer::TrackedSpinner;
 
 use std::fmt::Display;
 use std::future::Future;

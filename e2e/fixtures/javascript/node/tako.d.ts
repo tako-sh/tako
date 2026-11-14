@@ -33,7 +33,7 @@ declare module "tako.sh" {
   }
 
   /**
-   * Project-specific secret keys from `.tako/secrets.json`.
+   * Project-specific secret keys from local secret state and the published cache.
    *
    * No secrets are currently configured for this project. After you add one,
    * this interface is regenerated with typed readonly keys.

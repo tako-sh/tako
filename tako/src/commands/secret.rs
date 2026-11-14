@@ -18,7 +18,11 @@ use sync::{list_secrets, sync_secrets};
 /// Refresh generated files (`tako.d.ts` for JS/TS, `tako_secrets.go` for Go)
 /// after a secret change. Best-effort — a generation failure doesn't block
 /// the secret write itself.
-fn refresh_generated_files_after_secret_change(project_dir: &Path, config_path: &Path) {
+fn refresh_generated_files_after_secret_change(
+    project_dir: &Path,
+    config_path: &Path,
+    environment: Option<&str>,
+) {
     let tako_config = match TakoToml::load_from_file(config_path) {
         Ok(cfg) => cfg,
         Err(_) => return,
@@ -32,14 +36,19 @@ fn refresh_generated_files_after_secret_change(project_dir: &Path, config_path: 
         .unwrap_or_else(|| detect_build_adapter(project_dir));
     match adapter.preset_group() {
         PresetGroup::Js => {
-            let _ = build::js::write_tako_declarations_for_adapter_and_app_root(
+            let _ = build::js::write_tako_declarations_with_config(
                 project_dir,
                 adapter,
-                tako_config.js_app_root(),
+                &tako_config,
+                environment,
             );
         }
         PresetGroup::Go => {
-            let _ = build::go::write_secret_accessors(project_dir);
+            let _ = build::go::write_secret_accessors_with_config(
+                project_dir,
+                &tako_config,
+                environment,
+            );
         }
         PresetGroup::Unknown => {}
     }
@@ -47,6 +56,8 @@ fn refresh_generated_files_after_secret_change(project_dir: &Path, config_path: 
 
 #[derive(Subcommand)]
 pub enum SecretCommands {
+    /// Move the old Git-tracked secret file into ignored local state
+    Migrate,
     /// Set a secret (creates or overwrites)
     #[command(visible_alias = "add")]
     Set {
@@ -60,10 +71,6 @@ pub enum SecretCommands {
         /// Optional expiry date. Use YYYY-MM-DD or "in 30 days".
         #[arg(long)]
         expires_on: Option<String>,
-
-        /// Sync secrets to servers after setting
-        #[arg(long)]
-        sync: bool,
     },
 
     /// Remove a secret
@@ -76,16 +83,16 @@ pub enum SecretCommands {
         #[arg(long)]
         env: Option<String>,
 
-        /// Sync secrets to servers after removing
-        #[arg(long)]
-        sync: bool,
+        /// Confirm removal of the local draft without prompting
+        #[arg(short = 'y', long)]
+        yes: bool,
     },
 
     /// List all secrets
     #[command(visible_aliases = ["ls", "show"])]
     List,
 
-    /// Sync secrets to servers
+    /// Publish this worktree's secret drafts to the network
     Sync {
         /// Only sync to specific environment
         #[arg(long)]
@@ -220,29 +227,32 @@ async fn run_async(
     context: crate::commands::project_context::ProjectContext,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
+        SecretCommands::Migrate => {
+            if output::is_dry_run() {
+                output::dry_run_skip("Migrate tracked secrets to local drafts");
+                return Ok(());
+            }
+            crate::network::secrets::migrate(&context.project_dir)?;
+            output::success("Migrated secrets to this worktree's local drafts");
+            output::hint(
+                "Commit the deletion of .tako/secrets.json. Deploy or run `tako secrets sync` to publish the drafts; Git history is unchanged.",
+            );
+            Ok(())
+        }
         SecretCommands::Set {
             name,
             env,
             expires_on,
-            sync,
         } => {
             let Some(input) =
                 resolve_secret_set_input(&context, env.as_deref(), &name, expires_on)?
             else {
                 return Ok(());
             };
-            set_secret(
-                &context,
-                &name,
-                &input.env,
-                &input.value,
-                input.expires_on,
-                sync,
-            )
-            .await
+            set_secret(&context, &name, &input.env, &input.value, input.expires_on).await
         }
-        SecretCommands::Rm { name, env, sync } => {
-            remove_secret(&context, &name, env.as_deref(), sync).await
+        SecretCommands::Rm { name, env, yes } => {
+            remove_secret(&context, &name, env.as_deref(), yes).await
         }
         SecretCommands::List => list_secrets(&context).await,
         SecretCommands::Sync { env } => sync_secrets(&context, env.as_deref()).await,
@@ -310,7 +320,7 @@ pub(crate) fn resolve_secret_environment(
     }
 
     let tako_config = crate::config::TakoToml::load_from_file(&context.config_path)?;
-    let secrets = crate::config::SecretsStore::load_from_dir(&context.project_dir)?;
+    let secrets = crate::config::SecretsStore::load_for_key_recovery(&context.project_dir)?;
     let mut wizard = output::Wizard::new().with_fields(&[("Environment", false), ("Name", true)]);
 
     let choice = wizard.select(
@@ -448,7 +458,10 @@ fn resolve_secret_set_input(
     name: &str,
     requested_expires_on: Option<String>,
 ) -> Result<Option<SecretSetInput>, Box<dyn std::error::Error>> {
-    let secrets = crate::config::SecretsStore::load_from_dir(&context.project_dir)?;
+    let secrets = match requested_env {
+        Some(env) => context.load_secrets_for_environment(Some(env))?,
+        None => crate::config::SecretsStore::load_for_key_recovery(&context.project_dir)?,
+    };
     let requested_expires_on = requested_expires_on
         .map(|value| crate::config::normalize_secret_expires_on(&value))
         .transpose()?;
@@ -514,6 +527,7 @@ fn resolve_secret_set_input(
 
         match choice {
             SecretEnvironmentChoice::Existing(env) => {
+                let secrets = context.load_secrets_for_environment(Some(&env))?;
                 if secrets.contains(&env, name) {
                     wizard.set_visible("Override", true);
                     'override_existing: loop {
@@ -600,6 +614,7 @@ fn resolve_secret_set_input(
                         continue 'name;
                     }
 
+                    let secrets = context.load_secrets_for_environment(Some(&env))?;
                     if secrets.contains(&env, name) {
                         wizard.set_visible("Override", true);
                         'override_new: loop {
@@ -675,27 +690,29 @@ async fn set_secret(
     env: &str,
     value: &str,
     expires_on: Option<String>,
-    do_sync: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use crate::config::SecretsStore;
     use crate::crypto::encrypt;
 
     // Load secrets and ensure environment has an in-memory key_id. Do not write
-    // secrets.json until every prompt in this flow has completed.
-    let mut secrets = SecretsStore::load_from_dir(&context.project_dir)?;
+    // local state until every prompt in this flow has completed.
+    let mut secrets = context.load_secrets_for_environment(Some(env))?;
     secrets.ensure_env_key_id(env)?;
 
     let exists = secrets.contains(env, name);
 
     // Get or create the local encryption key only after the value prompt
-    // succeeds, so cancelled wizards do not touch secrets.json or key files.
+    // succeeds, so cancelled wizards do not touch local state or key files.
     let key = load_or_create_key_for_set(env, &secrets, Some(&context.project_dir))?;
 
     // Encrypt and store
     let encrypted = encrypt(value, &key)?;
     secrets.set_with_expires_on(env, name, encrypted, expires_on)?;
     secrets.save_to_dir(&context.project_dir)?;
-    refresh_generated_files_after_secret_change(&context.project_dir, &context.config_path);
+    refresh_generated_files_after_secret_change(
+        &context.project_dir,
+        &context.config_path,
+        Some(env),
+    );
 
     if exists {
         output::success(&format!(
@@ -711,10 +728,6 @@ async fn set_secret(
         ));
     }
 
-    if do_sync {
-        sync_secrets(context, Some(env)).await?;
-    }
-
     Ok(())
 }
 
@@ -722,10 +735,9 @@ async fn remove_secret(
     context: &crate::commands::project_context::ProjectContext,
     name: &str,
     env: Option<&str>,
-    do_sync: bool,
+    assume_yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use crate::config::SecretsStore;
-    let mut secrets = SecretsStore::load_from_dir(&context.project_dir)?;
+    let mut secrets = context.load_secrets_for_environment(env)?;
 
     if let Some(env) = env {
         // Remove from specific environment
@@ -733,14 +745,15 @@ async fn remove_secret(
             return Err(format!("Secret '{}' not found in environment '{}'", name, env).into());
         }
 
-        let confirm = crate::output::confirm(
-            &format!(
-                "Remove secret {} from {}?",
-                output::strong(name),
-                output::strong(env)
-            ),
-            false,
-        )?;
+        let confirm = assume_yes
+            || crate::output::confirm(
+                &format!(
+                    "Remove secret {} from {}?",
+                    output::strong(name),
+                    output::strong(env)
+                ),
+                false,
+            )?;
 
         if !confirm {
             output::operation_cancelled();
@@ -755,13 +768,14 @@ async fn remove_secret(
         ));
     } else {
         // Remove from all environments
-        let confirm = crate::output::confirm(
-            &format!(
-                "Remove secret {} from ALL environments?",
-                output::strong(name)
-            ),
-            false,
-        )?;
+        let confirm = assume_yes
+            || crate::output::confirm(
+                &format!(
+                    "Remove secret {} from ALL environments?",
+                    output::strong(name)
+                ),
+                false,
+            )?;
 
         if !confirm {
             output::operation_cancelled();
@@ -777,12 +791,7 @@ async fn remove_secret(
     }
 
     secrets.save_to_dir(&context.project_dir)?;
-    refresh_generated_files_after_secret_change(&context.project_dir, &context.config_path);
-
-    if do_sync {
-        // Sync to the specific env if provided, otherwise all environments
-        sync_secrets(context, env).await?;
-    }
+    refresh_generated_files_after_secret_change(&context.project_dir, &context.config_path, env);
 
     Ok(())
 }

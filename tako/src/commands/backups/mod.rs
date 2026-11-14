@@ -8,7 +8,7 @@ use tako_core::{
 
 use crate::app::require_app_name_from_config_path;
 use crate::commands::project_context;
-use crate::config::{ServersToml, TakoToml};
+use crate::config::{ServerInventory, TakoToml};
 use crate::output;
 
 pub(crate) mod client;
@@ -122,7 +122,7 @@ async fn run_async(
             let backup = if output::is_dry_run() {
                 None
             } else {
-                let mut secrets = crate::config::SecretsStore::load_from_dir(&context.project_dir)?;
+                let mut secrets = context.load_secrets_for_environment(Some(&target.env))?;
                 crate::commands::storage::ensure_backup_keys_for_env(
                     &context.project_dir,
                     &target.env,
@@ -188,7 +188,7 @@ async fn run_async(
 
 async fn backup_now(
     target: &target::BackupTarget,
-    servers: &ServersToml,
+    servers: &ServerInventory,
     backup: Option<tako_core::BackupBinding>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     output::section("Backups");
@@ -243,7 +243,7 @@ async fn backup_now(
 
 async fn list_backups(
     target: &target::BackupTarget,
-    servers: &ServersToml,
+    servers: &ServerInventory,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let results = send_typed_to_servers::<BackupListResponse>(
         &target.server_names,
@@ -329,7 +329,7 @@ async fn list_backups(
 
 async fn backup_status(
     target: &target::BackupTarget,
-    servers: &ServersToml,
+    servers: &ServerInventory,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let results = send_typed_to_servers::<BackupStatusResponse>(
         &target.server_names,
@@ -415,7 +415,7 @@ async fn backup_status(
 
 async fn download_backup(
     target: &target::BackupTarget,
-    servers: &ServersToml,
+    servers: &ServerInventory,
     backup_id: &str,
     output_path: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -423,9 +423,12 @@ async fn download_backup(
         &target.server_names,
         "Pass --server to choose a backup source.",
     )?;
-    let server = servers
-        .get(&server_name)
-        .ok_or_else(|| format!("Server '{}' not found in config.toml", server_name))?;
+    let server = servers.get(&server_name).ok_or_else(|| {
+        format!(
+            "Server '{}' not found in enrolled network membership",
+            server_name
+        )
+    })?;
     output::section("Backups");
     output::info(&format!(
         "{} ({}) from {}",
@@ -495,7 +498,7 @@ async fn download_backup(
 
 async fn restore_backup(
     target: &target::BackupTarget,
-    servers: &ServersToml,
+    servers: &ServerInventory,
     backup_id: &str,
     assume_yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -503,9 +506,12 @@ async fn restore_backup(
         &target.server_names,
         "Pass --server to choose where to restore.",
     )?;
-    let server = servers
-        .get(&server_name)
-        .ok_or_else(|| format!("Server '{}' not found in config.toml", server_name))?;
+    let server = servers.get(&server_name).ok_or_else(|| {
+        format!(
+            "Server '{}' not found in enrolled network membership",
+            server_name
+        )
+    })?;
 
     if output::is_interactive() && !assume_yes {
         // The confirmation says what this backup's kind replaces. Dry runs

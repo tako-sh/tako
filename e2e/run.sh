@@ -27,11 +27,11 @@ services:
     build:
       secrets: [proxy_ca]
     volumes:
-      - ${E2E_PROXY_CA}:/run/e2e-proxy-ca.pem:ro
+      - ${E2E_PROXY_CA}:/etc/tako-e2e-proxy-ca.pem:ro
     environment:
-      SSL_CERT_FILE: /run/e2e-proxy-ca.pem
-      CURL_CA_BUNDLE: /run/e2e-proxy-ca.pem
-      NODE_EXTRA_CA_CERTS: /run/e2e-proxy-ca.pem
+      SSL_CERT_FILE: /etc/tako-e2e-proxy-ca.pem
+      CURL_CA_BUNDLE: /etc/tako-e2e-proxy-ca.pem
+      NODE_EXTRA_CA_CERTS: /etc/tako-e2e-proxy-ca.pem
   server-alma: *trusted
   runner: *trusted
 secrets:
@@ -82,9 +82,20 @@ current_e2e_build_stamp() {
 cleanup() {
   local exit_code=$?
   if [[ $exit_code -ne 0 ]]; then
+    for server in server-ubuntu server-alma; do
+      "${COMPOSE[@]}" exec -T "$server" sh -c '
+        systemctl --no-pager --full status tako-network-agent.service tako-network-helper.service tako-server.service || true
+        journalctl --no-pager --lines=100 -u tako-network-agent.service -u tako-network-helper.service || true
+        if [ -f /tmp/tako-server.log ]; then tail -100 /tmp/tako-server.log; fi
+      ' || true
+    done
     "${COMPOSE[@]}" logs --no-color --tail=200 server-ubuntu server-alma runner || true
   fi
-  "${COMPOSE[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
+  if [[ $exit_code -ne 0 && "${E2E_KEEP_FAILED:-0}" == 1 ]]; then
+    echo "Keeping failed E2E servers for inspection (E2E_KEEP_FAILED=1)." >&2
+  else
+    "${COMPOSE[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
+  fi
   if [[ -n "$TRUST_OVERRIDE" ]]; then rm -f "$TRUST_OVERRIDE"; fi
   if [[ -n "$CACHE_OVERRIDE" ]]; then rm -f "$CACHE_OVERRIDE"; fi
 }
@@ -102,12 +113,14 @@ if [[ "$E2E_USE_PREBUILT" != 1 ]] && { [[ ! -f "$E2E_BIN_DIR/glibc/tako" ]] || [
   mkdir -p "$E2E_BIN_DIR/glibc"
 
   docker build \
+    --build-arg HTTP_PROXY --build-arg HTTPS_PROXY --build-arg NO_PROXY \
     "${BUILD_TRUST[@]}" \
     --file e2e/docker/builder/glibc.Dockerfile \
     --tag "$GLIBC_BUILDER_IMAGE" \
     .
   docker run --rm \
     "${RUN_TRUST[@]}" \
+    --env HTTP_PROXY --env HTTPS_PROXY --env NO_PROXY \
     --env CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}" \
     --env CARGO_TARGET_DIR=/workspace/target/e2e-linux-glibc \
     --env TAKO_BUILD_SHA="$(git rev-parse HEAD 2>/dev/null || true)" \

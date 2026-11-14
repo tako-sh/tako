@@ -397,7 +397,8 @@ fn load_dev_storages(
 ) -> Result<std::collections::HashMap<String, tako_core::StorageBinding>, Box<dyn std::error::Error>>
 {
     let config = crate::config::TakoToml::load_from_dir(project_dir)?;
-    let secrets = crate::config::SecretsStore::load_from_dir(project_dir)?;
+    let secrets =
+        crate::config::SecretsStore::load_for_environment(project_dir, &config, "development")?;
     crate::commands::storage::decrypt_storage_bindings(
         "development",
         &config,

@@ -74,6 +74,7 @@ fn validate_device_request(request: &EnrollmentRequest, keys: &LocalDeviceKeys) 
     request.verify()?;
     if request.ssh_public_key != keys.ssh_public_key()?
         || request.wg_public_key != keys.wg_public_key()?
+        || request.encryption_public_key != keys.encryption_public_key()?
     {
         return Err(Error::ProfileMismatch);
     }

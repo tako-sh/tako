@@ -33,12 +33,12 @@ with tempfile.TemporaryDirectory(prefix="tako-native-client-") as temporary:
     exported = root / "public.json"
     run("network", "export", "office", "--output", str(exported))
     assert json.loads(exported.read_text()) == profile
-    for field in ("wg_private_key", "ssh_private_key"):
+    for field in ("wg_private_key", "ssh_private_key", "encryption_private_key"):
         assert field not in exported.read_text()
         assert keys[field] not in exported.read_text()
-    run("network", "import", str(exported), "--name", "renamed")
+    run("network", "import", str(exported))
     listed = run("network", "list").stdout
-    assert "renamed" in listed and profile["snapshot"]["network"]["id"] in listed
+    assert "office" in listed and profile["snapshot"]["network"]["id"] in listed
     foreign = root / "foreign"
     foreign.mkdir(mode=0o700)
     run("network", "import", str(exported), directory=foreign, ok=False)
@@ -48,9 +48,9 @@ with tempfile.TemporaryDirectory(prefix="tako-native-client-") as temporary:
     for args in [
         ("network", "create", "dry"),
         ("network", "request", "--name", "laptop", "--output", str(request)),
-        ("network", "export", "renamed", "--output", str(root / "dry-export.json")),
-        ("network", "import", str(exported), "--name", "dry-import"),
-        ("connect", "renamed"), ("disconnect", "renamed"),
+        ("network", "export", "office", "--output", str(root / "dry-export.json")),
+        ("network", "import", str(exported)),
+        ("connect", "office"), ("disconnect", "office"),
     ]:
         run("--dry-run", *args)
         assert tree() == before, args
@@ -63,7 +63,7 @@ with tempfile.TemporaryDirectory(prefix="tako-native-client-") as temporary:
     before = tree()
     run("network", "request", "--name", "laptop", "--output", str(request), ok=False)
     assert tree() == before
-    run("network", "export", "renamed", "--output", str(exported), ok=False)
+    run("network", "export", "office", "--output", str(exported), ok=False)
     for hard in (False, True):
         linked_profile = root / ("hard-profile.json" if hard else "symlink-profile.json")
         if hard:
@@ -86,7 +86,7 @@ with tempfile.TemporaryDirectory(prefix="tako-native-client-") as temporary:
             keys_path.symlink_to(other)
         else:
             os.link(other, keys_path)
-        run("network", "export", "renamed", "--output", str(root / (link + ".json")), ok=False)
+        run("network", "export", "office", "--output", str(root / (link + ".json")), ok=False)
         assert other.read_bytes() == original_keys
     keys_path.unlink()
     keys_path.write_bytes(original_keys)
@@ -97,7 +97,7 @@ with tempfile.TemporaryDirectory(prefix="tako-native-client-") as temporary:
         run("--dry-run", *args, ok=False)
         run("--dry-run", "--config", str(root / "missing.toml"), *args, ok=False)
     bad_project.unlink()
-    config = home / "config.toml"
-    config.write_text("not valid toml [")
+    config = home / "networks" / "identities.json"
+    config.write_text("not valid json [")
     run("network", "list", ok=False)
     print("PASS native create/request/export/import/list/dry-run, own-key transfer, key links, corrupt config")

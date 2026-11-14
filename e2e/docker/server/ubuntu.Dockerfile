@@ -10,11 +10,12 @@ RUN --mount=type=secret,id=proxy_ca,mode=0444 \
     printf 'Acquire::https::CaInfo "/run/secrets/proxy_ca";\n' > /tmp/e2e-apt.conf; \
     export APT_CONFIG=/tmp/e2e-apt.conf; \
     trap 'rm -f /tmp/e2e-apt.conf' EXIT; \
+    sed -i 's|http://|https://|g' /etc/apt/sources.list.d/*.sources; \
   fi; \
   set -eu; \
   for attempt in 1 2 3 4 5; do \
     rm -rf /var/lib/apt/lists/*; \
-    if apt-get -o Acquire::Retries=5 update \
+    if apt-get -o Acquire::Retries=5 -o APT::Update::Error-Mode=any update \
       && apt-get install -y --no-install-recommends \
         openssh-server \
         bash \
@@ -26,6 +27,7 @@ RUN --mount=type=secret,id=proxy_ca,mode=0444 \
         netcat-openbsd \
         npm \
         sudo \
+        systemd systemd-sysv systemd-resolved dbus iproute2 wireguard-tools \
         xz-utils \
         zstd; then \
       rm -rf /var/lib/apt/lists/*; \
@@ -39,7 +41,8 @@ RUN --mount=type=secret,id=proxy_ca,mode=0444 \
 
 
 # The disposable host runs its own engine; never mount the executor's socket.
-COPY --from=docker /usr/local/bin/docker /usr/local/bin/docker-proxy /usr/local/bin/docker-init /usr/local/bin/dockerd /usr/local/bin/containerd /usr/local/bin/containerd-shim-runc-v2 /usr/local/bin/runc /usr/local/bin/
+COPY --from=docker /usr/local/bin/docker /usr/bin/docker
+COPY --from=docker /usr/local/bin/docker-proxy /usr/local/bin/docker-init /usr/local/bin/dockerd /usr/local/bin/containerd /usr/local/bin/containerd-shim-runc-v2 /usr/local/bin/runc /usr/local/bin/
 COPY --from=docker /usr/local/libexec/docker/cli-plugins/ /usr/local/libexec/docker/cli-plugins/
 
 # Pre-install tako-server (with dummy binary, installer creates user/service)

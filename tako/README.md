@@ -11,7 +11,7 @@ Rust crate for the `tako` CLI, `tako-dev-server`, and `tako-dev-proxy` local bin
 - macOS dev proxy for loopback-only local ingress (`tako-dev-proxy`).
 - Deployment orchestration (`tako deploy`).
 - Release history and rollback (`tako releases list`, `tako releases rollback`).
-- Remote operational commands (`logs`, `backups`, `delete`, `servers`, `secrets`).
+- Remote operational commands (`logs`, `backups`, `delete`, `network`, `secrets`).
 - Config loading/validation, runtime detection, and SSH interactions.
 
 ## Command Surface
@@ -29,7 +29,7 @@ Primary subcommands:
 - `credentials`
 - `completions`
 - `version`
-- `servers`
+- `network`
 - `secrets`
 - `storages`
 - `backups`
@@ -47,7 +47,7 @@ Operational behavior highlights:
 
 - `tako upgrade` upgrades only the local CLI. On macOS it supports Apple Silicon and Intel and preserves the signed `Tako.app` + `tako` symlink layout used by the hosted installer. Every build is a rolling `latest` build while Tako's protocol is v0. Intel builds publish independently after the main release; Intel installs and upgrades are temporarily unavailable until the matching build finishes.
 - `tako status` prints one global snapshot and exits.
-- `tako servers upgrade <name>` verifies the signed `tako-server-sha256s.txt` release manifest and passes the archive name and SHA-256 to a root-owned helper. The helper downloads only official releases and verifies the archive before installing it. Upgrade mode, service reload, readiness checks, and rollback keep the previous binary available until the replacement is ready. Service-user upgrades reject `TAKO_DOWNLOAD_BASE_URL`; install custom builds as administrator. GitHub-backed CLI update checks use `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`.
+- `tako network server upgrade <name>` verifies the signed `tako-server-sha256s.txt` release manifest and passes the archive name and SHA-256 to a root-owned helper. The helper downloads only official releases and verifies the archive before installing it. Upgrade mode, service reload, readiness checks, and rollback keep the previous binary available until the replacement is ready. Service-user upgrades reject `TAKO_DOWNLOAD_BASE_URL`; install custom builds as administrator. GitHub-backed CLI update checks use `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`.
 - Installer-managed hosts configure scoped passwordless sudo helpers for the `tako` SSH user, so upgrade/reload maintenance flows run non-interactively by default.
 - Status output shows separate lines for concurrently running builds of the same app.
 - App heading lines show `app (environment) state`; build/version is shown on the nested `build:` line.
@@ -66,8 +66,8 @@ Operational behavior highlights:
 - `tako deploy` writes `app.json` in the deployed app directory and `tako-server` uses it to resolve the runtime start command.
 - `tako releases list` shows release/build history for the current app and environment with commit metadata when available.
 - `tako releases rollback <release-id>` rolls target servers back to a previous release id using the normal rolling-update path.
-- `tako backups now/list/status/download/restore` manages encrypted private app data backups configured with `[envs.<env>].backup`; backup keys live encrypted in `.tako/secrets.json`.
-- `tako servers add admin@host --network <network>` installs and enrolls a server over administrator SSH. Native membership supplies server identities and targets; normal management uses signed, pinned HTTPS. Omit `--network` only when the project or sole configured network selects it unambiguously.
+- `tako backups now/list/status/download/restore` manages encrypted private app data backups configured with `[envs.<env>].backup`; backup keys are encrypted in shared network records and ignored worktree drafts.
+- `tako network server add admin@host --network <network>` installs and enrolls a server over administrator SSH. Native membership supplies server identities and targets; normal management uses signed, pinned HTTPS. Omit `--network` only when the project or sole configured network selects it unambiguously.
 - `tako deploy` requires valid target metadata for each selected server and does not probe targets during deploy.
 - Production environments use Let’s Encrypt certificates by default. Run `tako credentials set ssl.cloudflare --env <env>` for wildcard routes that need Cloudflare DNS-01, or set `ssl = "cloudflare"` and store the same credential to use Cloudflare Origin CA certificates. Wildcard DNS-01 needs a Cloudflare user or account API token with Zone Read and DNS Write for the matching zone, and any token IP restriction must include each target server's egress IP.
 - New apps start with one desired instance. Scaling to zero enables on-demand cold starts after the warm instance becomes idle.

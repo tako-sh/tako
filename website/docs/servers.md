@@ -31,13 +31,13 @@ Production isolation requires cgroup v2 with CPU, memory, and process controller
 
 ```bash
 tako network create production
-tako servers add ubuntu@203.0.113.10 --network production --name edge
+tako network server add ubuntu@203.0.113.10 --network production --name edge
 tako network status production --json
 ```
 
 Replace the example IP with your server's reachable address. Bootstrap installs the native network components over administrator SSH, generates server keys on the host, enrolls its membership, and starts the service. Without an explicit SSH user, Tako uses `root`. With no host in an interactive terminal, Tako prompts for `admin@host`.
 
-`--network` selects a local alias or stable ID. If omitted, Tako uses the project's production network (including a file selected with `--config`) or the only configured network. An explicit `--network` takes precedence. Create or import a network first; multiple networks require an explicit selection. `--ssh-key` selects the bootstrap key. The bootstrap SSH host and the key's absolute path are saved locally for subsequent reload, upgrade, and uninstall commands on this workstation. These SSH settings are scoped to the server and local network identity and are not exported with network membership. Use `--port` for a custom SSH port and `--http-port` / `--https-port` for public listeners (defaults `80` / `443`). `--wireguard-endpoint` overrides the advertised IP and UDP port (default: the host's IP on UDP `51820`); it does not change the saved SSH host.
+`--network` selects a shared network name or stable ID. If omitted, Tako uses the project's production network (including a file selected with `--config`) or the only configured network. An explicit `--network` takes precedence. Create or import a network first; multiple networks require an explicit selection. `--ssh-key` selects the bootstrap key. The bootstrap SSH host and the key's absolute path are saved locally for subsequent reload, upgrade, and uninstall commands on this workstation. These SSH settings are scoped to the server and local network identity and are not exported with network membership. Use `--port` for a custom SSH port and `--http-port` / `--https-port` for public listeners (defaults `80` / `443`). `--wireguard-endpoint` overrides the advertised IP and UDP port (default: the host's IP on UDP `51820`); it does not change the saved SSH host.
 
 Allow the configured HTTPS port for management and the WireGuard UDP endpoint for private traffic. Deployments use signed pinned HTTPS without requiring a workstation WireGuard interface. See [Native networks](/networks/) for enrollment, permissions, routing, and connectivity limits.
 
@@ -45,7 +45,7 @@ Allow the configured HTTPS port for management and the WireGuard UDP endpoint fo
 
 Tako manages its own WireGuard network. Provider selection and Tailscale/NetBird integrations have been removed. The `--vpn`, `--no-test`, `--install`, and server `--description` flags are no longer available.
 
-To replace an old installation, create a Tako network, re-enroll each server with the command above, and set `[envs.<env>].network` to its stable ID. Remove the old `[[servers]]` entries from your local inventory after enrollment. To preserve placement in each project, set the environment’s `servers` list to the corresponding enrolled server names. Saved `vpn` fields fail with re-enrollment guidance; they are not silently reassigned.
+To replace an old installation, preserve its app data and keys, create a Tako network, re-enroll each server with the command above, and set `[envs.<env>].network` to its stable ID. File-based inventories and their old `[[servers]]` entries are no longer read. To preserve placement in each project, set the environment’s `servers` list to the corresponding enrolled server names. Older native identities also need fresh enrollment; see [Native networks](/networks/) for the version-2 identity boundary.
 
 ### Install directly on the server
 
@@ -60,18 +60,20 @@ The installer defaults to native networking. Service startup requires applied na
 ## Server Maintenance
 
 ```bash
-tako servers reload production/edge
-tako servers reload production/edge --force
-tako servers upgrade production/edge
-tako servers upgrade production/edge --force
-tako servers uninstall production/edge --yes
+tako network server reload production/edge
+tako network server reload production/edge --force
+tako network server upgrade production/edge
+tako network server upgrade production/edge --force
+tako network server uninstall production/edge --yes
 ```
 
-Use the `alias/server-name` shown by `servers list`. `reload` is zero-downtime by default. Its `--force` flag performs a restart. `upgrade` installs a candidate `tako-server` binary, enters upgrade mode, and checks its protocol against the CLI and every active release before reloading. It checks again after readiness, then restarts the running network agent and optional running standby on the installed binary before leaving upgrade mode. An intentionally stopped standby stays stopped. Rollback also refreshes these companion processes. A mismatch fails before reload; any failure after reload begins restores and restarts the previous binary before upgrade mode ends. `upgrade --force` attempts a protocol mismatch but keeps readiness and rollback enabled. `uninstall` first publishes a revocation of the server's network membership and delegated approvals, then removes the remote service and data over the existing SSH session. If revocation cannot be confirmed, uninstall fails and leaves the remote files intact. Offline peers enforce the revocation when they reconnect. If remote cleanup fails after revocation, uninstall reports the remaining SSH cleanup instead of success.
+Use the exact selector shown by `tako network server list --json`. It normally has the form `network-name/server-name`. If enrolled networks share a name, it becomes `network-name/NETWORK_ID/server-name`. Duplicate server names within a network also append `/SERVER_DEVICE_ID`. Ambiguous short names are rejected. App placement in `[envs.<env>].servers` uses enrolled server names or device IDs within that environment's network; do not put maintenance selectors there.
 
-`servers remove <alias/server-name>` revokes the server's network membership and delegated approvals after confirmation. Enforcement on offline peers remains pending until they reconnect. It does not uninstall the service or delete app data.
+`reload` is zero-downtime by default. Its `--force` flag performs a restart. `upgrade` installs a candidate `tako-server` binary, enters upgrade mode, and checks its protocol against the CLI and every active release before reloading. It checks again after readiness, then restarts the running network agent and optional running standby on the installed binary before leaving upgrade mode. An intentionally stopped standby stays stopped. Rollback also refreshes these companion processes. A mismatch fails before reload; any failure after reload begins restores and restarts the previous binary before upgrade mode ends. `upgrade --force` attempts a protocol mismatch but keeps readiness and rollback enabled. `uninstall` first publishes a revocation of the server's network membership and delegated approvals, then removes the remote service and data over the existing SSH session. If revocation cannot be confirmed, uninstall fails and leaves the remote files intact. Offline peers enforce the revocation when they reconnect. If remote cleanup fails after revocation, uninstall reports the remaining SSH cleanup instead of success.
 
-Maintenance runs through restricted, root-owned helpers. Upgrades accept only official releases: the CLI verifies the signed release manifest, and the host verifies the archive against that manifest before installation. Install custom builds as administrator; `servers upgrade` rejects `TAKO_DOWNLOAD_BASE_URL` overrides.
+`network server remove <selector>` revokes the server's network membership and delegated approvals after confirmation. Enforcement on offline peers remains pending until they reconnect. It does not uninstall the service or delete app data.
+
+Maintenance runs through restricted, root-owned helpers. Upgrades accept only official releases: the CLI verifies the signed release manifest, and the host verifies the archive against that manifest before installation. Install custom builds as administrator; `network server upgrade` rejects `TAKO_DOWNLOAD_BASE_URL` overrides.
 
 ## Map an app to servers
 
@@ -88,7 +90,7 @@ Use the actual network ID. Trusted members supply deployment targets. See [Deplo
 ## Verify access
 
 ```bash
-tako servers list --json
+tako network server list --json
 tako status --json
 ```
 

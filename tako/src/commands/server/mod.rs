@@ -10,6 +10,21 @@ use clap::Subcommand;
 
 #[derive(Subcommand)]
 pub enum ServerCommands {
+    /// Stop new application traffic and drain a server, keeping management available
+    Drain {
+        device: String,
+        #[arg(long)]
+        network: Option<String>,
+        #[arg(long, default_value_t = 120, value_name = "SECONDS", value_parser = clap::value_parser!(u64).range(0..=3600))]
+        timeout: u64,
+    },
+    /// Resume persisted applications on a drained server
+    Resume {
+        device: String,
+        #[arg(long)]
+        network: Option<String>,
+    },
+
     /// Add a new server
     Add {
         /// Server host. Use admin-user@host to install or repair with that SSH user.
@@ -99,6 +114,28 @@ async fn run_async(
     config_path: Option<&std::path::Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
+        ServerCommands::Drain {
+            device,
+            network,
+            timeout,
+        } => tokio::task::block_in_place(|| {
+            super::network::manage_server(
+                &device,
+                network.as_deref(),
+                config_path,
+                tako_core::Command::DrainServer {
+                    timeout_seconds: timeout,
+                },
+            )
+        }),
+        ServerCommands::Resume { device, network } => tokio::task::block_in_place(|| {
+            super::network::manage_server(
+                &device,
+                network.as_deref(),
+                config_path,
+                tako_core::Command::ResumeServer,
+            )
+        }),
         ServerCommands::Add {
             host,
             network,
@@ -154,7 +191,7 @@ async fn uninstall_server_cmd(
         None => {
             if !output::is_interactive() {
                 return Err(
-                    "No server name provided and selection requires an interactive terminal. Run 'tako servers uninstall <name>'."
+                    "No server name provided and selection requires an interactive terminal. Run 'tako network server uninstall <name>'."
                         .into(),
                 );
             }

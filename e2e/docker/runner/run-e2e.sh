@@ -128,17 +128,24 @@ wait_tako_socket() {
 
 wait_tako_management_http() {
   local host=$1
-  for _ in $(seq 1 120); do
-    if curl -fsS -m 1 \
-      -H 'content-type: application/json' \
-      --data '{"command":"hello","protocol_version":0}' \
-      "http://${host}:9844/rpc" >/dev/null 2>&1; then
+  local status_file="$TMP_ROOT/management-readiness.json"
+  local error_file="$TMP_ROOT/management-readiness.log"
+  local deadline=$((SECONDS + 60))
+  while (( SECONDS < deadline )); do
+    # Native management requires the enrolled SNI and certificate pin. The
+    # container hostname addresses the public app listener, which has no app
+    # certificate yet. Probe real authenticated management through the CLI.
+    if timeout 10 env HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" \
+        "$TAKO_BIN" --ci --json status >"$status_file" 2>"$error_file" &&
+      jq -e --arg host "$host" \
+        'any(.servers[]?; .host == $host and .service_status == "active" and .error == null)' \
+        "$status_file" >/dev/null; then
       return 0
     fi
     sleep 0.25
   done
-  echo "tako-server management HTTP not ready: $host" >&2
-  ssh_exec "$host" "tail -n 120 /tmp/tako-server.log || true" >&2 || true
+  echo "Authenticated native management not ready: $host" >&2
+  cat "$status_file" "$error_file" >&2
   return 1
 }
 
@@ -191,6 +198,20 @@ detect_app_name() {
       exit
     }
   ' "$toml_path"
+}
+
+bind_fixture_target() {
+  local config=$1 server=$2
+  # Change only the disposable fixture copy. The checked-in app config still
+  # owns placement; enrolled membership supplies the selected server.
+  bun -e '
+    const fs = require("node:fs");
+    const file = process.argv[1];
+    let source = fs.readFileSync(file, "utf8");
+    source = source.replace(/^(network|servers)\s*=.*$/gm, "");
+    source = source.replace(/^\[envs\.production\]$/m, `[envs.production]\nnetwork = "${process.argv[2]}"\nservers = ["${process.argv[3]}"]`);
+    fs.writeFileSync(file, source);
+  ' "$config" "$NETWORK_ID" "$server"
 }
 
 require_file_contains() {
@@ -311,29 +332,19 @@ post_route_json() {
 
 fixture_has_secrets_for_env() {
   local env_name=$1
-  [[ -f "$PROJECT_DIR/.tako/secrets.json" ]] && \
+  [[ -f "$PROJECT_DIR/.tako/secrets.local.json" ]] && \
     jq -e --arg env_name "$env_name" '
-      ((.[$env_name].app // {}) | length > 0) or
-      ((.[$env_name].storages // {}) | length > 0)
+      ((.values[$env_name].app // {}) | length > 0) or
+      ((.values[$env_name].storages // {}) | length > 0)
     ' \
-      "$PROJECT_DIR/.tako/secrets.json" >/dev/null 2>&1
+      "$PROJECT_DIR/.tako/secrets.local.json" >/dev/null 2>&1
 }
 
-import_fixture_secret_key() {
-  local env_name=$1
-  local import_log="$TMP_ROOT/secrets-import-${env_name}.log"
-
-  if ! fixture_has_secrets_for_env "$env_name"; then
-    return 0
-  fi
-
-  if ! printf '%s\n' "${TAKO_EXAMPLE_SECRET_PASSPHRASE:-tako-example}" | \
-    HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" \
-      --config "$PROJECT_DIR/tako.toml" secrets key import --passphrase --env "$env_name" \
-      >"$import_log" 2>&1; then
-    echo "Failed to import $env_name fixture secret key" >&2
-    cat "$import_log" >&2 || true
-    exit 1
+seed_fixture_secrets() {
+  if [[ "$FIXTURE_REL" == examples/go/* ]]; then
+    for name in API_KEY DATABASE_URL EXAMPLE_SECRET; do
+      printf '%s' 'tako-example-secret' | HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" secrets set "$name" --env production
+    done
   fi
 }
 
@@ -409,28 +420,38 @@ run_channels_workflows_checks() {
   local route_host=$2
   local caller_host=${3:-$route_host}
   local events_file="$TMP_ROOT/channels-events-${server_host}.txt"
-  local headers_file="$TMP_ROOT/channels-headers-${server_host}.txt"
-  local stderr_file="$TMP_ROOT/channels-curl-${server_host}.err"
+  local ready_file="$TMP_ROOT/channels-ready-${server_host}.txt"
+  local stderr_file="$TMP_ROOT/channels-client-${server_host}.err"
   local direct_message="direct-${server_host}-$(date +%s%N)"
   local workflow_message="workflow-${server_host}-$(date +%s%N)"
   local sse_pid
 
   echo "Running channel/workflow SSE checks for route: $route_host on $server_host"
 
-  rm -f "$events_file" "$headers_file" "$stderr_file"
-  curl -sS -N \
-    --http1.1 \
-    --connect-timeout 3 \
-    --max-time 30 \
-    -H "Host: ${route_host}" \
-    -H "X-Forwarded-Proto: https" \
-    -H "Forwarded: proto=https" \
-    -H "Authorization: Bearer e2e" \
-    -H "Accept: text/event-stream" \
-    -D "$headers_file" \
-    -o "$events_file" \
-    "http://${server_host}:8080/_tako/channels/demo" \
-    2>"$stderr_file" &
+  rm -f "$events_file" "$ready_file" "$stderr_file"
+  # A newly deployed peer can legitimately reset replay when it first receives
+  # an origin's later event. Exercise the SDK's reconnect/replay contract rather
+  # than a one-shot curl connection that stops on that control event.
+  (
+    cd "$PROJECT_DIR"
+    exec bun - "$server_host" "$route_host" "$events_file" "$ready_file" <<'JS'
+import { appendFileSync, writeFileSync } from "node:fs";
+import { Channel } from "tako.sh/client";
+
+const [server, route, events, ready] = process.argv.slice(2);
+const subscription = new Channel("demo").subscribe({
+  baseUrl: `http://${server}:8080`,
+  from: "start",
+  authorization: "e2e",
+  headers: { Host: route, "X-Forwarded-Proto": "https", Forwarded: "proto=https" },
+  onRecovery(reason) { console.error(`Channel recovery: ${reason}`); },
+  onError(error) { console.error(error); process.exit(1); },
+});
+subscription.raw.addEventListener("open", () => writeFileSync(ready, "ready\n"));
+subscription.raw.addEventListener("message", (event) => appendFileSync(events, `${event.data}\n`));
+setTimeout(() => { subscription.close(); process.exit(1); }, 30_000);
+JS
+  ) 2>"$stderr_file" &
   sse_pid=$!
 
   cleanup_sse() {
@@ -439,12 +460,11 @@ run_channels_workflows_checks() {
   }
 
   for _ in $(seq 1 40); do
-    if [[ -f "$headers_file" ]] && grep -qi "content-type: text/event-stream" "$headers_file"; then
+    if [[ -f "$ready_file" ]]; then
       break
     fi
     if ! kill -0 "$sse_pid" >/dev/null 2>&1; then
       echo "SSE connection exited before opening" >&2
-      [[ -f "$headers_file" ]] && cat "$headers_file" >&2 || true
       [[ -f "$stderr_file" ]] && cat "$stderr_file" >&2 || true
       cleanup_sse
       exit 1
@@ -452,9 +472,8 @@ run_channels_workflows_checks() {
     sleep 0.25
   done
 
-  if ! grep -qi "content-type: text/event-stream" "$headers_file"; then
-    echo "SSE connection did not return text/event-stream headers" >&2
-    [[ -f "$headers_file" ]] && cat "$headers_file" >&2 || true
+  if [[ ! -f "$ready_file" ]]; then
+    echo "SSE connection did not open" >&2
     [[ -f "$stderr_file" ]] && cat "$stderr_file" >&2 || true
     cleanup_sse
     exit 1
@@ -466,10 +485,12 @@ run_channels_workflows_checks() {
   jq -e --arg id "$workflow_message" '.runId == $id' "$TMP_ROOT/post_body.tmp" >/dev/null
 
   if ! wait_for_file_text "$events_file" "$direct_message" "direct channel publish SSE event"; then
+    cat "$stderr_file" >&2
     cleanup_sse
     exit 1
   fi
   if ! wait_for_file_text "$events_file" "$workflow_message" "workflow channel publish SSE event"; then
+    cat "$stderr_file" >&2
     cleanup_sse
     exit 1
   fi
@@ -486,6 +507,7 @@ run_network_primitive_checks() {
   cp -R "$PROJECT_DIR/caller" "$caller_dir"
   cp "$PROJECT_DIR/tako-sdk.tgz" "$caller_dir/tako-sdk.tgz"
   cp "$PROJECT_DIR/tako-schema.json" "$caller_dir/mail-schema.json"
+  bind_fixture_target "$caller_dir/tako.toml" "$server_host"
   bun - "$PROJECT_DIR/tako.toml" "$caller_dir/tako.toml" <<'JS'
 import { readFileSync, appendFileSync } from "node:fs";
 const vars = Bun.TOML.parse(readFileSync(process.argv[2], "utf8")).vars?.production ?? {};
@@ -616,7 +638,7 @@ run_cli_post_deploy_checks() {
     cat "$status_log" >&2 || true
     exit 1
   fi
-  require_file_contains "$status_log" "Server ssh" "tako status"
+  require_file_contains "$status_log" "Server e2e/$server_host" "tako status"
   require_file_contains "$status_log" "$app_name" "tako status"
   require_file_contains "$status_log" "production" "tako status"
   require_file_contains "$status_log" "$route_host" "tako status"
@@ -907,24 +929,17 @@ run_universal_http_checks() {
 
 start_tako_server() {
   local host=$1
-  # Docker-compatible engines use different RFC 1918 bridge ranges. Treat the
-  # isolated E2E network as the trusted proxy boundary on all of them.
+  ssh_exec "$host" "sudo -n /usr/local/bin/tako-e2e-start-server"
+  wait_tako_socket "$host"
+  wait_tako_management_http "$host"
+}
+
+enroll_tako_server() {
+  local host=$1
   local server_config='{"server_name":"e2e","trusted_proxy":{"trusted_cidrs":["10.0.0.0/8","172.16.0.0/12","192.168.0.0/16"]}}'
-  if ! ssh_exec "$host" "/usr/local/bin/tako-server --version"; then
-    return 2
-  fi
-  # E2E marks requests as HTTPS through forwarded headers from the Docker bridge.
-  # Keep production defaults strict while making the test proxy relationship explicit.
   ssh_exec "$host" "printf '%s\n' '$server_config' > /opt/tako/config.json && chmod 0644 /opt/tako/config.json"
-  ssh_exec "$host" "pkill -x tako-server >/dev/null 2>&1 || true"
-  ssh_exec "$host" 'for attempt in $(seq 1 120); do
-    if ! ps -C tako-server -o stat= | grep -q "^[^Z]"; then exit 0; fi
-    sleep 0.25
-  done
-  echo "Previous tako-server did not stop" >&2
-  exit 1'
-  ssh_exec "$host" "rm -f /var/run/tako/tako.sock"
-  ssh_exec "$host" "nohup sudo -n /usr/local/bin/tako-e2e-start-server >/tmp/tako-server.log 2>&1 &"
+  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" TAKO_SERVER_URL=file:///opt/e2e-tako-server.tar.zst \
+    "$TAKO_BIN" --ci network server add "e2e-admin@$host" --network e2e --name "$host" --ssh-key "$SSH_KEY" --http-port 8080 --https-port 8443
   wait_tako_socket "$host"
   wait_tako_management_http "$host"
 }
@@ -933,34 +948,23 @@ start_tako_server() {
 ssh_wait server-ubuntu
 ssh_wait server-alma
 
-# Start the glibc tako-server on Ubuntu and AlmaLinux
+# Trust only these disposable container host keys before SSH enrollment.
+ssh-keyscan -H server-ubuntu >> "$HOME_DIR/.ssh/known_hosts" 2>/dev/null
+ssh-keyscan -H server-alma >> "$HOME_DIR/.ssh/known_hosts" 2>/dev/null
+
+# Exercise real native enrollment, Corrosion replication, and pinned HTTPS.
+HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci network create e2e
+NETWORK_ID=$(HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --json network list | jq -r '.networks[0].id')
 ACTIVE_SERVERS=()
-start_tako_server server-ubuntu "$TAKO_SERVER_GLIBC"
+enroll_tako_server server-ubuntu
 ACTIVE_SERVERS+=("server-ubuntu:gnu")
-if start_tako_server server-alma "$TAKO_SERVER_GLIBC"; then
-  ACTIVE_SERVERS+=("server-alma:gnu")
-else
-  rc=$?
-  if [[ $rc -ne 2 ]]; then
-    exit "$rc"
-  fi
-  echo "=== server-alma skipped (tako-server runtime dependencies unavailable) ==="
-fi
-if (( ${#ACTIVE_SERVERS[@]} == 0 )); then
-  echo "No E2E servers could start." >&2
-  exit 1
-fi
+enroll_tako_server server-alma
+ACTIVE_SERVERS+=("server-alma:gnu")
 
 # Stage a workspace copy for the fixture. JS fixtures need a monorepo-style
 # workspace; Go fixtures just need the SDK source for the replace directive.
 mkdir -p "$(dirname "$PROJECT_DIR")"
 cp -R "$FIXTURE_DIR" "$PROJECT_DIR"
-
-if [[ "$FIXTURE_REL" == examples/go/* || "$FIXTURE_REL" == examples/compose/* ]]; then
-  # The committed examples point at a real demo server. E2E runs against the
-  # disposable server named "ssh" that is written below.
-  sed -i 's/^servers = .*/servers = ["ssh"]/' "$PROJECT_DIR/tako.toml"
-fi
 
 if [[ -f "$PROJECT_DIR/go.mod" ]]; then
   # ── Go fixture setup ─────────────────────────────────────────────
@@ -1043,10 +1047,6 @@ if [[ "$ARCH_RAW" == "aarch64" || "$ARCH_RAW" == "arm64" ]]; then
   TARGET_ARCH="aarch64"
 fi
 
-# Populate known_hosts for the tako CLI (uses $HOME/.ssh/known_hosts)
-ssh-keyscan -H server-ubuntu >> "$HOME_DIR/.ssh/known_hosts" 2>/dev/null
-ssh-keyscan -H server-alma >> "$HOME_DIR/.ssh/known_hosts" 2>/dev/null
-
 # Deploy test targets
 SERVERS=("${ACTIVE_SERVERS[@]}")
 
@@ -1061,7 +1061,7 @@ if [[ -z "$APP_NAME" ]]; then
   exit 1
 fi
 
-import_fixture_secret_key production
+seed_fixture_secrets
 
 for entry in "${SERVERS[@]}"; do
   server="${entry%%:*}"
@@ -1069,14 +1069,7 @@ for entry in "${SERVERS[@]}"; do
 
   echo "=== Testing deploy on $server ($libc) ==="
 
-  cat > "$TAKO_HOME/config.toml" <<CFG
-[[servers]]
-name = "ssh"
-host = "$server"
-port = 22
-arch = "$TARGET_ARCH"
-libc = "$libc"
-CFG
+  bind_fixture_target "$PROJECT_DIR/tako.toml" "$server"
 
   DEPLOY_LOG="$TMP_ROOT/deploy-${server}.log"
 

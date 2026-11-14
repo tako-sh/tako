@@ -12,7 +12,7 @@ fn test_server_list_empty() {
 
     // Point tako at this isolated TAKO_HOME.
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_tako"));
-    cmd.args(["servers", "list"])
+    cmd.args(["network", "server", "list"])
         .current_dir(&project_dir)
         .env("HOME", &project_dir)
         .env("TAKO_HOME", &tako_dir)
@@ -24,7 +24,7 @@ fn test_server_list_empty() {
 
     assert!(
         output.status.success(),
-        "tako servers list failed: {}",
+        "tako network server list failed: {}",
         stderr_str(&output)
     );
 
@@ -35,8 +35,8 @@ fn test_server_list_empty() {
         combined
     );
     assert!(
-        combined.contains("Run 'tako servers add' to add a server.")
-            || combined.contains("Run tako servers add to add a server."),
+        combined.contains("Run 'tako network server add' to add a server.")
+            || combined.contains("Run tako network server add to add a server."),
         "Should include add-server hint: {}",
         combined
     );
@@ -52,14 +52,14 @@ fn servers_add_requires_native_network_without_writing_inventory() {
     let temp = TempDir::new().unwrap();
     let tako_home = temp.path().join("tako-home");
     let out = run_tako_with_env(
-        &["--ci", "servers", "add", "admin@192.0.2.1"],
+        &["--ci", "network", "server", "add", "admin@192.0.2.1"],
         temp.path(),
         temp.path(),
         &tako_home,
     );
     assert!(!out.status.success());
     assert!(stderr_str(&out).contains("No network configured"));
-    assert!(!tako_home.join("config.toml").exists());
+    assert!(!tako_home.join("networks/identities.json").exists());
 }
 
 #[test]
@@ -73,12 +73,13 @@ fn native_server_add_dry_run_uses_sole_network_without_touching_server_or_invent
         &tako_home,
     );
     assert!(created.status.success(), "{}", stderr_str(&created));
-    let before = fs::read(tako_home.join("config.toml")).unwrap();
+    let before = fs::read(tako_home.join("networks/identities.json")).unwrap();
     let out = run_tako_with_env(
         &[
             "--dry-run",
             "--json",
-            "servers",
+            "network",
+            "server",
             "add",
             "admin@not-resolved.invalid",
             "--name",
@@ -97,31 +98,31 @@ fn native_server_add_dry_run_uses_sole_network_without_touching_server_or_invent
     assert_eq!(data["network"], "fleet");
     assert_eq!(data["operator"], "admin");
     assert_eq!(data["server"], "edge");
-    assert_eq!(fs::read(tako_home.join("config.toml")).unwrap(), before);
+    assert_eq!(
+        fs::read(tako_home.join("networks/identities.json")).unwrap(),
+        before
+    );
 }
 
 #[test]
-fn removed_vpn_configuration_is_not_silently_accepted() {
+fn legacy_inventory_does_not_grant_server_membership() {
     let temp = TempDir::new().unwrap();
     let tako_home = temp.path().join("tako-home");
     fs::create_dir_all(&tako_home).unwrap();
-    for provider in ["tailscale", "netbird"] {
-        let config =
-            format!("[[servers]]\nname = 'edge'\nhost = 'edge.internal'\nvpn = '{provider}'\n");
-        fs::write(tako_home.join("config.toml"), &config).unwrap();
-        let out = run_tako_with_env(
-            &["servers", "list", "--json"],
-            temp.path(),
-            temp.path(),
-            &tako_home,
-        );
-        assert!(!out.status.success());
-        assert!(stderr_str(&out).contains("removed VPN provider"));
-        assert_eq!(
-            fs::read_to_string(tako_home.join("config.toml")).unwrap(),
-            config
-        );
-    }
+    let config = "[[servers]]\nname='old'\nhost='192.0.2.1'\nvpn='netbird'\n";
+    fs::write(tako_home.join("config.toml"), config).unwrap();
+    let out = run_tako_with_env(
+        &["--json", "network", "server", "list"],
+        temp.path(),
+        temp.path(),
+        &tako_home,
+    );
+    assert!(out.status.success(), "{}", stderr_str(&out));
+    assert!(!stdout_str(&out).contains("192.0.2.1"));
+    assert_eq!(
+        fs::read_to_string(tako_home.join("config.toml")).unwrap(),
+        config
+    );
 }
 
 #[test]
@@ -137,9 +138,14 @@ fn native_server_add_honors_selected_project_config_and_explicit_network() {
         );
         assert!(out.status.success(), "{}", stderr_str(&out));
     }
-    let inventory_before = fs::read(tako_home.join("config.toml")).unwrap();
-    let config: toml::Value =
-        toml::from_str(std::str::from_utf8(&inventory_before).unwrap()).unwrap();
+    let inventory_before = fs::read(tako_home.join("networks/identities.json")).unwrap();
+    let listed = run_tako_with_env(
+        &["--json", "network", "list"],
+        temp.path(),
+        temp.path(),
+        &tako_home,
+    );
+    let config: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
     for (alias, file) in [("default", "tako.toml"), ("selected", "other.toml")] {
         let network = config["networks"]
             .as_array()
@@ -162,7 +168,8 @@ fn native_server_add_honors_selected_project_config_and_explicit_network() {
             "--json",
             "--config",
             "other.toml",
-            "servers",
+            "network",
+            "server",
             "add",
             "admin@unreachable.invalid",
             "--name",
@@ -178,130 +185,48 @@ fn native_server_add_honors_selected_project_config_and_explicit_network() {
     fs::remove_file(temp.path().join("tako.toml")).unwrap();
     assert_eq!(add(&[])["network"], "selected");
     assert_eq!(
-        fs::read(tako_home.join("config.toml")).unwrap(),
+        fs::read(tako_home.join("networks/identities.json")).unwrap(),
         inventory_before
     );
 }
 
 #[test]
-fn servers_list_renders_aligned_name_host_and_description_columns() {
-    let temp = TempDir::new().unwrap();
-    let project_dir = temp.path().join("project");
-    fs::create_dir_all(&project_dir).unwrap();
-
-    let home = temp.path().join("home");
-    let tako_home = temp.path().join("tako-home");
-    fs::create_dir_all(&home).unwrap();
-    fs::create_dir_all(&tako_home).unwrap();
-
-    fs::write(tako_home.join("config.toml"), "[[servers]]\nname = 'eu-edge'\nhost = '10.0.0.2'\ndescription = 'EU Edge'\n[[servers]]\nname = 'us-edge'\nhost = '東京'\ndescription = 'US Edge'\n").unwrap();
-
-    let ls = run_tako_with_env(&["servers", "list"], &project_dir, &home, &tako_home);
-    assert!(
-        ls.status.success(),
-        "servers list should succeed: {}{}",
-        stdout_str(&ls),
-        stderr_str(&ls)
+fn servers_list_reads_enrolled_names_and_endpoints() {
+    let fixture = super::native_management::Fixture::with_servers(&["eu-edge", "us-edge"]);
+    let out = run_tako_with_env(
+        &["--json", "network", "server", "list"],
+        fixture.directory.path(),
+        &fixture.home,
+        &fixture.tako_home,
     );
-
-    let out = stderr_str(&ls);
-    assert!(out.contains("NAME"), "expected name column: {}", out);
-    assert!(out.contains("HOST"), "expected host column: {}", out);
-    assert!(
-        out.contains("DESCRIPTION"),
-        "expected description column: {}",
-        out
-    );
-    assert!(
-        out.contains("eu-edge  10.0.0.2  EU Edge"),
-        "expected aligned EU Edge row: {}",
-        out
-    );
-    assert!(
-        out.contains("us-edge  東京      US Edge"),
-        "expected aligned US Edge row: {}",
-        out
-    );
+    assert!(out.status.success(), "{}", stderr_str(&out));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let servers = json["servers"].as_array().unwrap();
+    assert_eq!(servers.len(), 2);
+    let output = stdout_str(&out);
+    assert!(output.contains("fleet/eu-edge"));
+    assert!(output.contains("fleet/us-edge"));
 }
 
 #[test]
-fn servers_remove_without_name_in_non_interactive_mode_shows_hint() {
-    let temp = TempDir::new().unwrap();
-    let project_dir = temp.path().join("project");
-    fs::create_dir_all(&project_dir).unwrap();
-
-    let home = temp.path().join("home");
-    let tako_home = temp.path().join("tako-home");
-    fs::create_dir_all(&home).unwrap();
-    fs::create_dir_all(&tako_home).unwrap();
-
-    fs::write(
-        tako_home.join("config.toml"),
-        "[[servers]]\nname = 'prod-1'\nhost = '10.0.0.4'\n",
-    )
-    .unwrap();
-
-    let rm = run_tako_with_env(&["servers", "remove"], &project_dir, &home, &tako_home);
-    assert!(
-        !rm.status.success(),
-        "remove without name should fail on non-tty"
+fn server_remove_requires_selection_and_preserves_membership_when_cancelled() {
+    let fixture = super::native_management::Fixture::with_servers(&["edge"]);
+    let before = fs::read(&fixture.profile_path).unwrap();
+    let missing = run_tako_with_env(
+        &["network", "server", "remove"],
+        fixture.directory.path(),
+        &fixture.home,
+        &fixture.tako_home,
     );
-
-    let stderr = stderr_str(&rm);
-    assert!(
-        stderr.contains("requires an interactive terminal")
-            || stderr.contains("provide a server name"),
-        "expected helpful error for non-interactive remove without name: {}",
-        stderr
+    assert!(!missing.status.success());
+    assert!(stderr_str(&missing).contains("interactive"));
+    let cancelled = run_tako_with_env(
+        &["network", "server", "remove", "fleet/edge"],
+        fixture.directory.path(),
+        &fixture.home,
+        &fixture.tako_home,
     );
-}
-
-#[test]
-fn servers_remove_named_non_interactive_uses_operation_cancelled_message() {
-    let temp = TempDir::new().unwrap();
-    let project_dir = temp.path().join("project");
-    fs::create_dir_all(&project_dir).unwrap();
-
-    let home = temp.path().join("home");
-    let tako_home = temp.path().join("tako-home");
-    fs::create_dir_all(&home).unwrap();
-    fs::create_dir_all(&tako_home).unwrap();
-
-    fs::write(
-        tako_home.join("config.toml"),
-        "[[servers]]\nname = 'prod-2'\nhost = '10.0.0.4'\n",
-    )
-    .unwrap();
-
-    let rm = run_tako_with_env(
-        &["servers", "remove", "prod-2"],
-        &project_dir,
-        &home,
-        &tako_home,
-    );
-    assert!(
-        rm.status.success(),
-        "rm cancellation should preserve current success behavior: {}{}",
-        stdout_str(&rm),
-        stderr_str(&rm)
-    );
-
-    let stderr = stderr_str(&rm);
-    assert!(
-        stderr.contains("Operation cancelled"),
-        "expected shared cancellation message: {stderr}"
-    );
-
-    let ls = run_tako_with_env(&["servers", "list"], &project_dir, &home, &tako_home);
-    assert!(
-        ls.status.success(),
-        "servers list should succeed after cancellation: {}{}",
-        stdout_str(&ls),
-        stderr_str(&ls)
-    );
-    let servers_output = stderr_str(&ls);
-    assert!(
-        servers_output.contains("prod-2"),
-        "server should remain after cancellation: {servers_output}"
-    );
+    assert!(cancelled.status.success(), "{}", stderr_str(&cancelled));
+    assert!(stderr_str(&cancelled).contains("Operation cancelled"));
+    assert_eq!(fs::read(&fixture.profile_path).unwrap(), before);
 }

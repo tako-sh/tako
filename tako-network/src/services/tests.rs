@@ -16,6 +16,7 @@ pub(super) fn fixture() -> (RegistrySnapshot, LocalDeviceKeys) {
         .unwrap();
     let mut registry = RegistrySnapshot {
         network: NetworkDescriptor {
+            name: "test".parse().unwrap(),
             id: network,
             initial_admin: id,
         },

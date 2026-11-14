@@ -45,7 +45,7 @@ pub(crate) enum ManagementTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeTarget {
-    pub(crate) network: crate::config::NetworkAlias,
+    pub(crate) network: crate::config::LocalNetwork,
     pub(crate) server_id: tako_network::DeviceId,
     pub(crate) server_name: tako_network::DeviceName,
 }

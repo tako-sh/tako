@@ -5,6 +5,8 @@ description: "How Tako encrypts secrets at rest, injects them via fd 3 at runtim
 image: 15ea83719868
 ---
 
+> **Update, November 14, 2026:** This article describes an earlier Tako release. The tracked secret file and SSH/rolling-restart sync flow below are historical. Edits now stay local until secret sync or deploy publishes them to network servers; sync alone does not restart apps. New devices join through invitations. The [current secrets guide](/docs/secrets/) also distinguishes native-process, container, and release-command delivery. Read [the new network and secrets workflow](/blog/sync-deployment-secrets-with-tako-networks/).
+
 Every deploy tool has a secrets story. Most of them end with "add it to your `.env` file." The `.env` file sits in `.gitignore`, gets copy-pasted between teammates over Slack, and lives as plaintext on every server it touches. If someone commits it by accident — and someone always does — you're rotating every key in the file.
 
 Tako does secrets differently. Encrypted at rest, injected at runtime through a file descriptor, and typed so your editor knows what's available. No plaintext touches disk. No environment variables leak to child processes.

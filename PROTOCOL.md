@@ -4,6 +4,15 @@ This document records the small set of contracts shared by the CLI, server, and 
 
 The protocol version is `0`. Breaking changes are allowed until protocol v1. Change every producer and consumer in the same update. Do not add compatibility shims.
 
+Native enrollment and local device keys use version 2. Requests bind distinct SSH,
+WireGuard, and X25519 secret-encryption keys. Membership and encrypted per-key
+records replicate between servers through Corrosion; clients pull and publish
+through signed, pinned HTTPS. Invitations are single-use capabilities consumed by
+their issuing server. Old native identities require fresh enrollment. Scoped
+deployments retain server-held backup keys when the request omits that binding;
+explicit changes still require server administration.
+
+
 Tako has one active protocol version. The CLI, server, and every deploy artifact must declare that exact version; compatibility does not negotiate version ranges or capability sets. Deploy artifacts record it as `protocol_version` in `app.json`.
 
 Deploy artifacts may also record the Tako SDK the app is built against as `sdk` in `app.json`: `{ "language", "name", "version" }`, where `language` is `javascript`, `go`, or `rust`. The CLI reads it from the app's dependency files at deploy time: the installed or locked `tako.sh` package, the `tako.sh` requirement in `go.mod` (`(devel)` when a `replace` points at a local directory, or the replacement module and version), or the `tako` crate in `Cargo.lock`. It is omitted when no SDK is found, including prebuilt images, Compose projects, and containers with `container_options.sdk = false`. The server reports it in `list_releases` and never gates on it.
@@ -12,7 +21,7 @@ Normal deploys check the CLI/server protocol before parallel deployment starts. 
 
 `PrepareRelease` carries the current deployment's secrets for preparation, including Compose interpolation on a first deploy. Preparation does not replace persisted app secrets; activation persists them after preparation succeeds.
 
-Server upgrades run the candidate binary in check-only mode before reload. The candidate checks the invoking CLI version and every active release, then repeats the check after the new process is ready. A mismatch aborts the upgrade. If a failure happens after reload starts, Tako restores and restarts the previous binary before leaving upgrade mode. `tako servers upgrade --force` permits an incompatible attempt but does not disable readiness or rollback.
+Server upgrades run the candidate binary in check-only mode before reload. The candidate checks the invoking CLI version and every active release, then repeats the check after the new process is ready. A mismatch aborts the upgrade. If a failure happens after reload starts, Tako restores and restarts the previous binary before leaving upgrade mode. `tako network server upgrade --force` permits an incompatible attempt but does not disable readiness or rollback.
 
 Before the controlled reload, the CLI writes a one-shot upgrade-owner marker under the server data directory. The candidate consumes it and preserves the matching persisted upgrade fence through state restoration and the post-readiness check. An ordinary reload has no marker, so it still clears a stale upgrade lock.
 

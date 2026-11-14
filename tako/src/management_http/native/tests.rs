@@ -25,7 +25,7 @@ fn identity() -> Identity {
     };
     Identity {
         target: NativeTarget {
-            network: crate::config::NetworkAlias {
+            network: crate::config::LocalNetwork {
                 name: "fleet".into(),
                 id: network_id.to_string(),
                 device: keys

@@ -20,13 +20,15 @@ go run .
 
 ## Secrets
 
-Each example has pre-configured encrypted development and production secrets.
-Passphrase: `tako-example`
+Example values are not stored in Git. Set local development values as needed:
 
 ```bash
-printf '%s\n' 'tako-example' | \
-  tako -c examples/go/basic/tako.toml secrets key import --passphrase --env development
-tako -c examples/go/basic/tako.toml secrets list
+tako -c examples/go/basic/tako.toml secrets set API_KEY --env development
+tako -c examples/go/basic/tako.toml secrets set DATABASE_URL --env development
+tako -c examples/go/basic/tako.toml secrets set EXAMPLE_SECRET --env development
+tako -c examples/go/basic/tako.toml generate
 ```
 
-Import the `production` key the same way before deploying an example.
+For deployment, enroll this machine with a network invitation and put the network
+ID in the production environment of `tako.toml`. Set production values locally;
+deploy or `secrets sync --env production` publishes them to shared encrypted state.

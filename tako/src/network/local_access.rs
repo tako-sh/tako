@@ -5,22 +5,22 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use super::{Profile, Result};
-use crate::config::NetworkAlias;
+use crate::config::LocalNetwork;
 use tako_network::{LocalDeviceKeys, MemberKind};
 
-fn directory(alias: &NetworkAlias) -> Result<PathBuf> {
+fn directory(alias: &LocalNetwork) -> Result<PathBuf> {
     Ok(alias.profile_path()?.parent().unwrap().join("ssh"))
 }
 
-pub(crate) fn install(alias: &NetworkAlias, profile: &Profile) -> Result<()> {
+pub(crate) fn install(alias: &LocalNetwork, profile: &Profile) -> Result<()> {
     configure(alias, profile, true)
 }
 
-pub(crate) fn preflight(alias: &NetworkAlias, profile: &Profile) -> Result<()> {
+pub(crate) fn preflight(alias: &LocalNetwork, profile: &Profile) -> Result<()> {
     configure(alias, profile, false)
 }
 
-fn configure(alias: &NetworkAlias, profile: &Profile, write: bool) -> Result<()> {
+fn configure(alias: &LocalNetwork, profile: &Profile, write: bool) -> Result<()> {
     let keys = LocalDeviceKeys::load(&super::keys_path(&profile.request().request_id)?)?;
     let own = profile
         .request()
@@ -42,7 +42,7 @@ fn configure(alias: &NetworkAlias, profile: &Profile, write: bool) -> Result<()>
 }
 
 fn render(
-    alias: &NetworkAlias,
+    alias: &LocalNetwork,
     profile: &Profile,
     user: &str,
     identity: &Path,
@@ -70,7 +70,7 @@ fn render(
     Ok((hosts, settings))
 }
 
-pub(crate) fn remove(alias: &NetworkAlias) -> Result<()> {
+pub(crate) fn remove(alias: &LocalNetwork) -> Result<()> {
     edit_ssh_config(&alias.id, None, true)?;
     let directory = directory(alias)?;
     for name in ["identity", "known_hosts"] {
@@ -204,7 +204,7 @@ mod tests {
     #[test]
     fn openssh_reads_the_approved_alias_without_leaking_settings_to_other_hosts() {
         let fixture = crate::network::tests::fixture();
-        let alias = NetworkAlias {
+        let alias = LocalNetwork {
             name: "test".into(),
             id: fixture.profile.snapshot().network.id.to_string(),
             device: "11".repeat(32),

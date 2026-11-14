@@ -137,8 +137,8 @@ route = "staging.example.com"
     let secrets_dir = dir.path().join(".tako");
     fs::create_dir_all(&secrets_dir).unwrap();
     fs::write(
-        secrets_dir.join("secrets.json"),
-        r#"{"development":{"app":{"API_KEY":{"value":"x"}}}}"#,
+        secrets_dir.join("secrets.local.json"),
+        r#"{"values":{"development":{"key_id":"aaaaaaaaaaaaaaaa","app":{"API_KEY":{"value":"x"}}}}}"#,
     )
     .unwrap();
 
@@ -151,7 +151,9 @@ route = "staging.example.com"
     assert!(content.contains(
         "    /** Narrows the SDK's `Env` export to this project's configured environments. */"
     ));
-    assert!(content.contains("   * Project-specific secret keys from `.tako/secrets.json`."));
+    assert!(content.contains(
+        "   * Project-specific secret keys from the local network cache and worktree drafts."
+    ));
     assert!(content.contains("   * const apiKey = tako.secrets.API_KEY;"));
     assert!(content.contains("    /** Secret `API_KEY`. Read it with `tako.secrets.API_KEY`. */"));
     assert!(content.contains(
@@ -233,8 +235,8 @@ fn write_tako_declarations_with_secrets_generate_typed_interface_augmentation() 
     let secrets_dir = dir.path().join(".tako");
     fs::create_dir_all(&secrets_dir).unwrap();
     fs::write(
-        secrets_dir.join("secrets.json"),
-        r#"{"development":{"app":{"API_KEY":{"value":"x"},"DATABASE_URL":{"value":"y"}}}}"#,
+        secrets_dir.join("secrets.local.json"),
+        r#"{"values":{"development":{"key_id":"aaaaaaaaaaaaaaaa","app":{"API_KEY":{"value":"x"},"DATABASE_URL":{"value":"y"}}}}}"#,
     )
     .unwrap();
 

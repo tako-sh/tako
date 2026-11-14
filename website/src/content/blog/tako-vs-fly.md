@@ -5,6 +5,8 @@ description: "Fly.io gives you a beautiful CLI and 30+ regions on their hardware
 image: 869741dfb914
 ---
 
+> **Update, November 14, 2026:** This article describes an earlier Tako release. Server commands now use `tako network server`, with inventory supplied by native network membership. See the [current enrollment instructions](/docs/networks/). The SFTP path below is historical: native deployments now use [pinned HTTPS management](/docs/deployment/). Read [the new network and secrets workflow](/blog/sync-deployment-secrets-with-tako-networks/).
+
 [Fly.io](https://fly.io) is one of our favorite developer platforms. A CLI that feels great, micro-VMs that boot fast enough to scale to zero, and 30+ regions you can scatter across with a single command. If you want "global" without thinking about servers, it's hard to beat.
 
 Tako plays the same sport differently. Same goal — your app, running close to users, deployed with one command — but the hardware is yours, the proxy is yours, and the bill is one you already know.

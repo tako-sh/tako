@@ -102,8 +102,14 @@ pub(super) async fn prepare(
     };
 
     if runtime_adapter.preset_group() == PresetGroup::Js {
-        js::write_generated_files_with_schemas(&project_dir, runtime_adapter, &cfg, false)
-            .map_err(|error| error.to_string())?;
+        js::write_generated_files_with_schemas(
+            &project_dir,
+            runtime_adapter,
+            &cfg,
+            Some("development"),
+            false,
+        )
+        .map_err(|error| error.to_string())?;
     }
 
     let runtime_name = build_preset.name.clone();
@@ -209,6 +215,7 @@ pub(super) async fn prepare(
             &project_dir,
             runtime_adapter,
             &cfg,
+            Some("development"),
             false,
         )
         .map_err(|error| error.to_string())?;
