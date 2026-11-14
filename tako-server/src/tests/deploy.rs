@@ -103,7 +103,7 @@ server.serve_forever()
     db.execute_batch("DROP TRIGGER reject_first").unwrap();
 
     let baseline = state.handle_command(deploy("v1")).await;
-    assert!(baseline.is_ok(), "{baseline:?}");
+    assert!(baseline.is_ok(), "initial deployment should succeed");
     let app = state.app_manager.get_app(app_id).unwrap();
     let backend = state.load_balancer.get_backend(app_id).unwrap();
     let predecessor = app.get_instance(backend.instance_id()).unwrap();
@@ -266,7 +266,7 @@ with os.fdopen(4"#,
         restarted.handle_command(deploy("v2")),
         request_during_deploy
     );
-    assert!(deployed.is_ok(), "{deployed:?}");
+    assert!(deployed.is_ok(), "replacement deployment should succeed");
     assert_eq!(restored.get_instances().len(), 1);
     assert_eq!(restored.get_instances()[0].build_version(), "v2");
     assert_eq!(
