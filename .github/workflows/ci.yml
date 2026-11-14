@@ -20,13 +20,18 @@ env:
 
 jobs:
   alma-fixture:
-    name: Native host (${{ matrix.os }})
+    name: ${{ matrix.check_name }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu, alma]
+        include:
+          - os: ubuntu
+            check_name: Native host (ubuntu)
+          # Keep the existing required-check name used by branch protection.
+          - os: alma
+            check_name: AlmaLinux fixture
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
