@@ -119,7 +119,9 @@ async fn run_async(
                 &tako_config,
                 &servers,
             )?;
-            let backup = if output::is_dry_run() {
+            let backup = if output::is_dry_run()
+                || !super::helpers::can_configure_bindings(&tako_config, &target.env)?
+            {
                 None
             } else {
                 let mut secrets = context.load_secrets_for_environment(Some(&target.env))?;

@@ -105,6 +105,8 @@ tako backups list --env production --server la --json
 
 `backups status` also lists active, unfinished, and abandoned restores, even when backups are disabled or the remote index is unreadable. JSON includes `unfinished_restores` with each record's `path`, `state` (`in_progress`, `unfinished`, or `abandoned`), `blocks_app`, and recovery `message`. A blocked app has no next scheduled backup. Status only reads these records; resolve them before attempting another restore.
 
+A client with a deployment grant for the app and environment can run `backups now` using the storage credentials and encryption keys an administrator has already provisioned on that server.
+
 Use explicit environment and server names when selecting recovery data. Download an archive by the ID returned by the list:
 
 ```bash
