@@ -346,8 +346,51 @@ fn telemetry_command(command: &Commands) -> &'static str {
     }
 }
 
+pub(crate) fn supports_dry_run(path: &[&str]) -> bool {
+    matches!(
+        path,
+        ["agents" | "deploy" | "delete" | "scale" | "connect" | "disconnect" | "ssh"]
+            | [
+                "network",
+                "sync"
+                    | "join"
+                    | "create"
+                    | "request"
+                    | "approve"
+                    | "revoke"
+                    | "status"
+                    | "import"
+                    | "export"
+                    | "list"
+            ]
+            | [
+                "network",
+                "server",
+                "drain" | "resume" | "add" | "remove" | "list" | "uninstall"
+            ]
+            | ["network", "client", "add" | "remove" | "list"]
+            | ["secrets", "migrate" | "sync"]
+            | ["backups", "now" | "download" | "restore"]
+            | ["workflows", "retry" | "cancel"]
+    )
+}
+
+pub(crate) fn is_read_only(path: &[&str]) -> bool {
+    matches!(
+        path,
+        ["version" | "status" | "doctor" | "logs" | "completions" | "credentials"]
+            | [
+                "dev" | "secrets" | "credentials" | "releases" | "workflows",
+                "list"
+            ]
+            | ["workflows", "show"]
+            | ["backups" | "network", "list" | "status"]
+            | ["network", "client" | "server", "list"]
+    )
+}
+
 impl Cli {
-    pub fn run(self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn run(self, matches: &clap::ArgMatches) -> Result<(), Box<dyn std::error::Error>> {
         crate::ssh::set_key_passphrase(self.ssh_passphrase.clone());
         let json = self.json;
 
@@ -373,6 +416,15 @@ impl Cli {
             }
         };
 
+        if self.dry_run && !matches!(command, Commands::Mcp) {
+            let path: Vec<_> =
+                std::iter::successors(matches.subcommand(), |(_, sub)| sub.subcommand())
+                    .map(|(name, _)| name)
+                    .collect();
+            if !supports_dry_run(&path) && !is_read_only(&path) {
+                return Err(format!("tako {} does not support --dry-run", path.join(" ")).into());
+            }
+        }
         crate::telemetry::maybe_send(telemetry_command(&command), self.ci, &display_version());
 
         match command {

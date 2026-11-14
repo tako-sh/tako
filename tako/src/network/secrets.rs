@@ -278,7 +278,13 @@ fn merge_remote(
     let store = crate::crypto::KeyStore::for_key_id(&key_id)?;
     let encryption = match store.load_key_optional()? {
         Some(key) => key,
-        None if !had_values => { let key = crate::crypto::EncryptionKey::generate()?; store.save_key(&key)?; key }
+        None if !had_values => {
+            let key = crate::crypto::EncryptionKey::generate()?;
+            if !crate::output::is_dry_run() {
+                store.save_key(&key)?;
+            }
+            key
+        }
         None => return Err("Existing encrypted secrets need their original local key; import it before synchronizing".into()),
     };
     let mut remote = Rows::new();

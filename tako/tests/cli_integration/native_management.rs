@@ -474,6 +474,79 @@ fn project_native_environment_never_falls_back_to_legacy_inventory() {
 }
 
 #[test]
+fn secret_sync_dry_run_preserves_drafts_with_retry_expired() {
+    let fixture = Fixture::with_servers(&["edge"]);
+    let project = fixture.directory.path();
+    fs::write(
+        project.join("tako.toml"),
+        format!(
+            "name='demo'\n[envs.production]\nnetwork='{}'\nroute='demo.example.test'\n",
+            fixture.profile.snapshot.network.id,
+        ),
+    )
+    .unwrap();
+    let set = run_tako_with_stdin_and_env(
+        &["--ci", "secrets", "set", "TOKEN", "--env", "production"],
+        project,
+        "local draft",
+        &fixture.home,
+        &fixture.tako_home,
+    );
+    assert!(set.status.success(), "{}", stderr_str(&set));
+    let draft = project.join(".tako/secrets.local.json");
+    let before = fs::read(&draft).unwrap();
+    let preview = run_tako_with_env(
+        &[
+            "--ci",
+            "secrets",
+            "sync",
+            "--env",
+            "production",
+            "--retry-expired",
+            "--dry-run",
+        ],
+        project,
+        &fixture.home,
+        &fixture.tako_home,
+    );
+    assert!(preview.status.success(), "{}", stderr_str(&preview));
+    assert!(stderr_str(&preview).contains("Publish secret drafts for production"));
+    assert_eq!(fs::read(draft).unwrap(), before);
+}
+
+#[test]
+fn javascript_deploy_dry_run_leaves_project_files_untouched() {
+    let fixture = Fixture::with_servers(&["edge"]);
+    let project = fixture.directory.path();
+    fs::write(project.join("tako.toml"), format!(
+        "name='demo'\nruntime='bun'\npreset='bun'\nmain='index.ts'\n[envs.production]\nnetwork='{}'\nroute='demo.example.test'\n",
+        fixture.profile.snapshot.network.id,
+    )).unwrap();
+    fs::write(project.join("package.json"), r#"{"name":"demo"}"#).unwrap();
+    // Running the Bun lockfile preflight would fail on this file.
+    fs::write(project.join("bun.lock"), "preview fixture\n").unwrap();
+    fs::create_dir_all(project.join("src/workflows")).unwrap();
+    let workflow = project.join("src/workflows/mail.ts");
+    fs::write(&workflow, "\n").unwrap();
+
+    let output = run_tako_with_env(
+        &["--ci", "deploy", "--dry-run"],
+        project,
+        &fixture.home,
+        &fixture.tako_home,
+    );
+    assert!(output.status.success(), "{}", stderr_str(&output));
+    assert!(stderr_str(&output).contains("Deploy to fleet/edge"));
+    assert!(!project.join("tako.d.ts").exists());
+    assert!(!project.join(".tako").exists());
+    assert_eq!(fs::read_to_string(workflow).unwrap(), "\n");
+    assert_eq!(
+        fs::read_to_string(project.join("bun.lock")).unwrap(),
+        "preview fixture\n"
+    );
+}
+
+#[test]
 fn native_scale_resolves_the_enrolled_server_name_and_excludes_legacy_servers() {
     let fixture = Fixture::new();
     fs::write(
@@ -485,10 +558,7 @@ fn native_scale_resolves_the_enrolled_server_name_and_excludes_legacy_servers() 
     contents.push_str("\n[[servers]]\nname = 'legacy'\nhost = '127.0.0.1'\n");
     fs::write(config, contents).unwrap();
     let selected = format!("fleet/node/{}", fixture.servers[0]);
-    for (server, expected) in [
-        (selected.as_str(), "Server has no pinned HTTPS certificate"),
-        ("legacy", "Server 'legacy' not found"),
-    ] {
+    for server in [selected.as_str(), "legacy"] {
         let output = run_tako_with_env(
             &[
                 "--ci",
@@ -504,10 +574,17 @@ fn native_scale_resolves_the_enrolled_server_name_and_excludes_legacy_servers() 
             &fixture.home,
             &fixture.tako_home,
         );
-        assert!(!output.status.success());
-        let error = stderr_str(&output);
-        assert!(error.contains(expected), "{error}");
-        assert!(!error.contains("No SSH keys"), "{error}");
+        let report = stderr_str(&output);
+        if server == selected {
+            assert!(output.status.success(), "{report}");
+            assert!(
+                report.contains(&format!("to 2 instance(s) on {selected}")),
+                "{report}"
+            );
+        } else {
+            assert!(!output.status.success());
+            assert!(report.contains("Server 'legacy' not found"), "{report}");
+        }
     }
 }
 
