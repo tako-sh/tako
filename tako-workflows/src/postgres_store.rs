@@ -1,5 +1,5 @@
-use parking_lot::Mutex;
-use postgres::{Client, NoTls};
+use parking_lot::{Mutex, MutexGuard};
+use postgres::{Client, Config, NoTls};
 use std::collections::HashMap;
 use tako_core::{EnqueueOpts, EnqueueRunResponse, RunPayload, ScheduleSpec};
 
@@ -25,6 +25,7 @@ const DB_NOW_MS: &str = "(EXTRACT(EPOCH FROM statement_timestamp()) * 1000)::BIG
 
 pub(super) struct PostgresRunsDb {
     client: Mutex<ReleaseOffRuntime<Client>>,
+    config: Config,
     schema: String,
     app_id: String,
     /// This server's clock, in Unix milliseconds, for scheduling and history
@@ -45,14 +46,27 @@ impl PostgresRunsDb {
         clock: fn() -> i64,
     ) -> Result<Self, RunsDbError> {
         validate_identifier(schema)?;
-        let mut client = Client::connect(url, NoTls)?;
+        let mut config: Config = url.parse()?;
+        if config.get_connect_timeout().is_none() {
+            config.connect_timeout(std::time::Duration::from_secs(10));
+        }
+        let mut client = config.connect(NoTls)?;
         init_schema(&mut client, schema)?;
         Ok(Self {
             client: Mutex::new(ReleaseOffRuntime::new(client)),
+            config,
             schema: schema.to_string(),
             app_id: app_id.to_string(),
             clock,
         })
+    }
+
+    fn client(&self) -> Result<MutexGuard<'_, ReleaseOffRuntime<Client>>, RunsDbError> {
+        let mut client = self.client.lock();
+        if client.is_closed() {
+            *client = ReleaseOffRuntime::new(self.config.connect(NoTls)?);
+        }
+        Ok(client)
     }
 
     fn now(&self) -> i64 {
@@ -71,7 +85,7 @@ impl PostgresRunsDb {
         let payload_json = serde_json::to_string(payload)?;
         let id = opts.id.clone().unwrap_or_else(|| nanoid::nanoid!());
 
-        let mut client = self.client.lock();
+        let mut client = self.client()?;
         let mut tx = client.transaction()?;
         let inserted = tx.execute(
             &format!(
@@ -126,7 +140,7 @@ impl PostgresRunsDb {
         }
         let now = self.now();
         let lease_ms = clamp_lease_ms(lease_ms);
-        let mut client = self.client.lock();
+        let mut client = self.client()?;
         let mut tx = client.transaction()?;
         // The candidate is a CTE so it is chosen once. As a subquery in FROM
         // the planner may rescan it per row of `runs`; each rescan skips the
@@ -238,7 +252,7 @@ impl PostgresRunsDb {
         result: &serde_json::Value,
     ) -> Result<(), RunsDbError> {
         let result = serde_json::to_string(result)?;
-        let mut client = self.client.lock();
+        let mut client = self.client()?;
         let mut tx = client.transaction()?;
         // Serialize the ownership check and checkpoint with lease takeover.
         // An INSERT ... SELECT alone can keep reading the previous owner from
@@ -273,7 +287,7 @@ impl PostgresRunsDb {
         name: &str,
         id: &str,
     ) -> Result<Option<crate::enqueue::RunResult>, RunsDbError> {
-        let mut client = self.client.lock();
+        let mut client = self.client()?;
         let row = client.query_opt(
             &format!("SELECT status, result, last_error FROM {}.runs WHERE app_id=$1 AND id=$2 AND name=$3", self.schema),
             &[&self.app_id, &id, &name],
@@ -344,7 +358,7 @@ impl PostgresRunsDb {
         cutoff_ms: i64,
         limit: u32,
     ) -> Result<u64, RunsDbError> {
-        let mut client = self.client.lock();
+        let mut client = self.client()?;
         let mut tx = client.transaction()?;
         let rows = tx.query(
             &format!(
@@ -391,7 +405,7 @@ impl PostgresRunsDb {
     }
 
     pub(super) fn reclaim_expired(&self) -> Result<Reclaimed, RunsDbError> {
-        let mut client = self.client.lock();
+        let mut client = self.client()?;
         // Return exactly the owners whose rows this statement reclaims.
         // Row locks prevent a heartbeat or another reclaimer from changing
         // ownership between selection and accounting.
@@ -425,7 +439,7 @@ impl PostgresRunsDb {
     }
 
     pub(super) fn in_flight_by_worker(&self) -> Result<HashMap<String, u32>, RunsDbError> {
-        let mut client = self.client.lock();
+        let mut client = self.client()?;
         let mut out = HashMap::new();
         for row in client.query(
             &format!(
@@ -449,7 +463,7 @@ impl PostgresRunsDb {
         event_name: &str,
         timeout_at_ms: Option<i64>,
     ) -> Result<(), RunsDbError> {
-        let mut client = self.client.lock();
+        let mut client = self.client()?;
         let mut tx = client.transaction()?;
         let run_at = timeout_at_ms.unwrap_or(i64::MAX);
         let rows = tx.execute(
@@ -491,7 +505,7 @@ impl PostgresRunsDb {
     ) -> Result<u64, RunsDbError> {
         let payload_json = serde_json::to_string(payload)?;
         let now = self.now();
-        let mut client = self.client.lock();
+        let mut client = self.client()?;
         let mut tx = client.transaction()?;
         let waiters = tx.query(
             &format!(
@@ -545,7 +559,7 @@ impl PostgresRunsDb {
     }
 
     pub(super) fn pending_count(&self) -> Result<u64, RunsDbError> {
-        let mut client = self.client.lock();
+        let mut client = self.client()?;
         let count: i64 = client
             .query_one(
                 &format!(
@@ -559,7 +573,7 @@ impl PostgresRunsDb {
     }
 
     pub(super) fn has_runnable_work(&self) -> Result<bool, RunsDbError> {
-        let mut client = self.client.lock();
+        let mut client = self.client()?;
         let exists: bool = client
             .query_one(
                 &format!(
@@ -576,7 +590,7 @@ impl PostgresRunsDb {
     }
 
     pub(super) fn replace_schedules(&self, schedules: &[ScheduleSpec]) -> Result<(), RunsDbError> {
-        let mut client = self.client.lock();
+        let mut client = self.client()?;
         let mut tx = client.transaction()?;
         let names = schedules
             .iter()
@@ -620,7 +634,7 @@ impl PostgresRunsDb {
     }
 
     pub(super) fn list_schedules(&self) -> Result<Vec<ScheduleRow>, RunsDbError> {
-        let mut client = self.client.lock();
+        let mut client = self.client()?;
         let rows = client.query(
             &format!(
                 "SELECT name, cron, last_run_at, max_attempts FROM {}.schedules WHERE app_id=$1",
@@ -642,7 +656,7 @@ impl PostgresRunsDb {
     }
 
     pub(super) fn set_schedule_last_run_at(&self, name: &str, ts: i64) -> Result<(), RunsDbError> {
-        let mut client = self.client.lock();
+        let mut client = self.client()?;
         client.execute(
             &format!(
                 "UPDATE {}.schedules SET last_run_at=$3 WHERE app_id=$1 AND name=$2",
@@ -659,7 +673,7 @@ impl PostgresRunsDb {
         name: Option<&str>,
         limit: u32,
     ) -> Result<Vec<SummaryRow>, RunsDbError> {
-        let mut client = self.client.lock();
+        let mut client = self.client()?;
         let rows = client.query(
             &format!(
                 "SELECT id, name, status, attempts, max_attempts, run_at, created_at, finished_at,
@@ -681,7 +695,7 @@ impl PostgresRunsDb {
         id: &str,
         step_limit: i64,
     ) -> Result<Option<RunRecord>, RunsDbError> {
-        let mut client = self.client.lock();
+        let mut client = self.client()?;
         // One snapshot, so the steps belong to the run state shown with them.
         let mut tx = client
             .build_transaction()
@@ -759,7 +773,7 @@ impl PostgresRunsDb {
     }
 
     pub(super) fn retry_run(&self, id: &str) -> Result<WorkflowRunStatus, RunsDbError> {
-        let mut client = self.client.lock();
+        let mut client = self.client()?;
         let mut tx = client.transaction()?;
         let (status, _) = self.lock_run_status(&mut tx, id)?;
         if !matches!(
@@ -786,7 +800,7 @@ impl PostgresRunsDb {
     }
 
     pub(super) fn cancel_run(&self, id: &str) -> Result<CancelledRun, RunsDbError> {
-        let mut client = self.client.lock();
+        let mut client = self.client()?;
         let mut tx = client.transaction()?;
         // The row lock orders this with checkpoints, which lock the run
         // before checking ownership, and with guarded lifecycle updates,
@@ -855,7 +869,7 @@ impl PostgresRunsDb {
         set_clause: &str,
         params: &[&(dyn postgres::types::ToSql + Sync)],
     ) -> Result<(), RunsDbError> {
-        let mut client = self.client.lock();
+        let mut client = self.client()?;
         let rows = client.execute(
             &format!(
                 "UPDATE {}.runs SET {set_clause}
@@ -991,6 +1005,46 @@ fn validate_identifier(identifier: &str) -> Result<(), RunsDbError> {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn postgres_reconnects_before_the_next_workflow_operation() {
+        let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let schema = format!(
+            "reconnect_{}",
+            nanoid::nanoid!(12, &['a', 'b', 'c', 'd', 'e', 'f'])
+        );
+        let db = PostgresRunsDb::open(&url, &schema, "app").unwrap();
+        let enqueued = db
+            .enqueue("work", &serde_json::json!(42), &EnqueueOpts::default())
+            .unwrap();
+        let pid: i32 = db
+            .client
+            .lock()
+            .query_one("SELECT pg_backend_pid()", &[])
+            .unwrap()
+            .get(0);
+        let mut admin = Client::connect(&url, NoTls).unwrap();
+        assert!(
+            admin
+                .query_one("SELECT pg_terminate_backend($1, 5000)", &[&pid])
+                .unwrap()
+                .get::<_, bool>(0)
+        );
+        // The first request observes the broken socket. A write is never replayed implicitly.
+        assert!(db.claim("worker", &["work".into()], 60_000).is_err());
+
+        let run = db
+            .claim("worker", &["work".into()], 60_000)
+            .unwrap()
+            .unwrap();
+        assert_eq!(run.id, enqueued.id);
+        assert_eq!(run.attempts, 1);
+        admin
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .unwrap();
+    }
 
     #[test]
     fn claim_takes_exactly_one_of_several_due_runs() {
