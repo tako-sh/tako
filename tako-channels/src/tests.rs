@@ -48,33 +48,47 @@ fn replay_expires_without_subscribers_or_further_publishes() {
 
 #[test]
 fn parse_channel_route_rejects_invalid_paths() {
-    assert!(matches!(
-        parse_channel_route("/_tako/channels/"),
-        Err(ChannelError::InvalidPath)
-    ));
-    assert!(matches!(
-        parse_channel_route("/_tako/channels/chat/messages"),
-        Err(ChannelError::InvalidPath)
-    ));
-    // Stream keys are internal storage names, never routes.
-    assert!(matches!(
-        parse_channel_route("/_tako/channels/tako.stream%3Aabc"),
-        Err(ChannelError::InvalidPath)
-    ));
+    for path in [
+        "/_tako/channels/",
+        "/_tako/channels/chat",
+        "/_tako/channels/sse",
+        "/_tako/channels/sse/",
+        "/_tako/channels/ws/",
+        "/_tako/channels/chat/messages",
+        "/_tako/channels/sse/chat/messages",
+        "/_tako/channels/ws/chat/messages",
+        // Stream keys are internal storage names, never routes.
+        "/_tako/channels/sse/tako.stream%3Aabc",
+        "/_tako/channels/ws/tako.stream%3Aabc",
+    ] {
+        assert!(
+            matches!(parse_channel_route(path), Err(ChannelError::InvalidPath)),
+            "{path}"
+        );
+    }
     assert!(parse_channel_route("/channels/chat").unwrap().is_none());
+    assert!(parse_channel_route(crate::shared::PATH).unwrap().is_none());
 }
 
 #[test]
 fn parse_channel_route_accepts_exact_channel_names() {
-    let route = parse_channel_route("/_tako/channels/chat")
-        .unwrap()
-        .unwrap();
-    assert_eq!(route.channel, "chat");
+    for (transport, operation) in [
+        ("sse", ChannelOperation::Subscribe),
+        ("ws", ChannelOperation::Connect),
+    ] {
+        for name in ["chat", "ws", "sse"] {
+            let route = parse_channel_route(&format!("/_tako/channels/{transport}/{name}"))
+                .unwrap()
+                .unwrap();
+            assert_eq!(route.channel, name);
+            assert_eq!(route.operation, operation);
+        }
+    }
 }
 
 #[test]
 fn parse_channel_route_decodes_percent_encoded_segment() {
-    let route = parse_channel_route("/_tako/channels/chat%3Aroom-123")
+    let route = parse_channel_route("/_tako/channels/ws/chat%3Aroom-123")
         .unwrap()
         .unwrap();
     assert_eq!(route.channel, "chat:room-123");

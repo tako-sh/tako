@@ -108,7 +108,7 @@ tako.Channels.Register("chat", tako.ChannelDefinition{
 
 Params do not partition channel messages: every authorized binding to `chat` reads the same stream, regardless of `roomId`. Do not use this parameter as a room-isolation boundary.
 
-Typed params, per-channel auth callbacks, and transport selection are wired up through the same protocol the proxy already speaks. Clients connect to the exact channel name plus query params, for example `/_tako/channels/chat?roomId=lobby`.
+Typed params, per-channel auth callbacks, and transport selection are wired up through the same protocol the proxy already speaks. Clients connect to the exact channel name plus query params, for example `/_tako/channels/sse/chat?roomId=lobby`.
 
 ## Getting Started
 

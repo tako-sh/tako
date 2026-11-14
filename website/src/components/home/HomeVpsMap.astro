@@ -85,7 +85,7 @@ const background = [
     { method: "GET", url: "app.example.com/", route: "app", status: "200", reply: "200" },
     { method: "GET", url: "app.example.com/logo.svg", route: "static", status: "304", reply: "304 Not Modified" },
     { method: "GET", url: "app.example.com/_tako/image?src=/hero.jpg&w=800", route: "image", status: "200", reply: "200" },
-    { method: "GET", url: "app.example.com/_tako/channels/chat", route: "channels", status: "101", reply: "101 Switching Protocols" },
+    { method: "GET", url: "app.example.com/_tako/channels/ws", route: "channels", status: "101", reply: "101 Switching Protocols" },
     { method: "PUT", url: "app.example.com/_tako/storages/uploads/avatars/u_123.png", route: "storage", status: "200", reply: "200" },
     { idle: true },
     { method: "GET", url: "app.example.com/dashboard", route: "app", status: "200", reply: "200 after a cold start", cold: true },

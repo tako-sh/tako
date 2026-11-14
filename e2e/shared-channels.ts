@@ -10,6 +10,7 @@ const sockets: WebSocket[] = [];
 const trace: unknown[] = [];
 class RoutedSocket extends WebSocket {
   constructor(url: string | URL) {
+    assert.equal(new URL(url).pathname, "/_tako/channels/ws");
     super(url.toString(), { headers: routing });
     sockets.push(this);
     this.addEventListener("message", (event) => {

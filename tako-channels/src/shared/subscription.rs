@@ -21,6 +21,7 @@ pub(super) struct SubscriptionIo {
     generation: u64,
     input: mpsc::Receiver<Bytes>,
     output: mpsc::Sender<Output>,
+    delivery_failed: Arc<Notify>,
     closed: bool,
 }
 
@@ -30,12 +31,14 @@ impl SubscriptionIo {
         generation: u64,
         input: mpsc::Receiver<Bytes>,
         output: mpsc::Sender<Output>,
+        delivery_failed: Arc<Notify>,
     ) -> Self {
         Self {
             id,
             generation,
             input,
             output,
+            delivery_failed,
             closed: false,
         }
     }
@@ -66,8 +69,13 @@ impl SubscriptionIo {
         if self.closed {
             return Ok(());
         }
-        self.emit(json!({"type":"closed", "code":code, "reason":reason}), true)
-            .await
+        let result = self
+            .emit(json!({"type":"closed", "code":code, "reason":reason}), true)
+            .await;
+        if result.is_err() {
+            self.delivery_failed.notify_one();
+        }
+        result
     }
 
     async fn text(&mut self, text: &str) -> Result<()> {
@@ -272,4 +280,52 @@ pub(super) async fn run(
         tracing::debug!(%error, "shared channel subscription ended");
     }
     let _ = io.close(1011, "subscription interrupted").await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn terminal_timeout_notifies_connection_even_when_output_is_full() {
+        let (_input_tx, input) = mpsc::channel(1);
+        let (output, mut receiver) = mpsc::channel(1);
+        let failed = Arc::new(Notify::new());
+        let mut io = SubscriptionIo::new("page".into(), 1, input, output, failed.clone());
+        io.ready().await.unwrap();
+
+        // Keep the queue full for the entire deadline. No consumer capacity is
+        // needed to wake the socket owner and force reconnection.
+        let close = tokio::spawn(async move { io.close(1011, "interrupted").await });
+        tokio::time::timeout(WRITE_TIMEOUT + Duration::from_secs(2), failed.notified())
+            .await
+            .expect("socket owner must hear about failed terminal delivery");
+        assert!(close.await.unwrap().is_err());
+        assert_eq!(receiver.try_recv().unwrap().body["type"], "subscribed");
+    }
+
+    #[tokio::test]
+    async fn delivered_close_and_cancelled_subscription_do_not_disconnect_peers() {
+        let failed = Arc::new(Notify::new());
+        let (_input_tx, input) = mpsc::channel(1);
+        let (output, mut receiver) = mpsc::channel(1);
+        let mut io = SubscriptionIo::new("page".into(), 1, input, output, failed.clone());
+        io.close(1000, "done").await.unwrap();
+        assert!(receiver.try_recv().unwrap().terminal);
+        drop(io);
+
+        let (_input_tx, input) = mpsc::channel(1);
+        let (output, _receiver) = mpsc::channel(1);
+        let mut io = SubscriptionIo::new("cancelled".into(), 2, input, output, failed.clone());
+        io.ready().await.unwrap();
+        let close = tokio::spawn(async move { io.close(1011, "interrupted").await });
+        tokio::task::yield_now().await;
+        close.abort();
+        assert!(close.await.unwrap_err().is_cancelled());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), failed.notified())
+                .await
+                .is_err()
+        );
+    }
 }

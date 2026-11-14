@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn websocket_upgrade_response_sets_accept_header() {
-        let mut request = RequestHeader::build("GET", b"/_tako/channels/chat%3Aroom-123", None)
+        let mut request = RequestHeader::build("GET", b"/_tako/channels/ws/chat%3Aroom-123", None)
             .expect("build request");
         request
             .insert_header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")

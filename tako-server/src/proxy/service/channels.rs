@@ -142,6 +142,7 @@ impl TakoProxy {
         let route = match store_name.as_ref() {
             Some(name) => Ok(Some(tako_channels::ChannelRoute {
                 channel: format!("{STORE_CHANNEL_PREFIX}{name}"),
+                operation: ChannelOperation::Subscribe,
             })),
             None => parse_channel_route(path),
         };
@@ -149,6 +150,7 @@ impl TakoProxy {
             Ok(Some(route)) => route,
             Ok(None) if path == tako_channels::shared::PATH => tako_channels::ChannelRoute {
                 channel: String::new(),
+                operation: ChannelOperation::Connect,
             },
             Ok(None) => {
                 return Ok(false);
@@ -166,9 +168,10 @@ impl TakoProxy {
         }
         ctx.observation
             .set_handler(if is_store { "store" } else { "channel" }, "pending");
-        if is_store
-            && (session.req_header().method.as_str() != "GET"
-                || session.as_downstream().is_upgrade_req())
+        if session.req_header().method.as_str() != "GET"
+            || (is_store
+                && (session.as_downstream().is_upgrade_req()
+                    || route.operation == ChannelOperation::Connect))
         {
             return self
                 .write_json_response(
@@ -176,6 +179,17 @@ impl TakoProxy {
                     405,
                     &serde_json::json!({"error":"Method not allowed"}),
                 )
+                .await;
+        }
+        let websocket = route.operation == ChannelOperation::Connect;
+        if websocket != session.as_downstream().is_upgrade_req() {
+            let (status, message) = if websocket {
+                (426, "WebSocket upgrade required")
+            } else {
+                (400, "SSE endpoint does not accept WebSocket upgrades")
+            };
+            return self
+                .write_json_response(session, status, &serde_json::json!({"error":message}))
                 .await;
         }
 
@@ -245,11 +259,7 @@ impl TakoProxy {
             .await;
         }
 
-        let operation = if session.as_downstream().is_upgrade_req() {
-            ChannelOperation::Connect
-        } else {
-            ChannelOperation::Subscribe
-        };
+        let operation = route.operation;
 
         let meta = match self
             .channel_meta_for_app(app_name, instance, &route.channel)

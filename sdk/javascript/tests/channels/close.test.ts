@@ -104,10 +104,10 @@ describe("reading from the start", () => {
     ws.connect({ baseUrl, from: "start", lastMessageId: "7", webSocketFactory });
 
     expect(urls).toEqual([
-      "https://app.example.com/_tako/channels/reply?requestId=r1&from=start",
-      "https://app.example.com/_tako/channels/reply?requestId=r1",
-      "wss://app.example.com/_tako/channels/reply?requestId=r1&from=start",
-      "wss://app.example.com/_tako/channels/reply?requestId=r1&last_message_id=7",
+      "https://app.example.com/_tako/channels/sse/reply?requestId=r1&from=start",
+      "https://app.example.com/_tako/channels/sse/reply?requestId=r1",
+      "wss://app.example.com/_tako/channels/ws/reply?requestId=r1&from=start",
+      "wss://app.example.com/_tako/channels/ws/reply?requestId=r1&last_message_id=7",
     ]);
     expect(() => sse.subscribe({ baseUrl, from: "end" as "start", eventSourceFactory })).toThrow(
       'must be "start"',
@@ -128,8 +128,8 @@ describe("reading from the start", () => {
     });
     await (subscription.raw as SseReader).drain({ connections: 2 });
     expect(requests).toEqual([
-      { url: "https://app.example.com/_tako/channels/reply?from=start", cursor: null },
-      { url: "https://app.example.com/_tako/channels/reply?from=start", cursor: "1" },
+      { url: "https://app.example.com/_tako/channels/sse/reply?from=start", cursor: null },
+      { url: "https://app.example.com/_tako/channels/sse/reply?from=start", cursor: "1" },
     ]);
   });
 });

@@ -27,7 +27,7 @@ async fn params_select_the_stream_subscribers_and_publishers_share() {
     let dev_store = DevChannelStore::new();
     let (endpoint, app_id) = test_app::dev_proxy(app_port, &dev_store).await;
     let subscribe =
-        |query: &str| reqwest::get(format!("http://{endpoint}/_tako/channels/chat?{query}"));
+        |query: &str| reqwest::get(format!("http://{endpoint}/_tako/channels/sse/chat?{query}"));
 
     // Params are validated against the definition, as in production.
     assert_eq!(subscribe("room=one").await.unwrap().status(), 400);
@@ -126,7 +126,7 @@ async fn closed_streams_replay_from_start_and_end_readers_as_in_production() {
 
     let request = |query: &str, headers: &str| {
         let request = format!(
-            "GET /_tako/channels/feed?{query} HTTP/1.1\r\nHost: app.test\r\n{headers}Connection: close\r\n\r\n"
+            "GET /_tako/channels/sse/feed?{query} HTTP/1.1\r\nHost: app.test\r\n{headers}Connection: close\r\n\r\n"
         );
         async move {
             let mut client = tokio::net::TcpStream::connect(endpoint).await.unwrap();
@@ -214,7 +214,7 @@ async fn undeclared_params_are_rejected_as_in_production() {
     let dev_store = DevChannelStore::new();
     let (endpoint, _) = test_app::dev_proxy(app_port, &dev_store).await;
     let subscribe =
-        |query: &str| reqwest::get(format!("http://{endpoint}/_tako/channels/open?{query}"));
+        |query: &str| reqwest::get(format!("http://{endpoint}/_tako/channels/sse/open?{query}"));
     for query in ["room=1&junk=a", "junk=a"] {
         let response = subscribe(query).await.unwrap();
         assert_eq!(response.status(), 400, "{query}");

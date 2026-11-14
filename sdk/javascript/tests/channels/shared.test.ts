@@ -79,7 +79,7 @@ test("different channels and parameter scopes share a physical socket and releas
   cleanup.push(() => second.close());
   expect(Socket.all).toHaveLength(1);
   const socket = Socket.all[0]!;
-  expect(socket.url).toBe("wss://app.test/_tako/channels");
+  expect(socket.url).toBe("wss://app.test/_tako/channels/ws");
   socket.open();
   await tick();
   const [a, b] = socket.sent;
@@ -114,6 +114,17 @@ test("origin and credentials are separate connection boundaries", () => {
   connect("c", { authorization: "one" });
   connect("d", { authorization: "one", baseUrl: "https://another.test" });
   expect(Socket.all).toHaveLength(3);
+});
+
+test("transport names and encoded topic names share the topic-free WS endpoint", async () => {
+  const names = ["ws", "sse", "chat/room:123", "tako.presence:lobby"];
+  for (const name of names) connect(name);
+  expect(Socket.all).toHaveLength(1);
+  const socket = Socket.all[0]!;
+  expect(new URL(socket.url).pathname).toBe("/_tako/channels/ws");
+  socket.open();
+  await tick();
+  expect(socket.sent.map((frame) => frame.channel)).toEqual(names);
 });
 
 test("session reset closes layout subscriptions and new joins perform a fresh handshake", async () => {

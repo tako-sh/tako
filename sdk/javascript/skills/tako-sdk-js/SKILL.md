@@ -648,10 +648,10 @@ Shared connections allow 32 subscriptions, 64 KiB client command frames includin
 
 | Direction     | Method | Path                     | Transport                        |
 | ------------- | ------ | ------------------------ | -------------------------------- |
-| Shared WS     | GET    | `/_tako/channels` | Multiplexed WebSocket |
-| Subscribe     | GET    | `/_tako/channels/<name>` | SSE (`text/event-stream`)        |
-| Connect       | GET    | `/_tako/channels/<name>` | WebSocket (`Upgrade: websocket`) |
-| Publish       | WS     | `/_tako/channels/<name>` | JSON text frame                  |
+| Shared WS     | GET    | `/_tako/channels/ws` | Multiplexed WebSocket |
+| Subscribe     | GET    | `/_tako/channels/sse/<name>` | SSE (`text/event-stream`)        |
+| Connect       | GET    | `/_tako/channels/ws/<name>` | Dedicated WebSocket (`Upgrade: websocket`) |
+| Publish       | WS     | `/_tako/channels/ws/<name>` | JSON text frame                  |
 | Auth callback | POST   | `/channels/authorize`    | Internal (`Host: <app>.tako`)    |
 
 ## Network primitives

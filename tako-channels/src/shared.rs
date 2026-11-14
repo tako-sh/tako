@@ -16,9 +16,9 @@ use pingora_proxy::Session;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{collections::HashMap, sync::Arc, time::Duration};
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 
-pub const PATH: &str = "/_tako/channels";
+pub const PATH: &str = "/_tako/channels/ws";
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 pub const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 const MAX_SUBSCRIPTIONS: usize = 32;
@@ -123,6 +123,9 @@ pub async fn serve(
     let mut reader = WebSocketFrameReader::bounded(MAX_FRAME_BYTES as u64, true);
     // At most 16 bounded frames are queued, independent of producer speed.
     let (output_tx, mut output_rx) = mpsc::channel::<Output>(16);
+    // Terminal delivery must not depend on capacity in the data queue. If a
+    // subscription cannot enqueue its close, disconnect so clients can recover.
+    let delivery_failed = Arc::new(Notify::new());
     let mut subscriptions = HashMap::<String, Subscription>::new();
     let mut generation = 0u64;
     let mut last_activity = tokio::time::Instant::now();
@@ -133,13 +136,24 @@ pub async fn serve(
             Input(Option<Bytes>),
             Output(Output),
             Heartbeat,
+            DeliveryFailed,
         }
         let action = tokio::select! {
+            _ = delivery_failed.notified() => Action::DeliveryFailed,
             body = session.as_downstream_mut().read_body_or_idle(false) => Action::Input(body?),
             Some(output) = output_rx.recv() => Action::Output(output),
             _ = heartbeat.tick() => Action::Heartbeat,
         };
         match action {
+            Action::DeliveryFailed => {
+                write(
+                    session,
+                    websocket_close_frame(1012, "slow channel reader; reconnect"),
+                    true,
+                )
+                .await?;
+                return Ok(true);
+            }
             Action::Heartbeat => {
                 if last_activity.elapsed() >= HEARTBEAT_TIMEOUT {
                     write(
@@ -276,6 +290,7 @@ pub async fn serve(
                                 generation,
                                 rx,
                                 output_tx.clone(),
+                                delivery_failed.clone(),
                             );
                             let spec = subscription::Spec {
                                 channel,

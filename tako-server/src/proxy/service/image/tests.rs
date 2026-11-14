@@ -18,7 +18,7 @@ fn image_admission_is_bounded_and_recovers_on_drop() {
 #[test]
 fn identifies_image_request_paths() {
     assert!(is_image_request_path("/_tako/image"));
-    assert!(!is_image_request_path("/_tako/channels/chat"));
+    assert!(!is_image_request_path("/_tako/channels/sse/chat"));
 }
 
 #[test]

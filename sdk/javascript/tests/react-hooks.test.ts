@@ -234,7 +234,7 @@ describe("useChannel (sse)", () => {
         baseUrl: "http://test",
       }),
     );
-    expect(es!.url).toBe("http://test/_tako/channels/chat?roomId=r1&limit=10");
+    expect(es!.url).toBe("http://test/_tako/channels/sse/chat?roomId=r1&limit=10");
   });
 
   test("passes authorization shorthand to SSE subscriptions", () => {
@@ -416,7 +416,7 @@ describe("useChannel (ws)", () => {
         baseUrl: "http://test",
       }),
     );
-    expect(sockets[0]!.url).toBe("ws://test/_tako/channels/chat?roomId=r1");
+    expect(sockets[0]!.url).toBe("ws://test/_tako/channels/ws/chat?roomId=r1");
   });
 
   test("send() forwards to the underlying socket", () => {
@@ -485,7 +485,7 @@ describe("useChannel (ws)", () => {
       await new Promise((r) => setTimeout(r, 1500));
     });
 
-    expect(sockets.at(-1)!.url).toBe("ws://test/_tako/channels/chat%3A1?last_message_id=m7");
+    expect(sockets.at(-1)!.url).toBe("ws://test/_tako/channels/ws/chat%3A1?last_message_id=m7");
   });
 
   test("closes the socket on unmount and stops reconnecting", async () => {
@@ -1299,7 +1299,7 @@ describe("useChannel closed streams", () => {
         onClose: () => onClose.push("closed"),
       }),
     );
-    expect(sources[0]!.url).toBe("http://test/_tako/channels/reply?requestId=r1&from=start");
+    expect(sources[0]!.url).toBe("http://test/_tako/channels/sse/reply?requestId=r1&from=start");
 
     act(() => {
       sources[0]!.emitOpen();
@@ -1340,7 +1340,7 @@ describe("useChannel closed streams", () => {
         onClose: () => closes++,
       }),
     );
-    expect(sockets[0]!.url).toBe("ws://test/_tako/channels/reply?requestId=r1&from=start");
+    expect(sockets[0]!.url).toBe("ws://test/_tako/channels/ws/reply?requestId=r1&from=start");
 
     act(() => {
       sockets[0]!.emitOpen();
@@ -1352,7 +1352,9 @@ describe("useChannel closed streams", () => {
       await new Promise((r) => setTimeout(r, 1500));
     });
     expect(sockets).toHaveLength(2);
-    expect(sockets[1]!.url).toBe("ws://test/_tako/channels/reply?requestId=r1&last_message_id=m1");
+    expect(sockets[1]!.url).toBe(
+      "ws://test/_tako/channels/ws/reply?requestId=r1&last_message_id=m1",
+    );
 
     act(() => {
       sockets[1]!.emitOpen();

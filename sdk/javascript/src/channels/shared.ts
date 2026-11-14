@@ -258,7 +258,11 @@ onChannelConnectionsReset(() => {
 });
 
 /** Pool by origin, credentials, configuration generation and transport factory. */
-export function openSharedChannel(url: URL, options: SharedOptions = {}): SharedChannel {
+export function openSharedChannel(
+  channel: string,
+  url: URL,
+  options: SharedOptions = {},
+): SharedChannel {
   const config = getChannelsConfig();
   const factoryIdentity = options.webSocketFactory ?? config.websocket;
   let factoryId = factories.get(factoryIdentity);
@@ -266,8 +270,7 @@ export function openSharedChannel(url: URL, options: SharedOptions = {}): Shared
     factoryId = ++nextFactory;
     factories.set(factoryIdentity, factoryId);
   }
-  const channel = decodeURIComponent(url.pathname.slice("/_tako/channels/".length));
-  const endpoint = new URL("/_tako/channels", url);
+  const endpoint = new URL("/_tako/channels/ws", url);
   endpoint.protocol = endpoint.protocol === "https:" ? "wss:" : "ws:";
   const headers = [...new Headers(options.headers)].sort(([a], [b]) => a.localeCompare(b));
   const key = JSON.stringify([endpoint.href, headers, factoryId, config.generation]);

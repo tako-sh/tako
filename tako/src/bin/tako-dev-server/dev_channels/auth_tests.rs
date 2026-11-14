@@ -36,7 +36,7 @@ async fn shared_websocket_is_routed_and_authorized_by_the_dev_proxy() {
                 .unwrap()
         );
     });
-    let mut request = format!("ws://{endpoint}/_tako/channels")
+    let mut request = format!("ws://{endpoint}/_tako/channels/ws")
         .into_client_request()
         .unwrap();
     request
@@ -123,7 +123,9 @@ async fn sse_subscribe_is_authorized_and_denied_by_the_app() {
     let (endpoint, _) = dev_proxy(app_port, &dev_store).await;
     let client = reqwest::Client::new();
     let subscribe = |channel: &str, header: Option<(&str, &str)>| {
-        let mut request = client.get(format!("http://{endpoint}/_tako/channels/{channel}?room=1"));
+        let mut request = client.get(format!(
+            "http://{endpoint}/_tako/channels/sse/{channel}?room=1"
+        ));
         if let Some((name, value)) = header {
             request = request.header(name, value);
         }
@@ -174,6 +176,29 @@ async fn sse_subscribe_is_authorized_and_denied_by_the_app() {
     assert_eq!(unknown.status(), 404);
 }
 
+#[tokio::test]
+async fn transport_paths_reject_mismatches_before_authorization() {
+    let (app_port, calls) = fake_app(definitions(), authorize).await;
+    let (endpoint, _) = dev_proxy(app_port, &DevChannelStore::new()).await;
+    for path in ["/_tako/channels/ws", "/_tako/channels/ws/room"] {
+        assert_eq!(
+            reqwest::get(format!("http://{endpoint}{path}"))
+                .await
+                .unwrap()
+                .status(),
+            426
+        );
+    }
+    let result =
+        tokio_tungstenite::connect_async(format!("ws://{endpoint}/_tako/channels/sse/room?room=1"))
+            .await;
+    match result {
+        Err(tungstenite::Error::Http(response)) => assert_eq!(response.status().as_u16(), 400),
+        other => panic!("expected rejection of WebSocket on SSE path: {other:?}"),
+    }
+    assert!(calls.lock().unwrap().is_empty());
+}
+
 async fn connect(
     endpoint: std::net::SocketAddr,
     channel: &str,
@@ -182,7 +207,7 @@ async fn connect(
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
     u16,
 > {
-    let mut request = format!("ws://{endpoint}/_tako/channels/{channel}?room=1")
+    let mut request = format!("ws://{endpoint}/_tako/channels/ws/{channel}?room=1")
         .into_client_request()
         .unwrap();
     for (name, value) in headers {
@@ -345,7 +370,7 @@ async fn unreachable_app_fails_with_a_clear_error_instead_of_allowing() {
         let dev_store = DevChannelStore::new();
         let (endpoint, _) = dev_proxy(app_port, &dev_store).await;
         let response = reqwest::Client::new()
-            .get(format!("http://{endpoint}/_tako/channels/chat?room=1"))
+            .get(format!("http://{endpoint}/_tako/channels/sse/chat?room=1"))
             .header("authorization", "Bearer good")
             .send()
             .await

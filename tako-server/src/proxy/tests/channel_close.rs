@@ -111,7 +111,7 @@ async fn request(addr: std::net::SocketAddr, query: &str, headers: &str) -> Vec<
     client
         .write_all(
             format!(
-                "GET /_tako/channels/feed?{query} HTTP/1.1\r\nHost: feed.example\r\n{headers}Connection: close\r\n\r\n"
+                "GET /_tako/channels/sse/feed?{query} HTTP/1.1\r\nHost: feed.example\r\n{headers}Connection: close\r\n\r\n"
             )
             .as_bytes(),
         )
@@ -247,7 +247,7 @@ async fn closed_streams_end_sse_and_websocket_readers_with_the_terminal_signal()
     let mut client = TcpStream::connect(addr).await.unwrap();
     client
         .write_all(
-            b"GET /_tako/channels/feed?id=2&from=start HTTP/1.1\r\nHost: feed.example\r\n\r\n",
+            b"GET /_tako/channels/sse/feed?id=2&from=start HTTP/1.1\r\nHost: feed.example\r\n\r\n",
         )
         .await
         .unwrap();

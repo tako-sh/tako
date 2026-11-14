@@ -130,6 +130,19 @@ pub async fn try_handle(
     if method != "GET" {
         return write_json(session, 405, r#"{"error":"Method not allowed"}"#).await;
     }
+    let websocket = route.operation == ChannelOperation::Connect;
+    if websocket != session.as_downstream().is_upgrade_req() {
+        return if websocket {
+            write_json(session, 426, r#"{"error":"WebSocket upgrade required"}"#).await
+        } else {
+            write_json(
+                session,
+                400,
+                r#"{"error":"SSE endpoint does not accept WebSocket upgrades"}"#,
+            )
+            .await
+        };
+    }
     let Some(context) = &target.store_auth else {
         return write_channel_error(session, target, ChannelError::AuthUnavailable).await;
     };
@@ -162,7 +175,6 @@ pub async fn try_handle(
         Ok(from_start) => from_start,
         Err(error) => return write_channel_error(session, target, error).await,
     };
-    let websocket = session.as_downstream().is_upgrade_req();
     let RequestCredentials {
         header,
         cookie,
@@ -355,7 +367,12 @@ pub async fn try_handle_store(
     let channel = match &load_name {
         Some(name) => format!("{STORE_CHANNEL_PREFIX}{name}"),
         None => match parse_channel_route(path) {
-            Ok(Some(route)) if route.channel.starts_with(STORE_CHANNEL_PREFIX) => route.channel,
+            Ok(Some(route))
+                if route.channel.starts_with(STORE_CHANNEL_PREFIX)
+                    && route.operation == ChannelOperation::Subscribe =>
+            {
+                route.channel
+            }
             _ => return write_json(session, 404, r#"{"error":"Not found"}"#).await,
         },
     };
@@ -549,7 +566,7 @@ mod tests {
 
     #[test]
     fn parse_subscribe_path() {
-        let route = parse_channel_route("/_tako/channels/demo-broadcast")
+        let route = parse_channel_route("/_tako/channels/sse/demo-broadcast")
             .unwrap()
             .unwrap();
         assert_eq!(route.channel, "demo-broadcast");
@@ -557,7 +574,7 @@ mod tests {
 
     #[test]
     fn parse_rejects_nested_channel_path() {
-        assert!(parse_channel_route("/_tako/channels/demo-broadcast/messages").is_err());
+        assert!(parse_channel_route("/_tako/channels/sse/demo-broadcast/messages").is_err());
     }
 
     #[test]

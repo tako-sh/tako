@@ -91,13 +91,14 @@ function normalizeBaseUrl(baseUrl?: string): URL {
 }
 
 function channelBaseUrl(
+  transport: "ws" | "sse",
   channel: string,
   baseUrl?: string,
   params: Record<string, unknown> = {},
   schema?: object,
 ): URL {
   const url = normalizeBaseUrl(baseUrl);
-  url.pathname = `${TAKO_CHANNELS_BASE_PATH}/${encodeURIComponent(channel)}`;
+  url.pathname = `${TAKO_CHANNELS_BASE_PATH}/${transport}/${encodeURIComponent(channel)}`;
   url.search = "";
   for (const [key, value] of channelParamQuery(params, schema)) {
     url.searchParams.set(key, value);
@@ -356,7 +357,7 @@ export class Channel {
    * @defaultValue options = {}
    */
   subscribe(options: ChannelSubscribeOptions = {}): ChannelSubscription {
-    const url = channelBaseUrl(this.name, options.baseUrl, this.params, this.paramsSchema);
+    const url = channelBaseUrl("sse", this.name, options.baseUrl, this.params, this.paramsSchema);
     withReadFrom(url, options.from, options.lastEventId);
     const onClose = once(options.onClose);
     const factory = options.eventSourceFactory;
@@ -429,13 +430,13 @@ export class Channel {
       throw new Error("Channel does not enable WebSocket transport.");
     }
 
-    const url = channelBaseUrl(this.name, options.baseUrl, this.params, this.paramsSchema);
+    const url = channelBaseUrl("ws", this.name, options.baseUrl, this.params, this.paramsSchema);
     withQuery(url, "last_message_id", options.lastMessageId);
     withReadFrom(url, options.from, options.lastMessageId);
 
     if ((options.connection ?? getChannelsConfig().connection) !== "dedicated") {
       const headers = headersWithAuthorization(options.headers, options.authorization);
-      const raw = openSharedChannel(url, {
+      const raw = openSharedChannel(this.name, url, {
         ...(headers !== undefined && { headers }),
         ...(options.lastMessageId !== undefined && { cursor: options.lastMessageId }),
         ...(options.from !== undefined && { from: options.from }),
