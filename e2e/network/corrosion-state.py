@@ -172,10 +172,10 @@ path = "{d}/admin.sock"
             ["secret", operation, digest, value],
         ]]
         if i == 0:
-            for value in expected:
+            for obsolete in expected:
                 statements.append([
                     "DELETE FROM tako_shared_records WHERE kind=? AND digest=?",
-                    ["secret", hashlib.sha256(value.encode()).hexdigest()],
+                    ["secret", hashlib.sha256(obsolete.encode()).hexdigest()],
                 ])
         result = post(i, "/v1/transactions", statements)
         assert "error" not in result, result

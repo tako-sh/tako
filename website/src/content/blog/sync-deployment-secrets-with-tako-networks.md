@@ -129,6 +129,6 @@ tako secrets sync --env production
 
 Migration requires the original environment keys, retains an ignored recovery copy, and removes the old working file. Review and commit that deletion. Previous Git commits still contain their encrypted blobs. Older native network identities also require fresh enrollment for this protocol update; secret migration does not upgrade those identities.
 
-We have documented the current [history and recovery limits](/docs/secrets/#apply-changes-to-deployed-apps), including the absence of automatic compaction. Shared state needs backups and maintenance, just as the apps running beside it do.
+Shared state now retains only the current encrypted value per key, with versioned deletion markers and a seven-day retry window for interrupted publications. Backup encryption keys remain separate records by key ID. If every administrator laptop is lost, a surviving server can issue an independent administrator invitation with `sudo tako-server admin invite`. See the [secret storage limits](/docs/secrets/#apply-changes-to-deployed-apps) and [administrator recovery procedure](/docs/networks/#recover-administrator-access). Recovery requires intact server state and keys; shared state still needs backups.
 
 The everyday workflow is smaller: review code and `tako.toml` in Git, enroll machines through invitations, and publish secret edits when they are ready to be shared.

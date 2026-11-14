@@ -237,6 +237,16 @@ Each device generates and retains its own keys. Repeat `--deploy` for exact app/
 
 `ssh` uses embedded WireGuard and userspace TCP without sudo or system network changes; OpenSSH is required. `connect` enables local applications, private DNS, short server names, and approved SSH aliases such as `ssh edge-a`. It explains the required administrator access before prompting. `disconnect` removes those managed settings. No external WireGuard executable is required. Normal native management uses pinned HTTPS without a tunnel or SSH agent. See [Native networks](/networks/) for platform requirements, enrollment, endpoints, and private service names.
 
+## Server administrator recovery
+
+Run on a surviving Linux server through its provider console or administrator SSH:
+
+```bash
+sudo tako-server admin invite [--expires-in <seconds>] [--ssh] [--json]
+```
+
+Requires root and a running native network agent with intact state and keys. Prints a single-use invitation for an independent administrator, with a default validity of 3600 seconds (60–86400 accepted). Join from the replacement machine with `tako network join`. `--ssh` also grants a Tako administrator shell. Ordinary client invitations remain delegated. See [Recover administrator access](/networks/#recover-administrator-access).
+
 ## Servers
 
 ```bash
@@ -266,13 +276,15 @@ tako secrets set <NAME> [--env <env>] [--expires-on <when>]
 tako secrets add <NAME> ...
 tako secrets rm <NAME> [--env <env>] [--yes]
 tako secrets list
-tako secrets sync [--env <env>]
+tako secrets sync [--env <env>] [--retry-expired]
 tako secrets migrate
 tako secrets key export [--env <env>]
 tako secrets key import [--env <env>] [--passphrase]
 ```
 
 Secrets are app-facing values delivered to SDKs. Values are encrypted in ignored worktree-local `.tako/secrets.local.json`; keys are stored outside the project. Interactive prompts accept pasted multiline values and ask before trimming surrounding whitespace; non-interactive commands read the full stdin stream. Set/remove commands only edit local drafts. Deploy and `secrets sync` pull published state, preserve local edits, and publish per-key changes for the selected environment. Sync does not restart running apps; deploy to apply values. Network-bound secrets, provider credentials, storage credentials, and backup keys are replicated as ciphertext between servers. Authorized clients cache them through HTTPS.
+
+Secret state retains the current value per key and versioned deletions. Pending publication requests expire after seven days; `--retry-expired` explicitly replaces expired requests with the current local drafts as new changes. Review the drafts first, since they can overwrite remote changes to those keys.
 
 `secrets migrate` validates the original environment keys, writes local state, and removes the old `.tako/secrets.json` after retaining an ignored recovery copy. Commit the tracked file's deletion. Historical commits remain unchanged. See [Secrets](/secrets/) for conflicts, worktrees, and recovery.
 

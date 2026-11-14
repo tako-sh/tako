@@ -1,3 +1,5 @@
+> Secret value retention and host administrator recovery are superseded by [Current secrets and administrator recovery](current-secrets-admin-recovery.md). The sections below record the original implementation.
+
 # Network shared state implementation plan
 
 Keep application source and desired deployment configuration in `tako.toml` in

@@ -101,6 +101,22 @@ Network membership grants access according to the device's permissions; publishe
 
 See [Secrets](/secrets/) for worktree isolation, publication, and migration from a tracked secret file. Legacy environment-key import/export remains available for migration and explicit recovery; it is no longer the normal new-device workflow.
 
+## Recover administrator access
+
+If the administrator's laptop is lost, open a surviving server through the provider's web console or administrator SSH and run:
+
+```bash
+sudo tako-server admin invite
+```
+
+On the replacement machine, run `tako network join` and paste the invitation at the prompt. The string includes the issuing server's IP and ports, certificate trust information, network name and ID, a single-use token, and its expiry. The replacement generates its own private keys. The issuing server must remain reachable until the join completes.
+
+The invitation defaults to one hour; `--expires-in` accepts 60–86400 seconds. Add `--ssh` to grant a Tako administrator shell, or `--json` for structured output. The token is sensitive: give it only to the intended administrator. Only root on the server can issue recovery invitations; this command is unavailable through the public management API or the unprivileged `tako` account.
+
+A recovered administrator has independent authority. Verify access with `tako network sync NETWORK_NAME`, list the clients, then revoke the lost device with `tako network client remove DEVICE --network NETWORK_NAME`. Revoking the lost device does not revoke the recovered administrator. Ordinary `network client add --admin` invitations retain their inviter's delegation chain, so use this host recovery flow for an independent administrator handoff as well.
+
+Recovery requires an active server with its network state, private keys, and network agent intact. A server whose membership is revoked cannot issue recovery invitations. This restores access to surviving published state; it cannot reconstruct unpublished laptop drafts or a network whose every copy and key has been lost. App-data backups do not include the network registry or device keys.
+
 ## Revoke a device
 
 Inspect device IDs before revoking:
