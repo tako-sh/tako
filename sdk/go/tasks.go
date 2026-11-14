@@ -115,11 +115,15 @@ func (c *Client) RegisterSchedules(ctx context.Context, schedules []ScheduleSpec
 		// The server requires a list: an empty one removes every schedule.
 		schedules = []ScheduleSpec{}
 	}
-	_, err := c.call(ctx, map[string]any{
+	command := map[string]any{
 		"command":   "register_schedules",
 		"app":       c.app,
 		"schedules": schedules,
-	})
+	}
+	if build := os.Getenv("TAKO_BUILD"); build != "" {
+		command["build"] = build
+	}
+	_, err := c.call(ctx, command)
 	return err
 }
 

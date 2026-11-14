@@ -25,7 +25,6 @@ use tako_socket::serve_jsonl_connection;
 use tokio::net::UnixListener;
 use tokio::sync::oneshot;
 
-use super::cron::register_schedules;
 use super::enqueue::RunsDb;
 
 /// Callback fired whenever a durable write means work might be runnable.
@@ -547,12 +546,14 @@ fn handle_command(
                 Err(e) => e.into_socket_error("enqueue").into(),
             }
         }
-        Command::RegisterSchedules { schedules, .. } => {
+        Command::RegisterSchedules {
+            build, schedules, ..
+        } => {
             if !accepting_new_work.load(Ordering::SeqCst) {
                 return Response::ok(serde_json::json!({ "count": 0 }));
             }
-            match register_schedules(&db, &schedules) {
-                Ok(()) => Response::ok(serde_json::json!({ "count": schedules.len() })),
+            match db.register_worker_schedules(build.as_deref(), &schedules) {
+                Ok(count) => Response::ok(serde_json::json!({ "count": count })),
                 Err(e) => e.into_socket_error("register_schedules").into(),
             }
         }

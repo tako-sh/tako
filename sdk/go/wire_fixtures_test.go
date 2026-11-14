@@ -124,6 +124,7 @@ func (s *wireSocket) take() []byte {
 func ptr[T any](value T) *T { return &value }
 
 func TestWorkflowCommandsMatchWireFixtures(t *testing.T) {
+	t.Setenv("TAKO_BUILD", "v7")
 	socket := startWireSocket(t)
 	client := NewClient(socket.path, wireApp)
 	ctx := context.Background()

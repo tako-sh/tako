@@ -73,6 +73,7 @@ fn reply(name: &str, response: Response) -> Fixture {
 fn schedules(schedules: Vec<ScheduleSpec>) -> Command {
     Command::RegisterSchedules {
         app: APP.into(),
+        build: Some("v7".into()),
         schedules,
     }
 }

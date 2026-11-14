@@ -4,10 +4,9 @@
 //!
 //! - `workers >= 1` (always-on): spawn N workers on `start`, respawn any that
 //!   exit unexpectedly.
-//! - `workers == 0` (scale-to-zero): no workers until the dispatcher calls
-//!   `wake()` after durable work becomes runnable. `wake()` spawns one worker
-//!   if none is running. When the worker idles out and exits, we don't respawn
-//!   until the dispatcher sees runnable work again.
+//! - `workers == 0` (scale-to-zero): the dispatcher starts one worker to register
+//!   the release's schedules, then wakes worker groups for runnable work.
+//!   Workers exit after their idle window.
 //!
 //! `shutdown(timeout)` SIGTERMs all workers, waits, and SIGKILLs anything
 //! still alive after the timeout. Used by the drain path.
@@ -224,6 +223,16 @@ impl WorkerSupervisor {
     /// detection — caller should surface this to the user instead of
     /// silently respawning.
     pub fn wake(&self) -> Result<(), SupervisorError> {
+        self.wake_lanes(&self.spec.resolved_lanes())
+    }
+
+    /// One worker can register the complete schedule set before any job exists.
+    pub(crate) fn bootstrap_schedules(&self) -> Result<(), SupervisorError> {
+        let lanes = self.spec.resolved_lanes();
+        self.wake_lanes(&lanes[..1])
+    }
+
+    fn wake_lanes(&self, lanes: &[WorkerLane]) -> Result<(), SupervisorError> {
         let mut state = self.state.lock();
         if state.shutting_down {
             return Ok(());
@@ -232,7 +241,7 @@ impl WorkerSupervisor {
         if let Some(reason) = Self::unhealthy_reason(&state) {
             return Err(SupervisorError::Unhealthy(reason));
         }
-        for lane in self.spec.resolved_lanes() {
+        for lane in lanes {
             let live = state
                 .children
                 .iter()
@@ -244,7 +253,7 @@ impl WorkerSupervisor {
                 (lane.workers as usize).saturating_sub(live)
             };
             for _ in 0..target {
-                if let Err(e) = self.spawn_one_locked(&mut state, &lane) {
+                if let Err(e) = self.spawn_one_locked(&mut state, lane) {
                     let msg = format!("worker spawn failed: {e}");
                     state.health.unhealthy_until = Some(Instant::now() + UNHEALTHY_COOLDOWN);
                     state.health.last_error = Some(msg.clone());

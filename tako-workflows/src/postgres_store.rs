@@ -589,9 +589,39 @@ impl PostgresRunsDb {
         Ok(exists)
     }
 
-    pub(super) fn replace_schedules(&self, schedules: &[ScheduleSpec]) -> Result<(), RunsDbError> {
+    pub(super) fn next_schedule_revision(&self) -> Result<i64, RunsDbError> {
+        let sql = format!("SELECT nextval('{}.schedule_revision')", self.schema);
+        Ok(self.client()?.query_one(&sql, &[])?.get(0))
+    }
+
+    pub(super) fn replace_schedules(
+        &self,
+        schedules: &[ScheduleSpec],
+        build: Option<&str>,
+        revision: Option<i64>,
+    ) -> Result<(), RunsDbError> {
         let mut client = self.client()?;
         let mut tx = client.transaction()?;
+        // Serialize whole-set replacements across servers. An older release or a
+        // pre-upgrade recovery (revision 0) cannot replace a newer deployment.
+        let active = tx.execute(
+            &format!(
+                "INSERT INTO {}.schedule_releases AS active (app_id, build, revision)
+                 VALUES ($1, $2, $3)
+                 ON CONFLICT (app_id) DO UPDATE SET build=excluded.build, revision=excluded.revision
+                 WHERE active.revision < excluded.revision
+                    OR (active.revision = excluded.revision AND active.build = excluded.build)",
+                self.schema
+            ),
+            &[
+                &self.app_id,
+                &build.unwrap_or_default(),
+                &revision.unwrap_or(0),
+            ],
+        )?;
+        if active == 0 {
+            return Ok(());
+        }
         let names = schedules
             .iter()
             .map(|s| s.name.clone())
@@ -965,6 +995,10 @@ fn init_schema(client: &mut Client, schema: &str) -> Result<(), RunsDbError> {
              PRIMARY KEY(app_id, name)
          );
          ALTER TABLE {schema}.schedules ADD COLUMN IF NOT EXISTS max_attempts BIGINT;
+         CREATE SEQUENCE IF NOT EXISTS {schema}.schedule_revision;
+         CREATE TABLE IF NOT EXISTS {schema}.schedule_releases (
+             app_id TEXT PRIMARY KEY, build TEXT NOT NULL, revision BIGINT NOT NULL
+         );
 
          CREATE TABLE IF NOT EXISTS {schema}.event_waiters (
              app_id TEXT NOT NULL,

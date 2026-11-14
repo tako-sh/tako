@@ -33,6 +33,7 @@ describe("bootstrapWorker", () => {
   let server: Server | undefined;
   let previousSocket: string | undefined;
   let previousApp: string | undefined;
+  let previousGroup: string | undefined;
   let previousStartWorker: typeof workflowsEngine.startWorker;
 
   beforeEach(async () => {
@@ -42,6 +43,8 @@ describe("bootstrapWorker", () => {
     sock = join(dir, "internal.sock");
     previousSocket = process.env["TAKO_INTERNAL_SOCKET"];
     previousApp = process.env["TAKO_APP_NAME"];
+    previousGroup = process.env["TAKO_WORKFLOW_WORKER"];
+    delete process.env["TAKO_WORKFLOW_WORKER"];
     process.env["TAKO_INTERNAL_SOCKET"] = sock;
     process.env["TAKO_APP_NAME"] = "test-app";
     previousStartWorker = workflowsEngine.startWorker.bind(workflowsEngine);
@@ -58,6 +61,8 @@ describe("bootstrapWorker", () => {
     else process.env["TAKO_INTERNAL_SOCKET"] = previousSocket;
     if (previousApp === undefined) delete process.env["TAKO_APP_NAME"];
     else process.env["TAKO_APP_NAME"] = previousApp;
+    if (previousGroup === undefined) delete process.env["TAKO_WORKFLOW_WORKER"];
+    else process.env["TAKO_WORKFLOW_WORKER"] = previousGroup;
     await rm(dir, { recursive: true, force: true });
   });
 
@@ -122,7 +127,7 @@ export default defineWorkflow("hourly", { schedule: "0 * * * *", handler: async 
     expect(commands[0]?.schedules).toContainEqual({ name: "hourly", cron: "0 * * * *" });
   });
 
-  test("default worker group does not load workflows assigned to another group", async () => {
+  test("every group registers all schedules and only claims its own workflows", async () => {
     const workflowsDir = join(dir, "workflows");
     await mkdir(workflowsDir);
     const defineUrl = new URL("../../src/workflows/define.ts", import.meta.url).href;
@@ -130,15 +135,24 @@ export default defineWorkflow("hourly", { schedule: "0 * * * *", handler: async 
       join(workflowsDir, "email.mjs"),
       `
 import { defineWorkflow } from "${defineUrl}";
-export default defineWorkflow("email", { worker: "email", handler: async () => {} });
+export default defineWorkflow("email", { worker: "email", schedule: "0 9 * * 1-5", handler: async () => {} });
 `,
     );
-    delete process.env["TAKO_WORKFLOW_WORKER"];
     const commands: unknown[] = [];
     server = await startRpcCaptureServer(sock, commands);
 
-    const result = await bootstrapWorker({ appDir: dir, appRoot: "." });
-    expect(result.started).toBe(false);
-    expect(result.workflowCount).toBe(0);
+    for (const group of ["default", "email"]) {
+      process.env["TAKO_WORKFLOW_WORKER"] = group;
+      workflowsEngine._reset();
+      const result = await bootstrapWorker({ appDir: dir, appRoot: "." });
+      expect(result.started).toBe(group === "email");
+      expect(workflowsEngine.registeredNames).toEqual(group === "email" ? ["email"] : []);
+    }
+    const registration = {
+      command: "register_schedules",
+      app: "test-app",
+      schedules: [{ name: "email", cron: "0 9 * * 1-5" }],
+    };
+    expect(commands).toEqual([registration, registration]);
   });
 });
