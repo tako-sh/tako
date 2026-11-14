@@ -12,6 +12,9 @@ without an external fork. Other Pingora crates remain registry dependencies.
 
 Changes to the published source:
 
+- `src/listeners/l4.rs` supports Linux freebind for managed addresses before their
+  interfaces exist. The manifest requires `socket2 0.6` for the IPv4 and IPv6
+  freebind methods so dependency updates cannot select an incompatible older API.
 - `src/protocols/l4/idle_buffer.rs` replaces Tokio's permanently allocated read
   buffer. Empty buffers return to a bounded thread-local pool when a read would
   block, reaches EOF or fails. Unread bytes remain owned by the connection.
