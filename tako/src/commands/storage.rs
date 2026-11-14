@@ -280,7 +280,7 @@ fn write_storage_credentials(
     secret_access_key: Option<String>,
     expires_on: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut secrets = crate::config::SecretsStore::load_with_config(project_dir, config)?;
+    let mut secrets = crate::config::SecretsStore::load_for_environment(project_dir, config, env)?;
     secrets.ensure_env_key_id(env)?;
     let key =
         crate::commands::secret::load_or_create_key_for_set(env, &secrets, Some(project_dir))?;

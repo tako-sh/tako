@@ -204,7 +204,7 @@ async fn run_async(
                 .get(&env)
                 .and_then(|env| env.network.as_deref());
             let servers = ServerInventory::load(network).map_err(|e| e.to_string())?;
-            let secrets = SecretsStore::load_with_config(&project_dir, &tako_config)
+            let secrets = SecretsStore::load_for_environment(&project_dir, &tako_config, &env)
                 .map_err(|e| e.to_string())?;
 
             let config_result = validate_full_config(&tako_config, &servers, Some(&env));
@@ -265,6 +265,7 @@ async fn run_async(
             &project_dir,
             preflight_runtime_adapter,
             &tako_config,
+            Some(&env),
             false,
         )?;
     }

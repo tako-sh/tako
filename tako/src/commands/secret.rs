@@ -18,7 +18,11 @@ use sync::{list_secrets, sync_secrets};
 /// Refresh generated files (`tako.d.ts` for JS/TS, `tako_secrets.go` for Go)
 /// after a secret change. Best-effort — a generation failure doesn't block
 /// the secret write itself.
-fn refresh_generated_files_after_secret_change(project_dir: &Path, config_path: &Path) {
+fn refresh_generated_files_after_secret_change(
+    project_dir: &Path,
+    config_path: &Path,
+    environment: Option<&str>,
+) {
     let tako_config = match TakoToml::load_from_file(config_path) {
         Ok(cfg) => cfg,
         Err(_) => return,
@@ -32,11 +36,19 @@ fn refresh_generated_files_after_secret_change(project_dir: &Path, config_path: 
         .unwrap_or_else(|| detect_build_adapter(project_dir));
     match adapter.preset_group() {
         PresetGroup::Js => {
-            let _ =
-                build::js::write_tako_declarations_with_config(project_dir, adapter, &tako_config);
+            let _ = build::js::write_tako_declarations_with_config(
+                project_dir,
+                adapter,
+                &tako_config,
+                environment,
+            );
         }
         PresetGroup::Go => {
-            let _ = build::go::write_secret_accessors_with_config(project_dir, &tako_config);
+            let _ = build::go::write_secret_accessors_with_config(
+                project_dir,
+                &tako_config,
+                environment,
+            );
         }
         PresetGroup::Unknown => {}
     }
@@ -446,7 +458,10 @@ fn resolve_secret_set_input(
     name: &str,
     requested_expires_on: Option<String>,
 ) -> Result<Option<SecretSetInput>, Box<dyn std::error::Error>> {
-    let secrets = context.load_secrets()?;
+    let secrets = match requested_env {
+        Some(env) => context.load_secrets_for_environment(Some(env))?,
+        None => crate::config::SecretsStore::load_for_key_recovery(&context.project_dir)?,
+    };
     let requested_expires_on = requested_expires_on
         .map(|value| crate::config::normalize_secret_expires_on(&value))
         .transpose()?;
@@ -512,6 +527,7 @@ fn resolve_secret_set_input(
 
         match choice {
             SecretEnvironmentChoice::Existing(env) => {
+                let secrets = context.load_secrets_for_environment(Some(&env))?;
                 if secrets.contains(&env, name) {
                     wizard.set_visible("Override", true);
                     'override_existing: loop {
@@ -598,6 +614,7 @@ fn resolve_secret_set_input(
                         continue 'name;
                     }
 
+                    let secrets = context.load_secrets_for_environment(Some(&env))?;
                     if secrets.contains(&env, name) {
                         wizard.set_visible("Override", true);
                         'override_new: loop {
@@ -678,7 +695,7 @@ async fn set_secret(
 
     // Load secrets and ensure environment has an in-memory key_id. Do not write
     // local state until every prompt in this flow has completed.
-    let mut secrets = context.load_secrets()?;
+    let mut secrets = context.load_secrets_for_environment(Some(env))?;
     secrets.ensure_env_key_id(env)?;
 
     let exists = secrets.contains(env, name);
@@ -691,7 +708,11 @@ async fn set_secret(
     let encrypted = encrypt(value, &key)?;
     secrets.set_with_expires_on(env, name, encrypted, expires_on)?;
     secrets.save_to_dir(&context.project_dir)?;
-    refresh_generated_files_after_secret_change(&context.project_dir, &context.config_path);
+    refresh_generated_files_after_secret_change(
+        &context.project_dir,
+        &context.config_path,
+        Some(env),
+    );
 
     if exists {
         output::success(&format!(
@@ -716,7 +737,7 @@ async fn remove_secret(
     env: Option<&str>,
     assume_yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut secrets = context.load_secrets()?;
+    let mut secrets = context.load_secrets_for_environment(env)?;
 
     if let Some(env) = env {
         // Remove from specific environment
@@ -770,7 +791,7 @@ async fn remove_secret(
     }
 
     secrets.save_to_dir(&context.project_dir)?;
-    refresh_generated_files_after_secret_change(&context.project_dir, &context.config_path);
+    refresh_generated_files_after_secret_change(&context.project_dir, &context.config_path, env);
 
     Ok(())
 }

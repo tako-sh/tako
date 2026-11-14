@@ -122,7 +122,7 @@ async fn run_async(
             let backup = if output::is_dry_run() {
                 None
             } else {
-                let mut secrets = context.load_secrets()?;
+                let mut secrets = context.load_secrets_for_environment(Some(&target.env))?;
                 crate::commands::storage::ensure_backup_keys_for_env(
                     &context.project_dir,
                     &target.env,

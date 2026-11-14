@@ -309,6 +309,81 @@ fn deploy_ignores_unrelated_inactive_networks_but_rejects_a_selected_inactive_ne
 }
 
 #[test]
+fn selected_environment_ignores_another_environments_inactive_secret_cache() {
+    let healthy = Fixture::with_servers(&["edge"]);
+    let mut stale = Fixture::with_servers(&["edge"]);
+    let own = stale.profile.snapshot.network.initial_admin.clone();
+    stale
+        .profile
+        .snapshot
+        .members
+        .iter_mut()
+        .find(|member| member.device_id == own)
+        .unwrap()
+        .expires_at = Some(1);
+    stale.save();
+    healthy.install_network(&stale);
+    for fixture in [&healthy, &stale] {
+        let cache = healthy
+            .tako_home
+            .join(
+                fixture
+                    .profile_path
+                    .strip_prefix(&fixture.tako_home)
+                    .unwrap(),
+            )
+            .with_file_name("secrets.json");
+        fs::write(
+            cache,
+            serde_json::to_vec(&tako_network::shared::SharedSnapshot::empty(
+                fixture.profile.snapshot.network.id.clone(),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+    fs::write(healthy.directory.path().join("tako.toml"), format!(
+        "name='demo'\nimage='example/demo:latest'\n[envs.production]\nnetwork='{}'\nroute='demo.example.test'\nservers=['missing']\n[envs.staging]\nnetwork='{}'\nroute='staging.example.test'\n",
+        healthy.profile.snapshot.network.id, stale.profile.snapshot.network.id,
+    )).unwrap();
+    let deploy = run_tako_with_env(
+        &["--ci", "--dry-run", "deploy", "--env", "production"],
+        healthy.directory.path(),
+        &healthy.home,
+        &healthy.tako_home,
+    );
+    assert!(!deploy.status.success());
+    assert!(
+        stderr_str(&deploy).contains("Server 'missing' is not a trusted server"),
+        "{}",
+        stderr_str(&deploy)
+    );
+
+    let edit = run_tako_with_stdin_and_env(
+        &["--ci", "secrets", "set", "TOKEN", "--env", "production"],
+        healthy.directory.path(),
+        "local-value\n",
+        &healthy.home,
+        &healthy.tako_home,
+    );
+    assert!(edit.status.success(), "{}", stderr_str(&edit));
+    let path = healthy.directory.path().join(".tako/secrets.local.json");
+    let before = fs::read(&path).unwrap();
+    let state: serde_json::Value = serde_json::from_slice(&before).unwrap();
+    assert!(state["environments"].get("production").is_some());
+    assert!(state["environments"].get("staging").is_none());
+    let rejected = run_tako_with_stdin_and_env(
+        &["--ci", "secrets", "set", "TOKEN", "--env", "staging"],
+        healthy.directory.path(),
+        "must-not-be-written\n",
+        &healthy.home,
+        &healthy.tako_home,
+    );
+    assert!(!rejected.status.success());
+    assert_eq!(fs::read(&path).unwrap(), before);
+}
+
+#[test]
 fn native_status_resolves_members_without_ssh_keys_and_rejects_missing_pins() {
     let fixture = Fixture::new();
     let before = fs::read(&fixture.profile_path).unwrap();

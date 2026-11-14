@@ -19,7 +19,7 @@ pub fn run(
     crate::config::validate_environment_name(env)?;
     let context = crate::commands::project_context::resolve_existing(config_path)?;
     let config = TakoToml::load_from_file(&context.config_path)?;
-    let secrets_store = context.load_secrets()?;
+    let secrets_store = context.load_secrets_for_environment(Some(env))?;
     let secrets = decrypt_run_secrets(env, &secrets_store, Some(&context.project_dir))?;
     let storages = crate::commands::storage::decrypt_storage_bindings(
         env,

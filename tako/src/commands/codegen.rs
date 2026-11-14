@@ -48,6 +48,7 @@ pub fn run(
                 &ctx.project_dir,
                 adapter,
                 &tako_config,
+                None,
                 update_schemas,
             )?;
             let mut generated = Vec::new();
@@ -73,8 +74,11 @@ pub fn run(
                 false,
                 update_schemas,
             )?;
-            written |=
-                build::go::write_secret_accessors_with_config(&ctx.project_dir, &tako_config)?;
+            written |= build::go::write_secret_accessors_with_config(
+                &ctx.project_dir,
+                &tako_config,
+                None,
+            )?;
             if written {
                 output::success("Generated Go types, secret accessors, and tako-schema.json");
             } else {

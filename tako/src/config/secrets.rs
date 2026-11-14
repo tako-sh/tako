@@ -191,13 +191,23 @@ impl SecretsStore {
 
     /// Materialize the shared cache for the configuration chosen by the caller.
     pub fn load_with_config(project_dir: &Path, config: &super::TakoToml) -> Result<Self> {
-        crate::network::secrets::load_local_with_config(project_dir, Some(config))
+        crate::network::secrets::load_local_with_config(project_dir, Some(config), None)
+            .map_err(|error| ConfigError::Validation(error.to_string()))
+    }
+
+    /// Load cached values only for the environment this command will use.
+    pub fn load_for_environment(
+        project_dir: &Path,
+        config: &super::TakoToml,
+        env: &str,
+    ) -> Result<Self> {
+        crate::network::secrets::load_local_with_config(project_dir, Some(config), Some(env))
             .map_err(|error| ConfigError::Validation(error.to_string()))
     }
 
     /// Read existing encrypted values without requiring keys or binding a cache.
     pub fn load_for_key_recovery(project_dir: &Path) -> Result<Self> {
-        crate::network::secrets::load_local_with_config(project_dir, None)
+        crate::network::secrets::load_local_with_config(project_dir, None, None)
             .map_err(|error| ConfigError::Validation(error.to_string()))
     }
 

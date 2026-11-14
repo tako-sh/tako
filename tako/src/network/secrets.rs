@@ -72,12 +72,13 @@ fn write_workspace(project: &Path, state: &Workspace) -> Result<()> {
 
 pub(crate) fn load_local(project: &Path) -> Result<SecretsStore> {
     let config = TakoToml::load_from_dir(project).ok();
-    load_local_with_config(project, config.as_ref())
+    load_local_with_config(project, config.as_ref(), None)
 }
 
 pub(crate) fn load_local_with_config(
     project: &Path,
     config: Option<&TakoToml>,
+    environment: Option<&str>,
 ) -> Result<SecretsStore> {
     let _lock = if crate::output::is_dry_run() {
         None
@@ -93,6 +94,9 @@ pub(crate) fn load_local_with_config(
     {
         let networks = LocalNetworks::load()?;
         for (env, spec) in &config.envs {
+            if environment.is_some_and(|selected| selected != env) {
+                continue;
+            }
             let Some(id) = spec.network.as_deref() else {
                 continue;
             };

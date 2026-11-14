@@ -65,7 +65,7 @@ fn set_credential_command(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let name = resolve_credential_name(requested_name)?;
     let env = resolve_credential_environment(context, requested_env)?;
-    let secrets = context.load_secrets()?;
+    let secrets = context.load_secrets_for_environment(Some(&env))?;
     if !confirm_credential_override(&secrets, &name, &env)? {
         return Ok(());
     }
@@ -107,7 +107,7 @@ fn remove_credential_command(
     let name = normalize_credential_name(name);
     crate::config::validate_credential_name(&name)?;
     let env = resolve_credential_environment(context, requested_env)?;
-    let mut secrets = context.load_secrets()?;
+    let mut secrets = context.load_secrets_for_environment(Some(&env))?;
     if !secrets.contains_credential(&env, &name) {
         return Err(format!("Credential '{name}' not found in environment '{env}'").into());
     }
@@ -225,7 +225,7 @@ fn resolve_credential_environment(
     }
 
     let tako_config = crate::config::TakoToml::load_from_file(&context.config_path)?;
-    let secrets = context.load_secrets()?;
+    let secrets = crate::config::SecretsStore::load_for_key_recovery(&context.project_dir)?;
     let mut wizard = output::Wizard::new().with_fields(&[("Environment", false)]);
     wizard
         .select(

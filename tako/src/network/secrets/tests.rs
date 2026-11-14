@@ -44,6 +44,79 @@ fn decrypted(values: &SecretsStore, name: &str) -> String {
 }
 
 #[test]
+fn selected_environment_cache_and_type_generation_leave_other_environments_untouched() {
+    let home = TestHome::new();
+    let healthy = fixture();
+    let mut stale = fixture();
+    let locals = [&healthy, &stale].map(|fixture| {
+        super::super::store_keys(&fixture.profile.request().request_id, &fixture.keys).unwrap();
+        super::super::save_profile(&fixture.profile).unwrap()
+    });
+    for (fixture, local) in [(&healthy, &locals[0]), (&stale, &locals[1])] {
+        let mut cache = SharedSnapshot::empty(fixture.profile.snapshot().network.id.clone());
+        cache
+            .secrets
+            .push(published(&fixture.profile, "TOKEN", Some("published"), 1));
+        cache_merge(local, &cache, &fixture.profile).unwrap();
+    }
+    let Profile::Active { profile } = &mut stale.profile else {
+        panic!()
+    };
+    let own = profile.snapshot.network.initial_admin.clone();
+    profile
+        .snapshot
+        .members
+        .iter_mut()
+        .find(|member| member.device_id == own)
+        .unwrap()
+        .expires_at = Some(1);
+    super::super::write_json(&locals[1].profile_path().unwrap(), &stale.profile, true).unwrap();
+    let project = home.directory.path().join("checkout");
+    std::fs::create_dir_all(&project).unwrap();
+    let config = TakoToml::parse(&format!(
+        "name='demo'\n[envs.production]\nnetwork='{}'\nroute='demo.example.test'\n[envs.staging]\nnetwork='{}'\nroute='staging.example.test'\n",
+        locals[0].id, locals[1].id,
+    )).unwrap();
+    let values = SecretsStore::load_for_environment(&project, &config, "production").unwrap();
+    assert!(decrypted(&values, "TOKEN") == "published");
+    assert!(
+        !read_workspace(&project)
+            .unwrap()
+            .environments
+            .contains_key("staging")
+    );
+    let before = std::fs::read(SecretsStore::default_path(&project)).unwrap();
+    crate::build::js::write_tako_declarations_with_config(
+        &project,
+        crate::build::BuildAdapter::Unknown,
+        &config,
+        Some("production"),
+    )
+    .unwrap();
+    crate::build::go::write_secret_accessors_with_config(&project, &config, Some("production"))
+        .unwrap();
+    assert!(
+        std::fs::read_to_string(project.join("tako.d.ts"))
+            .unwrap()
+            .contains("TOKEN")
+    );
+    assert!(
+        std::fs::read_to_string(project.join("tako_secrets.go"))
+            .unwrap()
+            .contains("Token")
+    );
+    assert_eq!(
+        std::fs::read(SecretsStore::default_path(&project)).unwrap(),
+        before
+    );
+    assert!(SecretsStore::load_for_environment(&project, &config, "staging").is_err());
+    assert_eq!(
+        std::fs::read(SecretsStore::default_path(&project)).unwrap(),
+        before
+    );
+}
+
+#[test]
 fn two_worktrees_share_published_values_but_keep_drafts_and_deletions_separate() {
     let home = TestHome::new();
     let fixture = fixture();

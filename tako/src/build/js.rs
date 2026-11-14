@@ -68,10 +68,17 @@ fn read_env_names(project_dir: &Path) -> Vec<String> {
 /// Falls back to all secret names across all environments if no development
 /// environment exists. Returns an empty vec if the file doesn't exist or is
 /// malformed.
-fn read_secret_names(project_dir: &Path, config: Option<&TakoToml>) -> Vec<String> {
-    let store = match config {
-        Some(config) => crate::config::SecretsStore::load_with_config(project_dir, config),
-        None => crate::config::SecretsStore::load_from_dir(project_dir),
+fn read_secret_names(
+    project_dir: &Path,
+    config: Option<&TakoToml>,
+    environment: Option<&str>,
+) -> Vec<String> {
+    let store = match (config, environment) {
+        (Some(config), Some(env)) => {
+            crate::config::SecretsStore::load_for_environment(project_dir, config, env)
+        }
+        (Some(config), None) => crate::config::SecretsStore::load_with_config(project_dir, config),
+        (None, _) => crate::config::SecretsStore::load_from_dir(project_dir),
     };
     let Ok(store) = store else {
         return vec![];
@@ -382,6 +389,7 @@ pub fn write_tako_declarations_with_config(
     project_dir: &Path,
     adapter: BuildAdapter,
     config: &TakoToml,
+    environment: Option<&str>,
 ) -> std::io::Result<bool> {
     write_tako_declarations_with_network_options(
         project_dir,
@@ -389,6 +397,7 @@ pub fn write_tako_declarations_with_config(
         config.js_app_root(),
         &|| Command::new("bun"),
         Some(config),
+        environment,
         false,
     )
     .map(|result| result.wrote_declarations || result.wrote_contracts)
@@ -417,6 +426,7 @@ fn write_tako_declarations_with_codegen_command(
         app_root,
         codegen_command,
         None,
+        None,
         false,
     )
 }
@@ -427,9 +437,10 @@ fn write_tako_declarations_with_network_options(
     app_root: &str,
     codegen_command: &impl Fn() -> Command,
     config: Option<&TakoToml>,
+    environment: Option<&str>,
     update: bool,
 ) -> std::io::Result<JsGeneratedFilesResult> {
-    let secret_names = read_secret_names(project_dir, config);
+    let secret_names = read_secret_names(project_dir, config, environment);
     let storage_names = read_storage_names(project_dir);
     let env_names = read_env_names(project_dir);
     let var_names = read_var_names(project_dir);
@@ -640,6 +651,7 @@ pub fn write_generated_files_with_schemas(
     project_dir: &Path,
     adapter: BuildAdapter,
     config: &TakoToml,
+    environment: Option<&str>,
     update: bool,
 ) -> std::io::Result<JsGeneratedFilesResult> {
     let wrote_scaffolds = ensure_js_definition_scaffolds(project_dir, config.js_app_root())?;
@@ -649,6 +661,7 @@ pub fn write_generated_files_with_schemas(
         config.js_app_root(),
         &|| Command::new("bun"),
         Some(config),
+        environment,
         update,
     )?;
     result.wrote_scaffolds = wrote_scaffolds;
