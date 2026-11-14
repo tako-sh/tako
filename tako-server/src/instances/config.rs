@@ -66,7 +66,7 @@ impl AppConfig {
         internal_app_host(&self.name)
     }
 
-    pub(super) fn apply_internal_defaults(&mut self) {
+    pub(crate) fn apply_internal_defaults(&mut self) {
         if self.health_check_host.is_empty() {
             self.health_check_host = self.internal_host();
         }

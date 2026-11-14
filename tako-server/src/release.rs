@@ -638,7 +638,11 @@ pub(crate) fn validate_deploy_routes(routes: &[String]) -> Result<(), String> {
     if routes.iter().any(|r| r.trim().is_empty()) {
         return Err("Deploy rejected: routes must be non-empty values".to_string());
     }
+    let mut seen = std::collections::HashSet::new();
     for route in routes {
+        if !seen.insert(route) {
+            return Err(format!("Deploy rejected: duplicate route '{route}'"));
+        }
         let host = route.split('/').next().unwrap_or(route);
         if !is_safe_cert_host(host) {
             return Err(format!("Deploy rejected: invalid route host '{host}'"));

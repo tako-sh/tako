@@ -5,6 +5,7 @@ mod workflows;
 
 pub(crate) use certificates::ssl_binding_needs_cloudflare_token;
 pub(crate) use startup::native_channel_client;
+pub(crate) use workflows::WorkflowBindings;
 
 use crate::container_runtime::{
     build_container_run_env, build_container_workflow_run_args, detect_container_engine,

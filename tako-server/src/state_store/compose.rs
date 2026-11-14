@@ -36,7 +36,7 @@ impl SqliteStateStore {
 
     /// The deployment's single durable commit point. Until this commits,
     /// recovery sees the previous release AND its previous credentials.
-    pub(crate) fn commit_compose_deployment(
+    pub(crate) fn commit_deployment(
         &self,
         config: &AppConfig,
         routes: &[String],
@@ -113,7 +113,7 @@ mod tests {
         config.compose_replicas.insert("web".into(), 5);
         config.compose_replicas.insert("worker".into(), 0);
         store
-            .commit_compose_deployment(
+            .commit_deployment(
                 &config,
                 &["old.example".into()],
                 &HashMap::new(),
@@ -133,7 +133,7 @@ mod tests {
         store.lock_conn().unwrap().execute_batch("CREATE TRIGGER fail_commit BEFORE DELETE ON app_compose_pending BEGIN SELECT RAISE(ABORT, 'injected commit failure'); END;").unwrap();
         assert!(
             store
-                .commit_compose_deployment(
+                .commit_deployment(
                     &config,
                     &["new.example".into()],
                     &HashMap::new(),
@@ -158,7 +158,7 @@ mod tests {
             .execute_batch("DROP TRIGGER fail_commit;")
             .unwrap();
         store
-            .commit_compose_deployment(
+            .commit_deployment(
                 &config,
                 &["new.example".into()],
                 &HashMap::new(),

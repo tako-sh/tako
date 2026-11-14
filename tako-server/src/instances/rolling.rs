@@ -106,20 +106,18 @@ impl RollingUpdater {
     pub async fn update(
         &self,
         app: &App,
-        new_config: AppConfig,
+        new_config: &AppConfig,
         target_count: u32,
+        commit: impl FnOnce() -> Result<(), String>,
     ) -> Result<RollingUpdateResult, InstanceError> {
-        let old_instances: Vec<Arc<Instance>> = app.get_instances();
+        let previous_count = app.get_instances().len();
 
         tracing::info!(
             app = %app.name(),
-            old_count = old_instances.len(),
+            old_count = previous_count,
             target_count = target_count,
             "Starting rolling update"
         );
-
-        // Update the app config first
-        app.update_config(new_config);
 
         let mut new_instances: Vec<Arc<Instance>> = Vec::new();
         let mut stopped_count = 0u32;
@@ -131,10 +129,13 @@ impl RollingUpdater {
 
             // Start batch of new instances
             for _ in batch_start..batch_end {
-                let instance = app.allocate_instance();
+                let instance = app.allocate_instance_for(&new_config.version);
                 app.suppress_instance_routing(&instance.id);
 
-                match self.start_and_wait_healthy(app, instance.clone()).await {
+                match self
+                    .start_and_wait_healthy(app, instance.clone(), new_config)
+                    .await
+                {
                     Ok(()) => {
                         tracing::info!(
                             app = %app.name(),
@@ -171,7 +172,9 @@ impl RollingUpdater {
                 }
             }
 
-            if let Err(error) = self.wait_for_stable_health(&batch_instances).await {
+            if previous_count > 0
+                && let Err(error) = self.wait_for_stable_health(&batch_instances).await
+            {
                 tracing::error!(
                     app = %app.name(),
                     error = %error,
@@ -189,19 +192,25 @@ impl RollingUpdater {
             }
         }
 
-        if let Err((id, state)) = app.enable_rollout_routing(&new_instances) {
-            tracing::error!(
-                app = %app.name(), instance = %id, state = %state,
-                "New instance became unhealthy before rollout cutover, rolling back"
-            );
+        // A request is allowed to cold-start the committed on-demand release
+        // while the candidate starts. Include such predecessors and finish
+        // their startup before removing them from routing.
+        let lifecycle = app.lifecycle_gate.write().await;
+        let old_instances: Vec<_> = app
+            .get_instances()
+            .into_iter()
+            .filter(|old| !new_instances.iter().any(|new| new.id == old.id))
+            .collect();
+        let cutover = app.enable_rollout_routing(&new_instances, &old_instances, commit);
+        drop(lifecycle);
+        if let Err(error) = cutover {
+            tracing::error!(app = %app.name(), %error, "Rolling update failed before cutover");
             Self::remove_new_instances(app, &new_instances).await;
             return Ok(RollingUpdateResult {
                 success: false,
                 new_instances: 0,
                 old_instances: 0,
-                error: Some(format!(
-                    "Health check failed: Instance became {state} before rollout cutover"
-                )),
+                error: Some(error),
             });
         }
 
@@ -237,9 +246,11 @@ impl RollingUpdater {
         &self,
         app: &App,
         instance: Arc<Instance>,
+        config: &AppConfig,
     ) -> Result<(), InstanceError> {
-        // Spawn the instance
-        self.spawner.spawn(app, instance.clone()).await?;
+        self.spawner
+            .spawn_with_config(app, instance.clone(), config)
+            .await?;
 
         // Wait for it to become healthy
         match timeout(self.config.health_timeout, self.wait_for_healthy(&instance)).await {

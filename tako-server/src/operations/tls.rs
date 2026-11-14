@@ -28,6 +28,29 @@ impl crate::ServerState {
         app_name: &str,
         domain: &str,
     ) -> Option<CertInfo> {
+        let ssl = match self.state_store.get_ssl(app_name) {
+            Ok(value) => value.unwrap_or_default(),
+            Err(error) => {
+                tracing::warn!(
+                    domain = %domain,
+                    app = app_name,
+                    error = %error,
+                    "Failed to load app SSL credentials"
+                );
+                tako_core::SslBinding::default()
+            }
+        };
+
+        self.ensure_route_certificate_with_ssl(app_name, domain, &ssl)
+            .await
+    }
+
+    pub(super) async fn ensure_route_certificate_with_ssl(
+        &self,
+        app_name: &str,
+        domain: &str,
+        ssl: &tako_core::SslBinding,
+    ) -> Option<CertInfo> {
         if should_use_self_signed_route_cert(domain) {
             if let Some(existing) = self.cert_manager.get_cert_for_host(domain) {
                 tracing::debug!(domain = %domain, "Certificate already exists");
@@ -55,19 +78,6 @@ impl crate::ServerState {
             }
         }
 
-        let ssl = match self.state_store.get_ssl(app_name) {
-            Ok(value) => value.unwrap_or_default(),
-            Err(error) => {
-                tracing::warn!(
-                    domain = %domain,
-                    app = app_name,
-                    error = %error,
-                    "Failed to load app SSL credentials"
-                );
-                tako_core::SslBinding::default()
-            }
-        };
-
         if let Some(existing) = self.cert_manager.get_cert_for_host(domain)
             && self
                 .cert_manager
@@ -79,13 +89,13 @@ impl crate::ServerState {
 
         if ssl.provider == tako_core::SslProvider::Cloudflare {
             return self
-                .request_cloudflare_origin_certificate(app_name, domain, &ssl)
+                .request_cloudflare_origin_certificate(app_name, domain, ssl)
                 .await;
         }
 
         let acme_guard = self.acme_client.read().await;
         let acme = acme_guard.as_ref()?;
-        let dns = cloudflare_dns_binding_from_ssl(&ssl);
+        let dns = cloudflare_dns_binding_from_ssl(ssl);
 
         tracing::info!(domain = %domain, app = app_name, "Requesting certificate for route");
         match acme
