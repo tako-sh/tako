@@ -4159,7 +4159,7 @@ dependencies = [
  "serde",
  "serde_yaml",
  "sfv",
- "socket2 0.4.10",
+ "socket2 0.6.5",
  "strum 0.26.3",
  "strum_macros 0.26.4",
  "tokio",
