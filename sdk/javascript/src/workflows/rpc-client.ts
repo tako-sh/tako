@@ -11,7 +11,13 @@
  * tako-server socket can route for every deployed app.
  */
 
-import { APP_NAME_ENV, INTERNAL_SOCKET_ENV, TakoError, callInternal } from "../tako/socket";
+import {
+  APP_NAME_ENV,
+  BUILD_ENV,
+  INTERNAL_SOCKET_ENV,
+  TakoError,
+  callInternal,
+} from "../tako/socket";
 import type { EnqueueOptions } from "./engine";
 import type { Run, RunId, RunStatus, StepState } from "./types";
 import type { WorkflowResultState } from "./result";
@@ -109,7 +115,8 @@ export class WorkflowsClient {
 
   /** Register cron schedules for discovered workflows. */
   async registerSchedules(schedules: ScheduleSpec[]): Promise<void> {
-    await this.call({ command: "register_schedules", app: this.app, schedules });
+    const build = process.env[BUILD_ENV] || undefined;
+    await this.call({ command: "register_schedules", app: this.app, build, schedules });
   }
 
   /** Claim one pending workflow run for a worker. */

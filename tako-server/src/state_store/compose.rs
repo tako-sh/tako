@@ -2,8 +2,23 @@ use std::collections::HashMap;
 
 use super::{SqliteStateStore, StateStoreError, app_registry::upsert_app_on, encryption};
 use crate::instances::AppConfig;
+use rusqlite::OptionalExtension;
 
 impl SqliteStateStore {
+    pub(crate) fn workflow_schedule_revision(
+        &self,
+        app: &str,
+    ) -> Result<Option<i64>, StateStoreError> {
+        Ok(self
+            .lock_conn()?
+            .query_row(
+                "SELECT revision FROM app_schedule_revisions WHERE app = ?1",
+                [app],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
     pub(crate) fn begin_compose_deployment(
         &self,
         app: &str,
@@ -43,6 +58,7 @@ impl SqliteStateStore {
         runtime_credentials: &HashMap<String, String>,
         ssl: Option<&tako_core::SslBinding>,
         backup: Option<&tako_core::BackupBinding>,
+        schedule_revision: Option<i64>,
     ) -> Result<(), StateStoreError> {
         let encode = |value: serde_json::Value| -> Result<Vec<u8>, StateStoreError> {
             let bytes = serde_json::to_vec(&value)
@@ -78,6 +94,13 @@ impl SqliteStateStore {
         let conn = self.lock_conn()?;
         let tx = conn.unchecked_transaction()?;
         upsert_app_on(&tx, config, routes)?;
+        tx.execute("DELETE FROM app_schedule_revisions WHERE app = ?1", [&app])?;
+        if let Some(revision) = schedule_revision {
+            tx.execute(
+                "INSERT INTO app_schedule_revisions (app, revision) VALUES (?1, ?2)",
+                (&app, revision),
+            )?;
+        }
         for (table, blob) in blobs {
             match blob {
                 Some(bytes) => {
@@ -119,6 +142,7 @@ mod tests {
                 &HashMap::new(),
                 None,
                 None,
+                Some(1),
             )
             .unwrap();
         store
@@ -138,11 +162,16 @@ mod tests {
                     &["new.example".into()],
                     &HashMap::new(),
                     None,
-                    None
+                    None,
+                    Some(2),
                 )
                 .is_err()
         );
         let persisted = store.load_apps().unwrap();
+        assert_eq!(
+            store.workflow_schedule_revision("app/production").unwrap(),
+            Some(1)
+        );
         assert_eq!(persisted[0].config.compose_replicas["web"], 5);
         assert_eq!(persisted[0].config.compose_replicas["worker"], 0);
         assert_eq!(persisted[0].config.version, "v1");
@@ -164,9 +193,14 @@ mod tests {
                 &HashMap::new(),
                 None,
                 None,
+                Some(2),
             )
             .unwrap();
         assert_eq!(store.load_apps().unwrap()[0].config.version, "v2");
+        assert_eq!(
+            store.workflow_schedule_revision("app/production").unwrap(),
+            Some(2)
+        );
         assert_eq!(
             store.load_apps().unwrap()[0].config.compose_replicas,
             config.compose_replicas
@@ -177,6 +211,10 @@ mod tests {
         );
         assert!(store.pending_compose_deployments().unwrap().is_empty());
         store.delete_app("app", "production").unwrap();
+        assert_eq!(
+            store.workflow_schedule_revision("app/production").unwrap(),
+            None
+        );
         config.compose_replicas.clear();
         store.upsert_app(&config, &[]).unwrap();
         assert!(

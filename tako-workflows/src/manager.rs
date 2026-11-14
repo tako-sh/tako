@@ -92,6 +92,19 @@ pub struct PreparedWorkflow {
     retention_ms: Option<i64>,
 }
 
+/// Only an explicit deploy or rollback can advance the shared schedule revision.
+#[derive(Clone, Copy)]
+pub enum ScheduleActivation {
+    Deploy,
+    Recover(Option<i64>),
+}
+
+impl PreparedWorkflow {
+    pub fn schedule_revision(&self) -> Option<i64> {
+        self.db.schedule_revision()
+    }
+}
+
 pub struct WorkflowManager {
     data_dir: PathBuf,
     apps: Arc<RwLock<HashMap<String, AppWorkflow>>>,
@@ -377,7 +390,12 @@ impl WorkflowManager {
             WorkflowStoreConfig::Postgres { .. } => self.workflows_db_path(app),
         };
         let prepared = self
-            .prepare(store_config, retention_ms, spec_fn(db_path))
+            .prepare(
+                store_config,
+                retention_ms,
+                spec_fn(db_path),
+                ScheduleActivation::Deploy,
+            )
             .await?;
         if let Err(error) = prepared.supervisor.start().await {
             prepared.supervisor.shutdown(Duration::ZERO).await;
@@ -393,13 +411,15 @@ impl WorkflowManager {
         store_config: WorkflowStoreConfig,
         retention_ms: Option<i64>,
         spec: WorkerSpec,
+        activation: ScheduleActivation,
     ) -> Result<PreparedWorkflow, WorkflowManagerError> {
         // The synchronous Postgres client cannot connect on a runtime thread.
+        let build = spec.env.get("TAKO_BUILD").cloned();
         let (db, in_flight) = crate::blocking::run(move || {
-            RunsDb::open_config(store_config).map(|db| {
-                let in_flight = db.in_flight_by_worker();
-                (db, in_flight)
-            })
+            let mut db = RunsDb::open_config(store_config)?;
+            db.prepare_schedule_registration(build, activation)?;
+            let in_flight = db.in_flight_by_worker();
+            Ok::<_, RunsDbError>((db, in_flight))
         })
         .await??;
         let db = Arc::new(db);
@@ -427,7 +447,9 @@ impl WorkflowManager {
             supervisor,
             retention_ms,
         } = prepared;
+        let mut apps = self.apps.write();
         let sup_for_dispatcher = supervisor.clone();
+        let sup_for_registration = supervisor.clone();
         let db_for_dispatcher = db.clone();
         let dispatcher = WorkDispatcher::spawn(
             Arc::new(move || {
@@ -437,7 +459,13 @@ impl WorkflowManager {
                 let _ = sup_for_dispatcher.wake();
             }),
             Arc::new(move || match db_for_dispatcher.has_runnable_work() {
-                Ok(has_work) => has_work,
+                Ok(true) => true,
+                Ok(false) => {
+                    if db_for_dispatcher.needs_schedule_registration() {
+                        let _ = sup_for_registration.bootstrap_schedules();
+                    }
+                    false
+                }
                 Err(e) => {
                     tracing::warn!(error = %e, "workflow runnable-work check failed");
                     false
@@ -477,7 +505,6 @@ impl WorkflowManager {
             accepting_new_work,
         };
 
-        let mut apps = self.apps.write();
         let old_entry = apps.insert(app.to_string(), entry);
         drop(apps);
 
@@ -937,6 +964,91 @@ mod tests {
             isolation: None,
             lanes: Vec::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn fresh_cron_runtime_registers_without_a_run_and_returns_to_zero() {
+        const CHILD_SOCKET: &str = "TAKO_TEST_CRON_CHILD_SOCKET";
+        if let Ok(path) = std::env::var(CHILD_SOCKET) {
+            use std::io::{BufRead, Write};
+            let mut socket = std::os::unix::net::UnixStream::connect(path).unwrap();
+            let mut starts = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("starts")
+                .unwrap();
+            writeln!(starts, "{}", std::env::var("TAKO_WORKFLOW_WORKER").unwrap()).unwrap();
+            let cmd = tako_core::Command::RegisterSchedules {
+                app: "cron".into(),
+                build: Some("v1".into()),
+                schedules: vec![tako_core::ScheduleSpec {
+                    name: "nightly".into(),
+                    cron: "0 0 * * *".into(),
+                    max_attempts: Some(5),
+                }],
+            };
+            writeln!(socket, "{}", serde_json::to_string(&cmd).unwrap()).unwrap();
+            let mut line = String::new();
+            std::io::BufReader::new(socket)
+                .read_line(&mut line)
+                .unwrap();
+            assert!(
+                serde_json::from_str::<tako_core::Response>(&line)
+                    .unwrap()
+                    .is_ok()
+            );
+            return;
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let m = WorkflowManager::new(tmp.path());
+        m.start_socket().unwrap();
+        m.ensure("cron", None, |db| {
+            let mut spec = dummy_spec(tmp.path().into(), db);
+            spec.env
+                .insert(CHILD_SOCKET.into(), m.socket_path().display().to_string());
+            spec.env.insert("TAKO_BUILD".into(), "v1".into());
+            spec.command = vec![
+                std::env::current_exe().unwrap().into(),
+                "--exact".into(),
+                "manager::tests::fresh_cron_runtime_registers_without_a_run_and_returns_to_zero"
+                    .into(),
+            ];
+            spec.lanes = ["default", "email"]
+                .into_iter()
+                .map(|name| crate::WorkerLane {
+                    name: name.into(),
+                    workers: 0,
+                    concurrency: 1,
+                })
+                .collect();
+            spec
+        })
+        .await
+        .unwrap();
+        let db = m.apps.read()["cron"].handlers.db.clone();
+        let supervisor = m.supervisor_for("cron").unwrap();
+        tokio::time::timeout(Duration::from_secs(8), async {
+            while db.list_schedules().unwrap().is_empty() || supervisor.is_running() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("starts")).unwrap(),
+            "default\n"
+        );
+        let registered = &db.list_schedules().unwrap()[0];
+        assert_eq!(registered.name, "nightly");
+        assert_eq!(db.pending_count().unwrap(), 0);
+        assert_eq!(
+            cron::tick_once(&db, registered.last_run_at.unwrap() + 86_400_000).unwrap(),
+            1
+        );
+        assert_eq!(db.pending_count().unwrap(), 1);
+        m.shutdown_all(Duration::from_secs(1)).await;
     }
 
     #[tokio::test]

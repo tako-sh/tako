@@ -38,6 +38,85 @@ fn scheduled_runs_use_the_registered_retry_budget() {
     });
 }
 
+#[test]
+fn retired_workers_and_recovered_servers_cannot_replace_the_active_schedule_set() {
+    use crate::manager::ScheduleActivation::{Deploy, Recover};
+    each_store("schedule_release", |store| {
+        store
+            .db
+            .prepare_schedule_registration(Some("v1".into()), Deploy)
+            .unwrap();
+        let register = |db: &RunsDb, build: &str, name: &str| {
+            db.register_worker_schedules(Some(build), &[schedule(name, None)])
+                .unwrap();
+        };
+        let names = || {
+            store
+                .db
+                .list_schedules()
+                .unwrap()
+                .into_iter()
+                .map(|row| row.name)
+                .collect::<Vec<_>>()
+        };
+        register(&store.db, "retired", "retired");
+        assert!(store.db.needs_schedule_registration());
+        assert!(names().is_empty());
+        let invalid = ScheduleSpec {
+            name: "bad".into(),
+            cron: "invalid".into(),
+            max_attempts: None,
+        };
+        assert!(
+            store
+                .db
+                .register_worker_schedules(Some("v1"), &[invalid])
+                .is_err()
+        );
+        assert!(store.db.needs_schedule_registration());
+        register(&store.db, "v1", "original");
+        assert_eq!(names(), ["original"]);
+        assert!(!store.db.needs_schedule_registration());
+
+        let Some(mut next) = store.other_app("app") else {
+            return;
+        };
+        let original = store.db.schedule_revision();
+        next.prepare_schedule_registration(Some("v2".into()), Deploy)
+            .unwrap();
+        let next_revision = next.schedule_revision();
+        assert!(next_revision > original);
+
+        // Crash after the local release committed, before the worker registered.
+        drop(next);
+        let mut recovered = store.other_app("app").unwrap();
+        recovered
+            .prepare_schedule_registration(Some("v2".into()), Recover(next_revision))
+            .unwrap();
+        register(&recovered, "v2", "replacement");
+        assert_eq!(names(), ["replacement"]);
+
+        for old_revision in [original, None] {
+            let mut stale = store.other_app("app").unwrap();
+            stale
+                .prepare_schedule_registration(Some("v1".into()), Recover(old_revision))
+                .unwrap();
+            register(&stale, "v1", "obsolete");
+            assert_eq!(names(), ["replacement"]);
+        }
+        register(&store.db, "v1", "obsolete");
+        assert_eq!(names(), ["replacement"]);
+
+        // A deliberate rollback gets a fresh revision and can remove every cron.
+        let mut rollback = store.other_app("app").unwrap();
+        rollback
+            .prepare_schedule_registration(Some("v1".into()), Deploy)
+            .unwrap();
+        rollback.register_worker_schedules(Some("v1"), &[]).unwrap();
+        assert!(names().is_empty());
+    });
+}
+
 /// Schedules registered before budgets were stored keep firing.
 fn assert_old_schedule_row_keeps_working(db: &RunsDb) {
     assert_eq!(tick_once(db, now_ms() + 60_000).unwrap(), 1);

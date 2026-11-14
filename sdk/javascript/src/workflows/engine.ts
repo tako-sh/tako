@@ -14,16 +14,15 @@
  * subset.
  */
 
-import { discoverWorkflows, type WorkflowDiscoveryOptions } from "./discovery";
+import {
+  discoverWorkflows,
+  type DiscoveredWorkflow,
+  type WorkflowDiscoveryOptions,
+} from "./discovery";
 import { WorkflowsClient, type ScheduleSpec } from "./rpc-client";
 import type { WorkflowRuntimeOpts } from "./types";
 import type { RunId } from "./types";
 import { Worker, type RegisteredWorkflow, type WorkflowHandler } from "./worker";
-
-interface Registration {
-  handler: WorkflowHandler;
-  opts: WorkflowRuntimeOpts;
-}
 
 /** Options for `workflow.enqueue(payload, options)`. */
 export interface EnqueueOptions {
@@ -56,7 +55,7 @@ export class WorkflowEngine {
   private worker: Worker | null = null;
   private workerId = "";
   private configuredFlag = false;
-  private readonly registrations = new Map<string, Registration>();
+  private readonly registrations = new Map<string, DiscoveredWorkflow>();
 
   /** True once configure() has succeeded (worker process only). */
   get configured(): boolean {
@@ -97,7 +96,7 @@ export class WorkflowEngine {
     if (this.registrations.has(name)) {
       throw new Error(`workflow '${name}' is already registered`);
     }
-    this.registrations.set(name, { handler, opts });
+    this.registrations.set(name, { name, handler, opts });
   }
 
   /**
@@ -210,12 +209,14 @@ export class WorkflowEngine {
    * Gather registered cron schedules for `RegisterSchedules`. Scheduled runs
    * get the workflow's retry budget; without `retries` the server default applies.
    */
-  collectSchedules(): ScheduleSpec[] {
+  collectSchedules(
+    definitions: Iterable<DiscoveredWorkflow> = this.registrations.values(),
+  ): ScheduleSpec[] {
     const out: ScheduleSpec[] = [];
-    for (const [name, reg] of this.registrations) {
-      if (reg.opts.schedule) {
-        const schedule: ScheduleSpec = { name, cron: reg.opts.schedule };
-        if (reg.opts.retries !== undefined) schedule.max_attempts = reg.opts.retries + 1;
+    for (const { name, opts } of definitions) {
+      if (opts.schedule) {
+        const schedule: ScheduleSpec = { name, cron: opts.schedule };
+        if (opts.retries !== undefined) schedule.max_attempts = opts.retries + 1;
         out.push(schedule);
       }
     }

@@ -105,6 +105,15 @@ afterAll(async () => {
 });
 
 describe("workflow commands match the wire fixtures", () => {
+  let previousBuild: string | undefined;
+  beforeEach(() => {
+    previousBuild = process.env[BUILD_ENV];
+    process.env[BUILD_ENV] = "v7";
+  });
+  afterEach(() => {
+    if (previousBuild === undefined) delete process.env[BUILD_ENV];
+    else process.env[BUILD_ENV] = previousBuild;
+  });
   const cases: [string, () => Promise<unknown>][] = [
     [
       "enqueue_run",

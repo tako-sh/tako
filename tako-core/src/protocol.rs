@@ -300,11 +300,12 @@ pub enum Command {
 
     /// Register (or replace) the full set of cron schedules for an app.
     ///
-    /// The worker sends this on startup; the server writes rows into
-    /// `schedules` and the cron ticker reads from there. Re-sending is
-    /// idempotent — any schedule not present in the new list is removed.
+    /// Each worker group sends every schedule. The active release replaces
+    /// the app's schedule set once, including when the list is empty.
     RegisterSchedules {
         app: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        build: Option<String>,
         schedules: Vec<ScheduleSpec>,
     },
 
@@ -474,8 +475,8 @@ pub enum Command {
 pub struct ScheduleSpec {
     /// Workflow name. Must match a registered handler.
     pub name: String,
-    /// Cron expression. 6-field format (sec min hour day month dayofweek) per
-    /// the `cron` crate, or 5-field (the worker SDK normalizes).
+    /// Five-field Unix cron (0 and 7 are Sunday), or the `cron` crate's
+    /// seconds-first format with an optional year or a named alias.
     pub cron: String,
     /// The workflow's attempt budget (inclusive of the first) for the runs
     /// this schedule creates. Defaults to 3.
