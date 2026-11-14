@@ -113,6 +113,8 @@ pub fn create_workdir_archive(
     })?;
     let mut archive = tar::Builder::new(encoder);
     archive.follow_symlinks(false);
+    // The upload protocol accepts regular files, including binaries with filesystem holes.
+    archive.sparse(false);
 
     for (full_path, relative_path) in files {
         archive
@@ -186,6 +188,33 @@ mod tests {
         let mut magic = [0u8; 4];
         file.read_exact(&mut magic).unwrap();
         assert_eq!(magic, [0x28, 0xB5, 0x2F, 0xFD], "archive should be zstd");
+    }
+
+    #[test]
+    fn workdir_archive_encodes_sparse_files_as_regular_files() {
+        use std::io::{Seek, SeekFrom, Write};
+
+        let temp = TempDir::new().unwrap();
+        let workdir = temp.path().join("workdir");
+        let archive = temp.path().join("out.tar.zst");
+        fs::create_dir(&workdir).unwrap();
+        let path = workdir.join("app");
+        let mut file = fs::File::create(&path).unwrap();
+        file.write_all(b"head").unwrap();
+        file.seek(SeekFrom::Start(128 * 1024)).unwrap();
+        file.write_all(b"tail").unwrap();
+        drop(file);
+
+        create_workdir_archive(&workdir, &archive, &[], &[]).unwrap();
+        let stream = zstd::Decoder::new(fs::File::open(archive).unwrap()).unwrap();
+        let mut archive = tar::Archive::new(stream);
+        let mut entries = archive.entries().unwrap();
+        let mut entry = entries.next().unwrap().unwrap();
+        assert_eq!(entry.header().entry_type(), tar::EntryType::Regular);
+        assert_eq!(entry.path().unwrap().as_ref(), Path::new("app"));
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, fs::read(path).unwrap());
     }
 
     #[test]
