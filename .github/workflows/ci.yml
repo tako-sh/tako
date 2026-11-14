@@ -40,7 +40,6 @@ jobs:
         run: |
           docker build -f e2e/docker/server/${{ matrix.os }}.Dockerfile -t tako-host-fixture .
           if ! docker run --rm --privileged tako-host-fixture sh -ec '
-            echo "tako:tako-e2e" | chpasswd
             su -s /bin/sh tako -c "sudo -n -l"
           '; then
             sudo dmesg | grep 'profile="unix-chkpwd"' || true
@@ -49,7 +48,6 @@ jobs:
           docker run --rm --privileged \
             -v "$PWD/e2e/docker/server/verify-sudo-context.sh:/opt/e2e/verify-sudo-context.sh:ro" \
             tako-host-fixture sh -ec '
-            echo "tako:tako-e2e" | chpasswd
             su -s /bin/sh tako -c "sudo -n -l"
             sh /opt/e2e/verify-sudo-context.sh
           '
