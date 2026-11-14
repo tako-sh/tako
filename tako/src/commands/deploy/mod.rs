@@ -315,6 +315,7 @@ async fn run_async(
                 &app_name,
                 &env,
                 false,
+                false,
             )
         })?;
     }
@@ -436,7 +437,14 @@ async fn run_async(
     }
 
     secrets = tokio::task::block_in_place(|| {
-        crate::network::secrets::sync_environment(&project_dir, &tako_config, &app_name, &env, true)
+        crate::network::secrets::sync_environment(
+            &project_dir,
+            &tako_config,
+            &app_name,
+            &env,
+            true,
+            false,
+        )
     })?;
     let final_validation = config::validate_release_secret_snapshot(
         &project_dir,

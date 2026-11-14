@@ -82,6 +82,7 @@ fn record(
     SecretRecord::encrypt(
         &SecretMutation {
             observed_revision: 0,
+            expires_at: 86400,
             id: RequestId::random().unwrap(),
             address: address(name),
             value: None,
@@ -137,12 +138,12 @@ fn concurrent_same_name_edits_converge_and_exact_redelivery_is_idempotent() {
             state.append_secret(value).unwrap();
         }
         state.append_secret(&a).unwrap();
-        assert_eq!(state.secrets.len(), 2);
+        assert_eq!(state.secrets.len(), 1);
         assert_eq!(state.latest().unwrap()[&address("API_KEY")], winner);
-        let mut conflict = a.clone();
+        let mut conflict = winner.clone();
         conflict.revision += 1;
         assert!(state.append_secret(&conflict).is_err());
-        assert_eq!(state.secrets.len(), 2);
+        assert_eq!(state.secrets.len(), 1);
     }
 }
 
@@ -167,9 +168,9 @@ fn new_members_receive_key_grants_and_revocation_excludes_future_values() {
     let grant = old
         .grant(&state, &admin_keys, &admin, effective[&client_id])
         .unwrap();
-    state.append_secret_grant(&grant).unwrap();
+    state.append_secret(&grant).unwrap();
     assert_eq!(
-        &*old.decrypt(&state, &client, &client_id).unwrap().unwrap(),
+        &*grant.decrypt(&state, &client, &client_id).unwrap().unwrap(),
         b"old value"
     );
     assert_eq!(state.latest().unwrap()[&address("API_KEY")].revision, 1);
@@ -180,6 +181,7 @@ fn new_members_receive_key_grants_and_revocation_excludes_future_values() {
     let new = SecretRecord::encrypt(
         &SecretMutation {
             observed_revision: 0,
+            expires_at: 86400,
             id: RequestId::random().unwrap(),
             address: address("API_KEY"),
             value: None,
@@ -201,7 +203,7 @@ fn new_members_receive_key_grants_and_revocation_excludes_future_values() {
     );
     // Revocation cannot make already-disclosed plaintext disappear.
     assert_eq!(
-        &*old.decrypt(&state, &client, &client_id).unwrap().unwrap(),
+        &*grant.decrypt(&state, &client, &client_id).unwrap().unwrap(),
         b"old value"
     );
 }
@@ -249,4 +251,205 @@ fn ciphertext_is_bound_to_network_scope_name_and_operation() {
         }
         assert!(changed.decrypt(&changed_state, &keys, &admin).is_err());
     }
+}
+
+#[test]
+fn overwrites_do_not_consume_lifetime_capacity_and_backup_key_ids_stay_distinct() {
+    let (registry, keys, admin) = bootstrap();
+    let mut state = SharedSnapshot::empty(registry.network.id.clone());
+    let mut deletion = record(&registry, &admin, "TOKEN", 1, None);
+    for revision in 1..=MAX_SHARED_RECORDS as u64 + 1 {
+        deletion.id = RequestId::random().unwrap();
+        deletion.revision = revision;
+        state.append_secret(&deletion).unwrap();
+    }
+    assert_eq!(state.secrets.len(), 1);
+    assert_eq!(state.secrets[0].revision, MAX_SHARED_RECORDS as u64 + 1);
+    for name in ["backup-key-one", "backup-key-two"] {
+        let mutation = SecretMutation {
+            id: RequestId::random().unwrap(),
+            observed_revision: 0,
+            expires_at: 86400,
+            address: SecretAddress {
+                kind: SecretKind::BackupKey,
+                ..address(name)
+            },
+            value: None,
+        };
+        let value = SecretRecord::encrypt(
+            &mutation,
+            Some(b"backup-key"),
+            1,
+            admin.clone(),
+            admin.clone(),
+            &registry,
+            2,
+        )
+        .unwrap();
+        state.append_secret(&value).unwrap();
+    }
+    assert_eq!(state.secrets.len(), 3);
+    for value in state
+        .secrets
+        .iter()
+        .filter(|value| value.address.kind == SecretKind::BackupKey)
+    {
+        assert_eq!(
+            &*value.decrypt(&state, &keys, &admin).unwrap().unwrap(),
+            b"backup-key"
+        );
+    }
+}
+
+#[test]
+fn concurrent_recipient_wraps_merge_and_legacy_grants_migrate_only_for_current_values() {
+    let (mut registry, keys, admin) = bootstrap();
+    let old = record(&registry, &admin, "TOKEN", 1, Some(b"obsolete"));
+    let current = record(&registry, &admin, "TOKEN", 2, Some(b"current"));
+    let mut initial = SharedSnapshot::empty(registry.network.id.clone());
+    initial.append_secret(&current).unwrap();
+    let client = LocalDeviceKeys::generate().unwrap();
+    let recipient = admit(
+        &mut registry,
+        &client,
+        Some(admin.clone()),
+        Permissions {
+            deployments: ["shop/production".parse().unwrap()].into(),
+            ..Default::default()
+        },
+    );
+    let members = registry.effective_members(2).unwrap();
+    let a = current
+        .grant(&initial, &keys, &admin, members[&recipient])
+        .unwrap();
+    let b = current
+        .grant(&initial, &keys, &admin, members[&recipient])
+        .unwrap();
+    let mut left = initial.clone();
+    left.append_secret(&a).unwrap();
+    left.append_secret(&b).unwrap();
+    let mut right = initial.clone();
+    right.append_secret(&b).unwrap();
+    right.append_secret(&a).unwrap();
+    assert_eq!(left, right);
+    assert_eq!(
+        &*left.secrets[0]
+            .decrypt(&left, &client, &recipient)
+            .unwrap()
+            .unwrap(),
+        b"current"
+    );
+    let legacy = serde_json::json!({
+        "network": registry.network.id, "secrets": [old, current],
+        "grants": [{"record": a.id, "recipient": recipient, "issuer": admin, "key": a.keys[&recipient]}]
+    });
+    let migrated = SharedSnapshot::from_persisted(&serde_json::to_vec(&legacy).unwrap()).unwrap();
+    assert_eq!(migrated.secrets.len(), 1);
+    assert_eq!(
+        &*migrated.secrets[0]
+            .decrypt(&migrated, &client, &recipient)
+            .unwrap()
+            .unwrap(),
+        b"current"
+    );
+    assert!(
+        !serde_json::to_value(&migrated)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("grants")
+    );
+}
+
+#[test]
+fn legacy_grants_can_fill_the_shared_budget_without_losing_recipient_keys() {
+    let (registry, admin_keys, admin) = bootstrap();
+    let current = record(&registry, &admin, "TOKEN", 1, Some(b"retained"));
+    let initial = SharedSnapshot {
+        network: registry.network.id.clone(),
+        secrets: vec![current.clone()],
+    };
+    let content_key = current.content_key(&initial, &admin_keys, &admin).unwrap();
+    let mut recipients = Vec::new();
+    let mut grants = Vec::new();
+    for _ in 0..800 {
+        let keys = LocalDeviceKeys::generate().unwrap();
+        let id = keys
+            .device_id(&registry.network.id, DeviceKind::Laptop)
+            .unwrap();
+        let key = SealedValue::seal(
+            &keys.encryption_public_key().unwrap(),
+            content_key.as_slice(),
+            &current.key_context(&registry.network.id, &id).unwrap(),
+        )
+        .unwrap();
+        grants.push(serde_json::json!({
+            "record": current.id, "recipient": id, "issuer": admin, "key": key,
+        }));
+        recipients.push((id, keys));
+    }
+    let legacy = serde_json::to_vec(&serde_json::json!({
+        "network": registry.network.id, "secrets": [current], "grants": grants,
+    }))
+    .unwrap();
+    assert!(legacy.len() < MAX_SHARED_BYTES);
+    let migrated = SharedSnapshot::from_persisted(&legacy).unwrap();
+    assert_eq!(migrated.secrets.len(), 1);
+    assert_eq!(migrated.secrets[0].keys.len(), 801);
+    assert!(serde_json::to_vec(&migrated.secrets[0]).unwrap().len() > 128 * 1024);
+    recipients.push((admin, admin_keys));
+    for (id, keys) in &recipients {
+        assert_eq!(
+            &*migrated.secrets[0]
+                .decrypt(&migrated, keys, id)
+                .unwrap()
+                .unwrap(),
+            b"retained"
+        );
+    }
+    let persisted = serde_json::to_vec(&migrated).unwrap();
+    assert_eq!(
+        SharedSnapshot::from_persisted(&persisted).unwrap(),
+        migrated
+    );
+}
+
+#[test]
+fn folded_keys_remain_bounded_by_record_and_snapshot_capacity() {
+    let (registry, keys, admin) = bootstrap();
+    let mut value = record(&registry, &admin, "TOKEN", 1, Some(b"retained"));
+    let large_wrap = SealedValue::seal(
+        &keys.encryption_public_key().unwrap(),
+        &vec![0; crate::sealed::MAX_SECRET_BYTES],
+        b"capacity fixture",
+    )
+    .unwrap();
+    for i in 0..100 {
+        value
+            .keys
+            .insert(format!("{i:064x}").parse().unwrap(), large_wrap.clone());
+    }
+    value.validate().unwrap();
+    let mut other = value.clone();
+    other.id = RequestId::random().unwrap();
+    other.address.name = "OTHER".into();
+    let mut state = SharedSnapshot {
+        network: registry.network.id.clone(),
+        secrets: vec![value.clone()],
+    };
+    let before = state.clone();
+    assert!(matches!(
+        state.append_secret(&other),
+        Err(RuntimeError::Capacity("shared secret state"))
+    ));
+    assert_eq!(state, before);
+    for i in 100..200 {
+        value
+            .keys
+            .insert(format!("{i:064x}").parse().unwrap(), large_wrap.clone());
+    }
+    assert!(matches!(
+        value.validate(),
+        Err(RuntimeError::Capacity("secret record"))
+    ));
 }

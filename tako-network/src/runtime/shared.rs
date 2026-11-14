@@ -1,13 +1,19 @@
 use super::*;
 use crate::shared::{
-    MAX_SHARED_RECORDS, SecretGrant, SecretMutation, SecretRecord, SharedSnapshot,
+    LegacySecretGrant, SECRET_RETRY_SECONDS, SecretMutation, SecretReceipt, SecretRecord,
+    SharedSnapshot,
 };
+
+const MAX_PUBLICATION_RECEIPTS: i64 = 100_000;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Publication {
     mutation_hash: String,
-    record: SecretRecord,
+    receipt: SecretReceipt,
+    // Only an unfinished write retains ciphertext. Once acknowledged, the
+    // receipt alone answers retries without reviving an overwritten value.
+    pending: Option<SecretRecord>,
 }
 
 impl<S: RegistryStore> ServerRuntime<S> {
@@ -18,41 +24,76 @@ impl<S: RegistryStore> ServerRuntime<S> {
             return Err(RuntimeError::Conflict("shared state network"));
         }
         let mut observed = SharedSnapshot::empty(self.config.network.id.clone());
-        let tx = self.db.transaction()?;
+        let mut legacy_grants = Vec::new();
+        let mut seen_ids = std::collections::BTreeSet::new();
         {
-            let mut statement =
-                tx.prepare("SELECT kind, payload FROM shared_observed ORDER BY kind, id")?;
+            let mut statement = self
+                .db
+                .prepare("SELECT kind, id, payload FROM shared_observed ORDER BY kind, id")?;
             let mut rows = statement.query([])?;
-            let mut bytes = 0;
             while let Some(row) = rows.next()? {
                 let kind: String = row.get(0)?;
-                let payload: String = row.get(1)?;
-                bytes += payload.len();
-                if bytes > crate::shared::MAX_SHARED_BYTES
-                    || observed.secrets.len() + observed.grants.len() >= MAX_SHARED_RECORDS
-                {
-                    return Err(RuntimeError::Capacity("observed shared state"));
+                let payload: String = row.get(2)?;
+                if payload.len() > crate::shared::MAX_SHARED_RECORD_BYTES {
+                    return Err(RuntimeError::Capacity("observed shared record"));
                 }
                 match kind.as_str() {
-                    "secret" => observed.secrets.push(serde_json::from_str(&payload)?),
-                    "grant" => observed.grants.push(serde_json::from_str(&payload)?),
+                    "secret" => {
+                        let record: SecretRecord = serde_json::from_str(&payload)?;
+                        seen_ids.insert(record.id.clone());
+                        observed.secrets.push(record);
+                    }
+                    "grant" => legacy_grants.push((
+                        row.get::<_, String>(1)?,
+                        serde_json::from_str::<LegacySecretGrant>(&payload)?,
+                    )),
                     _ => return Err(RuntimeError::Invalid("observed shared record kind")),
                 }
             }
         }
+        seen_ids.extend(snapshot.secrets.iter().map(|record| record.id.clone()));
         observed.merge(&snapshot)?;
-        for record in &snapshot.secrets {
+        for (_, grant) in &legacy_grants {
+            observed.import_grant(grant)?;
+        }
+        observed.validate()?;
+        // Repair with the durable current value if replication is temporarily
+        // missing it. This cache is one record per address, not a value history.
+        let replicated: BTreeMap<_, _> = snapshot
+            .secrets
+            .iter()
+            .map(|record| (&record.id, record))
+            .collect();
+        for record in &observed.secrets {
+            if replicated.get(&record.id).copied() != Some(record) {
+                self.store.append_secret(record)?;
+            }
+        }
+        let tx = self.db.transaction()?;
+        tx.execute("DELETE FROM shared_observed WHERE kind='secret'", [])?;
+        for record in &observed.secrets {
             tx.execute(
-                "INSERT OR IGNORE INTO shared_observed VALUES ('secret',?1,?2)",
-                params![record.id.to_string(), serde_json::to_string(record)?],
+                "INSERT INTO shared_observed VALUES ('secret',?1,?2)",
+                params![
+                    serde_json::to_string(&record.address)?,
+                    serde_json::to_string(record)?
+                ],
             )?;
         }
-        for grant in &snapshot.grants {
-            tx.execute(
-                "INSERT OR IGNORE INTO shared_observed VALUES ('grant',?1,?2)",
-                params![grant.id(), serde_json::to_string(grant)?],
-            )?;
+        for (id, grant) in &legacy_grants {
+            if seen_ids.contains(&grant.record) {
+                tx.execute(
+                    "DELETE FROM shared_observed WHERE kind='grant' AND id=?1",
+                    [id],
+                )?;
+            }
         }
+        // The old protocol's commands have no retry deadline. New clients must
+        // explicitly replace those pending commands; published values have just
+        // been preserved above. Do not retain their historical ciphertexts.
+        tx.execute_batch(
+            "DROP TABLE IF EXISTS shared_commands; DROP TABLE IF EXISTS shared_grants;",
+        )?;
         tx.commit()?;
         Ok(observed)
     }
@@ -68,18 +109,30 @@ impl<S: RegistryStore> ServerRuntime<S> {
         if !mutation.address.allowed(registry.permissions(author, now)?) {
             return Err(RuntimeError::Denied);
         }
+        if mutation.expires_at <= now
+            || mutation.expires_at
+                > now
+                    .saturating_add(SECRET_RETRY_SECONDS)
+                    .saturating_add(self.config.limits.auth_window_seconds)
+        {
+            return Err(RuntimeError::Invalid("secret publication deadline"));
+        }
+        self.db.execute(
+            "DELETE FROM shared_publications WHERE expires<=?1",
+            [sql_time(now)?],
+        )?;
         let hash = hex::encode(openssl::sha::sha256(&serde_json::to_vec(&mutation)?));
         let previous: Option<String> = self
             .db
             .query_row(
-                "SELECT payload FROM shared_commands WHERE id=?1",
+                "SELECT payload FROM shared_publications WHERE id=?1",
                 [mutation.id.to_string()],
                 |row| row.get(0),
             )
             .optional()?;
-        let publication = if let Some(previous) = previous {
+        let mut publication = if let Some(previous) = previous {
             let saved: Publication = serde_json::from_str(&previous)?;
-            if &saved.record.author != author || saved.mutation_hash != hash {
+            if &saved.receipt.author != author || saved.mutation_hash != hash {
                 return Err(RuntimeError::Conflict("secret operation"));
             }
             saved
@@ -101,18 +154,13 @@ impl<S: RegistryStore> ServerRuntime<S> {
                 .map(|value| {
                     value.open(
                         &self.keys,
-                        &mutation
-                            .address
-                            .context(&self.config.network.id, &mutation.id)
-                            .map_err(|_| {
-                                crate::error::invalid("secret address", "invalid context")
-                            })?,
+                        &mutation.context(&self.config.network.id).map_err(|_| {
+                            crate::error::invalid("secret command", "invalid context")
+                        })?,
                     )
                 })
                 .transpose()?;
             if let Some(plaintext) = &plaintext {
-                // Content metadata travels with its encrypted value, never as a
-                // separately merged database column.
                 let content: crate::shared::SecretContent = serde_json::from_slice(plaintext)?;
                 content.validate()?;
             }
@@ -127,69 +175,49 @@ impl<S: RegistryStore> ServerRuntime<S> {
             )?;
             let publication = Publication {
                 mutation_hash: hash,
-                record,
+                receipt: (&record).into(),
+                pending: Some(record),
             };
             let count: i64 =
                 self.db
-                    .query_row("SELECT count(*) FROM shared_commands", [], |row| row.get(0))?;
-            if count >= MAX_SHARED_RECORDS as i64 {
-                return Err(RuntimeError::Capacity("secret publication journal"));
+                    .query_row("SELECT count(*) FROM shared_publications", [], |row| {
+                        row.get(0)
+                    })?;
+            if count >= MAX_PUBLICATION_RECEIPTS {
+                return Err(RuntimeError::Capacity("secret publication receipts"));
             }
             self.db.execute(
-                "INSERT INTO shared_commands VALUES (?1, ?2)",
+                "INSERT INTO shared_publications VALUES (?1,?2,?3)",
                 params![
                     mutation.id.to_string(),
+                    sql_time(mutation.expires_at)?,
                     serde_json::to_string(&publication)?
                 ],
             )?;
             publication
         };
-        // FULL synchronous journal commit precedes publication. A response loss
-        // retries these exact bytes and never creates a later revision.
-        self.store.append_secret(&publication.record)?;
-        let state = self.shared_snapshot()?;
-        if !state.secrets.contains(&publication.record) {
-            return Err(RuntimeError::Corrosion("published secret absent"));
-        }
-        Ok(RpcResponse::SecretPublished(publication.record))
-    }
-
-    fn publish_grant(
-        &mut self,
-        record: &SecretRecord,
-        state: &SharedSnapshot,
-        recipient: &Member,
-    ) -> RuntimeResult<SecretGrant> {
-        let id = format!(
-            "{}:{}:{}",
-            record.id, recipient.device_id, self.config.server_id
-        );
-        let previous: Option<String> = self
-            .db
-            .query_row(
-                "SELECT payload FROM shared_grants WHERE id=?1",
-                [&id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let grant = if let Some(previous) = previous {
-            serde_json::from_str(&previous)?
-        } else {
-            let grant = record.grant(state, &self.keys, &self.config.server_id, recipient)?;
-            let count: i64 =
-                self.db
-                    .query_row("SELECT count(*) FROM shared_grants", [], |row| row.get(0))?;
-            if count >= MAX_SHARED_RECORDS as i64 {
-                return Err(RuntimeError::Capacity("secret grant journal"));
+        if let Some(record) = &publication.pending {
+            // The FULL synchronous outbox commit precedes publication. After a
+            // lost response, retry uses the original revision and ciphertext.
+            self.store.append_secret(record)?;
+            let state = self.shared_snapshot()?;
+            if state
+                .latest()?
+                .get(&record.address)
+                .is_none_or(|current| current.order() < record.order())
+            {
+                return Err(RuntimeError::Corrosion("published secret absent"));
             }
+            publication.pending = None;
             self.db.execute(
-                "INSERT INTO shared_grants VALUES (?1, ?2)",
-                params![id, serde_json::to_string(&grant)?],
+                "UPDATE shared_publications SET payload=?1 WHERE id=?2",
+                params![
+                    serde_json::to_string(&publication)?,
+                    mutation.id.to_string()
+                ],
             )?;
-            grant
-        };
-        self.store.append_secret_grant(&grant)?;
-        Ok(grant)
+        }
+        Ok(RpcResponse::SecretPublished(publication.receipt))
     }
 
     pub(super) fn pull_secrets(
@@ -214,67 +242,59 @@ impl<S: RegistryStore> ServerRuntime<S> {
         filtered
             .secrets
             .retain(|record| scope.is_none_or(|scope| &record.address.scope == scope));
-        let ids: std::collections::BTreeSet<_> = filtered
-            .secrets
-            .iter()
-            .map(|record| record.id.clone())
-            .collect();
-        filtered.grants.retain(|grant| ids.contains(&grant.record));
-        for record in &filtered.secrets.clone() {
-            if record.value.is_some()
-                && !record.keys.contains_key(signer)
-                && !filtered
-                    .grants
-                    .iter()
-                    .any(|grant| grant.record == record.id && &grant.recipient == signer)
-            {
-                let grant = self.publish_grant(record, &state, member)?;
-                filtered.grants.push(grant);
+        for record in &mut filtered.secrets {
+            if record.value.is_some() && !record.keys.contains_key(signer) {
+                let granted = record.grant(&state, &self.keys, &self.config.server_id, member)?;
+                self.store.append_secret(&granted)?;
+                *record = granted;
             }
         }
         filtered.validate()?;
+        // Persist newly wrapped keys before acknowledging them.
+        self.shared_snapshot()?;
         Ok(RpcResponse::Secrets(filtered))
     }
 
-    /// A ready server supplies old value keys to newly admitted servers. This
-    /// cannot restore revoked access; all recipients come from effective membership.
-    /// Missing keys on this server are left for an existing holder to grant.
+    /// Supply current value keys to newly admitted servers. Superseded versions
+    /// are never granted, and each successful reconciliation also retires them.
     pub fn reconcile_secret_grants(&mut self, now: u64) -> RuntimeResult<()> {
+        self.db.execute(
+            "DELETE FROM shared_publications WHERE expires<=?1",
+            [sql_time(now)?],
+        )?;
         let registry = self.snapshot()?;
         self.require_server(&registry, now)?;
         let state = self.shared_snapshot()?;
         let members = registry.effective_members(now)?;
         let mut published = 0;
-        for record in &state.secrets {
-            if record.value.is_none() {
-                continue;
-            }
-            let recipients: Vec<_> = members
-                .values()
-                .filter(|member| {
-                    matches!(member.kind, MemberKind::Server(_))
-                        && record.address.allowed(&member.permissions)
-                        && !record.keys.contains_key(&member.device_id)
-                        && !state.grants.iter().any(|grant| {
-                            grant.record == record.id && grant.recipient == member.device_id
-                        })
-                })
-                .collect();
-            if recipients.is_empty()
-                || record
+        for current in &state.secrets {
+            if current.value.is_none()
+                || current
                     .content_key(&state, &self.keys, &self.config.server_id)
                     .is_err()
             {
                 continue;
             }
-            for recipient in recipients {
-                self.publish_grant(record, &state, recipient)?;
+            let mut record = current.clone();
+            for member in members.values().filter(|member| {
+                matches!(member.kind, MemberKind::Server(_))
+                    && current.address.allowed(&member.permissions)
+                    && !current.keys.contains_key(&member.device_id)
+            }) {
+                record = record.grant(&state, &self.keys, &self.config.server_id, member)?;
                 published += 1;
-                if published == 16 {
-                    return Ok(());
+                if published >= 32 {
+                    break;
                 }
             }
+            if record != *current {
+                self.store.append_secret(&record)?;
+            }
+            if published >= 32 {
+                break;
+            }
         }
+        self.shared_snapshot()?;
         Ok(())
     }
 }

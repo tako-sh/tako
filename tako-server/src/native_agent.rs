@@ -19,7 +19,7 @@ mod services;
 #[path = "native_agent/store.rs"]
 mod store;
 
-pub use ipc::{recheck_authority, relay, run};
+pub use ipc::{recheck_authority, recover_admin, recovery_config, relay, run};
 use serde::{Deserialize, Serialize};
 use tako_network::{
     BootId,
@@ -59,6 +59,20 @@ pub struct AgentRequest {
     pub method: String,
     pub path: String,
     pub signed: SignedRequest,
+}
+
+/// The recovery variant is accepted only from a kernel-authenticated root peer.
+/// It is never constructible through the public HTTP relay.
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+pub(super) enum AgentCommand {
+    Rpc(AgentRequest),
+    Recovery(RecoveryRequest),
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RecoveryRequest {
+    pub recover_admin: tako_network::invitation::CreateInvitation,
 }
 
 #[derive(Serialize, Deserialize)]

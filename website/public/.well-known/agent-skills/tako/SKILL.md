@@ -116,7 +116,20 @@ drafts. Set/remove changes remain local until deploy or `secrets sync` publishes
 the selected environment. `network sync` only refreshes the device cache. Sync
 does not restart running apps. Different keys merge independently; the same key
 uses deterministic logical last-write-wins. Coordinate concurrent releases and
-multi-key rotations. An invitation cannot recover unpublished drafts.
+multi-key rotations. Shared state retains only each key's current encrypted value
+and a versioned deletion marker. Backup encryption keys have distinct IDs and
+remain available for retained backups. A publication request can be retried for
+seven days; after expiry, review preserved drafts before explicitly publishing
+with `secrets sync --retry-expired`. That action can overwrite remote changes.
+An invitation cannot recover unpublished drafts.
+
+For a lost administrator or an independent device handoff, run
+`sudo tako-server admin invite` from a surviving server's provider console or
+administrator SSH, then `network join` on the replacement. Verify the new
+administrator before revoking the lost device. This host recovery path creates
+independent authority; ordinary admin invitations remain tied to their inviter.
+It requires intact server state, keys, and a running network agent. It cannot
+restore a network after every copy and key is lost.
 
 Deploy loads membership and cached values only for its selected environment's
 network; an unrelated inactive membership must not block it. Honor `--config`:

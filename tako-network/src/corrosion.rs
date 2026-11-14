@@ -71,10 +71,6 @@ pub trait RegistryStore {
     fn append_secret(&mut self, _record: &crate::shared::SecretRecord) -> RuntimeResult<()> {
         Err(RuntimeError::Invalid("shared secret store unavailable"))
     }
-
-    fn append_secret_grant(&mut self, _grant: &crate::shared::SecretGrant) -> RuntimeResult<()> {
-        Err(RuntimeError::Invalid("shared secret store unavailable"))
-    }
 }
 
 pub struct CorrosionStore {
@@ -280,10 +276,6 @@ impl RegistryStore for CorrosionStore {
         crate::shared::SharedStore::append_secret(self, record)
     }
 
-    fn append_secret_grant(&mut self, grant: &crate::shared::SecretGrant) -> RuntimeResult<()> {
-        crate::shared::SharedStore::append_secret_grant(self, grant)
-    }
-
     fn snapshot(&mut self) -> RuntimeResult<RegistrySnapshot> {
         self.read_rows()?.finish()
     }
@@ -466,10 +458,10 @@ pub(crate) fn record_key(row: &[Value]) -> RuntimeResult<(String, String, String
 }
 
 fn record_limit(kind: &str) -> usize {
-    if kind == "revocation" {
-        MAX_REVOCATION_BYTES
-    } else {
-        MAX_RECORD_BYTES
+    match kind {
+        "revocation" => MAX_REVOCATION_BYTES,
+        "secret" => crate::shared::MAX_SHARED_RECORD_BYTES,
+        _ => MAX_RECORD_BYTES,
     }
 }
 

@@ -1,5 +1,5 @@
 use super::{
-    AgentError, AgentRequest, AgentResponse, Result, authority,
+    AgentCommand, AgentError, AgentRequest, AgentResponse, Result, authority,
     lifecycle::{Control, WithdrawOnDrop},
     now,
     process::{self, DnsStatus, OwnedChild},
@@ -29,7 +29,7 @@ use tako_network::{
 use zeroize::Zeroizing;
 
 pub(super) struct Work {
-    pub request: AgentRequest,
+    pub request: AgentCommand,
     pub reply: tokio::sync::oneshot::Sender<AgentResponse>,
     pub deadline: Instant,
 }
@@ -89,7 +89,12 @@ pub(super) fn worker(
                     continue;
                 }
                 // The request path is never reconstructed from the signed body.
-                let response = controller.handle(work.request);
+                let response = match work.request {
+                    AgentCommand::Rpc(request) => controller.handle(request),
+                    AgentCommand::Recovery(request) => {
+                        controller.recover_admin(request.recover_admin)
+                    }
+                };
                 let _ = work.reply.send(response);
             }
             Err(mpsc::RecvTimeoutError::Timeout) => (),
@@ -569,6 +574,22 @@ impl Controller {
             &self.control,
         ))
     }
+    fn recover_admin(
+        &mut self,
+        grant: tako_network::invitation::CreateInvitation,
+    ) -> AgentResponse {
+        self.reconcile_or_isolate();
+        if !self.ready {
+            return AgentResponse::unavailable(&self.boot);
+        }
+        let result = now().and_then(|time| {
+            self.runtime
+                .create_recovery_invitation(grant, time)
+                .map_err(Into::into)
+        });
+        self.response(result)
+    }
+
     fn handle(&mut self, request: AgentRequest) -> AgentResponse {
         if authority::reserved_route(&request.method, &request.path) {
             if request.method == authority::METHOD && request.path == authority::PATH {

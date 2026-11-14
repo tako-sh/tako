@@ -97,6 +97,9 @@ pub enum SecretCommands {
         /// Only sync to specific environment
         #[arg(long)]
         env: Option<String>,
+        /// Publish current drafts as new operations when a previous retry expired
+        #[arg(long)]
+        retry_expired: bool,
     },
 
     /// Manage encryption keys used for secrets
@@ -255,7 +258,9 @@ async fn run_async(
             remove_secret(&context, &name, env.as_deref(), yes).await
         }
         SecretCommands::List => list_secrets(&context).await,
-        SecretCommands::Sync { env } => sync_secrets(&context, env.as_deref()).await,
+        SecretCommands::Sync { env, retry_expired } => {
+            sync_secrets(&context, env.as_deref(), retry_expired).await
+        }
         SecretCommands::Key(SecretKeyCommands::Export { env }) => {
             let env = resolve_secret_environment(&context, env.as_deref(), "Key environment")?;
             export_key(&context, &env).await

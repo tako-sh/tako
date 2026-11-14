@@ -122,6 +122,14 @@ impl NodeConfig {
         config.validate()?;
         Ok(config)
     }
+    #[cfg(unix)]
+    pub fn load_for_owner(data_dir: &Path, owner: u32) -> Result<Self> {
+        let directory = protected::Directory::open_for_owner(data_dir, false, owner)?;
+        let bytes = directory.read(NODE_CONFIG_FILE, MAX_NODE_CONFIG_BYTES)?;
+        let config: Self = serde_json::from_slice(&bytes)?;
+        config.validate()?;
+        Ok(config)
+    }
     #[cfg(not(unix))]
     pub fn load(_: &Path) -> Result<Self> {
         Err(crate::Error::UnsupportedPlatform)
@@ -186,9 +194,18 @@ pub mod protected {
     };
     use zeroize::Zeroizing;
 
-    pub struct Directory(File);
+    pub struct Directory(File, u32);
     impl Directory {
         pub fn open(path: &Path, private: bool) -> Result<Self> {
+            Self::open_for_owner(path, private, geteuid().as_raw())
+        }
+
+        /// Root may inspect a service-owned directory without changing owners
+        /// or relaxing any no-follow, ownership, or mode checks.
+        pub fn open_for_owner(path: &Path, private: bool, owner: u32) -> Result<Self> {
+            if geteuid().as_raw() != 0 && geteuid().as_raw() != owner {
+                return Err(Error::UnsafeKeyFile);
+            }
             if !path.is_absolute() {
                 return Err(invalid("node directory", "absolute path required"));
             }
@@ -209,7 +226,7 @@ pub mod protected {
                         )?;
                         let stat = fs::fstat(&fd)?;
                         // A sticky root-owned /tmp is safe for private test directories.
-                        if (stat.st_uid != 0 && stat.st_uid != geteuid().as_raw())
+                        if (stat.st_uid != 0 && stat.st_uid != owner)
                             || (stat.st_mode & 0o022 != 0
                                 && !(stat.st_uid == 0 && stat.st_mode & 0o1000 != 0))
                         {
@@ -221,10 +238,10 @@ pub mod protected {
             }
             let file = File::from(fd);
             let meta = file.metadata()?;
-            if private && (meta.uid() != geteuid().as_raw() || meta.mode() & 0o7777 != 0o700) {
+            if private && (meta.uid() != owner || meta.mode() & 0o7777 != 0o700) {
                 return Err(Error::UnsafeKeyFile);
             }
-            Ok(Self(file))
+            Ok(Self(file, owner))
         }
         /// Atomically open/create a lock without replacing its inode. All
         /// contenders must lock this same file; atomic rename is unsafe here.
@@ -244,7 +261,7 @@ pub mod protected {
             let meta = file.metadata()?;
             if !meta.is_file()
                 || meta.nlink() != 1
-                || meta.uid() != geteuid().as_raw()
+                || meta.uid() != self.1
                 || meta.mode() & 0o7777 != 0o600
             {
                 return Err(Error::UnsafeKeyFile);
@@ -265,7 +282,7 @@ pub mod protected {
             let meta = file.metadata()?;
             if !meta.is_file()
                 || meta.nlink() != 1
-                || meta.uid() != geteuid().as_raw()
+                || meta.uid() != self.1
                 || meta.mode() & 0o7777 != 0o600
             {
                 return Err(Error::UnsafeKeyFile);

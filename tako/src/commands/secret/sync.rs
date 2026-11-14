@@ -105,6 +105,7 @@ pub(super) async fn list_secrets(
 pub(super) async fn sync_secrets(
     context: &crate::commands::project_context::ProjectContext,
     target_env: Option<&str>,
+    retry_expired: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = crate::config::TakoToml::load_from_file(&context.config_path)?;
     let app = resolve_app_name(&context.config_path)?;
@@ -133,6 +134,7 @@ pub(super) async fn sync_secrets(
                 &app,
                 &env,
                 true,
+                retry_expired,
             )
         })?;
         output::success(&format!("Published secret drafts for {env}"));

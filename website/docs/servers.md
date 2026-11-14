@@ -57,6 +57,10 @@ curl -fsSL https://tako.sh/install-server.sh | sudo env TAKO_RESTART_SERVICE=0 s
 
 The installer defaults to native networking. Service startup requires applied native network state; finish enrollment from the administrator's workstation. `TAKO_MANAGEMENT_HOST` may select only an address assigned by that state. Saved external-provider settings are rejected during standalone upgrades; administrator re-enrollment explicitly selects native networking.
 
+## Recover a lost administrator
+
+Use the provider’s web console or administrator SSH to run `sudo tako-server admin invite` on an active server. Join from the replacement machine with `tako network join`. This creates an independent administrator so revoking the lost client does not also revoke its replacement. The server’s state, keys, and network agent must still be available. See [Recover administrator access](/networks/#recover-administrator-access) for the full handoff and limits.
+
 ## Server Maintenance
 
 ```bash

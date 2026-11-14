@@ -944,6 +944,53 @@ enroll_tako_server() {
   wait_tako_management_http "$host"
 }
 
+run_admin_recovery_checks() {
+  local source="$TMP_ROOT/recovery-source"
+  local host invitation client_home project
+  mkdir -p "$source"
+  printf 'name = "admin-recovery"\n[envs.production]\nnetwork = "%s"\nroute = "recovery.example.test"\n' "$NETWORK_ID" > "$source/tako.toml"
+  printf '%s' 'recovery-fixture-value' | HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" \
+    "$TAKO_BIN" --ci --config "$source/tako.toml" secrets set RECOVERY_TOKEN --env production
+  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$source/tako.toml" secrets sync --env production
+  for host in server-ubuntu server-alma; do
+    if ssh_exec "$host" /usr/local/bin/tako-server admin invite >/dev/null 2>&1; then
+      echo "Service account issued a recovery invitation" >&2
+      return 1
+    fi
+    # Capture the token without logging it, as on a provider's root console.
+    invitation=$(HOME="$HOME_DIR" ssh "${SSH_OPTS[@]}" "e2e-admin@$host" \
+      sudo -n /usr/local/bin/tako-server admin invite --json | jq -er '.invitation')
+    client_home="$TMP_ROOT/recovered-$host"
+    project="$TMP_ROOT/recovered-project-$host"
+    mkdir -p "$client_home" "$project"
+    chmod 0700 "$client_home"
+    cp "$source/tako.toml" "$project/tako.toml"
+    printf '%s' "$invitation" | HOME="$client_home" TAKO_HOME="$client_home/tako" \
+      "$TAKO_BIN" --ci network join --name "recovered-$host" --invitation-stdin
+    unset invitation
+    HOME="$client_home" TAKO_HOME="$client_home/tako" "$TAKO_BIN" --ci --json \
+      network client list --network e2e > "$client_home/clients.json"
+    jq -e --arg name "recovered-$host" \
+      'any(.clients[]; .request.name == $name and .independent_admin == true and .approved_by == null)' \
+      "$client_home/clients.json" >/dev/null
+    # Materializing a fresh worktree exercises decryption with the new device's
+    # wrapped key, without importing the original laptop's environment key.
+    HOME="$client_home" TAKO_HOME="$client_home/tako" "$TAKO_BIN" --ci \
+      --config "$project/tako.toml" secrets sync --env production
+    HOME="$client_home" TAKO_HOME="$client_home/tako" "$TAKO_BIN" --ci --json \
+      --config "$project/tako.toml" secrets list > "$client_home/secrets.json"
+    jq -e 'any(.secrets[]; .name == "RECOVERY_TOKEN")' "$client_home/secrets.json" >/dev/null
+  done
+  HOME="$client_home" TAKO_HOME="$client_home/tako" "$TAKO_BIN" --ci \
+    network client remove recovered-server-ubuntu --network e2e
+  HOME="$client_home" TAKO_HOME="$client_home/tako" "$TAKO_BIN" --ci network sync e2e
+  HOME="$client_home" TAKO_HOME="$client_home/tako" "$TAKO_BIN" --ci --json \
+    network client list --network e2e > "$client_home/clients.json"
+  jq -e 'any(.clients[]; .request.name == "recovered-server-alma") and
+    (all(.clients[]; .request.name != "recovered-server-ubuntu"))' "$client_home/clients.json" >/dev/null
+  echo "Independent administrator recovery passed on Ubuntu and AlmaLinux"
+}
+
 # Wait for SSH on all servers
 ssh_wait server-ubuntu
 ssh_wait server-alma
@@ -1119,6 +1166,10 @@ for entry in "${SERVERS[@]}"; do
 
   echo "=== $server passed ==="
 done
+
+if [[ "$FIXTURE_REL" == "e2e/fixtures/javascript/tanstack-start" ]]; then
+  run_admin_recovery_checks
+fi
 
 TESTED_SERVERS=$(printf '%s\n' "${SERVERS[@]}" | cut -d: -f1 | tr '\n' ' ')
 echo "E2E deploy test passed for $FIXTURE_REL on${TESTED_SERVERS:+ $TESTED_SERVERS}"

@@ -277,7 +277,7 @@ pub enum RpcResponse {
     Active(NetworkPublicProfile),
     Snapshot(RegistrySnapshot),
     Secrets(crate::shared::SharedSnapshot),
-    SecretPublished(crate::shared::SecretRecord),
+    SecretPublished(crate::shared::SecretReceipt),
     Revoked(Revocation),
 }
 

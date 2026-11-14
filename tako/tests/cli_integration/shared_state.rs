@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tako_network::api::{RpcResponse, RuntimeResult, SignedRequest};
 use tako_network::corrosion::RegistryStore;
 use tako_network::runtime::{RuntimeConfig, RuntimeLimits, ServerRuntime};
-use tako_network::shared::{SecretGrant, SecretRecord, SharedSnapshot, SharedStore};
+use tako_network::shared::{SecretRecord, SharedSnapshot, SharedStore};
 use tako_network::*;
 
 #[derive(Clone)]
@@ -43,9 +43,6 @@ impl RegistryStore for Store {
     }
     fn append_secret(&mut self, value: &SecretRecord) -> RuntimeResult<()> {
         SharedStore::append_secret(&mut self.0.lock().unwrap().1, value)
-    }
-    fn append_secret_grant(&mut self, value: &SecretGrant) -> RuntimeResult<()> {
-        SharedStore::append_secret_grant(&mut self.0.lock().unwrap().1, value)
     }
 }
 fn now() -> u64 {
@@ -668,7 +665,7 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
         None,
     );
     let state = server.store.0.lock().unwrap().1.clone();
-    assert_eq!(state.secrets.len(), before + 1);
+    assert_eq!(state.secrets.len(), before);
     let latest = state.latest().unwrap();
     let alpha = latest
         .values()
@@ -825,4 +822,110 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
             .status
             .success()
     );
+}
+
+#[test]
+fn expired_publication_preserves_current_draft_and_requires_explicit_retry() {
+    for legacy in [false, true] {
+        let server = ApiServer::new();
+        let project = server.project("expired-retry");
+        server.ok(
+            &server.owner_home,
+            &project,
+            &["secrets", "set", "TOKEN", "--env", "production"],
+            Some("first"),
+        );
+        server.drop_publication.store(true, Ordering::Relaxed);
+        assert!(
+            !server
+                .run(
+                    &server.owner_home,
+                    &project,
+                    &["secrets", "sync", "--env", "production"],
+                    None
+                )
+                .status
+                .success()
+        );
+        // Simulate returning after the durable request's fixed retry window.
+        // The draft is edited since that failed attempt; only its current value
+        // should be published when the user explicitly retries.
+        let path = project.join(".tako/secrets.local.json");
+        let mut state: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let pending = state["environments"]["production"]["pending"]
+            .as_array_mut()
+            .unwrap();
+        assert_eq!(pending.len(), 1);
+        if legacy {
+            pending[0]["mutation"]
+                .as_object_mut()
+                .unwrap()
+                .remove("expires_at");
+        } else {
+            pending[0]["mutation"]["expires_at"] = serde_json::json!(0);
+        }
+        fs::write(&path, serde_json::to_vec(&state).unwrap()).unwrap();
+        server.ok(
+            &server.owner_home,
+            &project,
+            &["secrets", "set", "TOKEN", "--env", "production"],
+            Some("current-draft"),
+        );
+        let before = server.store.0.lock().unwrap().1.clone();
+        let failed = server.run(
+            &server.owner_home,
+            &project,
+            &["secrets", "sync", "--env", "production"],
+            None,
+        );
+        assert!(!failed.status.success());
+        assert!(
+            String::from_utf8_lossy(&failed.stderr).contains("retry-expired")
+                || String::from_utf8_lossy(&failed.stdout).contains("retry-expired")
+        );
+        assert_eq!(server.store.0.lock().unwrap().1, before);
+        server.ok(
+            &server.owner_home,
+            &project,
+            &["secrets", "sync", "--env", "production", "--retry-expired"],
+            None,
+        );
+        let after = server.store.0.lock().unwrap().1.clone();
+        assert_eq!(after.secrets.len(), 1);
+        assert_eq!(after.secrets[0].revision, 2);
+        assert_ne!(after.secrets[0].id, before.secrets[0].id);
+        let registry = server.store.0.lock().unwrap().0.clone();
+        let admin = registry
+            .members
+            .iter()
+            .find(|member| member.device_id == registry.network.initial_admin)
+            .unwrap();
+        let keys = LocalDeviceKeys::load(
+            &server
+                .owner_home
+                .join("network-keys")
+                .join(format!("{}.json", admin.request.request_id)),
+        )
+        .unwrap();
+        let plaintext = after.secrets[0]
+            .decrypt(&after, &keys, &admin.device_id)
+            .unwrap()
+            .unwrap();
+        let content: tako_network::shared::SecretContent =
+            serde_json::from_slice(&plaintext).unwrap();
+        assert_eq!(&*content.value, "current-draft");
+        let disk: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert!(
+            disk["environments"]["production"]["pending"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            !serde_json::to_string(&disk)
+                .unwrap()
+                .contains("current-draft")
+        );
+    }
 }
