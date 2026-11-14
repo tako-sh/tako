@@ -14,13 +14,13 @@ Previously, Tako kept server inventory in `servers.toml` and encrypted app secre
 
 The new arrangement gives each piece a clear home:
 
-| State | Where it lives | How it moves |
-| --- | --- | --- |
-| App code, build settings, routes, environment targets | Git, including `tako.toml` | Branches, reviews, and merges |
-| Network name and server/client membership | Network servers, with local client caches | Enrollment and network sync |
-| Published encrypted secrets and credential records | Network servers, with authorized client caches | Secret publication and network sync |
-| Unpublished secret edits | Ignored state in each worktree | Explicit publication or deploy |
-| Private device keys | That device's local Tako state | Each device generates its own |
+| State                                                 | Where it lives                                 | How it moves                        |
+| ----------------------------------------------------- | ---------------------------------------------- | ----------------------------------- |
+| App code, build settings, routes, environment targets | Git, including `tako.toml`                     | Branches, reviews, and merges       |
+| Network name and server/client membership             | Network servers, with local client caches      | Enrollment and network sync         |
+| Published encrypted secrets and credential records    | Network servers, with authorized client caches | Secret publication and network sync |
+| Unpublished secret edits                              | Ignored state in each worktree                 | Explicit publication or deploy      |
+| Private device keys                                   | That device's local Tako state                 | Each device generates its own       |
 
 Keeping [app configuration in `tako.toml`](/docs/tako-toml/) matters when several agents work in parallel. A branch changing a build command or route should carry that change through review. Moving those settings into a shared mutable database would make the branch incomplete: checking out its code would no longer tell you how it is meant to run.
 
@@ -106,11 +106,11 @@ This writes encrypted, ignored `.tako/secrets.local.json` state in the current w
 
 Publication happens when you choose it:
 
-| Command | Shared-state effect | Running app effect |
-| --- | --- | --- |
-| `tako network sync production` | Refreshes the device cache; leaves drafts unpublished | None |
-| `tako secrets sync --env production` | Pulls published values and publishes this worktree's changes | None |
-| `tako deploy --env production` | Syncs the selected environment before building | Deploys a new release if the deployment succeeds |
+| Command                              | Shared-state effect                                          | Running app effect                               |
+| ------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------ |
+| `tako network sync production`       | Refreshes the device cache; leaves drafts unpublished        | None                                             |
+| `tako secrets sync --env production` | Pulls published values and publishes this worktree's changes | None                                             |
+| `tako deploy --env production`       | Syncs the selected environment before building               | Deploys a new release if the deployment succeeds |
 
 Adding or removing a client refreshes membership and the local cache without publishing unrelated drafts. Secret sync alone does not restart apps. Also, because deployment publishes before building, a later build failure does not undo secret publication. See the [deployment flow](/docs/deployment/) when planning a rotation.
 

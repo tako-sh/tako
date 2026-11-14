@@ -13,15 +13,15 @@ Use `tako <command> --help` or the connected MCP tool's schema for the exact arg
 
 ## Global Options
 
-| Option                          | Meaning                                                                                                                         |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `--version`                     | Print the CLI version and exit.                                                                                                 |
-| `-v`, `--verbose`               | Append-only transcript with timestamps, log levels, and debug diagnostics.                                                      |
-| `--ci`                          | Deterministic non-interactive output: no colors, spinners, raw mode, or prompts.                                                |
-| `--json`                        | Emit structured JSON on stdout. Progress, diagnostics, and errors stay on stderr.                                               |
+| Option                          | Meaning                                                                                                                                |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `--version`                     | Print the CLI version and exit.                                                                                                        |
+| `-v`, `--verbose`               | Append-only transcript with timestamps, log levels, and debug diagnostics.                                                             |
+| `--ci`                          | Deterministic non-interactive output: no colors, spinners, raw mode, or prompts.                                                       |
+| `--json`                        | Emit structured JSON on stdout. Progress, diagnostics, and errors stay on stderr.                                                      |
 | `--dry-run`                     | Show side effects without performing them. Supported by deploy, network server add/remove, delete, and side-effecting backup commands. |
-| `-c`, `--config <CONFIG>`       | Use an explicit config file. `.toml` is appended when omitted.                                                                  |
-| `--ssh-passphrase <PASSPHRASE>` | Use a passphrase for encrypted local SSH keys.                                                                                  |
+| `-c`, `--config <CONFIG>`       | Use an explicit config file. `.toml` is appended when omitted.                                                                         |
+| `--ssh-passphrase <PASSPHRASE>` | Use a passphrase for encrypted local SSH keys.                                                                                         |
 
 App-scoped commands that honor `-c`: `agents`, `mcp`, `init`, `dev`, `run`, `logs`, `deploy`, `releases`, `backups`, `delete`, `secrets`, `credentials`, `storages`, `generate`, and project-context `scale`.
 
