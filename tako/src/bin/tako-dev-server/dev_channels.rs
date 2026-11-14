@@ -100,6 +100,27 @@ pub async fn try_handle(
     path: &str,
     method: &str,
 ) -> Result<bool> {
+    if path == tako_channels::shared::PATH {
+        let Some(context) = &target.store_auth else {
+            return write_channel_error(session, target, ChannelError::AuthUnavailable).await;
+        };
+        let app = AppAuthorizer {
+            endpoint: format!("127.0.0.1:{}", target.upstream_port),
+            internal_host: context.internal_host.clone(),
+            internal_token_header: INTERNAL_TOKEN_HEADER,
+            internal_token: context.token.clone(),
+        };
+        let store = store_for(dev_store, &target.channel_store_key).await?;
+        let writer = Arc::new(tako_channels::LocalChannelWriter::new(store.clone()));
+        return tako_channels::shared::serve(
+            session,
+            Arc::new(app),
+            store,
+            writer,
+            DEV_PROXY_IS_HTTPS,
+        )
+        .await;
+    }
     let route = match parse_channel_route(path) {
         Ok(Some(r)) => r,
         Ok(None) => return Ok(false),

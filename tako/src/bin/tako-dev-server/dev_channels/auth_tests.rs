@@ -8,6 +8,60 @@ use serde_json::{Value, json};
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::{self, Message, client::IntoClientRequest};
 
+#[tokio::test]
+async fn shared_websocket_is_routed_and_authorized_by_the_dev_proxy() {
+    use pingora_proxy::ProxyHttp;
+    let (app_port, calls) = fake_app(definitions(), authorize).await;
+    let routes = crate::proxy::Routes::default();
+    routes.set_routes("app".into(), vec!["app.test".into()], app_port, true);
+    routes.set_store_auth("app", "app.tako".into(), test_app::TOKEN.into());
+    let (events, _events_rx) = tokio::sync::mpsc::unbounded_channel();
+    let proxy = crate::proxy::DevProxy {
+        routes,
+        events,
+        channels: DevChannelStore::new(),
+    };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut session = Session::new_h1(Box::new(
+            pingora_core::protocols::l4::stream::Stream::from(socket),
+        ));
+        session.read_request().await.unwrap();
+        assert!(
+            proxy
+                .request_filter(&mut session, &mut proxy.new_ctx())
+                .await
+                .unwrap()
+        );
+    });
+    let mut request = format!("ws://{endpoint}/_tako/channels")
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("host", "app.test".parse().unwrap());
+    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+    socket.send(Message::text(json!({"type":"subscribe", "id":"page", "channel":"room", "query":"room=1", "headers":{"Authorization":"Bearer good"}}).to_string())).await.unwrap();
+    let next = tokio::time::timeout(Duration::from_secs(5), socket.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let frame: Value = serde_json::from_str(next.to_text().unwrap()).unwrap();
+    assert_eq!(frame, json!({"type":"subscribed", "id":"page"}));
+    let call = calls.lock().unwrap()[0].clone();
+    assert_eq!(call["operation"], "connect");
+    assert_eq!(call["params"], json!({"room":1}));
+    assert_eq!(call["header"]["value"], "good");
+    socket.close(None).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
 fn definitions() -> Value {
     json!([
         {

@@ -41,6 +41,7 @@ export function usePresence<T>(
     headersKey,
     options.baseUrl,
     options.authorization,
+    options.connection,
   ]);
   const latestKeyRef = useRef(connectionKey);
   const optionsRef = useRef(options);
@@ -143,7 +144,7 @@ export function usePresence<T>(
           const code = (event as CloseEvent).code;
           // 4410 is the server's replay reset after a native peer change; the
           // membership comes back on reconnect, unlike the other 44xx rejections.
-          if (code >= 4400 && code < 4500 && code !== 4410) {
+          if ((code >= 4400 && code < 4500 && code !== 4410) || code === 1009) {
             setError(new Error(`Presence "${name}" rejected (${code}).`));
             return;
           }

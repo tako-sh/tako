@@ -7,6 +7,7 @@ pub use mesh::{ChannelEvent, ChannelEventId, ChannelPublication, RemoteIngest};
 pub mod ephemeral;
 pub mod live_store;
 mod presence;
+pub mod shared;
 pub use presence::{PRESENCE_CHANNEL_PREFIX, PresenceMember, PresenceSession, presence_scope};
 pub mod close_codes;
 pub mod error_codes;

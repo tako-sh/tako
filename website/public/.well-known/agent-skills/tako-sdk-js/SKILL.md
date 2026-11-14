@@ -374,7 +374,7 @@ const status = new Channel("status");
 const token = await getToken();
 const sub = status.subscribe({ authorization: token });
 (sub.raw as EventSource).addEventListener("message", (e) => {
-  const msg = JSON.parse(e.data) as { type: string; data: unknown };
+  const msg = JSON.parse((e as MessageEvent<string>).data) as { type: string; data: unknown };
   // ...
 });
 sub.close();
@@ -382,8 +382,8 @@ sub.close();
 // WebSocket channel with params
 const room = new Channel("chat", "ws", { roomId: "room1" });
 const socket = room.connect({ authorization: token });
-(socket.raw as WebSocket).addEventListener("message", (e) => {
-  const msg = JSON.parse(e.data);
+(socket.raw as EventTarget).addEventListener("message", (e) => {
+  const msg = JSON.parse((e as MessageEvent<string>).data);
   // ...
 });
 socket.send({ type: "typing", data: { userId: "me" } });
@@ -634,10 +634,19 @@ export function useBroadcast() {
 
 One connection, one buffer, any number of consumers.
 
+### Shared WebSocket ownership
+
+WebSocket channels and Presence share a physical WebSocket per origin, credentials, and configuration within each browser tab. SSE subscriptions and Store notifications remain separate HTTP streams. Every logical WebSocket subscription has independent auth, params, cursor, and cleanup. React hooks unsubscribe on unmount, so leaving a page removes its presence while layout subscriptions stay connected. Lost cleanup is covered by presence leases; membership does not prove active viewing.
+
+`connect().raw` is a logical `EventTarget`. Use the returned handle's `send()` and `close()`, or its abort `signal`. `connection: "dedicated"` on `connect()`, a WebSocket `useChannel`, or `usePresence` opens an independent socket; `configureChannels({ connection: "dedicated" })` changes only the WebSocket default. A physical disconnect affects its subscriptions; React hooks rejoin with independent cursors, while low-level `connect()` callers own reconnecting.
+
+Shared connections allow 32 subscriptions, 64 KiB client command frames including the envelope, and 1 MiB complete delivered events. Larger events close only their subscription with code `1009`. Stream large AI outputs as smaller application events. The SDK reassembles transport fragments before notifying listeners and discards incomplete messages after disconnection. No timer-based batching is enabled.
+
 ### Network routes
 
 | Direction     | Method | Path                     | Transport                        |
 | ------------- | ------ | ------------------------ | -------------------------------- |
+| Shared WS     | GET    | `/_tako/channels` | Multiplexed WebSocket |
 | Subscribe     | GET    | `/_tako/channels/<name>` | SSE (`text/event-stream`)        |
 | Connect       | GET    | `/_tako/channels/<name>` | WebSocket (`Upgrade: websocket`) |
 | Publish       | WS     | `/_tako/channels/<name>` | JSON text frame                  |

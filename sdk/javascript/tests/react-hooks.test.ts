@@ -41,6 +41,7 @@ class MockEventSource extends EventTarget {
 class MockWebSocket extends EventTarget {
   url: string;
   readyState = 0;
+  bufferedAmount = 0;
   sent: unknown[] = [];
   closedWith: { code?: number; reason?: string } | null = null;
   constructor(url: string) {
@@ -70,6 +71,135 @@ class MockWebSocket extends EventTarget {
     this.dispatchEvent(new CloseEvent("close", { code }));
   }
 }
+
+test("a page presence hook leaves while its layout subscription stays connected", async () => {
+  const sockets: MockWebSocket[] = [];
+  class SharedSocket extends MockWebSocket {
+    constructor(url: string) {
+      super(url);
+      sockets.push(this);
+    }
+  }
+  configureChannels({
+    connection: "shared",
+    websocket: SharedSocket as unknown as typeof WebSocket,
+  });
+  const layout = renderHook(() =>
+    useChannel("notifications", { baseUrl: "https://app.test", transport: "ws" }),
+  );
+  const page = renderHook(() =>
+    usePresence("room", { baseUrl: "https://app.test", data: { page: "chat" } }),
+  );
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  expect(sockets).toHaveLength(1);
+  const socket = sockets[0]!;
+  await act(async () => {
+    socket.emitOpen();
+    await Promise.resolve();
+  });
+  const joins = socket.sent.map(
+    (sent) => JSON.parse(String(sent)) as { type: string; id: string; channel: string },
+  );
+  const layoutId = joins.find((join) => join.channel === "notifications")!.id;
+  const pageId = joins.find((join) => join.channel === "tako.presence:room")!.id;
+  act(() => {
+    socket.emitMessage({ type: "subscribed", id: layoutId });
+    socket.emitMessage({ type: "subscribed", id: pageId });
+    socket.emitMessage({
+      type: "data",
+      id: pageId,
+      data: '{"type":"tako.presence.ready"}',
+      end: true,
+    });
+  });
+  expect(JSON.parse(String(socket.sent.at(-1)))).toEqual({
+    type: "send",
+    id: pageId,
+    data: { type: "tako.presence", data: { page: "chat" } },
+  });
+  page.unmount();
+  expect(JSON.parse(String(socket.sent.at(-1)))).toEqual({ type: "unsubscribe", id: pageId });
+  expect(socket.closedWith).toBeNull();
+  act(() =>
+    socket.emitMessage({
+      type: "data",
+      id: layoutId,
+      data: JSON.stringify({
+        id: "1",
+        channel: "notifications",
+        type: "message",
+        data: "still here",
+      }),
+      end: true,
+    }),
+  );
+  expect(layout.result.current.messages[0]?.data).toBe("still here");
+  expect(layout.result.current.status).toBe("open");
+  layout.unmount();
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  expect(socket.closedWith).not.toBeNull();
+});
+
+test("shared hooks reconnect with independent cursors and discard incomplete messages", async () => {
+  const sockets: MockWebSocket[] = [];
+  class SharedSocket extends MockWebSocket {
+    constructor(url: string) {
+      super(url);
+      sockets.push(this);
+    }
+  }
+  configureChannels({
+    connection: "shared",
+    websocket: SharedSocket as unknown as typeof WebSocket,
+  });
+  const first = renderHook(() =>
+    useChannel("first", { transport: "ws", baseUrl: "https://app.test", from: "start" }),
+  );
+  const second = renderHook(() =>
+    useChannel("second", { transport: "ws", baseUrl: "https://app.test", lastMessageId: "5" }),
+  );
+  const socket = sockets[0]!;
+  await act(async () => {
+    socket.emitOpen();
+    await Promise.resolve();
+  });
+  const joins = socket.sent.map(
+    (value) => JSON.parse(String(value)) as { id: string; channel: string },
+  );
+  const a = joins.find((join) => join.channel === "first")!.id;
+  const b = joins.find((join) => join.channel === "second")!.id;
+  act(() => {
+    socket.emitMessage({ type: "subscribed", id: a });
+    socket.emitMessage({ type: "subscribed", id: b });
+    socket.emitMessage({
+      type: "data",
+      id: a,
+      data: '{"id":"12","type":"message","data":1}',
+      end: true,
+    });
+    socket.emitMessage({ type: "data", id: b, data: '{"id":"99",', end: false });
+    socket.emitClose();
+  });
+  expect(first.result.current.messages).toHaveLength(1);
+  expect(second.result.current.messages).toHaveLength(0);
+  await waitFor(() => expect(sockets).toHaveLength(2), { timeout: 3000 });
+  await act(async () => {
+    sockets[1]!.emitOpen();
+    await Promise.resolve();
+  });
+  await waitFor(() => expect(sockets[1]!.sent).toHaveLength(2), { timeout: 3000 });
+  const resumed = sockets[1]!.sent.map(
+    (value) => JSON.parse(String(value)) as { channel: string; cursor: string },
+  );
+  expect(resumed.find((join) => join.channel === "first")?.cursor).toBe("12");
+  expect(resumed.find((join) => join.channel === "second")?.cursor).toBe("5");
+  first.unmount();
+  second.unmount();
+});
 
 describe("useChannel (sse)", () => {
   let es: MockEventSource | null = null;
@@ -1241,3 +1371,6 @@ describe("useChannel closed streams", () => {
     expect(sockets).toHaveLength(2);
   });
 });
+
+// This suite exercises the dedicated SSE/WebSocket wire contracts.
+beforeEach(() => configureChannels({ connection: "dedicated" }));

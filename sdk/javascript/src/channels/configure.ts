@@ -1,6 +1,7 @@
 type TokenResolver = () => string | null | Promise<string | null>;
 
 interface ChannelsConfig {
+  connection: "shared" | "dedicated";
   token: TokenResolver | null;
   fetch: typeof fetch;
   websocket: typeof WebSocket;
@@ -22,6 +23,7 @@ function defaultWebSocket(): typeof WebSocket {
 
 function makeDefaultConfig(): ChannelsConfig {
   return {
+    connection: "shared",
     token: null,
     fetch: defaultFetch(),
     websocket: defaultWebSocket(),
@@ -29,6 +31,7 @@ function makeDefaultConfig(): ChannelsConfig {
 }
 
 let current: ChannelsConfig | null = null;
+let generation = 0;
 
 function getCurrent(): ChannelsConfig {
   current ??= makeDefaultConfig();
@@ -47,6 +50,8 @@ function getCurrent(): ChannelsConfig {
  */
 export function configureChannels(
   input: Partial<{
+    /** WebSocket connection ownership. SSE always uses independent streams. */
+    connection: "shared" | "dedicated";
     /** Token used for channel auth. Null/empty means no auth envelope. */
     token: TokenResolver;
     /** Fetch implementation used by SSE subscriptions and HTTP calls. */
@@ -55,6 +60,7 @@ export function configureChannels(
     websocket: typeof WebSocket;
   }>,
 ): void {
+  generation++;
   current = {
     ...getCurrent(),
     ...input,
@@ -67,6 +73,7 @@ export function configureChannels(
  * @internal Used by tests.
  */
 export function resetChannelsConfig(): void {
+  generation++;
   current = null;
 }
 
@@ -76,6 +83,8 @@ export function resetChannelsConfig(): void {
  * @internal Used by channel internals.
  */
 export function getChannelsConfig(): {
+  generation: number;
+  connection: "shared" | "dedicated";
   /** Fetch implementation for channel HTTP/SSE work. */
   fetch: typeof fetch;
   /** WebSocket constructor for live WebSocket channels. */
@@ -87,6 +96,8 @@ export function getChannelsConfig(): {
 } {
   const config = getCurrent();
   return {
+    generation,
+    connection: config.connection,
     fetch: config.fetch,
     websocket: config.websocket,
     async resolveToken() {

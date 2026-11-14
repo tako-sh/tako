@@ -1156,6 +1156,8 @@ for entry in "${SERVERS[@]}"; do
   fi
   if [[ "$FIXTURE_REL" == "e2e/fixtures/javascript/channels-workflows" ]]; then
     run_channels_workflows_checks "$server" "$ROUTE_HOST"
+    cp /workspace/e2e/shared-channels.ts "$PROJECT_DIR/check-shared-channels.ts"
+    (cd "$PROJECT_DIR" && bun check-shared-channels.ts "$server" "$ROUTE_HOST")
     run_network_primitive_checks "$server"
     run_store_checks "$server" "$ROUTE_HOST"
   fi

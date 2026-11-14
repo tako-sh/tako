@@ -23,7 +23,7 @@
  * }
  * ```
  *
- * Or connect via WebSocket:
+ * Or enable client publishing over the shared connection:
  * @example
  * ```typescript
  * const { messages, status, send } = useChannel("chat", {

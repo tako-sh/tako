@@ -1,4 +1,6 @@
+pub(crate) mod io;
 mod serve;
+pub(crate) use serve::serve_on;
 pub use serve::{serve, serve_with_writer};
 #[cfg(test)]
 #[path = "websocket/tests.rs"]
@@ -19,12 +21,27 @@ pub struct WebSocketFrame {
     pub payload: Vec<u8>,
 }
 
-#[derive(Default)]
 pub struct WebSocketFrameReader {
     buffer: Vec<u8>,
+    max_payload_bytes: u64,
+    require_mask: bool,
+}
+
+impl Default for WebSocketFrameReader {
+    fn default() -> Self {
+        Self::bounded(MAX_WEBSOCKET_FRAME_PAYLOAD_BYTES, false)
+    }
 }
 
 impl WebSocketFrameReader {
+    pub fn bounded(max_payload_bytes: u64, require_mask: bool) -> Self {
+        Self {
+            buffer: Vec::new(),
+            max_payload_bytes,
+            require_mask,
+        }
+    }
+
     pub fn extend(&mut self, chunk: &[u8]) {
         self.buffer.extend_from_slice(chunk);
     }
@@ -38,6 +55,11 @@ impl WebSocketFrameReader {
         let second = self.buffer[1];
         let fin = (first & 0x80) != 0;
         let opcode = first & 0x0f;
+        if first & 0x70 != 0 || (self.require_mask && second & 0x80 == 0) {
+            return Err(ChannelError::BadRequest(
+                "invalid websocket frame flags".into(),
+            ));
+        }
         if !fin {
             return Err(ChannelError::BadRequest(
                 "fragmented websocket frames are not supported".to_string(),
@@ -79,7 +101,7 @@ impl WebSocketFrameReader {
                 "invalid websocket control frame".to_string(),
             ));
         }
-        if payload_len > MAX_WEBSOCKET_FRAME_PAYLOAD_BYTES {
+        if payload_len > self.max_payload_bytes {
             return Err(ChannelError::BadRequest(
                 "websocket frame too large".to_string(),
             ));

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, afterEach, describe, expect, mock, test } from "bun:test";
 import { Channel, ChannelRegistry } from "../src/channels";
 import { configureChannels, resetChannelsConfig } from "../src/channels/configure";
 import { SseReader } from "../src/channels/sse-reader";
@@ -124,7 +124,7 @@ describe("channels", () => {
     );
   });
 
-  test("subscribe uses fetch-based SSE reader by default", async () => {
+  test("default subscribe uses the fetch-based SSE reader", async () => {
     const fetchMock = mock((_url: string) =>
       Promise.resolve(
         new Response("data: hi\n\n", {
@@ -385,3 +385,6 @@ describe("channels", () => {
     });
   });
 });
+
+// This suite exercises the dedicated SSE/WebSocket wire contracts.
+beforeEach(() => configureChannels({ connection: "dedicated" }));

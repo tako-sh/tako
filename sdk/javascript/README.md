@@ -451,3 +451,5 @@ bun test
 
 - [Quickstart](../../website/docs/quickstart.md)
 - `../../examples/javascript/demo/README.md`
+
+WebSocket channels and Presence share a connection per origin and credential set within each browser tab. Each hook or socket handle owns its subscription and releases it on cleanup. SSE subscriptions and Store notifications keep separate streams. Use `connection: "dedicated"` on `connect()` or a WebSocket hook for an independent socket. Shared events are limited to 1 MiB; stream larger AI output as incremental events.

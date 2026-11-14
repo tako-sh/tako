@@ -17,6 +17,7 @@ import {
 } from "./channels/meta";
 import { getChannelsConfig } from "./channels/configure";
 import { SseReader } from "./channels/sse-reader";
+import { openSharedChannel } from "./channels/shared";
 import { channelParamQuery, channelStreamParams, type ChannelParamValue } from "./channels/params";
 
 export type { SseRecoveryReason, ChannelSubscribeOptions } from "./types";
@@ -432,6 +433,30 @@ export class Channel {
     withQuery(url, "last_message_id", options.lastMessageId);
     withReadFrom(url, options.from, options.lastMessageId);
 
+    if ((options.connection ?? getChannelsConfig().connection) !== "dedicated") {
+      const headers = headersWithAuthorization(options.headers, options.authorization);
+      const raw = openSharedChannel(url, {
+        ...(headers !== undefined && { headers }),
+        ...(options.lastMessageId !== undefined && { cursor: options.lastMessageId }),
+        ...(options.from !== undefined && { from: options.from }),
+        ...(options.webSocketFactory !== undefined && {
+          webSocketFactory: options.webSocketFactory,
+        }),
+      });
+      const onClose = once(options.onClose);
+      raw.addEventListener("close", (event) => {
+        if ((event as CloseEvent).code === CHANNEL_STREAM_CLOSED_CODE) onClose();
+      });
+      const close = (code?: number, reason?: string) => raw.close(code, reason);
+      const abort = () => close();
+      if (options.signal?.aborted) close();
+      else options.signal?.addEventListener("abort", abort, { once: true });
+      raw.addEventListener("close", () => options.signal?.removeEventListener("abort", abort), {
+        once: true,
+      });
+      return { transport: "ws", raw, close, send: (data) => raw.send(data) };
+    }
+
     const factory = options.webSocketFactory ?? defaultWebSocketFactory;
     const raw = factory(toWebSocketUrl(url));
     const headers = headersWithAuthorization(options.headers, options.authorization);
@@ -444,12 +469,18 @@ export class Channel {
       onClose();
     });
     const name = this.name;
+    const close = (code?: number, reason?: string) => {
+      options.signal?.removeEventListener("abort", abort);
+      closeRaw(raw, code, reason);
+    };
+    const abort = () => close();
+    if (options.signal?.aborted) close();
+    else options.signal?.addEventListener("abort", abort, { once: true });
+    addRawListener(raw, "close", () => options.signal?.removeEventListener("abort", abort));
     return {
       transport: "ws",
       raw,
-      close(code?: number, reason?: string) {
-        closeRaw(raw, code, reason);
-      },
+      close,
       send(data: unknown) {
         if (streamClosed) {
           throw new Error(`Channel '${name}' stream is closed; it accepts no more messages.`);

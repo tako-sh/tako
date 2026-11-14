@@ -209,3 +209,6 @@ describe("terminal signal", () => {
     expect(() => connection.send("x")).not.toThrow();
   });
 });
+
+// This suite exercises the dedicated SSE/WebSocket wire contracts.
+beforeEach(() => configureChannels({ connection: "dedicated" }));
