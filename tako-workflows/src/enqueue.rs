@@ -159,6 +159,14 @@ fn postgres_unavailable(error: &postgres::Error) -> bool {
 pub struct RunsDb {
     backend: RunsDbBackend,
     pub(crate) monitoring: crate::monitoring::StoreMonitoring,
+    schedules: ScheduleRegistration,
+}
+
+#[derive(Default)]
+struct ScheduleRegistration {
+    build: Option<String>,
+    revision: Option<i64>,
+    done: parking_lot::Mutex<bool>,
 }
 
 enum RunsDbBackend {
@@ -175,6 +183,7 @@ impl RunsDb {
                 schema,
                 app_id,
             } => Ok(Self {
+                schedules: Default::default(),
                 monitoring: crate::monitoring::StoreMonitoring::postgres(&url, &schema, &app_id)?,
                 backend: RunsDbBackend::Postgres(Box::new(PostgresRunsDb::open(
                     &url, &schema, &app_id,
@@ -189,6 +198,7 @@ impl RunsDb {
 
     pub fn open_sqlite(path: &Path) -> Result<Self, RunsDbError> {
         Ok(Self {
+            schedules: Default::default(),
             backend: RunsDbBackend::Sqlite(SqliteRunsDb::open(path)?),
             monitoring: Default::default(),
         })
@@ -201,6 +211,7 @@ impl RunsDb {
     #[cfg(test)]
     pub fn open_in_memory() -> Result<Self, RunsDbError> {
         Ok(Self {
+            schedules: Default::default(),
             backend: RunsDbBackend::Sqlite(SqliteRunsDb::open_in_memory()?),
             monitoring: Default::default(),
         })
@@ -534,10 +545,57 @@ impl RunsDb {
         }
     }
 
+    pub(crate) fn prepare_schedule_registration(
+        &mut self,
+        build: Option<String>,
+        activation: crate::manager::ScheduleActivation,
+    ) -> Result<(), RunsDbError> {
+        use crate::manager::ScheduleActivation;
+        self.schedules.revision = match (&self.backend, activation) {
+            (RunsDbBackend::Postgres(db), ScheduleActivation::Deploy) => {
+                Some(db.next_schedule_revision()?)
+            }
+            (RunsDbBackend::Postgres(_), ScheduleActivation::Recover(revision)) => revision,
+            (RunsDbBackend::Sqlite(_), _) => None,
+        };
+        self.schedules.build = build.filter(|build| !build.is_empty());
+        Ok(())
+    }
+
+    pub(crate) fn schedule_revision(&self) -> Option<i64> {
+        self.schedules.revision
+    }
+
+    pub(crate) fn needs_schedule_registration(&self) -> bool {
+        // Registration may be committing to Postgres on a blocking thread.
+        self.schedules.done.try_lock().is_some_and(|done| !*done)
+    }
+
+    pub(crate) fn register_worker_schedules(
+        &self,
+        build: Option<&str>,
+        schedules: &[ScheduleSpec],
+    ) -> Result<usize, RunsDbError> {
+        if build != self.schedules.build.as_deref() {
+            // An old worker can reach the successor's socket while it drains.
+            return Ok(0);
+        }
+        let mut done = self.schedules.done.lock();
+        if !*done {
+            super::cron::register_schedules(self, schedules)?;
+            *done = true;
+        }
+        Ok(schedules.len())
+    }
+
     pub(crate) fn replace_schedules(&self, schedules: &[ScheduleSpec]) -> Result<(), RunsDbError> {
         match &self.backend {
             RunsDbBackend::Sqlite(db) => db.replace_schedules(schedules),
-            RunsDbBackend::Postgres(db) => db.replace_schedules(schedules),
+            RunsDbBackend::Postgres(db) => db.replace_schedules(
+                schedules,
+                self.schedules.build.as_deref(),
+                self.schedules.revision,
+            ),
         }
     }
 

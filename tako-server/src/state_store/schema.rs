@@ -158,6 +158,11 @@ fn ensure_schema_objects(conn: &rusqlite::Connection) -> Result<(), StateStoreEr
             encrypted_data BLOB NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS app_schedule_revisions (
+            app TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS app_storages (
             app TEXT NOT NULL PRIMARY KEY,
             encrypted_data BLOB NOT NULL

@@ -1,5 +1,6 @@
 {
   "app": "demo",
+  "build": "v7",
   "command": "register_schedules",
   "schedules": []
 }

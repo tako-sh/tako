@@ -201,6 +201,7 @@ impl crate::ServerState {
                     storages: &config.storages,
                     postgres_url: runtime_credentials.get("postgres_url"),
                 },
+                tako_workflows::manager::ScheduleActivation::Deploy,
             )
             .await
         {
@@ -246,6 +247,9 @@ impl crate::ServerState {
                         &runtime_credentials,
                         ssl.as_ref(),
                         backup.as_ref(),
+                        workflows
+                            .as_ref()
+                            .and_then(|runtime| runtime.schedule_revision()),
                     )
                     .map_err(|error| format!("Could not commit deployment: {error}"))?;
                 app.update_config(config.clone());

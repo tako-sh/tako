@@ -101,7 +101,7 @@ function pushIfWorkerMatches(
   }
 }
 
-function workflowWorkerGroup(opts: WorkflowRuntimeOpts): string {
+export function workflowWorkerGroup(opts: WorkflowRuntimeOpts): string {
   return opts.worker ?? DEFAULT_WORKER_GROUP;
 }
 

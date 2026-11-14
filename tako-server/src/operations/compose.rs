@@ -92,6 +92,7 @@ impl crate::ServerState {
                     &runtime_credentials,
                     ssl.as_ref(),
                     backup.as_ref(),
+                    None,
                 )
                 .map_err(|e| format!("Could not commit Compose deployment: {e}"))?;
             Ok(())
