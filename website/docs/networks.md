@@ -5,6 +5,8 @@ description: "Create a Tako network, enroll servers and devices, deploy over pin
 
 A native network identifies trusted devices and servers without an external account. Each device generates its own keys. A project selects the network by its stable 32-character hexadecimal ID; the network name is shared by every enrolled device. Human-readable commands use that name; `tako network list --json` includes the ID for `tako.toml`.
 
+Network names are currently immutable and need not be globally unique. If two enrolled networks share a name, select one by its ID. [Server maintenance selectors](/servers/#server-maintenance) include IDs when needed to distinguish names.
+
 Management uses signed requests over pinned HTTPS. Deploy, status, logs, releases, and scaling do not require a workstation WireGuard interface, TUN device, or SSH agent. Server installation still needs administrator SSH access. Tako networking is the supported enrollment path; see [re-enrollment](/servers/#choose-the-vpn-provider) for older installations.
 
 This protocol-v0 update changes the enrollment format to bind a separate secret-encryption key. Older native identities and profiles require a coordinated upgrade and fresh enrollment; ordinary server upgrade does not migrate them in place. Preserve application data, old network state, and legacy environment keys before rebuilding an existing network. `secrets migrate` preserves app secret values and keys, but does not convert old network identities.
@@ -54,6 +56,8 @@ tako logs --env production --days 1 --json
 ```
 
 Check the command exit status, membership, and application response separately. A successful dry run or upload does not verify a deployed application. Compose environments still require exactly one target server. Outside a project, `tako status` lists every configured network; one whose membership cannot be refreshed is reported as a warning and skipped instead of failing the command.
+
+Deploy resolves membership and cached secret values for the selected environment's network. An expired membership in an unrelated network does not block that deploy. Invalid membership in the selected network remains an error.
 
 ## Enroll another laptop or sandbox
 
@@ -156,7 +160,7 @@ Public application DNS, certificates, and ingress routes remain separate. A nati
 
 ## Understand replay and maintenance limits
 
-Native servers can replicate bounded channel replay and fan out events over their private transport. Presence uses expiring, server-bound leases. These are live-delivery mechanisms, not permanent application history. When replay is unavailable, the JavaScript SDK handles protocol resets quietly and application code reloads authoritative state. See [Channels](/channels/#deploy-replay-storage) for replay storage and recovery requirements. Native channels, presence, and store notifications can use SQLite across servers without Postgres; a configured Postgres credential is preserved and validated.
+Native servers can replicate bounded channel replay and fan out events over their private transport. Presence uses expiring, server-bound leases. These are live-delivery mechanisms, not permanent application history. When replay is unavailable, the JavaScript SDK handles protocol resets quietly and application code reloads authoritative state. See [Channels](/channels/#deploy-replay-storage) for replay storage and recovery requirements. Durable channel replay, presence, and store notifications can use SQLite across servers without Postgres; a configured Postgres credential is preserved and validated. Ephemeral channels use memory-only delivery without replay.
 
 Channel replication does not migrate durable workflow executions, databases, or volumes. [Workflow storage](/workflows/) and [Compose volumes](/docker-compose/) retain their own persistence requirements.
 

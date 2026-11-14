@@ -118,10 +118,21 @@ does not restart running apps. Different keys merge independently; the same key
 uses deterministic logical last-write-wins. Coordinate concurrent releases and
 multi-key rotations. An invitation cannot recover unpublished drafts.
 
+Deploy loads membership and cached values only for its selected environment's
+network; an unrelated inactive membership must not block it. Honor `--config`:
+its parent directory determines the project and draft store. Configs sharing a
+directory share drafts, and an environment already bound to another app/network
+cannot be silently reused. Use a separate worktree for a different target.
+For maintenance, copy the exact selector from `network server list --json`;
+colliding network or server names add stable IDs to that selector.
+
 For legacy tracked secrets, `secrets migrate` requires the original local keys,
 retains an ignored recovery copy, and removes the tracked file. Commit that
-deletion and publish through the intended network. Do not replace missing keys
-or rewrite history as part of ordinary migration.
+deletion and publish through the intended network. Recover missing original keys
+with `secrets key import` before migration; import validates local ciphertext
+without first materializing the shared cache. Do not replace missing keys or
+rewrite history as part of ordinary migration. App-data backups do not include
+network membership, shared secret records, or device keys; protect those separately.
 
 Native management uses signed pinned HTTPS without workstation WireGuard, TUN,
 or an SSH agent. Scoped sandbox deploys use administrator-provisioned routes and
@@ -195,9 +206,9 @@ history expires. React's optional `onResync` can be async but does not delay
 reconnect. Stores reload through their authorized loader automatically after
 subscription readiness. Native brokers replicate bounded SQLite replay and fan
 out to trusted server peers; presence uses expiring server-bound leases. This
-is not permanent history or durable workflow migration. Legacy multi-server
-replay uses shared Postgres. Native multi-server channel/presence/store delivery
-can use SQLite without Postgres. Configured credentials remain in use; credential
+is not permanent history or durable workflow migration. Native multi-server
+durable channel/presence/store delivery can use SQLite without Postgres;
+ephemeral channels use memory-only delivery. Configured credentials remain in use; credential
 read or validation failures must not trigger a backend fallback. Multi-server
 workflows still require Postgres unless intentionally local. Test expired history
 and the resulting authoritative-state reload.
@@ -212,8 +223,8 @@ external writers. Go/Rust registrations use the same browser/React client as JS.
 Offline persistence is opt-in on both backend policy and client user/tenant scope;
 never use credentials as cache scopes. Match cache versions, honor expiry, and
 clear caches on logout. Cached reads do not install an offline app shell or queue
-writes. Legacy shared multi-server notification state requires `postgres_url`;
-configure it explicitly for inline Go/Rust registrations. Verify private scope isolation,
+writes. Native multi-server notification state can use SQLite or an explicitly
+configured Postgres backend. Verify private scope isolation,
 invalidation, reconnect catch-up, and offline expiry through the real app flow.
 
 ## Install or refresh agent support

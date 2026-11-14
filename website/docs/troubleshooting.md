@@ -62,10 +62,10 @@ Deploy performs validation before build work starts. Check for:
 - Target environment missing from `[envs.<env>]`.
 - Missing `route` or `routes` on a non-development environment.
 - Unknown servers in `[envs.<env>].servers`.
-- Missing or invalid server `arch`/`libc` metadata. Re-add the server with SSH checks enabled.
+- Missing or invalid server `arch`/`libc` metadata. Check that the enrolled host uses a supported Linux architecture and glibc.
 - Expired app secrets, S3 credentials, or provider credentials.
 - Missing `ssl.cloudflare` for wildcard Let's Encrypt routes or Cloudflare SSL.
-- Missing `postgres_url` for multi-server Channels, Presence, Stores, or global workflows.
+- Missing `postgres_url` for shared multi-server workflows. Native channel, presence, and store delivery do not require it; see [workflow storage](/workflows/).
 - Local storage used in a multi-server deploy environment.
 
 Use:
@@ -109,7 +109,7 @@ web  healthy 0/0  production  abc123
 
 Read the app's output with `tako logs --env production --days 1`. `tako status --json` reports the same fields under `recovery`. The server keeps retrying on its own; a fixed deploy or `tako scale` starts new instances at once without waiting for the backoff. The `Restarts` row clears once the app has stayed healthy, or idle, for about a minute.
 
-A deploy, release command, or `tako secrets sync` that arrives while the server is repairing the app can fail with `Automatic recovery of <app> is in progress; retry in a moment.` Retry the command: recovery pauses for about a minute after turning a command away, so the retry gets through as soon as the current repair step ends. A scheduled backup can turn a command away the same way, with `A scheduled backup of <app> is in progress; retry in a moment.`; the retry gets through because scheduled backups pause for about a minute.
+A deploy or release command that arrives while the server is repairing the app can fail with `Automatic recovery of <app> is in progress; retry in a moment.` Retry the command: recovery pauses for about a minute after turning a command away, so the retry gets through as soon as the current repair step ends. A scheduled backup can turn a command away the same way, with `A scheduled backup of <app> is in progress; retry in a moment.`; the retry gets through because scheduled backups pause for about a minute. `tako secrets sync` publishes network state without restarting the app and does not take this app lock.
 
 ## TLS Or Certificate Problems
 
@@ -182,6 +182,10 @@ For a legacy tracked secret file or local encrypted draft with a missing environ
 tako secrets key import --env production
 ```
 
+Use `--passphrase --env production` if the original key came from a passphrase. Import validates existing ciphertext before installing the key and does not need to decrypt the shared cache first. Keep the legacy file or local drafts while recovering; generating a replacement key does not decrypt them. Once the original key is available, migrate a tracked file with `tako secrets migrate`, then publish with `tako secrets sync --env production`.
+
+If Tako reports that local drafts are bound to another app or network, confirm the selected `--config` file and its environment's network ID. Files in the same directory share `.tako/` state. Use a separate worktree or directory for a different target while preserving the original drafts. See [alternate configurations](/secrets/#use-an-alternate-configuration).
+
 On macOS, iCloud Keychain storage requires the signed `Tako.app` CLI. If Keychain entitlement is unavailable, reinstall Tako with the official installer.
 
 ## Server Commands Fail
@@ -197,3 +201,5 @@ tako status
 Use `tako network server add admin@host --network <network>` to install and enroll a server.
 
 Check network membership (`tako network status <network> --json`), HTTPS reachability, device permissions, and SSH recovery access before choosing a repair action. Reload requires a reachable host and is not a diagnostic probe; follow [Servers](/servers/) for maintenance.
+
+If a network or server name is ambiguous, inspect `tako network list --json` and `tako network server list --json`. Select the network by its stable ID or copy the full maintenance selector shown for the server. Do not rename or revoke a device merely to resolve a local name collision.

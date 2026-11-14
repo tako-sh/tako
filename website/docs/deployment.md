@@ -34,6 +34,8 @@ tako deploy --env production
 tako deploy --env staging
 ```
 
+Use `tako --config release.toml deploy --env production` for an alternate config. Its parent directory supplies the project root and local secret drafts. Deploy loads cached secrets and resolves server inventory only for the selected environment and network; an expired membership in an unrelated staging network does not block a production deploy. Existing drafts cannot silently move to another app or network when you change configs. See [alternate configurations](/secrets/#use-an-alternate-configuration).
+
 When `--env` is omitted, deploy targets `production`. In an interactive terminal, an implicit production deploy asks for confirmation — but only if `tako.toml` declares more than one deployable environment (`development` doesn't count). With a single environment, there's nothing the deploy could have implicitly missed, so it proceeds without asking. Passing `--env production`, `--yes`, or `-y` also skips the prompt by making the target explicit.
 
 The CLI, server, and release artifact must use the same protocol version. Tako checks before parallel deployment starts and again on each server before dependency preparation, release commands, workflow synchronization, or app startup. A mismatch fails the deploy without starting those workloads. `--force` attempts the incompatible deploy but does not skip validation or readiness checks; unlike `--yes`, it does not control confirmation prompts.
