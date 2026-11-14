@@ -86,6 +86,8 @@ pub struct RuntimeConfig {
 struct Entitlement {
     grant: ApproveRequest,
     approver: DeviceId,
+    #[serde(default)]
+    independent_admin: bool,
     candidate: Option<Member>,
 }
 
@@ -178,8 +180,8 @@ impl<S: RegistryStore> ServerRuntime<S> {
             CREATE TABLE IF NOT EXISTS pending_entitlements (id TEXT PRIMARY KEY, expires INTEGER NOT NULL, payload TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS invitations (id TEXT PRIMARY KEY, expires INTEGER NOT NULL, payload TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS shared_observed (kind TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(kind, id));
-            CREATE TABLE IF NOT EXISTS shared_commands (id TEXT PRIMARY KEY, payload TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS shared_grants (id TEXT PRIMARY KEY, payload TEXT NOT NULL);")?;
+            CREATE TABLE IF NOT EXISTS shared_publications (id TEXT PRIMARY KEY, expires INTEGER NOT NULL, payload TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS shared_publication_expiry ON shared_publications(expires);")?;
         let network = serde_json::to_string(&config.network)?;
         db.execute(
             "INSERT OR IGNORE INTO runtime_identity VALUES (1, ?1, ?2, 0, ?3)",
@@ -551,9 +553,21 @@ impl<S: RegistryStore> ServerRuntime<S> {
         snapshot: RegistrySnapshot,
         now: u64,
     ) -> RuntimeResult<RpcResponse> {
+        self.approve_pending_with_authority(grant, approver, false, snapshot, now)
+    }
+
+    fn approve_pending_with_authority(
+        &mut self,
+        grant: ApproveRequest,
+        approver: DeviceId,
+        independent_admin: bool,
+        snapshot: RegistrySnapshot,
+        now: u64,
+    ) -> RuntimeResult<RpcResponse> {
         let entitlement = Entitlement {
             grant,
             approver,
+            independent_admin,
             candidate: None,
         };
         self.check_grant(&entitlement, &snapshot, now)?;
@@ -581,7 +595,10 @@ impl<S: RegistryStore> ServerRuntime<S> {
             .optional()?;
         if let Some(existing) = existing {
             let previous: Entitlement = serde_json::from_str(&existing)?;
-            if previous.grant != entitlement.grant || previous.approver != entitlement.approver {
+            if previous.grant != entitlement.grant
+                || previous.approver != entitlement.approver
+                || previous.independent_admin != entitlement.independent_admin
+            {
                 return Err(RuntimeError::Conflict("pending ID"));
             }
         } else {
@@ -640,24 +657,37 @@ impl<S: RegistryStore> ServerRuntime<S> {
         if let MemberKind::Server(info) = &grant.kind {
             info.validate()?;
         }
-        let effective = snapshot.effective_members(now)?;
-        let parent = effective
-            .get(&entitlement.approver)
-            .ok_or(RuntimeError::Denied)?;
-        let rights = &parent.permissions;
-        if !rights.network_admin
-            || (grant.permissions.server_admin && !rights.server_admin)
-            || (matches!(grant.kind, MemberKind::Server(_)) && !rights.server_admin)
-            || (grant.permissions.ssh_user.is_some()
-                && !rights.server_admin
-                && grant.permissions.ssh_user != rights.ssh_user)
-            || (!rights.server_admin
-                && !grant.permissions.deployments.is_subset(&rights.deployments))
-            || parent
-                .expires_at
-                .is_some_and(|e| grant.member_expires_at.is_none_or(|child| child > e))
-        {
-            return Err(RuntimeError::Denied);
+        if entitlement.independent_admin {
+            // This bit only comes from a durable invitation minted by the
+            // authenticated local host operator, never from a public request.
+            if entitlement.approver != self.config.server_id
+                || !matches!(grant.kind, MemberKind::Laptop)
+                || !grant.permissions.network_admin
+                || !grant.permissions.server_admin
+            {
+                return Err(RuntimeError::Denied);
+            }
+            self.require_server(snapshot, now)?;
+        } else {
+            let effective = snapshot.effective_members(now)?;
+            let parent = effective
+                .get(&entitlement.approver)
+                .ok_or(RuntimeError::Denied)?;
+            let rights = &parent.permissions;
+            if !rights.network_admin
+                || (grant.permissions.server_admin && !rights.server_admin)
+                || (matches!(grant.kind, MemberKind::Server(_)) && !rights.server_admin)
+                || (grant.permissions.ssh_user.is_some()
+                    && !rights.server_admin
+                    && grant.permissions.ssh_user != rights.ssh_user)
+                || (!rights.server_admin
+                    && !grant.permissions.deployments.is_subset(&rights.deployments))
+                || parent
+                    .expires_at
+                    .is_some_and(|e| grant.member_expires_at.is_none_or(|child| child > e))
+            {
+                return Err(RuntimeError::Denied);
+            }
         }
         let wg_fingerprint = grant.request.wg_public_key.fingerprint();
         let ssh_fingerprint = grant.request.ssh_public_key.fingerprint()?;
@@ -768,35 +798,33 @@ impl<S: RegistryStore> ServerRuntime<S> {
             .remove(&challenge_id)
             .ok_or(RuntimeError::ChallengeUnavailable)?;
         let verified = state.proof.verify(&proof, now)?;
-        let candidate = if let Some(candidate) = &entitlement.candidate {
-            let approved = snapshot.approve(
-                verified,
-                Approval {
-                    kind: candidate.kind.clone(),
-                    permissions: candidate.permissions.clone(),
-                    approved_by: candidate.approved_by.clone(),
-                    independent_admin: false,
-                    created_at: candidate.created_at,
-                    expires_at: candidate.expires_at,
-                },
-            )?;
-            if &approved != candidate {
-                return Err(RuntimeError::Conflict("activation journal"));
-            }
-            candidate.clone()
-        } else {
-            snapshot.approve(
-                verified,
-                Approval {
-                    kind: entitlement.grant.kind.clone(),
-                    permissions: entitlement.grant.permissions.clone(),
-                    approved_by: Some(entitlement.approver.clone()),
-                    independent_admin: false,
-                    created_at: now,
-                    expires_at: entitlement.grant.member_expires_at,
-                },
-            )?
+        let approval = Approval {
+            kind: entitlement.grant.kind.clone(),
+            permissions: entitlement.grant.permissions.clone(),
+            approved_by: if entitlement.independent_admin {
+                None
+            } else {
+                Some(entitlement.approver.clone())
+            },
+            independent_admin: entitlement.independent_admin,
+            created_at: entitlement
+                .candidate
+                .as_ref()
+                .map_or(now, |candidate| candidate.created_at),
+            expires_at: entitlement.grant.member_expires_at,
         };
+        let candidate = if entitlement.independent_admin {
+            snapshot.approve_independent_admin(verified, approval)?
+        } else {
+            snapshot.approve(verified, approval)?
+        };
+        if entitlement
+            .candidate
+            .as_ref()
+            .is_some_and(|previous| previous != &candidate)
+        {
+            return Err(RuntimeError::Conflict("activation journal"));
+        }
         // FULL synchronous SQLite commit precedes the remote write. An uncertain
         // HTTP outcome can therefore only retry this exact immutable admission.
         entitlement.candidate = Some(candidate.clone());
@@ -973,9 +1001,6 @@ mod tests {
                 return Err(RuntimeError::Transport);
             }
             Ok(())
-        }
-        fn append_secret_grant(&mut self, grant: &crate::shared::SecretGrant) -> RuntimeResult<()> {
-            crate::shared::SharedStore::append_secret_grant(&mut self.0.borrow_mut().shared, grant)
         }
         fn snapshot(&mut self) -> RuntimeResult<RegistrySnapshot> {
             Ok(self.0.borrow().snapshot.clone())

@@ -7,7 +7,8 @@ use std::path::Path;
 use tako_network::api::{RpcRequest, RpcResponse};
 use tako_network::sealed::SealedValue;
 use tako_network::shared::{
-    SecretAddress, SecretContent, SecretKind, SecretMutation, SharedSnapshot,
+    SECRET_RETRY_SECONDS, SecretAddress, SecretContent, SecretKind, SecretMutation, SecretReceipt,
+    SharedSnapshot,
 };
 use tako_network::{AppEnv, DeviceId, LocalDeviceKeys, NetworkId, RequestId};
 use zeroize::Zeroizing;
@@ -52,7 +53,26 @@ fn lock(project: &Path) -> Result<std::fs::File> {
 fn read_workspace(project: &Path) -> Result<Workspace> {
     let path = SecretsStore::default_path(project);
     if path.try_exists()? {
-        return super::read_json(&path);
+        // Persisted commands from the previous protocol have no retry deadline.
+        // Preserve their drafts, but require an explicit retry after upgrade.
+        let mut value: serde_json::Value = super::read_json(&path)?;
+        if let Some(environments) = value
+            .get_mut("environments")
+            .and_then(|v| v.as_object_mut())
+        {
+            for env in environments.values_mut() {
+                if let Some(pending) = env.get_mut("pending").and_then(|v| v.as_array_mut()) {
+                    for command in pending {
+                        if let Some(mutation) =
+                            command.get_mut("mutation").and_then(|v| v.as_object_mut())
+                        {
+                            mutation.entry("expires_at").or_insert(serde_json::json!(0));
+                        }
+                    }
+                }
+            }
+        }
+        return Ok(serde_json::from_value(value)?);
     }
     let legacy = project.join(".tako/secrets.json");
     let values = if legacy.try_exists()? {
@@ -152,7 +172,8 @@ fn read_cache(alias: &LocalNetwork) -> Result<Option<SharedSnapshot>> {
     if !path.try_exists()? {
         return Ok(None);
     }
-    let cache: SharedSnapshot = super::read_json(&path)?;
+    let stored: serde_json::Value = super::read_json(&path)?;
+    let cache = SharedSnapshot::from_persisted(&serde_json::to_vec(&stored)?)?;
     if cache.network.to_string() != alias.id {
         return Err("Secret cache belongs to another network".into());
     }
@@ -297,6 +318,7 @@ pub(crate) fn sync_environment(
     app: &str,
     env: &str,
     publish: bool,
+    retry_expired: bool,
 ) -> Result<SecretsStore> {
     let id = config
         .envs
@@ -311,6 +333,13 @@ pub(crate) fn sync_environment(
     merge_remote(&mut state, env, &scope, &profile, &cache)?;
     write_workspace(project, &state)?;
     if publish {
+        if retry_expired {
+            let now = super::now()?;
+            bind(&mut state, env, &scope, &cache.network)?
+                .pending
+                .retain(|pending| pending.mutation.expires_at > now);
+            write_workspace(project, &state)?;
+        }
         publish_changes(project, &mut state, env, &scope, &alias, &profile)?;
         let (profile, cache) = pull(&alias, Some(scope.clone()))?;
         merge_remote(&mut state, env, &scope, &profile, &cache)?;
@@ -337,6 +366,9 @@ fn publish_changes(
         let Some(pending) = pending else {
             break;
         };
+        if pending.mutation.expires_at <= super::now()? {
+            return Err("Secret publication retry expired. Local drafts are preserved. Run `tako secrets sync --retry-expired` to publish the current drafts as new changes".into());
+        }
         let observed = read_cache(alias)?.and_then(|cache| {
             cache
                 .secrets
@@ -344,7 +376,7 @@ fn publish_changes(
                 .find(|record| record.id == pending.mutation.id)
         });
         let record = if let Some(record) = observed {
-            record
+            SecretReceipt::from(&record)
         } else {
             let RpcResponse::SecretPublished(record) = super::client::call(
                 profile,
@@ -364,9 +396,6 @@ fn publish_changes(
         {
             return Err("Secret publication response does not match the pending command".into());
         }
-        let mut addition = SharedSnapshot::empty(network.clone());
-        addition.secrets.push(record);
-        cache_merge(alias, &addition, profile)?;
         let entry = bind(state, env, scope, network)?;
         let key = RowKey {
             kind: pending.mutation.address.kind,
@@ -419,7 +448,16 @@ fn publish_changes(
             name: row_key.name.clone(),
         };
         let observed_revision = observed.get(&address).map_or(0, |record| record.revision);
-        let value = current
+        let mut mutation = SecretMutation {
+            id,
+            address,
+            value: None,
+            observed_revision,
+            expires_at: super::now()?
+                .checked_add(SECRET_RETRY_SECONDS)
+                .ok_or("Secret retry deadline overflow")?,
+        };
+        mutation.value = current
             .get(&row_key)
             .map(|row| -> Result<_> {
                 let content =
@@ -428,18 +466,13 @@ fn publish_changes(
                 Ok(SealedValue::seal(
                     recipient,
                     &bytes,
-                    &address.context(network, &id)?,
+                    &mutation.context(network)?,
                 )?)
             })
             .transpose()?;
         bind(state, env, scope, network)?.pending.push(Pending {
             issuer: issuer.clone(),
-            mutation: SecretMutation {
-                id,
-                address,
-                value,
-                observed_revision,
-            },
+            mutation,
             local: current.get(&row_key).cloned(),
         });
     }

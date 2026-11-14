@@ -1,3 +1,4 @@
+mod admin_cli;
 #[cfg(not(unix))]
 compile_error!("tako-server requires Unix (management commands use Unix sockets).");
 
@@ -230,6 +231,9 @@ impl Visit for JsonFieldVisitor<'_> {
 #[command(version = server_version())]
 #[command(about = "Tako Server - Application runtime and proxy")]
 pub struct Args {
+    #[command(subcommand)]
+    pub command: Option<admin_cli::ServerCommand>,
+
     /// Unix socket path for management commands
     #[arg(long)]
     pub socket: Option<String>,
@@ -247,7 +251,7 @@ pub struct Args {
     pub acme_staging: bool,
 
     /// Data directory for apps and certificates
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub data_dir: Option<String>,
 
     /// Run the separately supervised native network agent.
@@ -366,6 +370,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     install_rustls_crypto_provider();
 
     let args = Args::parse();
+    if let Some(command) = &args.command {
+        return admin_cli::run(
+            command,
+            Path::new(args.data_dir.as_deref().unwrap_or("/opt/tako")),
+        );
+    }
     #[cfg(target_os = "linux")]
     if let Some(paths) = &args.snapshot_live_wal {
         snapshot_live_wal::run(&paths[0], &paths[1])?;

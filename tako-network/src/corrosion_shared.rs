@@ -1,130 +1,129 @@
-use serde::Serialize;
-use serde_json::json;
-
+use super::{CorrosionStore, parse_query, parse_transaction, record_key, record_payload};
 use crate::api::{RuntimeError, RuntimeResult};
 use crate::shared::{
-    MAX_SHARED_BYTES, MAX_SHARED_RECORD_BYTES, MAX_SHARED_RECORDS, SecretGrant, SecretRecord,
-    SharedSnapshot, SharedStore,
+    LegacySecretGrant, MAX_SHARED_RECORD_BYTES, SecretRecord, SharedSnapshot, SharedStore,
 };
+use serde_json::json;
+use std::collections::BTreeSet;
 
-use super::{CorrosionStore, parse_query, parse_transaction, record_key, record_payload};
+type RowKey = (String, String, String);
 
 impl SharedStore for CorrosionStore {
     fn shared_snapshot(&mut self) -> RuntimeResult<SharedSnapshot> {
-        let mut snapshot = SharedSnapshot::empty(self.network.id.clone());
-        let high = parse_query(&self.post("/v1/queries", &json!([
-            "SELECT kind, record_id, digest, payload FROM tako_shared_records ORDER BY kind DESC, record_id DESC, digest DESC LIMIT 1", []
-        ]))?)?;
-        let Some(high) = high.first() else {
-            return Ok(snapshot);
-        };
-        let upper = record_key(high)?;
-        let mut cursor = (String::new(), String::new(), String::new());
-        let mut bytes = 0;
-        loop {
-            let page = parse_query(&self.post("/v1/queries", &json!([
-                "SELECT kind, record_id, digest, payload FROM tako_shared_records WHERE (kind, record_id, digest) > (?, ?, ?) AND (kind, record_id, digest) <= (?, ?, ?) ORDER BY kind, record_id, digest LIMIT 32",
-                [cursor.0, cursor.1, cursor.2, upper.0, upper.1, upper.2]
-            ]))?)?;
-            if page.is_empty() {
-                break;
-            }
-            if page.len() > 32 {
-                return Err(RuntimeError::Corrosion("shared state page size"));
-            }
-            for row in page {
-                let key = record_key(&row)?;
-                if key <= cursor || key > upper {
-                    return Err(RuntimeError::Corrosion("shared state page order"));
-                }
-                cursor = key;
-                let payload = record_payload(&row)?;
-                bytes += payload.len();
-                if bytes > MAX_SHARED_BYTES
-                    || snapshot.secrets.len() + snapshot.grants.len() >= MAX_SHARED_RECORDS
-                {
-                    return Err(RuntimeError::Capacity("shared secret state"));
-                }
-                match cursor.0.as_str() {
-                    "secret" => {
-                        let record: SecretRecord = serde_json::from_str(payload)?;
-                        if record.id.to_string() != cursor.1 {
-                            return Err(RuntimeError::Corrosion("secret operation ID"));
-                        }
-                        snapshot.secrets.push(record);
-                    }
-                    "grant" => {
-                        let grant: SecretGrant = serde_json::from_str(payload)?;
-                        if grant.id() != cursor.1 {
-                            return Err(RuntimeError::Corrosion("secret grant ID"));
-                        }
-                        snapshot.grants.push(grant);
-                    }
-                    _ => return Err(RuntimeError::Corrosion("shared state record kind")),
-                }
-            }
-        }
-        snapshot.validate()?;
+        let (snapshot, observed) = self.load_shared()?;
+        self.replace_shared(&snapshot, &observed)?;
         Ok(snapshot)
     }
 
     fn append_secret(&mut self, record: &SecretRecord) -> RuntimeResult<()> {
-        let mut snapshot = self.shared_snapshot()?;
-        if let Some(previous) = snapshot
-            .secrets
-            .iter()
-            .find(|previous| previous.id == record.id)
-        {
-            return if previous == record {
-                Ok(())
-            } else {
-                Err(RuntimeError::Conflict("secret operation"))
-            };
-        }
-        snapshot.secrets.push(record.clone());
-        snapshot.validate()?;
-        self.insert_shared("secret", &record.id.to_string(), record)
-    }
-
-    fn append_secret_grant(&mut self, grant: &SecretGrant) -> RuntimeResult<()> {
-        let mut snapshot = self.shared_snapshot()?;
-        if let Some(previous) = snapshot
-            .grants
-            .iter()
-            .find(|previous| previous.id() == grant.id())
-        {
-            return if previous == grant {
-                Ok(())
-            } else {
-                Err(RuntimeError::Conflict("secret grant"))
-            };
-        }
-        snapshot.grants.push(grant.clone());
-        snapshot.validate()?;
-        self.insert_shared("grant", &grant.id(), grant)
+        let (mut snapshot, observed) = self.load_shared()?;
+        let mut addition = SharedSnapshot::empty(self.network.id.clone());
+        addition.secrets.push(record.clone());
+        snapshot.merge(&addition)?;
+        self.replace_shared(&snapshot, &observed)?;
+        Ok(())
     }
 }
 
 impl CorrosionStore {
-    fn insert_shared(&self, kind: &str, id: &str, record: &impl Serialize) -> RuntimeResult<()> {
-        let payload = serde_json::to_string(record)?;
-        if payload.len() > MAX_SHARED_RECORD_BYTES {
-            return Err(RuntimeError::Capacity("shared record"));
+    fn load_shared(&self) -> RuntimeResult<(SharedSnapshot, Vec<RowKey>)> {
+        let mut snapshot = SharedSnapshot::empty(self.network.id.clone());
+        let mut observed = Vec::new();
+        let mut seen_ids = BTreeSet::new();
+        // Read values first so persisted legacy grants can be folded into their
+        // current value. New writers never create separate grant rows.
+        for kind in ["secret", "grant"] {
+            let high = parse_query(&self.post("/v1/queries", &json!([
+                "SELECT kind, record_id, digest, payload FROM tako_shared_records WHERE kind=? ORDER BY record_id DESC, digest DESC LIMIT 1", [kind]
+            ]))?)?;
+            let Some(high) = high.first() else {
+                continue;
+            };
+            let upper = record_key(high)?;
+            let mut cursor = (String::new(), String::new(), String::new());
+            loop {
+                let page = parse_query(&self.post("/v1/queries", &json!([
+                    "SELECT kind, record_id, digest, payload FROM tako_shared_records WHERE kind=? AND (record_id, digest) > (?, ?) AND (record_id, digest) <= (?, ?) ORDER BY record_id, digest LIMIT 32",
+                    [kind, cursor.1, cursor.2, upper.1, upper.2]
+                ]))?)?;
+                if page.is_empty() {
+                    break;
+                }
+                if page.len() > 32 {
+                    return Err(RuntimeError::Corrosion("shared state page size"));
+                }
+                let mut values = SharedSnapshot::empty(self.network.id.clone());
+                for row in page {
+                    let key = record_key(&row)?;
+                    if key.0 != kind || key <= cursor || key > upper {
+                        return Err(RuntimeError::Corrosion("shared state page order"));
+                    }
+                    cursor = key.clone();
+                    let payload = record_payload(&row)?;
+                    if payload.len() > MAX_SHARED_RECORD_BYTES {
+                        return Err(RuntimeError::Capacity("shared record"));
+                    }
+                    if kind == "secret" {
+                        let record: SecretRecord = serde_json::from_str(payload)?;
+                        if record.id.to_string() != key.1 {
+                            return Err(RuntimeError::Corrosion("secret operation ID"));
+                        }
+                        seen_ids.insert(record.id.clone());
+                        values.secrets.push(record);
+                        observed.push(key);
+                    } else {
+                        let grant: LegacySecretGrant = serde_json::from_str(payload)?;
+                        if format!("{}:{}:{}", grant.record, grant.recipient, grant.issuer) != key.1
+                        {
+                            return Err(RuntimeError::Corrosion("secret grant ID"));
+                        }
+                        snapshot.import_grant(&grant)?;
+                        // An old grant may arrive before its value. Leave that
+                        // row intact until the value is seen; never erase the
+                        // only key a newly admitted server might have received.
+                        if seen_ids.contains(&grant.record) {
+                            observed.push(key);
+                        }
+                    }
+                }
+                snapshot.merge(&values)?;
+            }
         }
-        let digest = hex::encode(openssl::sha::sha256(payload.as_bytes()));
-        let bytes = self.post("/v1/transactions", &json!([[
-            "INSERT OR IGNORE INTO tako_shared_records (kind, record_id, digest, payload) VALUES (?, ?, ?, ?)",
-            [kind, id, &digest, &payload]
-        ]]))?;
-        parse_transaction(&bytes, 1)?;
-        let rows = parse_query(&self.post("/v1/queries", &json!([
-            "SELECT kind, record_id, digest, payload FROM tako_shared_records WHERE kind=? AND record_id=? ORDER BY digest LIMIT 2", [kind, id]
-        ]))?)?;
-        if rows.len() != 1
-            || record_key(&rows[0])? != (kind.into(), id.into(), digest)
-            || record_payload(&rows[0])? != payload
-        {
-            return Err(RuntimeError::Conflict("shared record publication"));
+        snapshot.validate()?;
+        Ok((snapshot, observed))
+    }
+
+    fn replace_shared(&self, snapshot: &SharedSnapshot, observed: &[RowKey]) -> RuntimeResult<()> {
+        snapshot.validate()?;
+        let seen: BTreeSet<_> = observed.iter().collect();
+        let mut keep = BTreeSet::new();
+        let mut statements = Vec::new();
+        for record in &snapshot.secrets {
+            let payload = serde_json::to_string(record)?;
+            let digest = hex::encode(openssl::sha::sha256(payload.as_bytes()));
+            let key = ("secret".to_string(), record.id.to_string(), digest);
+            if !seen.contains(&key) {
+                statements.push(json!([
+                    "INSERT OR IGNORE INTO tako_shared_records (kind, record_id, digest, payload) VALUES (?, ?, ?, ?)",
+                    [&key.0, &key.1, &key.2, &payload]
+                ]));
+            }
+            keep.insert(key);
+        }
+        // Insert current values before removing superseded versions, including
+        // during a partial request failure. Delete only rows this read observed:
+        // unseen concurrent candidates are resolved by the next reconciliation.
+        for key in observed {
+            if !keep.contains(key) {
+                statements.push(json!([
+                    "DELETE FROM tako_shared_records WHERE kind=? AND record_id=? AND digest=?",
+                    [&key.0, &key.1, &key.2]
+                ]));
+            }
+        }
+        for batch in statements.chunks(32) {
+            let bytes = self.post("/v1/transactions", &json!(batch))?;
+            parse_transaction(&bytes, batch.len())?;
         }
         Ok(())
     }
@@ -190,7 +189,11 @@ mod tests {
     }
     #[test]
     fn shared_sql_paginates_retries_and_rejects_conflicting_or_corrupt_records() {
-        DB.with_borrow(|db| db.execute_batch(SHARED_SCHEMA).unwrap());
+        DB.with_borrow(|db| {
+            db.execute_batch("DROP TABLE IF EXISTS tako_shared_records")
+                .unwrap();
+            db.execute_batch(SHARED_SCHEMA).unwrap();
+        });
         let network = NetworkId::random().unwrap();
         let id = LocalDeviceKeys::generate()
             .unwrap()
@@ -228,8 +231,16 @@ mod tests {
         let record = last.unwrap();
         SharedStore::append_secret(&mut store, &record).unwrap();
         let snapshot = SharedStore::shared_snapshot(&mut store).unwrap();
-        assert_eq!(snapshot.secrets.len(), 65);
+        assert_eq!(snapshot.secrets.len(), 1);
         assert_eq!(snapshot.latest().unwrap()[&record.address].revision, 65);
+        DB.with_borrow(|db| {
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM tako_shared_records", [], |row| row
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+        });
         let mut conflict = record.clone();
         conflict.revision += 1;
         assert!(SharedStore::append_secret(&mut store, &conflict).is_err());
@@ -249,5 +260,132 @@ mod tests {
                 .unwrap()
         });
         assert!(SharedStore::shared_snapshot(&mut store).is_err());
+    }
+
+    #[test]
+    fn legacy_rows_are_compacted_without_losing_late_arriving_recipient_keys() {
+        DB.with_borrow(|db| {
+            db.execute_batch("DROP TABLE IF EXISTS tako_shared_records")
+                .unwrap();
+            db.execute_batch(SHARED_SCHEMA).unwrap();
+        });
+        let network = NetworkId::random().unwrap();
+        let keys = LocalDeviceKeys::generate().unwrap();
+        let id = keys.device_id(&network, DeviceKind::Server).unwrap();
+        let mut store = CorrosionStore::new(
+            "http://127.0.0.1:9834",
+            super::super::BearerToken::new("fixture-token-not-a-credential".into()).unwrap(),
+            NetworkDescriptor {
+                id: network.clone(),
+                name: "test".parse().unwrap(),
+                initial_admin: id.clone(),
+            },
+        )
+        .unwrap();
+        store.transport = Some(transport);
+        let content_key = crate::sealed::random_content_key().unwrap();
+        let operation = RequestId::random().unwrap();
+        let address = SecretAddress {
+            scope: "app/production".parse().unwrap(),
+            kind: SecretKind::App,
+            name: "TOKEN".into(),
+        };
+        let context = address.context(&network, &operation).unwrap();
+        let wrapped = crate::sealed::SealedValue::seal(
+            &keys.encryption_public_key().unwrap(),
+            &content_key[..],
+            &context,
+        )
+        .unwrap();
+        let record = SecretRecord {
+            id: operation,
+            address,
+            revision: 1,
+            issuer: id.clone(),
+            author: id.clone(),
+            value: Some(
+                crate::sealed::Ciphertext::encrypt(&content_key, b"retained", &context).unwrap(),
+            ),
+            keys: [(id.clone(), wrapped)].into(),
+        };
+        let recipient = LocalDeviceKeys::generate().unwrap();
+        let recipient_id = recipient.device_id(&network, DeviceKind::Laptop).unwrap();
+        let recipient_context = serde_json::to_vec(&(
+            "tako-shared-secret-key-v1",
+            &network,
+            &record.address,
+            &record.id,
+            &recipient_id,
+            hex::encode(openssl::sha::sha256(
+                &serde_json::to_vec(&record.value).unwrap(),
+            )),
+        ))
+        .unwrap();
+        let key = crate::sealed::SealedValue::seal(
+            &recipient.encryption_public_key().unwrap(),
+            &content_key[..],
+            &recipient_context,
+        )
+        .unwrap();
+        let grant =
+            json!({"record": record.id, "issuer": id, "recipient": recipient_id, "key": key});
+        let insert = |kind: &str, id: String, payload: String| {
+            let digest = hex::encode(openssl::sha::sha256(payload.as_bytes()));
+            DB.with_borrow(|db| {
+                db.execute(
+                    "INSERT INTO tako_shared_records VALUES (?,?,?,?)",
+                    rusqlite::params![kind, id, digest, payload],
+                )
+                .unwrap()
+            });
+        };
+        insert(
+            "grant",
+            format!("{}:{}:{}", record.id, recipient_id, id),
+            grant.to_string(),
+        );
+        assert!(store.shared_snapshot().unwrap().secrets.is_empty());
+        DB.with_borrow(|db| {
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM tako_shared_records", [], |row| row
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                1
+            )
+        });
+        insert(
+            "secret",
+            record.id.to_string(),
+            serde_json::to_string(&record).unwrap(),
+        );
+        let state = store.shared_snapshot().unwrap();
+        assert_eq!(
+            &*state.secrets[0]
+                .decrypt(&state, &recipient, &recipient_id)
+                .unwrap()
+                .unwrap(),
+            b"retained"
+        );
+        let previous = serde_json::to_string(&record.value).unwrap();
+        let mut deletion = record;
+        deletion.id = RequestId::random().unwrap();
+        deletion.revision = 2;
+        deletion.value = None;
+        deletion.keys.clear();
+        store.append_secret(&deletion).unwrap();
+        let final_state = store.shared_snapshot().unwrap();
+        assert_eq!(final_state.secrets, [deletion]);
+        DB.with_borrow(|db| {
+            let rows: Vec<String> = db
+                .prepare("SELECT payload FROM tako_shared_records")
+                .unwrap()
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            assert_eq!(rows.len(), 1);
+            assert!(!rows[0].contains(&previous));
+            assert!(!rows[0].contains("ephemeral"));
+        });
     }
 }

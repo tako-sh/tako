@@ -159,8 +159,46 @@ path = "{d}/admin.sock"
         ["SELECT record_id,payload FROM tako_shared_records ORDER BY record_id", []],
     )
     assert all(value in restored for value in expected), restored
+
+    # Replacing an observed value inserts the winner before deleting only the
+    # observed candidates. An unseen concurrent candidate on the other server
+    # must survive until the next reconciliation, including across restart.
+    winner = "current-secret-ciphertext"
+    concurrent = "unseen-concurrent-ciphertext"
+    for i, operation, value in [(0, "winner", winner), (1, "concurrent", concurrent)]:
+        digest = hashlib.sha256(value.encode()).hexdigest()
+        statements = [[
+            "INSERT OR IGNORE INTO tako_shared_records (kind,record_id,digest,payload) VALUES (?,?,?,?)",
+            ["secret", operation, digest, value],
+        ]]
+        if i == 0:
+            for value in expected:
+                statements.append([
+                    "DELETE FROM tako_shared_records WHERE kind=? AND digest=?",
+                    ["secret", hashlib.sha256(value.encode()).hexdigest()],
+                ])
+        result = post(i, "/v1/transactions", statements)
+        assert "error" not in result, result
+    for _ in range(100):
+        result = [post(i, "/v1/queries", ["SELECT payload FROM tako_shared_records", []]) for i in range(2)]
+        if all(winner in response and concurrent in response and
+               not any(value in response for value in expected) for response in result):
+            break
+        time.sleep(0.2)
+    else:
+        raise RuntimeError(result)
+    # Once both versions are observed, retire the losing candidate on one
+    # server and verify the remote SQL view has just the winning payload.
+    post(1, "/v1/transactions", [["DELETE FROM tako_shared_records WHERE record_id=?", ["concurrent"]]])
+    for _ in range(100):
+        result = [post(i, "/v1/queries", ["SELECT payload FROM tako_shared_records", []]) for i in range(2)]
+        if all(winner in response and concurrent not in response for response in result):
+            break
+        time.sleep(0.2)
+    else:
+        raise RuntimeError(result)
     print(
-        "PASS: actual Corrosion accepts all schemas, replicates independent records, preserves conflicting operations, and recovers them after restart"
+        "PASS: actual Corrosion accepts schemas, replicates conflicting operations, recovers after restart, and retires observed ciphertext without losing concurrent candidates"
     )
 except Exception:
     for i in range(len(processes)):

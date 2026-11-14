@@ -1,6 +1,6 @@
 use super::{
-    AgentError, AgentRequest, AgentResponse, CONNECTIONS, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES,
-    QUEUE_SIZE, Result, authority,
+    AgentCommand, AgentError, AgentRequest, AgentResponse, CONNECTIONS, MAX_REQUEST_BYTES,
+    MAX_RESPONSE_BYTES, QUEUE_SIZE, RecoveryRequest, Result, authority,
     controller::{self, Work},
     lifecycle::{self, BrokerOwner, Control},
     services,
@@ -56,7 +56,7 @@ fn check_signed_size(signed: &SignedRequest) -> Result<()> {
     Ok(())
 }
 
-fn service_uid() -> Result<u32> {
+pub(super) fn service_uid() -> Result<u32> {
     let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
     let mut result = std::ptr::null_mut();
     let mut buffer = vec![0u8; 16384];
@@ -107,11 +107,11 @@ pub async fn relay(
     check_signed_size(&signed)?;
     exchange(
         data_dir,
-        AgentRequest {
+        AgentCommand::Rpc(AgentRequest {
             method: method.into(),
             path: path.into(),
             signed,
-        },
+        }),
     )
     .await
 }
@@ -125,20 +125,47 @@ pub async fn recheck_authority(data_dir: &Path, signed: &SignedRequest) -> Resul
     authority::action(signed)?;
     exchange(
         data_dir,
-        AgentRequest {
+        AgentCommand::Rpc(AgentRequest {
             method: authority::METHOD.into(),
             path: authority::PATH.into(),
             signed: signed.clone(),
-        },
+        }),
     )
     .await
 }
 
-async fn exchange(data_dir: &Path, request: AgentRequest) -> Result<AgentResponse> {
-    let config = NodeConfig::load(data_dir)?;
-    let socket = config.socket_path(data_dir);
-    Directory::open(&config.network_dir(data_dir), true)?;
+pub fn recovery_config(data_dir: &Path) -> Result<NodeConfig> {
+    if unsafe { libc::geteuid() } != 0 {
+        return Err(AgentError::Invalid(
+            "administrator recovery requires root; run with sudo",
+        ));
+    }
+    Ok(NodeConfig::load_for_owner(data_dir, service_uid()?)?)
+}
+
+/// Invoked only by the root-only host console command. The listener checks the
+/// kernel peer UID again; service-account and public requests cannot elevate.
+pub async fn recover_admin(
+    data_dir: &Path,
+    grant: tako_network::invitation::CreateInvitation,
+) -> Result<AgentResponse> {
+    if unsafe { libc::geteuid() } != 0 {
+        return Err(AgentError::Invalid("administrator recovery requires root"));
+    }
+    exchange(
+        data_dir,
+        AgentCommand::Recovery(RecoveryRequest {
+            recover_admin: grant,
+        }),
+    )
+    .await
+}
+
+async fn exchange(data_dir: &Path, request: AgentCommand) -> Result<AgentResponse> {
     let uid = service_uid()?;
+    let config = NodeConfig::load_for_owner(data_dir, uid)?;
+    let socket = config.socket_path(data_dir);
+    Directory::open_for_owner(&config.network_dir(data_dir), true, uid)?;
     let meta = std::fs::symlink_metadata(&socket)?;
     if !meta.file_type().is_socket() || meta.uid() != uid || meta.mode() & 0o7777 != 0o600 {
         return Err(AgentError::Invalid("unsafe agent socket"));
@@ -369,15 +396,27 @@ impl Drop for SocketCleanup {
     }
 }
 
+fn validate_command(request: &AgentCommand, peer_uid: u32) -> Result<()> {
+    match request {
+        AgentCommand::Recovery(_) if peer_uid != 0 => {
+            Err(AgentError::Invalid("administrator recovery requires root"))
+        }
+        AgentCommand::Recovery(_) => Ok(()),
+        AgentCommand::Rpc(request) => {
+            if request.method.len() > 16 || request.path.len() > 256 {
+                return Err(AgentError::Invalid("IPC route exceeds limit"));
+            }
+            check_signed_size(&request.signed)
+        }
+    }
+}
+
 async fn serve(mut stream: UnixStream, tx: mpsc::SyncSender<Work>, boot: BootId) -> Result<()> {
     let frame = timeout(FRAME_TIME, read_frame(&mut stream, MAX_REQUEST_BYTES))
         .await
         .map_err(|_| AgentError::Timeout)??;
-    let request: AgentRequest = serde_json::from_slice(&frame)?;
-    if request.method.len() > 16 || request.path.len() > 256 {
-        return Err(AgentError::Invalid("IPC route exceeds limit"));
-    }
-    check_signed_size(&request.signed)?;
+    let request: AgentCommand = serde_json::from_slice(&frame)?;
+    validate_command(&request, stream.peer_cred()?.uid())?;
     let (reply, receiver) = oneshot::channel();
     let response = if tx
         .try_send(Work {
@@ -411,6 +450,48 @@ async fn serve(mut stream: UnixStream, tx: mpsc::SyncSender<Work>, boot: BootId)
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn recovery_requires_root_kernel_credentials_and_is_not_a_public_rpc() {
+        let grant = tako_network::invitation::CreateInvitation {
+            id: tako_network::RequestId::random().unwrap(),
+            token_hash: "ab".repeat(32),
+            expires_at: 3600,
+            member_expires_at: None,
+            permissions: tako_network::Permissions {
+                network_admin: true,
+                server_admin: true,
+                ..Default::default()
+            },
+        };
+        let request = AgentCommand::Recovery(RecoveryRequest {
+            recover_admin: grant,
+        });
+        assert!(validate_command(&request, 0).is_ok());
+        for uid in [1, 1000, 65534] {
+            assert!(validate_command(&request, uid).is_err());
+        }
+        let encoded = serde_json::to_vec(&request).unwrap();
+        let decoded: AgentCommand = serde_json::from_slice(&encoded).unwrap();
+        assert!(matches!(decoded, AgentCommand::Recovery(_)));
+        let (local, _peer) = UnixStream::pair().unwrap();
+        assert_eq!(
+            validate_command(&decoded, local.peer_cred().unwrap().uid()).is_ok(),
+            unsafe { libc::geteuid() } == 0
+        );
+        assert!(
+            relay(
+                Path::new("/does-not-exist"),
+                "POST",
+                "/v1/network/invitations",
+                &encoded
+            )
+            .await
+            .is_err()
+        );
+        let mut forged: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        forged["uid"] = serde_json::json!(0);
+        assert!(serde_json::from_value::<AgentCommand>(forged).is_err());
+    }
     async fn frame(bytes: &[u8], limit: usize) -> Result<Vec<u8>> {
         let (mut writer, mut reader) = tokio::io::duplex(bytes.len() + 1);
         writer.write_all(bytes).await.unwrap();

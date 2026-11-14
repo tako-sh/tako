@@ -1,9 +1,17 @@
+use crate::shared::SecretReceipt;
 fn secret_mutation(
     fixture: &Fixture,
     scope: &str,
     kind: crate::shared::SecretKind,
     name: &str,
     value: Option<&str>,
+) -> crate::shared::SecretMutation {
+    secret_mutation_at_revision(fixture, scope, kind, name, value, 0)
+}
+
+fn secret_mutation_at_revision(
+    fixture: &Fixture, scope: &str, kind: crate::shared::SecretKind,
+    name: &str, value: Option<&str>, observed_revision: u64,
 ) -> crate::shared::SecretMutation {
     use crate::shared::{SecretAddress, SecretContent, SecretMutation};
     let id = RequestId::random().unwrap();
@@ -24,7 +32,8 @@ fn secret_mutation(
         .request
         .encryption_public_key
         .clone();
-    let value = value.map(|value| {
+    let mut mutation = SecretMutation { id, address, value: None, observed_revision, expires_at: 86400 };
+    mutation.value = value.map(|value| {
         let bytes = Zeroizing::new(
             serde_json::to_vec(&SecretContent {
                 value: Zeroizing::new(value.into()),
@@ -35,16 +44,11 @@ fn secret_mutation(
         crate::sealed::SealedValue::seal(
             &public,
             &bytes,
-            &address.context(&fixture.config.network.id, &id).unwrap(),
+            &mutation.context(&fixture.config.network.id).unwrap(),
         )
         .unwrap()
     });
-    SecretMutation {
-        id,
-        address,
-        value,
-        observed_revision: 0,
-    }
+    mutation
 }
 
 #[test]
@@ -120,8 +124,19 @@ fn secret_publication_survives_lost_response_and_retry_cannot_win_again() {
         };
         assert_eq!(retry, original);
         let store = fixture.store.0.borrow();
-        assert_eq!(store.shared.secrets.len(), 2);
-        assert_eq!(store.shared.latest().unwrap()[&first.address], &newer);
+        assert_eq!(store.shared.secrets.len(), 1);
+        assert_eq!(SecretReceipt::from(store.shared.latest().unwrap()[&first.address]), newer);
+        // Completed acknowledgements cannot keep the overwritten ciphertext alive.
+        let payloads: Vec<String> = runtime.db.prepare("SELECT payload FROM shared_publications")
+            .unwrap().query_map([], |row| row.get(0)).unwrap().map(Result::unwrap).collect();
+        assert_eq!(payloads.len(), 2);
+        for payload in payloads {
+            assert!(serde_json::from_str::<serde_json::Value>(&payload).unwrap()["pending"].is_null());
+            assert!(!payload.contains("ciphertext"));
+        }
+        let observed: String = runtime.db.query_row(
+            "SELECT payload FROM shared_observed WHERE kind='secret'", [], |row| row.get(0)).unwrap();
+        assert_eq!(serde_json::from_str::<crate::shared::SecretRecord>(&observed).unwrap().id, newer.id);
     }
 }
 
@@ -166,7 +181,7 @@ fn secret_access_is_scoped_and_new_clients_receive_old_value_keys_via_server() {
         panic!("secrets expected");
     };
     assert_eq!(shared.secrets.len(), 1);
-    assert_eq!(shared.grants.len(), 1);
+    assert!(shared.secrets[0].keys.contains_key(&client.device_id(&fixture.config.network.id, DeviceKind::Laptop).unwrap()));
     let client_id = client
         .device_id(&fixture.config.network.id, DeviceKind::Laptop)
         .unwrap();
@@ -306,14 +321,9 @@ fn client_observation_orders_edits_after_a_revision_missing_on_this_server() {
     use crate::shared::SecretKind;
     let fixture = Fixture::new();
     let mut runtime = fixture.open();
-    let mut mutation = secret_mutation(
-        &fixture,
-        "shop/production",
-        SecretKind::App,
-        "TOKEN",
-        Some("causally-later"),
+    let mutation = secret_mutation_at_revision(
+        &fixture, "shop/production", SecretKind::App, "TOKEN", Some("causally-later"), 40,
     );
-    mutation.observed_revision = 40;
     let RpcResponse::SecretPublished(record) = fixture
         .call(
             &mut runtime,
@@ -373,7 +383,34 @@ fn client_observation_orders_edits_after_a_revision_missing_on_this_server() {
             .is_err()
     );
     assert_eq!(
-        fixture.store.0.borrow().shared.latest().unwrap()[&mutation.address],
-        &newer
+        SecretReceipt::from(fixture.store.0.borrow().shared.latest().unwrap()[&mutation.address]),
+        newer
     );
+}
+
+#[test]
+fn expired_receipts_are_collected_and_deadlines_and_observations_are_authenticated() {
+    let fixture = Fixture::new();
+    let mut runtime = fixture.open();
+    let mutation = secret_mutation(&fixture, "shop/production", crate::shared::SecretKind::App,
+        "TOKEN", Some("value"));
+    for variant in 0..2 {
+        let mut changed = mutation.clone();
+        if variant == 0 { changed.expires_at += 1; } else { changed.observed_revision = 10; }
+        assert!(fixture.call(&mut runtime, &fixture.admin,
+            RpcRequest::PublishSecret(Box::new(changed)), 10).is_err());
+    }
+    assert!(fixture.store.0.borrow().shared.secrets.is_empty());
+    fixture.call(&mut runtime, &fixture.admin,
+        RpcRequest::PublishSecret(Box::new(mutation.clone())), 11).unwrap();
+    runtime.reconcile_secret_grants(mutation.expires_at).unwrap();
+    let count: i64 = runtime.db.query_row("SELECT count(*) FROM shared_publications", [], |row| row.get(0)).unwrap();
+    assert_eq!(count, 0);
+    assert!(fixture.call(&mut runtime, &fixture.admin,
+        RpcRequest::PublishSecret(Box::new(mutation.clone())), mutation.expires_at).is_err());
+    let mut extended = mutation.clone();
+    extended.expires_at += 10;
+    assert!(fixture.call(&mut runtime, &fixture.admin,
+        RpcRequest::PublishSecret(Box::new(extended)), mutation.expires_at).is_err());
+    assert_eq!(fixture.store.0.borrow().shared.secrets.len(), 1);
 }

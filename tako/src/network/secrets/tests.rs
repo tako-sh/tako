@@ -1,10 +1,11 @@
 use super::*;
 use crate::network::tests::{TestHome, fixture};
-use tako_network::shared::SecretRecord;
+use tako_network::shared::{SecretRecord, SharedStore};
 
 fn published(profile: &Profile, name: &str, value: Option<&str>, revision: u64) -> SecretRecord {
     let mutation = SecretMutation {
         observed_revision: 0,
+        expires_at: 86400,
         id: RequestId::random().unwrap(),
         address: SecretAddress {
             scope: "demo/production".parse().unwrap(),
@@ -143,6 +144,7 @@ fn two_worktrees_share_published_values_but_keep_drafts_and_deletions_separate()
         )
         .unwrap();
     }
+    let older = cache.clone();
     let mut first = load_local(&a).unwrap();
     assert_eq!(decrypted(&first, "TOKEN"), "published");
     let path = SecretsStore::default_path(&a);
@@ -179,8 +181,8 @@ fn two_worktrees_share_published_values_but_keep_drafts_and_deletions_separate()
         2,
     ));
     cache
-        .secrets
-        .push(published(&fixture.profile, "DELETE_ME", None, 2));
+        .append_secret(&published(&fixture.profile, "DELETE_ME", None, 2))
+        .unwrap();
     let mut state = read_workspace(&a).unwrap();
     merge_remote(
         &mut state,
@@ -207,11 +209,6 @@ fn two_worktrees_share_published_values_but_keep_drafts_and_deletions_separate()
     assert!(dirty.iter().all(|key| key.name == "TOKEN"));
     // An older server response cannot discard a tombstone already cached.
     cache_merge(&alias, &cache, &fixture.profile).unwrap();
-    let older = SharedSnapshot {
-        network: cache.network.clone(),
-        secrets: cache.secrets[..2].to_vec(),
-        grants: vec![],
-    };
     let merged = cache_merge(&alias, &older, &fixture.profile).unwrap();
     assert!(
         merged

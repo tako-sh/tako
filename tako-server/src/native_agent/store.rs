@@ -97,16 +97,6 @@ impl<S: RegistryStore> RegistryStore for MonotonicStore<S> {
         self.inner.borrow_mut().append_secret(record)
     }
 
-    fn append_secret_grant(
-        &mut self,
-        grant: &tako_network::shared::SecretGrant,
-    ) -> RuntimeResult<()> {
-        if self.stop.load(Ordering::Acquire) {
-            return Err(RuntimeError::Transport);
-        }
-        self.inner.borrow_mut().append_secret_grant(grant)
-    }
-
     fn snapshot(&mut self) -> RuntimeResult<RegistrySnapshot> {
         if self.stop.load(Ordering::Acquire) {
             return Err(RuntimeError::Transport);

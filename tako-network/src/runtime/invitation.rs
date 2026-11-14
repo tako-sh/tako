@@ -6,6 +6,8 @@ use crate::invitation::{ClaimInvitation, CreateInvitation};
 struct StoredInvitation {
     grant: CreateInvitation,
     approver: DeviceId,
+    #[serde(default)]
+    independent_admin: bool,
     claim: Option<crate::EnrollmentRequest>,
 }
 
@@ -17,18 +19,50 @@ impl<S: RegistryStore> ServerRuntime<S> {
         snapshot: RegistrySnapshot,
         now: u64,
     ) -> RuntimeResult<RpcResponse> {
-        grant.permissions.validate()?;
-        let parent = snapshot
-            .effective_members(now)?
-            .get(&approver)
-            .copied()
-            .ok_or(RuntimeError::Denied)?;
-        if !parent.permissions.can_delegate(&grant.permissions)
-            || parent
-                .expires_at
-                .is_some_and(|expiry| grant.member_expires_at.is_none_or(|child| child > expiry))
+        self.store_invitation(grant, approver, false, snapshot, now)
+    }
+
+    /// Host-console recovery only. The caller MUST authenticate the local root
+    /// operator independently of network grants. No public RPC calls this.
+    pub fn create_recovery_invitation(
+        &mut self,
+        grant: CreateInvitation,
+        now: u64,
+    ) -> RuntimeResult<RpcResponse> {
+        self.advance_clock(now)?;
+        let snapshot = self.snapshot()?;
+        self.require_server(&snapshot, now)?;
+        if !grant.permissions.network_admin
+            || !grant.permissions.server_admin
+            || grant.member_expires_at.is_some()
         {
             return Err(RuntimeError::Denied);
+        }
+        self.store_invitation(grant, self.config.server_id.clone(), true, snapshot, now)
+    }
+
+    fn store_invitation(
+        &mut self,
+        grant: CreateInvitation,
+        approver: DeviceId,
+        independent_admin: bool,
+        snapshot: RegistrySnapshot,
+        now: u64,
+    ) -> RuntimeResult<RpcResponse> {
+        grant.permissions.validate()?;
+        if !independent_admin {
+            let parent = snapshot
+                .effective_members(now)?
+                .get(&approver)
+                .copied()
+                .ok_or(RuntimeError::Denied)?;
+            if !parent.permissions.can_delegate(&grant.permissions)
+                || parent.expires_at.is_some_and(|expiry| {
+                    grant.member_expires_at.is_none_or(|child| child > expiry)
+                })
+            {
+                return Err(RuntimeError::Denied);
+            }
         }
         if grant.expires_at <= now
             || grant.expires_at > now + 86400
@@ -65,7 +99,10 @@ impl<S: RegistryStore> ServerRuntime<S> {
             .optional()?;
         if let Some(previous) = previous {
             let previous: StoredInvitation = serde_json::from_str(&previous)?;
-            if previous.grant != grant || previous.approver != approver {
+            if previous.grant != grant
+                || previous.approver != approver
+                || previous.independent_admin != independent_admin
+            {
                 return Err(RuntimeError::Conflict("invitation ID"));
             }
         } else {
@@ -83,6 +120,7 @@ impl<S: RegistryStore> ServerRuntime<S> {
                     serde_json::to_string(&StoredInvitation {
                         grant: grant.clone(),
                         approver,
+                        independent_admin,
                         claim: None
                     })?
                 ],
@@ -138,6 +176,7 @@ impl<S: RegistryStore> ServerRuntime<S> {
             &Entitlement {
                 grant: grant.clone(),
                 approver: invitation.approver.clone(),
+                independent_admin: invitation.independent_admin,
                 candidate: None,
             },
             &snapshot,
@@ -150,6 +189,12 @@ impl<S: RegistryStore> ServerRuntime<S> {
             "UPDATE invitations SET payload=?1 WHERE id=?2",
             params![serde_json::to_string(&invitation)?, claim.id.to_string()],
         )?;
-        self.approve_pending(grant, invitation.approver, snapshot, now)
+        self.approve_pending_with_authority(
+            grant,
+            invitation.approver,
+            invitation.independent_admin,
+            snapshot,
+            now,
+        )
     }
 }
