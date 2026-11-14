@@ -373,7 +373,7 @@ mod tests {
     #[test]
     fn identifies_image_request_paths() {
         assert!(is_image_request_path("/_tako/image"));
-        assert!(!is_image_request_path("/_tako/channels/chat"));
+        assert!(!is_image_request_path("/_tako/channels/sse/chat"));
     }
 
     #[test]

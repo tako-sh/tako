@@ -97,10 +97,10 @@ export default defineChannel("chat", {
 }).$messageTypes<{ msg: { text: string; userId: string } }>();
 ```
 
-Channels use the same public route for live delivery and resume:
+Dedicated connections use the same public route for live delivery and resume:
 
 ```txt
-GET /_tako/channels/chat?roomId=42
+GET /_tako/channels/sse/chat?roomId=42
 ```
 
 That window is for delivery, not product history. A collaborative cursor can be replayed after a laptop wakes. Write canonical chat messages to your app database through an app route before publishing them.
@@ -114,13 +114,13 @@ client: Browser {style.fill: "#9BC4B6"; style.font-size: 16}
 proxy: Tako Proxy {style.fill: "#E88783"; style.font-size: 16}
 app: Your App {style.fill: "#FFF9F4"; style.stroke: "#2F2A44"; style.font-size: 16}
 
-client -> proxy: "GET /_tako/channels/presence?roomId=42"
+client -> proxy: "GET /_tako/channels/ws/presence?roomId=42"
 proxy -> app: "POST /channels/authorize"
 app -> proxy: "ok + subject"
-proxy -> client: "SSE / WebSocket live frames"
+proxy -> client: "WebSocket live frames"
 ```
 
-The Tako proxy owns `/_tako/channels/<name>` directly. Your app does not have to host a separate socket gateway; it answers auth and publishes typed events. When `tako-server` upgrades or your app rolls, clients reconnect through the same public route and the SDK rebuilds the live subscription.
+The Tako proxy owns `/_tako/channels/ws/<name>` (dedicated WebSocket) or `/_tako/channels/sse/<name>` (SSE) directly. Your app does not have to host a separate socket gateway; it answers auth and publishes typed events. When `tako-server` upgrades or your app rolls, clients reconnect through the same public route and the SDK rebuilds the live subscription.
 
 ## What Tako does not do yet
 

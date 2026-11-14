@@ -196,3 +196,5 @@ Local development keeps presence in memory and authorizes connections through th
 ## Verify
 
 Join with two tabs, check connection IDs and trusted subjects, update metadata, and close one tab. Verify that membership in another params scope is hidden and a denied caller cannot join in production. Disconnect a client without a clean close and allow for lease expiry before assuming a stale member is permanent.
+
+Presence memberships use logical subscriptions on the shared WebSocket. Unmounting a page sends an unsubscribe and removes its membership while a layout's other subscriptions remain connected. Use `connection: "dedicated"` when a presence hook needs its own physical socket. Lease expiry still covers interrupted cleanup after crashes or network loss.

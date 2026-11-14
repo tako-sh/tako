@@ -355,7 +355,7 @@ export class Store<T = unknown> {
     try {
       const url = makeURL(
         this.base,
-        `/_tako/channels/${encodeURIComponent(`tako.store:${this.name}`)}`,
+        `/_tako/channels/sse/${encodeURIComponent(`tako.store:${this.name}`)}`,
         this.params,
       );
       const reader = new SseReader(url.toString(), {

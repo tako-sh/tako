@@ -6,7 +6,7 @@ use tako_channels::websocket::is_websocket_auth_payload;
 
 #[test]
 fn cookie_websocket_origin_requires_same_scheme_host_and_port() {
-    let mut request = RequestHeader::build("GET", b"/_tako/channels/chat", None).unwrap();
+    let mut request = RequestHeader::build("GET", b"/_tako/channels/sse/chat", None).unwrap();
     request.insert_header("Host", "app.example:8443").unwrap();
     assert!(!websocket_origin_matches(&request, true));
     for origin in [

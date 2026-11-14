@@ -5,6 +5,7 @@ export function channelIdentity(
   name: string,
   options: {
     transport?: string;
+    connection?: "shared" | "dedicated";
     params?: Record<string, unknown>;
     baseUrl?: string;
     headers?: Record<string, string>;
@@ -16,6 +17,7 @@ export function channelIdentity(
     [
       name,
       options.transport ?? "sse",
+      options.connection,
       options.params ?? {},
       options.baseUrl ?? globalThis.location?.origin,
       Object.fromEntries(new Headers(options.headers)),
@@ -30,7 +32,7 @@ export function channelIdentity(
 }
 
 export function terminalClose(code: number): boolean {
-  return code === 4401 || code === 4403 || code === 4404;
+  return (code >= 4400 && code < 4500 && code !== 4410) || code === 1009;
 }
 
 export function reconnectDelay(attempt: number): number {

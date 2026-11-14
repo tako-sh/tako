@@ -31,13 +31,19 @@ describe("SseReader", () => {
       retryOnDisconnect: true,
       backoffBaseMs: 1,
       jitter: 0,
-      fetch: Object.assign(async (_input: RequestInfo | URL, init?: RequestInit) => {
-        cursors.push(new Headers(init?.headers).get("last-event-id"));
-        requests++;
-        return new Response(requests === 1
-          ? "id: first\ndata: first\n\nid:\nevent: tako.reset\ndata: {}\n\nid: invalid\ndata: stale\n\n"
-          : "id: second\ndata: second\n\n", { headers: { "content-type": "text/event-stream" } });
-      }, { preconnect: fetch.preconnect }),
+      fetch: Object.assign(
+        async (_input: RequestInfo | URL, init?: RequestInit) => {
+          cursors.push(new Headers(init?.headers).get("last-event-id"));
+          requests++;
+          return new Response(
+            requests === 1
+              ? "id: first\ndata: first\n\nid:\nevent: tako.reset\ndata: {}\n\nid: invalid\ndata: stale\n\n"
+              : "id: second\ndata: second\n\n",
+            { headers: { "content-type": "text/event-stream" } },
+          );
+        },
+        { preconnect: fetch.preconnect },
+      ),
       onRecovery: (reason) => recovery.push(reason),
       onMessage: (message) => {
         messages.push(message.data);
@@ -54,7 +60,7 @@ describe("SseReader", () => {
 
   test("dispatches messages assembled from data lines", async () => {
     const messages: string[] = [];
-    const reader = new SseReader("http://x/_tako/channels/chat", {
+    const reader = new SseReader("http://x/_tako/channels/sse/chat", {
       fetch: mockFetchStream(["data: hello\n\n", "data: world\n\n"]),
       headers: { Authorization: "Bearer t" },
       onMessage: (message) => messages.push(message.data),
@@ -68,7 +74,7 @@ describe("SseReader", () => {
 
   test("joins multiple data lines with newlines", async () => {
     const messages: string[] = [];
-    const reader = new SseReader("http://x/_tako/channels/chat", {
+    const reader = new SseReader("http://x/_tako/channels/sse/chat", {
       fetch: mockFetchStream(["event: note\ndata: hello\ndata: world\n\n"]),
       onMessage: (message) => messages.push(`${message.type}:${message.data}`),
     });
@@ -80,7 +86,7 @@ describe("SseReader", () => {
   });
 
   test("tracks lastEventId from id lines", async () => {
-    const reader = new SseReader("http://x/_tako/channels/chat", {
+    const reader = new SseReader("http://x/_tako/channels/sse/chat", {
       fetch: mockFetchStream(["id: 7\ndata: a\n\n"]),
       onMessage: () => {},
     });
@@ -94,7 +100,7 @@ describe("SseReader", () => {
   test("does not retry fetch failures by default", async () => {
     let calls = 0;
     const errors: string[] = [];
-    const reader = new SseReader("http://x/_tako/channels/chat", {
+    const reader = new SseReader("http://x/_tako/channels/sse/chat", {
       fetch: async () => {
         calls++;
         throw new Error("net");
@@ -115,7 +121,7 @@ describe("SseReader", () => {
 
   test("retries with backoff after fetch failure when retryOnDisconnect is enabled", async () => {
     let calls = 0;
-    const reader = new SseReader("http://x/_tako/channels/chat", {
+    const reader = new SseReader("http://x/_tako/channels/sse/chat", {
       fetch: async () => {
         calls++;
         if (calls === 1) {
@@ -141,7 +147,7 @@ describe("SseReader", () => {
   test("sends Last-Event-ID on retry", async () => {
     const seen: Array<string | null> = [];
     let calls = 0;
-    const reader = new SseReader("http://x/_tako/channels/chat", {
+    const reader = new SseReader("http://x/_tako/channels/sse/chat", {
       fetch: async (_url, init) => {
         calls++;
         seen.push(new Headers(init?.headers).get("Last-Event-ID"));
@@ -171,7 +177,7 @@ describe("SseReader", () => {
     const errors: string[] = [];
     const recoveries: SseRecoveryReason[] = [];
     let calls = 0;
-    const reader = new SseReader("http://x/_tako/channels/chat", {
+    const reader = new SseReader("http://x/_tako/channels/sse/chat", {
       fetch: async () => {
         calls++;
         return new Response("data: ok\n\n", {
@@ -204,7 +210,7 @@ describe("SseReader", () => {
       const events: string[] = [];
       const errors: Error[] = [];
       const recoveries: SseRecoveryReason[] = [];
-      const reader = new SseReader("http://x/_tako/channels/chat", {
+      const reader = new SseReader("http://x/_tako/channels/sse/chat", {
         headers: { [header]: "initial", Authorization: "Bearer t" },
         fetch: async (_url, init) => {
           const headers = new Headers(init?.headers);
@@ -256,7 +262,7 @@ describe("SseReader", () => {
 
   test("clears an explicit initial cursor when the first request returns 410", async () => {
     const seen: Array<string | null> = [];
-    const reader = new SseReader("http://x/_tako/channels/chat", {
+    const reader = new SseReader("http://x/_tako/channels/sse/chat", {
       headers: { "Last-Event-ID": "header-cursor" },
       fetch: async (_url, init) => {
         seen.push(new Headers(init?.headers).get("last-event-id"));
@@ -283,7 +289,7 @@ describe("SseReader", () => {
     const errors: Error[] = [];
     const events: Error[] = [];
     const recoveries: SseRecoveryReason[] = [];
-    const reader = new SseReader("http://x/_tako/channels/chat", {
+    const reader = new SseReader("http://x/_tako/channels/sse/chat", {
       fetch: async () => {
         calls++;
         return new Response(null, { status });
@@ -313,7 +319,7 @@ describe("SseReader", () => {
     let calls = 0;
     const errors: Error[] = [];
     const recoveries: SseRecoveryReason[] = [];
-    const reader = new SseReader("http://x/_tako/channels/chat", {
+    const reader = new SseReader("http://x/_tako/channels/sse/chat", {
       fetch: async () => {
         switch (++calls) {
           case 1:
@@ -352,7 +358,7 @@ describe("SseReader", () => {
 
   test("does not fetch with an already aborted signal", async () => {
     let calls = 0;
-    const reader = new SseReader("http://x/_tako/channels/chat", {
+    const reader = new SseReader("http://x/_tako/channels/sse/chat", {
       signal: AbortSignal.abort(),
       fetch: async () => {
         calls++;
@@ -371,7 +377,7 @@ describe("SseReader", () => {
     const controller = new AbortController();
     let calls = 0;
     const errors: Error[] = [];
-    const reader = new SseReader("http://x/_tako/channels/chat", {
+    const reader = new SseReader("http://x/_tako/channels/sse/chat", {
       signal: controller.signal,
       fetch: async () => {
         calls++;
@@ -399,7 +405,7 @@ describe("SseReader", () => {
     const errors: Error[] = [];
     const recoveries: SseRecoveryReason[] = [];
     let fetchSignal: AbortSignal | null | undefined;
-    const reader = new SseReader("http://x/_tako/channels/chat", {
+    const reader = new SseReader("http://x/_tako/channels/sse/chat", {
       signal: controller.signal,
       fetch: async (_url, init) => {
         fetchSignal = init?.signal;

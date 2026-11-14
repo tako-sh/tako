@@ -65,7 +65,7 @@ formats = ["webp"]
 | Next server           | `.next/tako-entry.mjs`             | Starts the standalone server or `next start`                  |
 | Public/static assets  | `public/` and Next build output    | Serves matching files directly after route match              |
 | Image optimizer       | `/_tako/image`                     | Validates sources, transforms with libvips, caches variants   |
-| Durable channels      | `<app_root>/channels/*.ts`         | Serves WebSocket/SSE endpoints under `/_tako/channels/<name>` |
+| Durable channels      | `<app_root>/channels/*.ts`         | Serves WebSocket/SSE endpoints under `/_tako/channels/ws/<name>` (dedicated WebSocket) or `/_tako/channels/sse/<name>` (SSE) |
 | Durable workflows     | `<app_root>/workflows/*.ts`        | Runs jobs in supervised worker processes with persisted state |
 | Routes, TLS, rollouts | `[envs.production]` in `tako.toml` | Maps hostnames, manages certificates, and rolls new instances |
 
@@ -115,7 +115,7 @@ export default defineChannel("orders", {
 }>();
 ```
 
-Channels are served at `/_tako/channels/orders`. The proxy owns the WebSocket/SSE connection, stores published messages in a bounded replay log, and lets reconnecting clients catch up from a retained cursor. Use your product database for canonical history; use channels for live delivery and short reconnect replay.
+Channels are served at `/_tako/channels/sse/orders`. The proxy owns the SSE connection, stores published messages in a bounded replay log, and lets reconnecting clients catch up from a retained cursor. Use your product database for canonical history; use channels for live delivery and short reconnect replay.
 
 Your Next route can now use both:
 
@@ -163,7 +163,7 @@ browser -> proxy: "HTTPS"
 proxy -> next: "SSR / API"
 next -> jobs: "enqueue"
 next -> channels: "publish"
-browser -> proxy: "/_tako/channels/orders"
+browser -> proxy: "/_tako/channels/sse/orders"
 browser -> proxy: "/_tako/image"
 proxy -> channels: "connect + replay"
 proxy -> images: "validate + transform"

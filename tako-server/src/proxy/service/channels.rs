@@ -31,6 +31,41 @@ use ws::ChannelWebSocketAuth;
 mod drain;
 mod ws;
 
+struct SharedAppResolver {
+    app_name: String,
+    lb: Arc<crate::lb::LoadBalancer>,
+    cold_start: Arc<crate::scaling::ColdStartManager>,
+    draining: Arc<std::sync::atomic::AtomicBool>,
+    spawn_gate: Arc<tokio::sync::RwLock<()>>,
+}
+
+#[async_trait::async_trait]
+impl tako_channels::shared::AppResolver for SharedAppResolver {
+    async fn resolve(&self) -> std::result::Result<AppAuthorizer, ChannelError> {
+        let BackendResolution::Ready { backend, .. } = super::backend::resolve_app_backend(
+            &self.lb,
+            &self.cold_start,
+            &self.draining,
+            &self.spawn_gate,
+            &self.app_name,
+        )
+        .await
+        else {
+            return Err(ChannelError::AuthUnavailable);
+        };
+        let instance = backend.instance();
+        Ok(AppAuthorizer {
+            endpoint: instance
+                .endpoint()
+                .ok_or(ChannelError::AuthUnavailable)?
+                .to_string(),
+            internal_host: crate::instances::internal_app_host_for_app_id(&self.app_name),
+            internal_token_header: "x-tako-internal-token",
+            internal_token: instance.internal_token().to_owned(),
+        })
+    }
+}
+
 impl TakoProxy {
     async fn write_json_response(
         &self,
@@ -107,11 +142,16 @@ impl TakoProxy {
         let route = match store_name.as_ref() {
             Some(name) => Ok(Some(tako_channels::ChannelRoute {
                 channel: format!("{STORE_CHANNEL_PREFIX}{name}"),
+                operation: ChannelOperation::Subscribe,
             })),
             None => parse_channel_route(path),
         };
         let route = match route {
             Ok(Some(route)) => route,
+            Ok(None) if path == tako_channels::shared::PATH => tako_channels::ChannelRoute {
+                channel: String::new(),
+                operation: ChannelOperation::Connect,
+            },
             Ok(None) => {
                 return Ok(false);
             }
@@ -128,9 +168,10 @@ impl TakoProxy {
         }
         ctx.observation
             .set_handler(if is_store { "store" } else { "channel" }, "pending");
-        if is_store
-            && (session.req_header().method.as_str() != "GET"
-                || session.as_downstream().is_upgrade_req())
+        if session.req_header().method.as_str() != "GET"
+            || (is_store
+                && (session.as_downstream().is_upgrade_req()
+                    || route.operation == ChannelOperation::Connect))
         {
             return self
                 .write_json_response(
@@ -138,6 +179,17 @@ impl TakoProxy {
                     405,
                     &serde_json::json!({"error":"Method not allowed"}),
                 )
+                .await;
+        }
+        let websocket = route.operation == ChannelOperation::Connect;
+        if websocket != session.as_downstream().is_upgrade_req() {
+            let (status, message) = if websocket {
+                (426, "WebSocket upgrade required")
+            } else {
+                (400, "SSE endpoint does not accept WebSocket upgrades")
+            };
+            return self
+                .write_json_response(session, status, &serde_json::json!({"error":message}))
                 .await;
         }
 
@@ -179,11 +231,35 @@ impl TakoProxy {
 
         let instance = backend.instance();
 
-        let operation = if session.as_downstream().is_upgrade_req() {
-            ChannelOperation::Connect
-        } else {
-            ChannelOperation::Subscribe
-        };
+        if path == tako_channels::shared::PATH {
+            let app = Arc::new(SharedAppResolver {
+                app_name: app_name.to_owned(),
+                lb: self.lb.clone(),
+                cold_start: self.cold_start.clone(),
+                draining: self.draining.clone(),
+                spawn_gate: self.spawn_gate.clone(),
+            });
+            let store = match self.channel_store_for_app(app_name).await {
+                Ok(store) => store,
+                Err(error) => {
+                    return self
+                        .write_channel_error(session, ChannelError::Storage(error.to_string()))
+                        .await;
+                }
+            };
+            drop(backend);
+            ctx.observation.set_handler_result("shared-websocket");
+            return tako_channels::shared::serve(
+                session,
+                app,
+                store.store().clone(),
+                store,
+                ctx.is_https,
+            )
+            .await;
+        }
+
+        let operation = route.operation;
 
         let meta = match self
             .channel_meta_for_app(app_name, instance, &route.channel)

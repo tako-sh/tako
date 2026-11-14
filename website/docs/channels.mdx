@@ -251,8 +251,8 @@ import { Channel, type ChannelMessage } from "tako.sh/client";
 const events = new Channel("site-events", "ws");
 const connection = events.connect({ authorization: token });
 
-(connection.raw as WebSocket).addEventListener("message", (event) => {
-  const message = JSON.parse(event.data) as ChannelMessage;
+(connection.raw as EventTarget).addEventListener("message", (event) => {
+  const message = JSON.parse((event as MessageEvent<string>).data) as ChannelMessage;
   console.log(message.type, message.data);
 });
 ```
@@ -285,6 +285,31 @@ function LiveStatus({ token }: { token: string }) {
   );
 }
 ```
+
+## Shared WebSocket Ownership
+
+WebSocket channels and Presence share one physical WebSocket per origin, credential set, and transport configuration within each browser tab. Every logical subscription has its own authorization, params, replay cursor, and lifetime. SSE subscriptions and Store notifications remain independent HTTP streams.
+
+The shared WebSocket endpoint is `/_tako/channels/ws`; topics and params travel in subscription messages. Dedicated WebSockets use `/_tako/channels/ws/<name>`, while each SSE subscription uses `/_tako/channels/sse/<name>`. Store notifications also use the SSE namespace. SSE URLs reject WebSocket upgrades, and WS URLs require them.
+
+The page owns its logical subscription. Call the socket handle's `close()` or abort its `signal` when leaving; React hooks do this on unmount. Unsubscribing removes that page's presence even while a layout's other subscriptions stay connected. Presence leases cover lost cleanup after crashes or suspended tabs. Membership does not prove that a user is actively looking at a page.
+
+`connect().raw` is a logical `EventTarget` with `open`, `message`, `error`, and `close` events. Use the handle's `send()` and `close()` methods. The physical connection closes when its last subscription is released. A rejected or terminally closed subscription leaves its siblings connected. A physical connection failure affects all subscriptions; React hooks reconnect independently with their own cursors. Lower-level `connect()` callers own reconnection.
+
+Use `connection: "dedicated"` on `connect()`, `useChannel({ transport: "ws" })`, or `usePresence()` for a separate WebSocket. `configureChannels({ connection: "dedicated" })` changes the WebSocket default. Calling `configureChannels` closes existing pooled connections and starts a new pool with the new configuration. These settings do not change SSE.
+
+Cookies belong to the physical WebSocket handshake. After login, logout, or switching accounts, call `resetChannelConnections()` from `tako.sh/client` after the session response updates cookies and before opening new subscriptions. Browsers hide HttpOnly cookie changes from JavaScript, so this reset must be part of the application's auth flow. It closes all shared subscriptions with code `1012`; React hooks reconnect with fresh cookies, while low-level `connect()` callers must reconnect. Also clear any application state belonging to the previous user. If your auth integration cannot perform this reset, use dedicated connections so each new subscription gets a fresh handshake.
+
+```ts
+import { resetChannelConnections } from "tako.sh/client";
+
+// After your application's successful login/logout response sets cookies:
+resetChannelConnections();
+```
+
+For header auth, `configureChannels({ token: () => currentToken })` supplies a token to each subscription regardless of its declared `auth.headerName`. A value supplied explicitly for that declared header takes precedence. Reset shared connections when the authenticated session changes, including when an existing token resolver starts returning another user's token.
+
+A shared connection permits 32 subscriptions and 64 KiB client command frames, including their envelope. Complete delivered events may contain up to 1 MiB of serialized UTF-8. Larger events close only that subscription with code `1009`; stream AI output as incremental application events. The transport splits eligible events into small fragments, delivers only complete events, and discards unfinished fragments on disconnect. Replay therefore resumes after the last complete event. Client publishing throws if the outgoing buffer would exceed 1 MiB. The server bounds its output queue and stops stalled writes after 10 seconds. No timer-based batching is enabled.
 
 ## Recover After Disconnects
 

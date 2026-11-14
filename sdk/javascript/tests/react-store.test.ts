@@ -22,7 +22,7 @@ class Backend {
   readonly streams: Array<{ send(type: string): void; close(): void }> = [];
   readonly fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input));
-    if (url.pathname.startsWith("/_tako/channels/")) {
+    if (url.pathname.startsWith("/_tako/channels/sse/")) {
       let closed = false;
       let controller!: ReadableStreamDefaultController<Uint8Array>;
       const stream = new ReadableStream<Uint8Array>({

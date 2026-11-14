@@ -45,7 +45,7 @@ export default defineChannel("presence", {
 }).$messageTypes<PresenceMessages>();
 ```
 
-TypeBox matters here because it gives Tako both sides of the shape. Per the [TypeBox docs](https://github.com/sinclairzx81/typebox), a schema is a JSON Schema object that can also infer a TypeScript type. Tako uses that JSON Schema to validate `/_tako/channels/presence?roomId=lobby` before asking your app to authorize anything, while TypeScript uses the same declaration to type `params.roomId` in your callback.
+TypeBox matters here because it gives Tako both sides of the shape. Per the [TypeBox docs](https://github.com/sinclairzx81/typebox), a schema is a JSON Schema object that can also infer a TypeScript type. Tako uses that JSON Schema to validate `/_tako/channels/ws/presence?roomId=lobby` before asking your app to authorize anything, while TypeScript uses the same declaration to type `params.roomId` in your callback.
 
 The default transport is receive-only SSE. With `transport: "ws"`, the proxy stores and broadcasts client `{ type, data }` frames as sent. Handle application mutations through your app's HTTP endpoints. See the [Channels reference](/docs/channels/) for the current contract.
 
@@ -75,7 +75,7 @@ app: "Your app auth callback" {
   style.stroke: "#2F2A44"
 }
 
-browser -> proxy: "GET /_tako/channels/presence?roomId=lobby\nUpgrade: websocket"
+browser -> proxy: "GET /_tako/channels/ws/presence?roomId=lobby\nUpgrade: websocket"
 browser -> proxy: "first frame: tako.auth"
 proxy -> app: "POST /channels/authorize"
 app -> proxy: "ok + subject"

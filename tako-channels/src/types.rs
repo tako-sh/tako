@@ -25,6 +25,7 @@ impl ChannelOperation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelRoute {
     pub channel: String,
+    pub operation: ChannelOperation,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

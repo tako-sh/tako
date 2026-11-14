@@ -106,12 +106,17 @@ async fn serve(proxy: Arc<TakoProxy>) -> std::net::SocketAddr {
 
 /// Send a request and read the whole response; a closed stream ends it long
 /// before the 3 s connection lifetime.
-async fn request(addr: std::net::SocketAddr, query: &str, headers: &str) -> Vec<u8> {
+async fn request(
+    addr: std::net::SocketAddr,
+    transport: &str,
+    query: &str,
+    headers: &str,
+) -> Vec<u8> {
     let mut client = TcpStream::connect(addr).await.unwrap();
     client
         .write_all(
             format!(
-                "GET /_tako/channels/feed?{query} HTTP/1.1\r\nHost: feed.example\r\n{headers}Connection: close\r\n\r\n"
+                "GET /_tako/channels/{transport}/feed?{query} HTTP/1.1\r\nHost: feed.example\r\n{headers}Connection: close\r\n\r\n"
             )
             .as_bytes(),
         )
@@ -126,7 +131,7 @@ async fn request(addr: std::net::SocketAddr, query: &str, headers: &str) -> Vec<
 }
 
 async fn sse(addr: std::net::SocketAddr, query: &str, headers: &str) -> String {
-    String::from_utf8(request(addr, query, headers).await).unwrap()
+    String::from_utf8(request(addr, "sse", query, headers).await).unwrap()
 }
 
 fn data(response: &str) -> Vec<Value> {
@@ -224,7 +229,7 @@ async fn closed_streams_end_sse_and_websocket_readers_with_the_terminal_signal()
     assert!(invalid.starts_with("HTTP/1.1 400"), "{invalid}");
 
     // WebSocket readers get the same messages and a stream-closed close frame.
-    let frames = websocket_frames(&request(addr, "id=1&from=start", UPGRADE).await);
+    let frames = websocket_frames(&request(addr, "ws", "id=1&from=start", UPGRADE).await);
     assert_eq!(frames.len(), 3, "{frames:?}");
     for ((opcode, payload), expected) in frames.iter().zip([&first, &second]) {
         assert_eq!(*opcode, 0x1);
@@ -239,7 +244,7 @@ async fn closed_streams_end_sse_and_websocket_readers_with_the_terminal_signal()
         "id=1".to_owned(),
         format!("id=1&from=start&last_message_id={}", second.id),
     ] {
-        let frames = websocket_frames(&request(addr, &query, UPGRADE).await);
+        let frames = websocket_frames(&request(addr, "ws", &query, UPGRADE).await);
         assert_eq!(frames, vec![(0x8, close.clone())]);
     }
 
@@ -247,7 +252,7 @@ async fn closed_streams_end_sse_and_websocket_readers_with_the_terminal_signal()
     let mut client = TcpStream::connect(addr).await.unwrap();
     client
         .write_all(
-            b"GET /_tako/channels/feed?id=2&from=start HTTP/1.1\r\nHost: feed.example\r\n\r\n",
+            b"GET /_tako/channels/sse/feed?id=2&from=start HTTP/1.1\r\nHost: feed.example\r\n\r\n",
         )
         .await
         .unwrap();

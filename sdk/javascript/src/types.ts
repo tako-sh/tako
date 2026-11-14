@@ -188,9 +188,13 @@ export type SseRecoveryReason = "reconnecting" | "history-expired";
 
 /** Options for {@link import("./channels").Channel.connect}. */
 export interface ChannelConnectOptions {
+  /** Shared WebSocket by default; dedicated opens a separate channel socket. */
+  connection?: "shared" | "dedicated";
+  /** Cancel only this subscription. */
+  signal?: AbortSignal;
   /** Override the base URL. Required outside the browser. */
   baseUrl?: string;
-  /** Extra headers for auth; `Authorization` is sent in the first WebSocket auth frame. */
+  /** Authorization headers sent with the logical subscription or dedicated auth frame. */
   headers?: Record<string, string>;
   /** Bearer token shorthand for header auth. Omit for public or cookie-auth channels. */
   authorization?: string;
@@ -233,7 +237,7 @@ export interface ChannelSubscription {
 export interface ChannelSocket {
   /** Always `"ws"` — sockets are WebSockets. */
   transport: "ws";
-  /** The underlying `WebSocket` (or factory result). Escape hatch for advanced callers. */
+  /** The logical EventTarget socket, or physical socket in dedicated mode. */
   raw: unknown;
   /** Close the socket with an optional code/reason. */
   close: (code?: number, reason?: string) => void;

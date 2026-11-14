@@ -76,7 +76,7 @@ lax -> pg: "insert run + steps"
 
 ## Why channels need shared replay
 
-Tako channels are durable WebSocket/SSE endpoints under `/_tako/channels/<name>`. A publish is inserted before delivery, and reconnecting clients can replay retained messages from a bounded window. The default replay window is 10 minutes, which is meant for browser reloads, laptop sleep, short network drops, and rolling deploys.
+Tako channels are durable WebSocket/SSE endpoints under `/_tako/channels/ws/<name>` (dedicated WebSocket) or `/_tako/channels/sse/<name>` (SSE). A publish is inserted before delivery, and reconnecting clients can replay retained messages from a bounded window. The default replay window is 10 minutes, which is meant for browser reloads, laptop sleep, short network drops, and rolling deploys.
 
 On one server, SQLite is perfect for that. It is local, fast, and private to the app. On multiple servers, local SQLite would split the replay log into islands. A subscriber connected to one server would only see messages that landed on that same server.
 
