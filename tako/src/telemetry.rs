@@ -32,6 +32,9 @@ pub(crate) struct TelemetryState {
 }
 
 pub fn maybe_send(command: &str, ci_flag: bool, version: &str) {
+    if crate::output::is_dry_run() {
+        return;
+    }
     let Some(token) = compiled_token() else {
         return;
     };

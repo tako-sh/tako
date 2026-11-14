@@ -1,6 +1,34 @@
 use crate::support::*;
 
 #[test]
+fn dry_run_rejects_unsupported_mutations_before_dispatch() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+    for command in [
+        &["uninstall"][..],
+        &["releases", "rollback", "v1"],
+        &["network", "server", "reload", "edge"],
+        &["secrets", "set", "TOKEN"],
+        &["generate"],
+    ] {
+        let mut args = vec!["--json", "--dry-run"];
+        args.extend_from_slice(command);
+        let output = run_tako_with_env(&args, project, project, project);
+        assert!(!output.status.success(), "{args:?}");
+        let error: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(
+            error["error"]["message"]
+                .as_str()
+                .unwrap()
+                .ends_with(" does not support --dry-run"),
+            "{args:?}: {}",
+            stderr_str(&output)
+        );
+    }
+    assert_eq!(fs::read_dir(project).unwrap().count(), 0);
+}
+
+#[test]
 fn ci_flag_disables_ansi_colors() {
     let temp = TempDir::new().unwrap();
     let project_dir = temp.path();

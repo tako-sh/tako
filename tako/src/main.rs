@@ -20,7 +20,7 @@ pub mod dev;
 pub mod ssh;
 pub mod validation;
 
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::prelude::*;
 
@@ -40,7 +40,8 @@ fn main() {
         network::ssh_tunnel::proxy_main();
     }
     // Parse CLI arguments early so we can configure logging/output.
-    let cli = Cli::parse();
+    let matches = Cli::command().get_matches();
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
 
     crate::output::set_verbose(cli.verbose);
     crate::output::set_json(cli.json);
@@ -94,7 +95,7 @@ fn main() {
     }
 
     // Run the command
-    let result = cli.run();
+    let result = cli.run(&matches);
     crate::telemetry::flush();
     if let Err(e) = result {
         crate::output::restore_cursor();
