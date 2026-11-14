@@ -148,6 +148,10 @@ fn rolling_update_deploy_updates_version_and_serves_new_code() {
     fs::create_dir_all(&app_dir_v2).unwrap();
 
     write_bun_app(&app_dir_v1, "v1");
+    for (dir, body) in [(&app_dir_v1, "old asset"), (&app_dir_v2, "new asset")] {
+        fs::create_dir_all(dir.join("public")).unwrap();
+        fs::write(dir.join("public/build.txt"), body).unwrap();
+    }
 
     let host = "test.localhost";
 
@@ -179,16 +183,44 @@ fn rolling_update_deploy_updates_version_and_serves_new_code() {
         last_v1_body
     );
 
-    // Deploy v2 (rolling update).
+    let new_host = "next-test.localhost";
     write_bun_app(&app_dir_v2, "v2");
+    // Hold the candidate immediately before fd-4 readiness so both kinds of
+    // public request are exercised while the replacement is definitely staged.
+    let entry = app_dir_v2.join("src/index.ts");
+    let source = fs::read_to_string(&entry).unwrap();
+    fs::write(
+        &entry,
+        source.replace(
+            "signalReady(server.port);",
+            r#"
+const { existsSync, writeFileSync } = await import("node:fs");
+const dir = process.env.TAKO_DATA_DIR;
+writeFileSync(dir + "/candidate-started", "");
+while (!existsSync(dir + "/allow-ready")) await Bun.sleep(20);
+signalReady(server.port);
+"#,
+        ),
+    )
+    .unwrap();
 
-    let resp = server.send_command(&serde_json::json!({
-        "command": "deploy",
-        "app": app_id,
-        "version": "v2",
-        "path": app_dir_v2.to_string_lossy(),
-        "routes": [host],
-    }));
+    let resp = std::thread::scope(|scope| {
+        let candidate = scope.spawn(|| {
+            server.send_command(&serde_json::json!({
+                "command": "deploy", "app": app_id, "version": "v2",
+                "path": app_dir_v2.to_string_lossy(), "routes": [new_host],
+            }))
+        });
+        let app_data = server.data_dir().join("apps").join(app_id).join("data/app");
+        assert!(wait_for(Duration::from_secs(15), || app_data
+            .join("candidate-started")
+            .exists()));
+        assert_eq!(server.https_get(host, "/"), "v1");
+        assert_eq!(server.https_get(host, "/build.txt"), "old asset");
+        assert_eq!(server.https_status(new_host, "/build.txt").unwrap(), 404);
+        fs::write(app_data.join("allow-ready"), "").unwrap();
+        candidate.join().unwrap()
+    });
     assert_eq!(
         resp.get("status").and_then(|s| s.as_str()),
         Some("ok"),
@@ -199,7 +231,7 @@ fn rolling_update_deploy_updates_version_and_serves_new_code() {
     let mut last_v2_body = String::new();
     assert!(
         wait_for(Duration::from_secs(90), || {
-            let body = server.https_get(host, "/");
+            let body = server.https_get(new_host, "/");
             if body.contains("v2") {
                 return true;
             }
@@ -209,6 +241,9 @@ fn rolling_update_deploy_updates_version_and_serves_new_code() {
         "timed out waiting for v2 response, last body: {}",
         last_v2_body
     );
+
+    assert_eq!(server.https_get(new_host, "/build.txt"), "new asset");
+    assert_eq!(server.https_status(host, "/").unwrap(), 404);
 
     // Eventually we should converge back to 1 healthy instance, and status should report v2.
     let mut last_status = serde_json::json!({"status": "no-response"});

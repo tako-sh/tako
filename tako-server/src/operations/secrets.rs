@@ -89,7 +89,7 @@ impl crate::ServerState {
                 let updater = RollingUpdater::new(self.app_manager.spawner(), rolling_config);
                 let target =
                     target_new_instances_for_build(config.min_instances, app.get_instances().len());
-                match updater.update(&app, config, target).await {
+                match updater.update(&app, &config, target, || Ok(())).await {
                     Ok(result) if result.success => {
                         app.set_state(AppState::Running);
                         app.reset_recovery();

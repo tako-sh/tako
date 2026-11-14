@@ -2,6 +2,288 @@ use super::*;
 use crate::isolation::fixture::TestDataDir as TempDir;
 
 #[tokio::test]
+async fn native_deploy_keeps_previous_release_on_failed_commit_and_restart() {
+    if !python3_ok() || !python3_can_bind_loopback_tcp() {
+        return;
+    }
+    async fn served_build(backend: &crate::lb::Backend) -> String {
+        reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .get(format!("http://{}/", backend.endpoint().unwrap()))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .text()
+            .await
+            .unwrap()
+    }
+    let temp = TempDir::new().unwrap();
+    let certs = Arc::new(CertManager::new(CertManagerConfig {
+        cert_dir: temp.path().join("certs"),
+        ..Default::default()
+    }));
+    let open_server = || {
+        ServerState::new(
+            temp.path().into(),
+            certs.clone(),
+            None,
+            empty_challenge_tokens(),
+        )
+        .unwrap()
+    };
+    let state = open_server();
+    let app_id = "commit-test/production";
+    let release = |version: &str| crate::release::app_release_root(temp.path(), app_id, version);
+    let deploy = |version: &str| Command::Deploy {
+        app: app_id.into(),
+        version: version.into(),
+        path: release(version).display().to_string(),
+        routes: vec![format!("{version}.localhost")],
+        source_ip: Default::default(),
+        secrets: Some(HashMap::from([("secret".into(), version.into())])),
+        runtime_credentials: Some(HashMap::from([("key".into(), version.into())])),
+        storages: None,
+        ssl: Default::default(),
+        backup: None,
+        force: false,
+    };
+    for version in ["v1", "v2"] {
+        let path = release(version);
+        std::fs::create_dir_all(path.join("public")).unwrap();
+        std::fs::write(path.join("public/build.txt"), version).unwrap();
+        std::fs::write(
+            path.join("app.py"),
+            r#"import json, os
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+with os.fdopen(3) as bootstrap:
+    token = json.load(bootstrap)["token"]
+build = (Path(__file__).parent / "public" / "build.txt").read_bytes()
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("X-Tako-Internal-Token", token)
+        self.end_headers()
+        self.wfile.write(build)
+    def log_message(self, *args):
+        pass
+server = HTTPServer(("127.0.0.1", 0), Handler)
+with os.fdopen(4, "w") as ready:
+    print(server.server_port, file=ready)
+server.serve_forever()
+"#,
+        )
+        .unwrap();
+        write_release_manifest(&path, "go", "app.py", &["python3", "{main}"], None, 300);
+    }
+
+    // Abort at the last binding write, after SQLite has updated the app, its
+    // routes and other encrypted bindings inside the same transaction.
+    let db = tako_sqlite::open_local(&temp.path().join("state.sqlite")).unwrap();
+    db.execute_batch(
+        "CREATE TRIGGER reject_first BEFORE INSERT ON app_runtime_credentials
+        BEGIN SELECT RAISE(ABORT, 'first commit failed'); END;",
+    )
+    .unwrap();
+    let first = state.handle_command(deploy("v1")).await;
+    assert!(
+        first
+            .error_message()
+            .unwrap()
+            .contains("first commit failed")
+    );
+    assert!(state.app_manager.get_app(app_id).is_none());
+    assert!(state.routes.read().routes_for_app(app_id).is_empty());
+    assert!(state.state_store.load_apps().unwrap().is_empty());
+    assert!(state.state_store.get_secrets(app_id).unwrap().is_empty());
+    db.execute_batch("DROP TRIGGER reject_first").unwrap();
+
+    let baseline = state.handle_command(deploy("v1")).await;
+    assert!(baseline.is_ok(), "{baseline:?}");
+    let app = state.app_manager.get_app(app_id).unwrap();
+    let backend = state.load_balancer.get_backend(app_id).unwrap();
+    let predecessor = app.get_instance(backend.instance_id()).unwrap();
+    assert_eq!(served_build(&backend).await, "v1");
+
+    // A declared but incomplete worker must reject the new release even when
+    // the HTTP executable is healthy. The active supervisor and metadata stay put.
+    let manifest = release("v2").join("app.json");
+    let original = std::fs::read_to_string(&manifest).unwrap();
+    let mut metadata: Value = serde_json::from_str(&original).unwrap();
+    metadata["workflow_worker_main"] = serde_json::json!("missing-worker");
+    std::fs::write(&manifest, metadata.to_string()).unwrap();
+    let workflow_error = state.handle_command(deploy("v2")).await;
+    assert!(
+        workflow_error
+            .error_message()
+            .unwrap()
+            .contains("Go worker binary not found")
+    );
+    assert_eq!(app.version(), "v1");
+    std::fs::write(manifest, original).unwrap();
+
+    db.execute_batch(
+        "CREATE TRIGGER reject_replacement BEFORE UPDATE ON app_runtime_credentials
+        BEGIN SELECT RAISE(ABORT, 'replacement commit failed'); END;",
+    )
+    .unwrap();
+    let check_previous = async {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !app.get_instances().iter().any(|instance| {
+                instance.build_version() == "v2" && instance.state() == InstanceState::Healthy
+            }) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("candidate reached readiness before the stability window");
+        assert_eq!(state.routes.read().routes_for_app(app_id), ["v1.localhost"]);
+        assert_eq!(
+            std::fs::read_to_string(app.config.read().path.join("public/build.txt")).unwrap(),
+            "v1"
+        );
+        let active = state.load_balancer.get_backend(app_id).unwrap();
+        assert_eq!(active.instance_id(), predecessor.id);
+        assert_eq!(served_build(&active).await, "v1");
+        assert_eq!(
+            state.state_store.get_secrets(app_id).unwrap()["secret"],
+            "v1"
+        );
+    };
+    let (failed, ()) = tokio::join!(state.handle_command(deploy("v2")), check_previous);
+    assert!(
+        failed
+            .error_message()
+            .unwrap()
+            .contains("replacement commit failed")
+    );
+    assert_eq!(app.get_instances().len(), 1);
+    assert_eq!(predecessor.state(), InstanceState::Healthy);
+    assert!(predecessor.is_alive().await);
+    assert_eq!(
+        state
+            .load_balancer
+            .get_backend(app_id)
+            .unwrap()
+            .instance_id(),
+        predecessor.id
+    );
+    assert_eq!(app.version(), "v1");
+    assert_eq!(
+        state.state_store.get_runtime_credentials(app_id).unwrap()["key"],
+        "v1"
+    );
+
+    assert_eq!(
+        served_build(&state.load_balancer.get_backend(app_id).unwrap()).await,
+        "v1"
+    );
+    state.app_manager.shutdown_all().await;
+    drop(state);
+    let restarted = open_server();
+    restarted.restore_apps_from_state_store(true).await.unwrap();
+    let restored = restarted.app_manager.get_app(app_id).unwrap();
+    assert_eq!(restored.version(), "v1");
+    assert_eq!(restored.config.read().secrets["secret"], "v1");
+    assert_eq!(
+        restarted.routes.read().routes_for_app(app_id),
+        ["v1.localhost"]
+    );
+    let backend = restarted.load_balancer.get_backend(app_id).unwrap();
+    let process = restored.get_instance(backend.instance_id()).unwrap();
+    assert_eq!(process.build_version(), "v1");
+    assert_eq!(served_build(&backend).await, "v1");
+
+    // Once scaled to zero, a request can cold-start v1 while v2 is preparing.
+    // The late v1 process must be included in the final cutover and drain.
+    db.execute_batch("DROP TRIGGER reject_replacement").unwrap();
+    restarted.app_manager.stop_app(app_id).await.unwrap();
+    restored.config.write().min_instances = 0;
+    restored.set_state(AppState::Idle);
+    let candidate = release("v2").join("app.py");
+    let source = std::fs::read_to_string(&candidate).unwrap();
+    std::fs::write(
+        &candidate,
+        source.replace(
+            "with os.fdopen(4",
+            r#"
+import time
+gate = Path(os.environ["TAKO_DATA_DIR"]) / "allow-ready"
+while not gate.exists():
+    time.sleep(0.01)
+with os.fdopen(4"#,
+        ),
+    )
+    .unwrap();
+    let request_during_deploy = async {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !restored
+                .get_instances()
+                .iter()
+                .any(|i| i.build_version() == "v2")
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let mut events = restarted.app_manager.take_event_receiver().unwrap();
+        let request = crate::proxy::resolve_app_backend(
+            &restarted.load_balancer,
+            &restarted.cold_start,
+            &restarted.drain_requested,
+            &restarted.spawn_gate,
+            app_id,
+        );
+        let completion = async {
+            while let Some(event) = events.recv().await {
+                let ready = matches!(&event, crate::instances::InstanceEvent::Ready { instance_id, .. } if
+                    restored.get_instance(instance_id).is_some_and(|i| i.build_version() == "v1"));
+                handle_instance_event(&restarted, event).await;
+                if ready {
+                    break;
+                }
+            }
+        };
+        let (resolution, ()) = tokio::join!(request, completion);
+        let crate::proxy::BackendResolution::Ready { backend, .. } = resolution else {
+            panic!("idle predecessor should serve requests during deployment");
+        };
+        assert_eq!(served_build(&backend).await, "v1");
+        std::fs::write(
+            crate::release::app_runtime_data_paths(temp.path(), app_id)
+                .app
+                .join("allow-ready"),
+            "",
+        )
+        .unwrap();
+    };
+    let (deployed, ()) = tokio::join!(
+        restarted.handle_command(deploy("v2")),
+        request_during_deploy
+    );
+    assert!(deployed.is_ok(), "{deployed:?}");
+    assert_eq!(restored.get_instances().len(), 1);
+    assert_eq!(restored.get_instances()[0].build_version(), "v2");
+    assert_eq!(
+        served_build(&restarted.load_balancer.get_backend(app_id).unwrap()).await,
+        "v2"
+    );
+    restarted.app_manager.shutdown_all().await;
+}
+
+#[test]
+fn deploy_rejects_duplicate_routes() {
+    let error =
+        validate_deploy_routes(&["app.localhost".into(), "app.localhost".into()]).unwrap_err();
+    assert!(error.contains("duplicate route 'app.localhost'"));
+}
+
+#[tokio::test]
 async fn native_deploy_must_stop_previous_compose_even_without_http_instances() {
     let temp = TempDir::new().unwrap();
     let state = ServerState::new(

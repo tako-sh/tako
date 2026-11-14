@@ -84,6 +84,14 @@ impl AppWorkflow {
     }
 }
 
+/// A release's validated workflow backend and supervisor. Dispatch starts at cutover.
+pub struct PreparedWorkflow {
+    db: Arc<RunsDb>,
+    limiter: Arc<InFlightLimiter>,
+    supervisor: Arc<WorkerSupervisor>,
+    retention_ms: Option<i64>,
+}
+
 pub struct WorkflowManager {
     data_dir: PathBuf,
     apps: Arc<RwLock<HashMap<String, AppWorkflow>>>,
@@ -368,6 +376,24 @@ impl WorkflowManager {
             WorkflowStoreConfig::Sqlite { path } => path.clone(),
             WorkflowStoreConfig::Postgres { .. } => self.workflows_db_path(app),
         };
+        let prepared = self
+            .prepare(store_config, retention_ms, spec_fn(db_path))
+            .await?;
+        if let Err(error) = prepared.supervisor.start().await {
+            prepared.supervisor.shutdown(Duration::ZERO).await;
+            return Err(error.into());
+        }
+        self.install(app, prepared);
+        Ok(())
+    }
+
+    /// Prepare a candidate against its own backend without replacing the active runtime.
+    pub async fn prepare(
+        &self,
+        store_config: WorkflowStoreConfig,
+        retention_ms: Option<i64>,
+        spec: WorkerSpec,
+    ) -> Result<PreparedWorkflow, WorkflowManagerError> {
         // The synchronous Postgres client cannot connect on a runtime thread.
         let (db, in_flight) = crate::blocking::run(move || {
             RunsDb::open_config(store_config).map(|db| {
@@ -378,7 +404,6 @@ impl WorkflowManager {
         .await??;
         let db = Arc::new(db);
 
-        let spec = spec_fn(db_path);
         let limiter = Arc::new(InFlightLimiter::new(spec.concurrency));
         // Rehydrate: any rows still `status='running'` from a previous
         // process count against the live budget until their leases expire
@@ -387,8 +412,21 @@ impl WorkflowManager {
             limiter.rehydrate(snapshot);
         }
         let supervisor = Arc::new(WorkerSupervisor::new(spec));
-        supervisor.start().await?;
+        Ok(PreparedWorkflow {
+            db,
+            limiter,
+            supervisor,
+            retention_ms,
+        })
+    }
 
+    pub fn install(&self, app: &str, prepared: PreparedWorkflow) {
+        let PreparedWorkflow {
+            db,
+            limiter,
+            supervisor,
+            retention_ms,
+        } = prepared;
         let sup_for_dispatcher = supervisor.clone();
         let db_for_dispatcher = db.clone();
         let dispatcher = WorkDispatcher::spawn(
@@ -465,7 +503,6 @@ impl WorkflowManager {
                 task,
             });
         }
-        Ok(())
     }
 
     /// Stop the worker but keep the DB around (app is paused).
@@ -543,17 +580,18 @@ impl WorkflowManager {
     /// New enqueues/claims stop immediately; running workers receive SIGTERM,
     /// drain, and can still write lifecycle updates through the retained
     /// handlers until they exit.
-    pub async fn retire(&self, app: &str) {
-        let Some(mut entry) = self.apps.write().remove(app) else {
+    pub fn retire(&self, app: &str) {
+        let mut active = self.apps.write();
+        let Some(mut entry) = active.remove(app) else {
             return;
         };
 
         entry.accepting_new_work.store(false, Ordering::SeqCst);
-        if let Some(cron) = entry.cron.take() {
-            cron.shutdown().await;
+        if let Some(cron) = entry.cron.as_mut() {
+            cron.request_shutdown();
         }
-        if let Some(dispatcher) = entry.dispatcher.take() {
-            dispatcher.shutdown().await;
+        if let Some(dispatcher) = entry.dispatcher.as_mut() {
+            dispatcher.request_shutdown();
         }
 
         let handlers = entry.handlers.clone();
@@ -567,16 +605,18 @@ impl WorkflowManager {
             accepting_new_work,
         };
 
-        self.apps.write().insert(app.to_string(), draining_entry);
+        active.insert(app.to_string(), draining_entry);
+        drop(active);
 
         let apps = self.apps.clone();
         let app = app.to_string();
         tokio::spawn(async move {
-            entry.supervisor.shutdown_gracefully().await;
+            let supervisor = entry.supervisor.clone();
+            entry.drain_existing_work().await;
             let mut apps = apps.write();
             if apps
                 .get(&app)
-                .is_some_and(|current| Arc::ptr_eq(&current.supervisor, &entry.supervisor))
+                .is_some_and(|current| Arc::ptr_eq(&current.supervisor, &supervisor))
             {
                 apps.remove(&app);
             }
@@ -1270,7 +1310,7 @@ mod tests {
         let replaced = m.retired.lock().pop().unwrap();
         replaced.task.await.unwrap();
 
-        m.retire(&app).await;
+        m.retire(&app);
         tokio::time::timeout(Duration::from_secs(2), async {
             while m.has(&app) {
                 tokio::time::sleep(Duration::from_millis(5)).await;
