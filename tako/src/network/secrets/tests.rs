@@ -45,6 +45,85 @@ fn decrypted(values: &SecretsStore, name: &str) -> String {
 }
 
 #[test]
+fn first_uncached_edit_binds_only_its_environment_and_rechecks_the_target_on_save() {
+    let home = TestHome::new();
+    let project = home.directory.path().join("checkout");
+    let network = NetworkId::random().unwrap();
+    let config = |app: &str, network: &NetworkId| {
+        TakoToml::parse(&format!(
+            "name='{app}'\n\
+             [envs.production]\nnetwork='{network}'\nroute='prod.example.test'\n\
+             [envs.staging]\nnetwork='{network}'\nroute='staging.example.test'\n"
+        ))
+        .unwrap()
+    };
+    let original = config("first", &network);
+    let alternate = config("second", &network);
+    let mut values = SecretsStore::load_with_config(&project, &original).unwrap();
+    assert!(read_workspace(&project).unwrap().environments.is_empty());
+    values.ensure_env_key_id("production").unwrap();
+    let key = crate::crypto::EncryptionKey::generate().unwrap();
+    values
+        .set(
+            "production",
+            "TOKEN",
+            crate::crypto::encrypt("draft", &key).unwrap(),
+        )
+        .unwrap();
+    save_local(&project, &values).unwrap();
+
+    let state = read_workspace(&project).unwrap();
+    assert_eq!(state.environments.len(), 1);
+    assert_eq!(
+        state.environments["production"].scope.to_string(),
+        "first/production"
+    );
+    assert_eq!(state.environments["production"].network, network);
+    for changed in [&alternate, &config("first", &NetworkId::random().unwrap())] {
+        let error =
+            SecretsStore::load_for_environment(&project, changed, "production").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("bound to another app or network")
+        );
+    }
+
+    // Another command can bind an empty environment by reading a newly available cache.
+    // Its values still match our editor's baseline, so checking values alone would miss it.
+    let mut editor = SecretsStore::load_for_environment(&project, &original, "staging").unwrap();
+    let mut state = read_workspace(&project).unwrap();
+    bind(
+        &mut state,
+        "staging",
+        &"second/staging".parse().unwrap(),
+        &network,
+    )
+    .unwrap();
+    write_workspace(&project, &state).unwrap();
+    editor.ensure_env_key_id("staging").unwrap();
+    editor
+        .set(
+            "staging",
+            "TOKEN",
+            crate::crypto::encrypt("draft", &key).unwrap(),
+        )
+        .unwrap();
+    let error = save_local(&project, &editor).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("bound to another app or network")
+    );
+    assert!(
+        !read_workspace(&project)
+            .unwrap()
+            .values
+            .contains("staging", "TOKEN")
+    );
+}
+
+#[test]
 fn selected_environment_cache_and_type_generation_leave_other_environments_untouched() {
     let home = TestHome::new();
     let healthy = fixture();
