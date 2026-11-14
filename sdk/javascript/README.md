@@ -279,6 +279,7 @@ export default defineChannel("chat", {
 - Pass `from: "start"` to `subscribe()`, `connect()`, or `useChannel` to replay every retained message before live ones; an explicit cursor wins, and reconnects resume by cursor.
 - When server code calls `close()` on a stream, readers get every earlier message, then `onClose` once, and stop without reconnecting; `useChannel` reports `closed: true` and `status: "closed"`, and WebSocket `send()` throws after the close (code 4200).
 - Browser clients can pass `authorization: token` to send `Authorization: Bearer <token>` on SSE channels or the equivalent WebSocket auth frame. Use `headers.Authorization` for custom authorization values, and omit both options for public or cookie-auth channels.
+- After login, logout, or account switching updates cookies, call `resetChannelConnections()` from `tako.sh/client` before opening new shared subscriptions. HttpOnly cookie changes are invisible to the SDK; resetting forces a fresh handshake and closes existing shared subscriptions with retryable code `1012`. React hooks reconnect; low-level callers own reconnection. `configureChannels` also resets active pools. Use dedicated connections when the auth flow cannot reset shared connections.
 
 Publish by importing the channel wherever you need it:
 

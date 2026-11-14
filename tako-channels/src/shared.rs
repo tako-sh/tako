@@ -51,6 +51,8 @@ enum Command {
         #[serde(default)]
         headers: HashMap<String, String>,
         #[serde(default)]
+        token: Option<String>,
+        #[serde(default)]
         cursor: Option<String>,
         #[serde(default)]
         from: Option<String>,
@@ -250,6 +252,7 @@ pub async fn serve(
                             channel,
                             query,
                             headers,
+                            token,
                             cursor,
                             from,
                         } => {
@@ -278,6 +281,7 @@ pub async fn serve(
                                 channel,
                                 query,
                                 headers,
+                                token,
                                 cursor,
                                 from,
                             };

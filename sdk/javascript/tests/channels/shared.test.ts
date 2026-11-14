@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Channel } from "../../src/channels";
-import { configureChannels, resetChannelsConfig } from "../../src/channels/configure";
+import {
+  configureChannels,
+  resetChannelConnections,
+  resetChannelsConfig,
+} from "../../src/channels/configure";
 
 type Frame = {
   type: string;
@@ -10,6 +14,7 @@ type Frame = {
   cursor?: string;
   from?: string;
   headers?: Record<string, string>;
+  token?: string;
   data?: unknown;
 };
 class Socket extends EventTarget {
@@ -109,6 +114,77 @@ test("origin and credentials are separate connection boundaries", () => {
   connect("c", { authorization: "one" });
   connect("d", { authorization: "one", baseUrl: "https://another.test" });
   expect(Socket.all).toHaveLength(3);
+});
+
+test("session reset closes layout subscriptions and new joins perform a fresh handshake", async () => {
+  let session = "anonymous";
+  const handshakes: string[] = [];
+  class SessionSocket extends Socket {
+    constructor(url: string) {
+      super(url);
+      handshakes.push(session);
+    }
+  }
+  configureChannels({ websocket: SessionSocket as unknown as typeof WebSocket });
+  const layout = connect("public-layout");
+  const original = Socket.all[0]!;
+  original.open();
+  await tick();
+  original.ready(original.sent[0]!.id);
+  let closeCode: number | undefined;
+  (layout.raw as EventTarget).addEventListener(
+    "close",
+    (event) => {
+      closeCode = (event as CloseEvent).code;
+      // Reconnecting from a close listener must use the new pool generation.
+      connect("public-layout");
+    },
+    { once: true },
+  );
+  session = "alice"; // Login response has updated the browser's HttpOnly cookie.
+  resetChannelConnections();
+  const alice = connect("private-page");
+  expect(original.closed).toBe(true);
+  expect(closeCode).toBe(1012);
+  expect(handshakes).toEqual(["anonymous", "alice"]);
+  session = "bob";
+  resetChannelConnections();
+  connect("private-page");
+  expect((alice.raw as { readyState: number }).readyState).toBe(3);
+  expect(handshakes).toEqual(["anonymous", "alice", "bob"]);
+});
+
+test("changing configuration cancels pending authentication from the old pool", async () => {
+  let resolve!: (token: string) => void;
+  configureChannels({
+    token: () =>
+      new Promise((done) => {
+        resolve = done;
+      }),
+  });
+  const old = connect("private");
+  const socket = Socket.all[0]!;
+  socket.open();
+  configureChannels({ token: () => "new-session" });
+  connect("private");
+  const replacement = Socket.all[1]!;
+  replacement.open();
+  resolve("old-session");
+  await tick();
+  expect(socket.closed).toBe(true);
+  expect((old.raw as { readyState: number }).readyState).toBe(3);
+  expect(socket.sent).toEqual([]);
+  expect(replacement.sent[0]?.token).toBe("new-session");
+});
+
+test("configured tokens preserve declared-header mapping and explicit header precedence", async () => {
+  configureChannels({ token: () => "configured-token" });
+  connect("custom-header", { headers: { "X-API-Key": "explicit-key" } });
+  const socket = Socket.all[0]!;
+  socket.open();
+  await tick();
+  expect(socket.sent[0]?.token).toBe("configured-token");
+  expect(socket.sent[0]?.headers).toEqual({ "x-api-key": "explicit-key" });
 });
 
 test("the shared WebSocket default preserves independent SSE subscriptions", () => {

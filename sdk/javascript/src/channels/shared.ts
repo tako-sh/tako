@@ -1,4 +1,4 @@
-import { getChannelsConfig } from "./configure";
+import { getChannelsConfig, onChannelConnectionsReset } from "./configure";
 
 const MAX_FRAME_BYTES = 64 * 1024;
 const MAX_MESSAGE_BYTES = 1024 * 1024;
@@ -187,10 +187,9 @@ class SharedConnection {
   private async join(subscription: SharedChannel): Promise<void> {
     try {
       const headers = new Headers(subscription.options.headers);
-      if (!headers.has("authorization")) {
-        const token = await this.config.resolveOptionalToken();
-        if (token) headers.set("authorization", token);
-      }
+      // Like tako.auth on a dedicated socket, the token is independent of the
+      // definition's header name. Explicit declared headers take precedence.
+      const token = headers.get("authorization") ?? (await this.config.resolveOptionalToken());
       if (this.disposed || !this.subscriptions.has(subscription.id) || this.socket.readyState !== 1)
         return;
       this.send({
@@ -199,6 +198,7 @@ class SharedConnection {
         channel: subscription.channel,
         query: subscription.query,
         headers: Object.fromEntries(headers),
+        ...(token && { token }),
         ...(subscription.options.cursor !== undefined && { cursor: subscription.options.cursor }),
         ...(subscription.options.from !== undefined && { from: subscription.options.from }),
       });
@@ -241,7 +241,7 @@ class SharedConnection {
     }
   }
 
-  private shutdown(code: number, reason: string): void {
+  shutdown(code: number, reason: string): void {
     if (this.disposed) return;
     this.disposed = true;
     clearTimeout(this.idle);
@@ -250,6 +250,12 @@ class SharedConnection {
     this.socket.close();
   }
 }
+
+onChannelConnectionsReset(() => {
+  // Snapshot before dispatching close events: callers may reconnect immediately.
+  for (const connection of [...connections.values()])
+    connection.shutdown(1012, "Channel credentials or configuration changed");
+});
 
 /** Pool by origin, credentials, configuration generation and transport factory. */
 export function openSharedChannel(url: URL, options: SharedOptions = {}): SharedChannel {

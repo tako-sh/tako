@@ -11,6 +11,7 @@ pub(super) struct Spec {
     pub channel: String,
     pub query: String,
     pub headers: HashMap<String, String>,
+    pub token: Option<String>,
     pub cursor: Option<String>,
     pub from: Option<String>,
 }
@@ -191,10 +192,12 @@ async fn authorize(
         && !["cookie", "origin", "host"]
             .iter()
             .any(|reserved| name.eq_ignore_ascii_case(reserved))
-        && let Some((_, value)) = spec
+        && let Some(value) = spec
             .headers
             .iter()
             .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value)
+            .or(spec.token.as_ref())
     {
         request
             .insert_header(name.clone(), value.clone())

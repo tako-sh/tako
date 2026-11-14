@@ -32,6 +32,25 @@ function makeDefaultConfig(): ChannelsConfig {
 
 let current: ChannelsConfig | null = null;
 let generation = 0;
+const connectionResetListeners = new Set<() => void>();
+
+/** @internal Register a transport's connection cleanup. */
+export function onChannelConnectionsReset(listener: () => void): void {
+  connectionResetListeners.add(listener);
+}
+
+/**
+ * Close shared WebSockets after login, logout, or an account/session change.
+ *
+ * Call this after updating session cookies and before opening new subscriptions.
+ * Browsers do not expose HttpOnly cookie changes to the SDK. React hooks reconnect
+ * with a fresh handshake; low-level connect() callers must reconnect themselves.
+ * Dedicated WebSockets and SSE subscriptions remain owned by their callers.
+ */
+export function resetChannelConnections(): void {
+  generation++;
+  for (const listener of connectionResetListeners) listener();
+}
 
 function getCurrent(): ChannelsConfig {
   current ??= makeDefaultConfig();
@@ -42,7 +61,8 @@ function getCurrent(): ChannelsConfig {
  * Override browser/runtime dependencies used by channel clients.
  *
  * Use this outside a normal browser environment, or to provide an auth token
- * resolver for header-auth channels.
+ * resolver for header-auth channels. Reconfiguration closes existing shared
+ * WebSockets so subscriptions cannot retain the previous credentials.
  *
  * @param input - Partial channel client configuration.
  * @defaultValue input.fetch = globalThis.fetch
@@ -60,11 +80,11 @@ export function configureChannels(
     websocket: typeof WebSocket;
   }>,
 ): void {
-  generation++;
   current = {
     ...getCurrent(),
     ...input,
   };
+  resetChannelConnections();
 }
 
 /**
@@ -73,8 +93,8 @@ export function configureChannels(
  * @internal Used by tests.
  */
 export function resetChannelsConfig(): void {
-  generation++;
   current = null;
+  resetChannelConnections();
 }
 
 /**

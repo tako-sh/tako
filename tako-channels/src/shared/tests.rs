@@ -54,12 +54,13 @@ impl Fixture {
                                     {"channel":"announcements", "paramsSchema":schema, "auth":false},
                                     {"channel":"chat", "paramsSchema":schema, "auth":false, "transport":"ws"},
                                     {"channel":"private", "paramsSchema":schema, "auth":{"headerName":"Authorization"}, "transport":"ws"},
+                                    {"channel":"api-key", "paramsSchema":schema, "auth":{"headerName":"X-API-Key"}, "transport":"ws"},
                                     {"channel":"tako.presence:room", "paramsSchema":schema, "auth":false, "transport":"ws"},
                                     {"channel":"tako.store:items", "paramsSchema":{"type":"object"}, "auth":false}
                                 ])
                             } else {
                                 let request: Value = serde_json::from_slice(&body).unwrap();
-                                if request["channel"] == "private" && request["header"]["value"] != "valid" {
+                                if matches!(request["channel"].as_str(), Some("private" | "api-key")) && request["header"]["value"] != "valid" {
                                     json!({"ok":false})
                                 } else {
                                     let mut auth = json!({"ok":true,"subject":"trusted", "maxConnectionLifetimeMs":60000});
@@ -132,6 +133,28 @@ impl Fixture {
             )
             .unwrap()
     }
+}
+
+#[tokio::test]
+async fn tokens_use_the_declared_auth_header_and_explicit_headers_win() {
+    let fixture = Fixture::start().await;
+    let mut client = fixture.connect().await;
+    let mut request = subscribe("token", "api-key", "a");
+    request["token"] = "valid".into();
+    send(&mut client, request).await;
+    assert_eq!(frame(&mut client).await["type"], "subscribed");
+
+    let mut request = subscribe("explicit", "api-key", "b");
+    request["token"] = "invalid".into();
+    request["headers"] = json!({"x-api-key":"valid"});
+    send(&mut client, request).await;
+    assert_eq!(frame(&mut client).await["type"], "subscribed");
+
+    let mut request = subscribe("denied", "api-key", "c");
+    request["token"] = "valid".into();
+    request["headers"] = json!({"X-API-Key":"invalid"});
+    send(&mut client, request).await;
+    assert_eq!(frame(&mut client).await["code"], 4403);
 }
 
 async fn send(client: &mut Client, value: Value) {

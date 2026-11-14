@@ -7,14 +7,22 @@ const [server, route] = process.argv.slice(2);
 const baseUrl = `http://${server}:8080`;
 const routing = { Host: route!, "X-Forwarded-Proto": "https", Forwarded: "proto=https" };
 const sockets: WebSocket[] = [];
+const trace: unknown[] = [];
 class RoutedSocket extends WebSocket {
   constructor(url: string | URL) {
     super(url.toString(), { headers: routing });
     sockets.push(this);
+    this.addEventListener("message", (event) => {
+      trace.push(JSON.parse(event.data));
+      if (trace.length > 20) trace.shift();
+    });
+    this.addEventListener("close", (event) =>
+      trace.push({ close: event.code, reason: event.reason }),
+    );
   }
 }
-configureChannels({ websocket: RoutedSocket });
-const options = { baseUrl, authorization: "e2e" };
+configureChannels({ websocket: RoutedSocket, token: () => "Bearer e2e" });
+const options = { baseUrl };
 const events: Array<{ data: { message: string } }> = [];
 const layout = new Channel("shared", "ws").connect({
   ...options,
@@ -36,19 +44,20 @@ function presence() {
 }
 const observer = presence();
 const page = presence();
-async function until(check: () => boolean) {
+async function until(stage: string, check: () => boolean) {
   const deadline = Date.now() + 15_000;
   while (!check()) {
-    if (Date.now() >= deadline) throw new Error("Shared channel fixture timed out");
+    if (Date.now() >= deadline)
+      throw new Error(`Shared channel fixture timed out: ${stage}; ${JSON.stringify(trace)}`);
     await Bun.sleep(20);
   }
 }
 try {
-  await until(() => memberships.length === 2);
+  await until("both presence members joined", () => memberships.length === 2);
   assert.equal(sockets.length, 1, "WebSocket channels and presence must share a socket");
   assert.ok(memberships.every((member) => member.subject === "e2e-user"));
   page.close();
-  await until(() => memberships.length === 1);
+  await until("page presence removed", () => memberships.length === 1);
   assert.equal(
     sockets[0]?.readyState,
     WebSocket.OPEN,
@@ -56,7 +65,9 @@ try {
   );
   const message = `shared-${crypto.randomUUID()}`;
   layout.send({ type: "message", data: { message } });
-  await until(() => events.some((event) => event.data.message === message));
+  await until("layout receives its publication", () =>
+    events.some((event) => event.data.message === message),
+  );
   assert.equal(sockets.length, 1);
   console.log(`Shared WebSocket and page-presence checks passed on ${server}`);
 } finally {
@@ -64,4 +75,4 @@ try {
   observer.close();
   layout.close();
 }
-await until(() => sockets[0]?.readyState === WebSocket.CLOSED);
+await until("last subscriber releases socket", () => sockets[0]?.readyState === WebSocket.CLOSED);
