@@ -819,6 +819,18 @@ fn scoped_compose_deploy_and_rollback_cannot_claim_routes_or_change_source_ip_tr
             assert!(authorize_command(&state, &admin, Some(&scope), command).is_ok());
         }
     }
+    // The handler activates the deployment's environment, so a manifest that
+    // claims another environment cannot hide a production policy change.
+    std::fs::write(release.join("app.json"), serde_json::json!({
+        "protocol_version":0, "idle_timeout":300, "environment":"staging", "release_kind":"compose",
+        "compose":{"file":"compose.yaml", "services":{"web":{"envs":{
+            "staging":{"route":"demo.example"},
+            "production":{"route":"demo.example","source_ip":"trusted-proxy"}
+        }}}}
+    }).to_string()).unwrap();
+    for command in [&rollback, &deploy] {
+        assert!(authorize_command(&state, &scoped(), Some(&scope), command).is_err());
+    }
     // A native rollback also cannot recover historical routes that an admin
     // has since removed from this deployment's provisioned set.
     state

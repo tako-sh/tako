@@ -47,6 +47,7 @@ impl crate::ServerState {
             if !previous.stopped && app.state() == AppState::Running {
                 return Response::ok(serde_json::json!({"status":"started", "app":app_name}));
             }
+            let previous_state = app.state();
             app.update_config(config.clone());
             self.cold_start.reset(app_name);
             let result = async {
@@ -78,10 +79,16 @@ impl crate::ServerState {
             }
             .await;
             if let Err(error) = result {
-                self.workflows
-                    .stop(app_name, Duration::from_secs(120))
-                    .await;
-                let _ = self.app_manager.stop_app_locked(&app).await;
+                if previous.stopped {
+                    self.workflows
+                        .stop(app_name, Duration::from_secs(120))
+                        .await;
+                    let _ = self.app_manager.stop_app_locked(&app).await;
+                } else {
+                    // The operator never stopped this app: keep what was
+                    // already serving and leave cold starts and recovery on.
+                    app.set_state(previous_state);
+                }
                 app.update_config(previous);
                 app.set_last_error(format!("Start failed: {error}"));
                 return Response::error(format!("Start failed: {error}"));

@@ -307,8 +307,8 @@ impl crate::ServerState {
     }
 
     pub(crate) async fn rollback_app(&self, app_name: &str, version: &str) -> Response {
-        let _app = match self.app_manager.get_app(app_name) {
-            Some(app) => app,
+        let environment = match self.app_manager.get_app(app_name) {
+            Some(app) => app.config.read().environment.clone(),
             None => return Response::error(format!("App not found: {}", app_name)),
         };
 
@@ -335,7 +335,7 @@ impl crate::ServerState {
         // Compose routes are part of the immutable service configuration. A
         // rollback restores those bindings, including a Docker-only group.
         let routes = match &target.compose {
-            Some(compose) => compose.routes(&target.environment),
+            Some(compose) => compose.routes(&environment),
             None => historical
                 .as_ref()
                 .map(|routing| routing.routes.clone())

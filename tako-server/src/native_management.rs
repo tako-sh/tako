@@ -461,13 +461,15 @@ fn authorize_command(
             let routes = manifest
                 .compose
                 .as_ref()
-                .map(|compose| compose.routes(&manifest.environment))
+                // The handler activates the deployment's environment, never
+                // the one an uploaded manifest claims.
+                .map(|compose| compose.routes(&stored.config.environment))
                 .unwrap_or(native_routes);
             let target = crate::state_store::ReleaseRouting::new(
                 routes,
                 source_ip,
                 manifest.compose.as_ref(),
-                &manifest.environment,
+                &stored.config.environment,
             );
             if target.source_ips != current.source_ips {
                 return Err("Scoped deployment must preserve provisioned routes and source-IP policies; a server administrator must provision changes.".into());

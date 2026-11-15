@@ -94,6 +94,56 @@ async fn operator_stop_survives_scale_deploy_and_server_restart() {
 }
 
 #[tokio::test]
+async fn failed_start_of_an_idle_app_keeps_cold_starts_enabled() {
+    let temp = TempDir::new().unwrap();
+    let state = ServerState::new(
+        temp.path().into(),
+        Arc::new(CertManager::new(CertManagerConfig {
+            cert_dir: temp.path().join("certs"),
+            ..Default::default()
+        })),
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let release = crate::release::app_release_root(temp.path(), "idle/production", "v1");
+    std::fs::create_dir_all(&release).unwrap();
+    write_release_manifest(
+        &release,
+        "node",
+        "index.js",
+        &["/bin/sh", "-c", "exit 99"],
+        Some("true"),
+        300,
+    );
+    let app = state.app_manager.register_app(AppConfig {
+        name: "idle".into(),
+        environment: "production".into(),
+        version: "v1".into(),
+        command: vec!["/bin/sh".into(), "-c".into(), "exit 99".into()],
+        path: release,
+        min_instances: 0,
+        ..Default::default()
+    });
+    app.set_state(AppState::Idle);
+    assert!(matches!(
+        state
+            .handle_command(Command::Start {
+                app: app.name(),
+                service: None
+            })
+            .await,
+        Response::Error { .. }
+    ));
+    assert!(!app.config.read().stopped);
+    assert_eq!(
+        app.state(),
+        AppState::Idle,
+        "a failed start must not stop an app the operator never stopped"
+    );
+}
+
+#[tokio::test]
 async fn deleting_a_compose_child_preserves_the_group_and_files() {
     let temp = TempDir::new().unwrap();
     let state = ServerState::new(
