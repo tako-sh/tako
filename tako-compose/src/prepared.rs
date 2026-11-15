@@ -354,10 +354,7 @@ mod tests {
             release,
             ComposeConfig {
                 file: "compose.yaml".into(),
-                service: "web".into(),
-                port: 8080,
-                health_path: "/".into(),
-                health_host: None,
+                services: Default::default(),
             },
             HashMap::from([
                 (

@@ -19,6 +19,7 @@ pub struct AppLoadBalancer {
     app: Arc<App>,
     /// Round-robin counter
     rr_counter: AtomicUsize,
+    service_counters: DashMap<String, AtomicUsize>,
 }
 
 impl AppLoadBalancer {
@@ -28,6 +29,7 @@ impl AppLoadBalancer {
             app_name,
             app,
             rr_counter: AtomicUsize::new(0),
+            service_counters: DashMap::new(),
         }
     }
 
@@ -82,6 +84,28 @@ impl LoadBalancer {
     pub fn get_backend(&self, app_name: &str) -> Option<Backend> {
         let lb = self.app_lbs.get(app_name)?;
         lb.get_backend()
+    }
+
+    pub fn get_service_backend(&self, app_name: &str, service: &str) -> Option<Backend> {
+        let lb = self.app_lbs.get(app_name)?;
+        // Each app has an independent round-robin sequence. Interleaved traffic
+        // to a sibling must not keep selecting the same replica here.
+        let index = if let Some(counter) = lb.service_counters.get(service) {
+            counter.fetch_add(1, Ordering::Relaxed)
+        } else {
+            lb.service_counters
+                .entry(service.to_owned())
+                .or_default()
+                .fetch_add(1, Ordering::Relaxed)
+        };
+        let healthy = lb
+            .app
+            .healthy_service_backend_for_request(index, Some(service))?;
+        Some(Backend {
+            app_name: lb.app_name.clone(),
+            endpoint: healthy.endpoint,
+            instance: healthy.instance,
+        })
     }
 
     /// Get app manager
@@ -382,6 +406,61 @@ mod tests {
             start.elapsed() < Duration::from_secs(20),
             "get_backend perf smoke threshold exceeded: {:?}",
             start.elapsed()
+        );
+    }
+    #[test]
+    fn compose_app_pools_never_mix_services_or_fall_back_to_a_sibling() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("compose.yaml"), "services: {}\n").unwrap();
+        let compose: tako_core::compose::ComposeConfig =
+            serde_json::from_value(serde_json::json!({
+                "file":"compose.yaml", "services":{"web":{},"api":{}}
+            }))
+            .unwrap();
+        let runtime = tako_compose::ComposeRuntime::new(
+            dir.path().into(),
+            compose.clone(),
+            std::collections::HashMap::from([(
+                "TAKO_DATA_DIR".into(),
+                dir.path().join("data").display().to_string(),
+            )]),
+        )
+        .unwrap();
+        let app = create_test_app();
+        app.config.write().compose = Some(compose);
+        let web = app.allocate_instance();
+        web.set_compose(runtime.clone(), "web-container".into(), "web".into());
+        web.set_port(3001);
+        app.set_instance_state(&web, InstanceState::Healthy);
+        let api = app.allocate_instance();
+        api.set_compose(runtime, "api-container".into(), "api".into());
+        api.set_port(3002);
+        app.set_instance_state(&api, InstanceState::Healthy);
+        for index in 0..10 {
+            assert_eq!(
+                app.healthy_service_backend_for_request(index, Some("web"))
+                    .unwrap()
+                    .instance
+                    .id,
+                web.id
+            );
+            assert_eq!(
+                app.healthy_service_backend_for_request(index, Some("api"))
+                    .unwrap()
+                    .instance
+                    .id,
+                api.id
+            );
+        }
+        assert!(app.healthy_backend_for_request(0).is_none());
+        app.set_instance_state(&api, InstanceState::Unhealthy);
+        assert!(
+            app.healthy_service_backend_for_request(0, Some("api"))
+                .is_none()
+        );
+        assert!(
+            app.healthy_service_backend_for_request(0, Some("web"))
+                .is_some()
         );
     }
 }

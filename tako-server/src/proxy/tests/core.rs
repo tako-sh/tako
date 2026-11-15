@@ -244,6 +244,7 @@ fn request_context_skips_metric_timers_when_metrics_are_disabled() {
         backend_long_lived: false,
         is_https: false,
         matched_route_path: None,
+        compose_service: None,
         request_timer: None,
         client_ip: None,
         body_bytes_received: 0,

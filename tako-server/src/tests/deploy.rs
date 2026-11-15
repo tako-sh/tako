@@ -312,10 +312,7 @@ async fn native_deploy_must_stop_previous_compose_even_without_http_instances() 
         )]),
         compose: Some(tako_core::compose::ComposeConfig {
             file: "missing-compose.yaml".into(),
-            service: "web".into(),
-            port: 8080,
-            health_path: "/".into(),
-            health_host: None,
+            services: Default::default(),
         }),
         ..Default::default()
     });

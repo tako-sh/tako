@@ -253,10 +253,7 @@ async fn compose_cleanup_can_finish_during_resume_and_expired_drain_retries() {
             config.path = directory;
             config.compose = Some(tako_core::compose::ComposeConfig {
                 file: "compose.yaml".into(),
-                service: "web".into(),
-                port: 8080,
-                health_path: "/".into(),
-                health_host: None,
+                services: Default::default(),
             });
             config.env_vars.insert(
                 crate::release::TAKO_APP_DATA_DIR_ENV.into(),

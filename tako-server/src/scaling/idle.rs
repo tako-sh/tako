@@ -58,6 +58,9 @@ impl IdleMonitor {
 
             let (idle_timeout, min_instances) = {
                 let config = app.config.read();
+                if config.compose.is_some() {
+                    continue; // Compose owns explicit service counts and group lifetime.
+                }
                 (config.idle_timeout, config.min_instances)
             };
 

@@ -141,7 +141,10 @@ impl TakoProxy {
                 .await;
         }
 
-        let backend = match self.resolve_backend(app_name).await {
+        let backend = match self
+            .resolve_service_backend(app_name, ctx.compose_service.as_deref())
+            .await
+        {
             BackendResolution::Ready {
                 backend,
                 cold_start_wait,

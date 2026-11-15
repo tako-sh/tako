@@ -112,6 +112,7 @@ pub struct Routes {
     compiled: Arc<Mutex<Vec<CompiledRoute>>>,
     /// Per-app upstream + active state.
     apps: Arc<Mutex<HashMap<String, AppRoute>>>,
+    service_ports: Arc<Mutex<HashMap<String, HashMap<String, u16>>>>,
 }
 
 impl Routes {
@@ -161,6 +162,7 @@ impl Routes {
         images: tako_images::ImagesConfig,
         channel_store_key: String,
     ) {
+        self.service_ports.lock().unwrap().remove(&app_id);
         {
             let mut ar = self.app_routes.lock().unwrap();
             ar.insert(app_id.clone(), routes);
@@ -207,6 +209,7 @@ impl Routes {
 
     /// Remove all routes for an app.
     pub fn remove_app(&self, app_id: &str) {
+        self.service_ports.lock().unwrap().remove(app_id);
         let mut ar = self.app_routes.lock().unwrap();
         ar.remove(app_id);
         self.rebuild(&ar);
@@ -234,9 +237,18 @@ impl Routes {
         }
     }
 
+    pub fn activate_compose(&self, app_id: &str, ports: HashMap<String, u16>) {
+        let first = ports.values().next().copied().unwrap_or(0);
+        self.service_ports
+            .lock()
+            .unwrap()
+            .insert(app_id.into(), ports);
+        self.activate_with_port(app_id, first);
+    }
+
     /// Find the best matching route for a (host, path) pair.
     pub fn lookup(&self, host: &str, path: &str) -> Option<RouteTarget> {
-        let app_id = {
+        let (app_id, pattern) = {
             let compiled = self.compiled.lock().unwrap();
             let mut found = None;
             for entry in compiled.iter() {
@@ -248,17 +260,31 @@ impl Routes {
                 {
                     continue;
                 }
-                found = Some(entry.app_id.clone());
+                found = Some((
+                    entry.app_id.clone(),
+                    format!("{}{}", entry.host, entry.path.as_deref().unwrap_or("")),
+                ));
                 break;
             }
             found?
         };
+        let port = self
+            .service_ports
+            .lock()
+            .unwrap()
+            .get(&app_id)
+            .map(|ports| ports.get(&pattern).copied());
         let apps = self.apps.lock().unwrap();
         let r = apps.get(&app_id)?.clone();
+        // An unmapped group alias must never pick an arbitrary service.
+        let port = match port {
+            Some(port) => port?,
+            None => r.upstream_port,
+        };
         Some(RouteTarget {
             app_id,
             channel_store_key: r.channel_store_key,
-            upstream_port: r.upstream_port,
+            upstream_port: port,
             active: r.active,
             images: r.images,
             store_auth: r.store_auth,
@@ -453,7 +479,11 @@ impl ProxyHttp for DevProxy {
                     .await?;
                 return Ok(true);
             };
-            target.upstream_port = active_port;
+            target.upstream_port = self
+                .routes
+                .lookup(&hostname, &path)
+                .map(|t| t.upstream_port)
+                .unwrap_or(active_port);
             target.active = true;
         }
 

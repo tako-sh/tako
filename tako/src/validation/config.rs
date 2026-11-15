@@ -64,7 +64,11 @@ pub fn validate_tako_toml(config: &TakoToml) -> ValidationResult {
     for (env_name, env_config) in &config.envs {
         let is_development = env_name == "development";
 
-        if !is_development && env_config.route.is_none() && env_config.routes.is_none() {
+        if config.compose.is_none()
+            && !is_development
+            && env_config.route.is_none()
+            && env_config.routes.is_none()
+        {
             result.error(format!(
                 "Environment '{}' must define either 'route' or 'routes'",
                 env_name

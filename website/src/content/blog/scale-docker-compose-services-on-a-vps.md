@@ -8,7 +8,7 @@ imageAlt: "A coral octopus installs matching web modules above worker modules an
 
 Your Compose app has a web service, a worker, and Redis. The web service needs more capacity. Redis is fine. Doubling the entire stack would be a rather enthusiastic response to a smaller problem.
 
-Tako can scale individual Compose services on one VPS. Each service keeps its own replica count, while the selected HTTP service gets health checks and public routing for every replica. We'll use a small stack to make the change visible, then explain why that count survives your next deploy and how to return to the Compose default.
+Tako can scale individual Compose services on one VPS. Each service keeps its own replica count, while the tagged Tako app gets health checks and public routing for every replica. We'll use a small stack to make the change visible, then explain why that count survives your next deploy and how to return to the Compose default.
 
 ## Start with services that can run more than once
 
@@ -19,6 +19,11 @@ For a disposable demonstration, create this `compose.yaml`:
 ```yaml
 services:
   web:
+    expose: ["8080"]
+    x-tako:
+      envs:
+        production:
+          route: app.example.com
     image: docker.io/library/busybox:1.37
     command:
       - sh
@@ -66,16 +71,12 @@ name = "compose-scale-demo"
 
 [compose]
 file = "compose.yaml"
-service = "web"
-port = 8080
-health_path = "/"
 
 [envs.production]
-route = "app.example.com"
 servers = ["prod"]
 ```
 
-The `[compose].service` field selects the HTTP ingress. Tako assigns each HTTP replica a loopback port and routes public HTTPS through its proxy. Redis and the worker use Compose networking. You don't need to publish their ports. See the [configuration reference](/docs/tako-toml/) for Compose fields.
+The `x-tako` mapping marks the web service as a Tako app. Tako assigns each HTTP replica a loopback port and routes public HTTPS through its proxy. Redis and the worker use Compose networking. You don't need to publish their ports. See the [configuration reference](/docs/tako-toml/) for Compose fields.
 
 Deploy and inspect the result:
 
@@ -95,7 +96,7 @@ From the project directory, increase HTTP capacity:
 tako scale 4 --env production
 ```
 
-Without `--service`, the target is `web`, because that's the HTTP service selected in `tako.toml`. The explicit equivalent is:
+Without `--service`, the target is `web`, because it is the only service marked with `x-tako`. With multiple tagged apps, specify `--service`. The explicit equivalent is:
 
 ```bash
 tako scale 4 --service web --env production
@@ -109,11 +110,11 @@ tako scale 3 --service worker --env production
 
 The resulting counts are independent:
 
-| Service | Compose default | Applied override | Running target |
-| --- | --- | --- | --- |
-| `web` | 2 | 4 | 4 |
-| `worker` | 1 | 3 | 3 |
-| `redis` | 1 | None | 1 |
+| Service  | Compose default | Applied override | Running target |
+| -------- | --------------- | ---------------- | -------------- |
+| `web`    | 2               | 4                | 4              |
+| `worker` | 1               | 3                | 3              |
+| `redis`  | 1               | None             | 1              |
 
 Scaling the web service does not create four copies of Redis. Unchanged dependencies keep their containers, network endpoints, and data. The [server scaling tests](https://github.com/tako-sh/tako/blob/master/tako-server/src/tests/compose_scaling.rs) verify retained container identities alongside HTTP replica health and routing.
 
@@ -173,11 +174,11 @@ Supply either a count or `--reset`; combining them is invalid. The [CLI referenc
 
 The production limits are explicit:
 
-| Service category | Supported replica count |
-| --- | --- |
-| Selected HTTP service | 1–128 |
-| Other services | 0–128 |
-| Required dependency | At least one |
+| Service category      | Supported replica count |
+| --------------------- | ----------------------- |
+| Selected HTTP service | 1–128                   |
+| Other services        | 0–128                   |
+| Required dependency   | At least one            |
 
 An independent worker can therefore be paused with `tako scale 0 --service worker --env production`. Redis cannot be reduced to zero in this example because the worker declares it as a required dependency. HTTP scale-to-zero and automatic cold starts are unsupported for Compose. Production Compose deployments target one server.
 

@@ -158,6 +158,9 @@ impl TakoToml {
 
     /// Get routes for an environment
     pub fn get_routes(&self, env_name: &str) -> Option<Vec<String>> {
+        if let Some(compose) = &self.compose {
+            return Some(compose.routes(env_name));
+        }
         self.envs.get(env_name).and_then(|env| {
             if let Some(route) = &env.route {
                 Some(vec![route.clone()])

@@ -13,15 +13,15 @@ Use `tako <command> --help` or the connected MCP tool's schema for the exact arg
 
 ## Global Options
 
-| Option                          | Meaning                                                                                                                                |
-| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `--version`                     | Print the CLI version and exit.                                                                                                        |
-| `-v`, `--verbose`               | Append-only transcript with timestamps, log levels, and debug diagnostics.                                                             |
-| `--ci`                          | Deterministic non-interactive output: no colors, spinners, raw mode, or prompts.                                                       |
-| `--json`                        | Emit structured JSON on stdout. Progress, diagnostics, and errors stay on stderr.                                                      |
-| `--dry-run`                     | Preview supported changes. A command that cannot preview its changes exits with an error before running.                               |
-| `-c`, `--config <CONFIG>`       | Use an explicit config file. `.toml` is appended when omitted.                                                                         |
-| `--ssh-passphrase <PASSPHRASE>` | Use a passphrase for encrypted local SSH keys.                                                                                         |
+| Option                          | Meaning                                                                                                  |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `--version`                     | Print the CLI version and exit.                                                                          |
+| `-v`, `--verbose`               | Append-only transcript with timestamps, log levels, and debug diagnostics.                               |
+| `--ci`                          | Deterministic non-interactive output: no colors, spinners, raw mode, or prompts.                         |
+| `--json`                        | Emit structured JSON on stdout. Progress, diagnostics, and errors stay on stderr.                        |
+| `--dry-run`                     | Preview supported changes. A command that cannot preview its changes exits with an error before running. |
+| `-c`, `--config <CONFIG>`       | Use an explicit config file. `.toml` is appended when omitted.                                           |
+| `--ssh-passphrase <PASSPHRASE>` | Use a passphrase for encrypted local SSH keys.                                                           |
 
 App-scoped commands that honor `-c`: `agents`, `mcp`, `init`, `dev`, `run`, `logs`, `deploy`, `releases`, `backups`, `delete`, `secrets`, `credentials`, `storages`, `generate`, and project-context `scale`.
 
@@ -185,7 +185,7 @@ tako scale --reset [--service <service>] [--env <env>] [--server <server>] [--ap
 
 Changes desired instance count on targeted servers. From a project, app identity is resolved from the config. Outside a project, pass `--app`, either as a base app with `--env` or as a full `{app}/{env}` deployment id.
 
-For Compose, the target defaults to `[compose].service`; `--service` selects another service. The count is a persistent override that survives deploys, rollbacks, and restarts. `--reset` clears the selected service override and applies its current Compose `deploy.replicas` default (one when omitted). Supply either a count or `--reset`. These flags require a Compose app. See [Compose scaling](/docker-compose/#scale-individual-services) for limits and shared-volume behavior.
+For a Compose group with exactly one `x-tako` app, that app is the default scale target. With multiple apps, supply `--service`. Untagged Docker services can also be selected with `--service`. The count is a persistent override that survives deploys, rollbacks, and restarts. `--reset` clears the selected service override and applies its current Compose `deploy.replicas` default (one when omitted). Supply either a count or `--reset`. These flags require a Compose app. See [Compose scaling](/docker-compose/#scale-individual-services) for limits and shared-volume behavior.
 
 ```bash
 tako delete [--env <env>] [--server <server>] [-y|--yes]

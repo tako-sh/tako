@@ -13,7 +13,7 @@ Tako's production Docker Compose support works at that service boundary. It prep
 
 ## A new release doesn't mean a whole new stack
 
-Assume you've already [deployed a Compose app to a VPS](/blog/how-to-deploy-docker-compose-to-a-vps/). Its selected HTTP service is `web`, and it depends on a healthy Redis service. A relevant fragment of the existing `compose.yaml` might look like this:
+Assume you've already [deployed a Compose app to a VPS](/blog/how-to-deploy-docker-compose-to-a-vps/). Its tagged Tako app is `web`, and it depends on a healthy Redis service. A relevant fragment of the existing `compose.yaml` might look like this:
 
 ```yaml
 services:
@@ -78,11 +78,11 @@ Declare named mounts for persistent data. Anonymous volumes are rejected, includ
 
 Preserving a volume is only half the update problem. The other half is deciding whether old and new processes may use it simultaneously:
 
-| Service being replaced | Default order | Reason to inspect the choice |
-| --- | --- | --- |
-| Selected HTTP service without writable persistent volumes | Start first | Old and new generations overlap during readiness checks. |
-| Selected HTTP service with writable persistent volumes | Stop first | Concurrent writers may be unsafe. |
-| Workers and other services | Stop first | Job execution and shared resources need explicit overlap decisions. |
+| Service being replaced                                    | Default order | Reason to inspect the choice                                        |
+| --------------------------------------------------------- | ------------- | ------------------------------------------------------------------- |
+| Selected HTTP service without writable persistent volumes | Start first   | Old and new generations overlap during readiness checks.            |
+| Selected HTTP service with writable persistent volumes    | Stop first    | Concurrent writers may be unsafe.                                   |
+| Workers and other services                                | Stop first    | Job execution and shared resources need explicit overlap decisions. |
 
 These are defaults for changed services, not instructions to stop an unchanged dependency. A retained healthy Redis container stays running while a changed stateless web service follows its start-first path.
 
@@ -101,7 +101,7 @@ Add that fragment to the existing service definition. Tako supports `order` and 
 
 Use start-first only when the application can safely run both generations, including their access to data and queues. Leave enough memory for the overlap. Selecting the flag doesn't make a database safe for two writers or make an incompatible migration compatible.
 
-New long-running containers must remain running and pass any Docker health check through the monitor window. The default is five seconds, with supported values from zero seconds through two minutes. Unchanged healthy containers skip that window. The selected HTTP service also passes Tako's HTTP readiness and stability checks before entering public routing.
+New long-running containers must remain running and pass any Docker health check through the monitor window. The default is five seconds, with supported values from zero seconds through two minutes. Unchanged healthy containers skip that window. The tagged Tako app also passes Tako's connection readiness and stability checks before entering public routing.
 
 Dependency conditions retain their meaning: `service_started`, `service_healthy`, and `service_completed_successfully` represent different requirements. A started dependency isn't silently upgraded to a healthy requirement. Define the health checks and conditions your consumers actually need.
 
@@ -115,10 +115,10 @@ Recovery uses the predecessors' original dependency graph and readiness conditio
 
 Process interruption has a durable boundary too:
 
-| Interruption | Authoritative deployment on recovery |
-| --- | --- |
-| Before the new deployment commits | Previous committed release |
-| After the new deployment commits | New committed release |
+| Interruption                      | Authoritative deployment on recovery |
+| --------------------------------- | ------------------------------------ |
+| Before the new deployment commits | Previous committed release           |
+| After the new deployment commits  | New committed release                |
 
 Tako records a pending marker before changing containers. The active release, routes, replica overrides, and encrypted credentials commit together. On startup, the server reconciles that committed release, adopts matching containers, and cleans abandoned generations. A normal Tako server shutdown leaves production Compose containers running so startup can adopt them. That doesn't make the public proxy available while its own server process is stopped.
 

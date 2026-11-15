@@ -21,20 +21,21 @@ async fn queued_compose_start_is_rejected_during_shutdown() {
 
 #[tokio::test]
 #[ignore = "requires Docker Compose and shared host/container loopback and project paths"]
-async fn compose_registration_restart_stop_and_shutdown_keep_redis_data() {
+async fn compose_apps_route_independently_and_keep_redis_data_across_restart() {
     let project = tempfile::tempdir().unwrap();
     let source =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/compose/bun-redis");
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/compose/web-api-redis");
     for file in [
         "tako.toml",
         "compose.yaml",
         "Dockerfile",
-        "server.ts",
+        "web.ts",
+        "api.ts",
         ".dockerignore",
     ] {
         std::fs::copy(source.join(file), project.path().join(file)).unwrap();
     }
-    // Production replicas must not compete for the single local dev port.
+    // Production replicas must not compete for the per-service local dev ports.
     let yaml = project.path().join("compose.yaml");
     let source = std::fs::read_to_string(&yaml).unwrap().replacen(
         "  web:\n",
@@ -42,7 +43,7 @@ async fn compose_registration_restart_stop_and_shutdown_keep_redis_data() {
         1,
     );
     std::fs::write(yaml, source).unwrap();
-    let server = project.path().join("server.ts");
+    let server = project.path().join("web.ts");
     let mut source = std::fs::read_to_string(&server).unwrap();
     // Exceed pipe capacity on both streams before the markers. The log client
     // must keep draining while startup waits for HTTP readiness.
@@ -57,13 +58,7 @@ async fn compose_registration_restart_stop_and_shutdown_keep_redis_data() {
         .unwrap()
         .display()
         .to_string();
-    let config = tako_core::compose::ComposeConfig {
-        file: "compose.yaml".into(),
-        service: "web".into(),
-        port: 3000,
-        health_path: "/health".into(),
-        health_host: None,
-    };
+    let config = tako_compose::load_config(project.path(), "compose.yaml").unwrap();
     let runtime = tako_compose::ComposeRuntime::development(
         project.path().into(),
         config.clone(),
@@ -97,7 +92,7 @@ async fn compose_registration_restart_stop_and_shutdown_keep_redis_data() {
         "127.0.0.1".into(),
     )));
     let register = serde_json::json!({"type":"RegisterApp", "config_path":key,
-        "project_dir":project.path(), "app_name":"compose-example", "hosts":["compose.test"],
+        "project_dir":project.path(), "app_name":"compose-example", "hosts":["shop.tako", "api.shop.tako"],
         "command":[], "env":{}, "compose":config});
 
     async fn request(state: &Arc<Mutex<State>>, value: serde_json::Value) -> Response {
@@ -115,23 +110,22 @@ async fn compose_registration_restart_stop_and_shutdown_keep_redis_data() {
         handle.await.unwrap().unwrap();
         response
     }
-    async fn ready(state: &Arc<Mutex<State>>, key: &str) -> u16 {
+    async fn ready(state: &Arc<Mutex<State>>, key: &str, previous_pid: Option<u32>) -> (u16, u16) {
         for _ in 0..600 {
-            if let Some(port) = {
+            if let Some(ports) = {
                 let state = state.lock().unwrap();
                 state
                     .apps
                     .get(key)
-                    .filter(|app| app.pid.is_some() && app.upstream_port > 0)
-                    .filter(|_| {
-                        state
-                            .routes
-                            .lookup("compose.test", "/")
-                            .is_some_and(|route| route.active)
+                    .filter(|app| app.pid.is_some() && app.pid != previous_pid)
+                    .and_then(|_| {
+                        let web = state.routes.lookup("shop.tako", "/")?;
+                        let api = state.routes.lookup("api.shop.tako", "/visits")?;
+                        (web.active && api.active).then_some((web.upstream_port, api.upstream_port))
                     })
-                    .map(|app| app.upstream_port)
             } {
-                return port;
+                assert_ne!(ports.0, ports.1, "Each app must have its own backend");
+                return ports;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -146,7 +140,24 @@ async fn compose_registration_restart_stop_and_shutdown_keep_redis_data() {
         request(&state, register.clone()).await,
         Response::AppRegistered { .. }
     ));
-    let port = ready(&state, &key).await;
+    let (web_port, port) = ready(&state, &key, None).await;
+    let web = http
+        .get(format!("http://127.0.0.1:{web_port}/"))
+        .send()
+        .await
+        .unwrap();
+    assert!(web.text().await.unwrap().contains("One group, two apps"));
+    let services = runtime.status().await.unwrap();
+    assert_eq!(services.iter().filter(|s| s.service == "web").count(), 1);
+    assert_eq!(services.iter().filter(|s| s.service == "api").count(), 1);
+    assert!(
+        state
+            .lock()
+            .unwrap()
+            .routes
+            .lookup("redis.shop.tako", "/")
+            .is_none()
+    );
     let (backlog, mut logs, _) = state.lock().unwrap().apps[&key].log_buffer.subscribe(None);
     let mut stdout_seen = backlog
         .iter()
@@ -164,7 +175,7 @@ async fn compose_registration_restart_stop_and_shutdown_keep_redis_data() {
     .await
     .expect("Compose stdout and stderr did not reach the log buffer");
     let first: serde_json::Value = http
-        .get(format!("http://127.0.0.1:{port}/"))
+        .get(format!("http://127.0.0.1:{port}/visits"))
         .send()
         .await
         .unwrap()
@@ -179,6 +190,7 @@ async fn compose_registration_restart_stop_and_shutdown_keep_redis_data() {
             .status(),
         200
     );
+    let previous_pid = state.lock().unwrap().apps[&key].pid;
     assert!(matches!(
         request(
             &state,
@@ -187,9 +199,9 @@ async fn compose_registration_restart_stop_and_shutdown_keep_redis_data() {
         .await,
         Response::AppRestarting { .. }
     ));
-    let port = ready(&state, &key).await;
+    let (_, port) = ready(&state, &key, previous_pid).await;
     let second: serde_json::Value = http
-        .get(format!("http://127.0.0.1:{port}/"))
+        .get(format!("http://127.0.0.1:{port}/visits"))
         .send()
         .await
         .unwrap()
@@ -220,9 +232,9 @@ async fn compose_registration_restart_stop_and_shutdown_keep_redis_data() {
         request(&state, register).await,
         Response::AppRegistered { .. }
     ));
-    let port = ready(&state, &key).await;
+    let (_, port) = ready(&state, &key, None).await;
     let third: serde_json::Value = http
-        .get(format!("http://127.0.0.1:{port}/"))
+        .get(format!("http://127.0.0.1:{port}/visits"))
         .send()
         .await
         .unwrap()

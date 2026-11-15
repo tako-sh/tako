@@ -15,6 +15,11 @@ pub(super) fn compute_display_routes(
     default_host: &str,
     base_domain: Option<&str>,
 ) -> Vec<String> {
+    if let Some(compose) = &cfg.compose {
+        return compose
+            .for_development(default_host, base_domain)
+            .routes("development");
+    }
     let configured: Vec<String> = cfg
         .get_routes("development")
         .unwrap_or_default()
@@ -106,6 +111,15 @@ pub(super) fn compute_dev_hosts(
     default_host: &str,
     base_domain: Option<&str>,
 ) -> Result<Vec<String>, String> {
+    if let Some(compose) = &cfg.compose {
+        let config = compose.for_development(default_host, base_domain);
+        config.validate()?;
+        let routes = config.routes("development");
+        for route in &routes {
+            validate_dev_route(route, app_name).map_err(|e| e.to_string())?;
+        }
+        return Ok(routes);
+    }
     let routes = match cfg.get_routes("development") {
         Some(routes) if !routes.is_empty() => routes,
         _ => return Ok(vec![default_host.to_string()]),
@@ -124,7 +138,7 @@ pub(super) fn compute_dev_hosts(
         }
     }
 
-    if !out.iter().any(|route| is_managed_dev_route(route)) {
+    if cfg.compose.is_none() && !out.iter().any(|route| is_managed_dev_route(route)) {
         out.insert(0, default_host.to_string());
     }
 

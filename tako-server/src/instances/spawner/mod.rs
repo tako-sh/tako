@@ -290,18 +290,22 @@ async fn wait_for_container_health(
                 "container exited before becoming healthy".to_string(),
             ));
         }
-        if probe_endpoint_tcp(
-            instance
-                .endpoint()
-                .ok_or_else(|| InstanceError::HealthCheckFailed("missing endpoint".to_string()))?,
-            &config.health_check_path,
-            &config.health_check_host,
-            instance.health_token(),
-            Duration::from_millis(500),
-        )
-        .await
-        .unwrap_or(false)
-        {
+        let healthy = if let Some(healthy) = instance.compose_healthy().await {
+            healthy
+        } else {
+            probe_endpoint_tcp(
+                instance.endpoint().ok_or_else(|| {
+                    InstanceError::HealthCheckFailed("missing endpoint".to_string())
+                })?,
+                &config.health_check_path,
+                &config.health_check_host,
+                instance.health_token(),
+                Duration::from_millis(500),
+            )
+            .await
+            .unwrap_or(false)
+        };
+        if healthy {
             app.set_instance_state(&instance, InstanceState::Ready);
             return Ok(());
         }

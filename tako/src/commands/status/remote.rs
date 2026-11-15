@@ -286,7 +286,9 @@ pub(super) fn expand_status_by_running_builds(
         return vec![status];
     };
 
-    if app_status.builds.is_empty() {
+    if app_status.kind == tako_core::ApplicationKind::ApplicationGroup
+        || app_status.builds.is_empty()
+    {
         return vec![status];
     }
 
@@ -300,6 +302,8 @@ pub(super) fn expand_status_by_running_builds(
             service_status: status.service_status.clone(),
             server_version: status.server_version.clone(),
             app_status: Some(AppStatus {
+                kind: app_status.kind,
+                applications: app_status.applications.clone(),
                 replica_overrides: app_status.replica_overrides.clone(),
                 services: app_status.services.clone(),
                 services_error: app_status.services_error.clone(),

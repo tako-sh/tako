@@ -26,7 +26,7 @@ impl ComposeRuntime {
         if self.development {
             return Err("Production rollout requested for a development project".into());
         }
-        let (runtime, images) = self.prepared()?;
+        let (mut runtime, images) = self.prepared()?;
         if let Some(network) = &runtime.native_network {
             network.ensure_bridge().await?;
         }
@@ -46,7 +46,7 @@ impl ComposeRuntime {
                 "image",
                 "inspect",
                 "--format",
-                r#"{"id":{{json .Id}},"volumes":{{json (index .Config "Volumes")}}}"#,
+                r#"{"id":{{json .Id}},"volumes":{{json (index .Config "Volumes")}},"ports":{{json (index .Config "ExposedPorts")}}}"#,
             ]);
             if let Some(platform) = service["platform"].as_str() {
                 command.args(["--platform", platform]);
@@ -56,6 +56,10 @@ impl ComposeRuntime {
             let image: Value =
                 serde_json::from_slice(&output).map_err(|_| "Invalid prepared image metadata")?;
             let id = image["id"].as_str().ok_or("Prepared image has no ID")?;
+            if runtime.is_ingress(name) {
+                let port = crate::ingress_port(name, service, &image["ports"])?;
+                runtime.ingress_ports.insert(name.clone(), port);
+            }
             for target in image["volumes"]
                 .as_object()
                 .into_iter()
@@ -121,13 +125,14 @@ impl Rollout {
     pub fn ingresses(&self) -> impl Iterator<Item = &ServiceContainer> {
         self.selected
             .iter()
-            .filter(|c| c.service == self.runtime.config.service)
+            .filter(|c| self.runtime.is_ingress(&c.service))
     }
 
     pub fn ingress(&self) -> Result<&ServiceContainer, String> {
+        let service = self.runtime.config.default_service()?;
         self.selected
             .iter()
-            .find(|c| c.service == self.runtime.config.service)
+            .find(|c| c.service == service)
             .ok_or_else(|| "Compose rollout has no HTTP ingress container".into())
     }
 
@@ -222,7 +227,6 @@ impl Rollout {
                 result.map_err(|e| format!("Compose readiness task failed: {e}"))?;
             self.selected[index] = container?;
         }
-        self.ingress()?;
         Ok(())
     }
 

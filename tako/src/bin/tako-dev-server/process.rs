@@ -411,6 +411,27 @@ async fn activate_after_readiness(
     #[cfg(unix)] readiness_fd: Option<OwnedFd>,
     #[cfg(not(unix))] _readiness_fd: Option<()>,
 ) -> Result<(), String> {
+    if let Some(runtime) = &app.compose {
+        let containers = runtime.containers().await?;
+        let mut ports = std::collections::HashMap::new();
+        for (service, settings) in runtime.config.routed_services("development") {
+            let port = containers
+                .iter()
+                .find(|c| c.service == service && c.healthy())
+                .and_then(|c| c.port)
+                .ok_or_else(|| format!("Compose service '{service}' has no ready upstream"))?;
+            for route in settings.routes() {
+                ports.insert(route, port);
+            }
+        }
+        let mut s = state.lock().unwrap();
+        let port = ports.values().next().copied().unwrap_or(0);
+        if let Some(app) = s.apps.get_mut(config_path) {
+            app.upstream_port = port;
+        }
+        s.routes.activate_compose(route_id, ports);
+        return Ok(());
+    }
     #[cfg(unix)]
     if let Some(fd) = readiness_fd {
         let readiness = wait_for_readiness(fd);

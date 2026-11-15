@@ -29,6 +29,10 @@ Its `compose.yaml` is:
 ```yaml
 services:
   web:
+    x-tako:
+      envs:
+        production:
+          route: app.example.com
     build: .
     restart: unless-stopped
     ports:
@@ -128,16 +132,12 @@ name = "bun-redis"
 
 [compose]
 file = "compose.yaml"
-service = "web"
-port = 3000
-health_path = "/health"
 
 [envs.production]
-route = "app.example.com"
 servers = ["prod"]
 ```
 
-`service` selects the HTTP ingress service; `port` is that service's container port. It is `3000`, not the standalone host port `8080`. The health path must return HTTP 2xx or 3xx. If your own app restricts Host headers, configure `health_host` to a hostname it accepts.
+`x-tako` marks `web` as a Tako app in this Compose group. Its route belongs to the service. Tako infers the container port from Compose exposure or image `EXPOSE` and uses the Compose health check; no extra port or health-path setting is needed.
 
 Point your public domain at the VPS's public address and allow public HTTP `80` and HTTPS `443`. For this direct-to-VPS example, Tako's default Let's Encrypt mode uses HTTP-01 validation. Declaring a route does not create DNS records; [Routing and TLS](/docs/routing/) covers the certificate choices.
 
@@ -158,7 +158,7 @@ vps: "One VPS" {
 browser -> vps.proxy: "app.example.com"
 ```
 
-Tako replaces Compose port publications and exposes only the selected HTTP service through assigned loopback ports. Redis stays on the Compose network; visitors reach the app through Tako's HTTPS route.
+Tako replaces Compose port publications and exposes only the tagged Tako app through assigned loopback ports. Redis stays on the Compose network; visitors reach the app through Tako's HTTPS route.
 
 ## Deploy and verify the counter and its data
 
@@ -170,7 +170,7 @@ tako status --json
 tako logs --env production --days 1 --json
 ```
 
-Tako captures and validates the production inputs, prepares the images, and starts the services. Once the selected web service passes readiness checks, Tako admits it to public traffic. The [deployment guide](/docs/deployment/) covers release preparation and failure handling.
+Tako captures and validates the production inputs, prepares the images, and starts the services. Once the web app passes readiness checks, Tako admits it to public traffic. The [deployment guide](/docs/deployment/) covers release preparation and failure handling.
 
 Request the real domain, substituting yours below:
 
@@ -184,14 +184,14 @@ Confirm a trusted certificate, a successful health response, and increasing `vis
 
 The stable app/environment project identity reuses the named volume across releases. Redis's append-only setting stores its data there. Docker's [volume reference](https://docs.docker.com/reference/compose-file/volumes/) explains named-volume declarations; Tako additionally scopes resources to the app and environment and rejects external resources, custom resource names, and anonymous volumes in production.
 
-| Check | What it establishes |
-| --- | --- |
-| `docker info` as `tako` | Service-account access to the server's Docker Engine |
-| Successful `/health` | The web process can reach Redis |
-| Increasing `visits` | Public requests exercise the application and database |
-| Counter continues after a code update | Named-volume data survives the release change |
+| Check                                 | What it establishes                                   |
+| ------------------------------------- | ----------------------------------------------------- |
+| `docker info` as `tako`               | Service-account access to the server's Docker Engine  |
+| Successful `/health`                  | The web process can reach Redis                       |
+| Increasing `visits`                   | Public requests exercise the application and database |
+| Counter continues after a code update | Named-volume data survives the release change         |
 
-This is a single-VPS deployment with one selected HTTP ingress service. Keep build inputs and file references within the application directory; writable bind mounts are unsupported in production. If your stack uses secrets, reference Tako secrets explicitly for Compose interpolation. Production does not load an implicit `.env` file. The [Compose reference](/docs/docker-compose/) documents these boundaries.
+This is a single-VPS deployment with one tagged Tako app. Keep build inputs and file references within the application directory; writable bind mounts are unsupported in production. If your stack uses secrets, reference Tako secrets explicitly for Compose interpolation. Production does not load an implicit `.env` file. The [Compose reference](/docs/docker-compose/) documents these boundaries.
 
 Named volumes survive stop/start, rollback, and application deletion, but Tako's app-data backups do not include them. Back up Redis separately and verify restoration into a separate stack. Keeping a volume is persistence; recovering a lost VPS requires a backup.
 

@@ -42,6 +42,24 @@ impl ServiceContainer {
 }
 
 impl ComposeRuntime {
+    pub async fn container_healthy(&self, id: &str) -> Result<bool, String> {
+        let Some(container) = inspect_container(id, self.development).await? else {
+            return Ok(false);
+        };
+        if !container.healthy() {
+            return Ok(false);
+        }
+        let Some(port) = container.port else {
+            return Ok(false);
+        };
+        Ok(tokio::time::timeout(
+            Duration::from_secs(2),
+            tokio::net::TcpStream::connect(("127.0.0.1", port)),
+        )
+        .await
+        .is_ok_and(|r| r.is_ok()))
+    }
+
     pub async fn containers(&self) -> Result<Vec<ServiceContainer>, String> {
         project_containers(&self.project, self.development).await
     }

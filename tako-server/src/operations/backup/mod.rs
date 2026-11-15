@@ -1481,7 +1481,7 @@ mod tests {
         // cold-start state without spawning a replacement HTTP instance.
         app.config.write().compose = Some(
             serde_json::from_value(serde_json::json!({
-                "file":"missing.yml", "service":"web", "port":8080
+                "file":"missing.yml", "services":{"web":{}}
             }))
             .unwrap(),
         );

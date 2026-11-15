@@ -6,12 +6,12 @@ fn runtime() -> (tempfile::TempDir, ComposeRuntime) {
     std::fs::write(dir.path().join("compose.yaml"), "services: {}\n").unwrap();
     let config = tako_core::compose::ComposeConfig {
         file: "compose.yaml".into(),
-        service: "web".into(),
-        port: 3000,
-        health_path: "/health".into(),
-        health_host: None,
+        services: serde_json::from_value(
+            json!({"web":{"envs":{"production":{"route":"web.localhost"}}}}),
+        )
+        .unwrap(),
     };
-    let runtime = ComposeRuntime::new(
+    let mut runtime = ComposeRuntime::new(
         dir.path().into(),
         config,
         HashMap::from([(
@@ -20,6 +20,7 @@ fn runtime() -> (tempfile::TempDir, ComposeRuntime) {
         )]),
     )
     .unwrap();
+    runtime.ingress_ports.insert("web".into(), 3000);
     (dir, runtime)
 }
 

@@ -100,6 +100,7 @@ impl TakoProxy {
         let route_match = private_app
             .map(|app| crate::routing::SelectedRoute {
                 app: app.into(),
+                service: None,
                 path: None,
                 source_ip: tako_core::SourceIpMode::Direct,
             })
@@ -266,6 +267,7 @@ impl TakoProxy {
         };
         let app_name = route_match.app;
         ctx.matched_route_path = route_match.path;
+        ctx.compose_service = route_match.service.clone();
         ctx.observation
             .set_app_route(&app_name, ctx.matched_route_path.as_deref());
 
@@ -336,7 +338,10 @@ impl TakoProxy {
             }
         }
 
-        let backend = match self.resolve_backend(&app_name).await {
+        let backend = match self
+            .resolve_service_backend(&app_name, route_match.service.as_deref())
+            .await
+        {
             BackendResolution::Ready {
                 backend,
                 cold_start_wait,

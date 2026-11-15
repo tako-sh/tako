@@ -53,7 +53,9 @@ impl crate::ServerState {
         if let Err(msg) = validate_release_version(version) {
             return Response::error(msg);
         }
-        if let Err(msg) = validate_deploy_routes(&routes) {
+        if !routes.is_empty()
+            && let Err(msg) = validate_deploy_routes(&routes)
+        {
             return Response::error(msg);
         }
         let release_path =
@@ -173,6 +175,11 @@ impl crate::ServerState {
             runtime_bin_path.as_deref(),
         ) {
             return Response::error(format!("Invalid app release: {error}"));
+        }
+        if config.compose.is_none()
+            && let Err(msg) = validate_deploy_routes(&routes)
+        {
+            return Response::error(msg);
         }
         if let Some(binding) = &backup {
             if let Err(error) =

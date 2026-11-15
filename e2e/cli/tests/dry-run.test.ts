@@ -294,15 +294,15 @@ describe("container and Compose deployment plans", () => {
       `name = "compose-app"
 [compose]
 file = "compose.yaml"
-service = "web"
-port = 80
 [envs.production]
 network = "${networkId}"
-route = "compose.example.com"
 servers = ["prod"]
 `,
     );
-    await writeFile(join(tempDir, "compose.yaml"), "services:\n  web:\n    image: nginx:alpine\n");
+    await writeFile(
+      join(tempDir, "compose.yaml"),
+      "services:\n  web:\n    image: nginx:alpine\n    x-tako:\n      envs:\n        production:\n          route: compose.example.com\n",
+    );
     const { exitCode, screen } = await run(["--dry-run", "deploy"], {
       cwd: tempDir,
       env: { HOME: tempDir, TAKO_HOME: takoHome },

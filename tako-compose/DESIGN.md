@@ -15,11 +15,17 @@ update planner below.
   Secrets participate in the fingerprint but are never written to generated files or deployment records.
 - Each replica has a stable slot. An unchanged healthy container keeps its ID,
   endpoint, and data across deployment and server restart.
-- The selected stateless HTTP service defaults to start-first. Other services
+- Every service with `x-tako` is a Tako app; untagged services remain Docker services.
+  The project is an application group, and routes select the group plus app service.
+- A tagged stateless app defaults to start-first. Other services
   and services with writable persistent volumes default to stop-first.
   `deploy.update_config.order` may explicitly allow or prevent overlap.
-- New containers must pass Docker readiness and the selected service must pass
-  Tako's HTTP readiness and stability checks before public traffic changes.
+- New containers must pass Docker readiness. Every tagged app must also accept
+  a connection on its private port and pass stability checks before routes change.
+  Ports come from Compose expose/ports or image EXPOSE; no HTTP path is assumed.
+- Read x-tako metadata from captured source before normalization: Docker removes
+  service extensions from config output. Compare it with release metadata.
+  Route-only changes do not participate in container fingerprints.
 - The old HTTP instance drains only after the replacement is in routing.
 - Rollback stops newly introduced containers and restarts stopped predecessors
   using their original dependency graph and readiness conditions;

@@ -223,8 +223,8 @@ pub(crate) fn apply_release_runtime_to_config(
         compose.validate()?;
         config.command.clear();
         config.launch = AppLaunch::Compose;
-        config.health_check_path = compose.health_path.clone();
-        config.health_check_host = compose.health_host.clone().unwrap_or_default();
+        // Compose owns health checks; no application HTTP path is assumed.
+        config.health_check_path.clear();
         config.compose = Some(compose);
         config.min_instances = 1;
         config.max_instances = 128;

@@ -58,6 +58,7 @@ pub struct RequestCtx {
     pub(super) backend_long_lived: bool,
     pub(super) is_https: bool,
     pub(super) matched_route_path: Option<Arc<str>>,
+    pub(super) compose_service: Option<Arc<str>>,
     pub(super) request_timer: Option<RequestTimer>,
     /// Client IP for per-IP rate limit tracking (released in logging phase)
     pub(super) client_ip: Option<IpAddr>,
@@ -162,6 +163,7 @@ impl ProxyHttp for TakoProxy {
             backend_long_lived: false,
             is_https: false,
             matched_route_path: None,
+            compose_service: None,
             request_timer: None,
             client_ip: None,
             body_bytes_received: 0,

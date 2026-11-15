@@ -266,6 +266,7 @@ impl App {
                 HealthyInstance {
                     instance: instance.clone(),
                     endpoint: instance.endpoint(),
+                    service: instance.compose_service(),
                 }
             })
             .collect();
@@ -291,12 +292,26 @@ impl App {
         &self,
         request_index: usize,
     ) -> Option<HealthyInstance> {
+        let config = self.config.read();
+        let service = match &config.compose {
+            Some(compose) => Some(compose.default_service().ok()?),
+            None => None,
+        };
+        self.healthy_service_backend_for_request(request_index, service)
+    }
+
+    pub(crate) fn healthy_service_backend_for_request(
+        &self,
+        request_index: usize,
+        service: Option<&str>,
+    ) -> Option<HealthyInstance> {
         let instances = self.healthy_instances.read();
-        if instances.is_empty() {
+        let mut eligible = instances.iter().filter(|i| i.service.as_deref() == service);
+        let count = eligible.clone().count();
+        if count == 0 {
             return None;
         }
-
-        Some(instances[request_index % instances.len()].clone())
+        eligible.nth(request_index % count).cloned()
     }
 
     fn add_healthy_instance(&self, instance: &Arc<Instance>) {
@@ -319,6 +334,7 @@ impl App {
         healthy_instances.push(HealthyInstance {
             instance: instance.clone(),
             endpoint: instance.endpoint(),
+            service: instance.compose_service(),
         });
     }
 

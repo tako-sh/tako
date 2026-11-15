@@ -1,5 +1,11 @@
 services:
   web:
+    x-tako:
+      envs:
+        development:
+          route: bun-redis.tako
+        production:
+          route: app.example.com
     build: .
     restart: unless-stopped
     ports:

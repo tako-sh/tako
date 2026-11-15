@@ -11,7 +11,7 @@ impl Spawner {
             .begin_rollout()
             .await
             .map_err(InstanceError::HealthCheckFailed)?;
-        config.min_instances = rollout.replicas()[&runtime.config.service];
+        config.min_instances = runtime.ingress_count(&rollout.replicas());
         app.update_config(config.clone());
         let old = app.get_instances();
         let mut attached = Vec::new();
@@ -91,18 +91,24 @@ impl Spawner {
         let port = web.port.ok_or_else(|| {
             InstanceError::HealthCheckFailed("Compose HTTP ingress has no loopback port".into())
         })?;
-        instance.set_compose(runtime.clone(), web.id.clone());
-        instance.set_health_probe(
-            config.health_check_host.clone(),
-            config.health_check_path.clone(),
-        );
+        instance.set_compose(runtime.clone(), web.id.clone(), web.service.clone());
         instance.set_sdk_health(false);
         app.set_instance_state(&instance, InstanceState::Starting);
         // Only slot zero follows shared dependency logs; each replica follows
         // its own HTTP container to avoid duplicate app log entries.
         let logs: Vec<_> = containers
             .iter()
-            .filter(|c| c.id == web.id || (web.slot == 0 && c.service != runtime.config.service))
+            .filter(|c| {
+                c.id == web.id
+                    || (web.slot == 0
+                        && runtime
+                            .config
+                            .services
+                            .keys()
+                            .next()
+                            .is_some_and(|name| name == &web.service)
+                        && !runtime.is_ingress(&c.service))
+            })
             .cloned()
             .collect();
         let child = runtime

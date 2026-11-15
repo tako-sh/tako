@@ -24,6 +24,15 @@ impl crate::ServerState {
             backup,
         } = request;
         let app_name = config.deployment_id();
+        if config
+            .compose
+            .as_ref()
+            .map(|c| c.routes(&config.environment))
+            .as_ref()
+            != Some(&routes)
+        {
+            return Response::error("Compose routes must match the service routes in the release");
+        }
         let runtime = match crate::compose_runtime::for_config(&config) {
             Ok(runtime) => runtime,
             Err(error) => return Response::error(error),
@@ -33,7 +42,7 @@ impl crate::ServerState {
             Err(error) => return Response::error(error),
         };
         let replicas = rollout.replicas();
-        config.min_instances = replicas[&runtime.config.service];
+        config.min_instances = runtime.ingress_count(&replicas);
         config
             .compose_replicas
             .retain(|service, _| replicas.contains_key(service));
@@ -150,11 +159,9 @@ impl crate::ServerState {
         // From here onward the new release is authoritative, including after
         // process termination. Cleanup failures must not roll its metadata back.
         {
-            self.routes.write().set_app_routes_with_source_ip(
-                app_name.clone(),
-                routes.clone(),
-                config.source_ip,
-            );
+            self.routes
+                .write()
+                .set_config_routes(&config, routes.clone());
         }
         for route in &routes {
             self.ensure_route_certificate(&app_name, route.split('/').next().unwrap_or(route))
@@ -224,9 +231,13 @@ impl crate::ServerState {
         service: Option<&str>,
     ) -> Response {
         let app = config.deployment_id();
-        let service = service
-            .unwrap_or(&config.compose.as_ref().unwrap().service)
-            .to_owned();
+        let service = match service {
+            Some(service) => service.to_owned(),
+            None => match config.compose.as_ref().unwrap().default_service() {
+                Ok(service) => service.to_owned(),
+                Err(error) => return Response::error(error),
+            },
+        };
         if let Some(count) = requested {
             config
                 .compose_replicas

@@ -1120,6 +1120,8 @@ mod tests {
             r#"
 services:
   web:
+    expose: ["8080"]
+    x-tako: {envs: {production: {route: web.localhost}}}
     image: docker.io/library/busybox:1.37
     command: [httpd, -f, -p, '8080', -h, /www]
     volumes: ['./public:/www:ro']
@@ -1137,10 +1139,10 @@ services:
             release,
             tako_core::compose::ComposeConfig {
                 file: "compose.yaml".into(),
-                service: "web".into(),
-                port: 8080,
-                health_path: "/".into(),
-                health_host: None,
+                services: serde_json::from_value(
+                    serde_json::json!({"web":{"envs":{"production":{"route":"web.localhost"}}}}),
+                )
+                .unwrap(),
             },
             HashMap::from([(
                 crate::release::TAKO_APP_DATA_DIR_ENV.into(),

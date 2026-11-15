@@ -632,3 +632,47 @@ fn route_table_reports_when_cloudflare_ranges_are_needed() {
     );
     assert!(table.needs_cloudflare_ip_ranges());
 }
+
+#[test]
+fn compose_routes_select_app_services_and_inherit_source_ip() {
+    let compose: tako_core::compose::ComposeConfig = serde_json::from_value(serde_json::json!({
+        "file":"compose.yaml", "services": {
+            "web":{"envs":{"production":{"route":"example.com"}}},
+            "api":{"envs":{"production":{"routes":["api.example.com", "example.com/api/*"],"source_ip":"direct"}}},
+            "private":{}
+        }
+    })).unwrap();
+    let config = crate::instances::AppConfig {
+        name: "shop".into(),
+        environment: "production".into(),
+        source_ip: tako_core::SourceIpMode::CloudflareProxy,
+        compose: Some(compose.clone()),
+        ..Default::default()
+    };
+    let mut table = RouteTable::default();
+    table.set_config_routes(&config, compose.routes("production"));
+    let web = table.select_with_route("example.com", "/").unwrap();
+    assert_eq!(web.app.as_ref(), "shop/production");
+    assert_eq!(web.service.as_deref(), Some("web"));
+    assert_eq!(web.source_ip, tako_core::SourceIpMode::CloudflareProxy);
+    for (host, path) in [("api.example.com", "/"), ("example.com", "/api/orders")] {
+        let api = table.select_with_route(host, path).unwrap();
+        assert_eq!(api.service.as_deref(), Some("api"));
+        assert_eq!(api.source_ip, tako_core::SourceIpMode::Direct);
+    }
+    assert!(
+        table
+            .select_with_route("private.example.com", "/")
+            .is_none()
+    );
+    table.remove_app_routes("shop/production");
+    assert!(table.select_with_route("api.example.com", "/").is_none());
+    table.set_app_routes("shop/production".into(), vec!["example.com".into()]);
+    assert!(
+        table
+            .select_with_route("example.com", "/")
+            .unwrap()
+            .service
+            .is_none()
+    );
+}
