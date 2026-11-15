@@ -11,6 +11,12 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::PathBuf;
 use std::thread::JoinHandle;
 
+/// App and SQLite capture processes must create shared sidecars group-writable.
+/// SQLite restores WAL/SHM modes after open, but a restrictive umask leaves a
+/// window where another app can open a new sidecar read-only. Per-app directory
+/// groups still isolate private data; only shared data uses the common group.
+pub const APP_DATA_UMASK: u32 = 0o007;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserIds {
     pub uid: u32,
@@ -636,6 +642,30 @@ mod tests {
         assert_eq!(lines.len(), 2, "stdout={stdout}");
         assert_eq!(lines[0].trim(), lines[1].trim());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn app_data_umask_preserves_group_write_at_creation() {
+        use std::os::unix::fs::PermissionsExt;
+        let isolation = ProcessIsolation {
+            umask: Some(APP_DATA_UMASK),
+            resource_limits: ResourceLimits {
+                open_files: None,
+                processes: None,
+                address_space_bytes: None,
+            },
+            ..Default::default()
+        };
+        let path = std::env::temp_dir().join(format!("tako-sidecar-mode-{}", std::process::id()));
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "set -eu; : > \"$1\"", "sh"]).arg(&path);
+        unsafe {
+            cmd.pre_exec(move || install_process_isolation(&isolation));
+        }
+        assert!(cmd.status().unwrap().success());
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(mode, 0o660);
     }
 
     #[test]

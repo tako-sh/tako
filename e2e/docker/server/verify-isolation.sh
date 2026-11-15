@@ -89,7 +89,7 @@ assert writer.returncode == 0
 PYSQL
 
 # Configured shared SQLite files retain separate app identities while allowing
-# both processes to commit through WAL with the normal restrictive app umask.
+# both processes to commit through WAL with the group-writable app data umask.
 shared_db=/opt/tako/shared/data/app/shared.sqlite
 install -o tako -g tako-app -m 0660 /dev/null "$shared_db"
 python3 - "$shared_db" <<'PYSQL'
@@ -107,7 +107,15 @@ for app_user in "$first_group" "$second_group"; do
   setpriv --reuid="$app_user" --regid="$app_user" --groups=tako-app --no-new-privs \
     python3 - "$shared_db" "$app_user" <<'PYSQL' &
 import os, sqlite3, sys
-os.umask(0o027)
+os.umask(0o007)
+# Check creation permissions before SQLite can repair them with fchmod.
+probe = sys.argv[1] + "." + sys.argv[2] + ".mode"
+fd = os.open(probe, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o660)
+try:
+    assert os.fstat(fd).st_mode & 0o777 == 0o660
+finally:
+    os.close(fd)
+    os.unlink(probe)
 try:
     with sqlite3.connect(sys.argv[1], timeout=10) as db:
         for value in range(200):
