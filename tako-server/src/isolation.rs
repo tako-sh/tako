@@ -59,6 +59,7 @@ pub(crate) fn app_process_isolation(
     if fixture::contains(data_dir) {
         return Ok(ProcessIsolation {
             parent_death_signal: app_child_parent_death_signal(),
+            umask: Some(tako_spawn::APP_DATA_UMASK),
             resource_limits: tako_spawn::ResourceLimits {
                 address_space_bytes: None,
                 ..Default::default()
@@ -68,6 +69,7 @@ pub(crate) fn app_process_isolation(
     }
     let mut isolation = ProcessIsolation {
         parent_death_signal: app_child_parent_death_signal(),
+        umask: Some(tako_spawn::APP_DATA_UMASK),
         ..ProcessIsolation::default()
     };
 
@@ -365,6 +367,14 @@ mod tests {
     fn linux_app_start_rejects_an_unconfigured_data_directory() {
         let temp = tempfile::tempdir().unwrap();
         assert!(app_process_isolation(temp.path(), "unconfigured-test/production").is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn app_process_allows_group_writable_shared_sidecars() {
+        let temp = fixture::TestDataDir::new().unwrap();
+        let isolation = app_process_isolation(temp.path(), "shared/production").unwrap();
+        assert_eq!(isolation.umask, Some(tako_spawn::APP_DATA_UMASK));
     }
 
     #[test]

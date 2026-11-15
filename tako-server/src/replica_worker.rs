@@ -180,6 +180,7 @@ pub(crate) fn spawn(
         no_new_privs: true,
         clear_ambient_capabilities: true,
         parent_death_signal: Some(libc::SIGKILL),
+        umask: Some(tako_spawn::APP_DATA_UMASK),
         ..Default::default()
     };
     // SAFETY: the common spawn policy makes only fork-safe system calls. The

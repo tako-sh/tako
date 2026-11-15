@@ -41,7 +41,7 @@ setpriv --reuid="$first_group" --regid="$first_group" --groups=tako-app --no-new
   printf nested-data > ../../data/app/nested/file
   mkdir node_modules
   printf "{}" > package-lock.json
-  if printf bad > app.json 2>/dev/null; then exit 1; fi
+  if { printf bad > app.json; } 2>/dev/null; then exit 1; fi
   if rm app.json 2>/dev/null; then exit 2; fi
   if mv app.json replaced.json 2>/dev/null; then exit 3; fi
   if ls /opt/tako/apps/second/production >/dev/null 2>&1; then exit 4; fi
@@ -89,24 +89,47 @@ assert writer.returncode == 0
 PYSQL
 
 # Configured shared SQLite files retain separate app identities while allowing
-# both processes to commit through WAL with the normal restrictive app umask.
+# both processes to commit through WAL with the group-writable app data umask.
 shared_db=/opt/tako/shared/data/app/shared.sqlite
 install -o tako -g tako-app -m 0660 /dev/null "$shared_db"
 python3 - "$shared_db" <<'PYSQL'
+from contextlib import closing
 import sqlite3, sys
-with sqlite3.connect(sys.argv[1]) as db:
+# A connection context commits transactions but does not close the connection.
+# Close the root-owned initializer before unprivileged writers open its WAL.
+with closing(sqlite3.connect(sys.argv[1])) as db:
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("CREATE TABLE writes (app TEXT, value INTEGER, PRIMARY KEY(app, value))")
 PYSQL
+test ! -e "$shared_db-wal"
+test ! -e "$shared_db-shm"
 for app_user in "$first_group" "$second_group"; do
   setpriv --reuid="$app_user" --regid="$app_user" --groups=tako-app --no-new-privs \
     python3 - "$shared_db" "$app_user" <<'PYSQL' &
 import os, sqlite3, sys
-os.umask(0o027)
-with sqlite3.connect(sys.argv[1], timeout=10) as db:
-    for value in range(200):
-        db.execute("INSERT INTO writes VALUES (?, ?)", (sys.argv[2], value))
-        db.commit()
+os.umask(0o007)
+# Check creation permissions before SQLite can repair them with fchmod.
+probe = sys.argv[1] + "." + sys.argv[2] + ".mode"
+fd = os.open(probe, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o660)
+try:
+    assert os.fstat(fd).st_mode & 0o777 == 0o660
+finally:
+    os.close(fd)
+    os.unlink(probe)
+try:
+    with sqlite3.connect(sys.argv[1], timeout=10) as db:
+        for value in range(200):
+            db.execute("INSERT INTO writes VALUES (?, ?)", (sys.argv[2], value))
+            db.commit()
+except sqlite3.Error as error:
+    print(f"{sys.argv[2]}: {error.sqlite_errorname} ({error.sqlite_errorcode})", file=sys.stderr)
+    for path in [os.path.dirname(sys.argv[1]), sys.argv[1], sys.argv[1] + "-wal", sys.argv[1] + "-shm"]:
+        try:
+            info = os.stat(path)
+            print(f"{path}: uid={info.st_uid} gid={info.st_gid} mode={oct(info.st_mode & 0o7777)}", file=sys.stderr)
+        except OSError as stat_error:
+            print(f"{path}: {stat_error}", file=sys.stderr)
+    raise
 PYSQL
   if [ "$app_user" = "$first_group" ]; then first_writer=$!; else second_writer=$!; fi
 done
