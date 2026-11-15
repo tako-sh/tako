@@ -32,7 +32,7 @@ Use the test executable reported by `cargo test -p tako-cli --bin tako --no-run`
 
 ## Native Image Dependency
 
-Run `mise bootstrap` to install the repository toolchain, the image codec build tools, and package dependencies. Full E2E also requires a running Docker engine with Compose support.
+Run `mise bootstrap` to install the repository toolchain, the image codec build tools, and package dependencies. Its CMake comes from the distro; where that is older than 3.22 (Debian 11), run `sh scripts/install-image-build-deps.sh` as well. Full E2E also requires a running Docker engine with Compose support.
 
 The Docker host kernel must support WireGuard interfaces. Privileged containers cannot supply a missing kernel module; an `ip link add ... type wireguard` failure prevents native enrollment. The loopback Corrosion check and pinned HTTPS CLI integration tests can run independently of that requirement.
 

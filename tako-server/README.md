@@ -58,7 +58,7 @@ scope, pool bounds and tests. This does not enable TLS handshake offloading.
 
 Deployment hosts require Linux with glibc and systemd on x86_64 or ARM64.
 
-The image optimizer statically links its codecs (libwebp, libavif, and dav1d), so the server binary needs no image libraries at runtime. Building it requires CMake 3.22 or newer, Meson, Ninja, and NASM on x86: run `sh scripts/install-image-build-deps.sh` on apt-based Linux or macOS with Homebrew, or `mise bootstrap`.
+The image optimizer statically links its codecs (libwebp, libavif, and dav1d), so the server binary needs no image libraries at runtime. Building it requires CMake 3.22 or newer, Meson, Ninja, and NASM on x86: run `sh scripts/install-image-build-deps.sh` on apt-based Linux or macOS with Homebrew. `mise bootstrap` installs the distro packages, so on distributions whose CMake is older than 3.22 (such as Debian 11) use the script, which falls back to CMake from PyPI.
 
 From the repository root:
 
