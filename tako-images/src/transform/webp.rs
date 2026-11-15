@@ -182,6 +182,7 @@ pub(super) fn decode_animation(
         frames,
         delays_ms,
         loop_count: u16::try_from(info.loop_count).unwrap_or(u16::MAX),
+        color_profile: None,
     })
 }
 

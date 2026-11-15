@@ -5,6 +5,7 @@ use crate::{
 use fast_image_resize as fr;
 
 mod avif;
+mod color;
 mod decode;
 mod smartcrop;
 mod webp;
@@ -116,13 +117,15 @@ impl Raster {
 
 /// A decoded source: one frame for still images, several for animations.
 /// Every frame has the same dimensions and layout.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 struct Decoded {
     frames: Vec<Raster>,
     /// Display duration of each frame in milliseconds. Empty for still images.
     delays_ms: Vec<u32>,
     /// WebP loop semantics: 0 loops forever, otherwise the total number of plays.
     loop_count: u16,
+    /// The source's tagged color space, when it may differ from sRGB.
+    color_profile: Option<Box<moxcms::ColorProfile>>,
 }
 
 impl Decoded {
@@ -131,7 +134,13 @@ impl Decoded {
             frames: vec![raster],
             delays_ms: Vec::new(),
             loop_count: 0,
+            color_profile: None,
         }
+    }
+
+    fn with_color_profile(mut self, profile: Option<moxcms::ColorProfile>) -> Self {
+        self.color_profile = profile.map(Box::new);
+        self
     }
 
     fn is_animated(&self) -> bool {
@@ -187,6 +196,12 @@ pub fn transform_image(
         for frame in &mut image.frames {
             *frame = crop_raster(frame, left, top, crop_width, crop_height)?;
         }
+    }
+
+    // Output drops color metadata, so convert tagged sources to sRGB. Doing
+    // it after resizing keeps the cost proportional to the output size.
+    if let Some(profile) = image.color_profile.take() {
+        color::convert_to_srgb(&mut image.frames, &profile);
     }
 
     let output = image.first()?;
