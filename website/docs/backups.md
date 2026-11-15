@@ -33,7 +33,7 @@ The destination must be private S3-compatible storage without `public_base_url`.
 
 `TAKO_DATA_DIR` remains private to an app/environment. `TAKO_SHARED_DATA_DIR` is shared by apps on one server, including different environments on that server. Each server belongs to one network. This directory is local disk, not a network filesystem or a way to share SQLite across servers. Use subdirectories to distinguish unrelated datasets.
 
-Apps retain separate Unix users. Tako grants shared-directory access through their common group and pre-creates configured database files with group-write permissions. Shared directories use inherited POSIX default ACLs so newly created files, including SQLite WAL and shared-memory files, are group-writable even with a restrictive process umask. The server data filesystem must support POSIX ACLs. An app can still request an explicitly restrictive file mode, such as `0600`; such a file is not shared. Never put app-private secrets in the shared directory.
+Apps retain separate Unix users. Tako grants shared-directory access through their common group and pre-creates configured database files with group-write permissions. For other shared files, apps must create files and directories writable by that group. Never put app-private secrets in the shared directory.
 
 SQLite supports multiple local processes. Use WAL mode, short write transactions, and a busy timeout; SQLite still permits only one writer at a time. Coordinate schema migrations between the apps.
 

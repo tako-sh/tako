@@ -181,15 +181,6 @@ fn prepare_filesystem(
     ids: &tako_spawn::UserIds,
 ) -> Result<(), String> {
     let (name, environment) = app_components(app)?;
-    let shared_access = DataAccess::Shared;
-    // Synthetic fixtures share one identity and may run on filesystems without
-    // ACLs. The installed isolation fixture exercises real group permissions.
-    #[cfg(test)]
-    let shared_access = if super::fixture::contains(root) {
-        DataAccess::App
-    } else {
-        shared_access
-    };
     let root = open_absolute(root).map_err(|e| e.to_string())?;
     let shared_root = ensure_directory(&root, "shared").map_err(|e| e.to_string())?;
     let shared_data = ensure_directory(&shared_root, "data").map_err(|e| e.to_string())?;
@@ -197,8 +188,7 @@ fn prepare_filesystem(
     let shared_gid = ids.supplementary_gids.first().copied().unwrap_or(ids.gid);
     set_owner_mode(&shared_root, service_uid, shared_gid, 0o750).map_err(|e| e.to_string())?;
     set_owner_mode(&shared_data, service_uid, shared_gid, 0o750).map_err(|e| e.to_string())?;
-    secure_data_tree(&shared, service_uid, shared_gid, shared_access)
-        .map_err(|e| format!("prepare shared-data permissions (POSIX ACLs required): {e}"))?;
+    secure_data_tree(&shared, service_uid, shared_gid, false).map_err(|e| e.to_string())?;
     let apps = open_child(&root, "apps", true).map_err(|e| e.to_string())?;
     let name = open_child(&apps, name, true).map_err(|e| e.to_string())?;
     let app = open_child(&name, environment, true).map_err(|e| e.to_string())?;
@@ -209,14 +199,12 @@ fn prepare_filesystem(
     }
     let data = open_child(&app, "data", true).map_err(|e| e.to_string())?;
     let writable = ensure_directory(&data, "app").map_err(|e| e.to_string())?;
-    secure_data_tree(&writable, service_uid, ids.gid, DataAccess::App)
-        .map_err(|e| e.to_string())?;
+    secure_data_tree(&writable, service_uid, ids.gid, false).map_err(|e| e.to_string())?;
     let private = ensure_directory(&data, "tako").map_err(|e| e.to_string())?;
-    secure_data_tree(&private, service_uid, ids.gid, DataAccess::Private)
-        .map_err(|e| e.to_string())?;
+    secure_data_tree(&private, service_uid, ids.gid, true).map_err(|e| e.to_string())?;
     let shared = open_child(&app, "shared", true).map_err(|e| e.to_string())?;
     let logs = ensure_directory(&shared, "logs").map_err(|e| e.to_string())?;
-    secure_data_tree(&logs, service_uid, ids.gid, DataAccess::App).map_err(|e| e.to_string())?;
+    secure_data_tree(&logs, service_uid, ids.gid, false).map_err(|e| e.to_string())?;
     if let Some(version) = version {
         let releases = open_child(&app, "releases", true).map_err(|e| e.to_string())?;
         let release = open_child(&releases, version, true).map_err(|e| e.to_string())?;
@@ -237,15 +225,7 @@ fn ensure_directory(parent: &File, name: &str) -> io::Result<File> {
     open_child(parent, name, true)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum DataAccess {
-    Private,
-    App,
-    Shared,
-}
-
-fn secure_data_tree(file: &File, uid: u32, gid: u32, access: DataAccess) -> io::Result<()> {
-    let private = access == DataAccess::Private;
+fn secure_data_tree(file: &File, uid: u32, gid: u32, private: bool) -> io::Result<()> {
     let metadata = file.metadata()?;
     let mode = if metadata.is_dir() {
         if private { 0o700 } else { 0o2770 }
@@ -258,51 +238,17 @@ fn secure_data_tree(file: &File, uid: u32, gid: u32, access: DataAccess) -> io::
     };
     set_owner_mode(file, uid, gid, mode)?;
     if metadata.is_dir() {
-        #[cfg(target_os = "linux")]
-        if access == DataAccess::Shared {
-            inherit_shared_group_permissions(file)?;
-        }
         for entry in std::fs::read_dir(format!("/proc/self/fd/{}", file.as_raw_fd()))? {
             let name = entry?.file_name();
             let name = name
                 .to_str()
                 .ok_or_else(|| io::Error::other("non-UTF8 data name"))?;
             match open_child(file, name, false) {
-                Ok(child) => secure_data_tree(&child, uid, gid, access)?,
+                Ok(child) => secure_data_tree(&child, uid, gid, private)?,
                 Err(e) if e.raw_os_error() == Some(libc::ELOOP) => (),
                 Err(e) => return Err(e),
             }
         }
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn inherit_shared_group_permissions(directory: &File) -> io::Result<()> {
-    // SQLite eventually chmods WAL/SHM files to match the database, but another
-    // app can open them read-only between creation under umask 027 and chmod.
-    // A default ACL gives the owning shared group access at creation, including
-    // in new subdirectories. Explicit modes such as 0600 still restrict access.
-    // Linux POSIX ACL xattrs: version, then (tag, permissions, undefined id).
-    let mut acl = 2u32.to_le_bytes().to_vec();
-    for (tag, permissions) in [(0x01u16, 7u16), (0x04, 7), (0x10, 7), (0x20, 0)] {
-        acl.extend_from_slice(&tag.to_le_bytes());
-        acl.extend_from_slice(&permissions.to_le_bytes());
-        acl.extend_from_slice(&u32::MAX.to_le_bytes());
-    }
-    // SAFETY: the directory fd is open, the name is NUL-terminated and acl
-    // contains the complete Linux ACL representation for the supplied length.
-    if unsafe {
-        libc::fsetxattr(
-            directory.as_raw_fd(),
-            c"system.posix_acl_default".as_ptr(),
-            acl.as_ptr().cast(),
-            acl.len(),
-            0,
-        )
-    } != 0
-    {
-        return Err(io::Error::last_os_error());
     }
     Ok(())
 }
@@ -524,47 +470,12 @@ mod tests {
             &File::open(&app).unwrap(),
             unsafe { libc::geteuid() },
             unsafe { libc::getegid() },
-            DataAccess::App,
+            false,
         )
         .unwrap();
         assert_eq!(
             std::fs::metadata(private).unwrap().permissions().mode() & 0o7777,
             0o700
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn shared_data_files_are_group_writable_at_creation_despite_umask() {
-        let temp = tempfile::tempdir().unwrap();
-        let shared = temp.path().join("shared");
-        std::fs::create_dir(&shared).unwrap();
-        std::fs::create_dir(shared.join("existing")).unwrap();
-        match secure_data_tree(
-            &File::open(&shared).unwrap(),
-            unsafe { libc::geteuid() },
-            unsafe { libc::getegid() },
-            DataAccess::Shared,
-        ) {
-            Ok(()) => {}
-            // Some development workspace mounts do not implement POSIX ACLs.
-            // The installed Docker fixture must still exercise this behavior.
-            Err(error) if error.raw_os_error() == Some(libc::EOPNOTSUPP) => return,
-            Err(error) => panic!("shared permissions: {error}"),
-        }
-        let status = std::process::Command::new("sh").current_dir(&shared).args([
-            "-c", "set -eu; umask 027; mkdir new; printf data > new/wal; printf data > existing/wal; install -m 0600 /dev/null private"
-        ]).status().unwrap();
-        assert!(status.success());
-        for file in ["new/wal", "existing/wal"] {
-            assert_eq!(
-                std::fs::metadata(shared.join(file)).unwrap().mode() & 0o777,
-                0o660
-            );
-        }
-        assert_eq!(
-            std::fs::metadata(shared.join("private")).unwrap().mode() & 0o777,
-            0o600
         );
     }
 
