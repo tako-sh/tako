@@ -46,6 +46,7 @@ impl SqliteStateStore {
         for table in [
             "app_secrets",
             "app_runtime_credentials",
+            "app_schedule_revisions",
             "app_storages",
             "app_ssl",
             "app_backups",

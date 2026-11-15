@@ -94,7 +94,7 @@ Useful definition options include:
 | `retries`  | Retries after the first run attempt. The default is `2`, for three total attempts. |
 | `backoff`  | Run-level retry timing with optional `base` and `max` values in milliseconds.      |
 | `worker`   | JavaScript worker group; omitted means the default lane.                           |
-| `schedule` | A five-field cron expression such as `"0 9 * * 1-5"`.                              |
+| `schedule` | Five-field Unix cron in UTC. `"0 9 * * 1-5"` runs at 09:00 Monday through Friday. Sunday is 0 or 7. |
 | `local`    | Keep the workflow on per-server local storage in a multi-server environment.       |
 
 ## Enqueue A Run
@@ -403,7 +403,7 @@ Workflow and step lifecycle logs appear in the normal Tako log stream. Use `ctx.
 
 ## Scale To Zero
 
-Tako keeps no workflow worker running while the queue has no runnable work. Enqueue, cron, a signal, a due retry or sleep, and reclaimed work can wake a worker. The worker exits after its idle window and the next runnable run starts a fresh process.
+When a workflow runtime starts, Tako launches one worker to register schedules, even with an empty queue. The worker exits after its idle window. Enqueue, cron, a signal, a due retry or sleep, and reclaimed work can wake workers again.
 
 Production starts one scale-to-zero lane per JavaScript worker group; Go and container workers use a single lane. Workflows with `worker: "email"` run in a process that only claims that group. The config parser also accepts worker counts, concurrency, and per-server overrides; those values are not applied yet.
 
@@ -455,11 +455,15 @@ Tako validates the multi-server storage choice before build and deploy work begi
 
 ## Development And Deployment
 
-`tako dev` discovers JavaScript and TypeScript workflows under `<app_root>/workflows/`. The dev daemon owns the durable state and starts a separate scale-to-zero worker when work becomes runnable. Worker output appears in the same log stream as the app. Workflow definition changes refresh the runtime, and a fresh worker picks up the new code on subsequent work.
+`tako dev` discovers JavaScript and TypeScript workflows under `<app_root>/workflows/`. The dev daemon owns the durable state and runs workflows in a separate scale-to-zero worker. Worker output appears in the same log stream as the app. Workflow definition changes refresh the runtime.
 
-Cron schedules are synchronized from the current workflow definitions when a worker starts, together with each workflow's retry setting. Removing a schedule removes its registered cron entry on the next worker startup.
+The first worker registers the schedules and retry settings of every group. Removing the last schedule from a release with workflow support clears its registered schedules. On shared Postgres, an older release restarting after a rollout cannot overwrite the newer registration.
+
+When upgrading a server, package the matching worker SDK. The server keeps existing schedules when a worker omits the release build from its registration.
 
 `tako deploy` validates the storage model, packages workflow definitions with the app, and installs the workflow runtime for the release. A new release replaces the previous worker runtime after in-flight work drains. Removing the workflows directory in a later release retires the old workflow runtime. Durable runs remain scoped to the app and environment across releases.
+
+Removing workflow support entirely stops that server's cron ticker. Any servers still running the old release can keep firing the stored schedules. To stop schedules across shared Postgres while keeping older servers online, first deploy a workflow-enabled release with all schedules removed. Then deploy the HTTP-only release.
 
 Use finite `tako logs --env production --days 1 --json` to inspect app and worker output with an agent; an attached terminal can follow it with `--tail`. See [Operations](/operations/) for log inspection, [Development](/development/) for local runtime details, and [Deployment](/deployment/) for release behavior.
 

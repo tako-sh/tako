@@ -124,7 +124,9 @@ JavaScript `.run()` combines enqueue and result waiting. In a workflow, the SDK 
 
 ## Workflow schedules
 
-A starting worker sends `RegisterSchedules {app,schedules}`, which replaces the app's schedule set. Each `ScheduleSpec` is `{name,cron,max_attempts?}`. `max_attempts` is the workflow's attempt budget, counting the first attempt: JavaScript sends `retries + 1` and Go sends `WithMaxAttempts`. The store keeps it with the schedule, and every run the schedule creates gets it. Omitted, scheduled runs get the default of three attempts.
+A starting worker sends `RegisterSchedules {app,build?,schedules}` with the complete set from every worker group. The build is the worker's `TAKO_BUILD`. Each installed runtime accepts its own build's first successful registration. An empty set removes every schedule. An explicit deployment or rollback to a shared Postgres store allocates a revision. The server commits that revision with the local release and Postgres checks it atomically with schedule replacement, including after server recovery.
+
+Each `ScheduleSpec` is `{name,cron,max_attempts?}`. Five-field Unix cron runs in UTC with Sunday numbered 0 or 7. Seconds-first expressions with an optional year and the existing aliases use the Rust `cron` grammar. JavaScript sends `retries + 1` and Go sends `WithMaxAttempts` as the total attempt budget. The default is three attempts.
 
 ## Workflow run operations
 

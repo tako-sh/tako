@@ -1,5 +1,5 @@
 use super::*;
-use tako_workflows::manager::PreparedWorkflow;
+use tako_workflows::manager::{PreparedWorkflow, ScheduleActivation};
 
 pub(crate) struct WorkflowBindings<'a> {
     pub(crate) secrets: &'a HashMap<String, String>,
@@ -50,6 +50,7 @@ impl ServerState {
                     storages: &storages,
                     postgres_url: runtime_credentials.get("postgres_url"),
                 },
+                ScheduleActivation::Recover(self.state_store.workflow_schedule_revision(app_name)?),
             )
             .await?;
         self.install_app_workflows(app_name, prepared);
@@ -69,6 +70,7 @@ impl ServerState {
         release_path: &std::path::Path,
         runtime_bin_path: Option<&str>,
         bindings: WorkflowBindings<'_>,
+        activation: ScheduleActivation,
     ) -> Result<Option<PreparedWorkflow>, StateStoreError> {
         let manifest = match crate::app_command::load_release_manifest(release_path) {
             Ok(manifest) => manifest,
@@ -102,6 +104,17 @@ impl ServerState {
             postgres_url,
         } = bindings;
         let mut worker_env = manifest.env_vars.clone();
+        // Older manifests can omit the version. Their release directory still
+        // identifies the build used by the server during deploy and recovery.
+        let build = if manifest.version.is_empty() {
+            release_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+        } else {
+            &manifest.version
+        };
+        worker_env.insert("TAKO_BUILD".into(), build.to_string());
         inject_app_data_dir_env(&mut worker_env, &data_paths);
 
         let worker_command = match manifest.runtime.as_str() {
@@ -271,7 +284,7 @@ impl ServerState {
         );
         spec.lanes = workflow_lanes;
         self.workflows
-            .prepare(store, manifest.workflow_retention_ms, spec)
+            .prepare(store, manifest.workflow_retention_ms, spec, activation)
             .await
             .map(Some)
             .map_err(|error| StateStoreError::InvalidData(error.to_string()))

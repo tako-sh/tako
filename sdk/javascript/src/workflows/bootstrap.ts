@@ -26,7 +26,7 @@ import {
   installChannelSocketPublisherFromEnv,
 } from "../tako/socket";
 import { setWorkflowRuntime } from "./define";
-import { DEFAULT_WORKER_GROUP } from "./discovery";
+import { DEFAULT_WORKER_GROUP, discoverWorkflows, workflowWorkerGroup } from "./discovery";
 import { workflowsEngine } from "./engine";
 import { WorkflowsClient } from "./rpc-client";
 import { resolveAppRootDir } from "../tako/app-root";
@@ -77,16 +77,19 @@ export async function bootstrapWorker(
   });
 
   const workflowsDir = join(resolveAppRootDir(appDir, opts.appRoot), WORKFLOWS_DIRNAME);
-  const count = await workflowsEngine.discover(workflowsDir, { worker: workflowWorker });
+  const definitions = await discoverWorkflows(workflowsDir);
+  for (const { name, handler, opts } of definitions) {
+    if (workflowWorkerGroup(opts) === workflowWorker) {
+      workflowsEngine.register(name, handler, opts);
+    }
+  }
+  // Registration replaces the app-wide set. Claims remain scoped to this group.
+  await client.registerSchedules(workflowsEngine.collectSchedules(definitions));
+
+  const count = workflowsEngine.registeredNames.length;
   if (count === 0) {
     return { started: false, reason: "no workflows discovered", workflowCount: 0 };
   }
-
-  // Replace server-side cron schedules, including clearing all stale schedules
-  // when the current release has workflows but no cron schedules.
-  const schedules = workflowsEngine.collectSchedules();
-  await client.registerSchedules(schedules);
-
   workflowsEngine.startWorker({ concurrency, idleTimeoutMs });
   return { started: true, workflowCount: count };
 }

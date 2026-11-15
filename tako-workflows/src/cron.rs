@@ -28,13 +28,78 @@ const PRUNE_BATCH_SIZE: u32 = 1_000;
 const PRUNE_IDLE_INTERVAL_MS: i64 = 24 * 60 * 60 * 1_000;
 const PRUNE_BACKLOG_INTERVAL_MS: i64 = 60 * 1_000;
 
+// Five-field cron numbers Sunday as 0 (also 7). The cron crate numbers it as 1.
+fn unix_weekdays(field: &str) -> Result<String, String> {
+    if field == "*" {
+        return Ok(field.into());
+    }
+    const NAMES: [&str; 7] = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+    let ordinal = |value: &str| {
+        NAMES
+            .iter()
+            .position(|name| name.eq_ignore_ascii_case(value))
+            .or_else(|| value.parse::<usize>().ok().filter(|day| *day <= 7))
+    };
+    let invalid = || format!("invalid Unix cron weekday '{field}'");
+    let mut selected = [false; 7];
+    for part in field.split(',') {
+        let (range, step) = part.split_once('/').unwrap_or((part, "1"));
+        let step = step
+            .parse::<usize>()
+            .ok()
+            .filter(|s| *s > 0)
+            .ok_or_else(invalid)?;
+        let (first, last) = if range == "*" {
+            (0, 7)
+        } else if let Some((first, last)) = range.split_once('-') {
+            (
+                ordinal(first).ok_or_else(invalid)?,
+                ordinal(last).ok_or_else(invalid)?,
+            )
+        } else {
+            let day = ordinal(range).ok_or_else(invalid)?;
+            (day, if part.contains('/') { 7 } else { day })
+        };
+        if first > last {
+            return Err(invalid());
+        }
+        for day in (first..=last).step_by(step) {
+            selected[day % 7] = true;
+        }
+    }
+    Ok((0..7)
+        .filter(|&day| selected[day])
+        .map(|day| NAMES[day])
+        .collect::<Vec<_>>()
+        .join(","))
+}
+
+fn parse_schedule(expression: &str) -> Result<Vec<Schedule>, String> {
+    let fields: Vec<_> = expression.split_whitespace().collect();
+    let parse = |value: &str| Schedule::from_str(value).map_err(|err| err.to_string());
+    let [minute, hour, day, month, weekday] = fields.as_slice() else {
+        return Ok(vec![parse(expression)?]);
+    };
+    let weekdays = unix_weekdays(weekday)?;
+    // When both day fields are restricted, Unix cron accepts either match.
+    if !day.starts_with('*') && !weekday.starts_with('*') {
+        return Ok(vec![
+            parse(&format!("0 {minute} {hour} {day} {month} *"))?,
+            parse(&format!("0 {minute} {hour} * {month} {weekdays}"))?,
+        ]);
+    }
+    Ok(vec![parse(&format!(
+        "0 {minute} {hour} {day} {month} {weekdays}"
+    ))?])
+}
+
 /// Replace the schedules table for this app with the given list.
 ///
 /// Unknown schedules are dropped. Existing schedules keep their `last_run_at`
 /// so a re-registration doesn't resurrect already-processed buckets.
 pub fn register_schedules(db: &RunsDb, schedules: &[ScheduleSpec]) -> Result<(), RunsDbError> {
     for s in schedules {
-        Schedule::from_str(&s.cron).map_err(|e| {
+        parse_schedule(&s.cron).map_err(|e| {
             RunsDbError::Storage(format!("invalid cron '{}' for '{}': {}", s.cron, s.name, e))
         })?;
     }
@@ -58,7 +123,7 @@ pub fn tick_once(db: &RunsDb, now_ms: i64) -> Result<u64, RunsDbError> {
     let mut enqueued = 0u64;
 
     for row in schedules {
-        let schedule = match Schedule::from_str(&row.cron) {
+        let schedules = match parse_schedule(&row.cron) {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!(name = %row.name, cron = %row.cron, error = %e, "skip invalid cron");
@@ -73,14 +138,11 @@ pub fn tick_once(db: &RunsDb, now_ms: i64) -> Result<u64, RunsDbError> {
         // Fast-forward: if the server fell behind (idle, sleep, crash), skip
         // intermediate boundaries and enqueue only the latest that has
         // already passed. Prevents a thundering-herd flood when catching up.
-        let mut latest: Option<DateTime<Utc>> = None;
-        for t in schedule.after(&after) {
-            if t > now {
-                break;
-            }
-            latest = Some(t);
-        }
-        let Some(next) = latest else {
+        let Some(next) = schedules
+            .iter()
+            .filter_map(|schedule| schedule.after(&after).take_while(|t| t <= &now).last())
+            .max()
+        else {
             continue;
         };
 
@@ -272,6 +334,32 @@ mod tests {
 
     fn db() -> Arc<RunsDb> {
         Arc::new(RunsDb::open_in_memory().unwrap())
+    }
+
+    #[test]
+    fn unix_weekdays_and_day_fields_match_calendar_dates() {
+        let matches = |expression: &str, dates: &[u32]| {
+            use chrono::TimeZone;
+            let schedules = parse_schedule(expression).unwrap();
+            let actual: Vec<_> = (14..=21)
+                .filter(|day| {
+                    let at = Utc.with_ymd_and_hms(2026, 11, *day, 9, 0, 0).unwrap();
+                    schedules.iter().any(|s| s.includes(at))
+                })
+                .collect();
+            assert_eq!(actual, dates, "{expression}");
+        };
+        matches("0 9 * * 1-5", &[16, 17, 18, 19, 20]);
+        matches("0 9 * * 0,7", &[15]);
+        matches("0 9 * * TUE-SAT/2", &[14, 17, 19, 21]);
+        matches("0 9 18 * MON", &[16, 18]);
+        matches("0 9 */2 * 1-5", &[17, 19]);
+        matches("0 0 9 * * 1", &[15]);
+        matches("0 0 9 * * 1 2026", &[15]);
+        assert!(parse_schedule("@daily").is_ok());
+        for bad in ["8", "8/2", "3-1", "1/0", "0,,7", "bogus"] {
+            assert!(parse_schedule(&format!("0 9 * * {bad}")).is_err(), "{bad}");
+        }
     }
 
     #[test]
