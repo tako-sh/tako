@@ -58,9 +58,7 @@ scope, pool bounds and tests. This does not enable TLS handshake offloading.
 
 Deployment hosts require Linux with glibc and systemd on x86_64 or ARM64.
 
-Install libvips first: macOS `brew install vips`; Debian/Ubuntu `sudo apt-get update && sudo apt-get install -y --no-install-recommends libvips-dev`.
-
-Homebrew's `vips` formula includes the codec libraries Tako needs for JPEG, PNG, WebP, and AVIF transforms. Debian/Ubuntu split AVIF encoder and decoder support into optional `libheif` plugin packages such as `libheif-plugin-aomenc`, `libheif-plugin-aomdec`, and `libheif-plugin-dav1d` when they are available.
+The image optimizer statically links its codecs (libwebp, libavif, and dav1d), so the server binary needs no image libraries at runtime. Building it requires CMake 3.22 or newer, Meson, Ninja, and NASM on x86: run `sh scripts/install-image-build-deps.sh` on apt-based Linux or macOS with Homebrew, or `mise bootstrap`.
 
 From the repository root:
 

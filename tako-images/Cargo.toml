@@ -11,13 +11,20 @@ schema = ["dep:schemars"]
 [dependencies]
 base64 = "0.23"
 hmac = "0.13"
-libvips = "2.3.0"
+fast_image_resize = "6.1.0"
+gif = "0.14.2"
+image = { version = "=0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
+image-webp = "0.2.4"
+imgref = "1.12"
+# Statically builds libavif with dav1d; needs cmake, meson, ninja and nasm (x86) at build time.
+libavif-sys = { version = "0.18.0", default-features = false, features = ["codec-dav1d"] }
+# Statically builds the vendored libwebp; no system libwebp is linked.
+libwebp-sys = "0.14.4"
+ravif = { version = "0.13.0", default-features = false, features = ["asm"] }
+rgb = "0.8"
 schemars = { version = "1.2", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.11"
 thiserror = "2.0"
 url = "2.5"
-
-[dev-dependencies]
-image = { version = "=0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }

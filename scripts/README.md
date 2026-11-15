@@ -4,8 +4,7 @@ Repository scripts used by installers, CI checks, and local development workflow
 
 ## Scripts
 
-- `install-tako.sh`: POSIX installer for local `tako`, `tako-dev-server`, and `tako-dev-proxy`. It verifies the release archive SHA-256 checksum before extraction. Official macOS CLI builds support Apple Silicon and Intel. On macOS it verifies `Tako.app` and helper signatures, installs `Tako.app`, symlinks `tako` to the signed CLI inside the app bundle, and installs libvips with Homebrew when available.
-- `install-libvips-runtime.sh`: CI helper that installs the libvips runtime used by downloaded Tako binaries on macOS and apt-based Linux runners.
+- `install-tako.sh`: POSIX installer for local `tako`, `tako-dev-server`, and `tako-dev-proxy`. It verifies the release archive SHA-256 checksum before extraction. Official macOS CLI builds support Apple Silicon and Intel. On macOS it verifies `Tako.app` and helper signatures, installs `Tako.app`, and symlinks `tako` to the signed CLI inside the app bundle.
 - `package-tako-app.sh`: Packages the Rust `tako` binary as `Tako.app` for macOS signing and iCloud Keychain entitlements.
 - `sign-macos-release.sh <arch>`: Signs and packages the macOS CLI and helpers from `raw/bin-tako-darwin-<arch>` into `signed-dist/`. Both Mac architectures use the same release signing secrets.
 - `publish-intel-release.sh <sha>`: Uploads the signed Intel archive and checksum only when `latest` still points to the build's commit. The caller must hold the `release-assets` GitHub Actions concurrency group through the check and upload.
@@ -29,9 +28,7 @@ Repository scripts used by installers, CI checks, and local development workflow
   - Enrolls `TAKO_SSH_PUBKEY` for both `tako` SSH login and signed remote management.
   - If `TAKO_SSH_PUBKEY` is unset, prompts for a public key from the terminal (`/dev/tty`) when available, including common piped installs; invalid key lines are re-prompted. If key input cannot be read, installer tries the invoking sudo user's `~/.ssh/authorized_keys` first, then warns/skips if no valid key is found.
   - Installs a systemd unit with `Type=notify`, `ExecReload=/bin/kill -HUP $MAINPID`, high file-descriptor limits, and capability bounding for bind, app-user switching, and app-process stop capabilities.
-  - Installs required runtime dependencies (including Unix-socket-capable `nc` with `-U` support, sqlite runtime libraries, libvips image codec packages, Linux namespace networking tools `ip`/`iptables`/`sysctl`, and `proto`) via the host package manager when available.
-  - On RHEL-family dnf hosts (AlmaLinux/Rocky/RHEL/CentOS Stream), no repo — including EPEL — ever carries a vips/libvips package, so the installer falls back to [Remi's RPM repository](https://rpms.remirepo.net/) instead of retrying a package that will never exist there.
-  - Remi setup and libvips installation retry up to three times with fresh repository metadata. These transactions exclude Remi's PHP module repository; installing the Remi release RPM also excludes EPEL metadata.
+  - Installs required runtime dependencies (including Unix-socket-capable `nc` with `-U` support, sqlite runtime libraries, Linux namespace networking tools `ip`/`iptables`/`sysctl`, and `proto`) via the host package manager when available.
   - Falls back to the official `proto` installer if not already present.
 - `check_critical_coverage.sh`: coverage gate for selected critical source files.
 

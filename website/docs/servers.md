@@ -21,7 +21,7 @@ Custom public ports:
 curl -fsSL https://tako.sh/install-server.sh | sudo env TAKO_RESTART_SERVICE=0 sh -s -- --http-port 8080 --https-port 8443
 ```
 
-The installer creates the `tako` service user, the shared `tako-app` group, `/opt/tako`, `/var/run/tako`, service files, maintenance helpers, restricted sudoers policy, public HTTP/HTTPS listeners, local metrics, libvips runtime support, and native WireGuard networking and signed, pinned HTTPS management.
+The installer creates the `tako` service user, the shared `tako-app` group, `/opt/tako`, `/var/run/tako`, service files, maintenance helpers, restricted sudoers policy, public HTTP/HTTPS listeners, local metrics, and native WireGuard networking and signed, pinned HTTPS management.
 
 On Linux, each app/environment runs as a separate Unix identity. Apps can write their own release files and data, including dependencies, while the service protects the release manifest and control directories. The internal socket checks the connecting Unix identity against the requested app. Image decoding runs under a separate unprivileged account with bounded resources.
 

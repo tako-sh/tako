@@ -69,7 +69,6 @@ class InstallerTests(unittest.TestCase):
                 for name, body in {
                     "uname": f'case "$1" in -s) echo Darwin ;; -m) echo {machine} ;; esac',
                     "codesign": "exit 0",
-                    "vips": "exit 0",
                 }.items():
                     command = commands / name
                     command.write_text(f"#!/bin/sh\n{body}\n")

@@ -8,7 +8,6 @@ set -eu
 #
 # What it does:
 # - downloads and installs `tako-server`
-# - installs the libvips runtime used by the built-in image optimizer
 # - installs Podman for container releases
 # - creates OS user `tako`
 # - installs systemd units for `tako-server`

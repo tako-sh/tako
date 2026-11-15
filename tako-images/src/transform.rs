@@ -2,21 +2,19 @@ use crate::{
     ImageCrop, ImageError, ImageFit, NormalizedResize, OutputFormat, normalize_resize,
     validate_quality, validate_width,
 };
-use libvips::{VipsApp, VipsImage, ops};
-use std::ffi::c_void;
-use std::mem::ManuallyDrop;
-use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};
+use fast_image_resize as fr;
 
-// Some libvips codec paths are process-global even when libvips worker
-// concurrency is set to one. Tako gets parallelism from the server worker pool,
-// so keep each process to one active transform.
-const MAX_PARALLEL_TRANSFORMS: usize = 1;
+mod avif;
+mod decode;
+mod smartcrop;
+mod webp;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransformLimits {
     pub max_source_bytes: usize,
     pub max_image_width: u32,
     pub max_image_height: u32,
+    /// Upper bound on decoded pixels across all frames of the source.
     pub max_decoded_pixels: u64,
 }
 
@@ -59,6 +57,92 @@ enum SourceFormat {
     Webp,
 }
 
+/// Interleaved 8-bit sRGB pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Layout {
+    Rgb,
+    Rgba,
+}
+
+impl Layout {
+    fn channels(self) -> usize {
+        match self {
+            Self::Rgb => 3,
+            Self::Rgba => 4,
+        }
+    }
+
+    fn pixel_type(self) -> fr::PixelType {
+        match self {
+            Self::Rgb => fr::PixelType::U8x3,
+            Self::Rgba => fr::PixelType::U8x4,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Raster {
+    width: u32,
+    height: u32,
+    layout: Layout,
+    data: Vec<u8>,
+}
+
+impl Raster {
+    fn new(width: u32, height: u32, layout: Layout, data: Vec<u8>) -> Result<Self, ImageError> {
+        let expected = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|pixels| pixels.checked_mul(layout.channels()))
+            .ok_or(ImageError::TransformFailed)?;
+        if width == 0 || height == 0 || data.len() != expected {
+            return Err(ImageError::TransformFailed);
+        }
+        Ok(Self {
+            width,
+            height,
+            layout,
+            data,
+        })
+    }
+
+    fn row_bytes(&self) -> usize {
+        self.width as usize * self.layout.channels()
+    }
+
+    fn has_transparency(&self) -> bool {
+        self.layout == Layout::Rgba && self.data.chunks_exact(4).any(|pixel| pixel[3] != 255)
+    }
+}
+
+/// A decoded source: one frame for still images, several for animations.
+/// Every frame has the same dimensions and layout.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Decoded {
+    frames: Vec<Raster>,
+    /// Display duration of each frame in milliseconds. Empty for still images.
+    delays_ms: Vec<u32>,
+    /// WebP loop semantics: 0 loops forever, otherwise the total number of plays.
+    loop_count: u16,
+}
+
+impl Decoded {
+    fn still(raster: Raster) -> Self {
+        Self {
+            frames: vec![raster],
+            delays_ms: Vec::new(),
+            loop_count: 0,
+        }
+    }
+
+    fn is_animated(&self) -> bool {
+        self.frames.len() > 1
+    }
+
+    fn first(&self) -> Result<&Raster, ImageError> {
+        self.frames.first().ok_or(ImageError::TransformFailed)
+    }
+}
+
 pub fn transform_image(
     source: &[u8],
     _source_content_type: Option<&str>,
@@ -78,51 +162,43 @@ pub fn transform_image(
     }
 
     let source_format = detect_source_format(source)?;
-    let _permit = acquire_vips_transform_permit();
-    let source_image = read_image(source, source_format)?;
-    let source_width = dimension_from_vips(source_image.get_width())?;
-    let source_height = frame_height_from_vips(&source_image)?;
-    enforce_dimension_limits(&source_image, source_width, source_height, limits)?;
+    // Decoding applies EXIF / irot / imir orientation to the pixels.
+    let mut image = decode::decode(source, source_format, limits)?;
 
-    if source_width == 0 || source_height == 0 {
-        return Err(ImageError::TransformFailed);
+    let first = image.first()?;
+    let (oriented_width, oriented_height) = (first.width, first.height);
+    let scale = resize_scale(oriented_width, oriented_height, options.width, resize)?;
+    if scale < 1.0 {
+        let width = scaled_dimension(oriented_width, scale);
+        let height = scaled_dimension(oriented_height, scale);
+        let mut resizer = fr::Resizer::new();
+        for frame in &mut image.frames {
+            *frame = resize_raster(&mut resizer, frame, width, height)?;
+        }
     }
 
-    let oriented_image = autorotate_image(&source_image)?;
-    let oriented_width = dimension_from_vips(oriented_image.get_width())?;
-    let oriented_height = frame_height_from_vips(&oriented_image)?;
-    let scale = resize_scale(oriented_width, oriented_height, options.width, resize)?;
+    if let Some((crop_width, crop_height)) = crop_size(image.first()?, resize) {
+        let first = image.first()?;
+        // One crop window for every frame keeps animations steady.
+        let (left, top) = match resize.crop.unwrap_or(ImageCrop::Center) {
+            ImageCrop::Center => center_crop_offset(first, crop_width, crop_height),
+            ImageCrop::Smart => smartcrop::attention_offset(first, crop_width, crop_height),
+        };
+        for frame in &mut image.frames {
+            *frame = crop_raster(frame, left, top, crop_width, crop_height)?;
+        }
+    }
 
-    let resized_image;
-    let resized = if scale < 1.0 {
-        resized_image = resize_image(&oriented_image, scale)?;
-        &resized_image
-    } else {
-        &oriented_image
+    let output = image.first()?;
+    let (width, height) = (output.width, output.height);
+    let output_format = output_format_for_image(&image, options.format);
+    let bytes = match output_format {
+        OutputFormat::Avif => avif::encode(output, options.quality)?,
+        OutputFormat::Webp if image.is_animated() => {
+            webp::encode_animation(&image, options.quality)?
+        }
+        OutputFormat::Webp => webp::encode_still(output, options.quality)?,
     };
-
-    let cropped_image;
-    let (output, output_height) = if should_crop_image(resized, resize)? {
-        let crop_width = resize.width.min(dimension_from_vips(resized.get_width())?);
-        let crop_height = resize
-            .height
-            .ok_or(ImageError::TransformFailed)?
-            .min(frame_height_from_vips(resized)?);
-        cropped_image = crop_image(
-            resized,
-            crop_width,
-            crop_height,
-            resize.crop.unwrap_or(ImageCrop::Center),
-        )?;
-        (&cropped_image, crop_height)
-    } else {
-        (resized, frame_height_from_vips(resized)?)
-    };
-
-    let width = dimension_from_vips(output.get_width())?;
-    let height = output_height;
-    let output_format = output_format_for_image(output, options.format)?;
-    let bytes = encode_image(output, output_format, options.quality, height)?;
 
     Ok(TransformedImage {
         bytes,
@@ -158,54 +234,25 @@ fn detect_source_format(source: &[u8]) -> Result<SourceFormat, ImageError> {
     Err(ImageError::UnsupportedFormat)
 }
 
+/// Rejects sources whose decoded size exceeds the configured limits. Called
+/// with header dimensions before any pixel data is decoded.
 fn enforce_dimension_limits(
-    image: &VipsImage,
     width: u32,
     height: u32,
+    frames: u32,
     limits: &TransformLimits,
 ) -> Result<(), ImageError> {
+    if width == 0 || height == 0 || frames == 0 {
+        return Err(ImageError::TransformFailed);
+    }
     if width > limits.max_image_width || height > limits.max_image_height {
         return Err(ImageError::ImageTooLarge);
     }
-    let pixels = u64::from(width) * u64::from(dimension_from_vips(image.get_height())?);
+    let pixels = u64::from(width) * u64::from(height) * u64::from(frames);
     if pixels > limits.max_decoded_pixels {
         return Err(ImageError::ImageTooLarge);
     }
     Ok(())
-}
-
-fn read_image(source: &[u8], source_format: SourceFormat) -> Result<VipsImage, ImageError> {
-    let app = vips_app()?;
-    app.error_clear();
-    match source_format {
-        SourceFormat::Avif => VipsImage::new_from_buffer(source, ""),
-        SourceFormat::Gif => VipsImage::new_from_buffer(source, "[n=-1]"),
-        SourceFormat::Webp => VipsImage::new_from_buffer(source, "[n=-1]"),
-        SourceFormat::Jpeg | SourceFormat::Png => VipsImage::new_from_buffer(source, ""),
-    }
-    .map_err(|_| vips_transform_error(app))
-}
-
-fn autorotate_image(image: &VipsImage) -> Result<VipsImage, ImageError> {
-    let app = vips_app()?;
-    app.error_clear();
-    ops::autorot(image).map_err(|_| vips_transform_error(app))
-}
-
-fn should_crop_image(image: &VipsImage, resize: NormalizedResize) -> Result<bool, ImageError> {
-    let source_width = dimension_from_vips(image.get_width())?;
-    let source_height = frame_height_from_vips(image)?;
-    let Some(height) = resize.height else {
-        return Ok(false);
-    };
-    if resize.fit == Some(ImageFit::Contain) {
-        return Ok(false);
-    }
-
-    Ok(
-        resize.width.min(source_width) != source_width
-            || height.min(source_height) != source_height,
-    )
 }
 
 fn resize_scale(
@@ -233,351 +280,84 @@ fn resize_scale(
     }
 }
 
-fn resize_image(image: &VipsImage, scale: f64) -> Result<VipsImage, ImageError> {
-    let app = vips_app()?;
-    app.error_clear();
-    ops::resize(image, scale).map_err(|_| vips_transform_error(app))
+fn scaled_dimension(dimension: u32, scale: f64) -> u32 {
+    // Matches libvips' resize rounding so output sizes stay stable.
+    let scaled = (f64::from(dimension) * scale).round();
+    if scaled < 1.0 { 1 } else { scaled as u32 }
 }
 
-fn output_format_for_image(
-    image: &VipsImage,
-    requested: OutputFormat,
-) -> Result<OutputFormat, ImageError> {
-    if requested == OutputFormat::Avif && is_animated_image(image)? {
-        return Ok(OutputFormat::Webp);
-    }
-
-    Ok(requested)
-}
-
-fn crop_image(
-    image: &VipsImage,
+fn resize_raster(
+    resizer: &mut fr::Resizer,
+    raster: &Raster,
     width: u32,
     height: u32,
-    crop: ImageCrop,
-) -> Result<VipsImage, ImageError> {
-    if is_animated_image(image)? {
-        return crop_animated_image(image, width, height, crop);
-    }
-
-    match crop {
-        ImageCrop::Center => center_crop_image(image, width, height),
-        ImageCrop::Smart => smart_crop_image(image, width, height),
-    }
+) -> Result<Raster, ImageError> {
+    let pixel_type = raster.layout.pixel_type();
+    let source = fr::images::ImageRef::new(raster.width, raster.height, &raster.data, pixel_type)
+        .map_err(|_| ImageError::TransformFailed)?;
+    let mut destination = fr::images::Image::new(width, height, pixel_type);
+    // Lanczos3 matches the libvips resize kernel. RGBA is premultiplied while
+    // filtering so transparent pixels do not bleed color into visible edges.
+    let options = fr::ResizeOptions::new()
+        .resize_alg(fr::ResizeAlg::Convolution(fr::FilterType::Lanczos3))
+        .use_alpha(true);
+    resizer
+        .resize(&source, &mut destination, &options)
+        .map_err(|_| ImageError::TransformFailed)?;
+    Raster::new(width, height, raster.layout, destination.into_vec())
 }
 
-fn crop_animated_image(
-    image: &VipsImage,
+/// Returns the crop box for cover resizes whose scaled image overflows the
+/// requested box. Contain and width-only resizes never crop.
+fn crop_size(image: &Raster, resize: NormalizedResize) -> Option<(u32, u32)> {
+    let height = resize.height?;
+    if resize.fit == Some(ImageFit::Contain) {
+        return None;
+    }
+    let crop_width = resize.width.min(image.width);
+    let crop_height = height.min(image.height);
+    (crop_width != image.width || crop_height != image.height).then_some((crop_width, crop_height))
+}
+
+fn center_crop_offset(image: &Raster, width: u32, height: u32) -> (u32, u32) {
+    (
+        image.width.saturating_sub(width) / 2,
+        image.height.saturating_sub(height) / 2,
+    )
+}
+
+fn crop_raster(
+    raster: &Raster,
+    left: u32,
+    top: u32,
     width: u32,
     height: u32,
-    crop: ImageCrop,
-) -> Result<VipsImage, ImageError> {
-    let pages = n_pages_from_vips(image)?;
-    let frame_height = frame_height_from_vips(image)?;
-    let total_height = dimension_from_vips(image.get_height())?;
-    if u64::from(frame_height) * u64::from(pages) != u64::from(total_height) {
-        return Err(ImageError::TransformFailed);
-    }
-
-    let mut frames =
-        Vec::with_capacity(usize::try_from(pages).map_err(|_| ImageError::TransformFailed)?);
-    for page in 0..pages {
-        let frame = extract_animation_frame(image, page, frame_height)?;
-        let cropped = match crop {
-            ImageCrop::Center => center_crop_image(&frame, width, height)?,
-            ImageCrop::Smart => smart_crop_image(&frame, width, height)?,
-        };
-        frames.push(cropped);
-    }
-
-    join_animation_frames(frames)
-}
-
-fn extract_animation_frame(
-    image: &VipsImage,
-    page: u32,
-    frame_height: u32,
-) -> Result<VipsImage, ImageError> {
-    let app = vips_app()?;
-    app.error_clear();
-    let top = page
-        .checked_mul(frame_height)
-        .ok_or(ImageError::TransformFailed)?;
-    ops::extract_area(
-        image,
-        0,
-        i32::try_from(top).map_err(|_| ImageError::TransformFailed)?,
-        image.get_width(),
-        i32::try_from(frame_height).map_err(|_| ImageError::TransformFailed)?,
-    )
-    .map_err(|_| vips_transform_error(app))
-}
-
-fn join_animation_frames(frames: Vec<VipsImage>) -> Result<VipsImage, ImageError> {
-    let mut frames = frames.into_iter();
-    let Some(mut output) = frames.next() else {
-        return Err(ImageError::TransformFailed);
-    };
-
-    for frame in frames {
-        let app = vips_app()?;
-        app.error_clear();
-        output = ops::join(&output, &frame, ops::Direction::Vertical)
-            .map_err(|_| vips_transform_error(app))?;
-    }
-
-    Ok(output)
-}
-
-fn center_crop_image(image: &VipsImage, width: u32, height: u32) -> Result<VipsImage, ImageError> {
-    let app = vips_app()?;
-    app.error_clear();
-    let image_width = dimension_from_vips(image.get_width())?;
-    let image_height = frame_height_from_vips(image)?;
-    let left = (image_width.saturating_sub(width)) / 2;
-    let top = (image_height.saturating_sub(height)) / 2;
-    ops::extract_area(
-        image,
-        i32::try_from(left).map_err(|_| ImageError::TransformFailed)?,
-        i32::try_from(top).map_err(|_| ImageError::TransformFailed)?,
-        i32::try_from(width).map_err(|_| ImageError::TransformFailed)?,
-        i32::try_from(height).map_err(|_| ImageError::TransformFailed)?,
-    )
-    .map_err(|_| vips_transform_error(app))
-}
-
-fn smart_crop_image(image: &VipsImage, width: u32, height: u32) -> Result<VipsImage, ImageError> {
-    let app = vips_app()?;
-    app.error_clear();
-    ops::smartcrop(
-        image,
-        i32::try_from(width).map_err(|_| ImageError::TransformFailed)?,
-        i32::try_from(height).map_err(|_| ImageError::TransformFailed)?,
-    )
-    .map_err(|_| vips_transform_error(app))
-}
-
-fn encode_image(
-    image: &VipsImage,
-    format: OutputFormat,
-    quality: u8,
-    frame_height: u32,
-) -> Result<Vec<u8>, ImageError> {
-    let app = vips_app()?;
-    app.error_clear();
-    let page_height = page_height_for_save(image, frame_height)?;
-    match format {
-        OutputFormat::Avif => {
-            if page_height > 0 {
-                return Err(ImageError::UnsupportedFormat);
-            }
-            let suffix = save_suffix_for_avif(quality);
-            let bytes = image
-                .image_write_to_buffer(&suffix)
-                .map_err(|_| vips_transform_error(app))?;
-            Ok(copy_vips_allocated_buffer(bytes))
-        }
-        OutputFormat::Webp => {
-            let suffix = save_suffix_for_webp(quality, page_height);
-            let bytes = image
-                .image_write_to_buffer(&suffix)
-                .map_err(|_| vips_transform_error(app))?;
-            Ok(copy_vips_allocated_buffer(bytes))
-        }
-    }
-}
-
-fn save_suffix_for_avif(quality: u8) -> String {
-    format!(".avif[Q={quality},compression=av1,keep=none]")
-}
-
-fn save_suffix_for_webp(quality: u8, page_height: i32) -> String {
-    format!(
-        ".webp[Q={quality},alpha-q={quality},smart-subsample=true,preset=photo,keep=none,page-height={page_height}]"
-    )
-}
-
-fn frame_height_from_vips(image: &VipsImage) -> Result<u32, ImageError> {
-    let total_height = dimension_from_vips(image.get_height())?;
-    let page_height = dimension_from_vips(image.get_page_height())?;
-    let pages = n_pages_from_vips(image)?;
-    if pages > 1 && total_height % pages == 0 {
-        if page_height > 0 && u64::from(page_height) * u64::from(pages) == u64::from(total_height) {
-            return Ok(page_height);
-        }
-        return Ok(total_height / pages);
-    }
-
-    if page_height > 0 && page_height <= total_height && total_height % page_height == 0 {
-        return Ok(page_height);
-    }
-
-    Ok(total_height)
-}
-
-fn page_height_for_save(image: &VipsImage, frame_height: u32) -> Result<i32, ImageError> {
-    let total_height = dimension_from_vips(image.get_height())?;
-    if frame_height > 0 && total_height > frame_height && total_height % frame_height == 0 {
-        return i32::try_from(frame_height).map_err(|_| ImageError::TransformFailed);
-    }
-
-    Ok(0)
-}
-
-fn is_animated_image(image: &VipsImage) -> Result<bool, ImageError> {
-    Ok(n_pages_from_vips(image)? > 1)
-}
-
-fn n_pages_from_vips(image: &VipsImage) -> Result<u32, ImageError> {
-    match image.get_n_pages() {
-        pages if pages <= 0 => Ok(1),
-        pages => u32::try_from(pages).map_err(|_| ImageError::TransformFailed),
-    }
-}
-
-fn copy_vips_allocated_buffer(bytes: Vec<u8>) -> Vec<u8> {
-    VipsAllocatedBuffer::new(bytes).to_vec()
-}
-
-struct VipsAllocatedBuffer {
-    bytes: ManuallyDrop<Vec<u8>>,
-}
-
-impl VipsAllocatedBuffer {
-    fn new(bytes: Vec<u8>) -> Self {
-        Self {
-            bytes: ManuallyDrop::new(bytes),
-        }
-    }
-
-    fn to_vec(&self) -> Vec<u8> {
-        self.bytes.as_slice().to_vec()
-    }
-}
-
-impl Drop for VipsAllocatedBuffer {
-    fn drop(&mut self) {
-        if self.bytes.capacity() == 0 {
-            return;
-        }
-
-        // SAFETY: libvips allocates image_write_to_buffer output with GLib. The
-        // libvips crate wraps that pointer in Vec, so we suppress Vec's Drop
-        // and return ownership to GLib instead of Rust's global allocator.
-        unsafe {
-            libvips::bindings::g_free(self.bytes.as_mut_ptr().cast::<c_void>());
-        }
-    }
-}
-
-fn vips_transform_error(_app: &VipsApp) -> ImageError {
-    #[cfg(test)]
-    if let Ok(error) = _app.error_buffer()
-        && !error.is_empty()
+) -> Result<Raster, ImageError> {
+    if left
+        .checked_add(width)
+        .is_none_or(|right| right > raster.width)
+        || top
+            .checked_add(height)
+            .is_none_or(|bottom| bottom > raster.height)
     {
-        eprintln!("libvips error: {error}");
+        return Err(ImageError::TransformFailed);
     }
-    ImageError::TransformFailed
-}
-
-fn dimension_from_vips(value: i32) -> Result<u32, ImageError> {
-    u32::try_from(value).map_err(|_| ImageError::TransformFailed)
-}
-
-fn vips_app() -> Result<&'static VipsApp, ImageError> {
-    static APP: OnceLock<Result<VipsApp, ()>> = OnceLock::new();
-    match APP.get_or_init(|| {
-        let app = VipsApp::new("tako-images", false).map_err(|_| ())?;
-        app.concurrency_set(1);
-        app.cache_set_max(100);
-        app.cache_set_max_mem(128 * 1024 * 1024);
-        Ok(app)
-    }) {
-        Ok(app) => Ok(app),
-        Err(()) => Err(ImageError::TransformFailed),
+    let channels = raster.layout.channels();
+    let source_stride = raster.row_bytes();
+    let row_bytes = width as usize * channels;
+    let mut data = Vec::with_capacity(row_bytes * height as usize);
+    for row in top..top + height {
+        let start = row as usize * source_stride + left as usize * channels;
+        data.extend_from_slice(&raster.data[start..start + row_bytes]);
     }
+    Raster::new(width, height, raster.layout, data)
 }
 
-fn lock_active_count(mutex: &Mutex<usize>) -> MutexGuard<'_, usize> {
-    match mutex.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
+fn output_format_for_image(image: &Decoded, requested: OutputFormat) -> OutputFormat {
+    // Browser-timed AVIF animation is not produced; animated sources keep
+    // their animation as WebP instead.
+    if requested == OutputFormat::Avif && image.is_animated() {
+        return OutputFormat::Webp;
     }
-}
-
-fn wait_for_transform_slot<'a>(
-    available: &Condvar,
-    active: MutexGuard<'a, usize>,
-) -> MutexGuard<'a, usize> {
-    match available.wait(active) {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    }
-}
-
-struct TransformGate {
-    active: Mutex<usize>,
-    available: Condvar,
-    capacity: usize,
-}
-
-impl TransformGate {
-    fn new(capacity: usize) -> Self {
-        Self {
-            active: Mutex::new(0),
-            available: Condvar::new(),
-            capacity,
-        }
-    }
-
-    fn acquire(&'static self) -> TransformPermit {
-        let mut active = lock_active_count(&self.active);
-        while *active >= self.capacity {
-            active = wait_for_transform_slot(&self.available, active);
-        }
-        *active += 1;
-        TransformPermit { gate: self }
-    }
-
-    fn release(&self) {
-        let mut active = lock_active_count(&self.active);
-        if *active > 0 {
-            *active -= 1;
-            self.available.notify_one();
-        }
-    }
-}
-
-struct TransformPermit {
-    gate: &'static TransformGate,
-}
-
-impl Drop for TransformPermit {
-    fn drop(&mut self) {
-        self.gate.release();
-    }
-}
-
-fn acquire_vips_transform_permit() -> TransformPermit {
-    vips_transform_gate().acquire()
-}
-
-fn vips_transform_gate() -> &'static TransformGate {
-    static GATE: OnceLock<TransformGate> = OnceLock::new();
-    GATE.get_or_init(|| TransformGate::new(MAX_PARALLEL_TRANSFORMS))
-}
-
-#[cfg(test)]
-pub(crate) fn vips_transform_capacity() -> usize {
-    vips_transform_gate().capacity
-}
-
-#[cfg(test)]
-pub(crate) fn occupy_vips_transform_slot() -> impl Drop {
-    acquire_vips_transform_permit()
-}
-
-#[cfg(test)]
-pub(crate) fn vips_concurrency() -> Result<i32, ImageError> {
-    Ok(vips_app()?.concurrency_get())
+    requested
 }

@@ -3,8 +3,6 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use image::{ImageBuffer, ImageFormat, Rgb, Rgba};
 use std::io::Cursor;
-use std::sync::mpsc;
-use std::time::Duration;
 
 #[test]
 fn resizes_png_to_avif() {
@@ -476,53 +474,298 @@ fn rejects_source_bytes_above_limit() {
 }
 
 #[test]
-fn limits_parallel_libvips_transform_work() {
-    let img = ImageBuffer::from_fn(32, 16, |_x, _y| Rgba([255_u8, 0, 0, 255]));
-    let mut source = Cursor::new(Vec::new());
-    img.write_to(&mut source, ImageFormat::Png)
-        .expect("encode png");
-    let source = source.into_inner();
+fn converts_gif_repeat_count_to_webp_play_count() {
+    let source = gif_animation(Some(gif::Repeat::Finite(3)), &[4, 7, 11]);
 
-    let permits = (0..crate::transform::vips_transform_capacity())
-        .map(|_| crate::transform::occupy_vips_transform_slot())
-        .collect::<Vec<_>>();
-    let (started_tx, started_rx) = mpsc::channel();
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        started_tx.send(()).expect("send worker start");
-        let result = transform_image(
-            &source,
-            Some("image/png"),
-            transform_options(OutputFormat::Webp, 16, 80),
-            &TransformLimits::default(),
-        )
-        .map(|transformed| (transformed.width, transformed.height));
-        tx.send(result).expect("send transform result");
-    });
-    started_rx
-        .recv_timeout(Duration::from_secs(5))
-        .expect("transform worker starts");
+    let transformed = transform_image(
+        &source,
+        Some("image/gif"),
+        transform_options(OutputFormat::Webp, 32, 80),
+        &TransformLimits::default(),
+    )
+    .expect("transform image");
 
-    match rx.recv_timeout(Duration::from_millis(50)) {
-        Ok(result) => panic!("transform passed gate early: {result:?}"),
-        Err(mpsc::RecvTimeoutError::Timeout) => {}
-        Err(mpsc::RecvTimeoutError::Disconnected) => panic!("transform worker disconnected"),
-    }
-
-    drop(permits);
-    let dimensions = rx
-        .recv_timeout(Duration::from_secs(5))
-        .expect("transform completes after gate is released")
-        .expect("transform image");
-    assert_eq!(dimensions, (16, 8));
+    let animation = decode_webp_animation(&transformed.bytes);
+    // GIF repeats three extra times; WebP counts all four plays.
+    assert_eq!(
+        animation.loop_count,
+        image_webp::LoopCount::Times(4.try_into().expect("non-zero"))
+    );
+    assert_eq!(animation.delays_ms, [40, 70, 110]);
 }
 
 #[test]
-fn configures_libvips_for_single_worker_transforms() {
+fn plays_gif_without_loop_extension_once() {
+    let source = gif_animation(None, &[5, 5]);
+
+    let transformed = transform_image(
+        &source,
+        Some("image/gif"),
+        transform_options(OutputFormat::Webp, 32, 80),
+        &TransformLimits::default(),
+    )
+    .expect("transform image");
+
     assert_eq!(
-        crate::transform::vips_concurrency().expect("libvips initializes"),
-        1
+        decode_webp_animation(&transformed.bytes).loop_count,
+        image_webp::LoopCount::Times(1.try_into().expect("non-zero"))
     );
+}
+
+#[test]
+fn preserves_infinite_gif_loop_and_webp_loop_count() {
+    let source = BASE64_STANDARD
+        .decode(super::GIF_32X16_TWO_FRAMES)
+        .expect("decode gif");
+    let looping = transform_image(
+        &source,
+        Some("image/gif"),
+        transform_options(OutputFormat::Webp, 16, 80),
+        &TransformLimits::default(),
+    )
+    .expect("transform image");
+    assert_eq!(
+        decode_webp_animation(&looping.bytes).loop_count,
+        image_webp::LoopCount::Forever
+    );
+
+    let finite = transform_image(
+        &gif_animation(Some(gif::Repeat::Finite(1)), &[5, 5]),
+        Some("image/gif"),
+        transform_options(OutputFormat::Webp, 32, 80),
+        &TransformLimits::default(),
+    )
+    .expect("transform gif");
+    let rewritten = transform_image(
+        &finite.bytes,
+        Some("image/webp"),
+        transform_options(OutputFormat::Webp, 16, 80),
+        &TransformLimits::default(),
+    )
+    .expect("transform webp");
+    assert_eq!(
+        decode_webp_animation(&rewritten.bytes).loop_count,
+        image_webp::LoopCount::Times(2.try_into().expect("non-zero"))
+    );
+}
+
+#[test]
+fn keeps_transparent_canvas_in_animated_webp() {
+    // Regression: libwebp's animation encoder trimmed the transparent left
+    // half out of every sub-frame and dropped the VP8X alpha flag, so
+    // decoders painted it opaque.
+    let source = gif_animation(Some(gif::Repeat::Infinite), &[4, 7, 11, 13]);
+
+    let transformed = transform_image(
+        &source,
+        Some("image/gif"),
+        transform_options(OutputFormat::Webp, 32, 80),
+        &TransformLimits::default(),
+    )
+    .expect("transform image");
+
+    let animation = decode_webp_animation(&transformed.bytes);
+    assert!(animation.has_alpha, "animated WebP lost its alpha flag");
+    assert_eq!(animation.frames.len(), 4);
+    for frame in &animation.frames {
+        for y in 0..16usize {
+            for x in 0..32usize {
+                let alpha = frame[(y * 32 + x) * 4 + 3];
+                if x < 12 {
+                    assert_eq!(alpha, 0, "pixel ({x}, {y}) should stay transparent");
+                } else if x >= 20 {
+                    assert_eq!(alpha, 255, "pixel ({x}, {y}) should stay opaque");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn accepts_zero_delay_gif_frames() {
+    let source = gif_animation(Some(gif::Repeat::Infinite), &[0, 0, 3]);
+
+    let transformed = transform_image(
+        &source,
+        Some("image/gif"),
+        transform_options(OutputFormat::Webp, 16, 80),
+        &TransformLimits::default(),
+    )
+    .expect("transform image");
+
+    assert_animation_dimensions(&transformed.bytes, 16, 8, 3);
+}
+
+#[test]
+fn rejects_animations_above_cumulative_frame_budget() {
+    let source = gif_animation(Some(gif::Repeat::Infinite), &[5, 5, 5]);
+    // Each 32x16 frame is 512 pixels; two fit, three do not.
+    let limits = TransformLimits {
+        max_decoded_pixels: 1_100,
+        ..Default::default()
+    };
+
+    let err = transform_image(
+        &source,
+        Some("image/gif"),
+        transform_options(OutputFormat::Webp, 16, 80),
+        &limits,
+    )
+    .unwrap_err();
+    assert_eq!(err, ImageError::ImageTooLarge);
+
+    let webp = transform_image(
+        &source,
+        Some("image/gif"),
+        transform_options(OutputFormat::Webp, 32, 80),
+        &TransformLimits::default(),
+    )
+    .expect("transform gif");
+    let err = transform_image(
+        &webp.bytes,
+        Some("image/webp"),
+        transform_options(OutputFormat::Webp, 16, 80),
+        &limits,
+    )
+    .unwrap_err();
+    assert_eq!(err, ImageError::ImageTooLarge);
+}
+
+#[test]
+fn round_trips_transparent_images_through_avif() {
+    let img = ImageBuffer::from_fn(64, 32, |x, _y| {
+        Rgba([0_u8, 96, 255, if x < 32 { 0 } else { 255 }])
+    });
+    let mut source = Cursor::new(Vec::new());
+    img.write_to(&mut source, ImageFormat::Png)
+        .expect("encode png");
+
+    let avif = transform_image(
+        source.get_ref(),
+        Some("image/png"),
+        transform_options(OutputFormat::Avif, 64, 80),
+        &TransformLimits::default(),
+    )
+    .expect("encode avif");
+    assert!(is_avif(&avif.bytes));
+
+    let webp = transform_image(
+        &avif.bytes,
+        Some("image/avif"),
+        transform_options(OutputFormat::Webp, 32, 90),
+        &TransformLimits::default(),
+    )
+    .expect("decode avif");
+    assert_eq!((webp.width, webp.height), (32, 16));
+
+    let decoded = image::load_from_memory_with_format(&webp.bytes, ImageFormat::WebP)
+        .expect("decode webp")
+        .into_rgba8();
+    assert!(
+        decoded.get_pixel(2, 8)[3] < 16,
+        "left half should stay transparent"
+    );
+    assert!(
+        decoded.get_pixel(29, 8)[3] > 240,
+        "right half should stay opaque"
+    );
+}
+
+#[test]
+fn rejects_avif_above_dimension_limits_before_decoding() {
+    let source = BASE64_STANDARD
+        .decode(super::AVIF_16X8)
+        .expect("decode avif");
+
+    let err = transform_image(
+        &source,
+        Some("image/avif"),
+        transform_options(OutputFormat::Webp, 16, 80),
+        &TransformLimits {
+            max_image_width: 8,
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(err, ImageError::ImageTooLarge);
+}
+
+#[test]
+fn smart_crop_keeps_the_detailed_region() {
+    // Flat gray with a saturated checkerboard on the right edge.
+    let img = ImageBuffer::from_fn(256, 64, |x, y| {
+        if x >= 192 {
+            if (x / 8 + y / 8) % 2 == 0 {
+                Rgb([255_u8, 0, 0])
+            } else {
+                Rgb([0, 0, 255])
+            }
+        } else {
+            Rgb([128, 128, 128])
+        }
+    });
+    let mut source = Cursor::new(Vec::new());
+    img.write_to(&mut source, ImageFormat::Png)
+        .expect("encode png");
+
+    let crop = |crop| {
+        let transformed = transform_image(
+            source.get_ref(),
+            Some("image/png"),
+            TransformOptions {
+                height: Some(64),
+                fit: Some(ImageFit::Cover),
+                crop: Some(crop),
+                ..transform_options(OutputFormat::Webp, 64, 90)
+            },
+            &TransformLimits::default(),
+        )
+        .expect("transform image");
+        assert_eq!((transformed.width, transformed.height), (64, 64));
+        image::load_from_memory_with_format(&transformed.bytes, ImageFormat::WebP)
+            .expect("decode webp")
+            .into_rgb8()
+    };
+
+    let saturated = |image: &image::RgbImage| {
+        image
+            .pixels()
+            .filter(|pixel| pixel[0].abs_diff(pixel[2]) > 128)
+            .count()
+    };
+    let center = crop(ImageCrop::Center);
+    let smart = crop(ImageCrop::Smart);
+    assert_eq!(saturated(&center), 0);
+    let smart_saturated = saturated(&smart);
+    assert!(
+        smart_saturated > 3_000,
+        "smart crop missed the detail: {smart_saturated} saturated pixels"
+    );
+}
+
+/// A 32x16 animation: the left 12 columns are transparent, the right 12 are
+/// opaque and change color per frame, and the middle uses partial frames.
+fn gif_animation(repeat: Option<gif::Repeat>, delays_cs: &[u16]) -> Vec<u8> {
+    let palette = [0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0];
+    let mut bytes = Vec::new();
+    {
+        let mut encoder = gif::Encoder::new(&mut bytes, 32, 16, &palette).expect("gif encoder");
+        if let Some(repeat) = repeat {
+            encoder.set_repeat(repeat).expect("set repeat");
+        }
+        for (index, delay) in delays_cs.iter().enumerate() {
+            let color = 1 + (index % 4) as u8;
+            let pixels = (0..16 * 32)
+                .map(|i| if i % 32 < 12 { 0 } else { color })
+                .collect::<Vec<u8>>();
+            let mut frame = gif::Frame::from_indexed_pixels(32, 16, pixels, Some(0));
+            frame.delay = *delay;
+            frame.dispose = gif::DisposalMethod::Background;
+            encoder.write_frame(&frame).expect("write frame");
+        }
+    }
+    bytes
 }
 
 fn transform_options(format: OutputFormat, width: u32, quality: u8) -> TransformOptions {
@@ -544,18 +787,49 @@ fn is_avif(bytes: &[u8]) -> bool {
             .any(|brand| brand == b"avif" || brand == b"avis")
 }
 
-fn assert_animation_dimensions(bytes: &[u8], width: u32, height: u32, frames: i32) {
-    let _permit = crate::transform::occupy_vips_transform_slot();
-    let animation = libvips::VipsImage::new_from_buffer(bytes, "[n=-1]").expect("load animation");
-    assert_eq!(
-        animation.get_width(),
-        i32::try_from(width).expect("width fits")
-    );
-    assert_eq!(
-        animation.get_page_height(),
-        i32::try_from(height).expect("height fits")
-    );
-    assert_eq!(animation.get_n_pages(), frames);
+fn assert_animation_dimensions(bytes: &[u8], width: u32, height: u32, frames: u32) {
+    let animation = decode_webp_animation(bytes);
+    assert_eq!((animation.width, animation.height), (width, height));
+    assert_eq!(animation.frames.len(), frames as usize);
+}
+
+struct WebpAnimation {
+    width: u32,
+    height: u32,
+    has_alpha: bool,
+    loop_count: image_webp::LoopCount,
+    delays_ms: Vec<u32>,
+    /// RGBA canvas after each frame.
+    frames: Vec<Vec<u8>>,
+}
+
+fn decode_webp_animation(bytes: &[u8]) -> WebpAnimation {
+    let mut decoder = image_webp::WebPDecoder::new(Cursor::new(bytes)).expect("parse webp");
+    assert!(decoder.is_animated(), "expected an animated WebP");
+    let (width, height) = decoder.dimensions();
+    let has_alpha = decoder.has_alpha();
+    let loop_count = decoder.loop_count();
+    let mut delays_ms = Vec::new();
+    let mut frames = Vec::new();
+    for _ in 0..decoder.num_frames() {
+        let mut buffer = vec![0; decoder.output_buffer_size().expect("buffer size")];
+        delays_ms.push(decoder.read_frame(&mut buffer).expect("decode frame"));
+        if !has_alpha {
+            buffer = buffer
+                .chunks_exact(3)
+                .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255])
+                .collect();
+        }
+        frames.push(buffer);
+    }
+    WebpAnimation {
+        width,
+        height,
+        has_alpha,
+        loop_count,
+        delays_ms,
+        frames,
+    }
 }
 
 const PRIVATE_XMP_MARKER: &[u8] = b"tako-private-xmp-marker";

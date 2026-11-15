@@ -390,19 +390,10 @@ fn tako_service_status_returns_unknown_without_systemctl() {
 #[test]
 fn install_server_script_installs_and_verifies_runtime_dependencies() {
     let script = super::tako::INSTALL_SERVER_SCRIPT;
-    assert!(script.contains("install_libvips_runtime"));
-    assert!(script.contains("libvips42t64"));
-    assert!(script.contains("libheif-plugin-aomenc"));
-    assert!(script.contains("libheif-plugin-aomdec"));
-    assert!(script.contains("libheif-plugin-dav1d"));
-    assert!(script.contains("apt-get install -y \"$apt_vips_pkg\" $apt_avif_pkgs"));
-    assert!(script.contains("if dnf install -y vips; then"));
-    assert!(script.contains("install_libvips_from_remi"));
-    assert!(script.contains("rpms.remirepo.net"));
-    assert!(script.contains("install_libvips_codec_runtime"));
-    assert!(!script.contains("dnf install -y libvips"));
-    assert!(script.contains("install_missing_tako_server_runtime_deps"));
-    assert!(script.contains("install_missing_tako_server_runtime_deps /usr/local/bin/tako-server"));
+    // Image codecs are statically linked into tako-server.
+    assert!(!script.contains("vips"));
+    assert!(!script.contains("libheif"));
+    assert!(!script.contains("rpms.remirepo.net"));
     assert!(script.contains("verify_tako_server_runtime_deps"));
     assert!(script.contains("missing_runtime_libraries /usr/local/bin/tako-server"));
     assert!(script.contains("install_podman_runtime"));
@@ -414,13 +405,8 @@ fn install_server_script_installs_and_verifies_runtime_dependencies() {
     let install_index = script
         .find("install -m 0755 \"$tmp_bin\" /usr/local/bin/tako-server")
         .unwrap();
-    let runtime_deps_index = script
-        .find("install_missing_tako_server_runtime_deps /usr/local/bin/tako-server")
-        .unwrap();
-    assert!(install_index < runtime_deps_index);
-
-    let between_install_and_runtime_check = &script[install_index..runtime_deps_index];
-    assert!(!between_install_and_runtime_check.contains("install_libvips_runtime"));
+    let runtime_check_index = script.find("\nverify_tako_server_runtime_deps\n").unwrap();
+    assert!(install_index < runtime_check_index);
 }
 
 #[test]

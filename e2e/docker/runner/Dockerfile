@@ -16,7 +16,6 @@ RUN --mount=type=secret,id=proxy_ca,mode=0444 \
     jq \
     ca-certificates \
     git \
-    libvips42 \
   && rm -rf /var/lib/apt/lists/*
 
 ENV BUN_INSTALL=/root/.bun
