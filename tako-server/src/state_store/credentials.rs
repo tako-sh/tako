@@ -22,6 +22,7 @@ impl SqliteStateStore {
         }
     }
 
+    #[cfg(test)]
     pub fn set_runtime_credentials(
         &self,
         app: &str,

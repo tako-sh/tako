@@ -1,6 +1,28 @@
 use crate::config::{ServerInventory, TakoToml};
 use crate::output;
 
+pub(super) fn can_configure_bindings(
+    config: &TakoToml,
+    env: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let Some(id) = config.envs.get(env).and_then(|env| env.network.as_deref()) else {
+        return Ok(true);
+    };
+    let alias = crate::network::resolve_network(Some(id), None)?;
+    let profile = crate::network::load_profile(&alias)?;
+    let device = profile
+        .request()
+        .device_id_for(&profile.snapshot().network.id)?;
+    let members = profile
+        .snapshot()
+        .effective_members(crate::network::now()?)?;
+    Ok(members
+        .get(&device)
+        .ok_or("This device is not an active network member")?
+        .permissions
+        .server_admin)
+}
+
 /// Resolve which servers to target for a given environment.
 ///
 /// Uses trusted native network membership and project placement selectors.

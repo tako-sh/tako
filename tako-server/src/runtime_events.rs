@@ -18,14 +18,24 @@ pub(crate) async fn handle_instance_event(state: &ServerState, event: InstanceEv
         }
         InstanceEvent::Ready { app, instance_id } => {
             tracing::info!(app = %app, instance = %instance_id, "Instance ready");
-            state.cold_start.mark_ready(&app);
-            crate::metrics::set_instance_health(&app, &instance_id, true);
-
-            if let Some(app_ref) = state.app_manager.get_app(&app) {
-                app_ref.clear_last_error();
-                update_instance_count_metric(&app, &app_ref);
-            }
+            instance_ready(state, &app, &instance_id);
         }
+    }
+}
+
+fn instance_ready(state: &ServerState, app: &str, instance_id: &str) {
+    crate::metrics::set_instance_health(app, instance_id, true);
+
+    if let Some(app_ref) = state.app_manager.get_app(app) {
+        if !app_ref.is_instance_routing_suppressed(instance_id)
+            && app_ref
+                .get_instance(instance_id)
+                .is_some_and(|instance| instance.state() == InstanceState::Healthy)
+        {
+            state.cold_start.mark_ready(app);
+            app_ref.clear_last_error();
+        }
+        update_instance_count_metric(app, &app_ref);
     }
 }
 
@@ -36,13 +46,7 @@ pub(crate) async fn handle_health_event(state: &ServerState, event: HealthEvent)
     match event {
         HealthEvent::Healthy { app, instance_id } => {
             tracing::info!(app = %app, instance = %instance_id, "Instance is healthy");
-            crate::metrics::set_instance_health(&app, &instance_id, true);
-            state.cold_start.mark_ready(&app);
-
-            if let Some(app_ref) = state.app_manager.get_app(&app) {
-                app_ref.clear_last_error();
-                update_instance_count_metric(&app, &app_ref);
-            }
+            instance_ready(state, &app, &instance_id);
         }
         HealthEvent::Unhealthy { app, instance_id } => {
             tracing::warn!(app = %app, instance = %instance_id, "Instance became unhealthy");
@@ -505,16 +509,12 @@ const OPERATOR_PRIORITY_WINDOW: Duration = Duration::from_secs(60);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BackgroundWork {
     AutomaticRecovery,
-    /// Operator backups (`backups now`, the post-deploy archive in finalize)
-    /// are operator work.
-    ScheduledBackup,
 }
 
 impl BackgroundWork {
     fn busy_message(self, app_name: &str) -> String {
         let (work, pauses) = match self {
             Self::AutomaticRecovery => ("Automatic recovery", "Recovery"),
-            Self::ScheduledBackup => ("A scheduled backup", "Scheduled backups"),
         };
         format!(
             "{work} of {app_name} is in progress; retry in a moment. \
@@ -673,28 +673,6 @@ impl ServerState {
     pub(crate) async fn lock_deploy_for_backup(&self, app_name: &str) -> BackupDeployLock {
         let guard = self.get_deploy_lock(app_name).await.lock_owned().await;
         BackupDeployLock::open(self.app_manager.get_app(app_name), guard, false)
-    }
-
-    /// For scheduled backups: never waits, and yields to operators like any
-    /// background work, see `try_lock_deploy_for_background`.
-    pub(crate) async fn try_lock_deploy_for_scheduled_backup(
-        &self,
-        app_name: &str,
-        now: Instant,
-    ) -> Option<BackupDeployLock> {
-        let lock = self.get_deploy_lock(app_name).await;
-        let Some(app) = self.app_manager.get_app(app_name) else {
-            // No operator operation waits on an app that is not loaded.
-            return Some(BackupDeployLock::open(
-                None,
-                lock.try_lock_owned().ok()?,
-                false,
-            ));
-        };
-        let guard = take_for_background(&app, BackgroundWork::ScheduledBackup, now, || {
-            lock.try_lock_owned().ok()
-        })?;
-        Some(BackupDeployLock::open(Some(app), guard, true))
     }
 }
 

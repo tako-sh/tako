@@ -19,11 +19,13 @@ Use `tako <command> --help` or the connected MCP tool's schema for the exact arg
 | `-v`, `--verbose`               | Append-only transcript with timestamps, log levels, and debug diagnostics.                                                             |
 | `--ci`                          | Deterministic non-interactive output: no colors, spinners, raw mode, or prompts.                                                       |
 | `--json`                        | Emit structured JSON on stdout. Progress, diagnostics, and errors stay on stderr.                                                      |
-| `--dry-run`                     | Show side effects without performing them. Supported by deploy, network server add/remove, delete, and side-effecting backup commands. |
+| `--dry-run`                     | Preview supported changes. A command that cannot preview its changes exits with an error before running.                               |
 | `-c`, `--config <CONFIG>`       | Use an explicit config file. `.toml` is appended when omitted.                                                                         |
 | `--ssh-passphrase <PASSPHRASE>` | Use a passphrase for encrypted local SSH keys.                                                                                         |
 
 App-scoped commands that honor `-c`: `agents`, `mcp`, `init`, `dev`, `run`, `logs`, `deploy`, `releases`, `backups`, `delete`, `secrets`, `credentials`, `storages`, `generate`, and project-context `scale`.
+
+Preview changes with `--dry-run` on `agents`, `deploy`, `scale`, `delete`, `connect`, `disconnect`, `ssh`, `secrets sync`, `secrets migrate`, `backups now/download/restore`, and `workflows retry/cancel`. Network membership commands also support previews, including server add, remove, drain, resume, and uninstall. Read-only commands still report their results.
 
 The config file's parent directory determines the project root and local `.tako/` state. Config files in the same directory share secret drafts; a bound environment cannot be reused for another app or network. See [alternate configurations](/secrets/#use-an-alternate-configuration).
 
@@ -168,7 +170,7 @@ Secrets are not process env vars. `tako run` is local-only in v0; it does not ru
 tako deploy [--env <env>] [-y|--yes] [--force] [--description <text>]
 ```
 
-Builds locally, uploads artifacts over signed HTTP management, prepares every mapped server, runs the optional release command on the leader, rolls instances, finalizes the release, and runs post-deploy backups when enabled. When an hourly database snapshot is running, the post-deploy backup is queued on the server and the deploy reports `backup queued` instead of waiting; a failed post-deploy backup is reported without failing the deploy. `--env` defaults to `production`. `development` is reserved for `tako dev`. Deploy requires the CLI, server, and release artifact to use the same protocol version; a mismatch fails before release commands, workflows, or app processes start. `--force` attempts the deploy despite a mismatch but does not skip normal validation or readiness checks. It is separate from `--yes`, which only skips confirmation.
+Builds locally, uploads artifacts over signed HTTP management, prepares every mapped server, runs the optional release command on the leader, rolls instances, and finalizes the release. Configured SQLite databases are backed up continuously; deploys do not create full-directory archives. `--env` defaults to `production`. `development` is reserved for `tako dev`. Deploy requires the CLI, server, and release artifact to use the same protocol version; a mismatch fails before release commands, workflows, or app processes start. `--force` attempts the deploy despite a mismatch but does not skip normal validation or readiness checks. It is separate from `--yes`, which only skips confirmation.
 
 ```bash
 tako logs [--env <env>] [--tail] [--days N]
@@ -322,16 +324,19 @@ Storage commands default to `--env production` and `--provider s3`.
 
 ```bash
 tako backups now [--env <env>] [--server <server>]
-tako backups list [--env <env>] [--server <server>]
+tako backups list [--database <path> [--shared]] [--env <env>] [--server <server>]
 tako backups ls [--env <env>] [--server <server>]
 tako backups status [--env <env>]
 tako backups download <backup-id> [--env <env>] [--server <server>] [--output <path>]
 tako backups restore <backup-id> [--env <env>] [--server <server>] [-y|--yes]
+tako backups restore --database <path> (--latest|--txid <capture-id>) [--shared] [--env <env>] [--server <server>] [-y|--yes]
 ```
 
 Backup commands default to `production`, require project context, and target the deployment id `{app}/{env}` over signed HTTP management. Multi-server download and restore require `--server`.
 
-`backups list` shows each entry's kind: `full` for an archive of the whole data tree, or `databases` for an hourly snapshot of only its SQLite databases. `--json` entries include `kind` and, for a database snapshot, its `databases`. `backups status` reports the latest full backup, the latest database snapshot, the reason the latest hourly database snapshot was skipped, if it was, and why scheduled full backups are failing, with the next attempt (`--json`: `last_backup`, `last_database_snapshot_at_unix_secs`, `last_database_snapshot_skip`, `last_backup_failure`). `download` saves the encrypted archive object, by default as `<backup-id>.tar.zst.enc` for a full backup or `<backup-id>.databases.tar.zst.enc` for a database snapshot, a name built from the validated ID; `--json` prints `backup`, `path`, and `size_bytes`. `restore` of a full backup replaces the data directory; restore of a database snapshot replaces only the SQLite databases it contains, removes their `-wal`, `-shm`, and `-journal` files, and leaves other files untouched. The confirmation names what the selected kind replaces, including the workflow-state rewind when the snapshot contains `tako/workflows.sqlite`. `restore --json` prints `backup` and, for a database snapshot, `databases` with the `replaced`, `created`, and `untouched` paths.
+`backups now` creates a manual full app-directory archive; deploys and timers do not create one. `backups list` lists these archives and older `databases` archives. Add `--database <path>` to list continuous SQLite recovery points and `--shared` for paths relative to `TAKO_SHARED_DATA_DIR`. `backups status` shows capture/upload progress, errors, and consuming apps for each selected database, plus manual archive and unfinished-restore status.
+
+Use `backups restore --database <path> --latest` or `--txid <capture-id>` to restore SQLite. Add `--shared` for a shared database; this requires server-admin permission and pauses all apps on that server. Private database restores pause the owning app. Use `--server` when multiple servers are mapped. `backups restore <backup-id>` restores a manual archive, including workflow state when present. `download` saves an encrypted archive; continuous SQLite history uses the database restore commands. See [Backups](/backups/) for retention, restore locks, and recovery on a replacement server.
 
 ## Workflows
 
@@ -380,4 +385,4 @@ Opt out:
 export TAKO_TELEMETRY=0
 ```
 
-Usage stats are always off in CI (`CI=true` or `--ci`), even with `TAKO_TELEMETRY=1`. Local Cargo builds are off by default; set `TAKO_TELEMETRY=1` to send from local builds outside CI.
+Usage stats are always off during dry runs and in CI (`CI=true` or `--ci`), even with `TAKO_TELEMETRY=1`. Local Cargo builds are off by default; set `TAKO_TELEMETRY=1` to send from local builds outside CI.

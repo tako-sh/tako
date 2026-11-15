@@ -150,28 +150,6 @@ impl DeployConfig {
     }
 }
 
-fn can_configure_bindings(
-    config: &TakoToml,
-    env: &str,
-) -> Result<bool, Box<dyn std::error::Error>> {
-    let Some(id) = config.envs.get(env).and_then(|env| env.network.as_deref()) else {
-        return Ok(true);
-    };
-    let alias = crate::network::resolve_network(Some(id), None)?;
-    let profile = crate::network::load_profile(&alias)?;
-    let device = profile
-        .request()
-        .device_id_for(&profile.snapshot().network.id)?;
-    let members = profile
-        .snapshot()
-        .effective_members(crate::network::now()?)?;
-    Ok(members
-        .get(&device)
-        .ok_or("This device is not an active network member")?
-        .permissions
-        .server_admin)
-}
-
 pub fn run(
     env: Option<&str>,
     assume_yes: bool,
@@ -260,7 +238,7 @@ async fn run_async(
 
     let source_root = source_bundle_root(&project_dir, preflight_runtime_adapter.id());
 
-    if preflight_runtime_adapter.preset_group() == PresetGroup::Js {
+    if !output::is_dry_run() && preflight_runtime_adapter.preset_group() == PresetGroup::Js {
         js::write_generated_files_with_schemas(
             &project_dir,
             preflight_runtime_adapter,
@@ -270,15 +248,13 @@ async fn run_async(
         )?;
     }
 
-    let _bun_lockfile_checked = if should_run_bun_lockfile_preflight(preflight_runtime_adapter) {
+    if !output::is_dry_run() && should_run_bun_lockfile_preflight(preflight_runtime_adapter) {
         output::with_spinner_silent("Checking Bun lockfile", || {
             let _t = output::timed("Bun lockfile check");
             run_bun_lockfile_preflight(&source_root)
         })
-        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?
-    } else {
-        false
-    };
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    }
 
     // Skip confirmation when the target is unambiguous: the user passed
     // --env production or --yes, or there is no other environment the
@@ -319,7 +295,7 @@ async fn run_async(
             )
         })?;
     }
-    let configure_bindings = can_configure_bindings(&tako_config, &env)?;
+    let configure_bindings = super::helpers::can_configure_bindings(&tako_config, &env)?;
     let secrets_result = validate_secrets_for_deployment(&secrets, &env);
     if secrets_result.has_errors() {
         return Err(format!("Secret errors: {}", secrets_result.errors.join("; ")).into());

@@ -1,4 +1,4 @@
-//! Isolated experiment: terse captures locally; async uploads never list the bucket.
+//! Embedded SQLite WAL capture, encrypted uploads, retention, and recovery.
 
 use std::{
     fs,
@@ -14,9 +14,12 @@ use bytes::Bytes;
 use futures::TryStreamExt;
 use object_store::{GetOptions, ObjectStore, PutMode, PutOptions, path::Path as ObjectPath};
 use tempfile::NamedTempFile;
-use terse_litestream::{Database, FileStore, Options, ReplicaStore, Segment};
+use terse_litestream::{Database, FileStore, Options, Segment};
 
+pub mod replica;
 mod retention;
+pub use terse_litestream::{FileStore as Spool, ReplicaStore};
+pub mod encryption;
 pub use retention::{RETENTION, RETENTION_INTERVAL, prune_expired};
 
 /// Capture and upload together so busy databases normally produce one object per minute.
@@ -84,22 +87,38 @@ impl BackupLoop {
 pub struct Capture {
     database: Database,
     spool: FileStore,
-    _lock: File,
+    _lock: CaptureLock,
+}
+
+/// Held while capturing or while replacing the source during a restore.
+pub struct CaptureLock(File);
+
+impl Drop for CaptureLock {
+    fn drop(&mut self) {
+        // Explicit unlock also releases descriptors briefly inherited by a
+        // concurrent fork before exec, rather than waiting for the child.
+        let _ = self.0.unlock();
+    }
+}
+
+pub fn lock_capture(directory: &Path) -> Result<CaptureLock> {
+    fs::create_dir_all(directory)?;
+    let lock = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(directory.join("capture.lock"))?;
+    lock.try_lock()
+        .context("spool already has a capture owner")?;
+    Ok(CaptureLock(lock))
 }
 
 impl Capture {
     /// Opens a durable local spool. Keep one dedicated spool and remote prefix per database.
     pub fn open(database: &Path, directory: &Path) -> Result<Self> {
         let source = fs::canonicalize(database)?;
-        fs::create_dir_all(directory)?;
-        let lock = File::options()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(directory.join("capture.lock"))?;
-        lock.try_lock()
-            .context("spool already has a capture owner")?;
+        let lock = lock_capture(directory)?;
         let identity = directory.join("source");
         let source = source.to_str().context("source path must be UTF-8")?;
         if identity.exists() {
@@ -150,7 +169,11 @@ pub async fn upload_pending(
     Ok(uploaded)
 }
 
-fn upload_lock(spool: &FileStore, remote: &dyn ObjectStore, prefix: &ObjectPath) -> Result<File> {
+fn upload_lock(
+    spool: &FileStore,
+    remote: &dyn ObjectStore,
+    prefix: &ObjectPath,
+) -> Result<CaptureLock> {
     let receipts = spool.root().join("uploaded");
     fs::create_dir_all(&receipts)?;
     File::open(spool.root())?.sync_all()?;
@@ -161,6 +184,7 @@ fn upload_lock(spool: &FileStore, remote: &dyn ObjectStore, prefix: &ObjectPath)
         .truncate(false)
         .open(receipts.join("upload.lock"))?;
     lock.try_lock().context("spool already has an uploader")?;
+    let lock = CaptureLock(lock);
     let destination = receipts.join("destination");
     let identity = format!("{remote}\n{prefix}");
     if destination.exists() {
@@ -200,8 +224,10 @@ async fn upload_segment(
         return Ok(false);
     }
     let key = segment_key(prefix, segment);
-    // shortcut: buffer one segment; stream large transactions before production use.
-    let bytes = Bytes::from(fs::read(spool.path(segment))?);
+    // Segment files are immutable and the upload lease excludes retention.
+    // Mapping lets the kernel reclaim pages during a large upload.
+    let file = File::open(spool.path(segment))?;
+    let bytes = unsafe { Bytes::from_owner(memmap2::Mmap::map(&file)?) };
     let options = PutOptions {
         mode: PutMode::Create,
         ..Default::default()
@@ -236,27 +262,72 @@ pub async fn restore_remote(
     ensure!(!output.exists(), "restore output already exists");
     let directory = tempfile::tempdir()?;
     let store = FileStore::new(directory.path());
-    let prefix = prefix.clone().join("ltx");
-    let mut objects = remote.list(Some(&prefix));
+    download_replica(remote, prefix, &store).await?;
+    terse_litestream::restore(&store, output, target)
+}
+
+#[derive(Debug, Clone)]
+pub struct RecoveryPoint {
+    pub txid: u64,
+    pub uploaded_at_unix_secs: i64,
+    pub size_bytes: u64,
+}
+
+fn parse_segment(prefix: &ObjectPath, key: &ObjectPath) -> Result<Segment> {
+    let relative = key
+        .as_ref()
+        .strip_prefix(&format!("{prefix}/ltx/"))
+        .context("object is outside replica prefix")?;
+    let (level, name) = relative.split_once('/').context("invalid segment key")?;
+    let stem = name
+        .strip_suffix(".ltx")
+        .context("invalid segment extension")?;
+    ensure!(
+        stem.len() == 33 && stem.as_bytes()[16] == b'-',
+        "invalid segment name"
+    );
+    let level: u8 = level.parse()?;
+    ensure!(level == 0 || level == 9, "invalid replica level");
+    Segment::new(
+        level,
+        u64::from_str_radix(stem.get(..16).context("invalid TXID")?, 16)?,
+        u64::from_str_radix(stem.get(17..).context("invalid TXID")?, 16)?,
+    )
+}
+
+pub async fn recovery_points(
+    remote: &dyn ObjectStore,
+    prefix: &ObjectPath,
+) -> Result<Vec<RecoveryPoint>> {
+    let mut objects = remote.list(Some(&prefix.clone().join("ltx")));
+    let mut points = std::collections::BTreeMap::new();
     while let Some(object) = objects.try_next().await? {
-        let relative = object
-            .location
-            .as_ref()
-            .strip_prefix(&format!("{prefix}/"))
-            .context("object is outside restore prefix")?;
-        let (level, name) = relative.split_once('/').context("invalid segment key")?;
-        let stem = name
-            .strip_suffix(".ltx")
-            .context("invalid segment extension")?;
-        ensure!(
-            stem.len() == 33 && stem.as_bytes()[16] == b'-',
-            "invalid segment name"
+        let segment = parse_segment(prefix, &object.location)?;
+        points.insert(
+            segment.max_txid,
+            RecoveryPoint {
+                txid: segment.max_txid,
+                uploaded_at_unix_secs: object.last_modified.timestamp(),
+                size_bytes: object.size,
+            },
         );
-        let segment = Segment::new(
-            level.parse()?,
-            u64::from_str_radix(stem.get(..16).context("invalid TXID")?, 16)?,
-            u64::from_str_radix(stem.get(17..).context("invalid TXID")?, 16)?,
-        )?;
+    }
+    Ok(points.into_values().rev().collect())
+}
+
+/// Seed an empty local spool before starting capture on a replacement server.
+/// Reopening capture then writes a full snapshot above the remote high-water mark.
+pub async fn download_replica(
+    remote: &dyn ObjectStore,
+    prefix: &ObjectPath,
+    store: &FileStore,
+) -> Result<()> {
+    let mut objects = remote.list(Some(&prefix.clone().join("ltx")));
+    while let Some(object) = objects.try_next().await? {
+        let segment = parse_segment(prefix, &object.location)?;
+        if store.path(&segment).exists() {
+            continue;
+        }
         let bytes = remote
             .get_opts(&object.location, GetOptions::default())
             .await?
@@ -266,7 +337,22 @@ pub async fn restore_remote(
         writer.write_all(&bytes)?;
         writer.commit()?;
     }
-    terse_litestream::restore(&store, output, target)
+    Ok(())
+}
+
+/// The greatest locally captured point and greatest acknowledged remote point.
+pub fn positions(spool: &FileStore) -> Result<(Option<u64>, Option<u64>)> {
+    let mut captured = None;
+    let mut uploaded = None;
+    for level in [0, 9] {
+        for segment in spool.list(level)? {
+            captured = captured.max(Some(segment.max_txid));
+            if receipt_path(spool, &segment).exists() {
+                uploaded = uploaded.max(Some(segment.max_txid));
+            }
+        }
+    }
+    Ok((captured, uploaded))
 }
 
 fn persist(directory: &Path, destination: &Path, bytes: &[u8]) -> Result<()> {

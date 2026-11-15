@@ -14,7 +14,6 @@ pub const UPGRADE_RELOAD_MARKER_FILE: &str = ".upgrade-reload";
 pub const MANAGEMENT_AUTH_NAMESPACE: &str = "tako-management-rpc-v0";
 pub const MAX_RELEASE_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
 pub const DEFAULT_BACKUP_RETENTION_DAYS: u16 = 30;
-pub const BACKUP_INTERVAL_SECS: i64 = 24 * 60 * 60;
 const DEPLOYMENT_APP_ID_SEPARATOR: char = '/';
 
 pub fn management_auth_message(timestamp: &str, nonce: &str, body: &[u8]) -> Vec<u8> {
@@ -216,6 +215,21 @@ pub enum Command {
     /// Restore a full backup, or the SQLite databases of a database snapshot, on this server.
     RestoreBackup { app: String, backup_id: String },
 
+    /// List uploaded recovery points for one explicitly configured SQLite database.
+    ListDatabaseBackups {
+        app: String,
+        database: String,
+        shared: bool,
+    },
+
+    /// Restore a SQLite database from an uploaded capture; None selects latest.
+    RestoreDatabaseBackup {
+        app: String,
+        database: String,
+        shared: bool,
+        txid: Option<u64>,
+    },
+
     /// Update the desired minimum number of instances for an app.
     Scale {
         app: String,
@@ -300,11 +314,12 @@ pub enum Command {
 
     /// Register (or replace) the full set of cron schedules for an app.
     ///
-    /// The worker sends this on startup; the server writes rows into
-    /// `schedules` and the cron ticker reads from there. Re-sending is
-    /// idempotent — any schedule not present in the new list is removed.
+    /// Each worker group sends every schedule. The active release replaces
+    /// the app's schedule set once, including when the list is empty.
     RegisterSchedules {
         app: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        build: Option<String>,
         schedules: Vec<ScheduleSpec>,
     },
 
@@ -474,8 +489,8 @@ pub enum Command {
 pub struct ScheduleSpec {
     /// Workflow name. Must match a registered handler.
     pub name: String,
-    /// Cron expression. 6-field format (sec min hour day month dayofweek) per
-    /// the `cron` crate, or 5-field (the worker SDK normalizes).
+    /// Five-field Unix cron (0 and 7 are Sunday), or the `cron` crate's
+    /// seconds-first format with an optional year or a named alias.
     pub cron: String,
     /// The workflow's attempt budget (inclusive of the first) for the runs
     /// this schedule creates. Defaults to 3.
@@ -777,6 +792,10 @@ impl Default for SslBinding {
 pub struct BackupBinding {
     pub storage: StorageBinding,
     #[serde(default)]
+    pub databases: Vec<String>,
+    #[serde(default)]
+    pub shared_databases: Vec<String>,
+    #[serde(default)]
     pub backup_keys: Vec<BackupKeyBinding>,
     #[serde(default = "default_backup_retention_days")]
     pub retention_days: u16,
@@ -879,26 +898,6 @@ impl BackupKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum BackupSkipReason {
-    Unchanged,
-    NoDatabases,
-    TooLarge,
-    InsufficientDisk,
-    DeployInProgress,
-    BackupInProgress,
-    /// An unfinished restore keeps the app stopped; no scheduled backup runs.
-    UnfinishedRestore,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BackupSkip {
-    pub at_unix_secs: i64,
-    pub reason: BackupSkipReason,
-    pub message: String,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BackupListResponse {
     pub app: String,
@@ -910,18 +909,13 @@ pub struct BackupStatusResponse {
     pub app: String,
     pub enabled: bool,
     #[serde(default)]
+    pub databases: Vec<crate::DatabaseBackupStatus>,
+    #[serde(default)]
     pub retention_days: Option<u16>,
     /// The latest full archive.
     #[serde(default)]
     pub last_backup: Option<BackupInfo>,
-    #[serde(default)]
-    pub next_backup_at_unix_secs: Option<i64>,
-    #[serde(default)]
-    pub last_database_snapshot_at_unix_secs: Option<i64>,
-    /// The latest hourly database snapshot attempt that uploaded nothing.
-    #[serde(default)]
-    pub last_database_snapshot_skip: Option<BackupSkip>,
-    /// Why scheduled full archives are failing, until one succeeds.
+    /// The latest failed manual full archive attempt.
     #[serde(default)]
     pub last_backup_failure: Option<BackupFailure>,
     /// Restore records that still need attention, even if backups are disabled.
@@ -952,7 +946,7 @@ pub enum BackupFailureReason {
     Failed,
     /// Too little free disk for the archive's temporary copies.
     InsufficientDisk,
-    /// The remote backup index could not be read; no scheduled backup runs.
+    /// The remote archive index could not be read.
     IndexUnreadable,
 }
 
@@ -961,8 +955,6 @@ pub struct BackupFailure {
     pub at_unix_secs: i64,
     pub reason: BackupFailureReason,
     pub message: String,
-    /// When the scheduler tries again.
-    pub retry_at_unix_secs: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

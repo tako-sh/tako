@@ -37,6 +37,7 @@ Tako builds with Podman, starts the image's default command, probes the app, and
 | Health checks                 | SDK-authenticated internal `/status`.                            |
 | Variables and logs            | App environment variables, `TAKO_BUILD`, captured stdout/stderr. |
 | Native fd 3 / fd 4            | Not passed into HTTP containers.                                 |
+| `TAKO_SHARED_DATA_DIR` | Shared data mounted at `/tako/shared-data` on this server. |
 | `TAKO_DATA_DIR`               | Persistent app directory mounted at `/tako/data` by default.      |
 | Internal workflow socket      | Not mounted into HTTP containers in v0.                          |
 
@@ -77,3 +78,5 @@ Pulled images receive a release-specific local tag so rollback uses the prepared
 `tako dev` runs the local dev command or supported runtime/preset defaults; it does not build or run the Dockerfile. For an image smoke test, build/run it with Docker or Podman as described in [Dockerfiles](/dockerfile/#verify-the-image). A local image smoke test does not simulate Tako's full bootstrap or shared services.
 
 After a deployment, request the real hostname, test an application route, and inspect finite logs. Confirm that the image's SDK handles health checks and private values, and check persistence separately from container lifetime. See [container troubleshooting](/troubleshooting/#container-release-does-not-start).
+
+Shared SQLite files use `/tako/shared-data` and `TAKO_SHARED_DATA_DIR`. Declare backed-up paths with `shared_databases` in the environment backup configuration. Tako pre-creates selected files with group write permissions. Standalone Podman containers retain the service user's supplementary groups with `keep-groups` (requires crun). Compose adds the shared directory's group to each service. Files created by apps outside these declarations must also grant group write access when other app identities need to write them.

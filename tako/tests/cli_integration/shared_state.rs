@@ -245,6 +245,7 @@ impl ApiServer {
                         }
                         Err(error) => panic!("{error}"),
                     };
+                    stream.set_nonblocking(false).unwrap();
                     stream
                         .set_read_timeout(Some(Duration::from_secs(3)))
                         .unwrap();
@@ -274,17 +275,36 @@ impl ApiServer {
                     assert!(length <= tako_network::api::MAX_RPC_BYTES);
                     let mut bytes = vec![0; length];
                     stream.read_exact(&mut bytes).unwrap();
-                    let signed = SignedRequest::from_slice(&bytes).unwrap();
-                    let path = signed.request.path();
-                    let result = runtime.handle(signed, "POST", path, now());
-                    if matches!(&result, Ok(RpcResponse::SecretPublished(_)))
-                        && drop_publication.swap(false, Ordering::Relaxed)
-                    {
-                        continue;
-                    }
-                    let (status, body) = match result {
-                        Ok(value) => (200, serde_json::to_vec(&value).unwrap()),
-                        Err(_) => (403, b"{}".to_vec()),
+                    let (status, body) = if headers.starts_with("POST /v1/management/rpc ") {
+                        let command: tako_core::Command = serde_json::from_slice(&bytes).unwrap();
+                        assert!(
+                            matches!(command, tako_core::Command::BackupNow {ref app, backup: None}
+                            if app == &tako_core::deployment_app_id("demo", "production"))
+                        );
+                        let backup = serde_json::json!({
+                            "id":"b1-test", "app":"demo", "environment":"production", "server":"edge",
+                            "created_at_unix_secs":1, "size_bytes":10, "sha256_hex":"hash",
+                            "archive_key":"archive", "manifest_key":"manifest", "encryption":{
+                                "algorithm":"aes-256-gcm", "key_id":"fixture", "nonce_base64":"AA==", "tag_base64":"AA=="
+                            }
+                        });
+                        (
+                            200,
+                            serde_json::to_vec(&tako_core::Response::ok(backup)).unwrap(),
+                        )
+                    } else {
+                        let signed = SignedRequest::from_slice(&bytes).unwrap();
+                        let path = signed.request.path();
+                        let result = runtime.handle(signed, "POST", path, now());
+                        if matches!(&result, Ok(RpcResponse::SecretPublished(_)))
+                            && drop_publication.swap(false, Ordering::Relaxed)
+                        {
+                            continue;
+                        }
+                        match result {
+                            Ok(value) => (200, serde_json::to_vec(&value).unwrap()),
+                            Err(_) => (403, b"{}".to_vec()),
+                        }
                     };
                     let response = format!(
                         "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nX-Tako-Network-Ready: true\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -754,6 +774,14 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
         &["network", "join", "--name", "scoped", "--invitation-stdin"],
         Some(&scoped_invitation),
     );
+    let config = scoped_project.join("tako.toml");
+    let mut contents = fs::read_to_string(&config).unwrap();
+    contents.push_str(
+        "backup = { storage = 'archives' }\n[storages.archives]\nprovider='s3'\nbucket='fixture'\nregion='auto'\nendpoint='https://archives.example.test'\n"
+    );
+    fs::write(config, contents).unwrap();
+    server.ok(&scoped_home, &scoped_project, &["backups", "now"], None);
+    assert!(!scoped_project.join(".tako/secrets.local.json").exists());
     let devices = fs::read_dir(
         scoped_home
             .join("networks")

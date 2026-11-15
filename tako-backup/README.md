@@ -1,22 +1,23 @@
-# Embedded terse backup prototype
+# Embedded SQLite backups
 
 Run from the repository root:
 
 ```sh
 just test terse
 cargo test --locked -p tako-storage
-cargo clippy --locked --manifest-path prototypes/terse-backup/Cargo.toml --all-targets -- -D warnings
+cargo clippy --locked -p tako-backup --all-targets -- -D warnings
 ```
 
-This is an isolated experiment, not a deployed Tako feature. It uses the vendored
+This workspace crate supplies capture, encrypted replication, retention, and recovery to Tako. It uses the vendored
 `terse-litestream` 0.2.0 from `3a78cd6c8d70f1b607dbc10c4368b25eb6122731`;
-the only upstream change is rusqlite 0.40.2 to 0.41. Both the prototype and patched
+the only upstream change is rusqlite 0.40.2 to 0.41. Both the workspace and patched
 upstream tests lock rusqlite 0.41.0 and libsqlite3-sys 0.39.1, matching Tako's
 lockfile. See `vendor/README.md` for provenance. The first build fetches Rust
 dependencies, including the separately pinned terse-ltx repository.
 
-Tests use the same fsync-enabled Apache `object_store` local backend as
-production's `tako-storage` crate. No object-storage daemon, cloud credentials,
+Recovery tests use the same fsync-enabled Apache `object_store` local backend as
+production's `tako-storage` crate; key-registration tests use its in-memory
+backend for conditional updates. No object-storage daemon, cloud credentials,
 or bucket is required. The Rust storage-handler tests separately exercise SDK
 URL signatures, streaming uploads/downloads, interrupted uploads, app isolation,
 and migration from the former SDK-managed directories. The MinIO runner was
@@ -34,7 +35,7 @@ Failed uploads back off at 1, 2, 4, 8 and then **15 minutes**, while local captu
 continues every minute. Success resets the delay. The shared S3 backend disables
 internal HTTP retries so the outer schedule controls attempts. Idle periods and
 uploader restarts use local receipts, with no bucket listing or HEAD polling.
-Remote listings happen only during an explicit restore. Retention verifies its
+Remote listings happen during initial registration, explicit inspection, and restore. Retention verifies its
 replacement anchor against the local spool.
 
 History has **seven-day retention**, with cleanup on startup and once every
@@ -56,8 +57,7 @@ conservatively retains additional history. Idle databases keep one base without
 repeated uploads or remote maintenance requests. Interrupted cleanup is safe to
 retry, including already-deleted remote objects.
 
-Before enabling continuous backups for users, require explicit database paths.
-Scheduled snapshots can retain their existing automatic SQLite detection.
+The server requires explicit database paths; no directory scanner or scheduled archive job selects databases.
 
 ## Data flow
 
@@ -80,7 +80,7 @@ receipts assume acknowledged remote objects remain present and immutable.
 
 ## Verification
 
-The fast tests use a filesystem-backed `object_store`, with counted API operations and
+The recovery tests use a filesystem-backed `object_store`, with counted API operations and
 failures injected before upload and after remote publication. They use real
 writer and capture subprocesses, terminated with `Child::kill` (SIGKILL on Unix).
 Restored databases must pass `PRAGMA integrity_check` and match every expected
@@ -99,17 +99,17 @@ The fixture binary is only a subprocess test driver. Tests create disposable
 databases and object directories; they do not access deployed app data or cloud
 credentials.
 
-## Deliberate limits
+## Limits
 
-No hosted S3 service, power-loss/torn-write simulation, soak test, timestamp index,
-encryption, background task runner, or server/CLI config integration is included.
-Retention bounds normal history by age rather than bytes; pending captures still
-accumulate during outages. Explicit restores must be serialized against cleanup
-before server integration; this prototype does not coordinate restore readers
-with deletion. Local filesystem deletions are not power-loss durable, so an
-unclean machine shutdown may leave expired remote files. One segment is buffered
-for upload, and explicit restore downloads the
-whole prefix. Large-database memory/restore costs need separate evaluation.
-Capture reopen can generate a full snapshot; restarting capture per upload tick
-would defeat incremental backup. This prototype must not establish a production
-durability or PITR guarantee.
+These tests do not simulate torn writes or use a hosted S3 service. Retention
+bounds normal history by age rather than bytes; pending captures accumulate
+during outages. The server serializes restore and cleanup with its per-database
+ownership lease. Local filesystem deletions are not power-loss durable, so an
+unclean shutdown may leave expired files. Upload encryption and decryption use
+private temporary files and immutable memory mappings; restore still downloads
+the whole replica history and requires temporary disk space for it.
+
+Capture reopening can generate a full snapshot. The server keeps its isolated
+capture worker alive between uploads. Shared registrations use one stable spool,
+remote prefix and encrypted data key, wrapped by each consumer's recovery key.
+Deleting a consumer preserves the history and the remaining consumers' access.

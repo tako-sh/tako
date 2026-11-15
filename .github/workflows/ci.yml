@@ -165,6 +165,7 @@ jobs:
           cargo test --workspace --locked --lib --bins
           cargo test -p tako-network --locked --test '*'
           cargo test -p tako-server --locked --test backup_snapshot --test backup_live_wal --test backup_standby
+          cargo test -p tako-backup --locked --test recovery
 
       - name: Run Compose integration tests
         run: |
@@ -615,6 +616,10 @@ jobs:
           set -euo pipefail
           sh e2e/prepare-ci-host.sh
           docker compose -p tako-e2e -f e2e/docker/compose.yml build server-ubuntu server-alma runner
+          docker run --rm --privileged --cgroupns=private \
+            -e TAKO_TEST_SERVER_BIN=/workspace/.e2e-bin/glibc/tako-server \
+            -v "$PWD:/workspace:ro" tako-e2e-server-ubuntu \
+            sh /workspace/e2e/docker/server/verify-isolation.sh
           for fixture in $(find e2e/fixtures -mindepth 3 -maxdepth 3 -type f -name tako.toml -exec dirname {} \; | sort); do
             ./e2e/run.sh "$fixture"
           done

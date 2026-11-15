@@ -1,6 +1,6 @@
 mod backup;
 pub(crate) use backup::{
-    DatabaseSnapshotState, PostDeployBackup, RecoveryMode, measure_database_tree,
+    DatabaseReplicas, ManualBackupState, RecoveryMode, measure_database_tree,
     recover_interrupted_restores, run_restore_worker, snapshot_data_tree, snapshot_database_tree,
     sweep_backup_work_dirs,
 };
@@ -13,6 +13,7 @@ mod lifecycle;
 pub(crate) mod logs;
 mod queries;
 mod release_artifacts;
+pub(crate) use release_artifacts::available_bytes as replica_available_bytes;
 mod releases;
 mod secrets;
 mod tls;

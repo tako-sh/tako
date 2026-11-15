@@ -209,6 +209,40 @@ backup = { storage = "r2" }
 }
 
 #[test]
+fn backup_database_paths_are_explicit_and_validated_in_each_scope() {
+    let config = |paths: &str| {
+        format!(
+            r#"
+name = "demo"
+[storages.backups]
+provider = "s3"
+bucket = "private"
+endpoint = "https://s3.example.test"
+region = "local"
+[envs.production]
+route = "demo.example.test"
+backup = {{ storage = "backups", {paths} }}
+"#
+        )
+    };
+    let parsed = TakoToml::parse(&config(
+        r#"databases = ["app.sqlite"], shared_databases = ["team/orders.db"]"#,
+    ))
+    .unwrap();
+    let backup = parsed.envs["production"].backup.as_ref().unwrap();
+    assert_eq!(backup.databases, ["app.sqlite"]);
+    assert_eq!(backup.shared_databases, ["team/orders.db"]);
+    for paths in [
+        r#"databases = ["../private.db"]"#,
+        r#"shared_databases = ["/absolute.db"]"#,
+        r#"shared_databases = ["a.db", "a.db"]"#,
+        r#"databases = ["a.db-wal"]"#,
+    ] {
+        assert!(TakoToml::parse(&config(paths)).is_err(), "{paths}");
+    }
+}
+
+#[test]
 fn backup_storage_must_reference_configured_resource() {
     let err = TakoToml::parse(
         r#"

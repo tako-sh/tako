@@ -41,10 +41,22 @@ pub(crate) async fn resolve_app_backend(
     let Some(app) = lb.app_manager().get_app(app_name) else {
         return BackendResolution::AppMissing;
     };
-    let Ok(lifecycle) = app.lifecycle_gate.clone().try_read_owned() else {
-        return BackendResolution::Unavailable;
+    let lifecycle = if app.state() == crate::socket::AppState::Deploying {
+        // A request arriving at cutover waits for the committed backend set.
+        app.lifecycle_gate.clone().read_owned().await
+    } else {
+        match app.lifecycle_gate.clone().try_read_owned() {
+            Ok(admission) => admission,
+            // A deploy may have started between the state check and admission.
+            Err(_) if app.state() == crate::socket::AppState::Deploying => {
+                app.lifecycle_gate.clone().read_owned().await
+            }
+            Err(_) => return BackendResolution::Unavailable,
+        }
     };
-    if app.state() == crate::socket::AppState::Stopped {
+    if draining.load(std::sync::atomic::Ordering::Acquire)
+        || app.state() == crate::socket::AppState::Stopped
+    {
         return BackendResolution::Unavailable;
     }
     if let Some(backend) = lb.get_backend(app_name) {
@@ -82,11 +94,11 @@ pub(crate) async fn resolve_app_backend(
                 cold_start.mark_failed(&app_name, "server_draining");
                 return;
             }
-            app.set_state(crate::socket::AppState::Running);
+            app.set_state_unless_deploying(crate::socket::AppState::Running);
             let instance = app.allocate_instance();
             if let Err(e) = spawner.spawn(&app, instance.clone()).await {
                 tracing::error!(app = %app_name, "cold start spawn failed: {}", e);
-                app.set_state(crate::socket::AppState::Error);
+                app.set_state_unless_deploying(crate::socket::AppState::Error);
                 app.set_last_error(format!("Cold start failed: {}", e));
                 app.remove_instance(&instance.id);
                 cold_start.mark_failed(&app_name, "spawn_failed");

@@ -248,16 +248,33 @@ fn dev_start_is_finite_and_dry_run_is_exposed_only_where_supported() {
         catalog["tako_dev"].arguments(&Default::default()).unwrap(),
         ["dev", "--background"]
     );
-    assert!(
-        catalog["tako_deploy"].tool.input_schema["properties"]
-            .get("dry_run")
-            .is_some()
-    );
-    assert!(
-        catalog["tako_secrets_set"].tool.input_schema["properties"]
-            .get("dry_run")
-            .is_none()
-    );
+    for tool in [
+        "tako_deploy",
+        "tako_scale",
+        "tako_secrets_sync",
+        "tako_network_server_uninstall",
+        "tako_workflows_retry",
+    ] {
+        assert!(
+            catalog[tool].tool.input_schema["properties"]
+                .get("dry_run")
+                .is_some(),
+            "{tool}"
+        );
+    }
+    for tool in [
+        "tako_secrets_set",
+        "tako_network_server_upgrade",
+        "tako_network_server_reload",
+        "tako_releases_rollback",
+    ] {
+        assert!(
+            catalog[tool].tool.input_schema["properties"]
+                .get("dry_run")
+                .is_none(),
+            "{tool}"
+        );
+    }
 }
 
 #[tokio::test]

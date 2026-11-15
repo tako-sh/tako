@@ -237,6 +237,8 @@ fn test_deploy_command_serialization_includes_ssl_binding() {
 #[test]
 fn backup_binding_serializes_backup_keys() {
     let binding = BackupBinding {
+        databases: Vec::new(),
+        shared_databases: Vec::new(),
         storage: StorageBinding {
             provider: crate::StorageProvider::S3,
             bucket: Some("bucket".to_string()),
@@ -407,22 +409,12 @@ fn backup_restore_response_reports_database_changes_only_for_snapshots() {
 }
 
 #[test]
-fn backup_status_reads_database_snapshot_fields_with_defaults() {
+fn backup_status_defaults_to_no_registered_databases() {
     let status: BackupStatusResponse =
         serde_json::from_str(r#"{"app":"demo/production","enabled":true}"#).unwrap();
-    assert_eq!(status.last_database_snapshot_at_unix_secs, None);
-    assert_eq!(status.last_database_snapshot_skip, None);
-
-    let status: BackupStatusResponse = serde_json::from_value(serde_json::json!({
-        "app": "demo/production", "enabled": true,
-        "last_database_snapshot_at_unix_secs": 10,
-        "last_database_snapshot_skip": {"at_unix_secs": 20, "reason": "too_large", "message": "too big"}
-    }))
-    .unwrap();
-    assert_eq!(status.last_database_snapshot_at_unix_secs, Some(10));
-    let skip = status.last_database_snapshot_skip.unwrap();
-    assert_eq!(skip.reason, BackupSkipReason::TooLarge);
-    assert_eq!(skip.at_unix_secs, 20);
+    assert!(status.databases.is_empty());
+    let json = serde_json::to_value(status).unwrap();
+    assert!(json.get("next_backup_at_unix_secs").is_none());
 }
 
 #[test]

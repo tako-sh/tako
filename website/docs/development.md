@@ -190,6 +190,7 @@ Development processes receive:
 | `PORT`          | `0`; SDK binds an OS-assigned port and reports it to Tako |
 | `HOST`          | `127.0.0.1`                                               |
 | `TAKO_BUILD`    | `dev`                                                     |
+| `TAKO_SHARED_DATA_DIR` | Persistent directory shared by projects using the same local `TAKO_HOME` |
 | `TAKO_DATA_DIR` | Persistent app-owned dev data dir                         |
 | `TAKO_APP_ROOT` | JS app root, default `src`                                |
 
@@ -209,7 +210,7 @@ tako run -- cargo run --bin migrate
 
 `--env` defaults to `development`. Script files use the selected runtime's local rule, such as Bun/Node for JS/TS and `go run` for `.go` files. `--eval` runs inline source when the runtime supports it; JS runtimes support inline TypeScript. Use `-- {command...}` for exact commands.
 
-The command runs from the app directory, sets `ENV`, `TAKO_BUILD=local`, `TAKO_DATA_DIR`, runtime defaults, and JS `TAKO_APP_ROOT`, then passes app secrets and storage bindings through `TAKO_BOOTSTRAP_DATA`. SDK-aware scripts use the same app SDK surfaces; JS/TS scripts can import `tako` and read `tako.secrets`.
+The command runs from the app directory, sets `ENV`, `TAKO_BUILD=local`, `TAKO_DATA_DIR`, `TAKO_SHARED_DATA_DIR`, runtime defaults, and JS `TAKO_APP_ROOT`, then passes app secrets and storage bindings through `TAKO_BOOTSTRAP_DATA`. SDK-aware scripts use the same app SDK surfaces; JS/TS scripts can import `tako` and read `tako.secrets`.
 
 Secrets are not raw process env vars.
 

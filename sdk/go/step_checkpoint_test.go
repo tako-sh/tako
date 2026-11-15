@@ -78,6 +78,38 @@ func TestReplayedStepReturnsItsResultOncePerExecution(t *testing.T) {
 	}
 }
 
+func TestClaimReplaysExactCheckpointAndSleepDeadline(t *testing.T) {
+	const wantID int64 = 9007199254740993
+	wakeMs := time.Now().Add(time.Hour).UnixMilli()
+	server := startMockServer(t)
+	id := server.seed("checkpoint", 3)
+	server.mu.Lock()
+	server.tasks[id].StepState = map[string]any{
+		"record":        map[string]any{"id": wantID},
+		"__sleep:pause": map[string]any{"wakeAt": wakeMs},
+	}
+	server.mu.Unlock()
+
+	client := NewClient(server.path, "test-app")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	run, err := client.Claim(ctx, "worker", []string{"checkpoint"}, 30_000)
+	if err != nil || run == nil {
+		t.Fatalf("claim: %v, %v", run, err)
+	}
+	step := &StepAPI{client: client, ctx: ctx, runID: run.ID, workerID: run.WorkerID, state: run.StepState}
+	var record struct{ ID int64 }
+	if err := step.Run("record", &record, func() (any, error) {
+		return nil, errors.New("replayed a completed step")
+	}); err != nil || record.ID != wantID {
+		t.Fatalf("replayed ID = %d, want %d, err = %v", record.ID, wantID, err)
+	}
+	var deferred *deferSignal
+	if err := step.Sleep("pause", 0); !errors.As(err, &deferred) || deferred.wakeAt.UnixMilli() != wakeMs {
+		t.Fatalf("expected to sleep until %d, got %v", wakeMs, err)
+	}
+}
+
 func TestRunSleepAndWaitForShareOneStepNamespace(t *testing.T) {
 	type use struct {
 		kind string

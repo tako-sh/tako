@@ -8,6 +8,8 @@ use sha2::{Digest, Sha256};
 use tokio::process::{Child, Command};
 
 const TAKO_APP_DATA_DIR_ENV: &str = "TAKO_DATA_DIR";
+const TAKO_SHARED_DATA_DIR_ENV: &str = "TAKO_SHARED_DATA_DIR";
+const SHARED_DATA_MOUNT: &str = "/tako/shared-data";
 mod engine;
 mod native_network;
 pub use native_network::NativeNetwork;
@@ -209,6 +211,37 @@ impl ComposeRuntime {
         Ok(runtime)
     }
 
+    fn shared_mount(&self) -> Option<Value> {
+        self.env.get(TAKO_SHARED_DATA_DIR_ENV).map(|source| {
+            json!({
+                "type": "bind", "source": source, "target": SHARED_DATA_MOUNT,
+                "bind": {"create_host_path": false}
+            })
+        })
+    }
+
+    fn inject_shared_data(&self, service: &mut Value) {
+        let Some(mount) = self.shared_mount() else {
+            return;
+        };
+        let mut volumes = service["volumes"].as_array().cloned().unwrap_or_default();
+        volumes.push(mount);
+        service["volumes"] = json!(volumes);
+        if !service["environment"].is_object() {
+            service["environment"] = json!({});
+        }
+        service["environment"][TAKO_SHARED_DATA_DIR_ENV] = json!(SHARED_DATA_MOUNT);
+        #[cfg(unix)]
+        if let Some(source) = self.env.get(TAKO_SHARED_DATA_DIR_ENV) {
+            use std::os::unix::fs::MetadataExt;
+            if let Ok(metadata) = std::fs::metadata(source) {
+                let mut groups = service["group_add"].as_array().cloned().unwrap_or_default();
+                groups.push(json!(metadata.gid().to_string()));
+                service["group_add"] = json!(groups);
+            }
+        }
+    }
+
     pub fn command(&self, with_override: bool) -> Command {
         let mut command = docker_command(self.development);
         command.envs(&self.env);
@@ -316,6 +349,23 @@ impl ComposeRuntime {
         )?;
         if !self.development {
             validation::validate_resources(&model, false, Some(&self.env))?;
+        }
+        if self.env.contains_key(TAKO_SHARED_DATA_DIR_ENV) {
+            for service in model["services"]
+                .as_object()
+                .into_iter()
+                .flat_map(|services| services.values())
+            {
+                for volume in service["volumes"].as_array().into_iter().flatten() {
+                    if let Some(target) = volume["target"].as_str() {
+                        if Path::new(target).starts_with(SHARED_DATA_MOUNT)
+                            || Path::new(SHARED_DATA_MOUNT).starts_with(target)
+                        {
+                            return Err("Compose volumes must not overlap the managed /tako/shared-data mount".into());
+                        }
+                    }
+                }
+            }
         }
         Ok(model)
     }
@@ -488,7 +538,13 @@ impl ComposeRuntime {
         std::fs::create_dir_all(override_path.parent().unwrap()).map_err(|e| e.to_string())?;
         write_private(
             &override_path,
-            render_override(&images, &self.config, port).as_bytes(),
+            render_override_with_shared_data(
+                &images,
+                &self.config,
+                port,
+                self.env.get(TAKO_SHARED_DATA_DIR_ENV).map(String::as_str),
+            )
+            .as_bytes(),
         )?;
         self.run(
             &[
@@ -710,6 +766,15 @@ pub fn render_override(
     config: &ComposeConfig,
     host_port: u16,
 ) -> String {
+    render_override_with_shared_data(images, config, host_port, None)
+}
+
+fn render_override_with_shared_data(
+    images: &BTreeMap<String, String>,
+    config: &ComposeConfig,
+    host_port: u16,
+    shared: Option<&str>,
+) -> String {
     let mut text = String::from("services:\n");
     for (service, image) in images {
         text.push_str(&format!(
@@ -724,6 +789,17 @@ pub fn render_override(
             ));
         } else {
             text.push_str("[]\n");
+        }
+        if let Some(source) = shared {
+            text.push_str(&format!("    volumes:\n      - type: bind\n        source: {}\n        target: /tako/shared-data\n        bind: {{create_host_path: false}}\n    environment:\n      TAKO_SHARED_DATA_DIR: /tako/shared-data\n", json!(source)));
+            #[cfg(unix)]
+            if let Ok(metadata) = std::fs::metadata(source) {
+                use std::os::unix::fs::MetadataExt;
+                text.push_str(&format!(
+                    "    group_add: [{}]\n",
+                    json!(metadata.gid().to_string())
+                ));
+            }
         }
     }
     text
@@ -807,6 +883,58 @@ mod tests {
             health_path: "/health".into(),
             health_host: None,
         }
+    }
+
+    #[test]
+    fn shared_mount_is_managed_and_preserves_service_environment_and_groups() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("compose.yaml"), "services: {}\n").unwrap();
+        let runtime = ComposeRuntime::new(
+            directory.path().into(),
+            config(),
+            HashMap::from([
+                (
+                    TAKO_APP_DATA_DIR_ENV.into(),
+                    directory.path().display().to_string(),
+                ),
+                (
+                    TAKO_SHARED_DATA_DIR_ENV.into(),
+                    directory.path().join("shared").display().to_string(),
+                ),
+            ]),
+        )
+        .unwrap();
+        std::fs::create_dir(directory.path().join("shared")).unwrap();
+        let mut service = json!({"environment":{"APP":"web"}, "volumes":[{"type":"volume", "source":"uploads", "target":"/uploads"}], "group_add":["123"]});
+        runtime.inject_shared_data(&mut service);
+        assert_eq!(service["environment"]["APP"], "web");
+        assert_eq!(
+            service["environment"][TAKO_SHARED_DATA_DIR_ENV],
+            SHARED_DATA_MOUNT
+        );
+        assert_eq!(service["volumes"][0]["target"], "/uploads");
+        assert_eq!(
+            service["volumes"][1]["source"],
+            runtime.env[TAKO_SHARED_DATA_DIR_ENV]
+        );
+        assert_eq!(service["volumes"][1]["bind"]["create_host_path"], false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let gid = std::fs::metadata(directory.path().join("shared"))
+                .unwrap()
+                .gid()
+                .to_string();
+            assert_eq!(service["group_add"], json!(["123", gid]));
+        }
+        let development = render_override_with_shared_data(
+            &BTreeMap::from([("web".into(), "image".into())]),
+            &config(),
+            1234,
+            Some(&runtime.env[TAKO_SHARED_DATA_DIR_ENV]),
+        );
+        assert!(development.contains("TAKO_SHARED_DATA_DIR: /tako/shared-data"));
+        assert!(development.contains("create_host_path: false"));
     }
 
     #[test]

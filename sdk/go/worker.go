@@ -253,29 +253,26 @@ func (s *StepAPI) sleep(name string, d time.Duration) error {
 	s.mu.Lock()
 	if stored, ok := s.state[key]; ok {
 		s.mu.Unlock()
-		if m, ok := stored.(map[string]any); ok {
-			if wakeMs, ok := m["wakeAt"].(float64); ok {
-				wakeAt := time.UnixMilli(int64(wakeMs))
-				if time.Now().Before(wakeAt) {
-					return &deferSignal{wakeAt: &wakeAt}
-				}
-				s.mu.Lock()
-				if _, hasName := s.state[name]; !hasName {
-					s.mu.Unlock()
-					return s.saveStep(name, true)
-				}
-				s.mu.Unlock()
-				return nil
-			}
+		var marker struct{ WakeAt *int64 }
+		if err := assignCached(stored, &marker); err != nil || marker.WakeAt == nil {
+			return nil
+		}
+		wakeAt := time.UnixMilli(*marker.WakeAt)
+		if time.Now().Before(wakeAt) {
+			return &deferSignal{wakeAt: &wakeAt}
+		}
+		s.mu.Lock()
+		_, complete := s.state[name]
+		s.mu.Unlock()
+		if !complete {
+			return s.saveStep(name, true)
 		}
 		return nil
 	}
 	s.mu.Unlock()
 
 	wakeAt := time.Now().Add(d)
-	wakeMs := wakeAt.UnixMilli()
-	// Match the representation restored from JSON on a subsequent claim.
-	marker := map[string]any{"wakeAt": float64(wakeMs)}
+	marker := map[string]any{"wakeAt": wakeAt.UnixMilli()}
 	if err := s.saveStep(key, marker); err != nil {
 		return err
 	}

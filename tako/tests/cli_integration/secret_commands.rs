@@ -479,6 +479,15 @@ fn test_secret_sync_reports_network_failure_and_preserves_draft() {
     assert!(output.status.success(), "{}", stderr_str(&output));
     let path = project.join(".tako/secrets.local.json");
     let before = fs::read(&path).unwrap();
+    let draft: serde_json::Value = serde_json::from_slice(&before).unwrap();
+    assert_eq!(
+        draft["environments"]["production"]["scope"],
+        "demo/production"
+    );
+    assert_eq!(
+        draft["environments"]["production"]["network"],
+        fixture.profile.snapshot.network.id.to_string()
+    );
     let output = run_tako_with_env(
         &["secrets", "sync", "--env", "production"],
         project,

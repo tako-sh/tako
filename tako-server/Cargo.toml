@@ -9,6 +9,7 @@ name = "tako-server"
 path = "src/main.rs"
 
 [dependencies]
+tako-backup = { path = "../tako-backup" }
 tako-network = { path = "../tako-network" }
 zeroize = "1"
 tako-channels = { path = "../tako-channels" }

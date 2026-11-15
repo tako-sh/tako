@@ -121,8 +121,13 @@ pub(crate) fn load_local_with_config(
                 continue;
             };
             let scope: AppEnv = format!("{app}/{env}").parse()?;
+            let network: NetworkId = id.parse()?;
+            state
+                .values
+                .targets
+                .insert(env.clone(), (scope.clone(), network.clone()));
             if state.environments.contains_key(env) {
-                bind(&mut state, env, &scope, &id.parse()?)?;
+                bind(&mut state, env, &scope, &network)?;
                 continue;
             }
             let Ok(alias) = networks.select(Some(id)) else {
@@ -159,6 +164,11 @@ pub(crate) fn save_local(project: &Path, values: &SecretsStore) -> Result<()> {
         return Err(
             "Secrets changed in this checkout while the command was running; retry the edit".into(),
         );
+    }
+    for (env, (scope, network)) in &values.targets {
+        if values.environments.get(env) != state.values.environments.get(env) {
+            bind(&mut state, env, scope, network)?;
+        }
     }
     state.values = values.clone();
     write_workspace(project, &state)
@@ -278,7 +288,13 @@ fn merge_remote(
     let store = crate::crypto::KeyStore::for_key_id(&key_id)?;
     let encryption = match store.load_key_optional()? {
         Some(key) => key,
-        None if !had_values => { let key = crate::crypto::EncryptionKey::generate()?; store.save_key(&key)?; key }
+        None if !had_values => {
+            let key = crate::crypto::EncryptionKey::generate()?;
+            if !crate::output::is_dry_run() {
+                store.save_key(&key)?;
+            }
+            key
+        }
         None => return Err("Existing encrypted secrets need their original local key; import it before synchronizing".into()),
     };
     let mut remote = Rows::new();
@@ -346,6 +362,7 @@ pub(crate) fn sync_environment(
         write_workspace(project, &state)?;
     }
     let mut values = state.values;
+    values.targets.insert(env.into(), (scope, cache.network));
     values.loaded = Some(values.environments.clone());
     Ok(values)
 }

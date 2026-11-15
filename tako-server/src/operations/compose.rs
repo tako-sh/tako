@@ -86,12 +86,13 @@ impl crate::ServerState {
                 .await
                 .map_err(|e| e.to_string())?;
             self.state_store
-                .commit_compose_deployment(
+                .commit_deployment(
                     &config,
                     &routes,
                     &runtime_credentials,
                     ssl.as_ref(),
                     backup.as_ref(),
+                    None,
                 )
                 .map_err(|e| format!("Could not commit Compose deployment: {e}"))?;
             Ok(())

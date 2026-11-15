@@ -57,6 +57,26 @@ async fn lifecycle_mutation_blocks_routing_and_waits_for_admitted_spawns() {
         BackendResolution::Unavailable
     ));
     drop(mutation);
+    // The same request arriving at deployment cutover waits for the new
+    // backend. Lifecycle stops above retain immediate refusal.
+    app.set_state(crate::socket::AppState::Deploying);
+    let cutover = app.lifecycle_gate.write().await;
+    let request = proxy.resolve_backend("gated");
+    tokio::pin!(request);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut request)
+            .await
+            .is_err()
+    );
+    let candidate = app.allocate_instance();
+    app.set_instance_state(&candidate, crate::socket::InstanceState::Healthy);
+    drop(cutover);
+    app.set_state(crate::socket::AppState::Running);
+    let BackendResolution::Ready { backend, .. } = request.await else {
+        panic!("cutover should release the request to the new backend");
+    };
+    assert_eq!(backend.instance_id(), candidate.id);
+
     let spawning = app.lifecycle_gate.read().await;
     let stopping = tokio::spawn(async move { manager.stop_app("gated").await });
     tokio::task::yield_now().await;

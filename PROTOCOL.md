@@ -124,7 +124,9 @@ JavaScript `.run()` combines enqueue and result waiting. In a workflow, the SDK 
 
 ## Workflow schedules
 
-A starting worker sends `RegisterSchedules {app,schedules}`, which replaces the app's schedule set. Each `ScheduleSpec` is `{name,cron,max_attempts?}`. `max_attempts` is the workflow's attempt budget, counting the first attempt: JavaScript sends `retries + 1` and Go sends `WithMaxAttempts`. The store keeps it with the schedule, and every run the schedule creates gets it. Omitted, scheduled runs get the default of three attempts.
+A starting worker sends `RegisterSchedules {app,build?,schedules}` with the complete set from every worker group. The build is the worker's `TAKO_BUILD`. Each installed runtime accepts its own build's first successful registration. An empty set removes every schedule. An explicit deployment or rollback to a shared Postgres store allocates a revision. The server commits that revision with the local release and Postgres checks it atomically with schedule replacement, including after server recovery.
+
+Each `ScheduleSpec` is `{name,cron,max_attempts?}`. Five-field Unix cron runs in UTC with Sunday numbered 0 or 7. Seconds-first expressions with an optional year and the existing aliases use the Rust `cron` grammar. JavaScript sends `retries + 1` and Go sends `WithMaxAttempts` as the total attempt budget. The default is three attempts.
 
 ## Workflow run operations
 
@@ -295,3 +297,11 @@ Before merging paired changes, run `python3 scripts/test-conformance.py ../tako`
 from the Tunnel checkout. It builds both real peers and checks registration,
 HTTP/SSE, WebSockets, cancellation, replacement, and shutdown. Tunnel's CI can
 also verify a selected Tako revision using its `tako_ref` workflow input.
+
+## SQLite backup scopes
+
+`BackupBinding.databases` and `shared_databases` explicitly select normalized relative paths under `TAKO_DATA_DIR` and `TAKO_SHARED_DATA_DIR`. An empty list selects no databases. One server belongs to one network; shared data is local to that server. Apps keep separate Unix users and a common shared-data group. Containers and Compose services receive the shared directory at `/tako/shared-data`.
+
+`ListDatabaseBackups { app, database, shared }` returns available capture TXIDs and upload times. `RestoreDatabaseBackup { app, database, shared, txid }` restores the selected TXID, or latest when absent. Shared restores require server-admin permission and drain every app on the server. Private restores stop the owning app and workers. Restore excludes capture, upload, and retention through the per-database lease. Replica identity and encryption key are independent of consuming apps; matching shared declarations deduplicate, conflicting destinations fail, and each consumer's backup key can unwrap the stable data key. Capture resumes above the highest retained TXID after a historical restore. Missing local spools with existing remote history require an explicit restore.
+
+`BackupStatusResponse.databases` reports replica identity, consumers, capture/upload TXIDs, activity, and errors. `BackupNow` creates manual archives only. Finalize and periodic tasks no longer create full or database-only archives. Existing archive records remain downloadable and restorable.

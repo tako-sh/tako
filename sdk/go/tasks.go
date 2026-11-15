@@ -8,6 +8,7 @@ package tako
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -115,11 +116,15 @@ func (c *Client) RegisterSchedules(ctx context.Context, schedules []ScheduleSpec
 		// The server requires a list: an empty one removes every schedule.
 		schedules = []ScheduleSpec{}
 	}
-	_, err := c.call(ctx, map[string]any{
+	command := map[string]any{
 		"command":   "register_schedules",
 		"app":       c.app,
 		"schedules": schedules,
-	})
+	}
+	if build := os.Getenv("TAKO_BUILD"); build != "" {
+		command["build"] = build
+	}
+	_, err := c.call(ctx, command)
 	return err
 }
 
@@ -153,7 +158,7 @@ type Run struct {
 	MaxAttempts uint32 `json:"max_attempts"`
 	// RunAtMs is the scheduled run time in Unix milliseconds.
 	RunAtMs int64 `json:"run_at_ms"`
-	// StepState contains persisted step results for this run.
+	// StepState contains persisted step results. JSON numbers are json.Number.
 	StepState map[string]any `json:"step_state"`
 }
 
@@ -174,7 +179,9 @@ func (c *Client) Claim(ctx context.Context, workerID string, names []string, lea
 		return nil, nil
 	}
 	var t Run
-	if err := json.Unmarshal(data, &t); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&t); err != nil {
 		return nil, fmt.Errorf("tako: parse run: %w", err)
 	}
 	if t.StepState == nil {

@@ -5,6 +5,7 @@ mod workflows;
 
 pub(crate) use certificates::ssl_binding_needs_cloudflare_token;
 pub(crate) use startup::native_channel_client;
+pub(crate) use workflows::WorkflowBindings;
 
 use crate::container_runtime::{
     build_container_run_env, build_container_workflow_run_args, detect_container_engine,
@@ -119,8 +120,11 @@ pub struct ServerState {
     pub(crate) backup_locks: SyncRwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// Latest hourly database snapshot attempt per app. Not persisted: the
     /// remote index keeps the cadence across restarts.
-    pub(crate) database_snapshots:
-        SyncRwLock<HashMap<String, crate::operations::DatabaseSnapshotState>>,
+    pub(crate) database_replica_status:
+        SyncRwLock<std::collections::BTreeMap<String, tako_core::DatabaseBackupStatus>>,
+    pub(crate) database_replicas: tokio::sync::Mutex<crate::operations::DatabaseReplicas>,
+    pub(crate) manual_backup_states:
+        SyncRwLock<HashMap<String, crate::operations::ManualBackupState>>,
     prepared_deploy_ssl: AsyncRwLock<HashMap<PreparedDeployKey, PreparedDeploySsl>>,
     pub(crate) cold_start: Arc<crate::scaling::ColdStartManager>,
     pub(crate) state_store: Arc<SqliteStateStore>,

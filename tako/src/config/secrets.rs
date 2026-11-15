@@ -169,6 +169,9 @@ pub struct SecretsStore {
     pub environments: HashMap<String, EnvironmentSecrets>,
     #[serde(skip)]
     pub(crate) loaded: Option<HashMap<String, EnvironmentSecrets>>,
+    /// Targets selected when loading this edit, including uncached environments.
+    #[serde(skip)]
+    pub(crate) targets: HashMap<String, (tako_network::AppEnv, tako_network::NetworkId)>,
 }
 
 impl PartialEq for SecretsStore {

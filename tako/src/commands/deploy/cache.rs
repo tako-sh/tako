@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::build::compute_file_hash;
 
-pub(super) const ARTIFACT_CACHE_SCHEMA_VERSION: u32 = 0;
+pub(super) const ARTIFACT_CACHE_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub(super) struct ArtifactCacheMetadata {

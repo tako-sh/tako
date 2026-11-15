@@ -40,6 +40,18 @@ pub fn tako_data_dir() -> Result<PathBuf, std::io::Error> {
     Ok(base.join("tako"))
 }
 
+/// A single local shared directory for projects using the same TAKO_HOME.
+pub fn shared_data_dir() -> Result<PathBuf, std::io::Error> {
+    let path = tako_data_dir()?.join("shared-data");
+    std::fs::create_dir_all(&path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o2770))?;
+    }
+    Ok(path)
+}
+
 /// Get Tako's cache directory (XDG-compliant).
 ///
 /// - `TAKO_HOME` set → that directory (all-in-one).

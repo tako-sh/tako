@@ -84,6 +84,16 @@ async fn run_async(
         ));
     }
 
+    if output::is_dry_run() {
+        for name in &server_names {
+            output::dry_run_skip(&format!(
+                "Scale {}{service_label} to {desired} on {name}",
+                target.remote_app_name
+            ));
+        }
+        return Ok(());
+    }
+
     let mut tasks = Vec::new();
     for server_name in &server_names {
         let Some(entry) = servers.get(server_name) else {

@@ -1,5 +1,5 @@
 use crate::build::{self, PresetGroup, detect_build_adapter};
-use crate::config::TakoToml;
+use crate::config::{SecretsStore, TakoToml};
 use crate::output;
 use clap::Subcommand;
 use std::collections::BTreeSet;
@@ -252,7 +252,7 @@ async fn run_async(
             else {
                 return Ok(());
             };
-            set_secret(&context, &name, &input.env, &input.value, input.expires_on).await
+            set_secret(&context, &name, input)
         }
         SecretCommands::Rm { name, env, yes } => {
             remove_secret(&context, &name, env.as_deref(), yes).await
@@ -278,6 +278,7 @@ enum SecretEnvironmentChoice {
 }
 
 struct SecretSetInput {
+    secrets: SecretsStore,
     env: String,
     value: String,
     expires_on: Option<String>,
@@ -481,6 +482,7 @@ fn resolve_secret_set_input(
             let value = maybe_trim_secret_value(read_secret_value(&prompt)?)?;
             let expires_on = read_secret_expires_on(None, "Expires on")?;
             return Ok(Some(SecretSetInput {
+                secrets,
                 env: env.to_string(),
                 value,
                 expires_on,
@@ -491,6 +493,7 @@ fn resolve_secret_set_input(
             None => read_secret_expires_on(None, "Expires on")?,
         };
         return Ok(Some(SecretSetInput {
+            secrets,
             env: env.to_string(),
             value: maybe_trim_secret_value(read_secret_value(&prompt)?)?,
             expires_on,
@@ -562,6 +565,7 @@ fn resolve_secret_set_input(
                         ) {
                             Ok((value, expires_on)) => {
                                 return Ok(Some(SecretSetInput {
+                                    secrets,
                                     env,
                                     value,
                                     expires_on,
@@ -585,6 +589,7 @@ fn resolve_secret_set_input(
                 ) {
                     Ok((value, expires_on)) => {
                         return Ok(Some(SecretSetInput {
+                            secrets,
                             env,
                             value,
                             expires_on,
@@ -649,6 +654,7 @@ fn resolve_secret_set_input(
                             ) {
                                 Ok((value, expires_on)) => {
                                     return Ok(Some(SecretSetInput {
+                                        secrets,
                                         env,
                                         value,
                                         expires_on,
@@ -672,6 +678,7 @@ fn resolve_secret_set_input(
                     ) {
                         Ok((value, expires_on)) => {
                             return Ok(Some(SecretSetInput {
+                                secrets,
                                 env,
                                 value,
                                 expires_on,
@@ -689,18 +696,19 @@ fn resolve_secret_set_input(
     }
 }
 
-async fn set_secret(
+fn set_secret(
     context: &crate::commands::project_context::ProjectContext,
     name: &str,
-    env: &str,
-    value: &str,
-    expires_on: Option<String>,
+    input: SecretSetInput,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::crypto::encrypt;
 
-    // Load secrets and ensure environment has an in-memory key_id. Do not write
-    // local state until every prompt in this flow has completed.
-    let mut secrets = context.load_secrets_for_environment(Some(env))?;
+    let SecretSetInput {
+        mut secrets,
+        ref env,
+        ref value,
+        expires_on,
+    } = input;
     secrets.ensure_env_key_id(env)?;
 
     let exists = secrets.contains(env, name);

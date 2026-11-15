@@ -94,9 +94,11 @@ Each deployed app has durable data under the server data directory:
 └── tako/  # Tako-owned workflow/channel/cache state
 ```
 
-Backups are opt-in with `[envs.<env>].backup`. Backup storage must be a private S3-compatible storage resource. Archives preserve symlinks as symlinks, are compressed and encrypted with environment-managed backup keys, uploaded under Tako's reserved backup prefix, and indexed remotely. Deploy creates a full backup after successful finalize when backups are enabled; the server also runs a due full backup about every 24 hours and, between them, an hourly snapshot of only the SQLite databases when they changed. SQLite data can therefore be recovered to within about an hour, other files to within about a day.
+`TAKO_SHARED_DATA_DIR` exposes `/opt/tako/shared/data/app` to apps on this server. Per-app users retain private directories and use a common group for shared files. Local development shares a directory under the same `TAKO_HOME`. Standalone containers and Compose services receive `/tako/shared-data` as a managed mount.
 
-Local workflow state is backed up. Channel replay and SDK cache storage are not backed up because they are transient and recomputable. External databases, shared Postgres state, and S3 object contents need their own backup policies; the app-data snapshot does not copy them. See [Backups](/backups/) for the exact boundary and recovery workflow.
+Backups are opt-in with `[envs.<env>].backup`. Explicit `databases` paths select app SQLite files; `shared_databases` selects shared files. Tako captures and uploads changes about once per minute to private S3-compatible storage, encrypted with a stable database key recoverable through each declaring app's backup keys. Matching shared declarations use one capture/upload pipeline; conflicting destinations are rejected. Seven days of capture points are retained. A shared database restore drains every app on the server; a private restore stops only its owner.
+
+Full app-directory archives are manual (`tako backups now`), including local workflow state. Deploys and timers no longer create full archives or hourly SQLite archives. Channel replay and SDK cache are excluded because they are transient. Shared non-SQLite files, Compose named volumes, external databases, and S3 contents need separate protection. See [Backups](/backups/) for recovery and boundaries.
 
 ## Remote Management
 

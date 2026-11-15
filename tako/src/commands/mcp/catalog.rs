@@ -47,10 +47,8 @@ pub(super) fn catalog() -> BTreeMap<String, CommandTool> {
 fn visit(command: &Command, path: Vec<String>, tools: &mut BTreeMap<String, CommandTool>) {
     if !command.is_subcommand_required_set() {
         let name = format!("tako_{}", path.join("_").replace('-', "_"));
-        let read_only = matches!(path[0].as_str(), "doctor" | "status" | "logs" | "version")
-            || path
-                .last()
-                .is_some_and(|last| matches!(last.as_str(), "list" | "status" | "show"));
+        let names: Vec<_> = path.iter().map(String::as_str).collect();
+        let read_only = crate::cli::is_read_only(&names);
         // Retrying a run only adds work; every other write may stop or remove it.
         let destructive = !read_only && path != ["workflows", "retry"];
         let description = format!(
@@ -72,7 +70,7 @@ fn visit(command: &Command, path: Vec<String>, tools: &mut BTreeMap<String, Comm
                 ""
             }
         );
-        let tool = Tool::new(name.clone(), description, schema(command, &path)).with_annotations(
+        let tool = Tool::new(name.clone(), description, schema(command, &names)).with_annotations(
             ToolAnnotations::new()
                 .read_only(read_only)
                 .destructive(destructive)
@@ -97,21 +95,11 @@ fn visit(command: &Command, path: Vec<String>, tools: &mut BTreeMap<String, Comm
     }
 }
 
-fn exposed(argument: &clap::Arg, path: &[String]) -> bool {
+fn exposed(argument: &clap::Arg, path: &[&str]) -> bool {
     !SKIP.contains(&argument.get_id().as_str())
         && !argument.is_hide_set()
         && argument.get_id() != "tail"
-        && (argument.get_id() != "dry_run" || supports_dry_run(path))
-}
-
-fn supports_dry_run(path: &[String]) -> bool {
-    matches!(path[0].as_str(), "deploy" | "delete")
-        || path[0] == "network"
-        || path == ["secrets", "migrate"]
-        || (path[0] == "backups"
-            && path
-                .last()
-                .is_some_and(|name| matches!(name.as_str(), "now" | "download" | "restore")))
+        && (argument.get_id() != "dry_run" || crate::cli::supports_dry_run(path))
 }
 
 fn integer(argument: &clap::Arg) -> bool {
@@ -136,7 +124,7 @@ fn multiple(argument: &clap::Arg) -> bool {
             .is_some_and(|range| range.max_values() > 1)
 }
 
-fn schema(command: &Command, path: &[String]) -> Map<String, Value> {
+fn schema(command: &Command, path: &[&str]) -> Map<String, Value> {
     let mut properties = Map::new();
     let mut required = Vec::new();
     for argument in command
@@ -194,10 +182,11 @@ impl CommandTool {
         }
         let mut arguments = self.path.clone();
         let mut positionals = Vec::new();
+        let path: Vec<_> = self.path.iter().map(String::as_str).collect();
         for argument in self
             .command
             .get_arguments()
-            .filter(|argument| exposed(argument, &self.path))
+            .filter(|argument| exposed(argument, &path))
         {
             let name = argument.get_id().as_str();
             let Some(value) = input.get(name) else {
