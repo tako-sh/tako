@@ -457,7 +457,10 @@ impl ProxyHttp for DevProxy {
             target.active = true;
         }
 
-        if path.starts_with(tako_channels::CHANNELS_BASE_PATH) && !is_store {
+        if (path == tako_channels::shared::PATH
+            || path.starts_with(tako_channels::CHANNELS_BASE_PATH))
+            && !is_store
+        {
             let method = session.req_header().method.as_str().to_string();
             return crate::dev_channels::try_handle(
                 session,

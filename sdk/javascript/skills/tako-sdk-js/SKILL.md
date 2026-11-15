@@ -330,8 +330,8 @@ export default defineChannel("chat", {
 - `.$messageTypes<M>()` is a type-level narrower that declares the message map — runtime no-op. Omit for channels with no typed messages.
 - `auth` is optional. Omit or set `false` for public channels.
 - `transport: "ws"` enables WebSocket; the default is receive-only SSE. WebSocket frames are stored and broadcast as sent. Handle application mutations in your app's HTTP endpoints.
-- Every publish is stored before delivery. Messages are not claimed or removed when one subscriber receives them. `replayWindowMs` defaults to 10 minutes and can be overridden per channel.
-- SSE subscriptions reconnect until closed. React `useChannel` reconnects WebSockets with the latest replay cursor. Lower-level `Channel.connect()` returns a single socket, so non-React callers must implement WebSocket reconnection.
+- Durable publishes are stored before delivery; ephemeral channels do not persist messages. Messages are not claimed or removed when one subscriber receives them. `replayWindowMs` defaults to 10 minutes and can be overridden per durable channel.
+- SSE subscriptions reconnect until closed. React `useChannel` reconnects WebSocket subscriptions with the latest replay cursor. Lower-level `Channel.connect()` returns a logical subscription by default, so non-React callers must implement its reconnection.
 
 Auth return values: `false` deny · `true` allow anonymously · `{ subject }` allow with identity.
 
@@ -374,7 +374,7 @@ const status = new Channel("status");
 const token = await getToken();
 const sub = status.subscribe({ authorization: token });
 (sub.raw as EventSource).addEventListener("message", (e) => {
-  const msg = JSON.parse(e.data) as { type: string; data: unknown };
+  const msg = JSON.parse((e as MessageEvent<string>).data) as { type: string; data: unknown };
   // ...
 });
 sub.close();
@@ -382,8 +382,8 @@ sub.close();
 // WebSocket channel with params
 const room = new Channel("chat", "ws", { roomId: "room1" });
 const socket = room.connect({ authorization: token });
-(socket.raw as WebSocket).addEventListener("message", (e) => {
-  const msg = JSON.parse(e.data);
+(socket.raw as EventTarget).addEventListener("message", (e) => {
+  const msg = JSON.parse((e as MessageEvent<string>).data);
   // ...
 });
 socket.send({ type: "typing", data: { userId: "me" } });
@@ -391,7 +391,7 @@ socket.send({ type: "typing", data: { userId: "me" } });
 
 `authorization` is optional. Omit it for public or cookie-auth channels; use `headers.Authorization` when the app expects a custom authorization value.
 
-`from: "start"` on `subscribe()` / `connect()` replays every retained message before live ones (query `from=start`); an explicit `lastEventId` / `lastMessageId` wins. `onClose` runs once when the server closed the stream (SSE `tako.close`, WebSocket close code 4200); the subscription stops without reconnecting, a custom `eventSourceFactory` source is closed for you, and `socket.send()` throws afterwards. Do not reconnect a raw `connect()` socket after 4200.
+`from: "start"` on `subscribe()` / `connect()` replays every retained message before live ones (`from` in shared subscription commands, query `from=start` for SSE/dedicated WS); an explicit `lastEventId` / `lastMessageId` wins. Shared WS sends `lastMessageId` as `cursor`; dedicated WS uses `last_message_id`. `onClose` runs once when the server closed the stream (SSE `tako.close`, WebSocket close code 4200); the subscription stops without reconnecting, a custom `eventSourceFactory` source is closed for you, and `socket.send()` throws afterwards. Do not reconnect a raw `connect()` subscription after 4200.
 
 For React apps, prefer `useChannel` from `tako.sh/react` — it wraps `Channel` with buffered state, reconnects, and an `onMessage` callback.
 
@@ -430,7 +430,7 @@ hook log callback failures and continue. The existing message buffer remains
 until `clear()`, unmount, or a change of connection identity. A custom channel needs this application recovery when
 missing events affect state; reconnect alone cannot restore those events.
 Non-React SSE clients can reload on `onRecovery("history-expired")`. A raw
-`connect()` returns one WebSocket and requires application reconnection logic.
+`connect()` returns one logical subscription by default and requires application reconnection logic.
 A custom `eventSourceFactory` owns cursor reset and recovery callbacks itself.
 The terminal close (`tako.close`, code 4200) is final and never a business
 message; `tako.reset`, 4410, a 1000 `connection expired` close, and an SSE
@@ -476,7 +476,7 @@ const { members, connectionId, status, error, update } = usePresence("lobby", {
 update({ typing: true });
 ```
 
-`members` contains `{ connectionId, subject?, data }`, including the current connection. Every hook call creates one connection; multiple tabs belonging to the same subject remain separate. Only the server controls identity; member data is untrusted client-provided JSON (up to 16 KiB). `data` supplies initial metadata; `update()` replaces it. The hook waits for authorization, sends heartbeats every 15 seconds, reconnects with current metadata, clears stale state on disconnect, and leaves on unmount. Authorization failures stop retries until connection options change. Membership converges within approximately one second. Connections without updates expire after 45 seconds, so a reconnect can briefly overlap its old connection. Presence has no durable replay. Validated params scope membership: different `chatId` values have separate member lists. Auth must verify access to the requested chat. Channel and presence names have separate namespaces.
+`members` contains `{ connectionId, subject?, data }`, including the current membership. Every hook call creates a distinct member entry even when several subscriptions share a physical socket; multiple tabs belonging to the same subject remain separate. Only the server controls identity; member data is untrusted client-provided JSON (up to 16 KiB). `data` supplies initial metadata; `update()` replaces it. The hook waits for authorization, sends heartbeats every 15 seconds, reconnects with current metadata, clears stale state on disconnect, and leaves on unmount. Authorization failures stop retries until connection options change. Membership converges within approximately one second. Connections without updates expire after 45 seconds, so a reconnect can briefly overlap its old connection. Presence has no durable replay. Validated params scope membership: different `chatId` values have separate member lists. Auth must verify access to the requested chat. Channel and presence names have separate namespaces.
 
 Single-server production uses SQLite. Native networks exchange expiring server-bound presence leases. Multi-server presence can use SQLite without a `postgres_url` credential; an explicitly configured Postgres backend remains in use. Local dev uses an in-memory store and runs the same auth callbacks as production, as with channels. Use durable channels for retained events and presence for current membership.
 
@@ -634,14 +634,28 @@ export function useBroadcast() {
 
 One connection, one buffer, any number of consumers.
 
+### Shared WebSocket ownership
+
+WebSocket channels and Presence share a physical WebSocket per origin, credentials, and configuration within each browser tab. SSE subscriptions and Store notifications remain separate HTTP streams. Every logical WebSocket subscription has independent auth, params, cursor, and cleanup. React hooks unsubscribe on unmount, so leaving a page removes its presence while layout subscriptions stay connected. Lost cleanup is covered by presence leases; membership does not prove active viewing.
+
+`connect().raw` is a logical `EventTarget`. Use the returned handle's `send()` and `close()`, or its abort `signal`. Aborting a WebSocket `useChannel` or `usePresence` also cancels pending retries and sets the hook's `error`; an already-aborted signal opens no socket. Pass a new signal to restart. `connection: "dedicated"` opens an independent socket; `configureChannels({ connection: "dedicated" })` changes only the WebSocket default. A physical disconnect affects its subscriptions; React hooks rejoin with independent cursors, while low-level `connect()` callers own reconnecting. Both the declaration and authorization response must allow WS; SSE-only definitions cannot join over WS.
+
+Call `resetChannelConnections()` from `tako.sh/client` after login/logout/account-switch responses update cookies and before opening new subscriptions. Cookies are captured by the physical handshake, and browsers cannot notify the SDK about HttpOnly cookie changes. Reset closes all shared subscriptions with retryable `1012`; React hooks reconnect, and low-level callers reconnect themselves. Clear application state for the previous user too. Use dedicated connections if the auth integration cannot reset the shared pool. Calling `configureChannels` also resets active pooled connections. Configured tokens are sent per subscription and mapped to its declared auth header; explicit values for that header take precedence. Reset on session changes even if a token resolver's function identity stays the same.
+
+Shared connections allow 32 subscriptions, 64 KiB client command frames including the envelope, and 1 MiB complete delivered events. A full local pool makes `connect()` throw; hooks expose the error and retry with backoff. Larger delivered events close only their subscription with code `1009`. Stream large AI outputs as smaller application events. Unserializable or oversized client messages throw before sending, without disconnecting peers. The SDK reassembles transport fragments before notifying listeners and discards incomplete messages after disconnection. If terminal delivery times out on the bounded server queue, the physical connection closes with retryable `1012`. Replay reads one record at a time; no timer-based batching is enabled.
+
 ### Network routes
 
 | Direction     | Method | Path                     | Transport                        |
 | ------------- | ------ | ------------------------ | -------------------------------- |
-| Subscribe     | GET    | `/_tako/channels/<name>` | SSE (`text/event-stream`)        |
-| Connect       | GET    | `/_tako/channels/<name>` | WebSocket (`Upgrade: websocket`) |
-| Publish       | WS     | `/_tako/channels/<name>` | JSON text frame                  |
+| Shared WS     | GET    | `/_tako/channels/ws` | Multiplexed WebSocket |
+| Subscribe     | GET    | `/_tako/channels/sse/<name>` | SSE (`text/event-stream`)        |
+| Connect       | GET    | `/_tako/channels/ws/<name>` | Dedicated WebSocket (`Upgrade: websocket`) |
+| Shared publish | WS    | `/_tako/channels/ws` | `send` command with subscription ID and application data |
+| Publish       | WS     | `/_tako/channels/ws/<name>` | JSON text frame                  |
 | Auth callback | POST   | `/channels/authorize`    | Internal (`Host: <app>.tako`)    |
+
+The old `/_tako/channels/<name>` paths have no v0 compatibility aliases. Upgrade server and browser SDK together. `tako.auth` first frames belong to dedicated WS; shared WS carries credentials on each subscription.
 
 ## Network primitives
 

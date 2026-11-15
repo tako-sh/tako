@@ -7,6 +7,8 @@ image: 75030c2f757f
 
 > **Update, November 14, 2026:** This article describes an earlier Tako release. Published encrypted secrets now live on network servers, with ignored drafts in each worktree; see [secret storage and migration](/docs/secrets/). Read [the new network and secrets workflow](/blog/sync-deployment-secrets-with-tako-networks/).
 
+> **Channels update, November 15, 2026:** The channel example below uses params-scoped streams. Earlier advice that params only supplied connection context is obsolete; check the [current parameter and authorization rules](/docs/channels/#understand-channel-params).
+
 Most runtime config is reached through APIs that lie to you. `process.env` pretends every variable is a string and returns `undefined` when you typo a name. `process.env.DATBASE_URL` is a syntactically valid read that fails silently, then explodes somewhere downstream — usually at 2am, usually in production.
 
 Tako's JavaScript SDK ships a different shape. App code imports `tako` from `tako.sh`, and `tako generate` writes a project-local `tako.d.ts` file that teaches TypeScript your secret keys, environment names, channel metadata, and workflow metadata. No app global, no guessing — just ES modules.
@@ -37,7 +39,7 @@ await sendEmail.enqueue({ to });
 await chat({ roomId }).publish({ type: "msg", data: { text, userId } });
 ```
 
-Channel params are connection context, not room isolation: every authorized binding to the same channel name reads the same stream. See the [Channels reference](/docs/channels/#understand-channel-params) before publishing private events.
+The channel name and validated params select a stream: `chat({ roomId })` publishes only to subscribers with that same binding. The verifier must check that the caller may enter the room. Generated types catch shape errors; they do not grant authorization. See the [Channels reference](/docs/channels/#understand-channel-params) before publishing private events.
 
 Same shape on Bun and Node. No global install step, no kebab↔camel rule to remember.
 

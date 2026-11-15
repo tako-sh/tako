@@ -6,6 +6,8 @@ description: "Tako's Go SDK wraps any http.Handler — Gin, Echo, Chi, or plain 
 image: 9ffa67280af1
 ---
 
+> **Channels update, November 15, 2026:** The channel section below now reflects params-scoped streams and separate WS/SSE URLs. Go supplies backend registration and authorization; the JavaScript browser client supplies shared WS subscriptions. See the [current Channels reference](/docs/channels/) for SDK capabilities.
+
 Here's a complete Go app on Tako:
 
 ```go
@@ -86,9 +88,14 @@ Secrets come from one place: the fd 3 bootstrap envelope Tako hands to your proc
 
 ## Channels
 
-The Go SDK ships with the same channel primitive as the JavaScript SDK — [channels](/docs/how-tako-works/) for WebSocket/SSE communication:
+The root `tako.sh` Go module registers [channel definitions](/docs/channels/) and serves their authorization callbacks. This example uses the default receive-only SSE transport:
 
 ```go
+import (
+  "encoding/json"
+  "tako.sh"
+)
+
 tako.Channels.Register("chat", tako.ChannelDefinition{
   ParamsSchema: []byte(`{
     "type": "object",
@@ -97,8 +104,12 @@ tako.Channels.Register("chat", tako.ChannelDefinition{
   }`),
   Auth: &tako.ChannelAuthScheme{HeaderName: "authorization"},
   Verify: func(input tako.VerifyInput) tako.ChannelAuthDecision {
+    var params struct { RoomID string `json:"roomId"` }
+    if json.Unmarshal(input.Params, &params) != nil {
+      return tako.RejectChannel()
+    }
     userID := authenticate(input.Header)
-    if userID != "" {
+    if userID != "" && canJoinRoom(userID, params.RoomID) {
       return tako.AllowChannel(tako.ChannelGrant{Subject: userID})
     }
     return tako.RejectChannel()
@@ -106,9 +117,9 @@ tako.Channels.Register("chat", tako.ChannelDefinition{
 })
 ```
 
-Params do not partition channel messages: every authorized binding to `chat` reads the same stream, regardless of `roomId`. Do not use this parameter as a room-isolation boundary.
+Place registration in application initialization before `tako.ListenAndServe`. `authenticate` and `canJoinRoom` are app-owned helpers. Validated `roomId` values select separate message streams and replay cursors; the verifier must check permission to use the requested room.
 
-Typed params, per-channel auth callbacks, and transport selection are wired up through the same protocol the proxy already speaks. Clients connect to the exact channel name plus query params, for example `/_tako/channels/chat?roomId=lobby`.
+SSE clients subscribe to `/_tako/channels/sse/chat?roomId=lobby`. Setting `Transport: tako.ChannelTransportWS` enables WS instead: the JavaScript browser SDK then shares `/_tako/channels/ws`, carrying each topic and its params in subscription messages. `connection: "dedicated"` selects a separate socket at `/_tako/channels/ws/chat?roomId=lobby`. Go provides backend registration and auth, not the JavaScript browser handles or local publish/close methods; see [network publication](/docs/network-primitives/) when publishing to a JavaScript-owned channel from Go.
 
 ## Getting Started
 

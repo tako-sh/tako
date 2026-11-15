@@ -8,7 +8,7 @@ use pingora_proxy::Session;
 use std::{sync::Arc, time::Duration};
 
 async fn write_close(
-    session: &mut Session,
+    session: &mut dyn io::ChannelIo,
     code: crate::ChannelCloseCode,
     end: bool,
 ) -> Result<bool> {
@@ -56,11 +56,36 @@ pub async fn serve_with_writer(
     requested: crate::ReplayFrom,
     auth: ChannelAuthResponse,
     params: serde_json::Value,
+    reader: WebSocketFrameReader,
+    writer: Arc<dyn crate::ChannelWriter>,
+) -> Result<bool> {
+    serve_on(
+        &mut io::SessionIo(session),
+        store,
+        stream,
+        requested,
+        auth,
+        params,
+        reader,
+        writer,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn serve_on(
+    session: &mut dyn io::ChannelIo,
+    store: &Arc<ChannelStore>,
+    stream: &ChannelStream,
+    requested: crate::ReplayFrom,
+    auth: ChannelAuthResponse,
+    params: serde_json::Value,
     mut reader: WebSocketFrameReader,
     writer: Arc<dyn crate::ChannelWriter>,
 ) -> Result<bool> {
     // Storage, cursors and fanout use the stream key; frames carry the public name.
     let (channel, key) = (stream.channel(), stream.key());
+    let page_size = session.replay_page_size();
     if channel.starts_with(crate::live_store::STORE_CHANNEL_PREFIX) {
         return write_close(session, crate::ChannelCloseCode::VerifyRejected, true).await;
     }
@@ -89,14 +114,6 @@ pub async fn serve_with_writer(
         let presence =
             PresenceSession::new_with_writer(writer.clone(), &scope, auth.subject.clone())
                 .map_err(|e| Error::explain(ErrorType::InternalError, e.to_string()))?;
-        session
-            .write_response_body(
-                Some(Bytes::from(websocket_text_frame(
-                    r#"{"type":"tako.presence.ready"}"#,
-                ))),
-                false,
-            )
-            .await?;
         Some(presence)
     } else {
         None
@@ -130,6 +147,17 @@ pub async fn serve_with_writer(
             }
         }
     }
+    session.ready().await?;
+    if presence.is_some() {
+        session
+            .write_response_body(
+                Some(Bytes::from(websocket_text_frame(
+                    r#"{"type":"tako.presence.ready"}"#,
+                ))),
+                false,
+            )
+            .await?;
+    }
     let keepalive_interval = Duration::from_millis(auth.keepalive_interval_ms.max(1));
     let max_connection_lifetime = Duration::from_millis(auth.max_connection_lifetime_ms.max(1));
     let started_at = tokio::time::Instant::now();
@@ -155,7 +183,7 @@ pub async fn serve_with_writer(
         }
         let messages = if read_replay {
             changes.borrow_and_update();
-            match store.read_after_async(key, after, 100).await {
+            match store.read_after_async(key, after, page_size as u32).await {
                 Ok(messages) => messages,
                 Err(ChannelError::StaleCursor) => {
                     return write_close(session, crate::ChannelCloseCode::ReplayTooOld, true).await;
@@ -173,7 +201,7 @@ pub async fn serve_with_writer(
         if resets.has_changed().unwrap_or(true) {
             return write_close(session, crate::ChannelCloseCode::ReplayTooOld, true).await;
         }
-        read_replay = messages.len() == 100;
+        read_replay = messages.len() == page_size;
 
         if !messages.is_empty() {
             for message in messages {
@@ -182,12 +210,21 @@ pub async fn serve_with_writer(
                     return write_close(session, crate::ChannelCloseCode::StreamClosed, true).await;
                 }
                 let message = stream.public(message);
-                let encoded = serde_json::to_string(&message).map_err(|error| {
-                    Error::explain(
-                        ErrorType::InternalError,
-                        format!("Failed to encode websocket payload: {error}"),
-                    )
-                })?;
+                let encoded = match io::encode(&message, session.message_limit()) {
+                    Ok(encoded) => encoded,
+                    Err(_) => {
+                        session
+                            .write_response_body(
+                                Some(Bytes::from(websocket_close_frame(
+                                    1009,
+                                    "message too large",
+                                ))),
+                                true,
+                            )
+                            .await?;
+                        return Ok(true);
+                    }
+                };
                 session
                     .write_response_body(Some(Bytes::from(websocket_text_frame(&encoded))), false)
                     .await?;
@@ -214,9 +251,6 @@ pub async fn serve_with_writer(
             return Ok(true);
         }
 
-        if read_replay {
-            continue;
-        }
         let mut sleep_until = next_ping.min(started_at + max_connection_lifetime);
         if presence.is_some() {
             sleep_until = sleep_until.min(next_presence);
@@ -234,11 +268,12 @@ pub async fn serve_with_writer(
             WebSocketAction::Read(Some(Bytes::new()))
         } else {
             let mut sleep = std::pin::pin!(tokio::time::sleep_until(sleep_until));
-            let mut read = std::pin::pin!(session.as_downstream_mut().read_body_or_idle(false));
+            let mut read = std::pin::pin!(session.read());
             tokio::select! {
                 body = &mut read => WebSocketAction::Read(body?),
                 _ = &mut sleep => WebSocketAction::Tick,
                 _ = changes.changed(), if !auth.ephemeral => WebSocketAction::Changed,
+                _ = std::future::ready(()), if read_replay => WebSocketAction::Changed,
                 _ = resets.changed() => WebSocketAction::Reset,
                 message = async {
                     match ephemeral.as_mut() {
@@ -337,7 +372,21 @@ pub async fn serve_with_writer(
             }
             WebSocketAction::Ephemeral(Some(message)) => {
                 let message = stream.public((*message).clone());
-                let encoded = serde_json::to_string(&message).expect("JSON channel message");
+                let encoded = match io::encode(&message, session.message_limit()) {
+                    Ok(encoded) => encoded,
+                    Err(_) => {
+                        session
+                            .write_response_body(
+                                Some(Bytes::from(websocket_close_frame(
+                                    1009,
+                                    "message too large",
+                                ))),
+                                true,
+                            )
+                            .await?;
+                        return Ok(true);
+                    }
+                };
                 session
                     .write_response_body(Some(Bytes::from(websocket_text_frame(&encoded))), false)
                     .await?;

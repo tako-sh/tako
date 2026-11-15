@@ -11,8 +11,9 @@ afterAll(async () => {
   await GlobalRegistrator.unregister();
 });
 import { useChannel, usePresence } from "../src/react";
+import { Channel } from "../src/channels";
 import { createElement, startTransition, Suspense, useLayoutEffect, useState } from "react";
-import type { ChannelMessage } from "../src/types";
+import type { ChannelConnectOptions, ChannelMessage } from "../src/types";
 import { configureChannels, resetChannelsConfig } from "../src/channels/configure";
 
 class MockEventSource extends EventTarget {
@@ -41,6 +42,7 @@ class MockEventSource extends EventTarget {
 class MockWebSocket extends EventTarget {
   url: string;
   readyState = 0;
+  bufferedAmount = 0;
   sent: unknown[] = [];
   closedWith: { code?: number; reason?: string } | null = null;
   constructor(url: string) {
@@ -68,6 +70,265 @@ class MockWebSocket extends EventTarget {
   emitClose(code = 1006) {
     this.readyState = 3;
     this.dispatchEvent(new CloseEvent("close", { code }));
+  }
+}
+
+test("a page presence hook leaves while its layout subscription stays connected", async () => {
+  const sockets: MockWebSocket[] = [];
+  class SharedSocket extends MockWebSocket {
+    constructor(url: string) {
+      super(url);
+      sockets.push(this);
+    }
+  }
+  configureChannels({
+    connection: "shared",
+    websocket: SharedSocket as unknown as typeof WebSocket,
+  });
+  const layout = renderHook(() =>
+    useChannel("notifications", { baseUrl: "https://app.test", transport: "ws" }),
+  );
+  const page = renderHook(() =>
+    usePresence("room", { baseUrl: "https://app.test", data: { page: "chat" } }),
+  );
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  expect(sockets).toHaveLength(1);
+  const socket = sockets[0]!;
+  await act(async () => {
+    socket.emitOpen();
+    await Promise.resolve();
+  });
+  const joins = socket.sent.map(
+    (sent) => JSON.parse(String(sent)) as { type: string; id: string; channel: string },
+  );
+  const layoutId = joins.find((join) => join.channel === "notifications")!.id;
+  const pageId = joins.find((join) => join.channel === "tako.presence:room")!.id;
+  act(() => {
+    socket.emitMessage({ type: "subscribed", id: layoutId });
+    socket.emitMessage({ type: "subscribed", id: pageId });
+    socket.emitMessage({
+      type: "data",
+      id: pageId,
+      data: '{"type":"tako.presence.ready"}',
+      end: true,
+    });
+  });
+  expect(JSON.parse(String(socket.sent.at(-1)))).toEqual({
+    type: "send",
+    id: pageId,
+    data: { type: "tako.presence", data: { page: "chat" } },
+  });
+  page.unmount();
+  expect(JSON.parse(String(socket.sent.at(-1)))).toEqual({ type: "unsubscribe", id: pageId });
+  expect(socket.closedWith).toBeNull();
+  act(() =>
+    socket.emitMessage({
+      type: "data",
+      id: layoutId,
+      data: JSON.stringify({
+        id: "1",
+        channel: "notifications",
+        type: "message",
+        data: "still here",
+      }),
+      end: true,
+    }),
+  );
+  expect(layout.result.current.messages[0]?.data).toBe("still here");
+  expect(layout.result.current.status).toBe("open");
+  layout.unmount();
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  expect(socket.closedWith).not.toBeNull();
+});
+
+test("shared hooks reconnect with independent cursors and discard incomplete messages", async () => {
+  const sockets: MockWebSocket[] = [];
+  class SharedSocket extends MockWebSocket {
+    constructor(url: string) {
+      super(url);
+      sockets.push(this);
+    }
+  }
+  configureChannels({
+    connection: "shared",
+    websocket: SharedSocket as unknown as typeof WebSocket,
+  });
+  const first = renderHook(() =>
+    useChannel("first", { transport: "ws", baseUrl: "https://app.test", from: "start" }),
+  );
+  const second = renderHook(() =>
+    useChannel("second", { transport: "ws", baseUrl: "https://app.test", lastMessageId: "5" }),
+  );
+  const socket = sockets[0]!;
+  await act(async () => {
+    socket.emitOpen();
+    await Promise.resolve();
+  });
+  const joins = socket.sent.map(
+    (value) => JSON.parse(String(value)) as { id: string; channel: string },
+  );
+  const a = joins.find((join) => join.channel === "first")!.id;
+  const b = joins.find((join) => join.channel === "second")!.id;
+  act(() => {
+    socket.emitMessage({ type: "subscribed", id: a });
+    socket.emitMessage({ type: "subscribed", id: b });
+    socket.emitMessage({
+      type: "data",
+      id: a,
+      data: '{"id":"12","type":"message","data":1}',
+      end: true,
+    });
+    socket.emitMessage({ type: "data", id: b, data: '{"id":"99",', end: false });
+    socket.emitClose();
+  });
+  expect(first.result.current.messages).toHaveLength(1);
+  expect(second.result.current.messages).toHaveLength(0);
+  await waitFor(() => expect(sockets).toHaveLength(2), { timeout: 3000 });
+  await act(async () => {
+    sockets[1]!.emitOpen();
+    await Promise.resolve();
+  });
+  await waitFor(() => expect(sockets[1]!.sent).toHaveLength(2), { timeout: 3000 });
+  const resumed = sockets[1]!.sent.map(
+    (value) => JSON.parse(String(value)) as { channel: string; cursor: string },
+  );
+  expect(resumed.find((join) => join.channel === "first")?.cursor).toBe("12");
+  expect(resumed.find((join) => join.channel === "second")?.cursor).toBe("5");
+  first.unmount();
+  second.unmount();
+});
+
+test("a full shared connection reports a hook error and recovers when a slot opens", async () => {
+  const sockets: MockWebSocket[] = [];
+  class SharedSocket extends MockWebSocket {
+    constructor(url: string) {
+      super(url);
+      sockets.push(this);
+    }
+  }
+  configureChannels({
+    connection: "shared",
+    websocket: SharedSocket as unknown as typeof WebSocket,
+  });
+  const channels = Array.from({ length: 32 }, (_, i) =>
+    new Channel(`layout-${i}`, "ws").connect({ baseUrl: "http://test" }),
+  );
+  const { result } = renderHook(() =>
+    useChannel("page", { transport: "ws", baseUrl: "http://test" }),
+  );
+  expect(result.current.error?.message).toContain("32 subscriptions");
+  await act(async () => {
+    sockets[0]!.emitOpen();
+    await Promise.resolve();
+    channels[0]!.close();
+    globalThis.dispatchEvent(new Event("online"));
+    await Promise.resolve();
+  });
+  expect(sockets).toHaveLength(1);
+  const joins = sockets[0]!.sent
+    .map((sent) => JSON.parse(String(sent)))
+    .filter((frame) => frame.type === "subscribe");
+  expect(joins).toHaveLength(33);
+  act(() => sockets[0]!.emitMessage({ type: "subscribed", id: joins.at(-1).id }));
+  expect(result.current.status).toBe("open");
+  expect(result.current.error).toBeNull();
+  channels.forEach((channel) => channel.close());
+});
+
+for (const connection of ["shared", "dedicated"] as const) {
+  for (const { name, useSubscription } of [
+    {
+      name: "useChannel",
+      useSubscription: (options: ChannelConnectOptions) =>
+        useChannel("page", { ...options, transport: "ws" }),
+    },
+    {
+      name: "usePresence",
+      useSubscription: (options: ChannelConnectOptions) =>
+        usePresence("page", { ...options, data: {} }),
+    },
+  ]) {
+    test(`${name} does not connect with an already aborted signal (${connection})`, () => {
+      const controller = new AbortController();
+      controller.abort();
+      let connections = 0;
+      const { result } = renderHook(() =>
+        useSubscription({
+          connection,
+          signal: controller.signal,
+          baseUrl: "http://test",
+          webSocketFactory: (url) => {
+            connections++;
+            return new MockWebSocket(url);
+          },
+        }),
+      );
+      expect(connections).toBe(0);
+      expect(result.current.error?.name).toBe("AbortError");
+      expect(result.current.status).toBe("closed");
+    });
+
+    test(`${name} abort cancels live and pending reconnects, and a new signal can restart (${connection})`, async () => {
+      const sockets: MockWebSocket[] = [];
+      const factory = (url: string) => {
+        const socket = new MockWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      };
+      const controller = new AbortController();
+      const { result, rerender } = renderHook(
+        ({ signal }) =>
+          useSubscription({
+            connection,
+            signal,
+            baseUrl: "http://test",
+            webSocketFactory: factory,
+          }),
+        { initialProps: { signal: controller.signal } },
+      );
+      await act(async () => {
+        const socket = sockets[0]!;
+        socket.emitOpen();
+        await Promise.resolve();
+        const id = connection === "shared" ? JSON.parse(String(socket.sent[0])).id : undefined;
+        if (id) socket.emitMessage({ type: "subscribed", id });
+        if (name === "usePresence") {
+          for (const message of [
+            { type: "tako.presence.ready" },
+            { type: "tako.presence", connectionId: "page", members: [] },
+          ]) {
+            socket.emitMessage(
+              id ? { type: "data", id, data: JSON.stringify(message), end: true } : message,
+            );
+          }
+        }
+      });
+      expect(result.current.status).toBe("open");
+      await act(async () => {
+        controller.abort();
+        globalThis.dispatchEvent(new Event("online"));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(sockets).toHaveLength(1);
+      expect(result.current.error?.name).toBe("AbortError");
+      expect(result.current.status).toBe("closed");
+
+      const next = new AbortController();
+      rerender({ signal: next.signal });
+      expect(sockets).toHaveLength(2);
+      act(() => sockets[1]!.emitClose(1006));
+      await act(async () => {
+        next.abort();
+        globalThis.dispatchEvent(new Event("online"));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(sockets).toHaveLength(2);
+      expect(result.current.error?.name).toBe("AbortError");
+    });
   }
 }
 
@@ -104,7 +365,7 @@ describe("useChannel (sse)", () => {
         baseUrl: "http://test",
       }),
     );
-    expect(es!.url).toBe("http://test/_tako/channels/chat?roomId=r1&limit=10");
+    expect(es!.url).toBe("http://test/_tako/channels/sse/chat?roomId=r1&limit=10");
   });
 
   test("passes authorization shorthand to SSE subscriptions", () => {
@@ -286,7 +547,7 @@ describe("useChannel (ws)", () => {
         baseUrl: "http://test",
       }),
     );
-    expect(sockets[0]!.url).toBe("ws://test/_tako/channels/chat?roomId=r1");
+    expect(sockets[0]!.url).toBe("ws://test/_tako/channels/ws/chat?roomId=r1");
   });
 
   test("send() forwards to the underlying socket", () => {
@@ -355,7 +616,7 @@ describe("useChannel (ws)", () => {
       await new Promise((r) => setTimeout(r, 1500));
     });
 
-    expect(sockets.at(-1)!.url).toBe("ws://test/_tako/channels/chat%3A1?last_message_id=m7");
+    expect(sockets.at(-1)!.url).toBe("ws://test/_tako/channels/ws/chat%3A1?last_message_id=m7");
   });
 
   test("closes the socket on unmount and stops reconnecting", async () => {
@@ -516,6 +777,28 @@ describe("channel recovery", () => {
     });
     expect(sockets).toHaveLength(1);
     expect(recoveries).toEqual([]);
+    unmount();
+  });
+
+  test("reconnects after capacity close code 4429", async () => {
+    const sockets: MockWebSocket[] = [];
+    const { result, unmount } = renderHook(() =>
+      useChannel("busy", {
+        transport: "ws",
+        baseUrl: "http://test",
+        webSocketFactory: (url) => {
+          const socket = new MockWebSocket(url);
+          sockets.push(socket);
+          return socket;
+        },
+      }),
+    );
+    act(() => {
+      sockets[0]!.emitClose(4429);
+      globalThis.dispatchEvent(new Event("online"));
+    });
+    await waitFor(() => expect(sockets).toHaveLength(2));
+    expect(result.current.status).toBe("connecting");
     unmount();
   });
 
@@ -1169,7 +1452,7 @@ describe("useChannel closed streams", () => {
         onClose: () => onClose.push("closed"),
       }),
     );
-    expect(sources[0]!.url).toBe("http://test/_tako/channels/reply?requestId=r1&from=start");
+    expect(sources[0]!.url).toBe("http://test/_tako/channels/sse/reply?requestId=r1&from=start");
 
     act(() => {
       sources[0]!.emitOpen();
@@ -1210,7 +1493,7 @@ describe("useChannel closed streams", () => {
         onClose: () => closes++,
       }),
     );
-    expect(sockets[0]!.url).toBe("ws://test/_tako/channels/reply?requestId=r1&from=start");
+    expect(sockets[0]!.url).toBe("ws://test/_tako/channels/ws/reply?requestId=r1&from=start");
 
     act(() => {
       sockets[0]!.emitOpen();
@@ -1222,7 +1505,9 @@ describe("useChannel closed streams", () => {
       await new Promise((r) => setTimeout(r, 1500));
     });
     expect(sockets).toHaveLength(2);
-    expect(sockets[1]!.url).toBe("ws://test/_tako/channels/reply?requestId=r1&last_message_id=m1");
+    expect(sockets[1]!.url).toBe(
+      "ws://test/_tako/channels/ws/reply?requestId=r1&last_message_id=m1",
+    );
 
     act(() => {
       sockets[1]!.emitOpen();
@@ -1241,3 +1526,6 @@ describe("useChannel closed streams", () => {
     expect(sockets).toHaveLength(2);
   });
 });
+
+// This suite exercises the dedicated SSE/WebSocket wire contracts.
+beforeEach(() => configureChannels({ connection: "dedicated" }));

@@ -111,6 +111,119 @@ async fn session_uses_verified_identity_and_cleans_up_on_drop() {
     panic!("Disconnected session remained present");
 }
 
+#[tokio::test]
+async fn cancellation_removes_presence_after_in_flight_joins_and_renewals_commit() {
+    use crate::{ChannelError, ChannelWriter, PresenceSession};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    use tokio::sync::Notify;
+
+    struct DelayedWriter {
+        store: Arc<ChannelStore>,
+        delay: AtomicBool,
+        started: Notify,
+        release: Arc<Notify>,
+        committed: Arc<Notify>,
+        removed: Notify,
+    }
+    #[async_trait::async_trait]
+    impl ChannelWriter for DelayedWriter {
+        async fn sync_channel(
+            &self,
+            _: &str,
+            _: &crate::ChannelAuthResponse,
+        ) -> Result<(), ChannelError> {
+            unreachable!("presence sessions do not sync channels")
+        }
+        async fn publish(
+            &self,
+            _: &str,
+            _: &crate::ChannelPublishPayload,
+            _: bool,
+        ) -> Result<crate::ChannelMessage, ChannelError> {
+            unreachable!("presence sessions do not publish messages")
+        }
+        async fn update_presence(
+            &self,
+            channel: &str,
+            member: &PresenceMember,
+        ) -> Result<(), ChannelError> {
+            if !self.delay.load(Ordering::Relaxed) {
+                return self
+                    .store
+                    .update_presence(channel, member, crate::store::now_unix_ms());
+            }
+            let (store, release, committed) = (
+                self.store.clone(),
+                self.release.clone(),
+                self.committed.clone(),
+            );
+            let (channel, member) = (channel.to_owned(), member.clone());
+            self.started.notify_one();
+            // Like a database worker or a request already accepted by a broker,
+            // this write keeps running if its awaiting caller disappears.
+            tokio::spawn(async move {
+                release.notified().await;
+                store
+                    .update_presence(&channel, &member, crate::store::now_unix_ms())
+                    .unwrap();
+                committed.notify_one();
+            })
+            .await
+            .unwrap();
+            Ok(())
+        }
+        async fn presence(&self, channel: &str) -> Result<Vec<PresenceMember>, ChannelError> {
+            self.store.presence(channel, crate::store::now_unix_ms())
+        }
+        async fn remove_presence(&self, channel: &str, id: &str) -> Result<(), ChannelError> {
+            self.store.remove_presence(channel, id)?;
+            self.removed.notify_one();
+            Ok(())
+        }
+    }
+
+    for already_joined in [false, true] {
+        let writer = Arc::new(DelayedWriter {
+            store: Arc::new(ChannelStore::open_in_memory().unwrap()),
+            delay: AtomicBool::new(false),
+            started: Notify::new(),
+            release: Arc::new(Notify::new()),
+            committed: Arc::new(Notify::new()),
+            removed: Notify::new(),
+        });
+        let mut session = PresenceSession::new_with_writer(writer.clone(), "room", None).unwrap();
+        if already_joined {
+            session
+                .update(br#"{"type":"tako.presence","data":{}}"#)
+                .await
+                .unwrap();
+        }
+        writer.delay.store(true, Ordering::Relaxed);
+        let task = tokio::spawn(async move {
+            session
+                .update(br#"{"type":"tako.presence","data":{"typing":true}}"#)
+                .await
+                .unwrap();
+        });
+        writer.started.notified().await;
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        // The page has left, but its backend write has not yet committed.
+        writer.release.notify_one();
+        writer.committed.notified().await;
+        tokio::time::timeout(std::time::Duration::from_secs(2), writer.removed.notified())
+            .await
+            .expect("cancelled presence update was not cleaned up");
+        assert!(
+            writer.presence("room").await.unwrap().is_empty(),
+            "late update resurrected a disconnected member"
+        );
+    }
+}
+
 #[test]
 fn postgres_presence_is_shared_and_scoped_by_app_when_configured() {
     let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {

@@ -531,7 +531,7 @@ async fn tunneled_channel_and_presence_websockets_use_the_trusted_proxy() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap().to_string();
     let paths = [
-        "/_tako/channels/chat?room=lobby",
+        "/_tako/channels/sse/chat?room=lobby",
         "/_tako/presence/online?room=lobby",
     ];
     let server = tokio::task::spawn_blocking(move || {

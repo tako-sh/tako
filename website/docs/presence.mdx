@@ -3,7 +3,7 @@ title: Presence
 description: "Track who is connected with Tako Presence: authenticated identities, scoped membership, client metadata, and automatic reconnects."
 ---
 
-Presence tracks who is connected to a named space. Tako manages membership, metadata updates, reconnects, and expiry. Each browser tab has its own entry, so closing one tab does not remove another tab belonging to the same user.
+Presence tracks who is connected to a named space. Tako manages membership, metadata updates, reconnects, and expiry. Each logical subscription has its own entry, even when several share one WebSocket. Closing one tab does not remove another tab belonging to the same user.
 
 Use [Stores](/stores/) to keep backend data and UI synchronized with optional cached offline reads. Presence describes current connections; Stores loads data from your existing database.
 
@@ -142,13 +142,13 @@ The hook returns:
 | -------------- | ---------------------------------------------------------------------------------------- |
 | `members`      | Latest snapshot of `{ connectionId, subject?, data }` entries, including this connection |
 | `connectionId` | This connection's server-assigned ID, or `null` while connecting                         |
-| `status`       | `"connecting"` until the first snapshot; `"open"` while joined                           |
+| `status`       | `"connecting"` until the first snapshot; `"open"` while joined; `"closed"` after abort   |
 | `error`        | Latest connection, protocol, or metadata error, cleared on a successful snapshot         |
 | `update(data)` | Replace this connection's complete metadata                                              |
 
 `data` provides initial metadata. Use `update()` for later changes. Metadata must be JSON-serializable and at most 16 KiB. Invalid updates set `error` and preserve the last valid metadata. Metadata from other members is client-provided; only `subject` and `connectionId` are server-controlled. `params`, `authorization`, and `baseUrl` are passed as connection options, just as with channels.
 
-Call the hook once in a provider and share its result when several components need the same presence connection. Each hook call creates another connection.
+Call the hook once in a provider and share its result when several components need the same membership. Each hook call creates another member entry, even when the underlying WebSocket is shared.
 
 ## Go Backends
 
@@ -185,7 +185,11 @@ browser membership, metadata updates, heartbeats, and reconnects for all backend
 
 ## Connection Lifecycle And Storage
 
-The hook waits for authorization before joining. It sends a heartbeat every 15 seconds, reconnects with bounded backoff, and rejoins with the latest metadata. Authorization failures stop retries until connection options change. While disconnected, it clears the member list. Unmounting closes the connection.
+The hook waits for authorization before joining. It sends a heartbeat every 15 seconds, reconnects with bounded backoff, and rejoins with the latest metadata. Authorization failures stop retries until connection options change. While disconnected, it clears the member list.
+
+Presence and WS channels share `/_tako/channels/ws` within a tab when their origin, credentials, and transport configuration match. Unmounting a page unsubscribes its membership while a layout's other subscriptions remain connected. The last subscription closes the physical socket. Use `connection: "dedicated"` when a hook needs its own socket. SSE and Store notifications remain independent streams.
+
+An abort `signal` stops the membership and cancels reconnect attempts; the hook exposes the abort reason in `error`. An already-aborted signal never connects. Pass a new signal to restart. After a cookie-session change, call `resetChannelConnections()` before opening subscriptions for the new account, as described in [shared WebSocket ownership](/channels/#shared-websocket-ownership).
 
 Connected clients receive membership changes within approximately one second. Clean disconnects remove the entry; network loss, suspended tabs, and server crashes expire entries 45 seconds after their last update. A reconnect receives a new connection ID and a fresh snapshot. An old connection can remain visible until its lease expires.
 
@@ -196,3 +200,5 @@ Local development keeps presence in memory and authorizes connections through th
 ## Verify
 
 Join with two tabs, check connection IDs and trusted subjects, update metadata, and close one tab. Verify that membership in another params scope is hidden and a denied caller cannot join in production. Disconnect a client without a clean close and allow for lease expiry before assuming a stale member is permanent.
+
+Keep a layout subscription mounted while leaving a page with Presence. The page's membership must disappear while the layout still receives events on the same socket. Lease expiry covers interrupted cleanup after crashes or network loss; membership alone does not prove that the user is actively viewing the page.

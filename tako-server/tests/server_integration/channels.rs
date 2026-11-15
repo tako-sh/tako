@@ -168,7 +168,7 @@ fn test_publish_and_sse_auth_with_app_auth() {
     let events = server
         .http_get_with_host_and_headers(
             "chat-app.localhost",
-            "/_tako/channels/chat?roomId=room-123",
+            "/_tako/channels/sse/chat?roomId=room-123",
             &[
                 ("X-Forwarded-Proto", "https"),
                 ("Authorization", "Bearer good"),
@@ -186,7 +186,7 @@ fn test_publish_and_sse_auth_with_app_auth() {
     let denied = server
         .http_get_with_host_and_headers(
             "chat-app.localhost",
-            "/_tako/channels/chat?roomId=room-123",
+            "/_tako/channels/sse/chat?roomId=room-123",
             &[
                 ("X-Forwarded-Proto", "https"),
                 ("Accept", "text/event-stream"),
@@ -214,7 +214,7 @@ fn test_events_stream_returns_sse_messages() {
     let events = server
         .http_get_with_host_and_headers(
             "chat-app.localhost",
-            "/_tako/channels/chat?roomId=room-123",
+            "/_tako/channels/sse/chat?roomId=room-123",
             &[
                 ("X-Forwarded-Proto", "https"),
                 ("Authorization", "Bearer good"),
@@ -275,7 +275,8 @@ fn websocket_connect(server: &TestServer, path: &str) -> (TcpStream, String) {
 }
 
 fn publish_via_websocket(server: &TestServer, text: &str) -> String {
-    let (mut stream, handshake) = websocket_connect(server, "/_tako/channels/chat?roomId=room-123");
+    let (mut stream, handshake) =
+        websocket_connect(server, "/_tako/channels/ws/chat?roomId=room-123");
     assert!(
         handshake.starts_with("HTTP/1.1 101") || handshake.starts_with("HTTP/1.0 101"),
         "expected websocket upgrade response: {handshake}"
@@ -359,7 +360,7 @@ fn test_websocket_stream_replays_messages_and_accepts_publish_frames() {
 
     let (mut stream, handshake) = websocket_connect(
         &server,
-        "/_tako/channels/chat?roomId=room-123&last_message_id=0",
+        "/_tako/channels/ws/chat?roomId=room-123&last_message_id=0",
     );
     assert!(
         handshake.starts_with("HTTP/1.1 101") || handshake.starts_with("HTTP/1.0 101"),
@@ -397,7 +398,7 @@ fn test_presence_tracks_verified_connections_and_leaves() {
     }
     let server = TestServer::start();
     deploy_chat_app(&server);
-    let path = "/_tako/channels/tako.presence%3Alobby?roomId=room-123";
+    let path = "/_tako/channels/ws/tako.presence%3Alobby?roomId=room-123";
     let (mut first, handshake) = websocket_connect(&server, path);
     assert!(handshake.starts_with("HTTP/1.1 101"), "{handshake}");
     let ready: serde_json::Value = serde_json::from_slice(&read_server_frame(&mut first)).unwrap();

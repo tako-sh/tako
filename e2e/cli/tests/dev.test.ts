@@ -259,7 +259,7 @@ describe.skipIf(SKIP)("tako dev fixtures", () => {
         markReady = resolve;
       });
       const sse = collectSseUntil(
-        appUrl(devUrl, "/_tako/channels/demo"),
+        appUrl(devUrl, "/_tako/channels/sse/demo"),
         [directMessage, workflowMessage],
         markReady,
         abort.signal,
@@ -312,7 +312,7 @@ describe.skipIf(SKIP)("tako dev fixtures", () => {
     try {
       const devUrl = await waitForApp(lf);
       await waitForHttpOk(devUrl, lf);
-      const url = new URL(appUrl(devUrl, "/_tako/channels/tako.presence%3Alobby"));
+      const url = new URL(appUrl(devUrl, "/_tako/channels/ws/tako.presence%3Alobby"));
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
       let firstMembers: unknown[] = [];
       for (let index = 0; index < 2; index++) {

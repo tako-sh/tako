@@ -1,13 +1,20 @@
 use percent_encoding::percent_decode_str;
 
-use crate::{CHANNELS_BASE_PATH, ChannelError, ChannelRoute, ReplayCursor};
+use crate::{CHANNELS_BASE_PATH, ChannelError, ChannelOperation, ChannelRoute, ReplayCursor};
 
 pub fn parse_channel_route(path: &str) -> Result<Option<ChannelRoute>, ChannelError> {
-    if !path.starts_with(CHANNELS_BASE_PATH) {
+    if path == crate::shared::PATH || !path.starts_with(CHANNELS_BASE_PATH) {
         return Ok(None);
     }
 
     let rest = &path[CHANNELS_BASE_PATH.len()..];
+    let (operation, rest) = if let Some(name) = rest.strip_prefix("sse/") {
+        (ChannelOperation::Subscribe, name)
+    } else if let Some(name) = rest.strip_prefix("ws/") {
+        (ChannelOperation::Connect, name)
+    } else {
+        return Err(ChannelError::InvalidPath);
+    };
     if rest.is_empty() || rest.contains('/') {
         return Err(ChannelError::InvalidPath);
     }
@@ -19,7 +26,7 @@ pub fn parse_channel_route(path: &str) -> Result<Option<ChannelRoute>, ChannelEr
         return Err(ChannelError::InvalidPath);
     }
 
-    Ok(Some(ChannelRoute { channel }))
+    Ok(Some(ChannelRoute { channel, operation }))
 }
 
 pub fn parse_message_id_cursor(

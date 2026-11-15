@@ -538,7 +538,7 @@ run_store_checks() {
   local query_a='params=%7B%22chat%22%3A%7B%22id%22%3A%22chat-a%22%7D%7D'
   local query_b='params=%7B%22chat%22%3A%7B%22id%22%3A%22chat-b%22%7D%7D'
   local store_url="http://${server_host}:8080/_tako/stores/messages"
-  local stream_url="http://${server_host}:8080/_tako/channels/tako.store%3Amessages"
+  local stream_url="http://${server_host}:8080/_tako/channels/sse/tako.store%3Amessages"
   local status sse_a sse_b
   local -a route_args=(
     --http1.1 --connect-timeout 3 --max-time 10
@@ -1156,6 +1156,8 @@ for entry in "${SERVERS[@]}"; do
   fi
   if [[ "$FIXTURE_REL" == "e2e/fixtures/javascript/channels-workflows" ]]; then
     run_channels_workflows_checks "$server" "$ROUTE_HOST"
+    cp /workspace/e2e/shared-channels.ts "$PROJECT_DIR/check-shared-channels.ts"
+    (cd "$PROJECT_DIR" && bun check-shared-channels.ts "$server" "$ROUTE_HOST")
     run_network_primitive_checks "$server"
     run_store_checks "$server" "$ROUTE_HOST"
   fi

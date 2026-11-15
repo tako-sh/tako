@@ -5,6 +5,8 @@ description: "Keep React synchronized with your existing database using Tako Sto
 image: 62991c3db48d
 ---
 
+> **Updated November 15, 2026:** Store notifications still use independent SSE streams; they do not join the shared WS pool. Native multi-server SQLite support below replaces the earlier Postgres-only guidance. See the [Stores reference](/docs/stores/) for the current storage and recovery behavior.
+
 You save a message. The database has it. The person in the next browser tab is still looking at yesterday's conversation. Somewhere between “write succeeded” and “everyone can see it,” you need subscriptions, permission checks, reconnect handling, and a way to ask for fresh data.
 
 We're introducing [Tako Stores](/docs/stores/): self-hosted live queries for React, backed by the database you already use. Define an authenticated loader, read it with `useStore`, and invalidate it after a write. Tako connects those pieces and reloads the view when notified. You can also opt into cached reads for when the connection disappears.
@@ -96,7 +98,7 @@ await messages.invalidate({ chatId });
 
 That wakes readers of `messages` with those exact params. Each read goes through authorization again and loads current data. Invalidating one chat doesn't refresh another, and there is no wildcard invalidation. An unparameterized Store uses `invalidate()`.
 
-Underneath, Stores use [Tako Channels](/docs/channels/) for notifications over an SSE subscription. The browser receives a small invalidation signal, then requests a fresh snapshot:
+Underneath, Stores use [Tako Channels](/docs/channels/) for notifications over an independent SSE subscription under `/_tako/channels/sse/<name>`. Store notifications do not join the shared WS connection used by WS channels and Presence. The browser receives a small invalidation signal, then requests a fresh snapshot:
 
 ```d2
 direction: right
@@ -160,6 +162,6 @@ await clearStoreCache(`${tenantId}:${userId}`);
 
 Offline reads are previously authorized data saved on that device. A disconnected browser cannot discover a remote permission revocation, so choose the data and expiry accordingly. The app shell must also already be available: Stores doesn't install a service worker. This release provides cached reads; queued writes, optimistic mutations, and conflict resolution aren't included.
 
-You can develop this flow with [`tako dev`](/docs/development/), which watches JavaScript Store definitions and enforces Store authorization locally. Notification state is in memory during development and uses Tako-managed SQLite by default on a single production server. For multiple servers, configure the shared `postgres_url` credential so notifications can reach readers connected elsewhere. Your application database remains the source of truth.
+You can develop this flow with [`tako dev`](/docs/development/), which watches JavaScript Store definitions and enforces Store authorization locally. Notification state is in memory during development and uses Tako-managed SQLite by default in production. Native networks propagate Store notifications between servers without requiring Postgres; an explicitly configured `postgres_url` backend remains supported. Your application database remains the source of truth.
 
 Start with one view that's frustrating to keep fresh. Define its loader, connect the hook, and invalidate after its writes. The [Stores documentation](/docs/stores/) has the complete JavaScript, Go, and Rust examples; the [implementation is on GitHub](https://github.com/tako-sh/tako). Your database already knows what's new. Now your React UI has a way to find out.

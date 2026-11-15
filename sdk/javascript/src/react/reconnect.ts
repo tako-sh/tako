@@ -1,10 +1,17 @@
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 
+export function subscriptionAbortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new DOMException("Channel subscription aborted.", "AbortError");
+}
+
 export function channelIdentity(
   name: string,
   options: {
     transport?: string;
+    connection?: "shared" | "dedicated";
     params?: Record<string, unknown>;
     baseUrl?: string;
     headers?: Record<string, string>;
@@ -16,6 +23,7 @@ export function channelIdentity(
     [
       name,
       options.transport ?? "sse",
+      options.connection,
       options.params ?? {},
       options.baseUrl ?? globalThis.location?.origin,
       Object.fromEntries(new Headers(options.headers)),
@@ -30,7 +38,9 @@ export function channelIdentity(
 }
 
 export function terminalClose(code: number): boolean {
-  return code === 4401 || code === 4403 || code === 4404;
+  // 4410 is a replay reset and 4429 a capacity rejection: both recover on
+  // reconnect, unlike the other 44xx rejections and oversized-message 1009.
+  return (code >= 4400 && code < 4500 && code !== 4410 && code !== 4429) || code === 1009;
 }
 
 export function reconnectDelay(attempt: number): number {
