@@ -70,10 +70,11 @@ Additional Compose lifecycle tests can run directly on a development machine wit
 ```bash
 cargo test -p tako-compose -- --ignored --test-threads=1
 cargo test -p tako-server --bin tako-server first_compose_prepare_uses_incoming_secrets_without_committing_them -- --ignored
-cargo test -p tako-cli --bin tako-dev-server compose_registration_restart_stop_and_shutdown_keep_redis_data -- --ignored
+cargo test -p tako-server --bin tako-server tests::compose_scaling -- --ignored --test-threads=1
+cargo test -p tako-cli --bin tako-dev-server tests::compose -- --ignored
 ```
 
-When running these tests inside a container, its temporary project paths and loopback must be shared with its Docker engine. Both tests use unique projects and remove their own test volumes afterward.
+When running these tests inside a container, its temporary project paths and loopback must be shared with its Docker engine. These tests use unique projects and remove their own test volumes afterward.
 
 For `on_demand_integration` and `rolling_update_integration`, an installed disposable Linux host can set `TAKO_E2E_DISPOSABLE_HOST=1` and `TAKO_TEST_SERVER_WRAPPER=/workspace/e2e/docker/server/test-wrapper.sh`. Run the test executables as root with `--test-threads=1`, with Bun installed in a path accessible to app users. The wrapper installs the test binary with production capabilities, points the real isolation helper at each temporary data directory, and starts the service as `tako`. The fixture uploader reproduces the ownership of an SSH upload. The wrapper refuses to run outside a root Docker test container.
 
