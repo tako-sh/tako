@@ -6,6 +6,8 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+mod shared;
+
 /// An app serving a `feed` definition with an integer `id` param over SSE and
 /// WebSocket.
 async fn feed_app() -> u16 {
@@ -37,6 +39,12 @@ async fn feed_app() -> u16 {
                 }
                 .to_string();
                 let mut header = ResponseHeader::build(200, None).unwrap();
+                header
+                    .insert_header(
+                        "x-tako-internal-token",
+                        session.req_header().headers["x-tako-internal-token"].clone(),
+                    )
+                    .unwrap();
                 header
                     .insert_header("Content-Type", "application/json")
                     .unwrap();

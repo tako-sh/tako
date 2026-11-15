@@ -37,11 +37,15 @@ struct SharedAppResolver {
     cold_start: Arc<crate::scaling::ColdStartManager>,
     draining: Arc<std::sync::atomic::AtomicBool>,
     spawn_gate: Arc<tokio::sync::RwLock<()>>,
+    store: Arc<ProxyChannelStore>,
+    credentials_generation: Arc<std::sync::atomic::AtomicU64>,
+    resolved_at: u64,
 }
 
 #[async_trait::async_trait]
 impl tako_channels::shared::AppResolver for SharedAppResolver {
     async fn resolve(&self) -> std::result::Result<AppAuthorizer, ChannelError> {
+        self.check_generation()?;
         let BackendResolution::Ready { backend, .. } = super::backend::resolve_app_backend(
             &self.lb,
             &self.cold_start,
@@ -53,6 +57,10 @@ impl tako_channels::shared::AppResolver for SharedAppResolver {
         else {
             return Err(ChannelError::AuthUnavailable);
         };
+        // A detached or replaced reader must trigger a physical reconnect,
+        // rather than a terminal 4403 from the subscription's writer setup.
+        self.store.ensure_ready().await?;
+        self.check_generation()?;
         let instance = backend.instance();
         Ok(AppAuthorizer {
             endpoint: instance
@@ -63,6 +71,21 @@ impl tako_channels::shared::AppResolver for SharedAppResolver {
             internal_token_header: "x-tako-internal-token",
             internal_token: instance.internal_token().to_owned(),
         })
+    }
+}
+
+impl SharedAppResolver {
+    fn check_generation(&self) -> std::result::Result<(), ChannelError> {
+        if self
+            .credentials_generation
+            .load(std::sync::atomic::Ordering::Acquire)
+            != self.resolved_at
+        {
+            // AuthUnavailable becomes a retryable physical close. The next
+            // handshake reopens the reader/writer through channel_store_for_app.
+            return Err(ChannelError::AuthUnavailable);
+        }
+        Ok(())
     }
 }
 
@@ -232,13 +255,11 @@ impl TakoProxy {
         let instance = backend.instance();
 
         if path == tako_channels::shared::PATH {
-            let app = Arc::new(SharedAppResolver {
-                app_name: app_name.to_owned(),
-                lb: self.lb.clone(),
-                cold_start: self.cold_start.clone(),
-                draining: self.draining.clone(),
-                spawn_gate: self.spawn_gate.clone(),
-            });
+            // Capture before opening the store: a rotation during that await
+            // must also invalidate this connection's reader and writer.
+            let resolved_at = self
+                .channel_credentials_generation
+                .load(std::sync::atomic::Ordering::Acquire);
             let store = match self.channel_store_for_app(app_name).await {
                 Ok(store) => store,
                 Err(error) => {
@@ -247,6 +268,16 @@ impl TakoProxy {
                         .await;
                 }
             };
+            let app = Arc::new(SharedAppResolver {
+                app_name: app_name.to_owned(),
+                lb: self.lb.clone(),
+                cold_start: self.cold_start.clone(),
+                draining: self.draining.clone(),
+                spawn_gate: self.spawn_gate.clone(),
+                store: store.clone(),
+                credentials_generation: self.channel_credentials_generation.clone(),
+                resolved_at,
+            });
             drop(backend);
             ctx.observation.set_handler_result("shared-websocket");
             return tako_channels::shared::serve(
