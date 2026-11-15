@@ -400,6 +400,16 @@ impl ComposeRuntime {
         let model: Value = serde_json::from_str(&output)
             .map_err(|e| format!("Invalid Compose config output: {e}"))?;
         validate_model_with_mode(&model, self.working_directory(), "", self.development)?;
+        // Profiles and other normalization can drop a service declared in the
+        // source; its routes would then point at an app with no containers.
+        if let Some(missing) = services
+            .keys()
+            .find(|name| model["services"].get(name.as_str()).is_none())
+        {
+            return Err(format!(
+                "Compose service '{missing}' has x-tako settings but is not part of the Compose model"
+            ));
+        }
         if !self.development {
             validation::validate_resources(&model, false, Some(&self.env))?;
         }

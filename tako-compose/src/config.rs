@@ -47,7 +47,12 @@ pub(crate) fn service_configs(
         .iter()
         .filter(|(_, service)| service.get("x-tako").is_some())
         .map(|(name, service)| {
-            let config = serde_json::from_value(service["x-tako"].clone())
+            // `x-tako:` with no value marks a service as an app with defaults.
+            let value = match &service["x-tako"] {
+                Value::Null => Value::Object(Default::default()),
+                value => value.clone(),
+            };
+            let config = serde_json::from_value(value)
                 .map_err(|e| format!("Compose service '{name}', x-tako: {e}"))?;
             Ok((name.clone(), config))
         })
@@ -219,6 +224,18 @@ mod tests {
         assert!(validate("example.com/api/", "example.com/api").is_err());
         assert!(validate("example.com/API", "example.com/api").is_ok());
         assert!(validate("example.com", "example.com/api/*").is_ok());
+        assert!(validate("example.com", "Example.com/*").is_err());
+    }
+
+    #[test]
+    fn empty_extension_marks_a_default_app() {
+        let services = service_configs(&json!({"services": {
+            "worker": {"x-tako": null},
+            "redis": {"image": "redis"}
+        }}))
+        .unwrap();
+        assert_eq!(services.len(), 1);
+        assert_eq!(services["worker"], ComposeServiceConfig::default());
     }
 
     #[test]

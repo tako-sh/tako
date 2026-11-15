@@ -82,7 +82,11 @@ impl ComposeConfig {
                     let (host, path) = route
                         .split_once('/')
                         .map_or((route.as_str(), None), |(host, path)| (host, Some(path)));
-                    let path = path.map(|path| path.trim_end_matches('/').to_owned());
+                    // `host` and `host/*` both match every path with equal
+                    // specificity, so they are the same binding.
+                    let path = path
+                        .map(|path| path.trim_end_matches('/').to_owned())
+                        .filter(|path| path != "*");
                     let key = (env, host.to_ascii_lowercase(), path);
                     if let Some(previous) = routes.insert(key, service) {
                         return Err(format!(
