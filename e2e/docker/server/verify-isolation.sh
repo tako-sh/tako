@@ -41,7 +41,7 @@ setpriv --reuid="$first_group" --regid="$first_group" --groups=tako-app --no-new
   printf nested-data > ../../data/app/nested/file
   mkdir node_modules
   printf "{}" > package-lock.json
-  if printf bad > app.json 2>/dev/null; then exit 1; fi
+  if printf bad 2>/dev/null > app.json; then exit 1; fi
   if rm app.json 2>/dev/null; then exit 2; fi
   if mv app.json replaced.json 2>/dev/null; then exit 3; fi
   if ls /opt/tako/apps/second/production >/dev/null 2>&1; then exit 4; fi
@@ -90,6 +90,16 @@ PYSQL
 
 # Configured shared SQLite files retain separate app identities while allowing
 # both processes to commit through WAL with the normal restrictive app umask.
+setpriv --reuid="$first_group" --regid="$first_group" --groups=tako-app --no-new-privs sh -c '
+  set -eu
+  umask 027
+  mkdir /opt/tako/shared/data/app/permissions-proof
+  printf first > /opt/tako/shared/data/app/permissions-proof/file
+  test "$(stat -c %a /opt/tako/shared/data/app/permissions-proof/file)" = 660
+'
+setpriv --reuid="$second_group" --regid="$second_group" --groups=tako-app --no-new-privs sh -c '
+  printf second >> /opt/tako/shared/data/app/permissions-proof/file
+'
 shared_db=/opt/tako/shared/data/app/shared.sqlite
 install -o tako -g tako-app -m 0660 /dev/null "$shared_db"
 python3 - "$shared_db" <<'PYSQL'
