@@ -47,6 +47,52 @@ missing_runtime_libraries() {
   ' || true
 }
 
+# TRANSITIONAL (with install_legacy_libvips_runtime below): RHEL-family hosts
+# (AlmaLinux/Rocky/RHEL/CentOS Stream) carry no vips package in any default or
+# EPEL repository, so older binaries get libvips from Remi's RPM repository.
+dnf_install_with_retry() {
+  for dnf_attempt in 1 2 3; do
+    if dnf install -y --refresh --disablerepo='remi-modular*' "$@"; then
+      return 0
+    fi
+    if [ "$dnf_attempt" -eq 3 ]; then
+      return 1
+    fi
+    # Mirror metadata can change between resolving a mirror and downloading it.
+    dnf clean metadata
+    sleep 5
+  done
+}
+
+install_libvips_from_remi() {
+  el_version="$(rpm -E %rhel 2>/dev/null || true)"
+  case "$el_version" in
+    '' | *[!0-9]*)
+      echo "error: could not detect the RHEL major version (rpm -E %rhel) for Remi's repository" >&2
+      return 1
+      ;;
+  esac
+
+  dnf_install_with_retry epel-release || return 1
+  if need_cmd dnf config-manager; then
+    dnf config-manager --set-enabled crb || true
+  fi
+  # EPEL is already installed; its metadata is not needed to install this RPM.
+  if ! dnf_install_with_retry --disablerepo='epel*' "https://rpms.remirepo.net/enterprise/remi-release-${el_version}.rpm"; then
+    echo "error: failed to install Remi's repository configuration" >&2
+    return 1
+  fi
+  dnf config-manager --set-enabled remi || true
+
+  # install_weak_deps=False: vips' optional codec modules (heif, jxl,
+  # ImageMagick/GraphicsMagick, OpenSlide, Poppler) pull in a desktop-sized
+  # dependency chain (GTK, WebKit, PulseAudio, X11 fonts...) as recommends.
+  # tako-server only needs the base runtime library.
+  # libvips comes from the non-modular repository, not the PHP module streams.
+  dnf_install_with_retry --setopt=install_weak_deps=False vips
+}
+
+
 # TRANSITIONAL — remove once the `latest` release ships a tako-server built
 # with the static Rust image pipeline (tako-sh/tako#223).
 # /install-server.sh serves this installer from master, but the binary comes
@@ -68,6 +114,7 @@ install_legacy_libvips_runtime() {
     done
   elif need_cmd dnf; then
     dnf install -y vips && return 0
+    install_libvips_from_remi && return 0
   elif need_cmd yum; then
     yum install -y vips && return 0
   elif need_cmd pacman; then
