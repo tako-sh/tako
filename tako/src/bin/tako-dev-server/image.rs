@@ -18,6 +18,10 @@ use tokio::time::timeout;
 use crate::proxy::RouteTarget;
 
 const IMAGE_ERROR_CACHE_CONTROL: &str = "private, no-store";
+/// Concurrent transforms per dev server. Each decode may hold up to
+/// `TransformLimits::max_decoded_pixels` across frames, so unbounded
+/// parallelism could exhaust memory on a page with many large images.
+const MAX_PARALLEL_TRANSFORMS: usize = 2;
 
 pub(crate) fn is_image_request_path(path: &str) -> bool {
     path == PUBLIC_IMAGE_BASE_PATH
@@ -149,7 +153,14 @@ async fn transform_image_blocking(
     options: TransformOptions,
     limits: TransformLimits,
 ) -> Result<tako_images::TransformedImage, ImageError> {
+    let permit = transform_slots()
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| ImageError::TransformFailed)?;
     tokio::task::spawn_blocking(move || {
+        // Held until the transform finishes, even if the request is dropped.
+        let _permit = permit;
         transform_image(
             &source.bytes,
             source.content_type.as_deref(),
@@ -159,6 +170,11 @@ async fn transform_image_blocking(
     })
     .await
     .map_err(|_| ImageError::TransformFailed)?
+}
+
+fn transform_slots() -> &'static std::sync::Arc<tokio::sync::Semaphore> {
+    static SLOTS: OnceLock<std::sync::Arc<tokio::sync::Semaphore>> = OnceLock::new();
+    SLOTS.get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_PARALLEL_TRANSFORMS)))
 }
 
 async fn fetch_remote_image_source(
@@ -369,6 +385,45 @@ fn image_etag(bytes: &[u8], content_type: &str) -> String {
 mod tests {
     use super::*;
     use std::net::{Ipv4Addr, SocketAddr};
+
+    #[tokio::test]
+    async fn bounds_parallel_image_transforms() {
+        let held = transform_slots()
+            .clone()
+            .acquire_many_owned(MAX_PARALLEL_TRANSFORMS as u32)
+            .await
+            .expect("occupy transform slots");
+        let source = ImageSourceBytes {
+            bytes: b"not an image".to_vec(),
+            content_type: None,
+        };
+        let options = TransformOptions {
+            format: tako_images::OutputFormat::Webp,
+            width: 16,
+            height: None,
+            fit: None,
+            crop: None,
+            quality: 80,
+        };
+        let transform = tokio::spawn(transform_image_blocking(
+            source,
+            options,
+            TransformLimits::default(),
+        ));
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !transform.is_finished(),
+            "transform ran past the slot limit"
+        );
+
+        drop(held);
+        let result = timeout(Duration::from_secs(5), transform)
+            .await
+            .expect("transform runs once a slot frees")
+            .expect("transform task");
+        assert_eq!(result.unwrap_err(), ImageError::UnsupportedFormat);
+    }
 
     #[test]
     fn identifies_image_request_paths() {

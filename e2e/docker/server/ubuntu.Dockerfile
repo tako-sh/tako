@@ -23,7 +23,6 @@ RUN --mount=type=secret,id=proxy_ca,mode=0444 \
         curl \
         git \
         iptables \
-        libvips42 \
         netcat-openbsd \
         npm \
         sudo \

@@ -167,7 +167,7 @@ fi
 
 install -m 0755 "$tmp_bin" /usr/local/bin/tako-server
 echo "OK installed tako-server binary"
-install_missing_tako_server_runtime_deps /usr/local/bin/tako-server
+install_legacy_libvips_runtime
 verify_tako_server_runtime_deps
 ensure_privileged_bind_capability
 

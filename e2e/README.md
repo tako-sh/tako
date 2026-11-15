@@ -20,7 +20,7 @@ CORROSION_BIN=/usr/local/libexec/tako/corrosion just test corrosion
 
 This starts two temporary loopback agents, loads all three production schemas, and checks that independent records and conflicting operation variants survive replication. It catches Corrosion-specific schema restrictions that plain SQLite tests cannot check. It requires no root access and removes its processes and temporary state afterward.
 
-The following scripts must run inside disposable privileged Linux containers, with the checkout mounted read-only. They reject execution outside a container. Install Python, iproute2, ping, wireguard-tools, wireguard-go, OpenSSH client/server, systemd-resolved, D-Bus, and the CLI's libvips runtime dependencies in the test image:
+The following scripts must run inside disposable privileged Linux containers, with the checkout mounted read-only. They reject execution outside a container. Install Python, iproute2, ping, wireguard-tools, wireguard-go, OpenSSH client/server, systemd-resolved, and D-Bus in the test image:
 
 ```bash
 python3 /checkout/e2e/cli/embedded-wireguard.py /checkout/target/debug/tako
@@ -32,13 +32,13 @@ Use the test executable reported by `cargo test -p tako-cli --bin tako --no-run`
 
 ## Native Image Dependency
 
-Run `mise bootstrap` to install the repository toolchain, native libvips dependencies, and package dependencies. Full E2E also requires a running Docker engine with Compose support.
+Run `mise bootstrap` to install the repository toolchain, the image codec build tools, and package dependencies. Its CMake comes from the distro; where that is older than 3.22 (Debian 11), run `sh scripts/install-image-build-deps.sh` as well. Full E2E also requires a running Docker engine with Compose support.
 
 The Docker host kernel must support WireGuard interfaces. Privileged containers cannot supply a missing kernel module; an `ip link add ... type wireguard` failure prevents native enrollment. The loopback Corrosion check and pinned HTTPS CLI integration tests can run independently of that requirement.
 
-Homebrew's `vips` formula includes the codec libraries Tako needs for JPEG, PNG, WebP, and AVIF transforms. Debian/Ubuntu split the AVIF encoder into `libheif-plugin-aomenc`, so install that alongside `libvips-dev`.
+`tako-images` statically links libwebp, libavif, and dav1d, so Tako binaries need no image libraries at runtime. Building them requires CMake 3.22 or newer, Meson, Ninja, and NASM on x86; `scripts/install-image-build-deps.sh` installs them on apt-based Linux and Homebrew hosts.
 
-Deploy E2E builds Linux binaries inside a pinned glibc builder image, so their libvips dependencies do not depend on the host operating system.
+Deploy E2E builds Linux binaries inside a pinned glibc builder image, so their glibc floor does not depend on the host operating system.
 
 ## Docker E2E Fixtures
 
@@ -61,7 +61,7 @@ Each test host also runs its own Docker Engine for Compose releases. The executo
 
 The staged JavaScript fixtures receive the runner's proxy and CA settings as explicit production variables so isolated dependency installs can access the registry. The committed fixtures are unchanged.
 
-The AlmaLinux image includes libvips and freezes DNF metadata after installing system dependencies. Enrollment runs the real installer against those installed packages; app dependency installs and runtime downloads continue to use the network.
+The AlmaLinux image freezes DNF metadata after installing system dependencies. Enrollment runs the real installer against those installed packages; app dependency installs and runtime downloads continue to use the network.
 
 The Bun + Redis example checks first deployment, service status, logs, code updates, server restart, explicit rollback, and recovery after a failed HTTP health check. The Redis counter must increase across every transition. `just test e2e` includes this example after the native fixtures.
 

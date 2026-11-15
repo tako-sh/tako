@@ -8,7 +8,6 @@ set -eu
 #
 # What it does:
 # - downloads and installs `tako-server`
-# - installs the libvips runtime used by the built-in image optimizer
 # - installs Podman for container releases
 # - creates OS user `tako`
 # - installs systemd units for `tako-server`
@@ -1328,32 +1327,25 @@ install_podman_runtime() {
   fi
 }
 
-apt_available_avif_packages() {
-  for apt_avif_pkg in libheif-plugin-aomenc libheif-plugin-aomdec libheif-plugin-dav1d; do
-    if apt-cache show "$apt_avif_pkg" >/dev/null 2>&1; then
-      printf '%s\n' "$apt_avif_pkg"
-    fi
-  done
-}
-
-install_apt_avif_plugins() {
-  apt_avif_pkgs="$(apt_available_avif_packages | tr '\n' ' ')"
-  if [ -n "$apt_avif_pkgs" ]; then
-    apt-get install -y $apt_avif_pkgs
+missing_runtime_libraries() {
+  _bin="$1"
+  if ! need_cmd ldd; then
+    return
   fi
+
+  ldd "$_bin" 2>&1 | awk '
+    /not found/ { print $1 }
+    /Error loading shared library/ {
+      lib = $5
+      sub(/:$/, "", lib)
+      print lib
+    }
+  ' || true
 }
 
-# dnf hosts fall into two groups: real Fedora, where "vips" installs
-# directly, and RHEL-family clones (AlmaLinux/Rocky/RHEL/CentOS Stream),
-# where no repo — including EPEL — ever carries it: Fedora's own package
-# page (https://packages.fedoraproject.org/pkgs/vips/vips/) only builds
-# Fedora branches, and that build requires glibc symbols RHEL9's glibc
-# 2.34 doesn't export. Retrying the plain install after enabling EPEL/CRB
-# can't succeed on the second group, so RHEL-family hosts go straight to
-# Remi's RPM repository (https://rpms.remirepo.net/), which builds vips
-# natively against each RHEL major version. This is also what libvips'
-# own current maintainer recommends for RHEL9:
-# https://github.com/libvips/pyvips/issues/356#issuecomment-1287872830
+# TRANSITIONAL (with install_legacy_libvips_runtime below): RHEL-family hosts
+# (AlmaLinux/Rocky/RHEL/CentOS Stream) carry no vips package in any default or
+# EPEL repository, so older binaries get libvips from Remi's RPM repository.
 dnf_install_with_retry() {
   for dnf_attempt in 1 2 3; do
     if dnf install -y --refresh --disablerepo='remi-modular*' "$@"; then
@@ -1396,79 +1388,45 @@ install_libvips_from_remi() {
   dnf_install_with_retry --setopt=install_weak_deps=False vips
 }
 
-install_libvips_runtime() {
-  echo "Installing libvips runtime"
+
+# TRANSITIONAL — remove once the `latest` release ships a tako-server built
+# with the static Rust image pipeline (tako-sh/tako#223).
+# /install-server.sh serves this installer from master, but the binary comes
+# from the `latest` release. Between merging that change and the next release,
+# a fresh install pairs this installer with an older binary that still links
+# libvips, so install the distro runtime only when the binary asks for it.
+install_legacy_libvips_runtime() {
+  if ! missing_runtime_libraries /usr/local/bin/tako-server | grep -Eq '^libvips(-cpp)?\.so'; then
+    return 0
+  fi
+
+  echo "Installing libvips runtime for an older tako-server release"
   if need_cmd apt-get; then
     apt-get update -y
-    apt_avif_pkgs=
-    apt_avif_pkgs="$(apt_available_avif_packages | tr '\n' ' ')"
-    for apt_vips_pkg in libvips42t64 libvips42 libvips; do
-      if apt-get install -y "$apt_vips_pkg" $apt_avif_pkgs; then
-        return
+    # libheif only recommends its codec plugins; older binaries need the AOM
+    # encoder for AVIF output, so install whichever plugins the distro offers.
+    apt_avif_pkgs=""
+    for apt_avif_pkg in libheif-plugin-aomenc libheif-plugin-aomdec libheif-plugin-dav1d; do
+      if apt-cache show "$apt_avif_pkg" >/dev/null 2>&1; then
+        apt_avif_pkgs="$apt_avif_pkgs $apt_avif_pkg"
       fi
     done
-    return 1
+    for apt_vips_pkg in libvips42t64 libvips42; do
+      if apt-get install -y "$apt_vips_pkg" $apt_avif_pkgs; then
+        return 0
+      fi
+    done
   elif need_cmd dnf; then
-    if dnf install -y vips; then
-      return
-    fi
-    install_libvips_from_remi
+    dnf install -y vips && return 0
+    install_libvips_from_remi && return 0
   elif need_cmd yum; then
-    yum install -y libvips || yum install -y vips || {
-      yum install -y epel-release
-      yum install -y libvips || yum install -y vips
-    }
+    yum install -y vips && return 0
   elif need_cmd pacman; then
-    pacman -Sy --noconfirm vips
+    pacman -Sy --noconfirm libvips && return 0
   elif need_cmd zypper; then
-    zypper --non-interactive install libvips42 || zypper --non-interactive install vips
-  else
-    echo "error: unsupported package manager; install libvips manually before starting tako-server" >&2
-    exit 1
+    zypper --non-interactive install libvips42 && return 0
   fi
-}
-
-install_libvips_codec_runtime() {
-  if need_cmd apt-get; then
-    apt-get update -y
-    install_apt_avif_plugins || true
-  fi
-}
-
-missing_runtime_libraries() {
-  _bin="$1"
-  if ! need_cmd ldd; then
-    return
-  fi
-
-  ldd "$_bin" 2>&1 | awk '
-    /not found/ { print $1 }
-    /Error loading shared library/ {
-      lib = $5
-      sub(/:$/, "", lib)
-      print lib
-    }
-  ' || true
-}
-
-install_missing_tako_server_runtime_deps() {
-  _bin="$1"
-  if ! need_cmd ldd; then
-    return
-  fi
-
-  missing="$(missing_runtime_libraries "$_bin")"
-  if [ -z "$missing" ]; then
-    install_libvips_codec_runtime
-    return
-  fi
-
-  if printf '%s\n' "$missing" | grep -Eq '^libvips(\.|$)'; then
-    install_libvips_runtime
-    return
-  fi
-
-  install_libvips_codec_runtime
+  echo "warning: could not install libvips for this tako-server release; rerun the installer after the next release" >&2
 }
 
 verify_tako_server_runtime_deps() {
@@ -1699,7 +1657,7 @@ fi
 
 install -m 0755 "$tmp_bin" /usr/local/bin/tako-server
 echo "OK installed tako-server binary"
-install_missing_tako_server_runtime_deps /usr/local/bin/tako-server
+install_legacy_libvips_runtime
 verify_tako_server_runtime_deps
 ensure_privileged_bind_capability
 

@@ -2,7 +2,7 @@
 """Run the ignored userspace transport test against a reference WireGuard peer.
 
 Run only inside a disposable privileged container with iproute2, wireguard-tools,
-Python, and libvips (wireguard-go when the kernel lacks WireGuard). argv[1] is the Tako Rust test binary. The server setup needs
+and Python (wireguard-go when the kernel lacks WireGuard). argv[1] is the Tako Rust test binary. The server setup needs
 root; the actual TCP client runs as an unprivileged user, without a TUN device or local route.
 """
 import base64

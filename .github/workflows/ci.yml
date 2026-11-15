@@ -135,8 +135,8 @@ jobs:
           rustup toolchain install stable --profile minimal --component rustfmt
           rustup default stable
 
-      - name: Install libvips
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvips-dev libheif-plugin-aomenc
+      - name: Install image codec build tools
+        run: sh scripts/install-image-build-deps.sh
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -271,9 +271,6 @@ jobs:
       - name: Make binaries executable
         run: chmod +x .e2e-bin/tako .e2e-bin/tako-dev-server .e2e-bin/tako-dev-proxy
 
-      - name: Install libvips runtime
-        run: sh scripts/install-libvips-runtime.sh
-
       - name: Setup Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
@@ -327,9 +324,6 @@ jobs:
 
       - name: Make binaries executable
         run: chmod +x .e2e-bin/tako .e2e-bin/tako-dev-server .e2e-bin/tako-dev-proxy
-
-      - name: Install libvips
-        run: sh scripts/install-libvips-runtime.sh
 
       - name: Setup Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
@@ -459,10 +453,13 @@ jobs:
           # Bullseye is retained for glibc 2.31; its security packages left the live mirror after EOL.
           sed -i 's|^deb http://deb.debian.org/debian-security |deb [check-valid-until=no] https://archive.debian.org/debian-security |' /etc/apt/sources.list
           apt-get -o Acquire::Retries=5 -o APT::Update::Error-Mode=any update
-          apt-get -o Acquire::Retries=5 install -y --no-install-recommends cmake pkg-config libssl-dev libvips-dev
+          apt-get -o Acquire::Retries=5 install -y --no-install-recommends cmake pkg-config libssl-dev
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install image codec build tools
+        run: sh scripts/install-image-build-deps.sh
 
       - name: Build
         env:
@@ -508,10 +505,13 @@ jobs:
           # Bullseye is retained for glibc 2.31; its security packages left the live mirror after EOL.
           sed -i 's|^deb http://deb.debian.org/debian-security |deb [check-valid-until=no] https://archive.debian.org/debian-security |' /etc/apt/sources.list
           apt-get -o Acquire::Retries=5 -o APT::Update::Error-Mode=any update
-          apt-get -o Acquire::Retries=5 install -y --no-install-recommends cmake pkg-config libssl-dev libvips-dev
+          apt-get -o Acquire::Retries=5 install -y --no-install-recommends cmake pkg-config libssl-dev
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install image codec build tools
+        run: sh scripts/install-image-build-deps.sh
 
       - name: Build
         env:
@@ -554,8 +554,8 @@ jobs:
           rustup toolchain install stable --profile minimal --target aarch64-apple-darwin
           rustup default stable
 
-      - name: Install libvips
-        run: sh scripts/install-libvips-runtime.sh
+      - name: Install image codec build tools
+        run: sh scripts/install-image-build-deps.sh
 
       - name: Build
         env:
@@ -604,9 +604,6 @@ jobs:
 
       - name: Make binaries executable
         run: chmod +x .e2e-bin/glibc/*
-
-      - name: Install libvips runtime
-        run: sh scripts/install-libvips-runtime.sh
 
       - name: Run E2E suites
         env:

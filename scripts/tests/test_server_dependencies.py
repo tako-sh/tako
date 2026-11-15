@@ -9,11 +9,13 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class ServerDependencyTests(unittest.TestCase):
+    # Covers the transitional Remi path for pre-Rust tako-server releases;
+    # delete together with install_legacy_libvips_runtime.
     def run_remi_install(self, failures, stage="epel-release"):
         source = (ROOT / "scripts/install-tako-server.sh").read_text()
         functions = source[
-            source.index("# dnf hosts fall into two groups:") :
-            source.index("install_libvips_runtime() {")
+            source.index("dnf_install_with_retry() {") :
+            source.index("# TRANSITIONAL — remove once the `latest` release ships")
         ]
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)

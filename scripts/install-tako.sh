@@ -11,7 +11,6 @@ set -eu
 # - verifies the release archive with its SHA-256 checksum before extraction
 # - supports Apple Silicon and Intel on macOS
 # - on macOS, verifies `Tako.app`, installs it, and symlinks `tako` to the signed CLI inside it
-# - on macOS, installs libvips with Homebrew when Homebrew is available
 # - installs binaries to ~/.local/bin by default
 #
 # Optional env vars:
@@ -126,21 +125,6 @@ require_secure_download_override() {
   fi
   echo "error: insecure download override '$value' is not allowed; use https:// or set TAKO_ALLOW_INSECURE_DOWNLOAD_BASE=1 for local testing" >&2
   exit 1
-}
-
-install_vips_with_homebrew() {
-  if [ "$os" != "darwin" ]; then
-    return 0
-  fi
-  if ! need_cmd brew; then
-    return 0
-  fi
-  if need_cmd vips || brew list --formula vips >/dev/null 2>&1; then
-    return 0
-  fi
-
-  echo "Installing libvips via Homebrew..."
-  brew install vips
 }
 
 if [ -z "${HOME:-}" ]; then
@@ -307,8 +291,6 @@ else
   install -m 0755 "$tmp_tako_bin" "$target_tako"
   echo "Installed tako to $target_tako"
 fi
-
-install_vips_with_homebrew
 
 case ":$PATH:" in
   *":$TAKO_INSTALL_DIR:"*) ;;

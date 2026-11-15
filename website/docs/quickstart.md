@@ -19,12 +19,6 @@ Verify installation:
 tako --version
 ```
 
-If you install Tako another way and use image optimization locally on macOS:
-
-```bash
-brew install vips
-```
-
 From an existing app directory, initialize the project:
 
 ```bash
