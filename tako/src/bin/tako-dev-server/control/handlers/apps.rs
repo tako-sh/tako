@@ -337,6 +337,12 @@ pub(super) async fn unregister_app(state: &Arc<Mutex<State>>, config_path: Strin
     cancel_app_startup(state, &config_path);
     let lock = crate::compose::app_lock(state, &config_path);
     let _guard = lock.lock().await;
+    // Retire the routes before stopping their containers.
+    state
+        .lock()
+        .unwrap()
+        .routes
+        .set_active(&format!("reg:{config_path}"), false);
     if let Err(message) = crate::compose::stop(state, &config_path).await {
         return Response::Error { message };
     }
@@ -406,6 +412,13 @@ pub(super) async fn restart_app(state: &Arc<Mutex<State>>, config_path: String) 
     cancel_app_startup(state, &config_path);
     let lock = crate::compose::app_lock(state, &config_path);
     let _guard = lock.lock().await;
+    // A new PID is published before readiness. Retire the previous routes
+    // before stopping containers so that PID cannot expose stale ports.
+    state
+        .lock()
+        .unwrap()
+        .routes
+        .set_active(&format!("reg:{config_path}"), false);
     if let Err(message) = crate::compose::stop(state, &config_path).await {
         return Response::Error { message };
     }
