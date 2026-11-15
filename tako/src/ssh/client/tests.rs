@@ -390,8 +390,9 @@ fn tako_service_status_returns_unknown_without_systemctl() {
 #[test]
 fn install_server_script_installs_and_verifies_runtime_dependencies() {
     let script = super::tako::INSTALL_SERVER_SCRIPT;
-    // Image codecs are statically linked into tako-server.
-    assert!(!script.contains("vips"));
+    // Image codecs are statically linked into tako-server. Older binaries
+    // still get their libvips runtime only when ldd reports it missing.
+    assert!(script.contains("install_legacy_libvips_runtime\nverify_tako_server_runtime_deps"));
     assert!(!script.contains("libheif"));
     assert!(!script.contains("rpms.remirepo.net"));
     assert!(script.contains("verify_tako_server_runtime_deps"));

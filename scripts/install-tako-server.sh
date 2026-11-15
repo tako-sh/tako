@@ -1343,6 +1343,37 @@ missing_runtime_libraries() {
   ' || true
 }
 
+# TRANSITIONAL — remove once the `latest` release ships a tako-server built
+# with the static Rust image pipeline (tako-sh/tako#223).
+# /install-server.sh serves this installer from master, but the binary comes
+# from the `latest` release. Between merging that change and the next release,
+# a fresh install pairs this installer with an older binary that still links
+# libvips, so install the distro runtime only when the binary asks for it.
+install_legacy_libvips_runtime() {
+  if ! missing_runtime_libraries /usr/local/bin/tako-server | grep -Eq '^libvips(-cpp)?\.so'; then
+    return 0
+  fi
+
+  echo "Installing libvips runtime for an older tako-server release"
+  if need_cmd apt-get; then
+    apt-get update -y
+    for apt_vips_pkg in libvips42t64 libvips42; do
+      if apt-get install -y "$apt_vips_pkg"; then
+        return 0
+      fi
+    done
+  elif need_cmd dnf; then
+    dnf install -y vips && return 0
+  elif need_cmd yum; then
+    yum install -y vips && return 0
+  elif need_cmd pacman; then
+    pacman -Sy --noconfirm libvips && return 0
+  elif need_cmd zypper; then
+    zypper --non-interactive install libvips42 && return 0
+  fi
+  echo "warning: could not install libvips for this tako-server release; rerun the installer after the next release" >&2
+}
+
 verify_tako_server_runtime_deps() {
   if ! need_cmd ldd; then
     return
@@ -1571,6 +1602,7 @@ fi
 
 install -m 0755 "$tmp_bin" /usr/local/bin/tako-server
 echo "OK installed tako-server binary"
+install_legacy_libvips_runtime
 verify_tako_server_runtime_deps
 ensure_privileged_bind_capability
 
