@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, afterEach, describe, expect, mock, test } from "bun:test";
 import { Channel, ChannelRegistry } from "../src/channels";
 import { configureChannels, resetChannelsConfig } from "../src/channels/configure";
 import { SseReader } from "../src/channels/sse-reader";
@@ -98,7 +98,7 @@ describe("channels", () => {
     expect(subscription.transport).toBe("sse");
     expect(subscription.raw).toEqual({
       kind: "eventsource",
-      url: "https://app.example.com/_tako/channels/chat?roomId=room-123",
+      url: "https://app.example.com/_tako/channels/sse/chat?roomId=room-123",
       close: expect.any(Function),
     });
     expect(eventSourceFactory).toHaveBeenCalledTimes(1);
@@ -119,12 +119,12 @@ describe("channels", () => {
     });
 
     expect(eventSourceFactory).toHaveBeenCalledWith(
-      "https://app.example.com/_tako/channels/chat%2Froom-123",
+      "https://app.example.com/_tako/channels/sse/chat%2Froom-123",
       {},
     );
   });
 
-  test("subscribe uses fetch-based SSE reader by default", async () => {
+  test("default subscribe uses the fetch-based SSE reader", async () => {
     const fetchMock = mock((_url: string) =>
       Promise.resolve(
         new Response("data: hi\n\n", {
@@ -148,7 +148,7 @@ describe("channels", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0]!;
-    expect(url).toBe("https://app.example.com/_tako/channels/chat?roomId=room-123");
+    expect(url).toBe("https://app.example.com/_tako/channels/sse/chat?roomId=room-123");
     expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer t");
     expect(new Headers(init?.headers).get("Last-Event-ID")).toBe("7");
   });
@@ -211,9 +211,12 @@ describe("channels", () => {
       eventSourceFactory,
     });
 
-    expect(eventSourceFactory).toHaveBeenCalledWith("https://app.example.com/_tako/channels/chat", {
-      headers: { Authorization: "Bearer token-123" },
-    });
+    expect(eventSourceFactory).toHaveBeenCalledWith(
+      "https://app.example.com/_tako/channels/sse/chat",
+      {
+        headers: { Authorization: "Bearer token-123" },
+      },
+    );
   });
 
   test("subscribe keeps fetch-based SSE alive after the stream ends", async () => {
@@ -258,7 +261,7 @@ describe("channels", () => {
     expect(connection.transport).toBe("ws");
     expect(connection.raw).toEqual({
       kind: "websocket",
-      url: "wss://app.example.com/_tako/channels/chat?roomId=room-123&last_message_id=42",
+      url: "wss://app.example.com/_tako/channels/ws/chat?roomId=room-123&last_message_id=42",
       send,
       close,
     });
@@ -295,7 +298,7 @@ describe("channels", () => {
 
     expect(connection.raw).toBeInstanceOf(MockWebSocket);
     expect((connection.raw as MockWebSocket).url).toBe(
-      "wss://app.example.com/_tako/channels/chat?roomId=room-123",
+      "wss://app.example.com/_tako/channels/ws/chat?roomId=room-123",
     );
   });
 
@@ -385,3 +388,6 @@ describe("channels", () => {
     });
   });
 });
+
+// This suite exercises the dedicated SSE/WebSocket wire contracts.
+beforeEach(() => configureChannels({ connection: "dedicated" }));

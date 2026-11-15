@@ -7,6 +7,8 @@ image: 7fc33c508440
 imageAlt: "An octopus broadcasts glowing message bubbles to connected laptops while a bubble bursts beside a disconnected laptop."
 ---
 
+> **Updated November 15, 2026:** The examples below use the shared WS default. Channel params now select isolated streams; they still require authorization. Ephemeral delivery remains memory-only with no reconnect replay. See [Channels](/docs/channels/) for the current API and limits.
+
 A browser is watching a live process. Another update arrives. The browser disconnects, and by the time it returns, those intermediate updates are already old news. Sometimes the useful thing to send is simply whatever happens next.
 
 Tako Channels now support `ephemeral: true`: memory-only pub/sub over WebSocket or SSE. Events go to current subscribers locally and across connected native server peers. They never enter the channel replay log. For transient application signals, that gives you a delivery contract you can explain in one sentence: be connected when it happens.
@@ -63,7 +65,7 @@ export default defineChannel("live-pulses", {
 
 `readOperatorSession` is application-owned authentication code: it must validate the supplied credential and verify that the user may access this shared operator stream. The helper receives Tako's parsed header value and returns your session or a falsy value. It isn't an SDK function. Omitting `auth` would make the channel public.
 
-The explicit name, `live-pulses`, identifies the stream. Every authorized subscriber to that name receives the same broadcast. Channel params validate connection context; they do **not** isolate rooms, users, or tenants. Avoid adding `tenantId` to this example and assuming the resulting streams become private to each tenant. See [channel parameter semantics](/docs/channels/#understand-channel-params) before designing an access boundary.
+This definition has no params, so every authorized subscriber to `live-pulses` receives the same broadcast. With a params schema, the channel name and validated params select separate streams. If you add `tenantId`, publish and subscribe with the same value and make the verifier check access to that tenant; params alone are not permission. See [channel parameter semantics](/docs/channels/#understand-channel-params).
 
 `.$messageTypes<PulseMessages>()` types server-side publishing. From code running inside the Tako server runtime, import the handle and publish:
 
@@ -125,6 +127,8 @@ server.live -> two: "live delivery"
 ```
 
 WebSocket and persistence are separate choices. For server-to-browser updates only, omit `transport: "ws"` in the definition and use the default SSE subscription in the browser. `ephemeral: true` keeps the same memory-only semantics for either transport. Do not combine it with `replayWindowMs`; the definition rejects that combination, including an explicit zero replay window.
+
+The WS hook shares `/_tako/channels/ws` with matching channel and Presence subscriptions in the same tab. Leaving this view unsubscribes only its topic; the socket closes when no subscriptions remain. SSE always keeps a separate request. Shared WS permits 32 subscriptions, 64 KiB client commands including envelopes, and 1 MiB delivered events, so send small application events rather than a large accumulated output. Cookie-session changes require `resetChannelConnections()`; see [shared ownership](/docs/channels/#shared-websocket-ownership).
 
 ## Test the disconnect, then deploy within the limits
 

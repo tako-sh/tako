@@ -90,7 +90,33 @@ async fn cookie_websocket_rejects_foreign_origin_before_contacting_app() {
         .await
         .unwrap();
     let response = request(proxy,
-        "GET /_tako/channels/chat HTTP/1.1\r\nHost: app.example\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nCookie: session=fixture\r\nOrigin: https://evil.example\r\n\r\n").await;
+        "GET /_tako/channels/ws/chat HTTP/1.1\r\nHost: app.example\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nCookie: session=fixture\r\nOrigin: https://evil.example\r\n\r\n").await;
     assert!(response.starts_with("HTTP/1.1 403"), "{response}");
     assert!(!response.contains("101 Switching"));
+}
+
+#[tokio::test]
+async fn channel_routes_require_their_declared_transport() {
+    let temp = TempDir::new().unwrap();
+    for (path, upgrade, status) in [
+        ("/_tako/channels/ws", false, 426),
+        ("/_tako/channels/ws/chat", false, 426),
+        ("/_tako/channels/sse/chat", true, 400),
+        ("/_tako/channels/chat", false, 404),
+    ] {
+        let headers = if upgrade {
+            "Connection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+        } else {
+            "Connection: close\r\n"
+        };
+        let response = request(
+            proxy_for_app(temp.path()),
+            &format!("GET {path} HTTP/1.1\r\nHost: app.example\r\n{headers}\r\n"),
+        )
+        .await;
+        assert!(
+            response.starts_with(&format!("HTTP/1.1 {status}")),
+            "{path}: {response}"
+        );
+    }
 }

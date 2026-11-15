@@ -21,7 +21,7 @@ async fn subscription_uses_the_granted_mode_before_first_publish() {
     .await;
     let dev_store = DevChannelStore::new();
     let (endpoint, app_id) = test_app::dev_proxy(app_port, &dev_store).await;
-    let mut response = reqwest::get(format!("http://{endpoint}/_tako/channels/progress"))
+    let mut response = reqwest::get(format!("http://{endpoint}/_tako/channels/sse/progress"))
         .await
         .unwrap();
     assert_eq!(response.status(), 200);

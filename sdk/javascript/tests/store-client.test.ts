@@ -30,7 +30,7 @@ class Backend {
   readonly streamRequests: Headers[] = [];
   readonly fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input));
-    if (url.pathname.startsWith("/_tako/channels/")) {
+    if (url.pathname.startsWith("/_tako/channels/sse/")) {
       this.streamRequests.push(new Headers(init?.headers));
       if (this.streamStatus !== 200) return new Response(null, { status: this.streamStatus });
       let closed = false;
@@ -990,7 +990,8 @@ describe("Store independent recovery failures", () => {
       now += 10001;
       expect(store.getSnapshot().data).toBeUndefined();
       expect(store.getSnapshot().error).not.toBeNull();
-      if (kind === "transport") expect(store.getSnapshot().error?.message).toContain(transportError.message);
+      if (kind === "transport")
+        expect(store.getSnapshot().error?.message).toContain(transportError.message);
     },
   );
 

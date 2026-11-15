@@ -7,6 +7,7 @@ test("tako.sh/client exports Channel", async () => {
   expect(typeof mod.Channel).toBe("function");
   expect(mod.configureChannels).toBeDefined();
   expect(typeof mod.configureChannels).toBe("function");
+  expect(typeof mod.resetChannelConnections).toBe("function");
   expect(typeof mod.Store).toBe("function");
   expect(typeof mod.clearStoreCache).toBe("function");
 });

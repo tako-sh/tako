@@ -54,7 +54,7 @@ Routes are declared per environment and can be exact hosts, wildcard hosts, host
 
 Public `/_tako/*` paths are reserved after a request matches an app route:
 
-- `/_tako/channels/<name>` serves durable SSE or WebSocket channels.
+- `/_tako/channels/ws` serves shared WebSocket channels and Presence; `/_tako/channels/ws/<name>` serves dedicated WebSockets, and `/_tako/channels/sse/<name>` serves dedicated SSE streams.
 - `/_tako/image` serves the public image optimizer.
 - `/_tako/storages/<binding>/<key>` is served directly by the Rust proxy for signed local storage uploads and downloads, independently of app workers. The SDK creates URLs and does not perform storage file I/O.
 

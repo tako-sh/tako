@@ -130,7 +130,7 @@ async fn get_channel(addr: std::net::SocketAddr, channel: &str, query: &str) -> 
     client
         .write_all(
             format!(
-                "GET /_tako/channels/{channel}?{query} HTTP/1.1\r\nHost: chat.example\r\nConnection: close\r\n\r\n"
+                "GET /_tako/channels/sse/{channel}?{query} HTTP/1.1\r\nHost: chat.example\r\nConnection: close\r\n\r\n"
             )
             .as_bytes(),
         )
@@ -253,7 +253,7 @@ async fn sse_cursors_from_one_binding_reset_on_another() {
         client
             .write_all(
                 format!(
-                    "GET /_tako/channels/chat?{query} HTTP/1.1\r\nHost: chat.example\r\nLast-Event-ID: {}\r\nConnection: close\r\n\r\n",
+                    "GET /_tako/channels/sse/chat?{query} HTTP/1.1\r\nHost: chat.example\r\nLast-Event-ID: {}\r\nConnection: close\r\n\r\n",
                     message.id
                 )
                 .as_bytes(),

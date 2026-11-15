@@ -1,6 +1,7 @@
 type TokenResolver = () => string | null | Promise<string | null>;
 
 interface ChannelsConfig {
+  connection: "shared" | "dedicated";
   token: TokenResolver | null;
   fetch: typeof fetch;
   websocket: typeof WebSocket;
@@ -22,6 +23,7 @@ function defaultWebSocket(): typeof WebSocket {
 
 function makeDefaultConfig(): ChannelsConfig {
   return {
+    connection: "shared",
     token: null,
     fetch: defaultFetch(),
     websocket: defaultWebSocket(),
@@ -29,6 +31,26 @@ function makeDefaultConfig(): ChannelsConfig {
 }
 
 let current: ChannelsConfig | null = null;
+let generation = 0;
+const connectionResetListeners = new Set<() => void>();
+
+/** @internal Register a transport's connection cleanup. */
+export function onChannelConnectionsReset(listener: () => void): void {
+  connectionResetListeners.add(listener);
+}
+
+/**
+ * Close shared WebSockets after login, logout, or an account/session change.
+ *
+ * Call this after updating session cookies and before opening new subscriptions.
+ * Browsers do not expose HttpOnly cookie changes to the SDK. React hooks reconnect
+ * with a fresh handshake; low-level connect() callers must reconnect themselves.
+ * Dedicated WebSockets and SSE subscriptions remain owned by their callers.
+ */
+export function resetChannelConnections(): void {
+  generation++;
+  for (const listener of connectionResetListeners) listener();
+}
 
 function getCurrent(): ChannelsConfig {
   current ??= makeDefaultConfig();
@@ -39,7 +61,8 @@ function getCurrent(): ChannelsConfig {
  * Override browser/runtime dependencies used by channel clients.
  *
  * Use this outside a normal browser environment, or to provide an auth token
- * resolver for header-auth channels.
+ * resolver for header-auth channels. Reconfiguration closes existing shared
+ * WebSockets so subscriptions cannot retain the previous credentials.
  *
  * @param input - Partial channel client configuration.
  * @defaultValue input.fetch = globalThis.fetch
@@ -47,6 +70,8 @@ function getCurrent(): ChannelsConfig {
  */
 export function configureChannels(
   input: Partial<{
+    /** WebSocket connection ownership. SSE always uses independent streams. */
+    connection: "shared" | "dedicated";
     /** Token used for channel auth. Null/empty means no auth envelope. */
     token: TokenResolver;
     /** Fetch implementation used by SSE subscriptions and HTTP calls. */
@@ -59,6 +84,7 @@ export function configureChannels(
     ...getCurrent(),
     ...input,
   };
+  resetChannelConnections();
 }
 
 /**
@@ -68,6 +94,7 @@ export function configureChannels(
  */
 export function resetChannelsConfig(): void {
   current = null;
+  resetChannelConnections();
 }
 
 /**
@@ -76,6 +103,8 @@ export function resetChannelsConfig(): void {
  * @internal Used by channel internals.
  */
 export function getChannelsConfig(): {
+  generation: number;
+  connection: "shared" | "dedicated";
   /** Fetch implementation for channel HTTP/SSE work. */
   fetch: typeof fetch;
   /** WebSocket constructor for live WebSocket channels. */
@@ -87,6 +116,8 @@ export function getChannelsConfig(): {
 } {
   const config = getCurrent();
   return {
+    generation,
+    connection: config.connection,
     fetch: config.fetch,
     websocket: config.websocket,
     async resolveToken() {

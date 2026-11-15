@@ -30,6 +30,8 @@ pub struct PresenceSession {
     channel: String,
     member: PresenceMember,
     joined: bool,
+    cleanup_required: bool,
+    pending_update: Option<tokio::task::JoinHandle<Result<(), ChannelError>>>,
     last_snapshot: Option<Vec<PresenceMember>>,
 }
 
@@ -62,6 +64,8 @@ impl PresenceSession {
                 data: serde_json::Value::Null,
             },
             joined: false,
+            cleanup_required: false,
+            pending_update: None,
             last_snapshot: None,
         })
     }
@@ -81,7 +85,25 @@ impl PresenceSession {
         }
         let mut member = self.member.clone();
         member.data = update.data;
-        self.writer.update_presence(&self.channel, &member).await?;
+        // A cancelled caller may retain the session and try another update.
+        // Finish its previous write before replacing the cleanup dependency.
+        if let Some(pending) = self.pending_update.as_mut() {
+            let _ = pending.await;
+            self.pending_update = None;
+        }
+        let writer = self.writer.clone();
+        let channel = self.channel.clone();
+        let update = member.clone();
+        self.cleanup_required = true;
+        // Database workers and broker requests can commit after their awaiting
+        // task is cancelled. Keep the write alive so Drop can remove membership
+        // after it finishes, including cancellation of the very first join.
+        self.pending_update = Some(tokio::spawn(async move {
+            writer.update_presence(&channel, &update).await
+        }));
+        let result = self.pending_update.as_mut().unwrap().await;
+        self.pending_update = None;
+        result.map_err(|error| ChannelError::Storage(error.to_string()))??;
         self.member = member;
         self.joined = true;
         Ok(())
@@ -106,16 +128,20 @@ impl PresenceSession {
 
 impl Drop for PresenceSession {
     fn drop(&mut self) {
-        if !self.joined {
+        if !self.cleanup_required {
             return;
         }
         let writer = self.writer.clone();
         let channel = self.channel.clone();
         let connection_id = self.member.connection_id.clone();
+        let pending_update = self.pending_update.take();
         // Also runs on I/O errors and task cancellation. A process crash is
         // covered by the lease, which only client heartbeats renew.
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(async move {
+                if let Some(pending) = pending_update {
+                    let _ = pending.await;
+                }
                 if let Err(error) = writer.remove_presence(&channel, &connection_id).await {
                     tracing::warn!(%error, "presence cleanup failed");
                 }

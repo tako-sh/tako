@@ -211,7 +211,7 @@ async fn store_public_routes_authorize_load_and_subscribe_without_exposing_boots
         405
     );
     let events = format!(
-        "{url}/_tako/channels/tako.store%3Amessages?{}",
+        "{url}/_tako/channels/sse/tako.store%3Amessages?{}",
         query(json!({"room":7,"last_message_id":42}))
     );
     assert_eq!(client.get(&events).send().await.unwrap().status(), 401);

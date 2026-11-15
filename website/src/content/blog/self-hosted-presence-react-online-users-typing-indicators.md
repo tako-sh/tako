@@ -5,11 +5,13 @@ description: "Build private chat presence in React with Tako: trusted identities
 image: 29a5b0563541
 ---
 
+> **Updated November 15, 2026:** Presence now shares a WS connection with other topics in the same tab, while each hook owns its membership. Local auth checks and native multi-server SQLite support below are current; the earlier permissive-dev and Postgres-only guidance no longer applies. See the [Presence reference](/docs/presence/).
+
 A green dot looks simple until someone opens three tabs, switches rooms, and closes their laptop halfway through typing. Now “online” needs an identity, a room boundary, and a way to disappear without receiving a polite goodbye.
 
 [Tako Presence](/docs/presence/) handles that connection lifecycle on your own servers. You define who can join a space; the React hook joins it, receives member snapshots, and updates connection metadata. We'll use it to build a private chat's online count and typing indicator, including the details that keep three tabs from becoming three people.
 
-Our [earlier Channels comparison](/blog/self-hosted-pusher-alternative/) described presence as a missing primitive. It has since shipped as its own API. Here's how to use it.
+Presence is separate from the message streams covered in our [Channels comparison](/blog/self-hosted-pusher-alternative/). It owns membership and expiry, so you do not have to reconstruct an online list from application events.
 
 ## 1. Give each chat an authorized presence space
 
@@ -37,7 +39,7 @@ export default definePresence("chat", {
 
 Omitting `auth` makes a space public. Returning `true` allows anonymous access, which isn't what we want for this example. Use a stable user ID from your verified session, not a user ID supplied in params or metadata.
 
-Presence isolates membership by the space name and all validated params. Connections to `chat` with `{ chatId: "one" }` share a list; connections with `{ chatId: "two" }` get a different list. The permission check still matters: knowing a chat ID must not grant access. These are Presence semantics; ordinary [channel params](/docs/channels/#understand-channel-params) don't create isolated message streams.
+Presence isolates membership by the space name and all validated params. Connections to `chat` with `{ chatId: "one" }` share a list; connections with `{ chatId: "two" }` get a different list. The permission check still matters: knowing a chat ID must not grant access. Ordinary [channel params](/docs/channels/#understand-channel-params) similarly select separate message streams, while Presence manages member entries and expiry.
 
 ```d2
 direction: right
@@ -54,7 +56,7 @@ auth -> two: "authorized for two"
 
 Every authorized connection within a room sees the same list. Per-user hiding and blocked-user filtering inside that list aren't supported. If someone must not see a participant, filtering the rendered list won't enforce that privacy requirement; design the membership boundary accordingly.
 
-Permissions are checked when connecting. The example's one-minute maximum connection lifetime forces periodic reconnection and reauthorization. Choose that interval for your app's permission model; revoking access doesn't continuously rerun the verifier on an already-open socket.
+Permissions are checked when subscribing. The example's one-minute maximum connection lifetime forces that logical subscription to rejoin and reauthorize, even if its shared socket stays open for other topics. Choose the interval for your permission model; revoking access doesn't continuously rerun the verifier on an active subscription.
 
 ## 2. Count people and publish typing metadata
 
@@ -139,7 +141,9 @@ The component key resets the draft and its idle timer when the chat or signed-in
 
 Metadata is client-provided, including `typing`. Treat it as a UI hint. The strict `=== true` check avoids accepting arbitrary truthy values, but no metadata field should grant permissions or establish identity. Use the trusted `subject` for an authorized profile lookup if you want names instead of a count.
 
-Mount this connection once per chat view. If the header, composer, and participant list all need it, put the hook in a provider and share its result. Calling it separately in each component creates extra connections.
+Mount this membership once per chat view. If the header, composer, and participant list all need it, put the hook in a provider and share its result. Calling it separately in each component creates extra member entries, even though matching subscriptions share `/_tako/channels/ws`. Each browser tab owns a separate pool.
+
+Unmounting the page sends an unsubscribe and removes its membership without closing a layout's other topics. The physical socket closes after its last subscription leaves. An abort `signal` also stops pending retries; pass a new signal to restart the hook. If your auth flow changes cookies, call `resetChannelConnections()` from `tako.sh/client` after the session response, and clear the previous user's state. See [shared subscription ownership](/docs/channels/#shared-websocket-ownership).
 
 ## 3. Check disconnects, expiry, and deployment
 
@@ -148,17 +152,17 @@ The hook waits for authorization before joining and considers the connection ope
 | Event                                      | Presence behavior                                  |
 | ------------------------------------------ | -------------------------------------------------- |
 | Another tab opens                          | A separate connection entry joins the room         |
-| A connection closes cleanly                | Its entry is removed; other tabs remain            |
+| A page unmounts or unsubscribes             | Its entry is removed; layout topics and other tabs remain |
 | Updates stop after network loss or a crash | Its lease expires 45 seconds after the last update |
 | A connection reconnects                    | It receives a new connection ID and fresh snapshot |
 | Authorization is rejected                  | Retries stop until connection options change       |
 
 Connected readers receive membership changes in approximately one second. A reconnect's old entry can remain until its lease expires, another reason to count unique subjects. The typing timeout is application behavior, separate from the connection lease: suspended browser timers or a lost connection can leave a typing hint visible until cleanup or expiry. Don't treat the indicator as an exact statement about someone's activity.
 
-Use [`tako dev`](/docs/development/) to work on the UI, but note its current limitation: local Presence is permissive and doesn't run auth callbacks. Local member entries therefore won't establish the verified subjects this people count relies on. Test private-room rejection and trusted identities in a deployed test environment before relying on them.
+Use [`tako dev`](/docs/development/) to test private-room rejection and trusted identities: it now runs the same Presence auth callbacks as production. Repeat these checks in a deployed test environment to verify your production session and network configuration.
 
 In that environment, open two tabs with the same account and confirm the count stays at one. Join with a second authorized account, type, then stop. Try a different chat and an account without access. Finally, disconnect a tab and observe cleanup or lease expiry from another connected client. These checks exercise the boundaries the interface depends on.
 
-Single-server production uses Tako-managed SQLite by default. For [multiple servers](/docs/deployment/), configure the shared `postgres_url` credential so connections on different servers see the same members. Presence is scoped to the deployed app and environment. Go and Rust backends can register spaces too; the same React hook manages browser membership.
+Single-server production uses Tako-managed SQLite by default. On a native network, servers exchange expiring presence leases, so [multiple servers](/docs/deployment/) can share membership without Postgres. An explicitly configured `postgres_url` backend remains supported. Presence is scoped to the deployed app and environment. Go and Rust backends can register spaces too; the same React hook manages browser membership.
 
 Presence records expire and aren't replayed as durable channel events. Keep lasting messages in your database, use [Stores](/docs/stores/) for live data reads, and use Presence for who's connected now. The [full reference](/docs/presence/) and [source](https://github.com/tako-sh/tako) cover the remaining options. The green dot now has a lifecycle behind it.

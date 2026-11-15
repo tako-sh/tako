@@ -7,6 +7,8 @@ image: cbd3c4bcfbec
 
 > **Update, November 14, 2026:** This article describes an earlier Tako release. Server commands now use `tako network server`, with inventory supplied by native network membership. See the [current enrollment instructions](/docs/networks/). The Tailscale and NetBird integrations described below have been retired; follow [current native network setup](/docs/networks/). Read [the new network and secrets workflow](/blog/sync-deployment-secrets-with-tako-networks/).
 
+> **Channels update, November 15, 2026:** The channel examples below now use `auth: false`, bound publish handles, and the separate WS/SSE routes. WS and Presence share a socket by default; this article's order updates use independent SSE. See [Channels](/docs/channels/) for current connection and session handling.
+
 One cheap VPS can run more than a homepage.
 
 The interesting question is what happens after the first deploy. A real Next.js app wants HTTPS, static assets, API routes, background jobs, WebSocket or SSE updates, image optimization, secrets, logs, and a deploy path that does not turn every change into a tiny incident. You can bolt those together from separate tools. Or you can make the VPS run like a small app platform.
@@ -65,7 +67,7 @@ formats = ["webp"]
 | Next server           | `.next/tako-entry.mjs`             | Starts the standalone server or `next start`                  |
 | Public/static assets  | `public/` and Next build output    | Serves matching files directly after route match              |
 | Image optimizer       | `/_tako/image`                     | Validates sources, transforms with libvips, caches variants   |
-| Durable channels      | `<app_root>/channels/*.ts`         | Serves WebSocket/SSE endpoints under `/_tako/channels/<name>` |
+| Durable channels      | `<app_root>/channels/*.ts`         | Shared WS at `/_tako/channels/ws`; dedicated WS at `/_tako/channels/ws/<name>`; SSE at `/_tako/channels/sse/<name>` |
 | Durable workflows     | `<app_root>/workflows/*.ts`        | Runs jobs in supervised worker processes with persisted state |
 | Routes, TLS, rollouts | `[envs.production]` in `tako.toml` | Maps hostnames, manages certificates, and rolls new instances |
 
@@ -109,13 +111,13 @@ Then add a channel:
 import { defineChannel } from "tako.sh";
 
 export default defineChannel("orders", {
-  auth: "public",
+  auth: false,
 }).$messageTypes<{
   updated: { orderId: string; status: string };
 }>();
 ```
 
-Channels are served at `/_tako/channels/orders`. The proxy owns the WebSocket/SSE connection, stores published messages in a bounded replay log, and lets reconnecting clients catch up from a retained cursor. Use your product database for canonical history; use channels for live delivery and short reconnect replay.
+This channel uses receive-only SSE at `/_tako/channels/sse/orders`, with an independent stream for each subscription. The proxy stores published messages in a bounded replay log and lets reconnecting clients catch up from a retained cursor. It is public for demonstration: add an authorization callback and scoped params before publishing private order details. Use your product database for canonical history.
 
 Your Next route can now use both:
 
@@ -128,7 +130,7 @@ export async function POST(req: Request) {
   const order = await req.json();
 
   await sendReceipt.enqueue({ orderId: order.id, email: order.email });
-  await orders().publish({
+  await orders.publish({
     type: "updated",
     data: { orderId: order.id, status: "placed" },
   });
@@ -136,6 +138,8 @@ export async function POST(req: Request) {
   return Response.json({ ok: true });
 }
 ```
+
+An unparameterized channel export is already a handle: call `orders.publish(...)`. A parameterized definition is bound first, such as `orders({ customerId }).publish(...)`. Browser code uses `Channel` from `tako.sh/client` or `useChannel` from `tako.sh/react`, without importing the server definition.
 
 Images stay ordinary in React:
 
@@ -163,7 +167,7 @@ browser -> proxy: "HTTPS"
 proxy -> next: "SSR / API"
 next -> jobs: "enqueue"
 next -> channels: "publish"
-browser -> proxy: "/_tako/channels/orders"
+browser -> proxy: "/_tako/channels/sse/orders"
 browser -> proxy: "/_tako/image"
 proxy -> channels: "connect + replay"
 proxy -> images: "validate + transform"
