@@ -123,6 +123,11 @@ fn decode_webp(source: &[u8], limits: &TransformLimits) -> Result<Decoded, Image
     let frame_count = decoder.num_frames();
     enforce_dimension_limits(width, height, frame_count, limits)?;
     decoder.set_memory_limit(memory_limit(limits));
+    // image-webp skips "dispose to background" unless a background is set.
+    // Dispose to transparent, as libwebp and browsers do.
+    decoder
+        .set_background_color([0, 0, 0, 0])
+        .map_err(|_| ImageError::TransformFailed)?;
     let layout = if decoder.has_alpha() {
         Layout::Rgba
     } else {

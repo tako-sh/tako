@@ -582,6 +582,42 @@ fn keeps_transparent_canvas_in_animated_webp() {
 }
 
 #[test]
+fn disposes_animated_webp_frames_to_background() {
+    // Regression: image-webp ignored dispose-to-background unless a
+    // background color was set, so earlier frames ghosted into later ones.
+    let source = BASE64_STANDARD
+        .decode(super::WEBP_ANIMATION_DISPOSE_BACKGROUND)
+        .expect("decode webp");
+
+    let transformed = transform_image(
+        &source,
+        Some("image/webp"),
+        transform_options(OutputFormat::Webp, 64, 90),
+        &TransformLimits::default(),
+    )
+    .expect("transform image");
+
+    let animation = decode_webp_animation(&transformed.bytes);
+    assert_eq!(animation.frames.len(), 4);
+    assert_eq!(animation.delays_ms, [40, 70, 110, 130]);
+    // Frame 0 draws a red rectangle around x=8..24; later frames dispose it.
+    let red_at = |frame: &[u8]| {
+        let pixel = &frame[(20 * 64 + 12) * 4..][..4];
+        pixel[0] > 200 && pixel[1] < 60 && pixel[3] > 200
+    };
+    assert!(
+        red_at(&animation.frames[0]),
+        "first frame lost its rectangle"
+    );
+    for (index, frame) in animation.frames.iter().enumerate().skip(1) {
+        assert!(
+            !red_at(frame),
+            "frame {index} still shows the disposed rectangle"
+        );
+    }
+}
+
+#[test]
 fn accepts_zero_delay_gif_frames() {
     let source = gif_animation(Some(gif::Repeat::Infinite), &[0, 0, 3]);
 
