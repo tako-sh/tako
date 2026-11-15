@@ -6,15 +6,17 @@ description: "Tako channels turn TypeBox params, auth, typed publish payloads, a
 image: a5263b3d6adb
 ---
 
+> **Updated November 15, 2026:** The examples below use shared WebSocket subscriptions and params-scoped streams. Older clients used a socket per topic and older releases did not partition channel delivery by params. Use matching client/server versions and the [current Channels reference](/docs/channels/) when upgrading.
+
 WebSocket code usually starts clean and then quietly splits into several little protocols: one for route params, one for auth, one for publish payloads, one for reconnects, and one for whatever the browser cannot express in `new WebSocket()`.
 
 Tako channels try to make the live part feel like one model. You define a channel once, and Tako turns that definition into the public route, the param validator, the auth callback, the publish type, and the browser transport.
 
-Durability is part of the channel contract, but it is scoped to delivery. Every publish is written to a bounded replay log before fanout, so reconnecting clients can catch up after short disconnects without turning the channel into your app's permanent history API.
+Durability is the default channel contract, scoped to delivery. Durable publishes are written to a bounded replay log before fanout, so reconnecting clients can catch up after short disconnects without turning the channel into your app's permanent history API. Set `ephemeral: true` for transient events that should never replay.
 
 ## Parameter safety
 
-The `roomId` examples below demonstrate typed connection context, not isolated rooms. In the current protocol, replay and fanout are keyed by the channel name: all authorized bindings to `presence` or `chat` receive that channel's messages, regardless of params. A per-room authorization check does not partition delivery. Do not use these examples for private room traffic; see the [Channels reference](/docs/channels/#understand-channel-params).
+The channel name and validated params select a stream. `chat({ roomId: "one" })` and `chat({ roomId: "two" })` have separate subscribers, messages, and replay cursors. Params do not grant access: the verifier must still check that the caller may enter the requested room. See the [Channels reference](/docs/channels/#understand-channel-params).
 
 ## The channel is the contract
 
@@ -36,7 +38,7 @@ export default defineChannel("presence", {
     async verify({ header, params, operation }) {
       const session = await readSession(header);
       if (!session) return false;
-      return canAccessRoom(session.userId, params.roomId, operation)
+      return (await canAccessRoom(session.userId, params.roomId, operation))
         ? { subject: session.userId }
         : false;
     },
@@ -45,21 +47,25 @@ export default defineChannel("presence", {
 }).$messageTypes<PresenceMessages>();
 ```
 
-TypeBox matters here because it gives Tako both sides of the shape. Per the [TypeBox docs](https://github.com/sinclairzx81/typebox), a schema is a JSON Schema object that can also infer a TypeScript type. Tako uses that JSON Schema to validate `/_tako/channels/ws/presence?roomId=lobby` before asking your app to authorize anything, while TypeScript uses the same declaration to type `params.roomId` in your callback.
+`readSession` and `canAccessRoom` are app-owned helpers. TypeBox gives Tako both sides of the shape: a JSON Schema for validation and an inferred TypeScript type. Tako validates `roomId=lobby` from each shared subscription before asking your app to authorize it. The same validation applies to a dedicated socket at `/_tako/channels/ws/presence?roomId=lobby`.
+
+This channel named `presence` carries application events. For server-maintained online membership and expiring typing metadata, use the separate [Presence API](/docs/presence/).
 
 The default transport is receive-only SSE. With `transport: "ws"`, the proxy stores and broadcasts client `{ type, data }` frames as sent. Handle application mutations through your app's HTTP endpoints. See the [Channels reference](/docs/channels/) for the current contract.
 
 ## Auth happens before messages
 
-For normal SSE requests, auth can ride in headers or cookies. Browser WebSockets are trickier because the constructor does not let client code set arbitrary headers. Tako handles that with a first text frame:
+For SSE requests, auth can ride in headers or cookies. Browser WebSockets cannot set arbitrary headers in their constructor. By default, the SDK opens `/_tako/channels/ws` once per origin, credential set, and transport configuration in a tab, then authorizes each topic with a subscription message:
 
 ```json
-{ "type": "tako.auth", "token": "Bearer abc" }
+{ "type": "subscribe", "id": "1", "channel": "presence", "query": "roomId=lobby", "token": "Bearer abc" }
 ```
 
-If a channel requires header auth and the WebSocket upgrade did not include that header, the proxy waits briefly for this frame. It parses the token as the declared header value, asks your app's `verify` callback through `POST /channels/authorize`, and only then starts accepting publish frames.
+The proxy maps the token to the channel's declared auth header, calls your app through `POST /channels/authorize`, and acknowledges the authorized subscription. The SDK manages subscription IDs, envelopes, and fragment assembly. Application code uses `connect({ authorization: token })` and `send({ type, data })`.
 
-That keeps auth in one place: your callback receives `{ header, cookie, params, channel, operation }`, and `operation` tells you whether the request is subscribing or connecting. Cookie-only auth still works too; set `headerName: false` and `cookieName` in the channel definition.
+With `connection: "dedicated"`, the SDK instead opens `/_tako/channels/ws/<name>` and uses a `tako.auth` first frame when the required header was absent from the handshake. That dedicated protocol remains supported; it is not the shared socket's protocol. SSE always keeps its own request at `/_tako/channels/sse/<name>`.
+
+Your callback receives `{ header, cookie, params, channel, operation }`. Cookie-only auth uses `headerName: false` and `cookieName`. After login, logout, or account changes, call `resetChannelConnections()` from `tako.sh/client` once the session response has updated cookies. This forces a fresh handshake; browsers do not expose HttpOnly cookie changes to the pool. See [session changes and shared ownership](/docs/channels/#shared-websocket-ownership).
 
 ```d2
 direction: right
@@ -75,11 +81,11 @@ app: "Your app auth callback" {
   style.stroke: "#2F2A44"
 }
 
-browser -> proxy: "GET /_tako/channels/ws/presence?roomId=lobby\nUpgrade: websocket"
-browser -> proxy: "first frame: tako.auth"
+browser -> proxy: "GET /_tako/channels/ws\nUpgrade: websocket"
+browser -> proxy: "subscribe: presence\nroomId=lobby + token"
 proxy -> app: "POST /channels/authorize"
 app -> proxy: "ok + subject"
-proxy -> browser: "live ChannelMessage frames"
+proxy -> browser: "subscribed + topic data"
 ```
 
 ## Publish and reconnect
@@ -97,9 +103,11 @@ await presence({ roomId: "lobby" }).publish({
 
 The `.$messageTypes<PresenceMessages>()` call is type-only, but it is enough for TypeScript to reject the wrong message type or payload shape. At runtime, the proxy stores each publish in the bounded replay log and fans it out to subscribers.
 
-SSE subscriptions reconnect automatically, and React `useChannel` reconnects WebSockets with the last received message id. A lower-level `Channel.connect()` returns one socket; its caller owns reconnection. Replay only covers messages still inside the retention window.
+SSE subscriptions reconnect automatically, and React `useChannel` reconnects each WS subscription with its last complete message's cursor. A lower-level `Channel.connect()` returns a logical subscription by default; its caller owns reconnection. Closing it or unmounting a hook leaves other topics connected. The last subscription closes the physical socket. Replay only covers messages still inside the retention window.
 
 That window is intentionally short by default: 10 minutes.
+
+Shared sockets allow 32 subscriptions, 64 KiB client commands including envelopes, and 1 MiB delivered events. Stream large AI output as smaller application events. Transport fragmentation is automatic and adds no batching delay; see [the limits and recovery behavior](/docs/channels/#shared-websocket-ownership).
 
 ## Store canonical history in your app
 

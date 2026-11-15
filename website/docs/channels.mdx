@@ -213,7 +213,7 @@ Omit `auth` or set it to `false` for a public channel. Otherwise, `auth.verify` 
 - `true` to allow access without an identity.
 - `{ subject: "user-id" }` to allow access with a stable identity.
 
-`headerName` defaults to `authorization`. Set `headerName: false` with `cookieName` for cookie-only auth. Cookie-authenticated WebSockets require an `Origin` matching the application’s public scheme, host, and port; cross-origin or missing-origin handshakes are rejected. Nonbrowser clients using cookies must also send this header. Browser clients can pass `authorization: token`; Tako sends `Authorization: Bearer <token>` for SSE and the equivalent auth envelope for WebSocket.
+`headerName` defaults to `authorization`. Set `headerName: false` with `cookieName` for cookie-only auth. Cookie-authenticated WebSockets require an `Origin` matching the application’s public scheme, host, and port; cross-origin or missing-origin handshakes are rejected. Nonbrowser clients using cookies must also send this header. Browser clients can pass `authorization: token`; Tako sends `Authorization: Bearer <token>` for SSE and includes the token in each shared WebSocket subscription. Dedicated WebSockets use a `tako.auth` first frame when header credentials are needed. The SDK handles these envelopes; application code calls `connect()` and `send()`.
 
 The `transport` option chooses the live transport:
 
@@ -222,7 +222,9 @@ The `transport` option chooses the live transport:
 | Server-to-browser updates  | Omit `transport`; the channel uses receive-only SSE | `subscribe()`          |
 | Browser-to-server messages | Set `transport: "ws"`                               | `connect()` / `send()` |
 
-WebSocket client frames are `{ type, data }`; the proxy stores and broadcasts them as sent to the stream selected by that connection's params. Channels do not run application callbacks for incoming messages. Once the server [closed the stream](#stream-a-reply-that-survives-a-refresh), a client frame is not stored: the connection ends with close code `4200`, and `connect().send()` and `useChannel`'s `send` throw after that close.
+Both the channel definition and the authorization response must allow WebSocket transport. An SSE-only definition cannot be joined over shared or dedicated WS.
+
+WebSocket application messages are `{ type, data }`; the shared client wraps them in a subscription-specific `send` command. The proxy stores and broadcasts the application message to the stream selected by that subscription's params. Channels do not run application callbacks for incoming messages. Once the server [closed the stream](#stream-a-reply-that-survives-a-refresh), a client message is not stored: the subscription ends with close code `4200`, and `connect().send()` and `useChannel`'s `send` throw after that close.
 
 ## Publish From The Server
 
@@ -292,7 +294,11 @@ WebSocket channels and Presence share one physical WebSocket per origin, credent
 
 The shared WebSocket endpoint is `/_tako/channels/ws`; topics and params travel in subscription messages. Dedicated WebSockets use `/_tako/channels/ws/<name>`, while each SSE subscription uses `/_tako/channels/sse/<name>`. Store notifications also use the SSE namespace. SSE URLs reject WebSocket upgrades, and WS URLs require them.
 
+These transport-specific paths replace the old `/_tako/channels/<name>` routes. Protocol v0 has no compatibility aliases: upgrade the server and browser SDK together, and update any handwritten transport URLs. The dedicated WS option is supported; the old unnamespaced URLs are not.
+
 The page owns its logical subscription. Call the socket handle's `close()` or abort its `signal` when leaving; React hooks do this on unmount. Unsubscribing removes that page's presence even while a layout's other subscriptions stay connected. Presence leases cover lost cleanup after crashes or suspended tabs. Membership does not prove that a user is actively looking at a page.
+
+For WebSocket `useChannel` and `usePresence`, an aborted `signal` stops the active subscription and cancels pending retries. An already-aborted signal opens no connection. The hook exposes the abort reason in `error`; pass a new signal to restart it. This applies to shared and dedicated WS.
 
 `connect().raw` is a logical `EventTarget` with `open`, `message`, `error`, and `close` events. Use the handle's `send()` and `close()` methods. The physical connection closes when its last subscription is released. A rejected or terminally closed subscription leaves its siblings connected. A physical connection failure affects all subscriptions; React hooks reconnect independently with their own cursors. Lower-level `connect()` callers own reconnection.
 
@@ -309,7 +315,16 @@ resetChannelConnections();
 
 For header auth, `configureChannels({ token: () => currentToken })` supplies a token to each subscription regardless of its declared `auth.headerName`. A value supplied explicitly for that declared header takes precedence. Reset shared connections when the authenticated session changes, including when an existing token resolver starts returning another user's token.
 
-A shared connection permits 32 subscriptions and 64 KiB client command frames, including their envelope. Complete delivered events may contain up to 1 MiB of serialized UTF-8. Larger events close only that subscription with code `1009`; stream AI output as incremental application events. The transport splits eligible events into small fragments, delivers only complete events, and discards unfinished fragments on disconnect. Replay therefore resumes after the last complete event. Client publishing throws if the outgoing buffer would exceed 1 MiB. The server bounds its output queue and stops stalled writes after 10 seconds. No timer-based batching is enabled.
+A shared connection permits 32 subscriptions and 64 KiB client command frames, including their envelope. If the local pool is full, `connect()` throws; React hooks expose the error and retry with backoff, so they can join after another subscription releases a slot. Complete delivered events may contain up to 1 MiB of serialized UTF-8. Larger events close only that subscription with code `1009`; stream AI output as incremental application events. The transport splits eligible events into small fragments, delivers only complete events, and discards unfinished fragments on disconnect. Replay therefore resumes after the last complete event.
+
+Client publishing throws before sending an unserializable payload, an oversized command, or a command that would make the outgoing buffer exceed 1 MiB. These local send failures leave sibling subscriptions connected. The server bounds its output queue and stops stalled writes after 10 seconds. If a subscription's terminal message cannot enter that queue, the server closes the physical socket with retryable code `1012` so clients can recover. Shared replay reads one record at a time; no timer-based batching is enabled.
+
+### Verify Shared Subscriptions
+
+1. With `tako dev`, mount a layout's WS channel and a page's Presence hook using the same credentials. The browser's Network panel should show one connection to `/_tako/channels/ws`.
+2. Leave the page while keeping the layout mounted. From another client, verify that the page's presence member disappears and the layout still receives events. Leaving the last subscription should close the physical socket.
+3. Abort a hook's signal and trigger an online/reconnect event. It must stay stopped until given a new signal. An SSE subscription should keep its own request under `/_tako/channels/sse/<name>` throughout.
+4. Switch accounts through your auth flow and call `resetChannelConnections()` after the new cookies are set. Confirm a fresh handshake and that subscriptions authorize as the new user. Clear the previous user's application state too.
 
 ## Recover After Disconnects
 
@@ -320,8 +335,8 @@ Replay cleanup runs every second, including when no clients are connected. Chann
 Local replay uses SQLite WAL with `synchronous=NORMAL`: committed messages survive an application process crash, but recent commits can be lost after a host crash or power failure. Replay is a short delivery buffer; keep canonical history in the app database as described below.
 
 - SSE resumes with `Last-Event-ID`; `subscribe({ lastEventId })` sets an initial cursor. The built-in fetch-based reader reconnects after routine disconnects and carries its latest message ID forward. `close()` or an abort `signal` stops it. HTTP `401`, `403`, and `404` are terminal and reach `onError`.
-- WebSocket resumes with `last_message_id`; `connect({ lastMessageId })` sets it. `useChannel` tracks the latest ID and reconnects with bounded backoff and jitter. A lower-level `connect()` call returns one socket, so non-React code owns WebSocket reconnection.
-- With no cursor, Tako starts at the latest retained message and then follows live traffic. A fresh subscription does not recover all missed events. Pass `from: "start"` to `subscribe()`, `connect()`, or `useChannel` to replay every message the stream still retains first; the SDK sends the query pair `from=start`. An explicit cursor wins over `from`, and reconnects resume by cursor rather than from the start again. If retention already dropped the beginning, the reader gets what is retained, without a reset. Ephemeral streams retain nothing, so `from: "start"` reads live messages only.
+- `connect({ lastMessageId })` resumes a WebSocket subscription after that cursor. The shared protocol sends it as the subscription's `cursor`; dedicated WS uses `last_message_id`. `useChannel` tracks the latest complete message's ID and reconnects with bounded backoff and jitter. A lower-level `connect()` call returns one logical subscription by default, so non-React code owns its reconnection.
+- With no cursor, Tako starts at the latest retained message and then follows live traffic. A fresh subscription does not recover all missed events. Pass `from: "start"` to `subscribe()`, `connect()`, or `useChannel` to replay every message the stream still retains first. The SDK sends `from` in a shared subscription command, or `from=start` in the SSE/dedicated WS query. An explicit cursor wins over `from`, and reconnects resume by cursor rather than from the start again. If retention already dropped the beginning, the reader gets what is retained, without a reset. Ephemeral streams retain nothing, so `from: "start"` reads live messages only.
 
 An expired SSE cursor produces HTTP `410 Gone`. A running SSE stream can also send the internal `tako.reset` control event. The built-in reader consumes either signal, clears its cursor, and reconnects without exposing a reset as an application message. The React hook handles WebSocket close code `4410` with reason `replay-too-old` the same way.
 
@@ -377,7 +392,9 @@ export function subscribeUpdates(reloadState: () => Promise<void>) {
 
 Both callbacks are optional and can be async. Reconnection does not await them. The built-in SSE reader and `useChannel` catch and log callback failures without stopping recovery. Handle reload failures in your application's data UI. `useChannel` keeps its existing message buffer until `clear()`, unmount, or a change of connection identity; treat the reloaded snapshot as authoritative rather than assuming the buffer contains complete history.
 
-If you supply a custom `eventSourceFactory`, that factory owns transport errors, cursor reset, and recovery callbacks; `subscribe()` only closes it on `tako.close`. If you use a raw WebSocket through `connect()`, handle close code `4410`, drop the expired cursor, reload state, and open another connection yourself; on code `4200`, stop. Custom transports do not acquire the built-in reader's recovery behavior. A client written without the JavaScript SDK follows the same contract: add `from=start` to the route's query to read from the start, resume with `Last-Event-ID` or `last_message_id`, and treat `tako.close` and close code `4200` as final.
+If you supply a custom `eventSourceFactory`, that factory owns transport errors, cursor reset, and recovery callbacks; `subscribe()` only closes it on `tako.close`. Lower-level `connect()` callers handle close code `4410` by dropping the expired cursor, reloading state, and opening another subscription; on code `4200`, stop. Custom transports do not acquire the built-in reader's recovery behavior.
+
+A client written without the JavaScript SDK can use dedicated SSE/WS endpoints: add `from=start` to the query, resume with `Last-Event-ID` or `last_message_id`, and treat `tako.close` or WS close code `4200` as final. A custom shared WS client instead needs subscription commands, per-subscription cursors and closure, and fragment assembly. Follow the [shared wire protocol](https://github.com/tako-sh/tako/blob/master/PROTOCOL.md), rather than sending dedicated `tako.auth` or application frames to the shared endpoint.
 
 [Stores](/stores/#recover-current-data) implement snapshot reloads for backend data, so they do not need a custom channel resync callback.
 

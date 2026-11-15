@@ -7,6 +7,8 @@ image: ec7ad3d89cdd
 
 > **Update, November 14, 2026:** This article describes an earlier Tako release. Published encrypted secrets now live on network servers, with ignored drafts in each worktree. Native channels, presence, and store notifications can also use SQLite across servers; durable workflow storage has separate requirements. See [current secrets](/docs/secrets/), [native replay](/docs/channels/#deploy-replay-storage), and [workflow storage](/docs/workflows/). Read [the new network and secrets workflow](/blog/sync-deployment-secrets-with-tako-networks/).
 
+> **Channels update, November 15, 2026:** The examples below use the current public-auth and publish APIs. WS subscriptions now share `/_tako/channels/ws`, while SSE remains independent. Changing the browser transport does not change the selected replay backend. See [Channels](/docs/channels/) for ownership, limits, and session resets.
+
 Single-server state is easy to reason about. One app, one proxy, one SQLite file, one place where channel replay and workflow runs live.
 
 Multi-server state is where the footguns start. If a user opens a WebSocket connection to the Tokyo VPS and your checkout route publishes from the Los Angeles VPS, that publish still has to arrive. If a scheduled workflow runs on three servers, it should not accidentally send the same reminder three times unless that is exactly what you asked for.
@@ -76,9 +78,9 @@ lax -> pg: "insert run + steps"
 
 ## Why channels need shared replay
 
-Tako channels are durable WebSocket/SSE endpoints under `/_tako/channels/ws/<name>` (dedicated WebSocket) or `/_tako/channels/sse/<name>` (SSE). A publish is inserted before delivery, and reconnecting clients can replay retained messages from a bounded window. The default replay window is 10 minutes, which is meant for browser reloads, laptop sleep, short network drops, and rolling deploys.
+Tako channels are durable by default. The browser SDK shares `/_tako/channels/ws` across WS subscriptions; dedicated WS uses `/_tako/channels/ws/<name>`, and SSE uses separate requests at `/_tako/channels/sse/<name>`. Each logical subscription has its own authorization and cursor. Durable publishes are inserted before delivery, and reconnecting clients can replay retained messages from the default 10-minute window.
 
-On one server, SQLite is perfect for that. It is local, fast, and private to the app. On multiple servers, local SQLite would split the replay log into islands. A subscriber connected to one server would only see messages that landed on that same server.
+On one server, SQLite is local and private to the app. Independent SQLite stores without native broker replication would split delivery between servers. Native Tako networks provide that replication; shared Postgres is another supported backend.
 
 Shared Postgres fixes the shape. A publish on any server writes to `tako_channels`; subscribers on every server poll the same replay store, fan out new retained rows, and can reconnect against the same cursor space.
 
@@ -136,7 +138,7 @@ Your channel definitions still live in `<app_root>/channels/`:
 import { defineChannel } from "tako.sh";
 
 export default defineChannel("orders", {
-  auth: "public",
+  auth: false,
 }).$messageTypes<{
   updated: { orderId: string; status: string };
 }>();
@@ -163,7 +165,7 @@ And your app still publishes or enqueues through the SDK:
 import orders from "@/channels/orders";
 import sendReceipt from "@/workflows/send-receipt";
 
-await orders().publish({
+await orders.publish({
   type: "updated",
   data: { orderId: "ord_123", status: "paid" },
 });
@@ -171,7 +173,7 @@ await orders().publish({
 await sendReceipt.enqueue({ orderId: "ord_123" });
 ```
 
-SDKs do not open SQLite or Postgres directly; they talk to `tako-server` over the internal socket, and `tako-server` owns the selected backend.
+The unparameterized `orders` export is already a handle, so publication uses `orders.publish(...)`. This example is public; add authorization and scoped params before publishing private order details. SDKs do not open SQLite or Postgres directly; they talk to `tako-server` over the internal socket, and `tako-server` owns the selected backend.
 
 ## Publish or enqueue from a different app
 
