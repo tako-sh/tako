@@ -92,7 +92,7 @@ async fn compose_apps_route_independently_and_keep_redis_data_across_restart() {
         "127.0.0.1".into(),
     )));
     let register = serde_json::json!({"type":"RegisterApp", "config_path":key,
-        "project_dir":project.path(), "app_name":"compose-example", "hosts":["shop.tako", "api.shop.tako"],
+        "project_dir":project.path(), "app_name":"compose-example", "hosts":["shop.test", "api.shop.test"],
         "command":[], "env":{}, "compose":config});
 
     async fn request(state: &Arc<Mutex<State>>, value: serde_json::Value) -> Response {
@@ -119,8 +119,8 @@ async fn compose_apps_route_independently_and_keep_redis_data_across_restart() {
                     .get(key)
                     .filter(|app| app.pid.is_some() && app.pid != previous_pid)
                     .and_then(|_| {
-                        let web = state.routes.lookup("shop.tako", "/")?;
-                        let api = state.routes.lookup("api.shop.tako", "/visits")?;
+                        let web = state.routes.lookup("shop.test", "/")?;
+                        let api = state.routes.lookup("api.shop.test", "/visits")?;
                         (web.active && api.active).then_some((web.upstream_port, api.upstream_port))
                     })
             } {
@@ -155,7 +155,7 @@ async fn compose_apps_route_independently_and_keep_redis_data_across_restart() {
             .lock()
             .unwrap()
             .routes
-            .lookup("redis.shop.tako", "/")
+            .lookup("redis.shop.test", "/")
             .is_none()
     );
     let (backlog, mut logs, _) = state.lock().unwrap().apps[&key].log_buffer.subscribe(None);
@@ -250,7 +250,7 @@ async fn compose_apps_route_independently_and_keep_redis_data_across_restart() {
     let original = std::fs::read_to_string(&yaml).unwrap();
     std::fs::write(
         &yaml,
-        original.replace("api.shop.tako", "renamed.shop.tako"),
+        original.replace("api.shop.test", "renamed.shop.test"),
     )
     .unwrap();
     let previous_pid = state.lock().unwrap().apps[&key].pid;
@@ -269,7 +269,7 @@ async fn compose_apps_route_independently_and_keep_redis_data_across_restart() {
                 s.apps[&key].pid.is_some()
                     && s.apps[&key].pid != previous_pid
                     && s.routes
-                        .lookup("renamed.shop.tako", "/visits")
+                        .lookup("renamed.shop.test", "/visits")
                         .is_some_and(|r| r.active)
             };
             if ready {
@@ -285,13 +285,13 @@ async fn compose_apps_route_independently_and_keep_redis_data_across_restart() {
             .lock()
             .unwrap()
             .routes
-            .lookup("api.shop.tako", "/visits")
+            .lookup("api.shop.test", "/visits")
             .is_none()
     );
     assert!(
         state.lock().unwrap().apps[&key]
             .hosts
-            .contains(&"renamed.shop.tako".to_string())
+            .contains(&"renamed.shop.test".to_string())
     );
     crate::compose::stop_all(&state).await;
     kill_all_app_processes(&state);
@@ -321,7 +321,7 @@ fn compose_restart_reloads_tagged_apps_and_variant_routes() {
         "variant-test",
     )
     .unwrap()
-    .with_development_hosts("feature.shop.tako".into(), Some("shop.tako".into()));
+    .with_development_hosts("feature.shop.test".into(), Some("shop.test".into()));
     std::fs::write(
         &file,
         r#"
@@ -333,7 +333,7 @@ services:
     x-tako:
       envs:
         development:
-          route: api.shop.tako
+          route: api.shop.test
   new:
     image: busybox
     x-tako: {}
@@ -344,7 +344,7 @@ services:
     assert!(!refreshed.config.services.contains_key("web"));
     assert_eq!(
         refreshed.config.routes("development"),
-        ["api.feature.shop.tako", "new.feature.shop.tako"]
+        ["api.feature.shop.test", "new.feature.shop.test"]
     );
     assert_eq!(refreshed.project, runtime.project);
 }

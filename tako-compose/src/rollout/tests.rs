@@ -1310,3 +1310,58 @@ services:
             .all(|container| container.service != "api")
     );
 }
+
+#[tokio::test]
+#[ignore = "requires Docker Compose and shared host/container loopback and project paths"]
+async fn failed_update_that_removes_a_stopped_dependency_restores_its_consumer() {
+    let mut fixture = Fixture::new();
+    let yaml = r#"
+services:
+  web:
+    build: .
+    depends_on: [api]
+    deploy: {update_config: {order: stop-first, monitor: 0s}}
+  api:
+    image: docker.io/library/busybox:1.37
+    expose: [9090]
+    x-tako: {}
+    command: [httpd, -f, -p, '9090']
+    deploy: {update_config: {monitor: 0s}}
+"#;
+    let original = fixture.release("removal-v1", yaml).await;
+    let mut first = original.begin_rollout().await.unwrap();
+    first.apply().await.unwrap();
+    first.finish().await.unwrap();
+    let stopped = BTreeSet::from(["api".to_string()]);
+    let mut pause = original
+        .clone()
+        .with_stopped(false, stopped.clone())
+        .begin_rollout()
+        .await
+        .unwrap();
+    pause.apply().await.unwrap();
+    pause.finish().await.unwrap();
+    let web = service(pause.containers(), "web").clone();
+    // The next release drops both the stopped app and the dependency on it.
+    // Recovery still needs the previous stop intent for the old consumer.
+    let changed = fixture
+        .release(
+            "removal-v2",
+            r#"
+services:
+  web:
+    build: .
+    command: [sh, -c, 'exit 1']
+    deploy: {update_config: {order: stop-first, monitor: 0s}}
+"#,
+        )
+        .await;
+    let mut pending = changed
+        .with_stopped(false, stopped)
+        .begin_rollout()
+        .await
+        .unwrap();
+    assert!(pending.apply().await.is_err());
+    pending.rollback().await.unwrap();
+    assert!(original.container_healthy(&web.id).await.unwrap());
+}

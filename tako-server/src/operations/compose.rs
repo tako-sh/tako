@@ -32,6 +32,14 @@ impl crate::ServerState {
         {
             return Response::error("Compose routes must match the service routes in the release");
         }
+        // Build the runtime with the previous stop intent intact: if this
+        // rollout fails, predecessor recovery must still skip dependencies the
+        // operator stopped, even ones the new release removes. Only the
+        // configuration committed below drops services that no longer exist.
+        let runtime = match crate::compose_runtime::for_config(&config) {
+            Ok(runtime) => runtime,
+            Err(error) => return Response::error(error),
+        };
         config.compose_stopped.retain(|service| {
             config
                 .compose
@@ -40,10 +48,6 @@ impl crate::ServerState {
                 .services
                 .contains_key(service)
         });
-        let runtime = match crate::compose_runtime::for_config(&config) {
-            Ok(runtime) => runtime,
-            Err(error) => return Response::error(error),
-        };
         let mut rollout = match runtime.begin_rollout().await {
             Ok(rollout) => rollout,
             Err(error) => return Response::error(error),
