@@ -73,7 +73,6 @@ RUN --mount=type=secret,id=proxy_ca,mode=0444 \
   if [ -s /run/secrets/proxy_ca ]; then \
     printf '\nsslcacert=/run/secrets/proxy_ca\n' >> /etc/dnf/dnf.conf; \
   fi; \
-  dnf config-manager --set-disabled 'remi-modular*'; \
   dnf makecache; \
   dnf clean packages
 

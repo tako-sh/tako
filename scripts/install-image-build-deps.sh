@@ -40,7 +40,10 @@ install_apt_build_deps() {
   # Older distributions (Debian 11) ship CMake or Meson below the minimum.
   if ! has_tool_version cmake 3.22 || ! has_tool_version meson 0.54; then
     run_as_root apt-get -o Acquire::Retries=5 install -y --no-install-recommends python3-pip
-    run_as_root python3 -m pip install --disable-pip-version-check 'cmake>=3.22' 'meson>=0.54' ninja
+    # CMake 4 removed compatibility with very old project minimums; stay on 3.x.
+    run_as_root python3 -m pip install --disable-pip-version-check 'cmake>=3.22,<4' 'meson>=0.54' ninja
+    # Forget cached command paths so the PyPI tools in /usr/local/bin are found.
+    hash -r
   fi
 }
 
@@ -74,6 +77,7 @@ case "$(uname -s)" in
     ;;
 esac
 
+hash -r
 for tool in cmake meson ninja; do
   if ! need_cmd "$tool"; then
     echo "error: $tool not found after installing image build tools" >&2
@@ -81,6 +85,7 @@ for tool in cmake meson ninja; do
   fi
 done
 if ! has_tool_version cmake 3.22; then
-  echo "error: CMake 3.22 or newer is required to build libavif" >&2
+  echo "error: CMake 3.22 or newer is required to build libavif; found $(command -v cmake) $(tool_version cmake)" >&2
   exit 1
 fi
+echo "Image codec build tools: cmake $(tool_version cmake), meson $(tool_version meson), ninja $(tool_version ninja)"

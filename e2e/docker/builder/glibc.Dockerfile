@@ -21,6 +21,6 @@ RUN --mount=type=secret,id=proxy_ca,mode=0444 \
   && rm -rf /var/lib/apt/lists/* \
   && if [ -s /run/secrets/proxy_ca ]; then export PIP_CERT=/run/secrets/proxy_ca; fi \
   && python3 -m pip install --no-cache-dir --disable-pip-version-check \
-    'cmake>=3.22' 'meson>=0.54' ninja
+    'cmake>=3.22,<4' 'meson>=0.54' ninja
 
 WORKDIR /workspace
