@@ -393,7 +393,6 @@ fn install_server_script_installs_and_verifies_runtime_dependencies() {
     // Image codecs are statically linked into tako-server. Older binaries
     // still get their libvips runtime only when ldd reports it missing.
     assert!(script.contains("install_legacy_libvips_runtime\nverify_tako_server_runtime_deps"));
-    assert!(!script.contains("libheif"));
     assert!(script.contains("verify_tako_server_runtime_deps"));
     assert!(script.contains("missing_runtime_libraries /usr/local/bin/tako-server"));
     assert!(script.contains("install_podman_runtime"));

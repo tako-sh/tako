@@ -1403,8 +1403,16 @@ install_legacy_libvips_runtime() {
   echo "Installing libvips runtime for an older tako-server release"
   if need_cmd apt-get; then
     apt-get update -y
+    # libheif only recommends its codec plugins; older binaries need the AOM
+    # encoder for AVIF output, so install whichever plugins the distro offers.
+    apt_avif_pkgs=""
+    for apt_avif_pkg in libheif-plugin-aomenc libheif-plugin-aomdec libheif-plugin-dav1d; do
+      if apt-cache show "$apt_avif_pkg" >/dev/null 2>&1; then
+        apt_avif_pkgs="$apt_avif_pkgs $apt_avif_pkg"
+      fi
+    done
     for apt_vips_pkg in libvips42t64 libvips42; do
-      if apt-get install -y "$apt_vips_pkg"; then
+      if apt-get install -y "$apt_vips_pkg" $apt_avif_pkgs; then
         return 0
       fi
     done

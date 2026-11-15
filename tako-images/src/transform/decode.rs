@@ -18,11 +18,11 @@ pub(super) fn decode(
     match format {
         SourceFormat::Jpeg => {
             let decoder = JpegDecoder::new(Cursor::new(source)).map_err(decode_error)?;
-            decode_still(decoder, limits).map(Decoded::still)
+            decode_still(decoder, None, limits).map(Decoded::still)
         }
         SourceFormat::Png => {
             let decoder = PngDecoder::new(Cursor::new(source)).map_err(decode_error)?;
-            decode_still(decoder, limits).map(Decoded::still)
+            decode_still(decoder, None, limits).map(Decoded::still)
         }
         SourceFormat::Gif => decode_gif(source, limits),
         SourceFormat::Webp => decode_webp(source, limits),
@@ -30,8 +30,11 @@ pub(super) fn decode(
     }
 }
 
+/// Decodes a still image and applies its orientation. `orientation`
+/// overrides the decoder's own EXIF reading when the caller parsed it.
 fn decode_still(
     mut decoder: impl ImageDecoder,
+    orientation: Option<Orientation>,
     limits: &TransformLimits,
 ) -> Result<Raster, ImageError> {
     let (width, height) = decoder.dimensions();
@@ -40,7 +43,10 @@ fn decode_still(
         .set_limits(decoder_limits(limits))
         .map_err(|_| ImageError::ImageTooLarge)?;
     // Unreadable EXIF should not reject an otherwise valid image.
-    let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+    let orientation = match orientation {
+        Some(orientation) => orientation,
+        None => decoder.orientation().unwrap_or(Orientation::NoTransforms),
+    };
     let mut image = DynamicImage::from_decoder(decoder).map_err(decode_error)?;
     image.apply_orientation(orientation);
     raster_from_dynamic(image)
@@ -113,10 +119,10 @@ fn gif_loop_count(source: &[u8]) -> Result<u16, ImageError> {
 fn decode_webp(source: &[u8], limits: &TransformLimits) -> Result<Decoded, ImageError> {
     let mut decoder = image_webp::WebPDecoder::new(Cursor::new(source))
         .map_err(|_| ImageError::TransformFailed)?;
+    let orientation = webp_orientation(&mut decoder);
     if !decoder.is_animated() || decoder.num_frames() <= 1 {
-        // The still path applies EXIF orientation like JPEG and PNG.
         let decoder = WebPDecoder::new(Cursor::new(source)).map_err(decode_error)?;
-        return decode_still(decoder, limits).map(Decoded::still);
+        return decode_still(decoder, Some(orientation), limits).map(Decoded::still);
     }
 
     let (width, height) = decoder.dimensions();
@@ -145,7 +151,9 @@ fn decode_webp(source: &[u8], limits: &TransformLimits) -> Result<Decoded, Image
             .read_frame(&mut buffer)
             .map_err(|_| ImageError::TransformFailed)?;
         delays_ms.push(delay);
-        frames.push(Raster::new(width, height, layout, buffer)?);
+        let frame = Raster::new(width, height, layout, buffer)?;
+        // Animated files may carry EXIF too; orient every frame like stills.
+        frames.push(orient_raster(frame, orientation)?);
     }
 
     let loop_count = match decoder.loop_count() {
@@ -157,6 +165,44 @@ fn decode_webp(source: &[u8], limits: &TransformLimits) -> Result<Decoded, Image
         delays_ms,
         loop_count,
     })
+}
+
+/// Reads the EXIF orientation of a still or animated WebP. The WebP spec stores
+/// a bare TIFF header, but common writers keep JPEG's `Exif\0\0` prefix, which
+/// `Orientation::from_exif_chunk` rejects; libvips accepts both.
+fn webp_orientation<R: std::io::BufRead + std::io::Seek>(
+    decoder: &mut image_webp::WebPDecoder<R>,
+) -> Orientation {
+    decoder
+        .exif_metadata()
+        .ok()
+        .flatten()
+        .and_then(|exif| {
+            let tiff = exif.strip_prefix(b"Exif\0\0").unwrap_or(&exif);
+            Orientation::from_exif_chunk(tiff)
+        })
+        .unwrap_or(Orientation::NoTransforms)
+}
+
+fn orient_raster(raster: Raster, orientation: Orientation) -> Result<Raster, ImageError> {
+    if orientation == Orientation::NoTransforms {
+        return Ok(raster);
+    }
+    let Raster {
+        width,
+        height,
+        layout,
+        data,
+    } = raster;
+    let mut image = match layout {
+        Layout::Rgb => image::RgbImage::from_raw(width, height, data).map(DynamicImage::ImageRgb8),
+        Layout::Rgba => {
+            image::RgbaImage::from_raw(width, height, data).map(DynamicImage::ImageRgba8)
+        }
+    }
+    .ok_or(ImageError::TransformFailed)?;
+    image.apply_orientation(orientation);
+    raster_from_dynamic(image)
 }
 
 fn decoder_limits(limits: &TransformLimits) -> Limits {

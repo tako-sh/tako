@@ -618,6 +618,57 @@ fn disposes_animated_webp_frames_to_background() {
 }
 
 #[test]
+fn applies_prefixed_exif_orientation_to_still_webp() {
+    let source = BASE64_STANDARD
+        .decode(super::WEBP_STILL_PREFIXED_EXIF_ORIENTATION_6)
+        .expect("decode webp");
+
+    let transformed = transform_image(
+        &source,
+        Some("image/webp"),
+        transform_options(OutputFormat::Webp, 64, 90),
+        &TransformLimits::default(),
+    )
+    .expect("transform image");
+
+    assert_eq!((transformed.width, transformed.height), (32, 64));
+}
+
+#[test]
+fn applies_exif_orientation_to_animated_webp_frames() {
+    let source = BASE64_STANDARD
+        .decode(super::WEBP_ANIMATION_EXIF_ORIENTATION_6)
+        .expect("decode webp");
+
+    let transformed = transform_image(
+        &source,
+        Some("image/webp"),
+        transform_options(OutputFormat::Webp, 16, 90),
+        &TransformLimits::default(),
+    )
+    .expect("transform image");
+
+    assert_eq!((transformed.width, transformed.height), (16, 32));
+    let animation = decode_webp_animation(&transformed.bytes);
+    assert_eq!((animation.width, animation.height), (16, 32));
+    assert_eq!(animation.frames.len(), 2);
+    assert_eq!(animation.delays_ms, [50, 60]);
+    // A clockwise quarter turn moves the top-left red marker to the top right.
+    let pixel = |frame: &[u8], x: usize, y: usize| -> [u8; 4] {
+        frame[(y * 16 + x) * 4..][..4].try_into().expect("pixel")
+    };
+    for frame in &animation.frames {
+        let top_right = pixel(frame, 13, 2);
+        let top_left = pixel(frame, 2, 2);
+        assert!(
+            top_right[0] > 200 && top_right[2] < 60,
+            "marker missing: {top_right:?}"
+        );
+        assert!(top_left[0] < 60, "frame not rotated: {top_left:?}");
+    }
+}
+
+#[test]
 fn accepts_zero_delay_gif_frames() {
     let source = gif_animation(Some(gif::Repeat::Infinite), &[0, 0, 3]);
 
