@@ -1,4 +1,5 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use sha2::{Digest, Sha256};
 use std::{fmt, str::FromStr};
 
 use crate::ChannelError;
@@ -20,7 +21,7 @@ pub struct ReplayCursor {
 }
 
 fn stream_id(channel: &str) -> [u8; 16] {
-    let digest = openssl::sha::sha256(channel.as_bytes());
+    let digest = Sha256::digest(channel.as_bytes());
     let mut stream = [0; 16];
     stream.copy_from_slice(&digest[..16]);
     stream
@@ -127,6 +128,8 @@ mod tests {
     fn cursors_round_trip_and_stay_bound_to_their_stream() {
         let sqlite = ReplayCursor::sqlite([7; 16], "chat", 42);
         let postgres = ReplayCursor::postgres("chat", 42);
+        // Fixed SHA-256 prefix keeps cursors issued by older servers usable.
+        assert_eq!(postgres.to_string(), "p1.MeBvfYn-uZoObAr_4Zh0jA.42");
         for cursor in [sqlite, postgres, ReplayCursor::unscoped(42)] {
             assert_eq!(cursor.to_string().parse::<ReplayCursor>().unwrap(), cursor);
         }

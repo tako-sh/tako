@@ -12,6 +12,11 @@ without an external fork. Other Pingora crates remain registry dependencies.
 
 Changes to the published source:
 
+- `Cargo.toml` selects flate2's pure Rust `zlib-rs` backend instead of `zlib-ng`.
+  This removes the bundled C zlib-ng build for every Pingora consumer while
+  retaining the gzip/deflate APIs. Keep this selection when updating the patch;
+  enabling a C backend elsewhere would reintroduce it through Cargo feature
+  unification. Its standalone lockfile uses the same Rust backend.
 - `src/listeners/l4.rs` supports Linux freebind for managed addresses before their
   interfaces exist. The manifest requires `socket2 0.6` for the IPv4 and IPv6
   freebind methods so dependency updates cannot select an incompatible older API.
@@ -44,9 +49,10 @@ cargo test --locked -p tako-server proxy::
 Keep this crate outside workspace-wide formatting and tests; its unrelated
 connector tests require direct external-network access. Run the affected suites
 explicitly when changing the patch. Remove the local override when a released
-Pingora version provides equivalent lifetime behavior and passes Tako's memory
-and performance checks. Do not update the copied crate independently of its
-provenance, fixtures, focused tests and locked dependency graph.
+Pingora version provides equivalent lifetime behavior, supports a pure Rust
+compression backend and passes Tako's memory and performance checks. Do not
+update the copied crate independently of its provenance, fixtures, focused tests
+and locked dependency graph.
 
 # SQLite capture dependency
 

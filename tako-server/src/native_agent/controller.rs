@@ -7,6 +7,7 @@ use super::{
     services::Publisher,
     store::{MonotonicStore, preserves},
 };
+use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
     path::{Path, PathBuf},
@@ -331,7 +332,7 @@ impl Controller {
         self.apply(&bytes)
     }
     fn apply(&mut self, bytes: &[u8]) -> Result<()> {
-        if self.applied.hash != Some(openssl::sha::sha256(bytes)) {
+        if self.applied.hash != Some(Sha256::digest(bytes).into()) {
             self.withdraw();
         }
         self.applied
@@ -545,7 +546,7 @@ impl Controller {
                 return Err(RuntimeError::Denied.into());
             }
             let desired = projection::desired(&self.config, &self.keys, &snapshot, time, false)?;
-            if self.applied.hash != Some(openssl::sha::sha256(&desired))
+            if self.applied.hash != Some(Sha256::digest(&desired).into())
                 || !self.control.matches(&snapshot)
                 || self.stop.load(Ordering::Acquire)
             {
@@ -704,7 +705,7 @@ impl ApplyCache {
         clock: impl Fn() -> Instant,
         apply: impl FnOnce() -> Result<DnsStatus>,
     ) -> Result<()> {
-        if self.hash != Some(openssl::sha::sha256(bytes)) {
+        if self.hash != Some(Sha256::digest(bytes).into()) {
             control.withdraw();
         }
         let result = self.enforce_with_clock(bytes, clock, apply);
@@ -727,7 +728,7 @@ impl ApplyCache {
         clock: impl Fn() -> Instant,
         apply: impl FnOnce() -> Result<DnsStatus>,
     ) -> Result<()> {
-        let hash = openssl::sha::sha256(bytes);
+        let hash: [u8; 32] = Sha256::digest(bytes).into();
         let unchanged = self.hash == Some(hash);
         if unchanged
             && self.dns_status.as_ref().is_some_and(|dns| {
@@ -823,7 +824,7 @@ fn renew_identity(config: &NodeConfig, root: &Path, directory: &Directory) -> Re
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or(AgentError::Invalid("invalid managed gossip fullchain path"))?;
-    Ok(openssl::sha::sha256(&directory.read(name, 128 * 1024)?))
+    Ok(Sha256::digest(&directory.read(name, 128 * 1024)?).into())
 }
 
 fn serving(config: &NodeConfig, snapshot: &RegistrySnapshot, now: u64) -> Result<bool> {
@@ -905,7 +906,7 @@ fn wait_for_corrosion(
 }
 
 fn gossip_hash(bundle: &str, seeds: &[String]) -> Result<[u8; 32]> {
-    Ok(openssl::sha::sha256(&serde_json::to_vec(&(bundle, seeds))?))
+    Ok(Sha256::digest(&serde_json::to_vec(&(bundle, seeds))?).into())
 }
 fn validate_gossip_leaf(
     config: &NodeConfig,

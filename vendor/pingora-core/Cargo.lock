@@ -1848,7 +1848,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e634e2e0ebac1ee034020da1ca582e17ffe4e0f5e985823721e168928136dcb"
 dependencies = [
  "crc32fast",
- "libz-ng-sys",
  "miniz_oxide 0.9.1",
  "zlib-rs",
 ]
@@ -2713,16 +2712,6 @@ checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
 dependencies = [
  "cfg-if",
  "windows-link",
-]
-
-[[package]]
-name = "libz-ng-sys"
-version = "1.1.29"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "879917b256f6317769b9f374b435805a8697013098aacce5a38ac106cd6a9469"
-dependencies = [
- "cmake",
- "libc",
 ]
 
 [[package]]

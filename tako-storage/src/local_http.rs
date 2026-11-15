@@ -8,12 +8,13 @@ use std::{
 };
 
 use futures_util::TryStreamExt;
+use hmac::{Hmac, KeyInit, Mac};
 use object_store::{ObjectStoreExt, buffered::BufWriter, path::Path as ObjectPath};
-use openssl::{hash::MessageDigest, pkey::PKey, sign::Signer};
 use percent_encoding::percent_decode_str;
 use pingora_core::{Error, ErrorType, Result};
 use pingora_http::ResponseHeader;
 use pingora_proxy::Session;
+use sha2::Sha256;
 use tako_core::{StorageBinding, StorageProvider};
 use tokio::io::AsyncWriteExt;
 
@@ -210,13 +211,11 @@ fn authorized(method: &str, name: &str, key: &str, query: &str, secret: &str, no
         return false;
     };
     let payload = format!("{method}\n{name}\n{key}\n{expires}");
-    let signature = (|| {
-        let key = PKey::hmac(secret.as_bytes())?;
-        let mut signer = Signer::new(MessageDigest::sha256(), &key)?;
-        signer.update(payload.as_bytes())?;
-        signer.sign_to_vec()
-    })();
-    signature.is_ok_and(|s| s.len() == token.len() && openssl::memcmp::eq(&s, &token))
+    let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(secret.as_bytes()) else {
+        return false;
+    };
+    mac.update(payload.as_bytes());
+    mac.verify_slice(&token).is_ok()
 }
 
 fn internal(error: impl std::fmt::Display) -> Box<Error> {

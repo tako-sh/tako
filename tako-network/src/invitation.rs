@@ -3,6 +3,7 @@ use crate::api::{RuntimeError, RuntimeResult};
 use crate::{DeviceId, EnrollmentRequest, NetworkDescriptor, Permissions, RequestId, ServerInfo};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -17,7 +18,8 @@ impl std::fmt::Debug for InvitationToken {
 impl InvitationToken {
     pub fn random() -> RuntimeResult<Self> {
         let mut bytes = Zeroizing::new([0; 32]);
-        openssl::rand::rand_bytes(bytes.as_mut()).map_err(crate::Error::from)?;
+        getrandom::fill(bytes.as_mut())
+            .map_err(|_| crate::error::invalid("randomness", "OS entropy unavailable"))?;
         Ok(Self(Zeroizing::new(hex::encode(bytes.as_slice()))))
     }
     pub fn hash(&self) -> RuntimeResult<String> {
@@ -29,7 +31,7 @@ impl InvitationToken {
         {
             return Err(RuntimeError::Authentication);
         }
-        Ok(hex::encode(openssl::sha::sha256(self.0.as_bytes())))
+        Ok(hex::encode(Sha256::digest(self.0.as_bytes())))
     }
 }
 

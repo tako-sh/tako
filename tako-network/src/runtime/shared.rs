@@ -3,6 +3,7 @@ use crate::shared::{
     LegacySecretGrant, SECRET_RETRY_SECONDS, SecretMutation, SecretReceipt, SecretRecord,
     SharedSnapshot,
 };
+use sha2::{Digest, Sha256};
 
 const MAX_PUBLICATION_RECEIPTS: i64 = 100_000;
 
@@ -121,7 +122,7 @@ impl<S: RegistryStore> ServerRuntime<S> {
             "DELETE FROM shared_publications WHERE expires<=?1",
             [sql_time(now)?],
         )?;
-        let hash = hex::encode(openssl::sha::sha256(&serde_json::to_vec(&mutation)?));
+        let hash = hex::encode(Sha256::digest(&serde_json::to_vec(&mutation)?));
         let previous: Option<String> = self
             .db
             .query_row(

@@ -35,6 +35,9 @@ pingora-http = "0.9"
 pingora-cache = "0.9"
 pingora-prometheus = "0.9"
 openssl.workspace = true
+aes-gcm = { version = "0.11", features = ["zeroize"] }
+getrandom = "0.4"
+hmac = { version = "0.13", features = ["zeroize"] }
 rusqlite.workspace = true
 tako-sqlite = { path = "../tako-sqlite" }
 tako-storage = { path = "../tako-storage" }
@@ -55,7 +58,7 @@ libc = "0.2"
 rustix = { version = "1", features = ["fs"] }
 tempfile = "=3.27.0"
 tar = "0.4"
-flate2 = "1.1"
+flate2.workspace = true
 zstd = "0.14"
 nanoid = "0.5"
 bytes = "1"
@@ -66,7 +69,7 @@ mimalloc = "0.1"
 percent-encoding = "2"
 prometheus = "0.14"
 hostname = "0.4"
-sha2 = "0.11"
+sha2 = { version = "0.11", features = ["zeroize"] }
 hex = "0.4"
 time = "0.3"
 ssh-key = { version = "0.6", features = ["ed25519", "getrandom"] }
