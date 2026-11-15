@@ -41,7 +41,7 @@ services:
 
   # No x-tako: an ordinary Docker service, not a Tako app.
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
     command: [redis-server, --appendonly, "yes"]
     volumes: [redis-data:/data]
     healthcheck:
