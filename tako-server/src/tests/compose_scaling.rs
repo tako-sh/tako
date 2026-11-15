@@ -33,7 +33,7 @@ fn scale(count: Option<u8>, service: Option<&str>) -> Command {
 fn ok(response: Response) -> Value {
     match response {
         Response::Ok { data } => data,
-        Response::Error { message, .. } => panic!("Compose command should succeed: {message}"),
+        Response::Error { .. } => panic!("Compose command should succeed"),
     }
 }
 
@@ -107,6 +107,72 @@ async fn assert_replicas(
         .collect();
     assert_eq!(routed, ports);
     ids
+}
+
+async fn assert_dependency_logs(state: &ServerState, runtime: &ComposeRuntime, marker: &str) {
+    let container = runtime
+        .containers()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|c| c.service == "database")
+        .unwrap();
+    let output = tokio::process::Command::new("docker")
+        .args([
+            "exec",
+            &container.id,
+            "sh",
+            "-c",
+            "echo \"$1\" > /proc/1/fd/1",
+            "fixture",
+            marker,
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(output.status.success());
+    let path = state
+        .runtime
+        .data_dir
+        .join("apps")
+        .join(APP)
+        .join("logs/current.log");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if std::fs::read_to_string(&path)
+                .unwrap_or_default()
+                .contains(marker)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("Dependency output must reach the group log");
+}
+
+async fn rotate_dependency_secret(state: &ServerState, runtime: &ComposeRuntime, value: &str) {
+    ok(state
+        .handle_command(Command::UpdateSecrets {
+            app: APP.into(),
+            secrets: HashMap::from([("ROTATION".into(), value.into())]),
+        })
+        .await);
+    let container = runtime
+        .containers()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|c| c.service == "database")
+        .unwrap();
+    let output = tokio::process::Command::new("docker")
+        .args(["exec", &container.id, "printenv", "ROTATION"])
+        .output()
+        .await
+        .unwrap();
+    assert!(output.status.success());
+    assert!(output.stdout == format!("{value}\n").as_bytes());
 }
 
 #[tokio::test]
@@ -413,6 +479,7 @@ services:
     deploy: {update_config: {monitor: 0s}}
   database:
     image: docker.io/library/busybox:1.37
+    environment: {ROTATION: "${ROTATION:-initial}"}
     command: [sleep, '3600']
     deploy: {update_config: {monitor: 0s}}
 "#).unwrap();
@@ -582,6 +649,7 @@ services:
             stopped.iter().find(|c| c.service == service).unwrap().id
         );
     }
+    assert_dependency_logs(&server, &runtime, "after-first-app-stop").await;
     let status = ok(server.get_status(APP).await);
     assert_eq!(
         status["applications"]
@@ -666,6 +734,30 @@ services:
     drop(server);
     let restarted = state(dir.path(), false);
     restarted.restore_from_state_store().await.unwrap();
+    // SQLite loads routes in lexical order, independently of service order.
+    rotate_dependency_secret(&restarted, &runtime, "after-restart").await;
+    ok(restarted
+        .handle_command(Command::Stop {
+            app: APP.into(),
+            service: Some("web".into()),
+        })
+        .await);
+    assert!(
+        restarted
+            .app_manager
+            .get_app(APP)
+            .unwrap()
+            .get_instances()
+            .is_empty()
+    );
+    rotate_dependency_secret(&restarted, &runtime, "all-paused").await;
+    assert_dependency_logs(&restarted, &runtime, "all-http-apps-paused").await;
+    ok(restarted
+        .handle_command(Command::Start {
+            app: APP.into(),
+            service: Some("web".into()),
+        })
+        .await);
     assert!(
         restarted
             .load_balancer
@@ -752,7 +844,7 @@ services:
         private_release.join("compose.yaml"),
         serde_json::json!({
             "services": {"database": {"image": "docker.io/library/busybox:1.37",
-                "command": ["sleep", "3600"], "deploy": {"update_config": {"monitor": "0s"}}}}
+                "environment": {"ROTATION":"${ROTATION:-initial}"}, "command": ["sleep", "3600"], "deploy": {"update_config": {"monitor": "0s"}}}}
         })
         .to_string(),
     )
@@ -827,6 +919,13 @@ services:
     let containers = private_runtime.containers().await.unwrap();
     assert_eq!(containers.len(), 1);
     assert!(containers.iter().all(|c| c.running() && c.port.is_none()));
+    rotate_dependency_secret(&private_server, &private_runtime, "docker-only").await;
+    assert_dependency_logs(
+        &private_server,
+        &private_runtime,
+        "docker-only-dependencies",
+    )
+    .await;
     ok(private_server.rollback_app(APP, "v1").await);
     check(&private_server).await;
     ok(private_server.rollback_app(APP, "v2").await);

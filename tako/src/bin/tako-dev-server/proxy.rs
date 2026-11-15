@@ -239,6 +239,11 @@ impl Routes {
 
     pub fn activate_compose(&self, app_id: &str, ports: HashMap<String, u16>) {
         let first = ports.values().next().copied().unwrap_or(0);
+        {
+            let mut routes = self.app_routes.lock().unwrap();
+            routes.insert(app_id.into(), ports.keys().cloned().collect());
+            self.rebuild(&routes);
+        }
         self.service_ports
             .lock()
             .unwrap()

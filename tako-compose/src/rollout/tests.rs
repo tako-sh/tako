@@ -1228,3 +1228,85 @@ volumes:
         worker.id
     );
 }
+
+#[tokio::test]
+#[ignore = "requires Docker Compose and shared host/container loopback and project paths"]
+async fn published_port_without_http_listener_is_not_ready() {
+    let mut fixture = Fixture::new();
+    let runtime = fixture
+        .release(
+            "no-listener",
+            r#"
+services:
+  web:
+    image: docker.io/library/busybox:1.37
+    command: [sleep, '3600']
+    deploy: {update_config: {monitor: 0s}}
+"#,
+        )
+        .await;
+    let mut rollout = runtime.begin_rollout().await.unwrap();
+    rollout.apply().await.unwrap();
+    let web = rollout.ingress().unwrap();
+    assert!(web.running());
+    assert!(web.port.is_some());
+    assert!(!runtime.container_healthy(&web.id).await.unwrap());
+}
+
+#[tokio::test]
+#[ignore = "requires Docker Compose and shared host/container loopback and project paths"]
+async fn failed_stop_first_update_restores_consumer_of_an_explicitly_stopped_app() {
+    let mut fixture = Fixture::new();
+    let yaml = r#"
+services:
+  web:
+    build: .
+    depends_on: [api]
+    deploy: {update_config: {order: stop-first, monitor: 0s}}
+  api:
+    image: docker.io/library/busybox:1.37
+    expose: [9090]
+    x-tako: {}
+    command: [httpd, -f, -p, '9090']
+    deploy: {update_config: {monitor: 0s}}
+"#;
+    let original = fixture.release("consumer-v1", yaml).await;
+    let mut first = original.begin_rollout().await.unwrap();
+    first.apply().await.unwrap();
+    first.finish().await.unwrap();
+    let stopped = BTreeSet::from(["api".to_string()]);
+    let mut pause = original
+        .clone()
+        .with_stopped(false, stopped.clone())
+        .begin_rollout()
+        .await
+        .unwrap();
+    pause.apply().await.unwrap();
+    pause.finish().await.unwrap();
+    let web = service(pause.containers(), "web").clone();
+    let changed = fixture
+        .release(
+            "consumer-v2",
+            &yaml.replace(
+                "    build: .",
+                "    build: .\n    command: [sh, -c, 'exit 1']",
+            ),
+        )
+        .await;
+    let mut pending = changed
+        .with_stopped(false, stopped)
+        .begin_rollout()
+        .await
+        .unwrap();
+    assert!(pending.apply().await.is_err());
+    pending.rollback().await.unwrap();
+    assert!(original.container_healthy(&web.id).await.unwrap());
+    assert!(
+        original
+            .containers()
+            .await
+            .unwrap()
+            .iter()
+            .all(|container| container.service != "api")
+    );
+}

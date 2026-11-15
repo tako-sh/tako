@@ -173,6 +173,13 @@ fn ensure_schema_objects(conn: &rusqlite::Connection) -> Result<(), StateStoreEr
             encrypted_data BLOB NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS app_release_routing (
+            app TEXT NOT NULL,
+            version TEXT NOT NULL,
+            routing TEXT NOT NULL,
+            PRIMARY KEY (app, version)
+        );
+
         CREATE TABLE IF NOT EXISTS app_compose_scales (
             app TEXT NOT NULL,
             service TEXT NOT NULL,

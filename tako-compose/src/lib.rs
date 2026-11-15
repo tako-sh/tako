@@ -118,6 +118,7 @@ pub struct ComposeRuntime {
     pub config: ComposeConfig,
     env: HashMap<String, String>,
     development: bool,
+    development_hosts: Option<(String, Option<String>)>,
     override_file: PathBuf,
     // Bound to one immutable, service-private preparation during a rollout.
     source: Option<PathBuf>,
@@ -182,6 +183,7 @@ impl ComposeRuntime {
             config,
             env,
             development: false,
+            development_hosts: None,
             override_file: PathBuf::from(OVERRIDE_FILE),
             source: None,
             replicas: BTreeMap::new(),
@@ -223,6 +225,31 @@ impl ComposeRuntime {
         runtime.project = format!("tako-dev-{}", digest(identity));
         runtime.development = true;
         runtime.override_file = PathBuf::from(format!(".tako/compose/{}.yaml", runtime.project));
+        Ok(runtime)
+    }
+
+    pub fn with_development_hosts(
+        mut self,
+        default_host: String,
+        base_host: Option<String>,
+    ) -> Self {
+        self.config = self
+            .config
+            .for_development(&default_host, base_host.as_deref());
+        self.development_hosts = Some((default_host, base_host));
+        self
+    }
+
+    pub fn reload_development(&self) -> Result<Self, String> {
+        if !self.development {
+            return Err("Only development projects can reload Compose metadata".into());
+        }
+        let mut runtime = self.clone();
+        runtime.config = load_config(&self.directory, &self.config.file)?;
+        if let Some((host, base)) = &self.development_hosts {
+            runtime.config = runtime.config.for_development(host, base.as_deref());
+        }
+        runtime.ingress_ports.clear();
         Ok(runtime)
     }
 

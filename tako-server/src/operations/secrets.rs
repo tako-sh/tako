@@ -22,33 +22,9 @@ impl crate::ServerState {
 
         if let Some(app) = self.app_manager.get_app(app_name) {
             let mut config = app.config.read().clone();
-            if config.compose.is_some() && !app.get_instances().is_empty() {
+            if config.compose.is_some() {
                 config.secrets = new_secrets;
-                let credentials = (|| -> Result<_, crate::state_store::StateStoreError> {
-                    Ok((
-                        self.state_store.get_runtime_credentials(app_name)?,
-                        self.state_store.get_ssl(app_name)?,
-                        self.state_store.get_backup(app_name)?,
-                    ))
-                })();
-                let (runtime_credentials, ssl, backup) = match credentials {
-                    Ok(bindings) => bindings,
-                    Err(error) => {
-                        return Response::error(format!(
-                            "Could not load deployment credentials: {error}"
-                        ));
-                    }
-                };
-                let routes = self.routes.read().routes_for_app(app_name);
-                let response = self
-                    .deploy_compose(super::compose::ComposeDeployment {
-                        config,
-                        routes,
-                        runtime_credentials,
-                        ssl,
-                        backup,
-                    })
-                    .await;
+                let response = self.apply_compose_config(config).await;
                 return match response {
                     Response::Ok { mut data } => {
                         data["status"] = serde_json::json!("updated");
@@ -79,8 +55,10 @@ impl crate::ServerState {
                     .await
                     .ok()
                     .flatten();
-            self.sync_app_workflows(app_name, &release_path, runtime_bin_path.as_deref())
-                .await;
+            if !config.stopped {
+                self.sync_app_workflows(app_name, &release_path, runtime_bin_path.as_deref())
+                    .await;
+            }
 
             if !app.get_instances().is_empty() {
                 let previous_state = app.state();

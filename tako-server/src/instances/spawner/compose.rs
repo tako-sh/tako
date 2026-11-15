@@ -41,8 +41,7 @@ impl Spawner {
                 }
                 let instance = app.allocate_instance();
                 attached.push(instance.clone());
-                self.attach_compose(app, instance, &runtime, web, rollout.containers())
-                    .await?;
+                self.attach_compose(app, instance, &runtime, web).await?;
             }
             // Any stale logical observers must relinquish container ownership
             // before cleanup. A restored container may now have a new port.
@@ -71,6 +70,9 @@ impl Spawner {
         for instance in attached {
             instance.own_compose_container(true);
         }
+        app.sync_compose_logs(&runtime, rollout.containers())
+            .await
+            .map_err(InstanceError::HealthCheckFailed)?;
         // The desired configuration is already durable. Cleanup failure must
         // not reintroduce containers from an abandoned generation.
         rollout
@@ -85,7 +87,6 @@ impl Spawner {
         instance: Arc<Instance>,
         runtime: &crate::compose_runtime::ComposeRuntime,
         web: &tako_compose::ServiceContainer,
-        containers: &[tako_compose::ServiceContainer],
     ) -> Result<(), InstanceError> {
         let config = app.config.read().clone();
         let port = web.port.ok_or_else(|| {
@@ -94,25 +95,8 @@ impl Spawner {
         instance.set_compose(runtime.clone(), web.id.clone(), web.service.clone());
         instance.set_sdk_health(false);
         app.set_instance_state(&instance, InstanceState::Starting);
-        // Only slot zero follows shared dependency logs; each replica follows
-        // its own HTTP container to avoid duplicate app log entries.
-        let logs: Vec<_> = containers
-            .iter()
-            .filter(|c| {
-                c.id == web.id
-                    || (web.slot == 0
-                        && runtime
-                            .config
-                            .services
-                            .keys()
-                            .next()
-                            .is_some_and(|name| name == &web.service)
-                        && !runtime.is_ingress(&c.service))
-            })
-            .cloned()
-            .collect();
         let child = runtime
-            .logs(&logs)
+            .logs(std::slice::from_ref(web))
             .await
             .map_err(InstanceError::HealthCheckFailed)?;
         instance.set_process(child);

@@ -326,6 +326,11 @@ impl Rollout {
             return Ok(None);
         }
         for (service, condition) in &old.dependencies {
+            // A deliberate stop may have removed this dependency before the
+            // attempt. Recovery must preserve that intent just as apply does.
+            if self.runtime.stopped_services.contains(service) {
+                continue;
+            }
             let dependencies: Vec<_> = self
                 .before
                 .iter()

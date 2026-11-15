@@ -52,12 +52,7 @@ impl ComposeRuntime {
         let Some(port) = container.port else {
             return Ok(false);
         };
-        Ok(tokio::time::timeout(
-            Duration::from_secs(2),
-            tokio::net::TcpStream::connect(("127.0.0.1", port)),
-        )
-        .await
-        .is_ok_and(|r| r.is_ok()))
+        Ok(http_ready(port).await)
     }
 
     pub async fn containers(&self) -> Result<Vec<ServiceContainer>, String> {
@@ -192,6 +187,28 @@ impl ComposeRuntime {
         }
         Ok(())
     }
+}
+
+/// A published TCP port can be accepted by docker-proxy before the container
+/// listens. Require an HTTP response from the app; any status (including 404
+/// or 405) is sufficient, without requiring an application health endpoint.
+async fn http_ready(port: u16) -> bool {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    tokio::time::timeout(Duration::from_secs(2), async {
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await?;
+        stream
+            .write_all(b"HEAD / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await?;
+        let mut prefix = [0u8; 12];
+        stream.read_exact(&mut prefix).await?;
+        Ok::<_, std::io::Error>(
+            (&prefix[..9] == b"HTTP/1.0 " || &prefix[..9] == b"HTTP/1.1 ")
+                && (b'1'..=b'5').contains(&prefix[9])
+                && prefix[10..].iter().all(u8::is_ascii_digit),
+        )
+    })
+    .await
+    .is_ok_and(|result| result.unwrap_or(false))
 }
 
 pub(crate) async fn stop_container(id: &str, development: bool) -> Result<(), String> {
@@ -329,6 +346,30 @@ fn escape_interpolation(value: &mut Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn readiness_requires_an_http_response_instead_of_a_proxy_tcp_accept() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for (response, expected) in [
+            (b"".as_slice(), false),
+            (
+                b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".as_slice(),
+                true,
+            ),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0; 256];
+                let length = stream.read(&mut request).await.unwrap();
+                assert!(request[..length].starts_with(b"HEAD / HTTP/1.1"));
+                stream.write_all(response).await.unwrap();
+            });
+            assert_eq!(http_ready(port).await, expected);
+            server.await.unwrap();
+        }
+    }
 
     #[test]
     fn resolved_values_survive_compose_interpolation() {

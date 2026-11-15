@@ -54,6 +54,7 @@ impl SqliteStateStore {
             "app_compose_pending",
             "app_compose_scales",
             "app_lifecycle",
+            "app_release_routing",
         ] {
             conn.execute(
                 &format!("DELETE FROM {table} WHERE app = ?1;"),
@@ -163,6 +164,45 @@ pub(super) fn upsert_app_on(
     config: &AppConfig,
     routes: &[String],
 ) -> Result<(), StateStoreError> {
+    let app = config.deployment_id();
+    // Capture the pre-upgrade native release before overwriting the registry.
+    // Existing release history is immutable until that version is deployed again.
+    let previous = conn.query_row(
+        "SELECT version, source_ip FROM apps WHERE name = ?1 AND environment = ?2
+         AND NOT EXISTS (SELECT 1 FROM app_release_routing WHERE app = ?3 AND version = apps.version)",
+        (&config.name, &config.environment, &app),
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    ).optional()?;
+    if let Some((version, source_ip)) = previous {
+        let mut statement = conn.prepare(
+            "SELECT route FROM app_routes WHERE name = ?1 AND environment = ?2 ORDER BY route",
+        )?;
+        let routes = statement
+            .query_map((&config.name, &config.environment), |row| row.get(0))?
+            .collect::<Result<Vec<String>, _>>()?;
+        super::release_routing::save_on(
+            conn,
+            &app,
+            &version,
+            &super::ReleaseRouting::new(
+                routes,
+                source_ip_from_str(&source_ip)?,
+                None,
+                &config.environment,
+            ),
+        )?;
+    }
+    super::release_routing::save_on(
+        conn,
+        &app,
+        &config.version,
+        &super::ReleaseRouting::new(
+            routes.to_vec(),
+            config.source_ip,
+            config.compose.as_ref(),
+            &config.environment,
+        ),
+    )?;
     conn.execute(
         "INSERT INTO apps (
             name, environment, version, min_instances, max_instances, source_ip

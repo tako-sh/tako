@@ -335,6 +335,20 @@ with os.fdopen(4"#,
             .collect::<Vec<_>>(),
         "starting a running app is idempotent"
     );
+    // A private successor leaves no current routes. Rollback must recover the
+    // target's committed bindings instead of reusing that empty route table.
+    let config = restored.config.read().clone();
+    restarted
+        .routes
+        .write()
+        .set_config_routes(&config, Vec::new());
+    restarted.state_store.upsert_app(&config, &[]).unwrap();
+    assert!(restarted.rollback_app(app_id, "v1").await.is_ok());
+    assert_eq!(restored.version(), "v1");
+    assert_eq!(
+        restarted.routes.read().routes_for_app(app_id),
+        ["v1.localhost"]
+    );
     restarted.app_manager.shutdown_all().await;
 }
 

@@ -426,8 +426,20 @@ async fn activate_after_readiness(
         }
         let mut s = state.lock().unwrap();
         let port = ports.values().next().copied().unwrap_or(0);
-        if let Some(app) = s.apps.get_mut(config_path) {
+        let hosts: Vec<_> = ports.keys().cloned().collect();
+        let old_hosts = if let Some(app) = s.apps.get_mut(config_path) {
             app.upstream_port = port;
+            std::mem::replace(&mut app.hosts, hosts.clone())
+        } else {
+            Vec::new()
+        };
+        if let Some(mdns) = &mut s.mdns {
+            for host in old_hosts {
+                mdns.unpublish(crate::route_pattern::split_route_pattern(&host).0);
+            }
+            for host in &hosts {
+                mdns.publish(crate::route_pattern::split_route_pattern(host).0);
+            }
         }
         s.routes.activate_compose(route_id, ports);
         return Ok(());

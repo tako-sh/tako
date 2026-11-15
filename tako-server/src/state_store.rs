@@ -8,13 +8,15 @@ mod device_key;
 mod drain;
 pub(crate) use drain::{DrainLease, wait_for_lease};
 mod encryption;
+mod release_routing;
 mod schema;
+pub(crate) use release_routing::ReleaseRouting;
 mod upgrade;
 
 pub(crate) use app_registry::load_persisted_releases_read_only;
 pub use device_key::load_or_create_device_key;
 
-pub const STATE_SCHEMA_VERSION: i32 = 13;
+pub const STATE_SCHEMA_VERSION: i32 = 14;
 
 #[derive(Debug, Clone)]
 pub struct PersistedApp {

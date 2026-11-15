@@ -136,6 +136,7 @@ impl AppManager {
     /// Caller must hold the app's lifecycle write guard.
     pub(crate) async fn stop_app_locked(&self, app: &Arc<App>) -> Result<(), InstanceError> {
         app.set_state(AppState::Stopped);
+        app.stop_compose_logs();
 
         let compose_config = app.config.read().clone();
         let compose = if compose_config.compose.is_some() {
@@ -175,6 +176,7 @@ impl AppManager {
 
         for (name, app) in apps {
             app.set_state(AppState::Stopped);
+            app.stop_compose_logs();
             for instance in app.get_instances() {
                 app.set_instance_state(&instance, InstanceState::Draining);
                 // Docker owns these processes across Tako server restarts.

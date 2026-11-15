@@ -206,11 +206,9 @@ async fn register_updated_app(
     let project_dir_display = ctx.project_dir.to_string_lossy();
     let reg_result =
         crate::dev_server_client::register_app(crate::dev_server_client::RegisterAppRequest {
-            compose: cfg
-                .compose
-                .as_ref()
-                .map(|c| c.for_development(&ctx.domain, ctx.base_domain.as_deref()))
-                .as_ref(),
+            compose: cfg.compose.as_ref(),
+            compose_default_host: Some(&ctx.domain),
+            compose_base_host: ctx.base_domain.as_deref(),
             config_path: &ctx.config_key,
             project_dir: &project_dir_display,
             app_name: &ctx.app_name,

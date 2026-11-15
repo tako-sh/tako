@@ -245,6 +245,54 @@ async fn compose_apps_route_independently_and_keep_redis_data_across_restart() {
         third["visits"].as_i64(),
         second["visits"].as_i64().map(|n| n + 1)
     );
+    // Restart reloads route metadata without requiring re-registration.
+    let yaml = project.path().join("compose.yaml");
+    let original = std::fs::read_to_string(&yaml).unwrap();
+    std::fs::write(
+        &yaml,
+        original.replace("api.shop.tako", "renamed.shop.tako"),
+    )
+    .unwrap();
+    let previous_pid = state.lock().unwrap().apps[&key].pid;
+    assert!(matches!(
+        request(
+            &state,
+            serde_json::json!({"type":"RestartApp","config_path":key})
+        )
+        .await,
+        Response::AppRestarting { .. }
+    ));
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let ready = {
+                let s = state.lock().unwrap();
+                s.apps[&key].pid.is_some()
+                    && s.apps[&key].pid != previous_pid
+                    && s.routes
+                        .lookup("renamed.shop.tako", "/visits")
+                        .is_some_and(|r| r.active)
+            };
+            if ready {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        state
+            .lock()
+            .unwrap()
+            .routes
+            .lookup("api.shop.tako", "/visits")
+            .is_none()
+    );
+    assert!(
+        state.lock().unwrap().apps[&key]
+            .hosts
+            .contains(&"renamed.shop.tako".to_string())
+    );
     crate::compose::stop_all(&state).await;
     kill_all_app_processes(&state);
     assert!(
@@ -255,4 +303,48 @@ async fn compose_apps_route_independently_and_keep_redis_data_across_restart() {
             .iter()
             .all(|service| service.state == "exited")
     );
+}
+
+#[test]
+fn compose_restart_reloads_tagged_apps_and_variant_routes() {
+    let project = tempfile::tempdir().unwrap();
+    let file = project.path().join("compose.yaml");
+    std::fs::write(
+        &file,
+        "services:\n  web:\n    image: busybox\n    x-tako: {}\n",
+    )
+    .unwrap();
+    let runtime = tako_compose::ComposeRuntime::development(
+        project.path().into(),
+        tako_compose::load_config(project.path(), "compose.yaml").unwrap(),
+        Default::default(),
+        "variant-test",
+    )
+    .unwrap()
+    .with_development_hosts("feature.shop.tako".into(), Some("shop.tako".into()));
+    std::fs::write(
+        &file,
+        r#"
+services:
+  web:
+    image: busybox
+  api:
+    image: busybox
+    x-tako:
+      envs:
+        development:
+          route: api.shop.tako
+  new:
+    image: busybox
+    x-tako: {}
+"#,
+    )
+    .unwrap();
+    let refreshed = runtime.reload_development().unwrap();
+    assert!(!refreshed.config.services.contains_key("web"));
+    assert_eq!(
+        refreshed.config.routes("development"),
+        ["api.feature.shop.tako", "new.feature.shop.tako"]
+    );
+    assert_eq!(refreshed.project, runtime.project);
 }

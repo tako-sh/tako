@@ -326,11 +326,20 @@ impl crate::ServerState {
             Ok(manifest) => manifest,
             Err(error) => return Response::error(error),
         };
+        let historical = match self.state_store.release_routing(app_name, version) {
+            Ok(value) => value,
+            Err(error) => {
+                return Response::error(format!("Failed to read release routes: {error}"));
+            }
+        };
         // Compose routes are part of the immutable service configuration. A
         // rollback restores those bindings, including a Docker-only group.
         let routes = match &target.compose {
             Some(compose) => compose.routes(&target.environment),
-            None => self.routes.read().routes_for_app(app_name),
+            None => historical
+                .as_ref()
+                .map(|routing| routing.routes.clone())
+                .unwrap_or_else(|| self.routes.read().routes_for_app(app_name)),
         };
         if routes.is_empty() && target.compose.is_none() {
             return Response::error(format!(
@@ -344,11 +353,14 @@ impl crate::ServerState {
                 return Response::error(format!("Failed to read SSL credentials: {error}"));
             }
         };
-        let source_ip = self
-            .app_manager
-            .get_app(app_name)
-            .map(|app| app.config.read().source_ip)
-            .unwrap_or_default();
+        let source_ip = historical
+            .map(|routing| routing.source_ip)
+            .unwrap_or_else(|| {
+                self.app_manager
+                    .get_app(app_name)
+                    .map(|app| app.config.read().source_ip)
+                    .unwrap_or_default()
+            });
 
         let target_path = target_path.to_string_lossy();
         let response = self

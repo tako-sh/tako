@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use crate::instances::{AppConfig, RollingUpdateConfig, RollingUpdater};
@@ -24,12 +24,11 @@ impl crate::ServerState {
             backup,
         } = request;
         let app_name = config.deployment_id();
-        if config
-            .compose
-            .as_ref()
-            .map(|c| c.routes(&config.environment))
-            .as_ref()
-            != Some(&routes)
+        if config.compose.as_ref().map(|c| {
+            c.routes(&config.environment)
+                .into_iter()
+                .collect::<BTreeSet<_>>()
+        }) != Some(routes.iter().cloned().collect())
         {
             return Response::error("Compose routes must match the service routes in the release");
         }
@@ -94,7 +93,7 @@ impl crate::ServerState {
                 instances.push(instance.clone());
                 self.app_manager
                     .spawner()
-                    .attach_compose(&app, instance, &runtime, web, rollout.containers())
+                    .attach_compose(&app, instance, &runtime, web)
                     .await
                     .map_err(|e| e.to_string())?;
             }
@@ -126,10 +125,7 @@ impl crate::ServerState {
             let mut recovery = rollout.rollback().await;
             if let Some((previous_config, previous_state)) = previous {
                 app.update_config(previous_config.clone());
-                if recovery.is_ok()
-                    && previous_config.compose.is_some()
-                    && !old_instances.is_empty()
-                {
+                if recovery.is_ok() && previous_config.compose.is_some() {
                     recovery = self
                         .app_manager
                         .spawner()
@@ -198,6 +194,9 @@ impl crate::ServerState {
             drains.spawn(async move { updater.drain_and_stop(&app, &old).await });
         }
         let mut cleanup_errors = Vec::new();
+        if let Err(error) = app.sync_compose_logs(&runtime, rollout.containers()).await {
+            cleanup_errors.push(error);
+        }
         while let Some(result) = drains.join_next().await {
             match result {
                 Ok(Ok(())) => {}
@@ -328,7 +327,7 @@ impl crate::ServerState {
         }
     }
 
-    async fn apply_compose_config(&self, config: AppConfig) -> Response {
+    pub(super) async fn apply_compose_config(&self, config: AppConfig) -> Response {
         let app = config.deployment_id();
         let bindings = (|| -> Result<_, crate::state_store::StateStoreError> {
             Ok((
