@@ -1,4 +1,5 @@
 //! Versioned encrypted values. Membership remains in its own immutable registry.
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -384,7 +385,7 @@ impl SecretRecord {
             &self.address,
             &self.id,
             recipient,
-            hex::encode(openssl::sha::sha256(&serde_json::to_vec(&self.value)?)),
+            hex::encode(Sha256::digest(&serde_json::to_vec(&self.value)?)),
         ))?)
     }
 

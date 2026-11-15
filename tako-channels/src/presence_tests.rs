@@ -4,6 +4,11 @@ use serde_json::json;
 #[test]
 fn presence_scopes_are_canonical_and_isolate_conversations() {
     use crate::presence_scope;
+    // Independent SHA-256 fixture for scopes persisted by older servers.
+    assert_eq!(
+        presence_scope("chat", &json!({"chatId":"one", "version":1})),
+        "4a993d692b9bc38ba09361b5eb92cd4b4e0f9ce543e6697f63d21cc2dd5991f5"
+    );
     assert_eq!(
         presence_scope("chat", &json!({"chatId":"one", "version":1})),
         presence_scope("chat", &json!({"version":1, "chatId":"one"}))

@@ -1,5 +1,6 @@
 use super::*;
 use crate::invitation::{ClaimInvitation, CreateInvitation};
+use subtle::ConstantTimeEq;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -151,9 +152,12 @@ impl<S: RegistryStore> ServerRuntime<S> {
             .optional()?;
         let mut invitation: StoredInvitation =
             serde_json::from_str(&payload.ok_or(RuntimeError::PendingUnavailable)?)?;
-        if !openssl::memcmp::eq(
-            claim.token.hash()?.as_bytes(),
-            invitation.grant.token_hash.as_bytes(),
+        if !bool::from(
+            claim
+                .token
+                .hash()?
+                .as_bytes()
+                .ct_eq(invitation.grant.token_hash.as_bytes()),
         ) {
             return Err(RuntimeError::Authentication);
         }

@@ -25,7 +25,7 @@ pub fn load_or_create_device_key(path: &Path) -> Result<[u8; 32], StateStoreErro
                 .map_err(|e| StateStoreError::Sqlite(format!("create key dir: {e}")))?;
         }
         let mut key = [0u8; 32];
-        openssl::rand::rand_bytes(&mut key)
+        getrandom::fill(&mut key)
             .map_err(|e| StateStoreError::Sqlite(format!("generate device key: {e}")))?;
         #[cfg(unix)]
         {

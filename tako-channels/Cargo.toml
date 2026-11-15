@@ -9,7 +9,9 @@ async-trait = "0.1"
 getrandom = "0.4"
 base64 = "0.23"
 bytes = "1"
-openssl.workspace = true
+sha1 = "0.11"
+sha2 = "0.11"
+subtle = "2.6"
 pingora-core = { version = "0.9", default-features = false, features = ["openssl"] }
 pingora-proxy = { version = "0.9", default-features = false, features = ["openssl"] }
 pingora-http = "0.9"

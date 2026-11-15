@@ -1,5 +1,6 @@
 use crate::{ChannelError, ChannelStore, ChannelWriter};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 pub const PRESENCE_CHANNEL_PREFIX: &str = "tako.presence:";
@@ -9,7 +10,7 @@ pub fn presence_scope(channel: &str, params: &serde_json::Value) -> String {
     let mut params = params.clone();
     params.sort_all_objects();
     let canonical = serde_json::json!([channel, params]).to_string();
-    openssl::sha::sha256(canonical.as_bytes())
+    Sha256::digest(canonical.as_bytes())
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()

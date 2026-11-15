@@ -129,7 +129,7 @@ version = "2.2.0"
 
 [dependencies.flate2]
 version = "1"
-features = ["zlib-ng"]
+features = ["zlib-rs"]
 default-features = false
 
 [dependencies.futures]

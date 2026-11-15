@@ -4,6 +4,7 @@ use crate::shared::{
     LegacySecretGrant, MAX_SHARED_RECORD_BYTES, SecretRecord, SharedSnapshot, SharedStore,
 };
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
 type RowKey = (String, String, String);
@@ -100,7 +101,7 @@ impl CorrosionStore {
         let mut statements = Vec::new();
         for record in &snapshot.secrets {
             let payload = serde_json::to_string(record)?;
-            let digest = hex::encode(openssl::sha::sha256(payload.as_bytes()));
+            let digest = hex::encode(Sha256::digest(payload.as_bytes()));
             let key = ("secret".to_string(), record.id.to_string(), digest);
             if !seen.contains(&key) {
                 statements.push(json!([
@@ -246,7 +247,7 @@ mod tests {
         assert!(SharedStore::append_secret(&mut store, &conflict).is_err());
         // Corrosion can merge two immutable payloads for one operation; fail closed.
         let payload = serde_json::to_string(&conflict).unwrap();
-        let digest = hex::encode(openssl::sha::sha256(payload.as_bytes()));
+        let digest = hex::encode(Sha256::digest(payload.as_bytes()));
         DB.with_borrow(|db| {
             db.execute(
                 "INSERT INTO tako_shared_records VALUES ('secret',?,?,?)",
@@ -316,9 +317,7 @@ mod tests {
             &record.address,
             &record.id,
             &recipient_id,
-            hex::encode(openssl::sha::sha256(
-                &serde_json::to_vec(&record.value).unwrap(),
-            )),
+            hex::encode(Sha256::digest(serde_json::to_vec(&record.value).unwrap())),
         ))
         .unwrap();
         let key = crate::sealed::SealedValue::seal(
@@ -330,7 +329,7 @@ mod tests {
         let grant =
             json!({"record": record.id, "issuer": id, "recipient": recipient_id, "key": key});
         let insert = |kind: &str, id: String, payload: String| {
-            let digest = hex::encode(openssl::sha::sha256(payload.as_bytes()));
+            let digest = hex::encode(Sha256::digest(payload.as_bytes()));
             DB.with_borrow(|db| {
                 db.execute(
                     "INSERT INTO tako_shared_records VALUES (?,?,?,?)",
@@ -369,9 +368,7 @@ mod tests {
                 &record.address,
                 &record.id,
                 &extra_id,
-                hex::encode(openssl::sha::sha256(
-                    &serde_json::to_vec(&record.value).unwrap(),
-                )),
+                hex::encode(Sha256::digest(serde_json::to_vec(&record.value).unwrap())),
             ))
             .unwrap();
             let key = crate::sealed::SealedValue::seal(

@@ -1,13 +1,10 @@
 use std::{fmt, net::Ipv6Addr, str::FromStr};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
-use openssl::{
-    derive::Deriver,
-    pkey::{Id, PKey},
-    sha::sha256,
-};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use ssh_key::rand_core::{OsRng, RngCore};
+use x25519_dalek::{PublicKey, StaticSecret};
 
 use crate::{Result, error::invalid};
 
@@ -84,11 +81,11 @@ impl NetworkId {
     pub fn address(&self, key: &WgPublicKey) -> Ipv6Addr {
         let mut network_input = b"tako-network-prefix-v1\0".to_vec();
         network_input.extend_from_slice(self.as_bytes());
-        let network_hash = sha256(&network_input);
+        let network_hash = Sha256::digest(&network_input);
         let mut host_input = b"tako-network-host-v1\0".to_vec();
         host_input.extend_from_slice(self.as_bytes());
         host_input.extend_from_slice(key.as_bytes());
-        let host_hash = sha256(&host_input);
+        let host_hash = Sha256::digest(&host_input);
         let mut bytes = [0; 16];
         bytes[0] = 0xfd;
         bytes[1..6].copy_from_slice(&network_hash[..5]);
@@ -109,13 +106,13 @@ impl DeviceId {
         bytes.push(kind.tag());
         bytes.extend_from_slice(&ssh.parsed()?.to_bytes()?);
         bytes.extend_from_slice(wg.as_bytes());
-        Ok(Self(sha256(&bytes)))
+        Ok(Self(Sha256::digest(&bytes).into()))
     }
 }
 
 impl KeyFingerprint {
     pub fn of_bytes(bytes: &[u8]) -> Self {
-        Self(sha256(bytes))
+        Self(Sha256::digest(bytes).into())
     }
 }
 
@@ -137,17 +134,9 @@ impl WgPublicKey {
         if bytes.iter().rev().cmp(prime.iter().rev()) != std::cmp::Ordering::Less {
             return Err(invalid("WG public key", "noncanonical X25519 coordinate"));
         }
-        let public = PKey::public_key_from_raw_bytes(&bytes, Id::X25519)?;
-        // A public, fixed scalar tests low-order points using OpenSSL's X25519 implementation.
-        let probe = PKey::private_key_from_raw_bytes(&[0x42; 32], Id::X25519)?;
-        let mut derive = Deriver::new(&probe)?;
-        derive
-            .set_peer(&public)
-            .map_err(|_| invalid("WG public key", "invalid X25519 point"))?;
-        let shared = derive
-            .derive_to_vec()
-            .map_err(|_| invalid("WG public key", "low-order X25519 point"))?;
-        if shared.iter().all(|b| *b == 0) {
+        // A public, fixed scalar rejects low-order points before accepting a key.
+        let shared = StaticSecret::from([0x42; 32]).diffie_hellman(&PublicKey::from(bytes));
+        if !shared.was_contributory() {
             return Err(invalid("WG public key", "low-order X25519 point"));
         }
         Ok(Self(bytes))

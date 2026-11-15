@@ -1,5 +1,6 @@
 //! Every runtime read passes through this monotonic guard, including reads
 //! inside handle/ACK. A preflight-only guard would miss rollback between reads.
+use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
     collections::BTreeSet,
@@ -47,15 +48,10 @@ impl<S: RegistryStore> MonotonicStore<S> {
 fn records(snapshot: &RegistrySnapshot) -> RuntimeResult<BTreeSet<[u8; 32]>> {
     let mut result = BTreeSet::new();
     for member in &snapshot.members {
-        result.insert(openssl::sha::sha256(&serde_json::to_vec(&(
-            "member", member,
-        ))?));
+        result.insert(Sha256::digest(&serde_json::to_vec(&("member", member))?).into());
     }
     for revocation in &snapshot.revocations {
-        result.insert(openssl::sha::sha256(&serde_json::to_vec(&(
-            "revocation",
-            revocation,
-        ))?));
+        result.insert(Sha256::digest(&serde_json::to_vec(&("revocation", revocation))?).into());
     }
     // ACKs are replaceable progress evidence. Corrosion may compact or omit
     // them; only immutable membership and denial facts are monotonic.

@@ -1,4 +1,5 @@
 //! Typed access to the authenticated, local Corrosion 1.0 HTTP API.
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     io::{Read, Write},
@@ -258,7 +259,7 @@ impl CorrosionStore {
         if payload.len() > record_limit(kind) {
             return Err(RuntimeError::Capacity("registry record"));
         }
-        let digest = hex::encode(openssl::sha::sha256(payload.as_bytes()));
+        let digest = hex::encode(Sha256::digest(payload.as_bytes()));
         let body = json!([[
             "INSERT OR IGNORE INTO tako_network_records (kind, record_id, digest, payload) VALUES (?, ?, ?, ?)",
             [kind, id, digest, payload]
@@ -347,7 +348,7 @@ impl RegistryStore for CorrosionStore {
             return Err(RuntimeError::Invalid("ACK target or server"));
         }
         let payload = serde_json::to_string(ack)?;
-        let digest = hex::encode(openssl::sha::sha256(payload.as_bytes()));
+        let digest = hex::encode(Sha256::digest(payload.as_bytes()));
         let id = ack_id(ack);
         if self
             .record::<Ack>("ack", &id)?
@@ -473,7 +474,7 @@ pub(crate) fn record_payload(row: &[Value]) -> RuntimeResult<&str> {
     if payload.len() > record_limit(row[0].as_str().unwrap_or_default()) {
         return Err(RuntimeError::Capacity("registry stored record"));
     }
-    if row[2].as_str() != Some(&hex::encode(openssl::sha::sha256(payload.as_bytes()))) {
+    if row[2].as_str() != Some(&hex::encode(Sha256::digest(payload.as_bytes()))) {
         return Err(RuntimeError::Corrosion("payload digest mismatch"));
     }
     Ok(payload)
@@ -659,7 +660,7 @@ mod tests {
         vec![
             json!(kind),
             json!(id),
-            json!(hex::encode(openssl::sha::sha256(payload.as_bytes()))),
+            json!(hex::encode(Sha256::digest(payload.as_bytes()))),
             json!(payload),
         ]
     }
@@ -723,7 +724,7 @@ mod tests {
                 rusqlite::params![
                     "member",
                     "same-id",
-                    hex::encode(openssl::sha::sha256(payload.as_bytes())),
+                    hex::encode(Sha256::digest(payload.as_bytes())),
                     payload
                 ],
             )

@@ -1,15 +1,14 @@
 //! X25519 / HKDF-SHA256 / AES-256-GCM envelopes for network secret keys.
 //! This is separate from SSH and WireGuard, with a fixed domain and caller AAD.
-use base64::{Engine, engine::general_purpose::STANDARD};
-use openssl::{
-    derive::Deriver,
-    md::Md,
-    pkey::{Id, PKey, Private},
-    pkey_ctx::PkeyCtx,
-    rand::rand_bytes,
-    symm::{Cipher, decrypt_aead, encrypt_aead},
+use aes_gcm::{
+    Aes256Gcm, Nonce,
+    aead::{Aead, KeyInit, Payload},
 };
+use base64::{Engine, engine::general_purpose::STANDARD};
+use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
+use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroizing;
 
 use crate::{EncryptionPublicKey, LocalDeviceKeys, Result, error::invalid};
@@ -47,7 +46,7 @@ fn decode(value: &str, max: usize) -> Result<Vec<u8>> {
 
 pub fn random_content_key() -> Result<Zeroizing<[u8; 32]>> {
     let mut key = Zeroizing::new([0; 32]);
-    rand_bytes(key.as_mut())?;
+    getrandom::fill(key.as_mut()).map_err(|_| invalid("randomness", "OS entropy unavailable"))?;
     Ok(key)
 }
 
@@ -57,16 +56,18 @@ impl Ciphertext {
             return Err(invalid("encrypted value", "too large"));
         }
         let mut nonce = [0; 12];
-        rand_bytes(&mut nonce)?;
-        let mut tag = [0; 16];
-        let value = encrypt_aead(
-            Cipher::aes_256_gcm(),
-            key,
-            Some(&nonce),
-            context,
-            plaintext,
-            &mut tag,
-        )?;
+        getrandom::fill(&mut nonce).map_err(|_| invalid("randomness", "OS entropy unavailable"))?;
+        let encrypted = Aes256Gcm::new(key.into())
+            .encrypt(
+                &Nonce::from(nonce),
+                Payload {
+                    msg: plaintext,
+                    aad: context,
+                },
+            )
+            .map_err(|_| invalid("encrypted value", "encryption failed"))?;
+        // The wire envelope stores the tag separately; RustCrypto appends it.
+        let (value, tag) = encrypted.split_at(encrypted.len() - 16);
         Ok(Self {
             nonce: STANDARD.encode(nonce),
             value: STANDARD.encode(value),
@@ -87,21 +88,25 @@ impl Ciphertext {
         if context.len() > 4096 {
             return Err(invalid("encrypted value", "context too large"));
         }
-        decrypt_aead(
-            Cipher::aes_256_gcm(),
-            key,
-            Some(&decode(&self.nonce, 12)?),
-            context,
-            &decode(&self.value, MAX_SECRET_BYTES)?,
-            &decode(&self.tag, 16)?,
-        )
-        .map(Zeroizing::new)
-        .map_err(|_| invalid("encrypted value", "authentication failed"))
+        let nonce = Nonce::try_from(decode(&self.nonce, 12)?.as_slice())
+            .map_err(|_| invalid("encrypted value", "invalid nonce"))?;
+        let mut encrypted = decode(&self.value, MAX_SECRET_BYTES)?;
+        encrypted.extend_from_slice(&decode(&self.tag, 16)?);
+        Aes256Gcm::new(key.into())
+            .decrypt(
+                &nonce,
+                Payload {
+                    msg: &encrypted,
+                    aad: context,
+                },
+            )
+            .map(Zeroizing::new)
+            .map_err(|_| invalid("encrypted value", "authentication failed"))
     }
 }
 
 fn derive_key(
-    private: &PKey<Private>,
+    private: &StaticSecret,
     peer: &EncryptionPublicKey,
     ephemeral: &EncryptionPublicKey,
     recipient: &EncryptionPublicKey,
@@ -110,11 +115,8 @@ fn derive_key(
     if context.len() > 4096 {
         return Err(invalid("secret envelope", "context too large"));
     }
-    let public = PKey::public_key_from_raw_bytes(peer.as_bytes(), Id::X25519)?;
-    let mut derive = Deriver::new(private)?;
-    derive.set_peer(&public)?;
-    let shared = Zeroizing::new(derive.derive_to_vec()?);
-    if shared.iter().all(|byte| *byte == 0) {
+    let shared = private.diffie_hellman(&PublicKey::from(*peer.as_bytes()));
+    if !shared.was_contributory() {
         return Err(invalid("secret envelope", "invalid shared key"));
     }
     let mut info = DOMAIN.to_vec();
@@ -122,26 +124,17 @@ fn derive_key(
     info.extend_from_slice(recipient.as_bytes());
     info.extend_from_slice(&(context.len() as u64).to_be_bytes());
     info.extend_from_slice(context);
-    let mut kdf = PkeyCtx::new_id(Id::HKDF)?;
-    kdf.derive_init()?;
-    kdf.set_hkdf_md(Md::sha256())?;
-    kdf.set_hkdf_salt(DOMAIN)?;
-    kdf.set_hkdf_key(&shared)?;
-    kdf.add_hkdf_info(&info)?;
     let mut key = Zeroizing::new([0; 32]);
-    kdf.derive(Some(key.as_mut()))?;
+    Hkdf::<Sha256>::new(Some(DOMAIN), shared.as_bytes())
+        .expand(&info, key.as_mut())
+        .expect("32 bytes is a valid HKDF-SHA256 output length");
     Ok(key)
 }
 
 impl SealedValue {
     pub fn seal(recipient: &EncryptionPublicKey, plaintext: &[u8], context: &[u8]) -> Result<Self> {
-        let ephemeral = PKey::generate_x25519()?;
-        let public = EncryptionPublicKey::from_bytes(
-            ephemeral
-                .raw_public_key()?
-                .try_into()
-                .map_err(|_| invalid("secret envelope", "invalid ephemeral key"))?,
-        )?;
+        let ephemeral = crate::keys::new_x25519_secret()?;
+        let public = EncryptionPublicKey::from_bytes(PublicKey::from(&ephemeral).to_bytes())?;
         let key = derive_key(&ephemeral, recipient, &public, recipient, context)?;
         Ok(Self {
             ephemeral: public,
@@ -165,6 +158,81 @@ impl SealedValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn envelopes_interoperate_with_openssl() {
+        use openssl::{
+            derive::Deriver,
+            md::Md,
+            pkey::{Id, PKey},
+            pkey_ctx::PkeyCtx,
+            symm::{Cipher, decrypt_aead, encrypt_aead},
+        };
+
+        let keys = LocalDeviceKeys::generate().unwrap();
+        let recipient = keys.encryption_public_key().unwrap();
+        let context = b"network/app/production/API_KEY/revision";
+        for plaintext in [Vec::new(), b"secret".to_vec(), vec![0x83; MAX_SECRET_BYTES]] {
+            let sealed = SealedValue::seal(&recipient, &plaintext, context).unwrap();
+            // Derive the key independently with the previous implementation.
+            let private =
+                PKey::private_key_from_raw_bytes(keys.encryption.as_bytes(), Id::X25519).unwrap();
+            let peer =
+                PKey::public_key_from_raw_bytes(sealed.ephemeral.as_bytes(), Id::X25519).unwrap();
+            let mut derive = Deriver::new(&private).unwrap();
+            derive.set_peer(&peer).unwrap();
+            let shared = Zeroizing::new(derive.derive_to_vec().unwrap());
+            let mut info = b"tako-network-secret-envelope-v1\0".to_vec();
+            info.extend_from_slice(sealed.ephemeral.as_bytes());
+            info.extend_from_slice(recipient.as_bytes());
+            info.extend_from_slice(&(context.len() as u64).to_be_bytes());
+            info.extend_from_slice(context);
+            let mut kdf = PkeyCtx::new_id(Id::HKDF).unwrap();
+            kdf.derive_init().unwrap();
+            kdf.set_hkdf_md(Md::sha256()).unwrap();
+            kdf.set_hkdf_salt(b"tako-network-secret-envelope-v1\0")
+                .unwrap();
+            kdf.set_hkdf_key(&shared).unwrap();
+            kdf.add_hkdf_info(&info).unwrap();
+            let mut key = Zeroizing::new([0; 32]);
+            kdf.derive(Some(key.as_mut())).unwrap();
+            let nonce = STANDARD.decode(&sealed.ciphertext.nonce).unwrap();
+            let ciphertext = STANDARD.decode(&sealed.ciphertext.value).unwrap();
+            let tag = STANDARD.decode(&sealed.ciphertext.tag).unwrap();
+            assert_eq!(
+                decrypt_aead(
+                    Cipher::aes_256_gcm(),
+                    key.as_slice(),
+                    Some(&nonce),
+                    context,
+                    &ciphertext,
+                    &tag
+                )
+                .unwrap(),
+                plaintext
+            );
+
+            let mut tag = [0; 16];
+            let value = encrypt_aead(
+                Cipher::aes_256_gcm(),
+                key.as_slice(),
+                Some(&nonce),
+                context,
+                &plaintext,
+                &mut tag,
+            )
+            .unwrap();
+            let legacy = SealedValue {
+                ephemeral: sealed.ephemeral,
+                ciphertext: Ciphertext {
+                    nonce: STANDARD.encode(nonce),
+                    value: STANDARD.encode(value),
+                    tag: STANDARD.encode(tag),
+                },
+            };
+            assert_eq!(*legacy.open(&keys, context).unwrap(), plaintext);
+        }
+    }
 
     #[test]
     fn envelope_binds_recipient_context_and_every_ciphertext_component() {

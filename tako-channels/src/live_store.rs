@@ -207,7 +207,8 @@ pub async fn internal_store_json(
         .get("x-tako-internal-token")
         .and_then(|header| header.to_str().ok())
         .is_some_and(|echo| {
-            echo.len() == token.len() && openssl::memcmp::eq(echo.as_bytes(), token.as_bytes())
+            use subtle::ConstantTimeEq;
+            bool::from(echo.as_bytes().ct_eq(token.as_bytes()))
         });
     if token.is_empty() || !valid_response_token {
         return Err(ChannelError::AuthUnavailable);
