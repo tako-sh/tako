@@ -1,4 +1,5 @@
-//! Lossy WebP encoding through the statically linked, vendored libwebp.
+//! Lossy WebP encoding and animated WebP decoding through the statically
+//! linked, vendored libwebp.
 
 use super::{Decoded, Layout, Raster};
 use crate::ImageError;
@@ -107,6 +108,83 @@ fn ensure_alpha_flag(bytes: &mut [u8]) -> Result<(), ImageError> {
     Ok(())
 }
 
+/// Decodes every frame of an animated WebP with libwebp's reference
+/// `WebPAnimDecoder`, which composites onto an RGBA canvas and clears disposed
+/// rectangles to transparent. The caller has already bounded `width`,
+/// `height` and `frame_count` from the headers.
+pub(super) fn decode_animation(
+    source: &[u8],
+    width: u32,
+    height: u32,
+    frame_count: u32,
+) -> Result<Decoded, ImageError> {
+    let mut options = std::mem::MaybeUninit::<sys::WebPAnimDecoderOptions>::uninit();
+    // SAFETY: the init function fully initializes `options` when it succeeds.
+    let mut options = unsafe {
+        if sys::WebPAnimDecoderOptionsInit(options.as_mut_ptr()) == 0 {
+            return Err(ImageError::TransformFailed);
+        }
+        options.assume_init()
+    };
+    options.color_mode = sys::WEBP_CSP_MODE::MODE_RGBA;
+    options.use_threads = 0;
+
+    let data = sys::WebPData {
+        bytes: source.as_ptr(),
+        size: source.len(),
+    };
+    let decoder = AnimDecoder::new(&data, &options)?;
+    let mut info = sys::WebPAnimInfo::default();
+    // SAFETY: `decoder.0` is live and `info` is writable.
+    if unsafe { sys::WebPAnimDecoderGetInfo(decoder.0, &mut info) } == 0 {
+        return Err(ImageError::TransformFailed);
+    }
+    // Trust only what the header check already bounded.
+    if (info.canvas_width, info.canvas_height, info.frame_count) != (width, height, frame_count) {
+        return Err(ImageError::TransformFailed);
+    }
+
+    let frame_bytes = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or(ImageError::ImageTooLarge)?;
+    let mut frames = Vec::with_capacity(frame_count as usize);
+    let mut delays_ms = Vec::with_capacity(frame_count as usize);
+    let mut previous_timestamp: c_int = 0;
+    // SAFETY: `decoder.0` stays live for the loop; each canvas pointer
+    // returned by GetNext is valid for `frame_bytes` bytes until the next call,
+    // and is copied before then. `source` outlives the decoder.
+    unsafe {
+        while sys::WebPAnimDecoderHasMoreFrames(decoder.0) != 0 {
+            if frames.len() == frame_count as usize {
+                return Err(ImageError::TransformFailed);
+            }
+            let mut canvas: *mut u8 = std::ptr::null_mut();
+            let mut timestamp: c_int = 0;
+            if sys::WebPAnimDecoderGetNext(decoder.0, &mut canvas, &mut timestamp) == 0
+                || canvas.is_null()
+            {
+                return Err(ImageError::TransformFailed);
+            }
+            let pixels = std::slice::from_raw_parts(canvas, frame_bytes).to_vec();
+            // Timestamps mark each frame's end; durations are the deltas.
+            let delay = timestamp.saturating_sub(previous_timestamp).max(0);
+            previous_timestamp = timestamp;
+            delays_ms.push(u32::try_from(delay).map_err(|_| ImageError::TransformFailed)?);
+            frames.push(Raster::new(width, height, Layout::Rgba, pixels)?);
+        }
+    }
+    if frames.len() != frame_count as usize {
+        return Err(ImageError::TransformFailed);
+    }
+
+    Ok(Decoded {
+        frames,
+        delays_ms,
+        loop_count: u16::try_from(info.loop_count).unwrap_or(u16::MAX),
+    })
+}
+
 fn lossy_config(quality: u8) -> Result<sys::WebPConfig, ImageError> {
     let mut config = std::mem::MaybeUninit::<sys::WebPConfig>::uninit();
     // SAFETY: the init function fully initializes `config` when it succeeds.
@@ -197,6 +275,31 @@ impl Drop for MemoryWriter {
     fn drop(&mut self) {
         // SAFETY: releases the buffer allocated by WebPMemoryWrite.
         unsafe { sys::WebPMemoryWriterClear(&mut self.0) }
+    }
+}
+
+struct AnimDecoder(*mut sys::WebPAnimDecoder);
+
+impl AnimDecoder {
+    fn new(
+        data: &sys::WebPData,
+        options: &sys::WebPAnimDecoderOptions,
+    ) -> Result<Self, ImageError> {
+        // SAFETY: `data` points at bytes that outlive the decoder (the caller
+        // keeps the source borrowed); null means invalid input or OOM.
+        let raw = unsafe { sys::WebPAnimDecoderNew(data, options) };
+        if raw.is_null() {
+            Err(ImageError::TransformFailed)
+        } else {
+            Ok(Self(raw))
+        }
+    }
+}
+
+impl Drop for AnimDecoder {
+    fn drop(&mut self) {
+        // SAFETY: `self.0` came from WebPAnimDecoderNew and is deleted once.
+        unsafe { sys::WebPAnimDecoderDelete(self.0) }
     }
 }
 

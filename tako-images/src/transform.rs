@@ -353,6 +353,20 @@ fn crop_raster(
     Raster::new(width, height, raster.layout, data)
 }
 
+/// Decodes an animated WebP with libwebp's reference decoder for tests:
+/// returns each composited RGBA frame and its duration in milliseconds.
+#[cfg(test)]
+pub(crate) fn decode_webp_animation_frames(
+    bytes: &[u8],
+) -> Result<(Vec<Vec<u8>>, Vec<u32>), ImageError> {
+    let decoder = image_webp::WebPDecoder::new(std::io::Cursor::new(bytes))
+        .map_err(|_| ImageError::TransformFailed)?;
+    let (width, height) = decoder.dimensions();
+    let decoded = webp::decode_animation(bytes, width, height, decoder.num_frames())?;
+    let frames = decoded.frames.into_iter().map(|frame| frame.data).collect();
+    Ok((frames, decoded.delays_ms))
+}
+
 fn output_format_for_image(image: &Decoded, requested: OutputFormat) -> OutputFormat {
     // Browser-timed AVIF animation is not produced; animated sources keep
     // their animation as WebP instead.

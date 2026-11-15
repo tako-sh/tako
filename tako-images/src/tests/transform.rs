@@ -391,6 +391,39 @@ fn rejects_content_type_spoofed_unsupported_bytes() {
 }
 
 #[test]
+fn decodes_ycck_jpeg_colors_without_inversion() {
+    let source = BASE64_STANDARD
+        .decode(super::JPEG_YCCK_32X16)
+        .expect("decode jpeg");
+
+    let transformed = transform_image(
+        &source,
+        Some("image/jpeg"),
+        transform_options(OutputFormat::Webp, 32, 95),
+        &TransformLimits::default(),
+    )
+    .expect("transform image");
+
+    let decoded = image::load_from_memory_with_format(&transformed.bytes, ImageFormat::WebP)
+        .expect("decode webp")
+        .into_rgb8();
+    let close = |pixel: &Rgb<u8>, expected: [u8; 3]| {
+        pixel
+            .0
+            .iter()
+            .zip(expected)
+            .all(|(actual, expected)| actual.abs_diff(expected) <= 20)
+    };
+    let light = decoded.get_pixel(4, 8);
+    let dark = decoded.get_pixel(27, 8);
+    assert!(
+        close(light, [250, 225, 150]),
+        "light half decoded as {light:?}"
+    );
+    assert!(close(dark, [20, 40, 120]), "dark half decoded as {dark:?}");
+}
+
+#[test]
 fn applies_exif_orientation_when_no_resize_needed() {
     let img = ImageBuffer::from_fn(32, 16, |_x, _y| Rgb([255_u8, 0, 0]));
     let mut source = Cursor::new(Vec::new());
@@ -583,8 +616,9 @@ fn keeps_transparent_canvas_in_animated_webp() {
 
 #[test]
 fn disposes_animated_webp_frames_to_background() {
-    // Regression: image-webp ignored dispose-to-background unless a
-    // background color was set, so earlier frames ghosted into later ones.
+    // Regression: earlier frames ghosted into later ones, and then the
+    // disposed area turned opaque black because this fixture leaves the VP8X
+    // alpha flag unset. libwebp and browsers clear it to transparent.
     let source = BASE64_STANDARD
         .decode(super::WEBP_ANIMATION_DISPOSE_BACKGROUND)
         .expect("decode webp");
@@ -615,6 +649,14 @@ fn disposes_animated_webp_frames_to_background() {
             "frame {index} still shows the disposed rectangle"
         );
     }
+    assert!(animation.has_alpha, "disposed canvas lost its transparency");
+    for (index, frame) in animation.frames.iter().enumerate() {
+        let corner_alpha = frame[3];
+        assert_eq!(corner_alpha, 0, "frame {index} corner is not transparent");
+    }
+    // The second frame disposed the first frame's rectangle.
+    let disposed_alpha = animation.frames[1][(20 * 64 + 12) * 4 + 3];
+    assert_eq!(disposed_alpha, 0, "disposed rectangle is not transparent");
 }
 
 #[test]
@@ -891,29 +933,17 @@ struct WebpAnimation {
 }
 
 fn decode_webp_animation(bytes: &[u8]) -> WebpAnimation {
-    let mut decoder = image_webp::WebPDecoder::new(Cursor::new(bytes)).expect("parse webp");
+    let decoder = image_webp::WebPDecoder::new(Cursor::new(bytes)).expect("parse webp");
     assert!(decoder.is_animated(), "expected an animated WebP");
     let (width, height) = decoder.dimensions();
-    let has_alpha = decoder.has_alpha();
-    let loop_count = decoder.loop_count();
-    let mut delays_ms = Vec::new();
-    let mut frames = Vec::new();
-    for _ in 0..decoder.num_frames() {
-        let mut buffer = vec![0; decoder.output_buffer_size().expect("buffer size")];
-        delays_ms.push(decoder.read_frame(&mut buffer).expect("decode frame"));
-        if !has_alpha {
-            buffer = buffer
-                .chunks_exact(3)
-                .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255])
-                .collect();
-        }
-        frames.push(buffer);
-    }
+    // Composite with libwebp's reference decoder, as browsers do.
+    let (frames, delays_ms) =
+        crate::transform::decode_webp_animation_frames(bytes).expect("decode animation");
     WebpAnimation {
         width,
         height,
-        has_alpha,
-        loop_count,
+        has_alpha: decoder.has_alpha(),
+        loop_count: decoder.loop_count(),
         delays_ms,
         frames,
     }

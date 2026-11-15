@@ -1,5 +1,5 @@
 use super::{
-    Decoded, Layout, Raster, SourceFormat, TransformLimits, avif, enforce_dimension_limits,
+    Decoded, Layout, Raster, SourceFormat, TransformLimits, avif, enforce_dimension_limits, webp,
 };
 use crate::ImageError;
 use image::codecs::gif::GifDecoder;
@@ -125,46 +125,39 @@ fn decode_webp(source: &[u8], limits: &TransformLimits) -> Result<Decoded, Image
         return decode_still(decoder, Some(orientation), limits).map(Decoded::still);
     }
 
+    // Header dimensions and frame count bound the work before decoding.
     let (width, height) = decoder.dimensions();
     let frame_count = decoder.num_frames();
     enforce_dimension_limits(width, height, frame_count, limits)?;
-    decoder.set_memory_limit(memory_limit(limits));
-    // image-webp skips "dispose to background" unless a background is set.
-    // Dispose to transparent, as libwebp and browsers do.
-    decoder
-        .set_background_color([0, 0, 0, 0])
-        .map_err(|_| ImageError::TransformFailed)?;
-    let layout = if decoder.has_alpha() {
-        Layout::Rgba
-    } else {
-        Layout::Rgb
-    };
-    let frame_bytes = decoder
-        .output_buffer_size()
-        .ok_or(ImageError::ImageTooLarge)?;
 
-    let mut frames = Vec::with_capacity(frame_count as usize);
-    let mut delays_ms = Vec::with_capacity(frame_count as usize);
-    for _ in 0..frame_count {
-        let mut buffer = vec![0; frame_bytes];
-        let delay = decoder
-            .read_frame(&mut buffer)
-            .map_err(|_| ImageError::TransformFailed)?;
-        delays_ms.push(delay);
-        let frame = Raster::new(width, height, layout, buffer)?;
-        // Animated files may carry EXIF too; orient every frame like stills.
-        frames.push(orient_raster(frame, orientation)?);
+    // libwebp's reference animation decoder composites frames onto an RGBA
+    // canvas and clears disposed areas to transparent, as browsers do, even
+    // when the VP8X alpha flag is unset (image-webp drops that alpha).
+    let mut animation = webp::decode_animation(source, width, height, frame_count)?;
+    // Most animations are opaque; RGB lightens resize and encode work.
+    let opaque = !animation.frames.iter().any(Raster::has_transparency);
+    animation.frames = animation
+        .frames
+        .into_iter()
+        .map(|frame| {
+            let frame = if opaque { drop_alpha(frame)? } else { frame };
+            // Animated files may carry EXIF too; orient every frame like stills.
+            orient_raster(frame, orientation)
+        })
+        .collect::<Result<_, _>>()?;
+    Ok(animation)
+}
+
+fn drop_alpha(raster: Raster) -> Result<Raster, ImageError> {
+    if raster.layout == Layout::Rgb {
+        return Ok(raster);
     }
-
-    let loop_count = match decoder.loop_count() {
-        image_webp::LoopCount::Forever => 0,
-        image_webp::LoopCount::Times(times) => times.get(),
-    };
-    Ok(Decoded {
-        frames,
-        delays_ms,
-        loop_count,
-    })
+    let data = raster
+        .data
+        .chunks_exact(4)
+        .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
+        .collect();
+    Raster::new(raster.width, raster.height, Layout::Rgb, data)
 }
 
 /// Reads the EXIF orientation of a still or animated WebP. The WebP spec stores

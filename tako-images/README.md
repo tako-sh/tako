@@ -6,7 +6,7 @@ This crate owns the compact path-based signed image URL contract, validation rul
 
 ## Pipeline
 
-- Decoding: `image` for JPEG, PNG, and still WebP; `image`'s GIF animation adapter for frame composition and disposal; `image-webp` for animated WebP; statically linked libavif + dav1d for AVIF, including grids, clean aperture, `irot`, and `imir`. Animated AVIF sources decode their first frame.
+- Decoding: `image` for JPEG, PNG, and still WebP; `image`'s GIF animation adapter for frame composition and disposal; libwebp's reference `WebPAnimDecoder` for animated WebP (disposed areas clear to transparent, as in browsers); statically linked libavif + dav1d for AVIF, including grids, clean aperture, `irot`, and `imir`. Animated AVIF sources decode their first frame.
 - Resizing: `fast_image_resize` Lanczos3 in sRGB sample space, premultiplying alpha so transparent pixels do not bleed into edges.
 - Cropping: center crops, or an attention-based smart crop that scores edges, saturated color, and skin tones. Animations use one crop window for every frame.
 - Encoding: statically linked libwebp for lossy still and animated WebP (photo preset, method 4, sharp YUV, alpha quality equal to quality); `ravif` (rav1e, speed 6, one thread) for AVIF.
