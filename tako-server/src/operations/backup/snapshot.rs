@@ -786,6 +786,12 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    /// Deterministic 32-byte fixture key (`seed ^ index`), matching the
+    /// length of production keys from `database_digest_key`.
+    fn fixture_digest_key(seed: u8) -> [u8; 32] {
+        std::array::from_fn(|index| seed ^ index as u8)
+    }
+
     #[test]
     fn backup_digest_preserves_the_existing_hmac_format() {
         let temp = TempDir::new().unwrap();
@@ -798,18 +804,20 @@ mod tests {
             std::fs::write(path, bytes).unwrap();
         }
         std::fs::write(temp.path().join("app/ignored.txt"), b"not a database").unwrap();
-        let digest = database_digest(temp.path(), b"backup-key").unwrap();
+        let digest = database_digest(temp.path(), &fixture_digest_key(0x5c)).unwrap();
         // Generated independently with Python's hmac/hashlib over the legacy framing.
         assert_eq!(
             digest.hex,
-            "975258ba7757ae68178b4e29ae778234338203dd922c76e3c47399e6f8e87ca3"
+            "594bddf217edb7d2107cd70e6478b90cc70003c36497e9dbcfaedb1ea1b23655"
         );
         assert_eq!(
             digest.databases,
             vec![PathBuf::from("app/a.db"), PathBuf::from("tako/z.db")]
         );
         assert_ne!(
-            database_digest(temp.path(), b"other-key").unwrap().hex,
+            database_digest(temp.path(), &fixture_digest_key(0x36))
+                .unwrap()
+                .hex,
             digest.hex
         );
     }
