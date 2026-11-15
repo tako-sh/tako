@@ -369,6 +369,11 @@ fn default_ssl_is_allowed_only_after_provisioning_and_a_successful_state_read() 
     let scope: AppEnv = "demo/production".parse().unwrap();
     let release = dir.path().join("apps/demo/production/releases/v1");
     std::fs::create_dir_all(&release).unwrap();
+    std::fs::write(
+        release.join("app.json"),
+        r#"{"protocol_version":0,"idle_timeout":300,"environment":"production"}"#,
+    )
+    .unwrap();
     let routes = vec!["demo.example".into()];
     let command = Command::Deploy {
         app: scope.as_str().to_owned(),
@@ -411,6 +416,11 @@ async fn policy_reads_bindings_after_acquiring_the_dispatch_guard() {
     let (dir, state) = state();
     let release = dir.path().join("apps/demo/production/releases/v1");
     std::fs::create_dir_all(&release).unwrap();
+    std::fs::write(
+        release.join("app.json"),
+        r#"{"protocol_version":0,"idle_timeout":300,"environment":"production"}"#,
+    )
+    .unwrap();
     let config = crate::instances::AppConfig {
         name: "demo".into(),
         environment: "production".into(),
@@ -606,6 +616,7 @@ async fn queued_request_checks_authority_only_after_dispatch_lock() {
     // Mutations queue behind the lock; inspection is dispatched immediately.
     let body = serde_json::to_vec(&Command::Stop {
         app: "demo/production".into(),
+        service: None,
     })
     .unwrap();
     let signed = rpc(&body, None);
@@ -693,6 +704,11 @@ fn scoped_deploy_preserves_backup_without_disclosing_keys_to_client() {
     let scope: AppEnv = "demo/production".parse().unwrap();
     let release = dir.path().join("apps/demo/production/releases/v1");
     std::fs::create_dir_all(&release).unwrap();
+    std::fs::write(
+        release.join("app.json"),
+        r#"{"protocol_version":0,"idle_timeout":300,"environment":"production"}"#,
+    )
+    .unwrap();
     let routes = vec!["demo.example".into()];
     state
         .state_store
@@ -749,4 +765,101 @@ fn scoped_deploy_preserves_backup_without_disclosing_keys_to_client() {
     };
     inherit_scoped_backup(&state, &admin, Some(&scope), &mut command).unwrap();
     assert!(matches!(command, Command::Deploy { backup: None, .. }));
+}
+
+#[test]
+fn scoped_compose_deploy_and_rollback_cannot_claim_routes_or_change_source_ip_trust() {
+    let (dir, state) = state();
+    let scope: AppEnv = "demo/production".parse().unwrap();
+    let routes = vec!["demo.example".to_string()];
+    let current = crate::instances::AppConfig {
+        name: "demo".into(),
+        environment: "production".into(),
+        version: "v1".into(),
+        ..Default::default()
+    };
+    state.state_store.upsert_app(&current, &routes).unwrap();
+    let release = crate::release::app_release_root(dir.path(), scope.as_str(), "uploaded");
+    std::fs::create_dir_all(&release).unwrap();
+    let rollback = Command::Rollback {
+        app: scope.as_str().into(),
+        version: "uploaded".into(),
+    };
+    let deploy = Command::Deploy {
+        app: scope.as_str().into(),
+        version: "uploaded".into(),
+        path: release.to_string_lossy().into(),
+        routes: routes.clone(),
+        source_ip: Default::default(),
+        ssl: Default::default(),
+        secrets: None,
+        runtime_credentials: None,
+        storages: None,
+        backup: None,
+        force: false,
+    };
+    let admin = Permissions {
+        server_admin: true,
+        ..Default::default()
+    };
+    for (route, source_ip, allowed) in [
+        ("demo.example", "auto", true),
+        ("victim.example", "auto", false),
+        ("demo.example", "trusted-proxy", false),
+    ] {
+        std::fs::write(release.join("app.json"), serde_json::json!({
+            "protocol_version":0, "idle_timeout":300, "environment":"production", "release_kind":"compose",
+            "compose":{"file":"compose.yaml", "services":{"web":{"envs":{"production":{"route":route,"source_ip":source_ip}}}}}
+        }).to_string()).unwrap();
+        for command in [&rollback, &deploy] {
+            assert_eq!(
+                authorize_command(&state, &scoped(), Some(&scope), command).is_ok(),
+                allowed
+            );
+            assert!(authorize_command(&state, &admin, Some(&scope), command).is_ok());
+        }
+    }
+    // The handler activates the deployment's environment, so a manifest that
+    // claims another environment cannot hide a production policy change.
+    std::fs::write(release.join("app.json"), serde_json::json!({
+        "protocol_version":0, "idle_timeout":300, "environment":"staging", "release_kind":"compose",
+        "compose":{"file":"compose.yaml", "services":{"web":{"envs":{
+            "staging":{"route":"demo.example"},
+            "production":{"route":"demo.example","source_ip":"trusted-proxy"}
+        }}}}
+    }).to_string()).unwrap();
+    for command in [&rollback, &deploy] {
+        assert!(authorize_command(&state, &scoped(), Some(&scope), command).is_err());
+    }
+    // A native rollback also cannot recover historical routes that an admin
+    // has since removed from this deployment's provisioned set.
+    state
+        .state_store
+        .upsert_app(
+            &crate::instances::AppConfig {
+                version: "v2".into(),
+                ..current
+            },
+            &[],
+        )
+        .unwrap();
+    let old = crate::release::app_release_root(dir.path(), scope.as_str(), "v1");
+    std::fs::create_dir_all(&old).unwrap();
+    std::fs::write(
+        old.join("app.json"),
+        r#"{"protocol_version":0,"idle_timeout":300}"#,
+    )
+    .unwrap();
+    assert!(
+        authorize_command(
+            &state,
+            &scoped(),
+            Some(&scope),
+            &Command::Rollback {
+                app: scope.as_str().into(),
+                version: "v1".into(),
+            }
+        )
+        .is_err()
+    );
 }

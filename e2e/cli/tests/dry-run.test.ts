@@ -60,6 +60,32 @@ describe("--dry-run appears in help", () => {
   });
 });
 
+describe("application lifecycle", () => {
+  for (const action of ["start", "stop"]) {
+    test(`${action} previews the selected Compose app without contacting its server`, async () => {
+      await setupProject({ servers: { prod: { host: "10.0.0.1" } } });
+      const { term, exitCode } = await run(["--dry-run", action, "--service", "api", "--env", "production"], {
+        cwd: tempDir,
+        env: { HOME: tempDir, TAKO_HOME: takoHome },
+      });
+      expect(exitCode).toBe(0);
+      expect(term.fullText()).toContain("dry-run-app/production / api");
+      expect(term.fullText()).toContain("prod");
+    });
+  }
+
+  test("child deletion fails with group guidance before resolving a deployment", async () => {
+    const { term, exitCode } = await run(["delete", "--service", "api", "--yes"], {
+      cwd: tempDir,
+      cols: 240,
+      env: { HOME: tempDir, TAKO_HOME: takoHome },
+    });
+    expect(exitCode).not.toBe(0);
+    expect(term.fullText()).toContain("Cannot delete app 'api' individually");
+    expect(term.fullText()).toContain("whole group");
+  });
+});
+
 describe("deploy --dry-run", () => {
   test("shows app summary when env is auto-resolved", async () => {
     await setupProject({ servers: { prod: { host: "10.0.0.1" } } });
@@ -294,15 +320,15 @@ describe("container and Compose deployment plans", () => {
       `name = "compose-app"
 [compose]
 file = "compose.yaml"
-service = "web"
-port = 80
 [envs.production]
 network = "${networkId}"
-route = "compose.example.com"
 servers = ["prod"]
 `,
     );
-    await writeFile(join(tempDir, "compose.yaml"), "services:\n  web:\n    image: nginx:alpine\n");
+    await writeFile(
+      join(tempDir, "compose.yaml"),
+      "services:\n  web:\n    image: nginx:alpine\n    x-tako:\n      envs:\n        production:\n          route: compose.example.com\n",
+    );
     const { exitCode, screen } = await run(["--dry-run", "deploy"], {
       cwd: tempDir,
       env: { HOME: tempDir, TAKO_HOME: takoHome },

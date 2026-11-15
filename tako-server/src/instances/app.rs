@@ -48,6 +48,8 @@ pub struct App {
     pub(super) instance_tx: mpsc::Sender<InstanceEvent>,
     /// Shared log handle for all instances of this app
     pub(super) log_handle: AppLogHandle,
+    pub(super) compose_logs:
+        parking_lot::Mutex<Option<(std::collections::BTreeSet<String>, tokio::process::Child)>>,
 }
 
 /// Events for instance lifecycle
@@ -79,6 +81,7 @@ impl App {
             last_error: RwLock::new(None),
             instance_tx,
             log_handle,
+            compose_logs: parking_lot::Mutex::new(None),
         }
     }
 
@@ -266,6 +269,7 @@ impl App {
                 HealthyInstance {
                     instance: instance.clone(),
                     endpoint: instance.endpoint(),
+                    service: instance.compose_service(),
                 }
             })
             .collect();
@@ -291,12 +295,28 @@ impl App {
         &self,
         request_index: usize,
     ) -> Option<HealthyInstance> {
+        let service = {
+            let config = self.config.read();
+            match &config.compose {
+                Some(compose) => Some(compose.default_service().ok()?.to_owned()),
+                None => None,
+            }
+        };
+        self.healthy_service_backend_for_request(request_index, service.as_deref())
+    }
+
+    pub(crate) fn healthy_service_backend_for_request(
+        &self,
+        request_index: usize,
+        service: Option<&str>,
+    ) -> Option<HealthyInstance> {
         let instances = self.healthy_instances.read();
-        if instances.is_empty() {
+        let mut eligible = instances.iter().filter(|i| i.service.as_deref() == service);
+        let count = eligible.clone().count();
+        if count == 0 {
             return None;
         }
-
-        Some(instances[request_index % instances.len()].clone())
+        eligible.nth(request_index % count).cloned()
     }
 
     fn add_healthy_instance(&self, instance: &Arc<Instance>) {
@@ -319,6 +339,7 @@ impl App {
         healthy_instances.push(HealthyInstance {
             instance: instance.clone(),
             endpoint: instance.endpoint(),
+            service: instance.compose_service(),
         });
     }
 
@@ -408,9 +429,66 @@ impl App {
         removed
     }
 
+    pub(crate) fn stop_compose_logs(&self) {
+        // Docker commands use kill_on_drop; this only stops the log follower.
+        self.compose_logs.lock().take();
+    }
+
+    pub(crate) async fn sync_compose_logs(
+        &self,
+        runtime: &tako_compose::ComposeRuntime,
+        containers: &[tako_compose::ServiceContainer],
+    ) -> Result<(), String> {
+        let dependencies: Vec<_> = containers
+            .iter()
+            .filter(|container| !runtime.is_ingress(&container.service))
+            .cloned()
+            .collect();
+        let ids = dependencies
+            .iter()
+            .map(|container| container.id.clone())
+            .collect();
+        {
+            let mut follower = self.compose_logs.lock();
+            if let Some((current, child)) = follower.as_mut()
+                && *current == ids
+                && matches!(child.try_wait(), Ok(None))
+            {
+                return Ok(());
+            }
+        }
+        if dependencies.is_empty() {
+            self.stop_compose_logs();
+            return Ok(());
+        }
+        let mut child = runtime.logs(&dependencies).await?;
+        use super::logger::{LogStream, log_pipe};
+        if let Some(stdout) = child.stdout.take() {
+            tokio::spawn(log_pipe(
+                stdout,
+                self.log_handle.clone(),
+                "compose".into(),
+                LogStream::Stdout,
+            ));
+        }
+        if let Some(stderr) = child.stderr.take() {
+            tokio::spawn(log_pipe(
+                stderr,
+                self.log_handle.clone(),
+                "compose".into(),
+                LogStream::Stderr,
+            ));
+        }
+        *self.compose_logs.lock() = Some((ids, child));
+        Ok(())
+    }
+
     /// Update configuration (for reloads/deploys)
     pub fn update_config(&self, mut config: AppConfig) {
         config.apply_internal_defaults();
+        if config.compose.is_none() {
+            self.stop_compose_logs();
+        }
         *self.config.write() = config;
     }
 }
@@ -422,4 +500,35 @@ fn unit_jitter() -> f64 {
     let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
     hasher.write_u64(now_unix_millis());
     (hasher.finish() >> 11) as f64 / (1u64 << 53) as f64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backend_lookup_releases_config_before_waiting_for_cutover() {
+        let (tx, _) = mpsc::channel(1);
+        let app = Arc::new(App::new(
+            AppConfig::default(),
+            tx,
+            super::super::logger::noop_log_handle(),
+        ));
+        let healthy = app.healthy_instances.write();
+        let reader = app.clone();
+        let (started, ready) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            started.send(()).unwrap();
+            reader.healthy_backend_for_request(0)
+        });
+        ready.recv().unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let can_commit = app.config.try_write_for(Duration::from_secs(1)).is_some();
+        drop(healthy);
+        thread.join().unwrap();
+        assert!(
+            can_commit,
+            "Cutover must be able to update config while lookup waits for the healthy pool"
+        );
+    }
 }

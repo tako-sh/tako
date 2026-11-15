@@ -1,20 +1,11 @@
 use std::path::Path;
 
-use crate::app::require_app_name_from_config_path;
-use crate::commands::helpers::{resolve_servers_for_env, validate_server_names};
 use crate::commands::project_context;
-use crate::config::{ServerEntry, ServerInventory, TakoToml};
+use crate::config::{ServerEntry, TakoToml};
 use crate::management_http::ManagementClient;
 use crate::output;
 use tako_core::{Command, Response};
 use tracing::Instrument;
-
-#[derive(Debug, Clone)]
-struct ScaleTarget {
-    display_app_name: String,
-    remote_app_name: String,
-    env_name: Option<String>,
-}
 
 pub fn run(
     instances: Option<u8>,
@@ -56,11 +47,11 @@ async fn run_async(
         .as_ref()
         .map(|context| context.config_path.as_path());
 
-    let target = resolve_scale_target(project_tako.as_ref(), config_path, app, env, server)?;
+    let target = super::app_target::resolve(project_tako.as_ref(), config_path, app, env, server)?;
     let servers =
         super::helpers::load_management_servers(project_tako.as_ref(), target.env_name.as_deref())
             .await?;
-    let server_names = resolve_scale_server_names(
+    let server_names = super::app_target::server_names(
         project_tako.as_ref(),
         &servers,
         target.env_name.as_deref(),
@@ -144,8 +135,13 @@ async fn run_async(
                     .map(|s| format!(" / {s}"))
                     .unwrap_or_default();
                 output::bullet(&format!(
-                    "{server_name}{service_label}: {} instance(s)",
-                    scale_result.instances
+                    "{server_name}{service_label}: {} instance(s){}",
+                    scale_result.instances,
+                    if scale_result.stopped {
+                        " (stopped; applies on start)"
+                    } else {
+                        ""
+                    }
                 ));
                 if scale_result.standby_limited {
                     output::warning(&format!(
@@ -173,122 +169,12 @@ async fn run_async(
     }
 }
 
-fn resolve_scale_target(
-    project_tako: Option<&TakoToml>,
-    config_path: Option<&std::path::Path>,
-    explicit_app: Option<&str>,
-    env: Option<&str>,
-    server: Option<&str>,
-) -> Result<ScaleTarget, Box<dyn std::error::Error>> {
-    if let Some(tako_config) = project_tako {
-        let config_path = config_path.expect("config path must exist when config is loaded");
-        let resolved = require_app_name_from_config_path(config_path).map_err(|error| {
-            std::io::Error::new(std::io::ErrorKind::InvalidInput, error.to_string())
-        })?;
-        if let Some(app_name) = explicit_app
-            && app_name != resolved
-        {
-            return Err(format!(
-                "--app '{}' does not match project app '{}'",
-                app_name, resolved
-            )
-            .into());
-        }
-        let env_name = match (env, server) {
-            (Some(env_name), _) => Some(env_name.to_string()),
-            (None, Some(_)) => Some(super::helpers::resolve_env(None)),
-            (None, None) => None,
-        };
-        if let Some(env_name) = env_name.as_deref()
-            && !tako_config.envs.contains_key(env_name)
-        {
-            return Err(format!("Environment '{}' not found in tako.toml.", env_name).into());
-        }
-        let remote_app_name = env_name
-            .as_deref()
-            .map(|env_name| tako_core::deployment_app_id(&resolved, env_name))
-            .unwrap_or_else(|| resolved.clone());
-        return Ok(ScaleTarget {
-            display_app_name: resolved,
-            remote_app_name,
-            env_name,
-        });
-    }
-
-    let explicit_app = explicit_app
-        .ok_or_else(|| "Run `tako scale` from a project directory or pass --app.".to_string())?;
-    let remote_app_name = match env {
-        Some(env_name) if tako_core::split_deployment_app_id(explicit_app).is_none() => {
-            tako_core::deployment_app_id(explicit_app, env_name)
-        }
-        _ => explicit_app.to_string(),
-    };
-    let (display_app_name, env_name) = match tako_core::split_deployment_app_id(&remote_app_name) {
-        Some((app_name, env_name)) => (app_name.to_string(), Some(env_name.to_string())),
-        None => (explicit_app.to_string(), env.map(str::to_string)),
-    };
-    Ok(ScaleTarget {
-        display_app_name,
-        remote_app_name,
-        env_name,
-    })
-}
-
-fn resolve_scale_server_names(
-    project_tako: Option<&TakoToml>,
-    servers: &ServerInventory,
-    env: Option<&str>,
-    server: Option<&str>,
-) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    if let Some(server_name) = server {
-        if !servers.contains(server_name) {
-            return Err(format!(
-                "Server '{}' not found in enrolled network membership",
-                server_name
-            )
-            .into());
-        }
-        if let Some(env_name) = env
-            && let Some(tako_config) = project_tako
-        {
-            if !tako_config.envs.contains_key(env_name) {
-                return Err(format!("Environment '{}' not found in tako.toml.", env_name).into());
-            }
-            if !resolve_servers_for_env(tako_config, servers, env_name)?
-                .iter()
-                .any(|name| name == server_name)
-            {
-                return Err(format!(
-                    "Server '{}' is not configured for environment '{}'.",
-                    server_name, env_name
-                )
-                .into());
-            }
-        }
-        return Ok(vec![server_name.to_string()]);
-    }
-
-    let env_name = env.ok_or_else(|| "Pass --env when --server is omitted.".to_string())?;
-    let tako_config = project_tako.ok_or_else(|| {
-        "Scaling by environment requires project context because environment mappings live in tako.toml."
-            .to_string()
-    })?;
-    if !tako_config.envs.contains_key(env_name) {
-        return Err(format!("Environment '{}' not found in tako.toml.", env_name).into());
-    }
-
-    let mut names = resolve_servers_for_env(tako_config, servers, env_name)?;
-    names.sort();
-    names.dedup();
-    validate_server_names(&names, servers)?;
-    Ok(names)
-}
-
 #[derive(Debug)]
 struct ScaleResult {
     instances: u8,
     service: Option<String>,
     standby_limited: bool,
+    stopped: bool,
 }
 
 async fn scale_server(
@@ -312,6 +198,10 @@ async fn scale_server(
     match response {
         Response::Ok { data } => {
             let result = ScaleResult {
+                stopped: data
+                    .get("stopped")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
                 service: data
                     .get("service")
                     .and_then(|v| v.as_str())

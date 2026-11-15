@@ -26,7 +26,7 @@ impl ComposeRuntime {
         if self.development {
             return Err("Production rollout requested for a development project".into());
         }
-        let (runtime, images) = self.prepared()?;
+        let (mut runtime, images) = self.prepared()?;
         if let Some(network) = &runtime.native_network {
             network.ensure_bridge().await?;
         }
@@ -46,7 +46,7 @@ impl ComposeRuntime {
                 "image",
                 "inspect",
                 "--format",
-                r#"{"id":{{json .Id}},"volumes":{{json (index .Config "Volumes")}}}"#,
+                r#"{"id":{{json .Id}},"volumes":{{json (index .Config "Volumes")}},"ports":{{json (index .Config "ExposedPorts")}}}"#,
             ]);
             if let Some(platform) = service["platform"].as_str() {
                 command.args(["--platform", platform]);
@@ -56,6 +56,10 @@ impl ComposeRuntime {
             let image: Value =
                 serde_json::from_slice(&output).map_err(|_| "Invalid prepared image metadata")?;
             let id = image["id"].as_str().ok_or("Prepared image has no ID")?;
+            if runtime.is_ingress(name) {
+                let port = crate::ingress_port(name, service, &image["ports"])?;
+                runtime.ingress_ports.insert(name.clone(), port);
+            }
             for target in image["volumes"]
                 .as_object()
                 .into_iter()
@@ -118,16 +122,25 @@ impl Rollout {
             .collect()
     }
 
+    pub fn configured_replicas(&self) -> BTreeMap<String, u32> {
+        self.plan
+            .services
+            .iter()
+            .map(|s| (s.name.clone(), s.configured_replicas))
+            .collect()
+    }
+
     pub fn ingresses(&self) -> impl Iterator<Item = &ServiceContainer> {
         self.selected
             .iter()
-            .filter(|c| c.service == self.runtime.config.service)
+            .filter(|c| self.runtime.is_ingress(&c.service))
     }
 
     pub fn ingress(&self) -> Result<&ServiceContainer, String> {
+        let service = self.runtime.config.default_service()?;
         self.selected
             .iter()
-            .find(|c| c.service == self.runtime.config.service)
+            .find(|c| c.service == service)
             .ok_or_else(|| "Compose rollout has no HTTP ingress container".into())
     }
 
@@ -136,11 +149,6 @@ impl Rollout {
             return Err("A Compose rollout can only be applied once".into());
         }
         for service in &self.plan.services {
-            for (dependency, condition) in &service.dependencies {
-                for container in self.selected.iter().filter(|c| &c.service == dependency) {
-                    wait_ready(container, Some(*condition), Duration::ZERO).await?;
-                }
-            }
             for slot in 0..service.replicas {
                 let existing = self.runtime.containers().await?;
                 let matched = existing.iter().find(|c| {
@@ -148,6 +156,23 @@ impl Rollout {
                         && c.slot == slot
                         && c.fingerprint == service.fingerprint
                 });
+                // Explicit operator stops override startup dependencies. Never
+                // resume a paused app implicitly or stop its consumers.
+                if !matched.is_some_and(|c| c.healthy() || (service.completed && c.completed())) {
+                    for (dependency, condition) in &service.dependencies {
+                        if self
+                            .plan
+                            .services
+                            .iter()
+                            .any(|p| &p.name == dependency && p.stopped)
+                        {
+                            continue;
+                        }
+                        for container in self.selected.iter().filter(|c| &c.service == dependency) {
+                            wait_ready(container, Some(*condition), Duration::ZERO).await?;
+                        }
+                    }
+                }
                 let mut candidate = if let Some(container) = matched {
                     container.clone()
                 } else {
@@ -222,7 +247,6 @@ impl Rollout {
                 result.map_err(|e| format!("Compose readiness task failed: {e}"))?;
             self.selected[index] = container?;
         }
-        self.ingress()?;
         Ok(())
     }
 
@@ -302,6 +326,11 @@ impl Rollout {
             return Ok(None);
         }
         for (service, condition) in &old.dependencies {
+            // A deliberate stop may have removed this dependency before the
+            // attempt. Recovery must preserve that intent just as apply does.
+            if self.runtime.stopped_services.contains(service) {
+                continue;
+            }
             let dependencies: Vec<_> = self
                 .before
                 .iter()

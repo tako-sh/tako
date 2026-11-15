@@ -1,7 +1,5 @@
-use std::io::Write;
 use std::os::fd::OwnedFd;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use crate::control::State;
 
@@ -43,59 +41,15 @@ pub(crate) async fn spawn(
     runtime: &tako_compose::ComposeRuntime,
     log_buffer: &crate::state::LogBuffer,
 ) -> Result<(tokio::process::Child, Option<OwnedFd>), Box<dyn std::error::Error + Send + Sync>> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-    let port = listener.local_addr()?.port();
-    drop(listener);
-    let mut child = match runtime.start_development(port).await {
-        Ok(child) => child,
-        Err(error) => {
-            return Err(match runtime.stop().await {
-                Ok(()) => error,
-                Err(cleanup) => format!("{error}; Compose cleanup failed: {cleanup}"),
-            }
-            .into());
+    match runtime.start_development().await {
+        Ok(mut child) => {
+            crate::process::forward_child_pipes(&mut child, log_buffer);
+            Ok((child, None))
         }
-    };
-    crate::process::forward_child_pipes(&mut child, log_buffer);
-    let ready = async {
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_secs(2))
-            .build()
-            .map_err(|e| e.to_string())?;
-        let url = format!("http://127.0.0.1:{port}{}", runtime.config.health_path);
-        for _ in 0..60 {
-            if let Ok(response) = client
-                .get(&url)
-                .header(
-                    "Host",
-                    runtime.config.health_host.as_deref().unwrap_or("localhost"),
-                )
-                .send()
-                .await
-                && (response.status().is_success() || response.status().is_redirection())
-            {
-                let (read, write) =
-                    crate::process::create_readiness_pipe().map_err(|e| e.to_string())?;
-                writeln!(std::fs::File::from(write), "{port}").map_err(|e| e.to_string())?;
-                return Ok(read);
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
+        Err(error) => Err(match runtime.stop().await {
+            Ok(()) => error,
+            Err(cleanup) => format!("{error}; Compose cleanup failed: {cleanup}"),
         }
-        Err("Compose HTTP service did not become healthy".to_string())
-    }
-    .await;
-    match ready {
-        Ok(read) => Ok((child, Some(read))),
-        Err(error) => {
-            let cleanup = runtime.stop().await;
-            let _ = child.kill().await;
-            Err(match cleanup {
-                Ok(()) => error,
-                Err(cleanup) => format!("{error}; Compose cleanup failed: {cleanup}"),
-            }
-            .into())
-        }
+        .into()),
     }
 }

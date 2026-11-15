@@ -12,6 +12,49 @@ impl crate::ServerState {
             app.get_instances().iter().map(|i| i.status()).collect();
         let builds = collect_running_build_statuses(&app);
         let config = app.config.read().clone();
+        let kind = if config.compose.is_some() {
+            tako_core::ApplicationKind::ApplicationGroup
+        } else {
+            tako_core::ApplicationKind::Application
+        };
+        let applications = config
+            .compose
+            .as_ref()
+            .map(|compose| {
+                compose
+                    .services
+                    .iter()
+                    .map(|(service, settings)| tako_core::ComposeApplicationStatus {
+                        name: format!("{}/{}", app.name(), service),
+                        service: service.clone(),
+                        state: if config.stopped || config.compose_stopped.contains(service) {
+                            tako_core::AppState::Stopped
+                        } else if app.get_instances().iter().any(|i| {
+                            i.compose_service().as_ref() == Some(service)
+                                && i.state() == tako_core::InstanceState::Healthy
+                        }) {
+                            tako_core::AppState::Running
+                        } else {
+                            match app.state() {
+                                tako_core::AppState::Running => tako_core::AppState::Error,
+                                state => state,
+                            }
+                        },
+                        routes: settings
+                            .envs
+                            .get(&config.environment)
+                            .map(|e| e.routes())
+                            .unwrap_or_default(),
+                        instances: app
+                            .get_instances()
+                            .iter()
+                            .filter(|i| i.compose_service().as_ref() == Some(service))
+                            .map(|i| i.status())
+                            .collect(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let (services, services_error) = if let Some(compose) = config.compose {
             let mut env = config.env_vars.clone();
             env.extend(config.secrets);
@@ -41,6 +84,8 @@ impl crate::ServerState {
         };
 
         let status = AppStatus {
+            kind,
+            applications,
             replica_overrides: config.compose_replicas.clone(),
             services,
             services_error,
@@ -65,6 +110,7 @@ impl crate::ServerState {
                 self.app_manager.get_app(name).map(|app| {
                     serde_json::json!({
                         "name": app.name(),
+                        "kind": if app.config.read().compose.is_some() { "application_group" } else { "application" },
                         "version": app.version(),
                         "state": app.state(),
                         "instances": app.get_instances().len()

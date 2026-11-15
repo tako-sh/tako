@@ -147,7 +147,7 @@ pub(super) fn generate() -> Value {
             "type": "string",
             "description": "Prebuilt container image reference, such as `registry/name:tag`. `container`, `image`, and `[compose]` are mutually exclusive.",
         },
-        "compose": merge(compose, json!({ "description": "Docker Compose release: one Compose project on one server, with one HTTP service exposed by Tako." })),
+        "compose": merge(compose, json!({ "description": "Docker Compose application group on one server. Services with x-tako are apps; other services are managed only by Compose." })),
         "container_options": merge(container_options, json!({ "description": "Container release options. Require `container` or `image`." })),
         "release": {
             "type": "string",
@@ -181,14 +181,7 @@ pub(super) fn generate() -> Value {
             "properties": {
                 "development": merge(env.clone(), json!({ "description": "Local development with `tako dev`. Routes are optional and default to `<name>.test`." })),
             },
-            "additionalProperties": {
-                "allOf": [
-                    env,
-                    {
-                        "anyOf": [{ "required": ["route"] }, { "required": ["routes"] }],
-                    },
-                ],
-            },
+            "additionalProperties": env,
         },
         "storages": {
             "type": "object",
@@ -217,6 +210,9 @@ pub(super) fn generate() -> Value {
         "properties": properties,
         "additionalProperties": false,
         "$defs": definitions,
+        "if": { "required": ["compose"] },
+        "then": { "properties": { "envs": { "additionalProperties": { "not": { "anyOf": [{ "required": ["route"] }, { "required": ["routes"] }] } } } } },
+        "else": { "properties": { "envs": { "properties": { "development": {} }, "additionalProperties": { "anyOf": [{ "required": ["route"] }, { "required": ["routes"] }] } } } },
     });
     clean(&mut schema);
     schema

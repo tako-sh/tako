@@ -253,10 +253,7 @@ async fn compose_cleanup_can_finish_during_resume_and_expired_drain_retries() {
             config.path = directory;
             config.compose = Some(tako_core::compose::ComposeConfig {
                 file: "compose.yaml".into(),
-                service: "web".into(),
-                port: 8080,
-                health_path: "/".into(),
-                health_host: None,
+                services: Default::default(),
             });
             config.env_vars.insert(
                 crate::release::TAKO_APP_DATA_DIR_ENV.into(),
@@ -300,9 +297,22 @@ async fn drained_dispatch_rejects_new_work_but_allows_inspection_and_cleanup() {
     );
     assert!(state.handle_command(Command::ServerInfo).await.is_ok());
     assert!(state.handle_command(Command::List).await.is_ok());
+    for command in [
+        Command::Start {
+            app: "app/production".into(),
+            service: None,
+        },
+        Command::Stop {
+            app: "app/production".into(),
+            service: Some("api".into()),
+        },
+    ] {
+        assert!(blocked_while_draining(&command));
+    }
     for cmd in [
         Command::Stop {
             app: "app/production".into(),
+            service: None,
         },
         Command::Delete {
             app: "app/production".into(),

@@ -253,16 +253,28 @@ impl crate::ServerState {
                 }
                 self.scale_app(&app, instances, service.as_deref(), reset).await
             }
-            Command::Stop { app } => {
+            Command::Start { app, service } => {
+                if let Err(msg) = validate_app_name(&app) {
+                    return Response::error(msg);
+                }
+                if let Some(resp) = self.reject_mutating_when_upgrading("start").await {
+                    return resp;
+                }
+                self.start_app(&app, service.as_deref()).await
+            }
+            Command::Stop { app, service } => {
                 if let Err(msg) = validate_app_name(&app) {
                     return Response::error(msg);
                 }
                 if let Some(resp) = self.reject_mutating_when_upgrading("stop").await {
                     return resp;
                 }
-                self.stop_app(&app).await
+                self.stop_app(&app, service.as_deref()).await
             }
             Command::Delete { app } => {
+                if let Some(message) = self.compose_child_delete_error(&app) {
+                    return Response::error(message);
+                }
                 if let Err(msg) = validate_app_name(&app) {
                     return Response::error(msg);
                 }

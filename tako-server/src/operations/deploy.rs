@@ -53,7 +53,9 @@ impl crate::ServerState {
         if let Err(msg) = validate_release_version(version) {
             return Response::error(msg);
         }
-        if let Err(msg) = validate_deploy_routes(&routes) {
+        if !routes.is_empty()
+            && let Err(msg) = validate_deploy_routes(&routes)
+        {
             return Response::error(msg);
         }
         let release_path =
@@ -174,6 +176,11 @@ impl crate::ServerState {
         ) {
             return Response::error(format!("Invalid app release: {error}"));
         }
+        if config.compose.is_none()
+            && let Err(msg) = validate_deploy_routes(&routes)
+        {
+            return Response::error(msg);
+        }
         if let Some(binding) = &backup {
             if let Err(error) =
                 crate::replica_worker::prepare_sources(&data_paths.app, &binding.databases)
@@ -226,6 +233,50 @@ impl crate::ServerState {
                 return Response::error(format!("Deploy failed to prepare workflows: {error}"));
             }
         };
+
+        if config.stopped {
+            // A release may advance while paused, but must not start HTTP or
+            // workflow processes. Start will use this newly committed release.
+            // Stop with the previous configuration so a Compose -> native
+            // transition also tears down untagged dependency containers.
+            if existing.is_some()
+                && let Err(error) = self.app_manager.stop_app(app_name).await
+            {
+                return Response::error(format!("Could not stop previous release: {error}"));
+            }
+            if let Err(error) = self.state_store.commit_deployment(
+                &config,
+                &routes,
+                &runtime_credentials,
+                ssl.as_ref(),
+                backup.as_ref(),
+                workflows
+                    .as_ref()
+                    .and_then(|runtime| runtime.schedule_revision()),
+            ) {
+                return Response::error(format!("Could not commit stopped deployment: {error}"));
+            }
+            let app = existing.unwrap_or_else(|| self.app_manager.register_app(config.clone()));
+            app.update_config(config.clone());
+            self.load_balancer.register_app(app.clone());
+            self.routes
+                .write()
+                .set_config_routes(&config, routes.clone());
+            self.channel_credentials_generation
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            self.cold_start.mark_failed(app_name, "app_stopped");
+            self.workflows
+                .stop(app_name, std::time::Duration::from_secs(120))
+                .await;
+            app.set_state(AppState::Stopped);
+            for route in &routes {
+                self.ensure_route_certificate(app_name, route.split('/').next().unwrap_or(route))
+                    .await;
+            }
+            return Response::ok(serde_json::json!({
+                "status":"deployed", "app":app_name, "version":version, "stopped":true
+            }));
+        }
 
         // Prepare TLS with the incoming binding before publishing new hostnames.
         for route in &routes {

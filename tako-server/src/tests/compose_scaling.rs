@@ -109,6 +109,72 @@ async fn assert_replicas(
     ids
 }
 
+async fn assert_dependency_logs(state: &ServerState, runtime: &ComposeRuntime, marker: &str) {
+    let container = runtime
+        .containers()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|c| c.service == "database")
+        .unwrap();
+    let output = tokio::process::Command::new("docker")
+        .args([
+            "exec",
+            &container.id,
+            "sh",
+            "-c",
+            "echo \"$1\" > /proc/1/fd/1",
+            "fixture",
+            marker,
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(output.status.success());
+    let path = state
+        .runtime
+        .data_dir
+        .join("apps")
+        .join(APP)
+        .join("logs/current.log");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if std::fs::read_to_string(&path)
+                .unwrap_or_default()
+                .contains(marker)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("Dependency output must reach the group log");
+}
+
+async fn rotate_dependency_secret(state: &ServerState, runtime: &ComposeRuntime, value: &str) {
+    ok(state
+        .handle_command(Command::UpdateSecrets {
+            app: APP.into(),
+            secrets: HashMap::from([("ROTATION".into(), value.into())]),
+        })
+        .await);
+    let container = runtime
+        .containers()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|c| c.service == "database")
+        .unwrap();
+    let output = tokio::process::Command::new("docker")
+        .args(["exec", &container.id, "printenv", "ROTATION"])
+        .output()
+        .await
+        .unwrap();
+    assert!(output.status.success());
+    assert!(output.stdout == format!("{value}\n").as_bytes());
+}
+
 #[tokio::test]
 #[ignore = "requires Docker Compose with shared host/container loopback and project paths"]
 async fn compose_service_scaling_survives_deploy_restart_and_failed_commit() {
@@ -116,10 +182,10 @@ async fn compose_service_scaling_survives_deploy_restart_and_failed_commit() {
     let data = crate::release::ensure_app_runtime_data_dirs(dir.path(), APP).unwrap();
     let compose = tako_core::compose::ComposeConfig {
         file: "compose.yaml".into(),
-        service: "web".into(),
-        port: 8080,
-        health_path: "/".into(),
-        health_host: None,
+        services: serde_json::from_value(
+            serde_json::json!({"web":{"envs":{"production":{"route":"scale.localhost"}}}}),
+        )
+        .unwrap(),
     };
     let mut runtimes = Vec::new();
     for (version, defaults) in [("v1", 1), ("v2", 3)] {
@@ -141,6 +207,8 @@ async fn compose_service_scaling_survives_deploy_restart_and_failed_commit() {
                 r#"
 services:
   web:
+    expose: ["8080"]
+    x-tako: {{envs: {{production: {{route: scale.localhost}}}}}}
     image: docker.io/library/busybox:1.37
     command: [sh, -c, 'mkdir -p /www; hostname > /www/index.html; exec httpd -f -p 8080 -h /www']
     deploy:
@@ -378,4 +446,495 @@ volumes:
     deploy(&server, dir.path(), "v1").await;
     assert_eq!(assert_replicas(&server, runtime, 1).await, initial);
     server.app_manager.stop_app(APP).await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires Docker Compose with shared host/container loopback and project paths"]
+async fn compose_group_routes_status_scaling_and_restart_keep_app_identity() {
+    let dir = crate::isolation::fixture::TestDataDir::new().unwrap();
+    let data = crate::release::ensure_app_runtime_data_dirs(dir.path(), APP).unwrap();
+    let release = crate::release::app_release_root(dir.path(), APP, "v1");
+    std::fs::create_dir_all(&release).unwrap();
+    std::fs::write(release.join("compose.yaml"), r#"
+services:
+  web:
+    image: docker.io/library/busybox:1.37
+    expose: [8080]
+    depends_on: [api]
+    x-tako:
+      envs:
+        production:
+          route: web.localhost
+    command: [sh, -c, 'mkdir -p /www; echo frontend > /www/index.html; exec httpd -f -p 8080 -h /www']
+    deploy: {update_config: {monitor: 0s}}
+  api:
+    image: docker.io/library/busybox:1.37
+    expose: [9090]
+    depends_on: [database]
+    x-tako:
+      envs:
+        production:
+          routes: [api.localhost, web.localhost/api/*]
+    command: [sh, -c, 'mkdir -p /www; echo backend > /www/index.html; exec httpd -f -p 9090 -h /www']
+    deploy: {update_config: {monitor: 0s}}
+  database:
+    image: docker.io/library/busybox:1.37
+    environment: {ROTATION: "${ROTATION:-initial}"}
+    command: [sleep, '3600']
+    deploy: {update_config: {monitor: 0s}}
+"#).unwrap();
+    let compose = tako_compose::load_config(&release, "compose.yaml").unwrap();
+    std::fs::write(
+        release.join("app.json"),
+        serde_json::json!({
+            "protocol_version":tako_core::PROTOCOL_VERSION, "release_kind":"compose",
+            "app_name":"scale", "environment":"production", "version":"v1",
+            "runtime":"compose", "main":"", "idle_timeout":300, "compose":compose,
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let runtime = ComposeRuntime::new(
+        release.clone(),
+        compose.clone(),
+        HashMap::from([(
+            crate::release::TAKO_APP_DATA_DIR_ENV.into(),
+            data.app.display().to_string(),
+        )]),
+    )
+    .unwrap();
+    struct Cleanup(ComposeRuntime);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = self
+                .0
+                .command(false)
+                .into_std()
+                .args(["down", "--volumes", "--remove-orphans"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    }
+    let _cleanup = Cleanup(runtime.clone());
+    runtime.prepare("v1").await.unwrap();
+    let server = state(dir.path(), false);
+    ok(server
+        .handle_command(
+            serde_json::from_value(serde_json::json!({
+                "command":"deploy", "app":APP, "version":"v1", "path":release,
+                "routes":compose.routes("production")
+            }))
+            .unwrap(),
+        )
+        .await);
+    async fn check(server: &ServerState) {
+        for (host, expected) in [("web.localhost", "frontend"), ("api.localhost", "backend")] {
+            let route = server.routes.read().select_with_route(host, "/").unwrap();
+            let backend = server
+                .load_balancer
+                .get_service_backend(&route.app, route.service.as_deref().unwrap())
+                .unwrap();
+            let response = reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .unwrap()
+                .get(format!("http://{}/", backend.endpoint().unwrap()))
+                .header("Host", host)
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap();
+            assert_eq!(response.trim(), expected);
+        }
+        assert_eq!(
+            server
+                .routes
+                .read()
+                .select_with_route("web.localhost", "/api/orders")
+                .unwrap()
+                .service
+                .as_deref(),
+            Some("api")
+        );
+        // An ambiguous group request must not balance between unrelated apps.
+        assert!(server.load_balancer.get_backend(APP).is_none());
+        let status = ok(server.get_status(APP).await);
+        assert_eq!(status["kind"], "application_group");
+        assert_eq!(status["applications"].as_array().unwrap().len(), 2);
+        assert!(
+            status["applications"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|a| a["service"] != "database")
+        );
+        assert!(
+            status["services"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|s| s["service"] == "database")
+        );
+    }
+    check(&server).await;
+    let before = runtime.containers().await.unwrap();
+    assert!(matches!(
+        server.handle_command(scale(Some(2), None)).await,
+        Response::Error { .. }
+    ));
+    ok(server.handle_command(scale(Some(2), Some("api"))).await);
+    let after = runtime.containers().await.unwrap();
+    assert_eq!(after.iter().filter(|c| c.service == "api").count(), 2);
+    for service in ["web", "database"] {
+        assert_eq!(
+            before.iter().find(|c| c.service == service).unwrap().id,
+            after.iter().find(|c| c.service == service).unwrap().id
+        );
+    }
+    check(&server).await;
+    let mut selected_api_replicas = BTreeSet::new();
+    for _ in 0..12 {
+        server
+            .load_balancer
+            .get_service_backend(APP, "web")
+            .unwrap();
+        selected_api_replicas.insert(
+            server
+                .load_balancer
+                .get_service_backend(APP, "api")
+                .unwrap()
+                .instance_id()
+                .to_owned(),
+        );
+    }
+    assert_eq!(
+        selected_api_replicas.len(),
+        2,
+        "sibling traffic must not skew round robin"
+    );
+    // Individual lifecycle operations preserve siblings, routes and desired scale.
+    ok(server
+        .handle_command(Command::Stop {
+            app: APP.into(),
+            service: Some("api".into()),
+        })
+        .await);
+    assert!(
+        server
+            .load_balancer
+            .get_service_backend(APP, "api")
+            .is_none()
+    );
+    assert!(
+        server
+            .load_balancer
+            .get_service_backend(APP, "web")
+            .is_some()
+    );
+    assert!(
+        server
+            .routes
+            .read()
+            .select_with_route("api.localhost", "/")
+            .is_some()
+    );
+    let stopped = runtime.containers().await.unwrap();
+    assert!(stopped.iter().all(|c| c.service != "api"));
+    for service in ["web", "database"] {
+        assert_eq!(
+            after.iter().find(|c| c.service == service).unwrap().id,
+            stopped.iter().find(|c| c.service == service).unwrap().id
+        );
+    }
+    assert_dependency_logs(&server, &runtime, "after-first-app-stop").await;
+    let status = ok(server.get_status(APP).await);
+    assert_eq!(
+        status["applications"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["service"] == "api")
+            .unwrap()["state"],
+        "stopped"
+    );
+    assert!(matches!(
+        server
+            .handle_command(Command::Stop {
+                app: APP.into(),
+                service: Some("database".into())
+            })
+            .await,
+        Response::Error { .. }
+    ));
+    // A failed start cannot clear durable stop intent or affect siblings.
+    rusqlite::Connection::open(dir.path().join("state.sqlite")).unwrap().execute_batch("CREATE TRIGGER fail_lifecycle BEFORE UPDATE ON app_lifecycle BEGIN SELECT RAISE(ABORT, 'injected lifecycle failure'); END;").unwrap();
+    assert!(matches!(
+        server
+            .handle_command(Command::Start {
+                app: APP.into(),
+                service: Some("api".into())
+            })
+            .await,
+        Response::Error { .. }
+    ));
+    rusqlite::Connection::open(dir.path().join("state.sqlite"))
+        .unwrap()
+        .execute_batch("DROP TRIGGER fail_lifecycle;")
+        .unwrap();
+    assert!(
+        server
+            .app_manager
+            .get_app(APP)
+            .unwrap()
+            .config
+            .read()
+            .compose_stopped
+            .contains("api")
+    );
+    assert!(
+        runtime
+            .containers()
+            .await
+            .unwrap()
+            .iter()
+            .all(|c| c.service != "api")
+    );
+    let scale_result = ok(server.handle_command(scale(Some(3), Some("api"))).await);
+    assert_eq!(scale_result["instances"], 3);
+    assert_eq!(scale_result["stopped"], true);
+    assert!(
+        runtime
+            .containers()
+            .await
+            .unwrap()
+            .iter()
+            .all(|c| c.service != "api")
+    );
+    ok(server
+        .handle_command(
+            serde_json::from_value(serde_json::json!({
+                "command":"deploy", "app":APP, "version":"v1", "path":release,
+                "routes":compose.routes("production")
+            }))
+            .unwrap(),
+        )
+        .await);
+    assert!(
+        runtime
+            .containers()
+            .await
+            .unwrap()
+            .iter()
+            .all(|c| c.service != "api")
+    );
+    server.app_manager.shutdown_all().await;
+    drop(server);
+    let restarted = state(dir.path(), false);
+    restarted.restore_from_state_store().await.unwrap();
+    // SQLite loads routes in lexical order, independently of service order.
+    rotate_dependency_secret(&restarted, &runtime, "after-restart").await;
+    ok(restarted
+        .handle_command(Command::Stop {
+            app: APP.into(),
+            service: Some("web".into()),
+        })
+        .await);
+    assert!(
+        restarted
+            .app_manager
+            .get_app(APP)
+            .unwrap()
+            .get_instances()
+            .is_empty()
+    );
+    rotate_dependency_secret(&restarted, &runtime, "all-paused").await;
+    assert_dependency_logs(&restarted, &runtime, "all-http-apps-paused").await;
+    ok(restarted
+        .handle_command(Command::Start {
+            app: APP.into(),
+            service: Some("web".into()),
+        })
+        .await);
+    assert!(
+        restarted
+            .load_balancer
+            .get_service_backend(APP, "api")
+            .is_none()
+    );
+    assert!(
+        restarted
+            .load_balancer
+            .get_service_backend(APP, "web")
+            .is_some()
+    );
+    ok(restarted
+        .handle_command(Command::Stop {
+            app: APP.into(),
+            service: None,
+        })
+        .await);
+    assert_eq!(
+        restarted.app_manager.get_app(APP).unwrap().state(),
+        AppState::Stopped
+    );
+    assert!(runtime.containers().await.unwrap().is_empty());
+    restarted.app_manager.shutdown_all().await;
+    drop(restarted);
+    let restarted = state(dir.path(), false);
+    restarted.restore_from_state_store().await.unwrap();
+    assert_eq!(
+        restarted.app_manager.get_app(APP).unwrap().state(),
+        AppState::Stopped
+    );
+    assert!(runtime.containers().await.unwrap().is_empty());
+    ok(restarted
+        .handle_command(Command::Start {
+            app: APP.into(),
+            service: None,
+        })
+        .await);
+    assert!(
+        restarted
+            .load_balancer
+            .get_service_backend(APP, "api")
+            .is_none(),
+        "group start preserves explicit child stops"
+    );
+    assert!(
+        restarted
+            .load_balancer
+            .get_service_backend(APP, "web")
+            .is_some()
+    );
+    ok(restarted
+        .handle_command(Command::Start {
+            app: APP.into(),
+            service: Some("api".into()),
+        })
+        .await);
+    check(&restarted).await;
+    assert_eq!(
+        runtime
+            .containers()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|c| c.service == "api")
+            .count(),
+        3
+    );
+    assert_eq!(
+        restarted
+            .app_manager
+            .get_app(APP)
+            .unwrap()
+            .config
+            .read()
+            .compose_replicas["api"],
+        3
+    );
+
+    // A Docker-only group has no app routes/backends, but still recovers its services.
+    let private_release = crate::release::app_release_root(dir.path(), APP, "v2");
+    std::fs::create_dir_all(&private_release).unwrap();
+    std::fs::write(
+        private_release.join("compose.yaml"),
+        serde_json::json!({
+            "services": {"database": {"image": "docker.io/library/busybox:1.37",
+                "environment": {"ROTATION":"${ROTATION:-initial}"}, "command": ["sleep", "3600"], "deploy": {"update_config": {"monitor": "0s"}}}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let private_compose = tako_compose::load_config(&private_release, "compose.yaml").unwrap();
+    let mut manifest: Value =
+        serde_json::from_slice(&std::fs::read(release.join("app.json")).unwrap()).unwrap();
+    manifest["version"] = serde_json::json!("v2");
+    manifest["compose"] = serde_json::to_value(&private_compose).unwrap();
+    std::fs::write(private_release.join("app.json"), manifest.to_string()).unwrap();
+    let private_runtime = ComposeRuntime::new(
+        private_release.clone(),
+        private_compose,
+        HashMap::from([(
+            crate::release::TAKO_APP_DATA_DIR_ENV.into(),
+            data.app.display().to_string(),
+        )]),
+    )
+    .unwrap();
+    private_runtime.prepare("v2").await.unwrap();
+    ok(restarted
+        .prepare_deploy(
+            APP,
+            "v2",
+            &private_release.to_string_lossy(),
+            vec![],
+            tako_core::SslBinding::default(),
+            false,
+        )
+        .await);
+    ok(restarted
+        .handle_command(
+            serde_json::from_value(serde_json::json!({
+                "command":"deploy", "app":APP, "version":"v2", "path":private_release, "routes":[]
+            }))
+            .unwrap(),
+        )
+        .await);
+    assert!(
+        restarted
+            .routes
+            .read()
+            .select_with_route("web.localhost", "/")
+            .is_none()
+    );
+    assert_eq!(
+        restarted
+            .app_manager
+            .get_app(APP)
+            .unwrap()
+            .config
+            .read()
+            .min_instances,
+        0
+    );
+    restarted.app_manager.shutdown_all().await;
+    drop(restarted);
+    let private_server = state(dir.path(), false);
+    private_server.restore_from_state_store().await.unwrap();
+    let status = ok(private_server.get_status(APP).await);
+    assert_eq!(status["kind"], "application_group");
+    assert!(
+        serde_json::from_value::<tako_core::AppStatus>(status)
+            .unwrap()
+            .applications
+            .is_empty()
+    );
+    assert_eq!(
+        private_server.app_manager.get_app(APP).unwrap().state(),
+        AppState::Running
+    );
+    let containers = private_runtime.containers().await.unwrap();
+    assert_eq!(containers.len(), 1);
+    assert!(containers.iter().all(|c| c.running() && c.port.is_none()));
+    rotate_dependency_secret(&private_server, &private_runtime, "docker-only").await;
+    assert_dependency_logs(
+        &private_server,
+        &private_runtime,
+        "docker-only-dependencies",
+    )
+    .await;
+    ok(private_server.rollback_app(APP, "v1").await);
+    check(&private_server).await;
+    ok(private_server.rollback_app(APP, "v2").await);
+    assert!(
+        private_server
+            .routes
+            .read()
+            .select_with_route("web.localhost", "/")
+            .is_none()
+    );
+    private_server.app_manager.stop_app(APP).await.unwrap();
 }

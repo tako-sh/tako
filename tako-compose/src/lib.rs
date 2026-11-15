@@ -1,5 +1,5 @@
 //! Compose materializes containers and resources; Tako owns production updates.
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -10,7 +10,9 @@ use tokio::process::{Child, Command};
 const TAKO_APP_DATA_DIR_ENV: &str = "TAKO_DATA_DIR";
 const TAKO_SHARED_DATA_DIR_ENV: &str = "TAKO_SHARED_DATA_DIR";
 const SHARED_DATA_MOUNT: &str = "/tako/shared-data";
+mod config;
 mod engine;
+pub use config::{ingress_port, load_config};
 mod native_network;
 pub use native_network::NativeNetwork;
 mod plan;
@@ -116,11 +118,15 @@ pub struct ComposeRuntime {
     pub config: ComposeConfig,
     env: HashMap<String, String>,
     development: bool,
+    development_hosts: Option<(String, Option<String>)>,
     override_file: PathBuf,
     // Bound to one immutable, service-private preparation during a rollout.
     source: Option<PathBuf>,
     replicas: BTreeMap<String, u32>,
+    stopped: bool,
+    stopped_services: BTreeSet<String>,
     native_network: Option<NativeNetwork>,
+    ingress_ports: BTreeMap<String, u16>,
 }
 
 impl std::fmt::Debug for ComposeRuntime {
@@ -177,10 +183,14 @@ impl ComposeRuntime {
             config,
             env,
             development: false,
+            development_hosts: None,
             override_file: PathBuf::from(OVERRIDE_FILE),
             source: None,
             replicas: BTreeMap::new(),
+            stopped: false,
+            stopped_services: BTreeSet::new(),
             native_network: None,
+            ingress_ports: BTreeMap::new(),
         })
     }
 
@@ -192,6 +202,13 @@ impl ComposeRuntime {
     /// Desired replica overrides, scoped to service names in this project.
     pub fn with_replicas(mut self, replicas: BTreeMap<String, u32>) -> Self {
         self.replicas = replicas;
+        self
+    }
+
+    /// Runtime intent survives releases without changing configured replica counts.
+    pub fn with_stopped(mut self, stopped: bool, services: BTreeSet<String>) -> Self {
+        self.stopped = stopped;
+        self.stopped_services = services;
         self
     }
 
@@ -208,6 +225,31 @@ impl ComposeRuntime {
         runtime.project = format!("tako-dev-{}", digest(identity));
         runtime.development = true;
         runtime.override_file = PathBuf::from(format!(".tako/compose/{}.yaml", runtime.project));
+        Ok(runtime)
+    }
+
+    pub fn with_development_hosts(
+        mut self,
+        default_host: String,
+        base_host: Option<String>,
+    ) -> Self {
+        self.config = self
+            .config
+            .for_development(&default_host, base_host.as_deref());
+        self.development_hosts = Some((default_host, base_host));
+        self
+    }
+
+    pub fn reload_development(&self) -> Result<Self, String> {
+        if !self.development {
+            return Err("Only development projects can reload Compose metadata".into());
+        }
+        let mut runtime = self.clone();
+        runtime.config = load_config(&self.directory, &self.config.file)?;
+        if let Some((host, base)) = &self.development_hosts {
+            runtime.config = runtime.config.for_development(host, base.as_deref());
+        }
+        runtime.ingress_ports.clear();
         Ok(runtime)
     }
 
@@ -326,6 +368,22 @@ impl ComposeRuntime {
     }
 
     async fn model(&self) -> Result<Value, String> {
+        // Docker removes service extensions from normalized output. Validate
+        // metadata against the captured source before giving that source to it.
+        let services = if let Some(source) = &self.source {
+            let bytes = std::fs::read(source.parent().unwrap().join("compose.json"))
+                .map_err(|e| e.to_string())?;
+            let raw =
+                serde_json::from_slice(&bytes).map_err(|_| "Invalid captured Compose model")?;
+            config::service_configs(&raw)?
+        } else {
+            load_config(&self.directory, &self.config.file)?.services
+        };
+        if !self.development && services != self.config.services {
+            return Err(
+                "Compose x-tako settings differ from the captured release; deploy again".into(),
+            );
+        }
         let output = self
             .output(
                 &["config", "--format", "json"],
@@ -341,12 +399,17 @@ impl ComposeRuntime {
             .replace("$$", "$");
         let model: Value = serde_json::from_str(&output)
             .map_err(|e| format!("Invalid Compose config output: {e}"))?;
-        validate_model_with_mode(
-            &model,
-            self.working_directory(),
-            &self.config.service,
-            self.development,
-        )?;
+        validate_model_with_mode(&model, self.working_directory(), "", self.development)?;
+        // Profiles and other normalization can drop a service declared in the
+        // source; its routes would then point at an app with no containers.
+        if let Some(missing) = services
+            .keys()
+            .find(|name| model["services"].get(name.as_str()).is_none())
+        {
+            return Err(format!(
+                "Compose service '{missing}' has x-tako settings but is not part of the Compose model"
+            ));
+        }
         if !self.development {
             validation::validate_resources(&model, false, Some(&self.env))?;
         }
@@ -368,6 +431,18 @@ impl ComposeRuntime {
             }
         }
         Ok(model)
+    }
+
+    pub fn is_ingress(&self, service: &str) -> bool {
+        self.config.services.contains_key(service)
+    }
+
+    pub fn ingress_count(&self, replicas: &BTreeMap<String, u32>) -> u32 {
+        replicas
+            .iter()
+            .filter(|(service, _)| self.is_ingress(service))
+            .map(|(_, count)| *count)
+            .sum()
     }
 
     fn working_directory(&self) -> &Path {
@@ -514,34 +589,57 @@ impl ComposeRuntime {
         self.commit_preparation(snapshot, images)
     }
 
-    pub async fn start_development(&self, port: u16) -> Result<Child, String> {
+    pub async fn start_development(&self) -> Result<Child, String> {
         if !self.development {
             return Err("development startup requires a development project".into());
         }
         self.check_version().await?;
         let model = self.model().await?;
-        let images = model["services"]
+        // Build/pull before inspecting image EXPOSE metadata; no containers start here.
+        self.run(&["build"], false, Duration::from_secs(1800))
+            .await?;
+        self.run(
+            &["pull", "--ignore-buildable"],
+            false,
+            Duration::from_secs(1800),
+        )
+        .await?;
+        let mut images = BTreeMap::new();
+        let mut ports = BTreeMap::new();
+        for (service, definition) in model["services"]
             .as_object()
             .ok_or("Compose has no services")?
-            .iter()
-            .map(|(service, definition)| {
-                (
+        {
+            let image = definition["image"]
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("{}-{service}", self.project));
+            if self.is_ingress(service) {
+                let mut inspect = docker_command(true);
+                inspect.args([
+                    "image",
+                    "inspect",
+                    "--format",
+                    "{{json (index .Config \"ExposedPorts\")}}",
+                    &image,
+                ]);
+                let output = engine_output(inspect, Duration::from_secs(30)).await?;
+                let exposed: Value =
+                    serde_json::from_slice(&output).map_err(|_| "Invalid image port metadata")?;
+                ports.insert(
                     service.clone(),
-                    definition["image"]
-                        .as_str()
-                        .map(str::to_string)
-                        .unwrap_or_else(|| format!("{}-{service}", self.project)),
-                )
-            })
-            .collect();
+                    (0, ingress_port(service, definition, &exposed)?),
+                );
+            }
+            images.insert(service.clone(), image);
+        }
         let override_path = self.directory.join(&self.override_file);
         std::fs::create_dir_all(override_path.parent().unwrap()).map_err(|e| e.to_string())?;
         write_private(
             &override_path,
             render_override_with_shared_data(
                 &images,
-                &self.config,
-                port,
+                &ports,
                 self.env.get(TAKO_SHARED_DATA_DIR_ENV).map(String::as_str),
             )
             .as_bytes(),
@@ -550,7 +648,7 @@ impl ComposeRuntime {
             &[
                 "up",
                 "--detach",
-                "--build",
+                "--no-build",
                 "--wait",
                 "--wait-timeout",
                 "120",
@@ -560,6 +658,26 @@ impl ComposeRuntime {
             Duration::from_secs(1800),
         )
         .await?;
+        for container in self.containers().await? {
+            if !self.is_ingress(&container.service) {
+                continue;
+            }
+            let ready = tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    if self.container_healthy(&container.id).await? {
+                        return Ok::<_, String>(());
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            })
+            .await;
+            ready.map_err(|_| {
+                format!(
+                    "Compose service '{}' did not become ready",
+                    container.service
+                )
+            })??;
+        }
         self.command(true)
             .args(["logs", "--follow", "--no-color", "--tail", "100"])
             .stdout(std::process::Stdio::piped())
@@ -708,7 +826,7 @@ fn validate_model_with_mode(
     let services = model["services"]
         .as_object()
         .ok_or("Compose has no services")?;
-    if !services.contains_key(ingress) {
+    if !ingress.is_empty() && !services.contains_key(ingress) {
         return Err(format!("Compose service '{ingress}' does not exist"));
     }
     let root = directory.canonicalize().map_err(|e| e.to_string())?;
@@ -763,16 +881,14 @@ fn validate_model_with_mode(
 
 pub fn render_override(
     images: &BTreeMap<String, String>,
-    config: &ComposeConfig,
-    host_port: u16,
+    ports: &BTreeMap<String, (u16, u16)>,
 ) -> String {
-    render_override_with_shared_data(images, config, host_port, None)
+    render_override_with_shared_data(images, ports, None)
 }
 
 fn render_override_with_shared_data(
     images: &BTreeMap<String, String>,
-    config: &ComposeConfig,
-    host_port: u16,
+    ports: &BTreeMap<String, (u16, u16)>,
     shared: Option<&str>,
 ) -> String {
     let mut text = String::from("services:\n");
@@ -782,10 +898,10 @@ fn render_override_with_shared_data(
             json!(service),
             json!(image)
         ));
-        if service == &config.service {
+        if let Some((host_port, port)) = ports.get(service) {
             text.push_str(&format!(
                 "[{}]\n    scale: 1\n    deploy:\n      replicas: 1\n",
-                json!(format!("127.0.0.1:{host_port}:{}", config.port))
+                json!(format!("127.0.0.1:{host_port}:{port}"))
             ));
         } else {
             text.push_str("[]\n");
@@ -878,10 +994,7 @@ mod tests {
     fn config() -> ComposeConfig {
         ComposeConfig {
             file: "compose.yaml".into(),
-            service: "web".into(),
-            port: 3000,
-            health_path: "/health".into(),
-            health_host: None,
+            services: Default::default(),
         }
     }
 
@@ -929,8 +1042,7 @@ mod tests {
         }
         let development = render_override_with_shared_data(
             &BTreeMap::from([("web".into(), "image".into())]),
-            &config(),
-            1234,
+            &BTreeMap::from([("web".into(), (1234, 8080))]),
             Some(&runtime.env[TAKO_SHARED_DATA_DIR_ENV]),
         );
         assert!(development.contains("TAKO_SHARED_DATA_DIR: /tako/shared-data"));

@@ -44,6 +44,7 @@ fn test_command_serialization() {
 #[test]
 fn app_status_recovery_is_omitted_when_empty_and_roundtrips() {
     let quiet = serde_json::json!({
+        "kind": "application",
         "name": "my-app/production",
         "version": "v1",
         "instances": [],
@@ -75,6 +76,23 @@ fn app_status_recovery_is_omitted_when_empty_and_roundtrips() {
     ] {
         assert_eq!(serde_json::to_value(reason).unwrap(), wire);
     }
+}
+
+#[test]
+fn compose_group_status_roundtrips_service_identities() {
+    let wire = serde_json::json!({
+        "kind": "application_group", "name": "shop/production", "version": "v1",
+        "state": "running", "last_error": null, "instances": [], "builds": [],
+        "applications": [
+            {"name": "shop/production/web", "service": "web", "state": "running", "routes": ["example.com"], "instances": []},
+            {"name": "shop/production/api", "service": "api", "state": "stopped", "routes": ["api.example.com"], "instances": []},
+            {"name": "shop/production/private", "service": "private", "state": "running", "routes": [], "instances": []}
+        ]
+    });
+    let status: AppStatus = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(status.kind, ApplicationKind::ApplicationGroup);
+    assert_eq!(status.applications.len(), 3);
+    assert_eq!(serde_json::to_value(status).unwrap(), wire);
 }
 
 #[test]

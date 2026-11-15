@@ -1,0 +1,16 @@
+#:schema https://tako.sh/schemas/tako-toml.json
+name = "shop"
+
+[compose]
+file = "compose.yaml"
+
+[envs.production]
+servers = ["prod"]
+
+[vars.production]
+API_URL = "https://api.example.com"
+WEB_URL = "https://example.com"
+
+[vars.development]
+API_URL = "https://api.shop.test"
+WEB_URL = "https://shop.test"

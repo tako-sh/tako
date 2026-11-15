@@ -403,6 +403,79 @@ fn authorize_command(
         &PolicyContext { data_dir, app },
     )
     .map_err(|denial| denial.to_string())?;
+    if !permissions.server_admin {
+        // Check the bindings the handler will actually activate, including
+        // Compose metadata from an uploaded rollback target. The management
+        // lock keeps the provisioned snapshot stable through dispatch.
+        let target = match command {
+            Command::Deploy {
+                path,
+                source_ip,
+                routes,
+                ..
+            } => Some((
+                std::path::PathBuf::from(path),
+                Some((*source_ip, routes.clone())),
+            )),
+            Command::Rollback { app, version } => Some((
+                crate::release::app_release_root(data_dir, app, version),
+                None,
+            )),
+            _ => None,
+        };
+        if let Some((path, deployment)) = target {
+            let stored = stored
+                .as_ref()
+                .ok_or("Cannot read provisioned route state")?;
+            let app = stored.config.deployment_id();
+            let current = state
+                .state_store
+                .release_routing(&app, &stored.config.version)
+                .map_err(fail)?
+                .unwrap_or_else(|| {
+                    crate::state_store::ReleaseRouting::new(
+                        stored.routes.clone(),
+                        stored.config.source_ip,
+                        None,
+                        &stored.config.environment,
+                    )
+                });
+            let manifest = crate::app_command::load_release_manifest(&path)
+                .map_err(|_| "Cannot read target release route state")?;
+            let (source_ip, native_routes) = match deployment {
+                Some(value) => value,
+                None => {
+                    let version = match command {
+                        Command::Rollback { version, .. } => version,
+                        _ => unreachable!(),
+                    };
+                    let historical = state
+                        .state_store
+                        .release_routing(&app, version)
+                        .map_err(fail)?;
+                    historical
+                        .map(|routing| (routing.source_ip, routing.routes))
+                        .unwrap_or((current.source_ip, current.routes.clone()))
+                }
+            };
+            let routes = manifest
+                .compose
+                .as_ref()
+                // The handler activates the deployment's environment, never
+                // the one an uploaded manifest claims.
+                .map(|compose| compose.routes(&stored.config.environment))
+                .unwrap_or(native_routes);
+            let target = crate::state_store::ReleaseRouting::new(
+                routes,
+                source_ip,
+                manifest.compose.as_ref(),
+                &stored.config.environment,
+            );
+            if target.source_ips != current.source_ips {
+                return Err("Scoped deployment must preserve provisioned routes and source-IP policies; a server administrator must provision changes.".into());
+            }
+        }
+    }
     if let policy::CommandClass::Application { app } = policy::classify(command) {
         upload::confined_directory(&crate::release::app_root(data_dir, app).join("shared/logs"))
             .map_err(|_| "Managed shared log directory must not redirect".to_string())?;

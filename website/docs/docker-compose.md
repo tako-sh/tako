@@ -3,27 +3,56 @@ title: Docker Compose
 description: "Deploy an existing Compose stack to one VPS with persistent named volumes, Tako HTTPS, service logs, status, and application rollback."
 ---
 
-Use Compose for an application with multiple services, such as a web server, worker, Postgres, and Redis. Services use their existing images and commands; a Tako SDK is optional.
+A Compose project is an **application group**. Each service with an `x-tako` mapping is a Tako app with its own routes, replicas, readiness and backend pool. Services without `x-tako`, such as databases and workers, remain ordinary Docker services. The group owns deployment, rollback, shared networks and volumes. A Tako SDK is optional.
 
 ## Configure a stack
 
-Keep `compose.yaml` and its build contexts in the application directory. Add:
+Keep `compose.yaml` and its build contexts in the application directory. Group settings stay in `tako.toml`:
 
 ```toml tako.toml
 name = "my-stack"
 
 [compose]
 file = "compose.yaml"
-service = "web"
-port = 8080
-health_path = "/health"
 
 [envs.production]
-route = "app.example.com"
 servers = ["prod"]
 ```
 
-`service` selects the HTTP ingress service and `port` is its container port. `health_path` defaults to `/` and must return HTTP 2xx or 3xx. Set `health_host = "app.example.com"` if the application restricts allowed Host headers. Define dependency health checks in Compose and use `depends_on` conditions where startup ordering matters.
+Put each app's route beside its Compose service:
+
+```yaml compose.yaml
+services:
+  web:
+    image: example/web:1
+    x-tako:
+      envs:
+        production:
+          route: example.com
+  api:
+    image: example/api:1
+    x-tako:
+      envs:
+        production:
+          routes: [api.example.com, example.com/api/*]
+  redis:
+    image: redis:7-alpine
+    volumes: [redis-data:/data]
+volumes:
+  redis-data:
+```
+
+The web and API images must declare their listening port with `EXPOSE`, or the services must declare it with standard Compose `expose` or `ports`. Tako selects a single TCP port from `expose`, then `ports` targets, then image metadata. It never guesses between multiple candidates: use one `expose` entry to select the HTTP port. Host publications are replaced with private loopback ports. There is no `x-tako.port` or Tako health-path setting.
+
+Readiness uses the container's Docker health check when present, plus an HTTP check on the app's private port. Tako sends `HEAD /` with `Host: localhost` and accepts any valid HTTP status, including 404 or 405. This verifies that the app responds behind Docker's port proxy without requiring a health endpoint. Define stricter application readiness with standard Compose `healthcheck` and dependency ordering with `depends_on`.
+
+`x-tako.envs.<environment>` accepts `route` or `routes` and optional `source_ip`, which inherits the group setting when omitted. Routes use the same host/path syntax as native apps, must be literal, and cannot be assigned to two apps in the same group. Unknown `x-tako` fields fail validation. An empty `x-tako: {}` still opts a service into being a Tako app; without public routes it has only a private backend. Removing the mapping returns it to ordinary Compose management.
+
+Group settings in `tako.toml` include identity, environment/server selection, variables and secrets, certificate provider/credentials, storage bindings and backups. Compose remains authoritative for builds, commands, container environment, health checks, resource limits and replica defaults. SDK bootstrap and native scale-to-zero are not enabled by adding `x-tako`.
+
+A complete runnable [web/API/Redis example](https://github.com/tako-sh/tako/tree/master/examples/compose/web-api-redis) includes the frontend, API, Dockerfile, local routes and persistence verification.
+
+Existing configurations must move their routes from `[envs.*]` into the selected service's `x-tako.envs.*`, remove `[compose].service`, `port`, `health_path` and `health_host`, and declare exposure/readiness through Compose or the image. Deploy with the matching CLI and server versions; protocol v0 does not keep the previous schema.
 
 The target server needs Docker Engine and the Docker Compose plugin **2.24.4 or newer**, with local Docker socket access for the `tako-server` service account. Docker is required for Compose deployments; standalone Dockerfile/image releases continue to use Podman. The Tako installer currently installs Podman. Install and configure Docker separately for a Compose host, then verify `docker compose version` and `docker info` as the service account.
 
@@ -79,7 +108,7 @@ failure. Docker controls retries and intervals. For an ad hoc check, run
 
 ## Networking and persistence
 
-Tako replaces Compose port publications. Only the selected HTTP service is published, with an assigned loopback port per replica; Tako handles public HTTPS and routes. Databases, caches, and workers communicate through Compose networks and service names.
+Tako replaces Compose port publications. Only Tako apps are published, with an assigned loopback port per replica; Tako handles public HTTPS and routes. Databases, caches, and workers communicate through Compose networks and service names.
 
 Use named volumes for persistent data. The project identity is stable for one app/environment on one server, so new releases reuse the same volumes. Anonymous volumes are rejected in production. If an image declares a volume, mount a named volume there, or explicitly use tmpfs for disposable data. Read-only bind mounts and config/secret files must stay inside the uploaded app directory. Tako retains older release files while containers reference them.
 
@@ -91,11 +120,11 @@ Named volumes survive deployment, stop/start, rollback, and application deletion
 
 Tako prepares and pins all images before changing running containers. It compares each service's image configuration and filesystem, plus its resolved Compose configuration, dependency conditions, referenced secrets, and mounted file contents and executable permissions. Build attestations and release directory names do not trigger replacements. Unchanged services keep their container IDs, network endpoints, and volumes. Updating a Bun web app therefore leaves unchanged Redis running.
 
-| Service                                                   | Default update order                                                     |
-| --------------------------------------------------------- | ------------------------------------------------------------------------ |
-| Selected HTTP service without writable persistent volumes | Start replacement, verify readiness, switch traffic, drain old container |
-| Selected HTTP service with writable persistent volumes    | Stop old container before starting its replacement                       |
-| Workers and other services                                | Stop old container before starting its replacement                       |
+| Service                                      | Default update order                                                     |
+| -------------------------------------------- | ------------------------------------------------------------------------ |
+| Tako app without writable persistent volumes | Start replacement, verify readiness, switch traffic, drain old container |
+| Tako app with writable persistent volumes    | Stop old container before starting its replacement                       |
+| Workers and other services                   | Stop old container before starting its replacement                       |
 
 Override the order for a service using standard Compose settings:
 
@@ -110,45 +139,69 @@ services:
         monitor: 5s
 ```
 
-Use `start-first` only when old and new containers can safely overlap, including access to shared data or job queues. Allocate enough memory for both generations. `monitor` defaults to 5 seconds and supports 0 seconds through 2 minutes. New containers must remain running and pass any Docker health check for this window; unchanged healthy containers skip it. Tako also checks HTTP readiness and a stability window before routing to the selected service. Dependencies follow `service_started`, `service_healthy`, and `service_completed_successfully`; unchanged completed jobs are not rerun.
+Use `start-first` only when old and new containers can safely overlap, including access to shared data or job queues. Allocate enough memory for both generations. `monitor` defaults to 5 seconds and supports 0 seconds through 2 minutes. New containers must remain running and pass any Docker health check for this window; unchanged healthy containers skip it. Tako also checks each app's private connection and stability window before routing to it. Dependencies follow `service_started`, `service_healthy`, and `service_completed_successfully`; unchanged completed jobs are not rerun.
 
-If readiness fails, Tako removes the new containers and restarts any predecessors it stopped. Healthy unchanged containers remain running. Failed recovery is reported as an application error. The active release, routes, replica overrides, and encrypted credentials commit together. On a server restart, Tako reconciles that committed release, adopts matching containers, and removes abandoned generations. A normal Tako server shutdown leaves production Compose containers running for adoption on startup.
+If readiness fails, Tako removes the new containers and restarts any predecessors it stopped. Healthy unchanged containers remain running. Failed recovery is reported as an application error. The active release, routes, replica overrides, stopped state, and encrypted credentials commit together. Tako saves route and source-IP settings with each successful release, so rollback can restore a native app after a Docker-only release. Scoped deployers can only activate the currently provisioned routes and source-IP policies; changing them requires a server administrator. On a server restart, Tako reconciles that committed release, adopts matching containers, and removes abandoned generations. A normal Tako server shutdown leaves production Compose containers running for adoption on startup.
 
 Start-first updates protect traffic through Tako's HTTP ingress. Updates to databases or other dependencies can still cause downtime, and migrations must remain compatible with the versions that overlap. Internal clients using Docker DNS can see a candidate before Tako admits it to public HTTP routing. Existing requests and server-sent event streams drain for up to 30 seconds; upgraded WebSocket connections do not hold the drain and are closed when the old container stops, so clients need reconnect handling.
 
 ## Scale individual services
 
 ```bash
-# Scale the HTTP service selected by [compose].service.
+# With exactly one Tako app, --service can be omitted.
 tako scale 5 --env production
 
 # Scale a named service without duplicating its dependencies.
 tako scale 5 --service api --env production
 tako scale 3 --service worker --env production
 
-# Clear that service's override and immediately apply its Compose default.
+# Clear that service's override and use its Compose default.
 tako scale --service api --reset --env production
 ```
 
-`deploy.replicas` supplies each service's default (one when omitted). A successful `tako scale` stores an override for that app, environment, server, and service. Overrides survive deployments, release rollbacks, secret rotation, and server restarts. Changing `deploy.replicas` takes effect for services without an override; use `--reset` to follow the current release's default again. A failed scale restores the previous count and leaves the previous override intact. Removing a service in a successful deployment removes its override; deleting the app clears all overrides.
+With multiple tagged apps, `tako scale` requires `--service`; Tako never chooses an arbitrary app. `deploy.replicas` supplies each service's default (one when omitted). A successful `tako scale` stores an override for that app, environment, server, and service. Overrides survive deployments, release rollbacks, secret rotation, and server restarts. Changing `deploy.replicas` takes effect for services without an override; use `--reset` to follow the current release's default again. A failed scale restores the previous count and leaves the previous override intact. Removing a service in a successful deployment removes its override; deleting the app clears all overrides.
+
+Scaling or resetting a stopped app or group changes the count used on its next start. It does not resume the app.
 
 Every HTTP replica has an independent health check and routing entry. Tako balances traffic across healthy replicas and drains requests before removing replicas. Scaling `api` to five creates five API containers in the same project; Redis stays at its own count and keeps its existing container and data. Replicas share the service's networks and named volumes. Scale only services whose processes can safely share those resources; a replica count does not configure database replication.
 
-Production Compose deployments target one server. The HTTP service supports 1–128 replicas; other services support 0–128, and required dependencies must keep at least one replica. Compose uses these explicit per-service counts, including on a standby server, rather than the native process CPU-based maximum. HTTP scale-to-zero and automatic cold starts are unsupported for Compose. The management `stop` command stops the whole stack; `tako delete` removes the deployment while preserving named volumes.
+Production Compose deployments target one server. Each Tako app has a configured count of 1–128 replicas; ordinary Docker services support 0–128, and required dependencies must have at least one configured replica. An explicitly stopped app or group runs zero replicas without changing those counts. Compose uses these explicit per-service counts, including on a standby server, rather than the native process CPU-based maximum. HTTP scale-to-zero and automatic cold starts are unsupported for Compose.
 
-`tako status --json` includes original service names, state, health, exit codes, and `replica_overrides`. Log prefixes include the service name and generation.
+`tako status --json` identifies the deployment as `kind: "application_group"`. Its `applications` list contains each tagged app's identity (`<group>/<environment>/<service>`), state, routes and instances; `services` reports Docker containers, and `replica_overrides` records overrides. Stopped apps remain in `applications` with `state: "stopped"` and no instances. Human output labels each service as an app or Docker service. Log prefixes include the service name and generation.
 
 Production rejects writable bind mounts, outside build contexts, `container_name`, `network_mode`, profiles, links, `volumes_from`, shared service namespaces, Compose lifecycle hooks, optional dependencies, and `depends_on.restart`. `update_config` supports `order` and `monitor`; `rollback_config` is unsupported. These restrictions keep replacement and recovery behavior explicit.
 
 Host privileges and resource sharing are unsupported: this includes `privileged`, added capabilities, devices, host namespaces, custom runtimes, Docker socket injection, and providers. `security_opt` supports only `no-new-privileges`. Logging uses `json-file`, `local`, or `none`, with `max-size`, `max-file`, and `compress` options. Builds reject SSH forwarding, entitlements, host networking, and cache import/export settings. Compose `include` and `extends` are unsupported. Unrecognized production service and build settings fail validation before Docker creates containers.
 
+## Start and stop apps
+
+```bash
+# Stop only the API; the frontend and database keep running.
+tako stop --service api --env production
+tako status --json
+
+# Set the next start's count without resuming the API.
+tako scale 3 --service api --env production
+tako start --service api --env production
+
+# Stop or start the whole group, including ordinary Docker services.
+tako stop --env production
+tako start --env production
+```
+
+Only services with `x-tako` support individual start and stop. Routes remain configured while an app is stopped, but requests have no backend and do not wake it. Named volumes and configured replica counts are preserved. Stop intent is separate from scaling and survives deployments, rollbacks, and server restarts.
+
+Starting the group resumes its ordinary Docker services and apps, except apps that were individually stopped. Start the group before resuming one of those apps. Explicit stops take precedence over `depends_on`: starting or redeploying a consumer does not resume a stopped dependency or wait for it to become healthy. Consumers must handle that dependency being unavailable.
+
+Deployment, rollback, and deletion belong to the group. `tako delete --service api` is rejected. To remove a service, edit the Compose file and redeploy; to remove the whole deployment, use `tako delete --env production`. Docker named volumes remain in either case.
+
 ## Verify and develop locally
 
 Request the deployed hostname, write a record or upload through the app, deploy again, and confirm that the data remains. Also test a service failure and restore a backup into a separate environment.
 
-Run `tako dev` from the app directory. Tako builds and starts the whole Compose stack, waits for service and HTTP health, and serves the selected service through the usual local HTTPS hostname. Docker Engine and Compose must be available locally; Docker Desktop and the current Docker context are supported. Development runs one HTTP replica on its assigned local port, regardless of production `deploy.replicas` or server-side overrides; other services retain their Compose counts.
+Run `tako dev` from the app directory. Tako builds and starts the whole group and waits for Docker health and app HTTP checks. Each app gets `<service>.<group>.test` (or `<service>.<group>.tako.test`), including apps without public production routes. Override these names with `x-tako.envs.development.route` or `routes`; development variants keep their own hostnames. Docker Engine and Compose must be available locally; Docker Desktop and the current Docker context are supported. Development runs one replica of each tagged app on its own assigned local port, regardless of production `deploy.replicas` or server-side overrides; other services retain their Compose counts.
 
-Press `r` in the dev session or run `tako dev --restart` after changing the image or Compose configuration. For live source updates, use a project-local bind mount and a watch command in your Compose service. Development permits writable bind mounts inside the project; production requires read-only binds. Published ports are replaced with private ingress in both modes.
+Press `r` in the dev session or run `tako dev --restart` after changing the image or Compose configuration. Restart reloads tagged apps and their routes, including development variant hostnames. For live source updates, use a project-local bind mount and a watch command in your Compose service. Development permits writable bind mounts inside the project; production requires read-only binds. Published ports are replaced with private ingress in both modes.
 
 Stopping the app or shutting down the dev daemon stops its containers and preserves named volumes. Each checkout and dev variant has its own Compose project and default named volumes. Reopening the same checkout and variant reuses that data. A daemon crash can leave containers running; starting the same app again reconciles them. Standalone `docker compose up --build --wait` remains available and uses a separate project and its original port mappings.
 
@@ -157,3 +210,5 @@ Stopping the app or shutting down the dev daemon stops its containers and preser
 On a native network, supported Compose services use Tako's private gateway and DNS resolver for `{app}.{env}.{network-id}.tako.internal` addresses. The gateway admits current trusted placements and provides DNS independently of host systemd-resolved. Use `tako connect` to resolve private names from workstation applications. See [Native networks](/networks/#use-private-service-addresses).
 
 Compose deployments still target one server. Network membership and server drain do not replicate named volumes, move databases, or switch global ingress. Preserve separate backup and migration procedures for stateful services.
+
+Dependency logs belong to the group and remain available through `tako logs` when individual apps are stopped or the group has no tagged apps. Secret updates refresh running Docker services even when all HTTP apps are paused. Restoring a Tako app-data backup also restarts those services while preserving individual and group stop intent; Docker named volumes remain outside these backups.

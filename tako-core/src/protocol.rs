@@ -240,8 +240,19 @@ pub enum Command {
         reset: bool,
     },
 
-    /// Stop an app
-    Stop { app: String },
+    /// Start an app or resume a Compose group, preserving individually stopped apps.
+    Start {
+        app: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        service: Option<String>,
+    },
+
+    /// Stop an app or a Compose group without changing replica counts.
+    Stop {
+        app: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        service: Option<String>,
+    },
 
     /// Delete an app from runtime state
     Delete { app: String },
@@ -1094,6 +1105,10 @@ impl From<crate::SocketError> for Response {
 /// App status information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppStatus {
+    #[serde(default)]
+    pub kind: ApplicationKind,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub applications: Vec<ComposeApplicationStatus>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub replica_overrides: std::collections::BTreeMap<String, u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1110,6 +1125,25 @@ pub struct AppStatus {
     /// Present only while there is instance recovery activity to report.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery: Option<RecoveryStatus>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApplicationKind {
+    #[default]
+    Application,
+    ApplicationGroup,
+}
+
+/// An x-tako app within a Compose group. Identity and replicas are service-scoped;
+/// releases, networks, volumes and lifecycle transactions belong to the group.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComposeApplicationStatus {
+    pub name: String,
+    pub service: String,
+    pub state: AppState,
+    pub routes: Vec<String>,
+    pub instances: Vec<InstanceStatus>,
 }
 
 /// Instance recovery activity since the app was deployed or last stayed healthy.

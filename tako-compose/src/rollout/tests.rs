@@ -5,7 +5,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 struct Fixture {
     dir: tempfile::TempDir,
-    config: tako_core::compose::ComposeConfig,
     env: HashMap<String, String>,
     runtimes: Vec<ComposeRuntime>,
 }
@@ -13,13 +12,6 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let config = tako_core::compose::ComposeConfig {
-            file: "compose.yaml".into(),
-            service: "web".into(),
-            port: 8080,
-            health_path: "/".into(),
-            health_host: None,
-        };
         let env = HashMap::from([
             (
                 crate::TAKO_APP_DATA_DIR_ENV.into(),
@@ -30,7 +22,6 @@ impl Fixture {
         ]);
         Self {
             dir,
-            config,
             env,
             runtimes: Vec::new(),
         }
@@ -45,9 +36,21 @@ impl Fixture {
     fn unprepared_release(&mut self, version: &str, yaml: &str) -> ComposeRuntime {
         let dir = self.dir.path().join(version);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("compose.yaml"), yaml).unwrap();
+        // Fixtures use both YAML and JSON (valid Compose YAML). Tag the web
+        // app in either representation so every rollout exercises app readiness.
+        let mut model: Value = serde_yaml_ng::from_str(yaml).unwrap();
+        model["services"]["web"]["expose"] = serde_json::json!(["8080"]);
+        model["services"]["web"]["x-tako"] = serde_json::json!({
+            "envs": {"production": {"route": "web.localhost"}}
+        });
+        std::fs::write(
+            dir.join("compose.yaml"),
+            serde_json::to_vec(&model).unwrap(),
+        )
+        .unwrap();
         std::fs::write(dir.join("Dockerfile"), format!("FROM docker.io/library/busybox:1.37\nRUN mkdir -p /www && echo {version} > /www/index.html\nCMD [\"sh\",\"-c\",\"echo web-ready; exec httpd -f -p 8080 -h /www\"]\n")).unwrap();
-        let runtime = ComposeRuntime::new(dir, self.config.clone(), self.env.clone()).unwrap();
+        let config = crate::load_config(&dir, "compose.yaml").unwrap();
+        let runtime = ComposeRuntime::new(dir, config, self.env.clone()).unwrap();
         self.runtimes.push(runtime.clone());
         runtime
     }
@@ -1141,4 +1144,224 @@ async fn worker_replicas_and_completed_jobs_keep_their_independent_lifecycles() 
     assert_eq!(scaled_workers.len(), 3);
     assert!(workers.is_subset(&scaled_workers));
     assert_eq!(service(scaled.containers(), "migrate").id, job_id);
+}
+
+#[tokio::test]
+#[ignore = "requires Docker Compose with shared host/container loopback and project paths"]
+async fn multiple_apps_have_independent_endpoints_and_failed_api_update_recovers_group() {
+    let mut fixture = Fixture::new();
+    let yaml = r#"
+services:
+  web:
+    build: .
+    deploy: {update_config: {monitor: 0s}}
+  api:
+    image: docker.io/library/busybox:1.37
+    expose: [9090]
+    x-tako:
+      envs:
+        production:
+          route: api.localhost
+    command: [sh, -c, 'mkdir -p /www; echo api-v1 > /www/index.html; exec httpd -f -p 9090 -h /www']
+    healthcheck:
+      test: [CMD, wget, -Y, 'off', -q, -O, /dev/null, 'http://127.0.0.1:9090/']
+      interval: 1s
+      timeout: 1s
+      retries: 1
+    deploy: {update_config: {monitor: 0s}}
+  worker:
+    image: docker.io/library/busybox:1.37
+    command: [sleep, '3600']
+    volumes: [data:/data]
+    deploy: {update_config: {monitor: 0s}}
+volumes:
+  data:
+"#;
+    let first = fixture.release("v1", yaml).await;
+    let mut rollout = first.begin_rollout().await.unwrap();
+    rollout.apply().await.unwrap();
+    assert_eq!(rollout.ingresses().count(), 2);
+    let before = rollout.containers().to_vec();
+    let web = service(&before, "web");
+    let api = service(&before, "api");
+    let worker = service(&before, "worker");
+    assert_ne!(web.port, api.port);
+    assert!(worker.port.is_none());
+    assert!(http(web).await.contains("v1"));
+    assert!(http(api).await.contains("api-v1"));
+    rollout.finish().await.unwrap();
+
+    // Route edits preserve both containers; scaling one app preserves the other.
+    let renamed = fixture
+        .release("v2", &yaml.replace("api.localhost", "renamed.localhost"))
+        .await;
+    let mut scaled = renamed
+        .with_replicas(BTreeMap::from([("api".into(), 2)]))
+        .begin_rollout()
+        .await
+        .unwrap();
+    scaled.apply().await.unwrap();
+    assert_eq!(scaled.ingresses().filter(|c| c.service == "api").count(), 2);
+    assert_eq!(service(scaled.containers(), "api").id, api.id);
+    assert_eq!(service(scaled.containers(), "worker").id, worker.id);
+    scaled.finish().await.unwrap();
+
+    let broken = fixture
+        .release(
+            "bad",
+            &yaml.replace("http://127.0.0.1:9090/", "http://127.0.0.1:9090/missing"),
+        )
+        .await;
+    let mut pending = broken.begin_rollout().await.unwrap();
+    assert!(pending.apply().await.is_err());
+    pending.rollback().await.unwrap();
+    assert!(first.container_healthy(&api.id).await.unwrap());
+    assert_eq!(
+        first
+            .containers()
+            .await
+            .unwrap()
+            .iter()
+            .find(|c| c.service == "worker")
+            .unwrap()
+            .id,
+        worker.id
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires Docker Compose and shared host/container loopback and project paths"]
+async fn published_port_without_http_listener_is_not_ready() {
+    let mut fixture = Fixture::new();
+    let runtime = fixture
+        .release(
+            "no-listener",
+            r#"
+services:
+  web:
+    image: docker.io/library/busybox:1.37
+    command: [sleep, '3600']
+    deploy: {update_config: {monitor: 0s}}
+"#,
+        )
+        .await;
+    let mut rollout = runtime.begin_rollout().await.unwrap();
+    rollout.apply().await.unwrap();
+    let web = rollout.ingress().unwrap();
+    assert!(web.running());
+    assert!(web.port.is_some());
+    assert!(!runtime.container_healthy(&web.id).await.unwrap());
+}
+
+#[tokio::test]
+#[ignore = "requires Docker Compose and shared host/container loopback and project paths"]
+async fn failed_stop_first_update_restores_consumer_of_an_explicitly_stopped_app() {
+    let mut fixture = Fixture::new();
+    let yaml = r#"
+services:
+  web:
+    build: .
+    depends_on: [api]
+    deploy: {update_config: {order: stop-first, monitor: 0s}}
+  api:
+    image: docker.io/library/busybox:1.37
+    expose: [9090]
+    x-tako: {}
+    command: [httpd, -f, -p, '9090']
+    deploy: {update_config: {monitor: 0s}}
+"#;
+    let original = fixture.release("consumer-v1", yaml).await;
+    let mut first = original.begin_rollout().await.unwrap();
+    first.apply().await.unwrap();
+    first.finish().await.unwrap();
+    let stopped = BTreeSet::from(["api".to_string()]);
+    let mut pause = original
+        .clone()
+        .with_stopped(false, stopped.clone())
+        .begin_rollout()
+        .await
+        .unwrap();
+    pause.apply().await.unwrap();
+    pause.finish().await.unwrap();
+    let web = service(pause.containers(), "web").clone();
+    let changed = fixture
+        .release(
+            "consumer-v2",
+            &yaml.replace(
+                "    build: .",
+                "    build: .\n    command: [sh, -c, 'exit 1']",
+            ),
+        )
+        .await;
+    let mut pending = changed
+        .with_stopped(false, stopped)
+        .begin_rollout()
+        .await
+        .unwrap();
+    assert!(pending.apply().await.is_err());
+    pending.rollback().await.unwrap();
+    assert!(original.container_healthy(&web.id).await.unwrap());
+    assert!(
+        original
+            .containers()
+            .await
+            .unwrap()
+            .iter()
+            .all(|container| container.service != "api")
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires Docker Compose and shared host/container loopback and project paths"]
+async fn failed_update_that_removes_a_stopped_dependency_restores_its_consumer() {
+    let mut fixture = Fixture::new();
+    let yaml = r#"
+services:
+  web:
+    build: .
+    depends_on: [api]
+    deploy: {update_config: {order: stop-first, monitor: 0s}}
+  api:
+    image: docker.io/library/busybox:1.37
+    expose: [9090]
+    x-tako: {}
+    command: [httpd, -f, -p, '9090']
+    deploy: {update_config: {monitor: 0s}}
+"#;
+    let original = fixture.release("removal-v1", yaml).await;
+    let mut first = original.begin_rollout().await.unwrap();
+    first.apply().await.unwrap();
+    first.finish().await.unwrap();
+    let stopped = BTreeSet::from(["api".to_string()]);
+    let mut pause = original
+        .clone()
+        .with_stopped(false, stopped.clone())
+        .begin_rollout()
+        .await
+        .unwrap();
+    pause.apply().await.unwrap();
+    pause.finish().await.unwrap();
+    let web = service(pause.containers(), "web").clone();
+    // The next release drops both the stopped app and the dependency on it.
+    // Recovery still needs the previous stop intent for the old consumer.
+    let changed = fixture
+        .release(
+            "removal-v2",
+            r#"
+services:
+  web:
+    build: .
+    command: [sh, -c, 'exit 1']
+    deploy: {update_config: {order: stop-first, monitor: 0s}}
+"#,
+        )
+        .await;
+    let mut pending = changed
+        .with_stopped(false, stopped)
+        .begin_rollout()
+        .await
+        .unwrap();
+    assert!(pending.apply().await.is_err());
+    pending.rollback().await.unwrap();
+    assert!(original.container_healthy(&web.id).await.unwrap());
 }

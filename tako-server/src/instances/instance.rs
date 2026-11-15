@@ -101,6 +101,7 @@ pub struct Instance {
 struct ComposeInstance {
     runtime: crate::compose_runtime::ComposeRuntime,
     container_id: String,
+    service: String,
     owned: bool,
 }
 
@@ -108,6 +109,7 @@ struct ComposeInstance {
 pub(crate) struct HealthyInstance {
     pub(crate) instance: Arc<Instance>,
     pub(crate) endpoint: Option<SocketAddr>,
+    pub(crate) service: Option<String>,
 }
 
 impl Instance {
@@ -255,13 +257,30 @@ impl Instance {
         &self,
         runtime: crate::compose_runtime::ComposeRuntime,
         container_id: String,
+        service: String,
     ) {
         // The pending rollout owns cleanup until its durable commit.
         *self.compose.write() = Some(ComposeInstance {
             runtime,
             container_id,
+            service,
             owned: false,
         });
+    }
+
+    pub(crate) fn compose_service(&self) -> Option<String> {
+        self.compose.read().as_ref().map(|c| c.service.clone())
+    }
+
+    pub(crate) async fn compose_healthy(&self) -> Option<bool> {
+        let compose = self.compose.read().clone()?;
+        Some(
+            compose
+                .runtime
+                .container_healthy(&compose.container_id)
+                .await
+                .unwrap_or(false),
+        )
     }
 
     pub(crate) fn compose_container_id(&self) -> Option<String> {

@@ -42,6 +42,7 @@ pub(crate) fn for_config(config: &crate::instances::AppConfig) -> Result<Compose
             data.clone(),
         );
     }
+    env.insert("ENV".into(), config.environment.clone());
     if let Some(data) = config.env_vars.get(crate::release::TAKO_APP_DATA_DIR_ENV) {
         env.insert(crate::release::TAKO_APP_DATA_DIR_ENV.into(), data.clone());
     }
@@ -54,7 +55,9 @@ pub(crate) fn for_config(config: &crate::instances::AppConfig) -> Result<Compose
         env,
     )
     .map(|runtime| {
-        let runtime = runtime.with_replicas(config.compose_replicas.clone());
+        let runtime = runtime
+            .with_replicas(config.compose_replicas.clone())
+            .with_stopped(config.stopped, config.compose_stopped.clone());
         match NATIVE_NETWORK.get() {
             Some(network) => runtime.with_native_network(network.clone()),
             None => runtime,
@@ -72,7 +75,9 @@ pub(crate) async fn prepare(
         .clone()
         .ok_or("Compose release is missing compose settings")?;
     let directory = safe_subdir(release, &manifest.app_dir)?;
-    ComposeRuntime::new(directory, config, env.clone())?
+    let mut env = env.clone();
+    env.insert("ENV".into(), manifest.environment.clone());
+    ComposeRuntime::new(directory, config, env)?
         .prepare(&manifest.version)
         .await
 }
@@ -83,18 +88,11 @@ mod tests {
 
     #[test]
     fn override_replaces_public_ports_and_pins_each_service() {
-        let config = ComposeConfig {
-            file: "compose.yaml".into(),
-            service: "web".into(),
-            port: 8080,
-            health_path: "/".into(),
-            health_host: None,
-        };
         let images = BTreeMap::from([
             ("web".into(), "local:web-v1".into()),
             ("db".into(), "local:db-v1".into()),
         ]);
-        let output = render_override(&images, &config, 45001);
+        let output = render_override(&images, &BTreeMap::from([("web".into(), (45001, 8080))]));
         assert!(output.contains("ports: !override [\"127.0.0.1:45001:8080\"]"));
         assert!(output.contains("scale: 1\n    deploy:\n      replicas: 1"));
         assert!(output.contains("image: \"local:db-v1\"\n    ports: !override []"));
@@ -126,10 +124,7 @@ mod tests {
         std::fs::write(dir.path().join("compose.yaml"), "services: {}\n").unwrap();
         let config = ComposeConfig {
             file: "compose.yaml".into(),
-            service: "web".into(),
-            port: 8080,
-            health_path: "/".into(),
-            health_host: None,
+            services: Default::default(),
         };
         let production = HashMap::from([(
             TAKO_APP_DATA_DIR_ENV.into(),
@@ -156,10 +151,10 @@ mod tests {
         std::fs::create_dir_all(&release).unwrap();
         let config = ComposeConfig {
             file: "compose.yaml".into(),
-            service: "web".into(),
-            port: 8080,
-            health_path: "/".into(),
-            health_host: None,
+            services: serde_json::from_value(
+                json!({"web":{"envs":{"production":{"route":"fixture.localhost"}}}}),
+            )
+            .unwrap(),
         };
         std::fs::write(release.join("app.json"), json!({
             "protocol_version":tako_core::PROTOCOL_VERSION,
@@ -235,13 +230,13 @@ mod tests {
         .unwrap();
         let config = ComposeConfig {
             file: "compose.yaml".into(),
-            service: "web".into(),
-            port: 8080,
-            health_path: "/".into(),
-            health_host: None,
+            services: serde_json::from_value(
+                json!({"web":{"envs":{"production":{"route":"delete.localhost"}}}}),
+            )
+            .unwrap(),
         };
         let release = crate::release::app_release_root(dir.path(), name, "v1");
-        let yaml = "services:\n  web:\n    image: docker.io/library/busybox:1.37\n    command: [httpd, -f, -p, '8080', -h, /www]\n    volumes: ['./public:/www:ro', 'state:/state']\nvolumes:\n  state:\n";
+        let yaml = "services:\n  web:\n    expose: ['8080']\n    x-tako: {envs: {production: {route: delete.localhost}}}\n    image: docker.io/library/busybox:1.37\n    command: [httpd, -f, -p, '8080', -h, /www]\n    volumes: ['./public:/www:ro', 'state:/state']\nvolumes:\n  state:\n";
         struct Cleanup(String);
         impl Drop for Cleanup {
             fn drop(&mut self) {
@@ -348,10 +343,10 @@ mod tests {
             std::fs::create_dir_all(&release).unwrap();
             let config = ComposeConfig {
                 file: "compose.yaml".into(),
-                service: "web".into(),
-                port: 8080,
-                health_path: "/".into(),
-                health_host: None,
+                services: serde_json::from_value(
+                    json!({"web":{"envs":{"production":{"route":"transition.localhost"}}}}),
+                )
+                .unwrap(),
             };
             std::fs::write(release.join("app.json"), json!({
                 "protocol_version":tako_core::PROTOCOL_VERSION,
@@ -361,6 +356,8 @@ mod tests {
             std::fs::write(release.join("compose.yaml"), r#"
 services:
   web:
+    expose: ["8080"]
+    x-tako: {envs: {production: {route: transition.localhost}}}
     image: docker.io/library/busybox:1.37
     command: [sh, -c, 'mkdir -p /www; echo compose > /www/index.html; exec httpd -f -p 8080 -h /www']
   worker:

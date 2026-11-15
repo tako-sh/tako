@@ -503,11 +503,8 @@ fn compose_validates_deployment_boundaries() {
     let base = r#"
 [compose]
 file = "compose.yaml"
-service = "web"
-port = 8080
 [envs.production]
 servers = ["one"]
-route = "compose.example.com"
 "#;
     TakoToml::parse(base).unwrap();
     assert!(TakoToml::parse(&base.replace("[\"one\"]", "[\"one\", \"two\"]")).is_err());
@@ -533,4 +530,37 @@ fn container_runtime_rejects_invalid_paths_and_health() {
             "{options}"
         );
     }
+}
+
+#[test]
+fn compose_loads_service_routes_and_local_app_defaults() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("tako.toml"),
+        "name = 'shop'\n[compose]\nfile = 'compose.yaml'\n[envs.production]\nservers = ['prod']\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("compose.yaml"), "services:\n  web:\n    image: nginx\n    x-tako:\n      envs:\n        production:\n          route: example.com\n  api:\n    image: nginx\n    x-tako:\n      envs:\n        production:\n          route: api.example.com\n  private:\n    image: nginx\n    x-tako: {}\n  redis:\n    image: redis\n").unwrap();
+    let config = TakoToml::load_from_dir(dir.path()).unwrap();
+    assert_eq!(
+        config.get_routes("production").unwrap(),
+        ["api.example.com", "example.com"]
+    );
+    let compose = config.compose.unwrap();
+    assert_eq!(compose.services.len(), 3);
+    assert!(!compose.services.contains_key("redis"));
+    let dev = compose.for_development("shop-preview.tako", Some("shop.tako"));
+    assert_eq!(
+        dev.routes("development"),
+        [
+            "api.shop-preview.tako",
+            "private.shop-preview.tako",
+            "web.shop-preview.tako"
+        ]
+    );
+    assert!(TakoToml::parse("[compose]\nfile='compose.yaml'\nport=3000").is_err());
+    assert!(
+        TakoToml::parse("[compose]\nfile='compose.yaml'\n[envs.production]\nroute='example.com'")
+            .is_err()
+    );
 }

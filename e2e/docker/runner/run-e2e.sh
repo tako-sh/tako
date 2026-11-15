@@ -167,24 +167,17 @@ exit 1
 }
 
 detect_route_host() {
-  local toml_path=$1
-  local env_name=${2:-production}
-  awk -v env_name="$env_name" '
-    $0 ~ "^\\[envs\\." env_name "\\]" {
-      in_env = 1
-      next
-    }
-    in_env && $0 ~ "^\\[" {
-      in_env = 0
-    }
-    in_env && $1 == "route" {
-      line = $0
-      sub(/^[^=]*=[[:space:]]*"/, "", line)
-      sub(/".*$/, "", line)
-      print line
-      exit
-    }
-  ' "$toml_path"
+  bun - "$1" "${2:-production}" <<'JS'
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+const path = process.argv[2], env = process.argv[3];
+const config = Bun.TOML.parse(readFileSync(path, "utf8"));
+const settings = config.compose
+  ? Object.values(Bun.YAML.parse(readFileSync(resolve(dirname(path), config.compose.file), "utf8")).services).map(service => service["x-tako"]?.envs?.[env])
+  : [config.envs?.[env]];
+const route = settings.flatMap(value => value?.route ? [value.route] : value?.routes ?? [])[0];
+if (route) console.log(route.split("/")[0]);
+JS
 }
 
 detect_app_name() {
@@ -791,7 +784,7 @@ run_compose_lifecycle_checks() {
   compose_assert_response 'Hello from Bun!'
 
   # A failed HTTP health check must recover the old release with its data.
-  sed -i 's#health_path = "/health"#health_path = "/missing"#' "$PROJECT_DIR/tako.toml"
+  sed -i 's#127.0.0.1:3000/health#127.0.0.1:3000/missing#' "$PROJECT_DIR/compose.yaml"
   compose_probe_start
   if HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" deploy --env production --yes >"$TMP_ROOT/compose-failed-deploy.log" 2>&1; then
     echo "Compose deployment with a failing health check unexpectedly succeeded" >&2
@@ -821,7 +814,7 @@ run_compose_lifecycle_checks() {
   [[ $(compose_container_id web) == "$web_id" ]]
   compose_assert_release
   compose_assert_response 'Hello from Bun!'
-  sed -i 's#health_path = "/missing"#health_path = "/health"#' "$PROJECT_DIR/tako.toml"
+  sed -i 's#127.0.0.1:3000/missing#127.0.0.1:3000/health#' "$PROJECT_DIR/compose.yaml"
   sed -i 's/Updated Bun release!/Hello from Bun!/' "$PROJECT_DIR/server.ts"
   sed -i '/ROTATION_TOKEN:/d' "$PROJECT_DIR/compose.yaml"
 

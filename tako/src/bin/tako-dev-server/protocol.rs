@@ -59,6 +59,10 @@ pub enum Request {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RegisterAppRequest {
     #[serde(default)]
+    pub compose_default_host: Option<String>,
+    #[serde(default)]
+    pub compose_base_host: Option<String>,
+    #[serde(default)]
     pub compose: Option<tako_core::compose::ComposeConfig>,
     pub config_path: String,
     pub project_dir: String,
@@ -387,6 +391,8 @@ mod tests {
     fn serde_roundtrip_register_app() {
         let req = Request::RegisterApp(Box::new(RegisterAppRequest {
             compose: None,
+            compose_default_host: None,
+            compose_base_host: None,
             config_path: "/home/user/proj/tako.toml".to_string(),
             project_dir: "/home/user/proj".to_string(),
             app_name: "my-app".to_string(),

@@ -33,6 +33,7 @@ mod ws;
 
 struct SharedAppResolver {
     app_name: String,
+    compose_service: Option<Arc<str>>,
     lb: Arc<crate::lb::LoadBalancer>,
     cold_start: Arc<crate::scaling::ColdStartManager>,
     draining: Arc<std::sync::atomic::AtomicBool>,
@@ -46,12 +47,13 @@ struct SharedAppResolver {
 impl tako_channels::shared::AppResolver for SharedAppResolver {
     async fn resolve(&self) -> std::result::Result<AppAuthorizer, ChannelError> {
         self.check_generation()?;
-        let BackendResolution::Ready { backend, .. } = super::backend::resolve_app_backend(
+        let BackendResolution::Ready { backend, .. } = super::backend::resolve_service_backend(
             &self.lb,
             &self.cold_start,
             &self.draining,
             &self.spawn_gate,
             &self.app_name,
+            self.compose_service.as_deref(),
         )
         .await
         else {
@@ -216,7 +218,10 @@ impl TakoProxy {
                 .await;
         }
 
-        let backend = match self.resolve_backend(app_name).await {
+        let backend = match self
+            .resolve_service_backend(app_name, ctx.compose_service.as_deref())
+            .await
+        {
             BackendResolution::Ready {
                 backend,
                 cold_start_wait,
@@ -270,6 +275,7 @@ impl TakoProxy {
             };
             let app = Arc::new(SharedAppResolver {
                 app_name: app_name.to_owned(),
+                compose_service: ctx.compose_service.clone(),
                 lb: self.lb.clone(),
                 cold_start: self.cold_start.clone(),
                 draining: self.draining.clone(),

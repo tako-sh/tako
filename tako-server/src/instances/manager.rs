@@ -102,13 +102,20 @@ impl AppManager {
     /// Caller must hold the app's lifecycle write guard.
     pub(crate) async fn start_app_locked(&self, app: &Arc<App>) -> Result<(), InstanceError> {
         let min_instances = app.config.read().min_instances;
-        app.set_state(AppState::Running);
+        app.set_state(if app.config.read().stopped {
+            AppState::Stopped
+        } else {
+            AppState::Running
+        });
 
         if app.config.read().compose.is_some() {
             return self.spawner.reconcile_compose(app).await;
         }
 
-        for _ in 0..min_instances {
+        if app.config.read().stopped {
+            return Ok(());
+        }
+        for _ in app.get_instances().len() as u32..min_instances {
             let instance = app.allocate_instance();
             self.spawner.spawn(app, instance).await?;
         }
@@ -129,6 +136,7 @@ impl AppManager {
     /// Caller must hold the app's lifecycle write guard.
     pub(crate) async fn stop_app_locked(&self, app: &Arc<App>) -> Result<(), InstanceError> {
         app.set_state(AppState::Stopped);
+        app.stop_compose_logs();
 
         let compose_config = app.config.read().clone();
         let compose = if compose_config.compose.is_some() {
@@ -168,6 +176,7 @@ impl AppManager {
 
         for (name, app) in apps {
             app.set_state(AppState::Stopped);
+            app.stop_compose_logs();
             for instance in app.get_instances() {
                 app.set_instance_state(&instance, InstanceState::Draining);
                 // Docker owns these processes across Tako server restarts.

@@ -223,27 +223,16 @@ pub fn routes_overlap(_a: &str, _b: &str) -> bool {
 
 /// Validate that a new app's routes don't conflict with existing deployed apps.
 ///
-/// `existing` is a list of (app_name, routes). An empty routes list means "no routes configured"
-/// and is considered invalid.
+/// `existing` is a list of (app_name, routes). Empty lists describe private groups;
+/// native application configuration validates route presence separately.
 pub fn validate_no_route_conflicts(
     _existing: &[(String, Vec<String>)],
     _new_app: &str,
     _new_routes: &[String],
 ) -> Result<(), String> {
-    if _new_routes.is_empty() {
-        return Err("route conflict: app must define at least one route".to_string());
-    }
-
     for (existing_app, existing_routes) in _existing {
         if existing_app == _new_app {
             continue;
-        }
-
-        if existing_routes.is_empty() {
-            return Err(format!(
-                "route conflict: '{}' has no routes configured; catch-all deployments are not supported",
-                existing_app
-            ));
         }
 
         for er in existing_routes {
@@ -446,18 +435,17 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_no_route_conflicts_rejects_existing_catch_all_app() {
+    fn test_validate_no_route_conflicts_allows_existing_private_group() {
         let existing = vec![("other".to_string(), vec![])];
-        let err = validate_no_route_conflicts(&existing, "new", &["api.example.com".to_string()])
-            .unwrap_err();
-        assert!(err.contains("no routes"));
+        assert!(
+            validate_no_route_conflicts(&existing, "new", &["api.example.com".to_string()]).is_ok()
+        );
     }
 
     #[test]
-    fn test_validate_no_route_conflicts_rejects_new_app_without_routes() {
+    fn test_validate_no_route_conflicts_allows_private_group() {
         let existing = vec![("other".to_string(), vec![])];
-        let err = validate_no_route_conflicts(&existing, "new", &[]).unwrap_err();
-        assert!(err.contains("must define at least one route"));
+        assert!(validate_no_route_conflicts(&existing, "new", &[]).is_ok());
     }
 
     #[test]

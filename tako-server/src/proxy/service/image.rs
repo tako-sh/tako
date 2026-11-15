@@ -261,7 +261,16 @@ impl TakoProxy {
         host: &str,
         limits: &TransformLimits,
     ) -> Result<ImageSourceBytes, ImageError> {
-        let backend = match self.resolve_backend(app_name).await {
+        let service = self
+            .routes
+            .read()
+            .select_with_route(host.split(':').next().unwrap_or(host), path)
+            .filter(|route| route.app.as_ref() == app_name)
+            .and_then(|route| route.service);
+        let backend = match self
+            .resolve_service_backend(app_name, service.as_deref())
+            .await
+        {
             BackendResolution::Ready { backend, .. } => backend,
             _ => return Err(ImageError::TransformFailed),
         };

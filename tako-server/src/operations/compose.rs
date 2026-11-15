@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use crate::instances::{AppConfig, RollingUpdateConfig, RollingUpdater};
@@ -24,16 +24,36 @@ impl crate::ServerState {
             backup,
         } = request;
         let app_name = config.deployment_id();
+        if config.compose.as_ref().map(|c| {
+            c.routes(&config.environment)
+                .into_iter()
+                .collect::<BTreeSet<_>>()
+        }) != Some(routes.iter().cloned().collect())
+        {
+            return Response::error("Compose routes must match the service routes in the release");
+        }
+        // Build the runtime with the previous stop intent intact: if this
+        // rollout fails, predecessor recovery must still skip dependencies the
+        // operator stopped, even ones the new release removes. Only the
+        // configuration committed below drops services that no longer exist.
         let runtime = match crate::compose_runtime::for_config(&config) {
             Ok(runtime) => runtime,
             Err(error) => return Response::error(error),
         };
+        config.compose_stopped.retain(|service| {
+            config
+                .compose
+                .as_ref()
+                .unwrap()
+                .services
+                .contains_key(service)
+        });
         let mut rollout = match runtime.begin_rollout().await {
             Ok(rollout) => rollout,
             Err(error) => return Response::error(error),
         };
         let replicas = rollout.replicas();
-        config.min_instances = replicas[&runtime.config.service];
+        config.min_instances = runtime.ingress_count(&replicas);
         config
             .compose_replicas
             .retain(|service, _| replicas.contains_key(service));
@@ -77,7 +97,7 @@ impl crate::ServerState {
                 instances.push(instance.clone());
                 self.app_manager
                     .spawner()
-                    .attach_compose(&app, instance, &runtime, web, rollout.containers())
+                    .attach_compose(&app, instance, &runtime, web)
                     .await
                     .map_err(|e| e.to_string())?;
             }
@@ -109,10 +129,7 @@ impl crate::ServerState {
             let mut recovery = rollout.rollback().await;
             if let Some((previous_config, previous_state)) = previous {
                 app.update_config(previous_config.clone());
-                if recovery.is_ok()
-                    && previous_config.compose.is_some()
-                    && !old_instances.is_empty()
-                {
+                if recovery.is_ok() && previous_config.compose.is_some() {
                     recovery = self
                         .app_manager
                         .spawner()
@@ -150,11 +167,9 @@ impl crate::ServerState {
         // From here onward the new release is authoritative, including after
         // process termination. Cleanup failures must not roll its metadata back.
         {
-            self.routes.write().set_app_routes_with_source_ip(
-                app_name.clone(),
-                routes.clone(),
-                config.source_ip,
-            );
+            self.routes
+                .write()
+                .set_config_routes(&config, routes.clone());
         }
         for route in &routes {
             self.ensure_route_certificate(&app_name, route.split('/').next().unwrap_or(route))
@@ -183,6 +198,9 @@ impl crate::ServerState {
             drains.spawn(async move { updater.drain_and_stop(&app, &old).await });
         }
         let mut cleanup_errors = Vec::new();
+        if let Err(error) = app.sync_compose_logs(&runtime, rollout.containers()).await {
+            cleanup_errors.push(error);
+        }
         while let Some(result) = drains.join_next().await {
             match result {
                 Ok(Ok(())) => {}
@@ -194,7 +212,11 @@ impl crate::ServerState {
             cleanup_errors.push(error);
         }
         let cleanup_error = (!cleanup_errors.is_empty()).then(|| cleanup_errors.join("; "));
-        app.set_state(AppState::Running);
+        app.set_state(if config.stopped {
+            AppState::Stopped
+        } else {
+            AppState::Running
+        });
         app.reset_recovery();
         if let Some(error) = &cleanup_error {
             app.set_last_error(format!(
@@ -206,8 +228,15 @@ impl crate::ServerState {
         crate::runtime_events::update_instance_count_metric(&app_name, &app);
         let release_path =
             crate::release::app_release_root(&self.runtime.data_dir, &app_name, &config.version);
-        self.sync_app_workflows(&app_name, &release_path, None)
-            .await;
+        if config.stopped {
+            self.cold_start.mark_failed(&app_name, "app_stopped");
+            self.workflows
+                .stop(&app_name, std::time::Duration::from_secs(120))
+                .await;
+        } else {
+            self.sync_app_workflows(&app_name, &release_path, None)
+                .await;
+        }
         Response::ok(serde_json::json!({
             "status":"deployed", "app":app_name, "version":config.version,
             "new_app":previous.is_none(), "updates":updates, "cleanup_error":cleanup_error,
@@ -223,10 +252,13 @@ impl crate::ServerState {
         requested: Option<u8>,
         service: Option<&str>,
     ) -> Response {
-        let app = config.deployment_id();
-        let service = service
-            .unwrap_or(&config.compose.as_ref().unwrap().service)
-            .to_owned();
+        let service = match service {
+            Some(service) => service.to_owned(),
+            None => match config.compose.as_ref().unwrap().default_service() {
+                Ok(service) => service.to_owned(),
+                Err(error) => return Response::error(error),
+            },
+        };
         if let Some(count) = requested {
             config
                 .compose_replicas
@@ -242,9 +274,65 @@ impl crate::ServerState {
             Ok(plan) => plan,
             Err(error) => return Response::error(error),
         };
-        let Some(count) = plan.replicas().get(&service).copied() else {
+        let Some(count) = plan.configured_replicas().get(&service).copied() else {
             return Response::error(format!("Unknown Compose service '{service}'"));
         };
+        let stopped = config.stopped || config.compose_stopped.contains(&service);
+        match self.apply_compose_config(config).await {
+            Response::Ok { mut data } => {
+                data["status"] = serde_json::json!("scaled");
+                data["service"] = serde_json::json!(service);
+                data["instances"] = serde_json::json!(count);
+                data["requested_instances"] = serde_json::json!(requested);
+                data["standby_limited"] = serde_json::json!(false);
+                data["stopped"] = serde_json::json!(stopped);
+                Response::Ok { data }
+            }
+            error => error,
+        }
+    }
+
+    pub(super) async fn set_compose_running(
+        &self,
+        mut config: AppConfig,
+        service: Option<&str>,
+        running: bool,
+    ) -> Response {
+        if let Some(service) = service {
+            if !config
+                .compose
+                .as_ref()
+                .unwrap()
+                .services
+                .contains_key(service)
+            {
+                return Response::error(format!(
+                    "'{service}' is not a Tako app in this group; individual start/stop requires x-tako"
+                ));
+            }
+            if running && config.stopped {
+                return Response::error("The application group is stopped; start the group first");
+            }
+            if running {
+                config.compose_stopped.remove(service);
+            } else {
+                config.compose_stopped.insert(service.to_owned());
+            }
+        } else {
+            config.stopped = !running;
+        }
+        match self.apply_compose_config(config).await {
+            Response::Ok { mut data } => {
+                data["status"] = serde_json::json!(if running { "started" } else { "stopped" });
+                data["service"] = serde_json::json!(service);
+                Response::Ok { data }
+            }
+            error => error,
+        }
+    }
+
+    pub(super) async fn apply_compose_config(&self, config: AppConfig) -> Response {
+        let app = config.deployment_id();
         let bindings = (|| -> Result<_, crate::state_store::StateStoreError> {
             Ok((
                 self.state_store.get_runtime_credentials(&app)?,
@@ -258,26 +346,16 @@ impl crate::ServerState {
                 return Response::error(format!("Could not load deployment credentials: {error}"));
             }
         };
-        let routes = self.routes.read().routes_for_app(&app);
-        match self
-            .deploy_compose(ComposeDeployment {
-                config,
-                routes,
-                runtime_credentials,
-                ssl,
-                backup,
-            })
-            .await
-        {
-            Response::Ok { mut data } => {
-                data["status"] = serde_json::json!("scaled");
-                data["service"] = serde_json::json!(service);
-                data["instances"] = serde_json::json!(count);
-                data["requested_instances"] = serde_json::json!(requested);
-                data["standby_limited"] = serde_json::json!(false);
-                Response::Ok { data }
-            }
-            error => error,
-        }
+        // Persisted route rows can have a different order after a restart.
+        // The release's per-service metadata remains authoritative.
+        let routes = config.compose.as_ref().unwrap().routes(&config.environment);
+        self.deploy_compose(ComposeDeployment {
+            config,
+            routes,
+            runtime_credentials,
+            ssl,
+            backup,
+        })
+        .await
     }
 }

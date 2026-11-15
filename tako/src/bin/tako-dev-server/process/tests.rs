@@ -548,6 +548,12 @@ async fn restart_and_stop_interrupt_pending_readiness_without_error_logs() {
 
     let directory = tempfile::tempdir().unwrap();
     let (state, config_path) = idle_wake_app(directory.path());
+    // Simulate a previously healthy generation whose old process monitor has
+    // not yet run. A replacement PID alone must not reactivate its old ports.
+    state.lock().unwrap().routes.activate_compose(
+        &format!("reg:{config_path}"),
+        std::collections::HashMap::from([("wake.test".into(), 31337)]),
+    );
     let mut events = state.lock().unwrap().events.subscribe();
     state
         .lock()
@@ -571,6 +577,15 @@ async fn restart_and_stop_interrupt_pending_readiness_without_error_logs() {
     assert!(matches!(response, Response::AppRestarting { .. }));
     wait_for_startup_event(&mut events, false).await;
     let first_pid = state.lock().unwrap().apps[&config_path].pid.unwrap();
+    assert!(
+        !state
+            .lock()
+            .unwrap()
+            .routes
+            .lookup("wake.test", "/")
+            .unwrap()
+            .active
+    );
 
     // Restart while the first command is still waiting, then stop the next wait.
     let response = tokio::time::timeout(

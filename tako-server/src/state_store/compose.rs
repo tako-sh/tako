@@ -136,6 +136,7 @@ mod tests {
         config.secrets.insert("TOKEN".into(), "previous".into());
         config.compose_replicas.insert("web".into(), 5);
         config.compose_replicas.insert("worker".into(), 0);
+        config.compose_stopped.insert("web".into());
         store
             .commit_deployment(
                 &config,
@@ -152,6 +153,8 @@ mod tests {
         config.version = "v2".into();
         config.compose_replicas.remove("web");
         config.compose_replicas.insert("worker".into(), 3);
+        config.stopped = true;
+        config.compose_stopped.clear();
         config.secrets.insert("TOKEN".into(), "next".into());
         // A late SQL failure must roll back the app row, routes, and every secret
         // write, leaving the marker for recovery.
@@ -169,6 +172,8 @@ mod tests {
                 .is_err()
         );
         let persisted = store.load_apps().unwrap();
+        assert!(!persisted[0].config.stopped);
+        assert!(persisted[0].config.compose_stopped.contains("web"));
         assert_eq!(
             store.workflow_schedule_revision("app/production").unwrap(),
             Some(1)

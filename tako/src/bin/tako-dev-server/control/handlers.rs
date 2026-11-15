@@ -56,6 +56,8 @@ pub(crate) async fn handle_client(
             Request::RegisterApp(request) => {
                 let RegisterAppRequest {
                     compose,
+                    compose_default_host,
+                    compose_base_host,
                     config_path,
                     project_dir,
                     app_name,
@@ -75,6 +77,8 @@ pub(crate) async fn handle_client(
                     Arc::clone(&state),
                     apps::RegisterAppArgs {
                         compose,
+                        compose_default_host,
+                        compose_base_host,
                         config_path,
                         project_dir,
                         app_name,

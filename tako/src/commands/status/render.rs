@@ -159,11 +159,25 @@ fn format_app_lines(apps: &[super::GlobalAppStatusResult]) -> Vec<String> {
             details = segments.join("  "),
         ));
         if let Some(status) = &app.status.app_status {
-            for service in &status.services {
+            for child in &status.applications {
+                lines.push(format!(
+                    "{}{} (app)  {}  {} instance(s)",
+                    output::INDENT.repeat(3),
+                    child.service,
+                    child.state,
+                    child.instances.len()
+                ));
+            }
+            for service in status.services.iter().filter(|service| {
+                !status
+                    .applications
+                    .iter()
+                    .any(|app| app.service == service.service)
+            }) {
                 lines.push(format!(
                     "{}{}  {}  {}",
                     output::INDENT.repeat(3),
-                    service.service,
+                    format!("{} (Docker service)", service.service),
                     service.state,
                     service.health
                 ));
@@ -291,6 +305,8 @@ mod tests {
                     service_status: "active".to_string(),
                     server_version: Some("0.1.0".to_string()),
                     app_status: Some(AppStatus {
+                        kind: Default::default(),
+                        applications: Vec::new(),
                         replica_overrides: Default::default(),
                         services: Vec::new(),
                         services_error: None,
@@ -399,6 +415,8 @@ mod tests {
                     service_status: "active".to_string(),
                     server_version: None,
                     app_status: Some(AppStatus {
+                        kind: Default::default(),
+                        applications: Vec::new(),
                         replica_overrides: Default::default(),
                         services: Vec::new(),
                         services_error: None,

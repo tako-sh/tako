@@ -195,6 +195,8 @@ pub async fn run(
     let reg_url =
         crate::dev_server_client::register_app(crate::dev_server_client::RegisterAppRequest {
             compose: cfg.compose.as_ref(),
+            compose_default_host: Some(&domain),
+            compose_base_host: base_domain.as_deref(),
             config_path: &config_key,
             project_dir: &project_dir_display,
             app_name: &app_name,

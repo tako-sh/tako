@@ -1,4 +1,4 @@
-use crate::app_command::env_vars_from_release_dir;
+use crate::app_command::{env_vars_from_release_dir, load_release_manifest};
 use crate::release::{
     app_release_root, current_release_version, directory_modified_unix_secs,
     ensure_app_runtime_data_dirs, inject_app_data_dir_env, prepare_release_runtime,
@@ -18,7 +18,9 @@ impl crate::ServerState {
         ssl: tako_core::SslBinding,
         force: bool,
     ) -> Response {
-        if let Err(msg) = validate_deploy_routes(&routes) {
+        if !routes.is_empty()
+            && let Err(msg) = validate_deploy_routes(&routes)
+        {
             return Response::error(msg);
         }
         let release_path =
@@ -30,6 +32,16 @@ impl crate::ServerState {
             crate::protocol_compatibility::validate_release_protocol(&release_path, force)
         {
             return Response::error(error);
+        }
+
+        if routes.is_empty() {
+            match load_release_manifest(&release_path) {
+                Ok(manifest) if manifest.compose.is_some() => {}
+                Ok(_) => {
+                    return Response::error("Deploy rejected: app must define at least one route");
+                }
+                Err(error) => return Response::error(error),
+            }
         }
 
         if let Err(error) = self.validate_deploy_ssl_binding(&routes, &ssl).await {
@@ -295,8 +307,8 @@ impl crate::ServerState {
     }
 
     pub(crate) async fn rollback_app(&self, app_name: &str, version: &str) -> Response {
-        let _app = match self.app_manager.get_app(app_name) {
-            Some(app) => app,
+        let environment = match self.app_manager.get_app(app_name) {
+            Some(app) => app.config.read().environment.clone(),
             None => return Response::error(format!("App not found: {}", app_name)),
         };
 
@@ -310,11 +322,26 @@ impl crate::ServerState {
             ));
         }
 
-        let routes = {
-            let route_table = self.routes.read();
-            route_table.routes_for_app(app_name)
+        let target = match load_release_manifest(&target_path) {
+            Ok(manifest) => manifest,
+            Err(error) => return Response::error(error),
         };
-        if routes.is_empty() {
+        let historical = match self.state_store.release_routing(app_name, version) {
+            Ok(value) => value,
+            Err(error) => {
+                return Response::error(format!("Failed to read release routes: {error}"));
+            }
+        };
+        // Compose routes are part of the immutable service configuration. A
+        // rollback restores those bindings, including a Docker-only group.
+        let routes = match &target.compose {
+            Some(compose) => compose.routes(&environment),
+            None => historical
+                .as_ref()
+                .map(|routing| routing.routes.clone())
+                .unwrap_or_else(|| self.routes.read().routes_for_app(app_name)),
+        };
+        if routes.is_empty() && target.compose.is_none() {
             return Response::error(format!(
                 "Cannot rollback '{}': no routes are configured",
                 app_name
@@ -326,11 +353,14 @@ impl crate::ServerState {
                 return Response::error(format!("Failed to read SSL credentials: {error}"));
             }
         };
-        let source_ip = self
-            .app_manager
-            .get_app(app_name)
-            .map(|app| app.config.read().source_ip)
-            .unwrap_or_default();
+        let source_ip = historical
+            .map(|routing| routing.source_ip)
+            .unwrap_or_else(|| {
+                self.app_manager
+                    .get_app(app_name)
+                    .map(|app| app.config.read().source_ip)
+                    .unwrap_or_default()
+            });
 
         let target_path = target_path.to_string_lossy();
         let response = self

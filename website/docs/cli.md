@@ -13,15 +13,15 @@ Use `tako <command> --help` or the connected MCP tool's schema for the exact arg
 
 ## Global Options
 
-| Option                          | Meaning                                                                                                                                |
-| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `--version`                     | Print the CLI version and exit.                                                                                                        |
-| `-v`, `--verbose`               | Append-only transcript with timestamps, log levels, and debug diagnostics.                                                             |
-| `--ci`                          | Deterministic non-interactive output: no colors, spinners, raw mode, or prompts.                                                       |
-| `--json`                        | Emit structured JSON on stdout. Progress, diagnostics, and errors stay on stderr.                                                      |
-| `--dry-run`                     | Preview supported changes. A command that cannot preview its changes exits with an error before running.                               |
-| `-c`, `--config <CONFIG>`       | Use an explicit config file. `.toml` is appended when omitted.                                                                         |
-| `--ssh-passphrase <PASSPHRASE>` | Use a passphrase for encrypted local SSH keys.                                                                                         |
+| Option                          | Meaning                                                                                                  |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `--version`                     | Print the CLI version and exit.                                                                          |
+| `-v`, `--verbose`               | Append-only transcript with timestamps, log levels, and debug diagnostics.                               |
+| `--ci`                          | Deterministic non-interactive output: no colors, spinners, raw mode, or prompts.                         |
+| `--json`                        | Emit structured JSON on stdout. Progress, diagnostics, and errors stay on stderr.                        |
+| `--dry-run`                     | Preview supported changes. A command that cannot preview its changes exits with an error before running. |
+| `-c`, `--config <CONFIG>`       | Use an explicit config file. `.toml` is appended when omitted.                                           |
+| `--ssh-passphrase <PASSPHRASE>` | Use a passphrase for encrypted local SSH keys.                                                           |
 
 App-scoped commands that honor `-c`: `agents`, `mcp`, `init`, `dev`, `run`, `logs`, `deploy`, `releases`, `backups`, `delete`, `secrets`, `credentials`, `storages`, `generate`, and project-context `scale`.
 
@@ -185,7 +185,18 @@ tako scale --reset [--service <service>] [--env <env>] [--server <server>] [--ap
 
 Changes desired instance count on targeted servers. From a project, app identity is resolved from the config. Outside a project, pass `--app`, either as a base app with `--env` or as a full `{app}/{env}` deployment id.
 
-For Compose, the target defaults to `[compose].service`; `--service` selects another service. The count is a persistent override that survives deploys, rollbacks, and restarts. `--reset` clears the selected service override and applies its current Compose `deploy.replicas` default (one when omitted). Supply either a count or `--reset`. These flags require a Compose app. See [Compose scaling](/docker-compose/#scale-individual-services) for limits and shared-volume behavior.
+For a Compose group with exactly one `x-tako` app, that app is the default scale target. With multiple apps, supply `--service`. Untagged Docker services can also be selected with `--service`. The count is a persistent override that survives deploys, rollbacks, and restarts. `--reset` clears the selected service override and applies its current Compose `deploy.replicas` default (one when omitted). Supply either a count or `--reset`. These flags require a Compose app. Scaling a stopped app or group updates its count for the next start without resuming it. See [Compose scaling](/docker-compose/#scale-individual-services) for limits and shared-volume behavior.
+
+```bash
+tako stop [--service <service>] [--env <env>] [--server <server>] [--app <app>]
+tako start [--service <service>] [--env <env>] [--server <server>] [--app <app>]
+```
+
+Stops or starts an existing deployment. From a project, pass `--env` to use its configured servers, or select `--server` (defaulting to the production environment when `--env` is omitted). Outside a project, pass `--server` and either `--app <app>/<env>` or `--app <app> --env <env>`. Both commands support global `--dry-run` and `--json`.
+
+For Compose, `--service` selects an `x-tako` app; omitting it selects the whole group, including its ordinary Docker services. Stopped apps retain their routes and configured replica counts. The stopped state survives deploys, rollbacks, and server restarts; requests do not wake them. Starting a group preserves apps that were individually stopped. Start the group before starting one of its apps. Explicitly stopped dependencies stay stopped even when a consumer starts or is redeployed. See [Compose start and stop](/docker-compose/#start-and-stop-apps).
+
+For native apps, stop also stops workflow workers. Unlike `scale 0`, it prevents automatic cold starts. Start resumes the configured instance count and workflows; for an app configured with zero minimum instances, it warms one instance without changing that minimum.
 
 ```bash
 tako delete [--env <env>] [--server <server>] [-y|--yes]
@@ -196,6 +207,8 @@ tako destroy ...
 ```
 
 Deletes one deployment target, drains and stops the app, removes runtime state, and removes the server-side app data tree for that app/environment on the selected server.
+
+A Compose service cannot be deleted independently: `tako delete --service <service>` is rejected before contacting a server. Remove the service from the Compose file and redeploy, or delete the whole group. Docker named volumes remain after group deletion.
 
 ## Releases
 

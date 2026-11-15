@@ -20,7 +20,7 @@ Only the Bun app publishes a port. Redis is accessible to the app through the Co
 
 ## Deploy with Tako
 
-Change the domain and server in `tako.toml`. The server needs Docker Engine and Docker Compose 2.24.4 or newer accessible to the Tako service user.
+Change the domain in `compose.yaml` (`x-tako.envs.production.route`) and the server in `tako.toml`. The server needs Docker Engine and Docker Compose 2.24.4 or newer accessible to the Tako service user.
 
 ```bash
 tako deploy --env production

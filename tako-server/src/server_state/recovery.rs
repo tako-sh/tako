@@ -96,7 +96,7 @@ impl ServerState {
                     );
                 }
             }
-            let should_start = config.min_instances > 0;
+            let should_start = config.compose.is_some() || config.min_instances > 0;
             match ensure_app_runtime_data_dirs(&self.runtime.data_dir, &app_name) {
                 Ok(paths) => inject_app_data_dir_env(&mut config.env_vars, &paths),
                 Err(error) => {
@@ -134,11 +134,7 @@ impl ServerState {
 
             {
                 let mut route_table = self.routes.write();
-                route_table.set_app_routes_with_source_ip(
-                    app_name.clone(),
-                    routes,
-                    config.source_ip,
-                );
+                route_table.set_config_routes(&config, routes);
             }
 
             // Neither the app nor its workflows start on data a restore left
@@ -152,9 +148,15 @@ impl ServerState {
                 app.set_last_error(reason);
                 continue;
             }
-            if let Err(error) = self
-                .try_sync_app_workflows(&app_name, &release_path, runtime_bin_path.as_deref())
-                .await
+            if config.stopped && config.compose.is_none() {
+                app.set_state(AppState::Stopped);
+                self.cold_start.mark_failed(&app_name, "app_stopped");
+                continue;
+            }
+            if !config.stopped
+                && let Err(error) = self
+                    .try_sync_app_workflows(&app_name, &release_path, runtime_bin_path.as_deref())
+                    .await
             {
                 errors.push(format!("{app_name}: {error}"));
             }
@@ -165,7 +167,11 @@ impl ServerState {
             if should_start {
                 match self.app_manager.start_app(&app_name).await {
                     Ok(()) => {
-                        app.set_state(AppState::Running);
+                        app.set_state(if config.stopped {
+                            AppState::Stopped
+                        } else {
+                            AppState::Running
+                        });
                         if config.compose.is_some() {
                             // The process or deploy client can disappear after
                             // the database commit but before CLI finalization.

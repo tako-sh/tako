@@ -19,6 +19,8 @@ use crate::{advertised_https_port, app_short_host, default_hosts};
 use super::super::state::State;
 
 pub(super) struct RegisterAppArgs {
+    pub(super) compose_default_host: Option<String>,
+    pub(super) compose_base_host: Option<String>,
     pub(super) compose: Option<tako_core::compose::ComposeConfig>,
     pub(super) config_path: String,
     pub(super) project_dir: String,
@@ -42,6 +44,8 @@ pub(super) async fn register_app(
 ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
     let RegisterAppArgs {
         compose,
+        compose_default_host,
+        compose_base_host,
         config_path,
         project_dir,
         app_name,
@@ -81,6 +85,12 @@ pub(super) async fn register_app(
                     variant.as_deref().unwrap_or_default()
                 ),
             )
+            .map(|runtime| {
+                runtime.with_development_hosts(
+                    compose_default_host.unwrap_or_else(|| app_short_host(&app_name)),
+                    compose_base_host,
+                )
+            })
         })
         .transpose()?;
     crate::compose::stop(&state, &config_path).await?;
@@ -337,6 +347,12 @@ pub(super) async fn unregister_app(state: &Arc<Mutex<State>>, config_path: Strin
     cancel_app_startup(state, &config_path);
     let lock = crate::compose::app_lock(state, &config_path);
     let _guard = lock.lock().await;
+    // Retire the routes before stopping their containers.
+    state
+        .lock()
+        .unwrap()
+        .routes
+        .set_active(&format!("reg:{config_path}"), false);
     if let Err(message) = crate::compose::stop(state, &config_path).await {
         return Response::Error { message };
     }
@@ -406,6 +422,25 @@ pub(super) async fn restart_app(state: &Arc<Mutex<State>>, config_path: String) 
     cancel_app_startup(state, &config_path);
     let lock = crate::compose::app_lock(state, &config_path);
     let _guard = lock.lock().await;
+    let refreshed = {
+        let s = state.lock().unwrap();
+        s.apps
+            .get(&config_path)
+            .and_then(|app| app.compose.as_ref())
+            .map(|runtime| runtime.reload_development())
+            .transpose()
+    };
+    let refreshed = match refreshed {
+        Ok(runtime) => runtime,
+        Err(message) => return Response::Error { message },
+    };
+    // A new PID is published before readiness. Retire the previous routes
+    // before stopping containers so that PID cannot expose stale ports.
+    state
+        .lock()
+        .unwrap()
+        .routes
+        .set_active(&format!("reg:{config_path}"), false);
     if let Err(message) = crate::compose::stop(state, &config_path).await {
         return Response::Error { message };
     }
@@ -435,6 +470,9 @@ pub(super) async fn restart_app(state: &Arc<Mutex<State>>, config_path: String) 
                 state::remove_pid_file(&app.project_dir, &config_path);
             }
             app.is_idle = true;
+            if refreshed.is_some() {
+                app.compose = refreshed;
+            }
         }
     }
 

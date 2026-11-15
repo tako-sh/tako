@@ -32,6 +32,8 @@ pub(crate) struct ServicePlan {
     pub name: String,
     pub fingerprint: String,
     pub replicas: u32,
+    pub configured_replicas: u32,
+    pub stopped: bool,
     pub order: UpdateOrder,
     pub monitor: Duration,
     pub dependencies: BTreeMap<String, DependencyCondition>,
@@ -66,11 +68,12 @@ impl Plan {
                 .get(name)
                 .map(|n| u64::from(*n))
                 .unwrap_or(replicas);
-            if replicas > 128 || (name == &runtime.config.service && replicas == 0) {
+            if replicas > 128 || (runtime.is_ingress(name) && replicas == 0) {
                 return Err(format!(
                     "Compose service '{name}': HTTP ingress supports 1..128 replicas; other services support 0..128 replicas"
                 ));
             }
+            let stopped = runtime.stopped || runtime.stopped_services.contains(name);
             let writable_volumes = definition["volumes"]
                 .as_array()
                 .into_iter()
@@ -84,7 +87,7 @@ impl Plan {
             let order = match explicit {
                 Some("start-first") => UpdateOrder::StartFirst,
                 Some("stop-first") => UpdateOrder::StopFirst,
-                None if name == &runtime.config.service && writable_volumes.is_empty() => {
+                None if runtime.is_ingress(name) && writable_volumes.is_empty() => {
                     UpdateOrder::StartFirst
                 }
                 None => UpdateOrder::StopFirst,
@@ -127,7 +130,9 @@ impl Plan {
                 ServicePlan {
                     name: name.clone(),
                     fingerprint: String::new(),
-                    replicas: replicas as u32,
+                    replicas: if stopped { 0 } else { replicas as u32 },
+                    configured_replicas: replicas as u32,
+                    stopped,
                     order,
                     monitor,
                     dependencies,
@@ -145,7 +150,7 @@ impl Plan {
             let plan = plans
                 .get_mut(&name)
                 .ok_or_else(|| format!("Unknown Compose dependency '{name}'"))?;
-            if name == runtime.config.service {
+            if runtime.is_ingress(&name) {
                 return Err("The HTTP ingress cannot be a completed dependency job".into());
             }
             plan.completed = true;
@@ -211,11 +216,13 @@ impl Plan {
                     volume["x-tako-content"] = json!(contents);
                 }
             }
-            if plan.name == runtime.config.service {
-                identity["ingress"] =
-                    serde_json::to_value(&runtime.config).map_err(|e| e.to_string())?;
-                identity["ingress"].as_object_mut().unwrap().remove("file");
-            }
+            // Route-only changes must not replace healthy containers.
+            identity["service"]
+                .as_object_mut()
+                .unwrap()
+                .remove("x-tako");
+            identity["ingress_port"] = serde_json::to_value(runtime.ingress_ports.get(&plan.name))
+                .map_err(|e| e.to_string())?;
             identity["managed_shared_data"] = runtime.shared_mount().unwrap_or(Value::Null);
             plan.fingerprint = hex::encode(Sha256::digest(
                 serde_json::to_vec(&identity).map_err(|e| e.to_string())?,
@@ -272,10 +279,11 @@ impl Plan {
         definition["labels"][FINGERPRINT_LABEL] = json!(service.fingerprint);
         definition["labels"][RELEASE_LABEL] = json!(runtime.directory);
         definition["labels"][DEPENDENCIES_LABEL] = json!(json!(service.dependencies).to_string());
-        if service.name == runtime.config.service {
+        if let Some(port) = runtime.ingress_ports.get(&service.name) {
             // Docker allocates the loopback port atomically; reuse it when adopting
             // this generation after a restart or an unchanged deployment.
-            definition["ports"] = json!([{"host_ip":"127.0.0.1", "published":"0", "target":runtime.config.port, "protocol":"tcp"}]);
+            definition["ports"] =
+                json!([{"host_ip":"127.0.0.1", "published":"0", "target":port, "protocol":"tcp"}]);
         }
         model["services"] = json!({ (service.generation(slot)): definition });
         model
@@ -334,7 +342,7 @@ fn visit(
         let dependency_plan = plans
             .get(dependency)
             .ok_or_else(|| format!("Unknown Compose dependency '{dependency}'"))?;
-        if dependency_plan.replicas == 0 {
+        if dependency_plan.replicas == 0 && !dependency_plan.stopped && !plan.stopped {
             return Err(format!(
                 "Required Compose dependency '{dependency}' has zero replicas"
             ));

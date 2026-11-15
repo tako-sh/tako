@@ -1,0 +1,54 @@
+services:
+  web:
+    build: .
+    command: [bun, web.ts]
+    environment:
+      API_URL: ${API_URL:-http://localhost:8081}
+    ports: ["8080:3000"] # Used by docker compose up; Tako replaces host publications.
+    x-tako:
+      envs:
+        development:
+          route: shop.test
+        production:
+          route: example.com
+    healthcheck:
+      test: [CMD, bun, -e, "process.exit((await fetch('http://127.0.0.1:3000/health')).ok ? 0 : 1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    command: [bun, api.ts]
+    environment:
+      REDIS_URL: redis://redis:6379
+      WEB_URL: ${WEB_URL:-http://localhost:8080}
+    ports: ["8081:3000"]
+    x-tako:
+      envs:
+        development:
+          route: api.shop.test
+        production:
+          route: api.example.com
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, bun, -e, "process.exit((await fetch('http://127.0.0.1:3000/health')).ok ? 0 : 1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # No x-tako: an ordinary Docker service, not a Tako app.
+  redis:
+    image: redis:7-alpine
+    command: [redis-server, --appendonly, "yes"]
+    volumes: [redis-data:/data]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  redis-data:

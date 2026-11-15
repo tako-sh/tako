@@ -97,34 +97,14 @@
     },
     "ComposeConfig": {
       "additionalProperties": false,
-      "description": "One Compose project on one server, with one HTTP service exposed by Tako.",
+      "description": "One deployment group. Compose owns the service processes and shared resources.",
       "properties": {
         "file": {
           "description": "Compose file, relative to the app directory and inside it.",
           "type": "string"
-        },
-        "health_host": {
-          "description": "HTTP Host header sent with health checks.",
-          "type": "string"
-        },
-        "health_path": {
-          "default": "/",
-          "description": "HTTP health check path.",
-          "type": "string"
-        },
-        "port": {
-          "description": "Port the service listens on inside its container.",
-          "format": "uint16",
-          "maximum": 65535,
-          "minimum": 0,
-          "type": "integer"
-        },
-        "service": {
-          "description": "Compose service that receives HTTP traffic.",
-          "type": "string"
         }
       },
-      "required": ["file", "service", "port"],
+      "required": ["file"],
       "type": "object"
     },
     "ContainerOptions": {
@@ -457,6 +437,28 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "description": "Tako app configuration. Reference: https://tako.sh/docs/tako-toml. This schema can be looser than the CLI's validation; `tako` remains the authority.",
+  "else": {
+    "properties": {
+      "envs": {
+        "additionalProperties": {
+          "anyOf": [
+            {
+              "required": ["route"]
+            },
+            {
+              "required": ["routes"]
+            }
+          ]
+        },
+        "properties": {
+          "development": {}
+        }
+      }
+    }
+  },
+  "if": {
+    "required": ["compose"]
+  },
   "properties": {
     "app_root": {
       "default": "src",
@@ -483,7 +485,7 @@
     },
     "compose": {
       "$ref": "#/$defs/ComposeConfig",
-      "description": "Docker Compose release: one Compose project on one server, with one HTTP service exposed by Tako."
+      "description": "Docker Compose application group on one server. Services with x-tako are apps; other services are managed only by Compose."
     },
     "container": {
       "description": "Container file path for container releases, relative to `tako.toml`. `container`, `image`, and `[compose]` are mutually exclusive.",
@@ -502,21 +504,7 @@
     },
     "envs": {
       "additionalProperties": {
-        "allOf": [
-          {
-            "$ref": "#/$defs/EnvConfig"
-          },
-          {
-            "anyOf": [
-              {
-                "required": ["route"]
-              },
-              {
-                "required": ["routes"]
-              }
-            ]
-          }
-        ]
+        "$ref": "#/$defs/EnvConfig"
       },
       "description": "Environments. Deploy environments must define `route` or `routes`. `development` is reserved for `tako dev`.",
       "properties": {
@@ -632,6 +620,24 @@
     },
     "workflows": {
       "$ref": "#/$defs/Workflows"
+    }
+  },
+  "then": {
+    "properties": {
+      "envs": {
+        "additionalProperties": {
+          "not": {
+            "anyOf": [
+              {
+                "required": ["route"]
+              },
+              {
+                "required": ["routes"]
+              }
+            ]
+          }
+        }
+      }
     }
   },
   "title": "tako.toml",

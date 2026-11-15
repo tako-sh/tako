@@ -1,4 +1,5 @@
 pub mod agents;
+mod app_target;
 pub mod backups;
 pub mod codegen;
 pub mod completions;
@@ -13,6 +14,7 @@ pub mod doctor;
 pub mod helpers;
 pub mod implode;
 pub mod init;
+pub mod lifecycle;
 mod log_style;
 pub mod logs;
 pub mod project_context;

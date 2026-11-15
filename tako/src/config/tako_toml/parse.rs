@@ -23,7 +23,36 @@ impl TakoToml {
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let content = fs::read_to_string(path.as_ref())
             .map_err(|e| ConfigError::FileRead(path.as_ref().to_path_buf(), e))?;
-        let config = Self::parse(&content)?;
+        let mut config = Self::parse(&content)?;
+        if let Some(compose) = &mut config.compose {
+            *compose = tako_compose::load_config(
+                path.as_ref()
+                    .parent()
+                    .filter(|path| !path.as_os_str().is_empty())
+                    .unwrap_or(Path::new(".")),
+                &compose.file,
+            )
+            .map_err(ConfigError::Validation)?;
+            for (service, settings) in &compose.services {
+                for (environment, settings) in &settings.envs {
+                    for route in settings.routes() {
+                        if environment == "development" {
+                            crate::validation::validate_dev_route(
+                                &route,
+                                config.name.as_deref().unwrap_or("app"),
+                            )
+                            .map_err(|e| {
+                                ConfigError::Validation(format!("Compose service '{service}': {e}"))
+                            })?;
+                        } else {
+                            crate::validation::validate_route(&route).map_err(|e| {
+                                ConfigError::Validation(format!("Compose service '{service}': {e}"))
+                            })?;
+                        }
+                    }
+                }
+            }
+        }
         Ok(config)
     }
 
@@ -44,6 +73,16 @@ impl TakoToml {
         let (runtime, runtime_version_pin) = parse_runtime_spec(&raw)?;
         let container = parse_optional_string(&raw, "container")?;
         let image = parse_optional_string(&raw, "image")?;
+        if raw
+            .get("compose")
+            .and_then(toml::Value::as_table)
+            .is_some_and(|table| table.keys().any(|key| key != "file"))
+        {
+            return Err(ConfigError::Validation(
+                "[compose] accepts only file; configure each service under x-tako in compose.yaml"
+                    .into(),
+            ));
+        }
         let compose = raw
             .get("compose")
             .map(|value| value.clone().try_into())

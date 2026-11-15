@@ -576,6 +576,7 @@ mod tests {
             state.clone(),
             Command::Stop {
                 app: "disconnect/production".into(),
+                service: None,
             },
         ));
         tokio::time::timeout(Duration::from_secs(2), async {
@@ -617,6 +618,7 @@ mod tests {
             state.clone(),
             Command::Stop {
                 app: "missing/production".into(),
+                service: None,
             },
         ));
         tokio::time::sleep(Duration::from_millis(50)).await;

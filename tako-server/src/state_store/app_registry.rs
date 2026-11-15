@@ -1,4 +1,5 @@
 use crate::instances::AppConfig;
+use rusqlite::OptionalExtension;
 
 use super::{PersistedApp, PersistedRelease, SqliteStateStore, StateStoreError};
 
@@ -52,6 +53,8 @@ impl SqliteStateStore {
             "app_backups",
             "app_compose_pending",
             "app_compose_scales",
+            "app_lifecycle",
+            "app_release_routing",
         ] {
             conn.execute(
                 &format!("DELETE FROM {table} WHERE app = ?1;"),
@@ -113,8 +116,33 @@ impl SqliteStateStore {
                     |row| Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?)),
                 )?
                 .collect::<Result<_, _>>()?;
+            let app_id = if environment.is_empty() {
+                name.clone()
+            } else {
+                tako_core::deployment_app_id(&name, &environment)
+            };
+            let lifecycle = conn
+                .query_row(
+                    "SELECT stopped, compose_stopped FROM app_lifecycle WHERE app = ?1;",
+                    [&app_id],
+                    |row| Ok((row.get::<_, bool>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()?;
+            let (stopped, compose_stopped) = match lifecycle {
+                Some((stopped, services)) => (
+                    stopped,
+                    serde_json::from_str(&services).map_err(|e| {
+                        StateStoreError::InvalidData(format!(
+                            "Invalid stopped apps for {app_id}: {e}"
+                        ))
+                    })?,
+                ),
+                None => Default::default(),
+            };
             let config = AppConfig {
                 compose_replicas,
+                stopped,
+                compose_stopped,
                 name,
                 environment,
                 version,
@@ -136,6 +164,45 @@ pub(super) fn upsert_app_on(
     config: &AppConfig,
     routes: &[String],
 ) -> Result<(), StateStoreError> {
+    let app = config.deployment_id();
+    // Capture the pre-upgrade native release before overwriting the registry.
+    // Existing release history is immutable until that version is deployed again.
+    let previous = conn.query_row(
+        "SELECT version, source_ip FROM apps WHERE name = ?1 AND environment = ?2
+         AND NOT EXISTS (SELECT 1 FROM app_release_routing WHERE app = ?3 AND version = apps.version)",
+        (&config.name, &config.environment, &app),
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    ).optional()?;
+    if let Some((version, source_ip)) = previous {
+        let mut statement = conn.prepare(
+            "SELECT route FROM app_routes WHERE name = ?1 AND environment = ?2 ORDER BY route",
+        )?;
+        let routes = statement
+            .query_map((&config.name, &config.environment), |row| row.get(0))?
+            .collect::<Result<Vec<String>, _>>()?;
+        super::release_routing::save_on(
+            conn,
+            &app,
+            &version,
+            &super::ReleaseRouting::new(
+                routes,
+                source_ip_from_str(&source_ip)?,
+                None,
+                &config.environment,
+            ),
+        )?;
+    }
+    super::release_routing::save_on(
+        conn,
+        &app,
+        &config.version,
+        &super::ReleaseRouting::new(
+            routes.to_vec(),
+            config.source_ip,
+            config.compose.as_ref(),
+            &config.environment,
+        ),
+    )?;
     conn.execute(
         "INSERT INTO apps (
             name, environment, version, min_instances, max_instances, source_ip
@@ -161,6 +228,12 @@ pub(super) fn upsert_app_on(
     )?;
 
     let app = config.deployment_id();
+    conn.execute(
+        "INSERT INTO app_lifecycle (app, stopped, compose_stopped) VALUES (?1, ?2, ?3)
+         ON CONFLICT(app) DO UPDATE SET stopped = excluded.stopped, compose_stopped = excluded.compose_stopped;",
+        (&app, config.stopped, serde_json::to_string(&config.compose_stopped)
+            .map_err(|e| StateStoreError::InvalidData(e.to_string()))?),
+    )?;
     conn.execute("DELETE FROM app_compose_scales WHERE app = ?1;", [&app])?;
     for (service, replicas) in &config.compose_replicas {
         conn.execute(

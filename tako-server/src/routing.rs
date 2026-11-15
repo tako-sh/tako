@@ -15,6 +15,7 @@ pub struct RouteEntry {
 pub struct CompiledRouteEntry {
     pub app: Arc<str>,
     pub host: Arc<str>,
+    pub service: Option<Arc<str>>,
     pub path: Option<Arc<str>>,
     pub source_ip: tako_core::SourceIpMode,
     pub specificity: (u8, usize, u8),
@@ -25,11 +26,13 @@ pub struct RouteTable {
     app_routes: std::collections::HashMap<String, Vec<String>>,
     app_source_ip: std::collections::HashMap<String, tako_core::SourceIpMode>,
     compiled: Vec<CompiledRouteEntry>,
+    services: std::collections::HashMap<(String, String), (String, tako_core::SourceIpMode)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectedRoute {
     pub app: Arc<str>,
+    pub service: Option<Arc<str>>,
     pub path: Option<Arc<str>>,
     pub source_ip: tako_core::SourceIpMode,
 }
@@ -45,12 +48,39 @@ impl RouteTable {
         routes: Vec<String>,
         source_ip: tako_core::SourceIpMode,
     ) {
+        self.services.retain(|(owner, _), _| owner != &app);
         self.app_source_ip.insert(app.clone(), source_ip);
         self.app_routes.insert(app, routes);
         self.rebuild();
     }
 
+    pub(crate) fn set_config_routes(
+        &mut self,
+        config: &crate::instances::AppConfig,
+        routes: Vec<String>,
+    ) {
+        let app = config.deployment_id();
+        self.services.retain(|(owner, _), _| owner != &app);
+        self.app_source_ip.insert(app.clone(), config.source_ip);
+        self.app_routes.insert(app.clone(), routes);
+        if let Some(compose) = &config.compose {
+            for (service, settings) in compose.routed_services(&config.environment) {
+                for route in settings.routes() {
+                    self.services.insert(
+                        (app.clone(), route),
+                        (
+                            service.into(),
+                            settings.source_ip.unwrap_or(config.source_ip),
+                        ),
+                    );
+                }
+            }
+        }
+        self.rebuild();
+    }
+
     pub fn remove_app_routes(&mut self, app: &str) {
+        self.services.retain(|(owner, _), _| owner != app);
         self.app_routes.remove(app);
         self.app_source_ip.remove(app);
         self.rebuild();
@@ -105,6 +135,14 @@ impl RouteTable {
         }
 
         self.compiled = compile_routes(&entries);
+        for entry in &mut self.compiled {
+            let pattern = format!("{}{}", entry.host, entry.path.as_deref().unwrap_or(""));
+            if let Some((service, source_ip)) = self.services.get(&(entry.app.to_string(), pattern))
+            {
+                entry.service = Some(Arc::from(service.as_str()));
+                entry.source_ip = *source_ip;
+            }
+        }
     }
 }
 
@@ -119,6 +157,7 @@ pub fn compile_routes(routes: &[RouteEntry]) -> Vec<CompiledRouteEntry> {
         compiled.push(CompiledRouteEntry {
             app: Arc::from(entry.app.as_str()),
             host: Arc::from(pattern_host),
+            service: None,
             path: pattern_path.map(Arc::from),
             source_ip: entry.source_ip,
             specificity: route_specificity(&entry.pattern),
@@ -155,6 +194,7 @@ pub fn select_route_for_request_compiled(
         }
         return Some(SelectedRoute {
             app: entry.app.clone(),
+            service: entry.service.clone(),
             path: entry.path.clone(),
             source_ip: entry.source_ip,
         });

@@ -62,7 +62,8 @@ pub(crate) fn classify(command: &Command) -> CommandClass<'_> {
         | Command::RestoreDatabaseBackup { app, .. }
         | Command::RestoreBackup { app, .. }
         | Command::Scale { app, .. }
-        | Command::Stop { app }
+        | Command::Start { app, .. }
+        | Command::Stop { app, .. }
         | Command::Delete { app }
         | Command::Status { app }
         | Command::ListReleases { app }
@@ -291,6 +292,7 @@ pub(crate) fn authorize_command(
         | Command::RestoreDatabaseBackup { .. }
         | Command::RestoreBackup { .. }
         | Command::Scale { .. }
+        | Command::Start { .. }
         | Command::Stop { .. }
         | Command::Delete { .. }
         | Command::Status { .. }
@@ -348,8 +350,11 @@ fn provisioned_app<'a, 'b>(
 fn preserve_routes(app: &ProvisionedApp<'_>, requested: &[String]) -> Result<(), Denial> {
     let existing: BTreeSet<_> = app.routes.iter().collect();
     let requested_set: BTreeSet<_> = requested.iter().collect();
-    if existing.is_empty() || existing != requested_set || requested.len() != requested_set.len() {
+    if existing != requested_set || requested.len() != requested_set.len() {
         return Err(ROUTES_DENIED);
+    }
+    if requested.is_empty() {
+        return Ok(());
     }
     crate::release::validate_deploy_routes(requested).map_err(|_| ROUTES_DENIED)
 }
@@ -833,7 +838,9 @@ mod tests {
             Err(STATE_REQUIRED)
         );
         f.routes.clear();
-        assert_eq!(f.authorize(&f.command("deploy")), Err(ROUTES_DENIED));
+        assert_eq!(f.authorize(&command), Err(ROUTES_DENIED));
+        // An already provisioned private group can remain private.
+        assert_eq!(f.authorize(&f.command("deploy")), Ok(()));
     }
 
     #[test]

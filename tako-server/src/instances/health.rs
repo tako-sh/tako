@@ -326,6 +326,16 @@ async fn probe_instance_health(
     health_path: &str,
     probe_timeout: Duration,
 ) -> Result<(), HealthProbeFailure> {
+    if let Some(healthy) = instance.compose_healthy().await {
+        return if healthy {
+            Ok(())
+        } else {
+            Err(HealthProbeFailure::new(
+                "compose_unhealthy",
+                "Docker health or service connection check failed",
+            ))
+        };
+    }
     let (health_host, health_path) = instance
         .health_probe()
         .unwrap_or_else(|| (health_host.to_string(), health_path.to_string()));

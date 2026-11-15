@@ -68,6 +68,52 @@ async fn reconnect_required(client: &mut TcpStream, id: &str) {
 }
 
 #[tokio::test]
+async fn compose_subscriptions_keep_the_handshake_service() {
+    let temp = TempDir::new().unwrap();
+    let proxy = proxy_for_feed(temp.path(), feed_app().await);
+    let app = proxy.lb.app_manager().get_app("feed-app").unwrap();
+    let mut config = app.config.read().clone();
+    config.compose = Some(
+        serde_json::from_value(json!({
+            "file": "compose.yaml",
+            "services": {
+                "api": {"envs": {"": {"route": "feed.example"}}},
+                "web": {}
+            }
+        }))
+        .unwrap(),
+    );
+    config.env_vars.insert(
+        crate::release::TAKO_APP_DATA_DIR_ENV.into(),
+        temp.path().join("data/app").display().to_string(),
+    );
+    std::fs::write(temp.path().join("compose.yaml"), "services: {}\n").unwrap();
+    let runtime = crate::compose_runtime::for_config(&config).unwrap();
+    let instance = app.get_instances().into_iter().next().unwrap();
+    app.set_instance_state(&instance, InstanceState::Starting);
+    instance.set_compose(runtime, "fixture-api".into(), "api".into());
+    app.update_config(config.clone());
+    app.set_instance_state(&instance, InstanceState::Healthy);
+    proxy
+        .routes
+        .write()
+        .set_config_routes(&config, vec!["feed.example".into()]);
+    assert!(
+        proxy.lb.get_backend("feed-app").is_none(),
+        "a group has no implicit app"
+    );
+
+    let mut client = connect(serve(proxy).await).await;
+    for id in ["layout", "page"] {
+        subscribe(&mut client, id).await;
+        assert_eq!(
+            control(&mut client).await,
+            json!({"type":"subscribed", "id":id})
+        );
+    }
+}
+
+#[tokio::test]
 async fn credential_rotation_reconnects_shared_socket_and_refreshes_credentials() {
     let temp = TempDir::new().unwrap();
     let proxy = proxy_for_feed(temp.path(), feed_app().await);

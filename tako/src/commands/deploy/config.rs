@@ -44,7 +44,7 @@ pub(super) fn required_env_routes(
     let routes = tako_config
         .get_routes(env)
         .ok_or_else(|| format!("Environment '{env}' has no routes configured"))?;
-    if routes.is_empty() {
+    if routes.is_empty() && tako_config.compose.is_none() {
         return Err(format!(
             "Environment '{}' must define at least one route",
             env

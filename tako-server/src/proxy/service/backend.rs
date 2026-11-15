@@ -17,12 +17,21 @@ pub(crate) enum BackendResolution {
 
 impl TakoProxy {
     pub(crate) async fn resolve_backend(&self, app_name: &str) -> BackendResolution {
-        resolve_app_backend(
+        self.resolve_service_backend(app_name, None).await
+    }
+
+    pub(crate) async fn resolve_service_backend(
+        &self,
+        app_name: &str,
+        service: Option<&str>,
+    ) -> BackendResolution {
+        resolve_service_backend(
             &self.lb,
             &self.cold_start,
             &self.draining,
             &self.spawn_gate,
             app_name,
+            service,
         )
         .await
     }
@@ -34,6 +43,17 @@ pub(crate) async fn resolve_app_backend(
     draining: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     spawn_gate: &std::sync::Arc<tokio::sync::RwLock<()>>,
     app_name: &str,
+) -> BackendResolution {
+    resolve_service_backend(lb, cold_start, draining, spawn_gate, app_name, None).await
+}
+
+pub(crate) async fn resolve_service_backend(
+    lb: &std::sync::Arc<crate::lb::LoadBalancer>,
+    cold_start: &std::sync::Arc<crate::scaling::ColdStartManager>,
+    draining: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    spawn_gate: &std::sync::Arc<tokio::sync::RwLock<()>>,
+    app_name: &str,
+    service: Option<&str>,
 ) -> BackendResolution {
     if draining.load(std::sync::atomic::Ordering::Acquire) {
         return BackendResolution::Unavailable;
@@ -59,14 +79,22 @@ pub(crate) async fn resolve_app_backend(
     {
         return BackendResolution::Unavailable;
     }
-    if let Some(backend) = lb.get_backend(app_name) {
+    let backend = match service {
+        Some(service) => lb.get_service_backend(app_name, service),
+        None => lb.get_backend(app_name),
+    };
+    if let Some(backend) = backend {
         return BackendResolution::Ready {
             backend,
             cold_start_wait: None,
         };
     }
 
-    if app.config.read().min_instances != 0 {
+    let allows_cold_start = {
+        let config = app.config.read();
+        config.compose.is_none() && config.min_instances == 0
+    };
+    if service.is_some() || !allows_cold_start {
         return BackendResolution::Unavailable;
     }
 

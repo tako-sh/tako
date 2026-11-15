@@ -94,6 +94,9 @@ impl TakoToml {
                 ));
             }
             for env in self.envs.values() {
+                if env.route.is_some() || env.routes.is_some() {
+                    return Err(ConfigError::Validation("Compose routes belong in services.<name>.x-tako.envs.<environment> in compose.yaml".into()));
+                }
                 if env.servers.len() > 1 {
                     return Err(ConfigError::Validation(
                         "Compose deployments require exactly one target server".into(),
@@ -201,7 +204,11 @@ impl TakoToml {
                 )));
             }
 
-            if !is_development && env_config.route.is_none() && env_config.routes.is_none() {
+            if self.compose.is_none()
+                && !is_development
+                && env_config.route.is_none()
+                && env_config.routes.is_none()
+            {
                 return Err(ConfigError::Validation(format!(
                     "Environment '{}' must define either 'route' or 'routes'",
                     env_name

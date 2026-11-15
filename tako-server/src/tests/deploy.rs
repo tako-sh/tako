@@ -273,6 +273,82 @@ with os.fdopen(4"#,
         served_build(&restarted.load_balancer.get_backend(app_id).unwrap()).await,
         "v2"
     );
+    assert!(
+        restarted
+            .handle_command(Command::Stop {
+                app: app_id.into(),
+                service: None
+            })
+            .await
+            .is_ok()
+    );
+    assert!(restored.config.read().stopped);
+    assert!(matches!(
+        crate::proxy::resolve_app_backend(
+            &restarted.load_balancer,
+            &restarted.cold_start,
+            &restarted.drain_requested,
+            &restarted.spawn_gate,
+            app_id,
+        )
+        .await,
+        crate::proxy::BackendResolution::Unavailable
+    ));
+    assert!(
+        restored.get_instances().is_empty(),
+        "requests must not wake an operator-stopped app"
+    );
+    assert!(
+        restarted
+            .handle_command(Command::Start {
+                app: app_id.into(),
+                service: None
+            })
+            .await
+            .is_ok()
+    );
+    assert!(!restored.config.read().stopped);
+    assert_eq!(
+        served_build(&restarted.load_balancer.get_backend(app_id).unwrap()).await,
+        "v2"
+    );
+    let ids: Vec<_> = restored
+        .get_instances()
+        .iter()
+        .map(|i| i.id.clone())
+        .collect();
+    assert!(
+        restarted
+            .handle_command(Command::Start {
+                app: app_id.into(),
+                service: None
+            })
+            .await
+            .is_ok()
+    );
+    assert_eq!(
+        ids,
+        restored
+            .get_instances()
+            .iter()
+            .map(|i| i.id.clone())
+            .collect::<Vec<_>>(),
+        "starting a running app is idempotent"
+    );
+    // A private successor leaves no current routes. Rollback must recover the
+    // target's committed bindings instead of reusing that empty route table.
+    let config = restored.config.read().clone();
+    restarted
+        .routes
+        .write()
+        .set_config_routes(&config, Vec::new());
+    restarted.state_store.upsert_app(&config, &[]).unwrap();
+    assert!(restarted.rollback_app(app_id, "v1").await.is_ok());
+    assert_eq!(restored.version(), "v1");
+    assert_eq!(
+        restarted.routes.read().routes_for_app(app_id),
+        ["v1.localhost"]
+    );
     restarted.app_manager.shutdown_all().await;
 }
 
@@ -312,10 +388,7 @@ async fn native_deploy_must_stop_previous_compose_even_without_http_instances() 
         )]),
         compose: Some(tako_core::compose::ComposeConfig {
             file: "missing-compose.yaml".into(),
-            service: "web".into(),
-            port: 8080,
-            health_path: "/".into(),
-            health_host: None,
+            services: Default::default(),
         }),
         ..Default::default()
     });

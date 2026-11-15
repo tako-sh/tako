@@ -820,10 +820,13 @@ impl crate::ServerState {
         if self.is_draining() {
             return Err("Server began draining during restore".to_string());
         }
+        if config.stopped {
+            return Ok(());
+        }
         self.try_sync_app_workflows(app, release_path, runtime_bin_path)
             .await
             .map_err(|error| format!("Restart workflows after restore: {error}"))?;
-        if config.min_instances > 0 {
+        if config.compose.is_some() || config.min_instances > 0 {
             self.app_manager
                 .start_app_locked(app_ref)
                 .await
@@ -838,7 +841,12 @@ impl crate::ServerState {
         app_ref: &crate::instances::App,
         config: &crate::instances::AppConfig,
     ) {
-        if config.min_instances == 0 {
+        if config.stopped {
+            app_ref.set_state(crate::socket::AppState::Stopped);
+            self.cold_start.mark_failed(app, "app_stopped");
+            return;
+        }
+        if config.compose.is_none() && config.min_instances == 0 {
             app_ref.set_state(crate::socket::AppState::Idle);
         }
         self.cold_start.reset(app);
@@ -1372,6 +1380,88 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires Docker Compose and shared host/container project paths"]
+    async fn restore_restarts_dependencies_without_http_instances() {
+        for paused_app in [false, true] {
+            let fixture = RestoreFixture::new();
+            let app = fixture.state.app_manager.get_app(&fixture.app).unwrap();
+            let mut config = app.config.read().clone();
+            let mut services = serde_json::json!({"database": {
+                "image":"docker.io/library/busybox:1.37", "command":["sleep","3600"],
+                "stop_grace_period":"1s", "deploy":{"update_config":{"monitor":"0s"}}
+            }});
+            if paused_app {
+                services["web"] = serde_json::json!({
+                    "image":"docker.io/library/busybox:1.37", "expose":[8080], "x-tako":{},
+                    "command":["httpd","-f","-p","8080"]
+                });
+                config.compose_stopped.insert("web".into());
+            }
+            std::fs::write(
+                config.path.join("compose.yaml"),
+                serde_json::json!({"services":services}).to_string(),
+            )
+            .unwrap();
+            config.compose = Some(tako_compose::load_config(&config.path, "compose.yaml").unwrap());
+            std::fs::write(config.path.join("app.json"), serde_json::json!({
+                "protocol_version":0, "idle_timeout":300, "release_kind":"compose", "runtime":"compose",
+                "app_name":"demo", "environment":"production", "version":"v1", "compose":config.compose,
+            }).to_string()).unwrap();
+            ensure_app_runtime_data_dirs(fixture.temp.path(), &fixture.app).unwrap();
+            config.env_vars.insert(
+                crate::release::TAKO_APP_DATA_DIR_ENV.into(),
+                fixture.data.join("app").to_string_lossy().into(),
+            );
+            let runtime = crate::compose_runtime::for_config(&config).unwrap();
+            runtime.prepare("v1").await.unwrap();
+            struct Cleanup(tako_compose::ComposeRuntime);
+            impl Drop for Cleanup {
+                fn drop(&mut self) {
+                    let _ = self
+                        .0
+                        .command(false)
+                        .into_std()
+                        .args(["down", "--volumes", "--remove-orphans"])
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status();
+                }
+            }
+            let _cleanup = Cleanup(runtime.clone());
+            app.update_config(config);
+            fixture
+                .state
+                .app_manager
+                .start_app(&fixture.app)
+                .await
+                .unwrap();
+            let server = fixture.serve(2);
+            fixture
+                .state
+                .restore_backup_inner(&fixture.app, &fixture.info.id)
+                .await
+                .unwrap();
+            server.await.unwrap();
+            assert_eq!(
+                sqlite_value(&fixture.data.join("app/data.sqlite")),
+                "snapshot"
+            );
+            assert_eq!(app.state(), crate::socket::AppState::Running);
+            assert!(app.get_instances().is_empty());
+            let containers = runtime.containers().await.unwrap();
+            assert_eq!(containers.len(), 1);
+            assert_eq!(containers[0].service, "database");
+            assert!(containers[0].running());
+            fixture
+                .state
+                .app_manager
+                .stop_app(&fixture.app)
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn restoring_a_database_snapshot_replaces_only_its_databases() {
         let fixture = RestoreFixture::new();
         let server = fixture.serve(2);
@@ -1417,6 +1507,42 @@ mod tests {
                 .next()
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn restoring_a_backup_preserves_an_operator_stop() {
+        for minimum in [0, 1] {
+            let fixture = RestoreFixture::new();
+            let app = fixture.state.app_manager.get_app(&fixture.app).unwrap();
+            app.config.write().min_instances = minimum;
+            assert!(fixture.state.stop_app(&fixture.app, None).await.is_ok());
+            let server = fixture.serve(2);
+            fixture
+                .state
+                .restore_backup_inner(&fixture.app, &fixture.info.id)
+                .await
+                .unwrap();
+            server.await.unwrap();
+            assert_eq!(
+                sqlite_value(&fixture.data.join("app/data.sqlite")),
+                "snapshot"
+            );
+            assert_eq!(app.state(), crate::socket::AppState::Stopped);
+            assert!(app.config.read().stopped);
+            assert_eq!(app.config.read().min_instances, minimum);
+            assert!(app.get_instances().is_empty());
+            assert!(matches!(
+                crate::proxy::resolve_app_backend(
+                    &fixture.state.load_balancer,
+                    &fixture.state.cold_start,
+                    &fixture.state.drain_requested,
+                    &fixture.state.spawn_gate,
+                    &fixture.app,
+                )
+                .await,
+                crate::proxy::BackendResolution::Unavailable
+            ));
+        }
     }
 
     /// A standby serves the same app data with its own instances, which a
@@ -1476,12 +1602,11 @@ mod tests {
     async fn a_stop_failure_before_the_swap_recovers_the_original_app() {
         let fixture = RestoreFixture::new();
         let app = fixture.state.app_manager.get_app(&fixture.app).unwrap();
-        // A broken Compose release makes stop fail before touching the data.
-        // This scale-to-zero app can still recover its workflow runtime and
-        // cold-start state without spawning a replacement HTTP instance.
+        // A broken Compose release makes both stop and recovery fail before
+        // touching the data. Zero HTTP instances cannot hide that failure.
         app.config.write().compose = Some(
             serde_json::from_value(serde_json::json!({
-                "file":"missing.yml", "service":"web", "port":8080
+                "file":"missing.yml", "services":{"web":{}}
             }))
             .unwrap(),
         );
@@ -1494,12 +1619,12 @@ mod tests {
         server.await.unwrap();
         assert!(error.contains("Stop failed before restore"), "{error}");
         assert!(
-            error.contains("original data kept and app restarted"),
+            error.contains("original data kept, but restart failed"),
             "{error}"
         );
         assert_eq!(sqlite_value(&fixture.data.join("app/data.sqlite")), "live");
         assert_eq!(fixture.previous_dirs(), 0);
-        assert_eq!(app.state(), crate::socket::AppState::Idle);
+        assert_eq!(app.state(), crate::socket::AppState::Stopped);
     }
 
     #[tokio::test]
