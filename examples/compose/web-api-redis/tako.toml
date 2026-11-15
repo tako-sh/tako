@@ -12,5 +12,5 @@ API_URL = "https://api.example.com"
 WEB_URL = "https://example.com"
 
 [vars.development]
-API_URL = "https://api.shop.tako"
-WEB_URL = "https://shop.tako"
+API_URL = "https://api.shop.test"
+WEB_URL = "https://shop.test"

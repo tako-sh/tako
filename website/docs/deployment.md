@@ -73,7 +73,7 @@ Native HTTP instances bind `127.0.0.1` on an OS-assigned port and signal readine
 
 ## Compose Releases
 
-[Docker Compose](/docker-compose/) deployments prepare images and update only changed services. The selected stateless HTTP service uses readiness checks, traffic switching, and draining while unchanged dependencies keep running. Stateful services and workers default to stop-first updates. Compose supports one server and one HTTP ingress service with persistent named volumes; rollback restores containers and configuration, not database contents.
+[Docker Compose](/docker-compose/) deployments prepare images and update only changed services. Each stateless `x-tako` app uses readiness checks, traffic switching, and draining while unchanged dependencies keep running. Stateful services and workers default to stop-first updates. Compose supports one server, any number of `x-tako` apps with their own routes, and persistent named volumes; rollback restores containers and configuration, not database contents.
 
 ## Container Releases
 

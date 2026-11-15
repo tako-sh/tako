@@ -80,8 +80,8 @@ Preserving a volume is only half the update problem. The other half is deciding 
 
 | Service being replaced                                    | Default order | Reason to inspect the choice                                        |
 | --------------------------------------------------------- | ------------- | ------------------------------------------------------------------- |
-| Selected HTTP service without writable persistent volumes | Start first   | Old and new generations overlap during readiness checks.            |
-| Selected HTTP service with writable persistent volumes    | Stop first    | Concurrent writers may be unsafe.                                   |
+| `x-tako` app without writable persistent volumes          | Start first   | Old and new generations overlap during readiness checks.            |
+| `x-tako` app with writable persistent volumes             | Stop first    | Concurrent writers may be unsafe.                                   |
 | Workers and other services                                | Stop first    | Job execution and shared resources need explicit overlap decisions. |
 
 These are defaults for changed services, not instructions to stop an unchanged dependency. A retained healthy Redis container stays running while a changed stateless web service follows its start-first path.

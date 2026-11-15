@@ -8,7 +8,7 @@ services:
     x-tako:
       envs:
         development:
-          route: shop.tako
+          route: shop.test
         production:
           route: example.com
     healthcheck:
@@ -27,7 +27,7 @@ services:
     x-tako:
       envs:
         development:
-          route: api.shop.tako
+          route: api.shop.test
         production:
           route: api.example.com
     depends_on:

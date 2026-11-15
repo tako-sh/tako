@@ -176,7 +176,7 @@ The production limits are explicit:
 
 | Service category      | Supported replica count |
 | --------------------- | ----------------------- |
-| Selected HTTP service | 1–128                   |
+| `x-tako` app          | 1–128                   |
 | Other services        | 0–128                   |
 | Required dependency   | At least one            |
 

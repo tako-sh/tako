@@ -100,7 +100,7 @@ Press `r` in the dev session, or run `tako dev --restart`, after changing the im
 
 For a standalone Compose check, `docker compose up --build --wait` uses the original `8080:3000` mapping. Tako replaces that mapping with private ingress in its own development project. Pick one workflow for your test and use its corresponding URL.
 
-## Prepare the VPS and select the HTTP service
+## Prepare the VPS and tag the HTTP apps
 
 Use a supported Linux VPS with glibc, systemd, and Tako's required isolation controllers. Connect your workstation and server through Tailscale or NetBird, allowing SSH and private management TCP `9844`. Follow [Servers](/docs/servers/) for host requirements and enrollment.
 

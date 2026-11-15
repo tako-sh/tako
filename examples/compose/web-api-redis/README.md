@@ -12,7 +12,7 @@ From this directory, with Docker and the Compose plugin available:
 tako dev
 ```
 
-Open `https://shop.tako` and click **Call the API**. The browser calls `https://api.shop.tako/visits`. Development runs one replica of each Tako app. Without explicit development routes, Tako generates `<service>.<group>.tako` (or the configured local development suffix), including for tagged apps without public production routes.
+Open `https://shop.test` and click **Call the API**. The browser calls `https://api.shop.test/visits`. Development runs one replica of each Tako app. Without explicit development routes, Tako generates `<service>.<group>.test` (or `<service>.<group>.tako.test`), including for tagged apps without public production routes.
 
 You can also run `docker compose up --build --wait` and open `http://localhost:8080`. Stop that separate project with `docker compose down`; its named volume remains.
 

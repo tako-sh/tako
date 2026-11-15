@@ -3,7 +3,7 @@ services:
     x-tako:
       envs:
         development:
-          route: bun-redis.tako
+          route: bun-redis.test
         production:
           route: app.example.com
     build: .
