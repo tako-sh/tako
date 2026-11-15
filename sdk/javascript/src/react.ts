@@ -358,7 +358,9 @@ export function useChannel<T = unknown>(
       };
       const abort = () => {
         if (!active() || !signal) return;
-        update("connecting", subscriptionAbortError(signal));
+        // Aborted is final until a new signal restarts the hook; "connecting"
+        // would promise a reconnect that never comes.
+        update("closed", subscriptionAbortError(signal));
         disposed = true;
         cancelReconnect?.();
         close?.();

@@ -2,7 +2,12 @@ import { useCallback, useEffect, useInsertionEffect, useRef, useState } from "re
 import { Channel } from "../channels";
 import { PRESENCE_CHANNEL_PREFIX, type PresenceMember, type PresenceSnapshot } from "../presence";
 import type { ChannelConnectOptions } from "../types";
-import { reconnectDelay, scheduleReconnect, subscriptionAbortError } from "./reconnect";
+import {
+  reconnectDelay,
+  scheduleReconnect,
+  subscriptionAbortError,
+  terminalClose,
+} from "./reconnect";
 
 function encodePresenceData(data: unknown): string {
   const encoded = JSON.stringify(data);
@@ -22,7 +27,7 @@ export interface UsePresenceOptions<T> extends Omit<ChannelConnectOptions, "last
 export interface PresenceConnection<T> {
   members: PresenceMember<T>[];
   connectionId: string | null;
-  status: "connecting" | "open";
+  status: "connecting" | "open" | "closed";
   error: Error | null;
   /** Replace this connection's metadata, including on the next reconnect. */
   update(data: T): void;
@@ -53,7 +58,7 @@ export function usePresence<T>(
   const [stateKey, setStateKey] = useState(connectionKey);
   const [members, setMembers] = useState<PresenceMember<T>[]>([]);
   const [connectionId, setConnectionId] = useState<string | null>(null);
-  const [status, setStatus] = useState<"connecting" | "open">("connecting");
+  const [status, setStatus] = useState<"connecting" | "open" | "closed">("connecting");
   const [error, setError] = useState<Error | null>(null);
   const dataRef = useRef<{ connectionKey: string; data: T; payload?: string }>({
     connectionKey,
@@ -147,9 +152,7 @@ export function usePresence<T>(
           setConnectionId(null);
           setStatus("connecting");
           const code = (event as CloseEvent).code;
-          // 4410 is the server's replay reset after a native peer change; the
-          // membership comes back on reconnect, unlike the other 44xx rejections.
-          if ((code >= 4400 && code < 4500 && code !== 4410) || code === 1009) {
+          if (terminalClose(code)) {
             setError(new Error(`Presence "${name}" rejected (${code}).`));
             return;
           }
@@ -172,7 +175,9 @@ export function usePresence<T>(
       if (disposed || !signal) return;
       setMembers([]);
       setConnectionId(null);
-      setStatus("connecting");
+      // Aborted is final until a new signal restarts the hook; "connecting"
+      // would promise a reconnect that never comes.
+      setStatus("closed");
       setError(subscriptionAbortError(signal));
       disposed = true;
       if (activeKeyRef.current === connectionKey) activeKeyRef.current = null;

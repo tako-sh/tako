@@ -38,7 +38,9 @@ export function channelIdentity(
 }
 
 export function terminalClose(code: number): boolean {
-  return (code >= 4400 && code < 4500 && code !== 4410) || code === 1009;
+  // 4410 is a replay reset and 4429 a capacity rejection: both recover on
+  // reconnect, unlike the other 44xx rejections and oversized-message 1009.
+  return (code >= 4400 && code < 4500 && code !== 4410 && code !== 4429) || code === 1009;
 }
 
 export function reconnectDelay(attempt: number): number {

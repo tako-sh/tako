@@ -153,7 +153,9 @@ impl ChannelIo for SubscriptionIo {
     }
 
     fn replay_page_size(&self) -> usize {
-        1
+        // Small batches amortize one store read over several replayed messages
+        // while bounding what a subscription materializes between writes.
+        16
     }
     fn message_limit(&self) -> usize {
         MAX_MESSAGE_BYTES

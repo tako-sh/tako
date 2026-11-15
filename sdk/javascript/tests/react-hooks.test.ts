@@ -269,6 +269,7 @@ for (const connection of ["shared", "dedicated"] as const) {
       );
       expect(connections).toBe(0);
       expect(result.current.error?.name).toBe("AbortError");
+      expect(result.current.status).toBe("closed");
     });
 
     test(`${name} abort cancels live and pending reconnects, and a new signal can restart (${connection})`, async () => {
@@ -314,6 +315,7 @@ for (const connection of ["shared", "dedicated"] as const) {
       });
       expect(sockets).toHaveLength(1);
       expect(result.current.error?.name).toBe("AbortError");
+      expect(result.current.status).toBe("closed");
 
       const next = new AbortController();
       rerender({ signal: next.signal });
@@ -775,6 +777,28 @@ describe("channel recovery", () => {
     });
     expect(sockets).toHaveLength(1);
     expect(recoveries).toEqual([]);
+    unmount();
+  });
+
+  test("reconnects after capacity close code 4429", async () => {
+    const sockets: MockWebSocket[] = [];
+    const { result, unmount } = renderHook(() =>
+      useChannel("busy", {
+        transport: "ws",
+        baseUrl: "http://test",
+        webSocketFactory: (url) => {
+          const socket = new MockWebSocket(url);
+          sockets.push(socket);
+          return socket;
+        },
+      }),
+    );
+    act(() => {
+      sockets[0]!.emitClose(4429);
+      globalThis.dispatchEvent(new Event("online"));
+    });
+    await waitFor(() => expect(sockets).toHaveLength(2));
+    expect(result.current.status).toBe("connecting");
     unmount();
   });
 

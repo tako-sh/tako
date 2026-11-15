@@ -142,7 +142,7 @@ The hook returns:
 | -------------- | ---------------------------------------------------------------------------------------- |
 | `members`      | Latest snapshot of `{ connectionId, subject?, data }` entries, including this connection |
 | `connectionId` | This connection's server-assigned ID, or `null` while connecting                         |
-| `status`       | `"connecting"` until the first snapshot; `"open"` while joined                           |
+| `status`       | `"connecting"` until the first snapshot; `"open"` while joined; `"closed"` after abort   |
 | `error`        | Latest connection, protocol, or metadata error, cleared on a successful snapshot         |
 | `update(data)` | Replace this connection's complete metadata                                              |
 

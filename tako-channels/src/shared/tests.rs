@@ -420,3 +420,10 @@ async fn cancelled_subscription_ids_can_be_reused_without_stale_replay() {
     assert_eq!(frame(&mut client).await["type"], "unsubscribed");
     assert_eq!(data(&mut client, "page").await["data"], "current");
 }
+
+#[test]
+fn shared_path_stays_under_the_channels_base_path() {
+    // The SDK derives the shared endpoint from channel URLs built on the same
+    // base path; a drift between the two constants would break only shared WS.
+    assert_eq!(PATH, format!("{}ws", crate::CHANNELS_BASE_PATH));
+}

@@ -22,6 +22,10 @@ pub const PATH: &str = "/_tako/channels/ws";
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 pub const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 const MAX_SUBSCRIPTIONS: usize = 32;
+// Absorb a client-side publish burst (sends are not acknowledged) without
+// letting one subscription buffer more than PUBLISH_QUEUE_COMMANDS frames of
+// up to MAX_FRAME_BYTES while its task is busy writing output.
+const PUBLISH_QUEUE_COMMANDS: usize = 16;
 const CHUNK_BYTES: usize = 8 * 1024;
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(25);
@@ -173,9 +177,11 @@ pub async fn serve(
                 {
                     continue;
                 }
-                // An app may have been redeployed or scaled to zero since the
-                // handshake resolved its authorize endpoint. Reconnect through
-                // the proxy so new subscriptions don't stay pinned to it.
+                // Authorization resolves per subscription, but this connection
+                // still pins the channel store and writer the proxy resolved at
+                // the handshake. After a redeploy or scale-to-zero those can be
+                // stale, so a 1013 disconnects the socket to re-resolve them;
+                // every subscription closes retryable (1012) and reconnects.
                 let resolve_app_again = output.terminal && output.body["code"] == 1013;
                 control(session, output.body).await?;
                 if output.terminal {
@@ -284,7 +290,7 @@ pub async fn serve(
                                 continue;
                             }
                             generation += 1;
-                            let (input, rx) = mpsc::channel(2);
+                            let (input, rx) = mpsc::channel(PUBLISH_QUEUE_COMMANDS);
                             let io = subscription::SubscriptionIo::new(
                                 id.clone(),
                                 generation,

@@ -84,7 +84,21 @@ export class SharedChannel extends EventTarget {
 
   send(data: unknown): void {
     if (this.readyState !== 1) throw new Error("Channel subscription is not open.");
-    const value = typeof data === "string" ? (JSON.parse(data) as unknown) : data;
+    if (
+      data instanceof ArrayBuffer ||
+      ArrayBuffer.isView(data) ||
+      (typeof Blob !== "undefined" && data instanceof Blob)
+    ) {
+      throw new TypeError("Channel messages must be JSON; binary payloads are not supported.");
+    }
+    let value = data;
+    if (typeof data === "string") {
+      try {
+        value = JSON.parse(data) as unknown;
+      } catch {
+        throw new TypeError("Channel messages must be JSON text or JSON-serializable values.");
+      }
+    }
     this.connection.publish(this.id, value);
   }
 
@@ -203,10 +217,12 @@ class SharedConnection {
         ...(subscription.options.from !== undefined && { from: subscription.options.from }),
       });
     } catch (error) {
+      // A failed token resolver or send is a local, possibly transient fault,
+      // not a server auth rejection: close retryable so callers reconnect.
       if (this.subscriptions.has(subscription.id))
         subscription.fail(
           error instanceof Error ? error : new Error(String(error)),
-          error instanceof SendError ? error.code : 4401,
+          error instanceof SendError ? error.code : 1006,
         );
     }
   }
@@ -282,7 +298,11 @@ export function openSharedChannel(
     factoryId = ++nextFactory;
     factories.set(factoryIdentity, factoryId);
   }
-  const endpoint = new URL("/_tako/channels/ws", url);
+  // The subscription URL is `<base>/ws/<encoded channel>`; the shared endpoint
+  // is its parent, so the base path has a single source of truth in channels.ts.
+  const endpoint = new URL(url);
+  endpoint.pathname = url.pathname.slice(0, url.pathname.lastIndexOf("/"));
+  endpoint.search = "";
   endpoint.protocol = endpoint.protocol === "https:" ? "wss:" : "ws:";
   const headers = [...new Headers(options.headers)].sort(([a], [b]) => a.localeCompare(b));
   const key = JSON.stringify([endpoint.href, headers, factoryId, config.generation]);

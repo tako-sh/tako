@@ -371,3 +371,36 @@ test("join failures on an already-open connection reach the new subscription's l
   expect(code).toBe(1009);
   expect(socket.closed).toBe(false);
 });
+
+test("send passes JSON text through and rejects binary or non-JSON payloads", async () => {
+  const page = connect("chat");
+  const socket = Socket.all[0]!;
+  socket.open();
+  await tick();
+  for (const frame of socket.sent) socket.ready(frame.id);
+  page.send('{"type":"chat","data":"hi"}');
+  expect(socket.sent.at(-1)?.data).toEqual({ type: "chat", data: "hi" });
+  const before = socket.sent.length;
+  expect(() => page.send("not json")).toThrow(/JSON/);
+  expect(() => page.send(new ArrayBuffer(4))).toThrow(/binary/i);
+  expect(() => page.send(new Uint8Array([1, 2, 3]))).toThrow(/binary/i);
+  expect(socket.sent).toHaveLength(before);
+  expect(socket.closed).toBe(false);
+});
+
+test("a failing token resolver closes the subscription retryable, not as an auth rejection", async () => {
+  configureChannels({
+    websocket: Socket as unknown as typeof WebSocket,
+    token: () => Promise.reject(new Error("refresh failed")),
+  });
+  const page = connect("chat");
+  const socket = Socket.all[0]!;
+  let code: number | undefined;
+  (page.raw as EventTarget).addEventListener("close", (event) => {
+    code = (event as CloseEvent).code;
+  });
+  socket.open();
+  await tick();
+  expect(code).toBe(1006);
+  expect(socket.closed).toBe(false);
+});
