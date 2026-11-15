@@ -93,6 +93,9 @@ export const build = __takoEnv["TAKO_BUILD"] ?? "";
 /** Persistent app-owned data directory. */
 export const dataDir = __takoEnv["TAKO_DATA_DIR"] ?? "";
 
+/** Persistent directory shared by apps on this server (or local TAKO_HOME). */
+export const sharedDataDir = __takoEnv["TAKO_SHARED_DATA_DIR"] ?? "";
+
 /** Directory the app is running from (`process.cwd()`). */
 export const appDir =
   typeof process !== "undefined" && typeof process.cwd === "function" ? process.cwd() : "";
@@ -115,6 +118,7 @@ export const tako = Object.freeze({
   host,
   build,
   dataDir,
+  sharedDataDir,
   appDir,
   logger,
   secrets,

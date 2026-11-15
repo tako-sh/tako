@@ -596,6 +596,9 @@ pub(super) fn build_worker_env(
             .to_string_lossy()
             .to_string(),
     );
+    if let Ok(shared) = tako::paths::shared_data_dir() {
+        env.insert("TAKO_SHARED_DATA_DIR".into(), shared.display().to_string());
+    }
     if let Some(app_root) = app_root {
         env.insert("TAKO_APP_ROOT".into(), app_root.to_string());
     }

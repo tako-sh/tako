@@ -182,6 +182,13 @@ fn prepare_filesystem(
 ) -> Result<(), String> {
     let (name, environment) = app_components(app)?;
     let root = open_absolute(root).map_err(|e| e.to_string())?;
+    let shared_root = ensure_directory(&root, "shared").map_err(|e| e.to_string())?;
+    let shared_data = ensure_directory(&shared_root, "data").map_err(|e| e.to_string())?;
+    let shared = ensure_directory(&shared_data, "app").map_err(|e| e.to_string())?;
+    let shared_gid = ids.supplementary_gids.first().copied().unwrap_or(ids.gid);
+    set_owner_mode(&shared_root, service_uid, shared_gid, 0o750).map_err(|e| e.to_string())?;
+    set_owner_mode(&shared_data, service_uid, shared_gid, 0o750).map_err(|e| e.to_string())?;
+    secure_data_tree(&shared, service_uid, shared_gid, false).map_err(|e| e.to_string())?;
     let apps = open_child(&root, "apps", true).map_err(|e| e.to_string())?;
     let name = open_child(&apps, name, true).map_err(|e| e.to_string())?;
     let app = open_child(&name, environment, true).map_err(|e| e.to_string())?;

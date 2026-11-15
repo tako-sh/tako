@@ -118,35 +118,32 @@ pub(super) fn format_status_line(server_name: &str, status: &BackupStatusRespons
             )
         })
         .unwrap_or_else(|| "no backups yet".to_string());
-    let next = status
-        .next_backup_at_unix_secs
-        .map(format_backup_time)
-        .unwrap_or_else(|| "-".to_string());
     let retention = status
         .retention_days
-        .map(|days| format!("{days}d retention"))
-        .unwrap_or_else(|| "retention unknown".to_string());
-    let databases = status
-        .last_database_snapshot_at_unix_secs
-        .map(|time| format!("last database snapshot at {}", format_backup_time(time)))
-        .unwrap_or_else(|| "no database snapshots yet".to_string());
-    let skipped = status
-        .last_database_snapshot_skip
-        .as_ref()
-        .map(|skip| {
-            let activity = if skip.reason == tako_core::BackupSkipReason::UnfinishedRestore {
-                "scheduled backups paused"
-            } else {
-                "database snapshot skipped"
-            };
-            format!(
-                ", {activity} at {}: {}",
-                format_backup_time(skip.at_unix_secs),
-                skip.message
-            )
-        })
+        .map(|days| format!("{days}d archive retention"))
         .unwrap_or_default();
-    format!("{server_name}: enabled, {last}, next {next}, {retention}, {databases}{skipped}")
+    let databases = status
+        .databases
+        .iter()
+        .map(|database| {
+            let scope = if database.shared { "shared/" } else { "" };
+            let progress = match &database.error {
+                Some(error) => format!("error: {error}"),
+                None => database
+                    .uploaded_txid
+                    .map(|txid| format!("uploaded TXID {txid}"))
+                    .unwrap_or_else(|| "waiting for first upload".into()),
+            };
+            format!("{scope}{}: {progress}", database.database)
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let databases = if databases.is_empty() {
+        "no SQLite databases selected"
+    } else {
+        &databases
+    };
+    format!("{server_name}: enabled, manual archives, {last}, {retention}; SQLite: {databases}")
 }
 
 pub(super) fn format_status_restores(
@@ -170,23 +167,19 @@ pub(super) fn format_status_restores(
         .collect()
 }
 
-/// Why scheduled backups on this server are failing, if they are.
+/// The latest manual archive failure, or an unreadable archive index.
 pub(super) fn format_status_failure(
     server_name: &str,
     status: &BackupStatusResponse,
 ) -> Option<String> {
     let failure = status.last_backup_failure.as_ref()?;
-    let retry = format_backup_time(failure.retry_at_unix_secs);
     Some(match failure.reason {
         tako_core::BackupFailureReason::IndexUnreadable => {
-            format!(
-                "{server_name}: {}; next attempt at {retry}",
-                failure.message
-            )
+            format!("{server_name}: {}", failure.message)
         }
         tako_core::BackupFailureReason::Failed
         | tako_core::BackupFailureReason::InsufficientDisk => format!(
-            "{server_name}: full backup failed at {}: {}; next attempt at {retry}",
+            "{server_name}: full backup failed at {}: {}",
             format_backup_time(failure.at_unix_secs),
             failure.message
         ),
@@ -197,7 +190,7 @@ fn local_offset() -> UtcOffset {
     *LOCAL_OFFSET.get_or_init(|| UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC))
 }
 
-fn format_backup_time(unix_secs: i64) -> String {
+pub(super) fn format_backup_time(unix_secs: i64) -> String {
     OffsetDateTime::from_unix_timestamp(unix_secs)
         .map(|dt| {
             let dt = dt.to_offset(local_offset());
@@ -221,13 +214,12 @@ mod tests {
     #[test]
     fn status_line_marks_disabled_backup() {
         let status = BackupStatusResponse {
+            databases: Vec::new(),
             app: "demo/production".to_string(),
             enabled: false,
             retention_days: None,
             last_backup: None,
-            next_backup_at_unix_secs: None,
-            last_database_snapshot_at_unix_secs: None,
-            last_database_snapshot_skip: None,
+
             last_backup_failure: None,
             unfinished_restores: Vec::new(),
         };
@@ -235,65 +227,58 @@ mod tests {
     }
 
     #[test]
-    fn status_line_reports_database_snapshots_and_skips() {
+    fn status_line_reports_continuous_replication_and_manual_archive_failures() {
         let mut status = BackupStatusResponse {
+            databases: Vec::new(),
             app: "demo/production".to_string(),
             enabled: true,
             retention_days: Some(30),
             last_backup: None,
-            next_backup_at_unix_secs: None,
-            last_database_snapshot_at_unix_secs: None,
-            last_database_snapshot_skip: None,
+
             last_backup_failure: None,
             unfinished_restores: Vec::new(),
         };
         let line = format_status_line("prod", &status);
-        assert!(
-            line.ends_with("30d retention, no database snapshots yet"),
-            "{line}"
-        );
+        assert!(line.contains("no SQLite databases selected"), "{line}");
 
-        status.last_database_snapshot_at_unix_secs = Some(0);
-        status.last_database_snapshot_skip = Some(tako_core::BackupSkip {
-            at_unix_secs: 0,
-            reason: tako_core::BackupSkipReason::Unchanged,
-            message: "No database changed since the latest backup.".to_string(),
+        status.databases.push(tako_core::DatabaseBackupStatus {
+            database: "orders.sqlite".into(),
+            shared: true,
+            replica_id: "replica".into(),
+            consumers: vec!["demo/production".into()],
+            active: true,
+            captured_txid: Some(42),
+            uploaded_txid: Some(41),
+            uploaded_at_unix_secs: Some(0),
+            error: None,
         });
         let line = format_status_line("prod", &status);
         let time = format_backup_time(0);
-        assert!(
-            line.ends_with(&format!(
-                "last database snapshot at {time}, database snapshot skipped at {time}: No database changed since the latest backup."
-            )),
-            "{line}"
-        );
+        assert!(line.contains("manual archives"));
+        assert!(line.contains("shared/orders.sqlite: uploaded TXID 41"));
+        status.databases[0].error = Some("bucket unavailable".into());
+        assert!(format_status_line("prod", &status).contains("bucket unavailable"));
         assert_eq!(format_status_failure("prod", &status), None);
-
-        status.last_database_snapshot_skip.as_mut().unwrap().reason =
-            tako_core::BackupSkipReason::UnfinishedRestore;
-        assert!(format_status_line("prod", &status).contains("scheduled backups paused"));
 
         status.last_backup_failure = Some(tako_core::BackupFailure {
             at_unix_secs: 0,
             reason: tako_core::BackupFailureReason::InsufficientDisk,
             message: "Not enough free disk space for a full backup.".to_string(),
-            retry_at_unix_secs: 0,
         });
         assert_eq!(
             format_status_failure("prod", &status).unwrap(),
             format!(
-                "prod: full backup failed at {time}: Not enough free disk space for a full backup.; next attempt at {time}"
+                "prod: full backup failed at {time}: Not enough free disk space for a full backup."
             )
         );
         status.last_backup_failure = Some(tako_core::BackupFailure {
             at_unix_secs: 0,
             reason: tako_core::BackupFailureReason::IndexUnreadable,
             message: "Failed to read backup index: invalid JSON".to_string(),
-            retry_at_unix_secs: 0,
         });
         assert_eq!(
             format_status_failure("prod", &status).unwrap(),
-            format!("prod: Failed to read backup index: invalid JSON; next attempt at {time}")
+            format!("prod: Failed to read backup index: invalid JSON")
         );
     }
 

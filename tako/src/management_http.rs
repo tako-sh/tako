@@ -393,6 +393,7 @@ fn management_rpc_timeout_for_command(command: &Command) -> Duration {
         | Command::Deploy { .. }
         | Command::Scale { .. }
         | Command::BackupNow { .. }
+        | Command::RestoreDatabaseBackup { .. }
         | Command::RestoreBackup { .. }
         | Command::Stop { .. }
         | Command::Delete { .. }
@@ -406,6 +407,7 @@ fn management_rpc_timeout_for_command(command: &Command) -> Duration {
         | Command::InjectChallengeToken { .. }
         | Command::PrepareReleaseUpload { .. }
         | Command::CheckDeploySpace { .. }
+        | Command::ListDatabaseBackups { .. }
         | Command::ListBackups { .. }
         | Command::BackupStatus { .. }
         | Command::BackupDownloadUrl { .. }

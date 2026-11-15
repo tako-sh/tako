@@ -149,6 +149,9 @@ impl crate::ServerState {
             },
             BackupUpdate::Replace(binding) => binding.map(|binding| *binding),
         };
+        if let Err(error) = self.validate_database_registration(app_name, backup.as_ref()) {
+            return Response::error(error);
+        }
         let mut config = existing.as_ref().map_or_else(
             || {
                 let (name, environment) = requested_deployment_identity(app_name);
@@ -170,6 +173,19 @@ impl crate::ServerState {
             runtime_bin_path.as_deref(),
         ) {
             return Response::error(format!("Invalid app release: {error}"));
+        }
+        if let Some(binding) = &backup {
+            if let Err(error) =
+                crate::replica_worker::prepare_sources(&data_paths.app, &binding.databases)
+                    .and_then(|()| {
+                        crate::replica_worker::prepare_sources(
+                            &data_paths.shared,
+                            &binding.shared_databases,
+                        )
+                    })
+            {
+                return Response::error(error);
+            }
         }
         inject_app_data_dir_env(&mut config.env_vars, &data_paths);
         config.secrets = secrets;

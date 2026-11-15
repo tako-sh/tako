@@ -15,6 +15,7 @@ pub(crate) fn command_is_read_only(command: &Command) -> bool {
             | Command::ListReleases { .. }
             | Command::Routes
             | Command::GetSecretsHash { .. }
+            | Command::ListDatabaseBackups { .. }
             | Command::ListBackups { .. }
             | Command::BackupStatus { .. }
             | Command::BackupDownloadUrl { .. }
@@ -197,12 +198,24 @@ impl crate::ServerState {
                 if let Some(resp) = self.reject_mutating_when_upgrading("backup-now").await {
                     return resp;
                 }
+                if let Some(backup) = backup.as_deref() {
+                    if let Err(error) = self.validate_database_registration(&app, Some(backup)) { return Response::error(error); }
+                }
                 if let Some(backup) = backup.as_deref()
                     && let Err(error) = self.state_store.set_backup(&app, Some(backup))
                 {
                     return Response::error(format!("Failed to store backup config: {error}"));
                 }
                 self.backup_now(&app).await
+            }
+            Command::ListDatabaseBackups { app, database, shared } => {
+                if let Err(msg) = validate_app_name(&app) { return Response::error(msg); }
+                self.list_database_backups(&app, &database, shared).await
+            }
+            Command::RestoreDatabaseBackup { app, database, shared, txid } => {
+                if let Err(msg) = validate_app_name(&app) { return Response::error(msg); }
+                if let Some(resp) = self.reject_mutating_when_upgrading("restore-database").await { return resp; }
+                self.restore_database_backup(&app, &database, shared, txid).await
             }
             Command::ListBackups { app } => {
                 if let Err(msg) = validate_app_name(&app) {

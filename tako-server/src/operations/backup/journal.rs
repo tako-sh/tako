@@ -598,14 +598,27 @@ fn mark_abandoned(dir: &Path) -> Result<PathBuf, String> {
             }
             Ok(abandoned)
         }
-        Err(rename) => remove_lock(dir)
-            .map_err(|unlink| format!("rename: {rename}; {unlink}"))
-            .or_else(|error| {
-                // Rollback directories sit at <data dir>/apps/<name>/<environment>/.
-                start_generation_in(dir.ancestors().nth(4))
-                    .map_err(|generation| format!("{error}; {generation}"))
-            })
-            .map(|()| dir.to_path_buf()),
+        Err(rename) => {
+            remove_lock(dir)
+                .map_err(|unlink| format!("rename: {rename}; {unlink}"))
+                .or_else(|error| {
+                    let server_root =
+                        if dir.ancestors().nth(3).is_some_and(|parent| {
+                            parent.file_name().is_some_and(|name| name == "apps")
+                        }) {
+                            dir.ancestors().nth(4)
+                        } else if dir.parent().is_some_and(|parent| {
+                            parent.file_name().is_some_and(|name| name == "shared")
+                        }) {
+                            dir.ancestors().nth(2)
+                        } else {
+                            None
+                        };
+                    start_generation_in(server_root)
+                        .map_err(|generation| format!("{error}; {generation}"))
+                })
+                .map(|()| dir.to_path_buf())
+        }
     }
 }
 
@@ -1013,7 +1026,7 @@ fn restore_dirs(data_dir: &Path) -> Vec<PathBuf> {
             .map(|entry| entry.path())
             .collect()
     };
-    let mut found = Vec::new();
+    let mut found = restore_dirs_in(&data_dir.join("shared"));
     for name in children(&data_dir.join("apps")) {
         for environment in children(&name) {
             found.extend(restore_dirs_in(&environment));
@@ -1128,6 +1141,15 @@ pub(super) struct DatabaseSwap {
 }
 
 impl DatabaseSwap {
+    /// A shared restore must reopen apps through normal startup validation.
+    /// Record that every swap completed, retaining the originals until health
+    /// checks finish. A crash here leaves a complete database and a drain intent.
+    pub(super) fn prepare_restart(&self) -> Result<(), String> {
+        let mut intent = read_intent(self.dir.path())?.ok_or("missing restore intent")?;
+        intent.state = IntentState::Restored;
+        write_intent(self.dir.path(), &intent).map_err(|e| e.to_string())
+    }
+
     pub(super) fn summary(&self) -> &RestoredDatabases {
         &self.summary
     }
@@ -1142,6 +1164,10 @@ impl DatabaseSwap {
     /// process: it only inspects, renames, and unlinks files, and never
     /// opens a database.
     pub(super) fn rollback(self) -> Result<(), String> {
+        if let Some(mut intent) = read_intent(self.dir.path())? {
+            intent.state = IntentState::Swapping;
+            write_intent(self.dir.path(), &intent).map_err(|e| e.to_string())?;
+        }
         self.dir.roll_back()
     }
 
@@ -1380,6 +1406,19 @@ pub(crate) fn run_restore_worker(request: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_recovery_includes_shared_data_and_retires_completed_intents() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("shared/data");
+        std::fs::create_dir_all(&root).unwrap();
+        let unused = RollbackDir::create(&root).unwrap();
+        let path = unused.path().to_owned();
+        unused.leave_for_recovery();
+        assert_eq!(restore_dirs(temp.path()), [path.clone()]);
+        recover_as_next_start(temp.path());
+        assert!(!path.exists());
+    }
 
     #[test]
     fn startup_recovery_finds_rollback_dirs_and_sweeps_work_dirs() {

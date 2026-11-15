@@ -91,8 +91,9 @@ impl SqliteStateStore {
             ),
         ];
         let app = config.deployment_id();
-        let conn = self.lock_conn()?;
-        let tx = conn.unchecked_transaction()?;
+        let mut conn = self.lock_conn()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        self.register_database_destinations_on(&tx, &app, backup)?;
         upsert_app_on(&tx, config, routes)?;
         tx.execute("DELETE FROM app_schedule_revisions WHERE app = ?1", [&app])?;
         if let Some(revision) = schedule_revision {

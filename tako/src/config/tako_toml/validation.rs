@@ -274,6 +274,9 @@ impl TakoToml {
 }
 
 fn validate_backup_config(config: &TakoToml, env_name: &str, backup: &BackupConfig) -> Result<()> {
+    tako_core::validate_database_paths(&backup.databases).map_err(ConfigError::Validation)?;
+    tako_core::validate_database_paths(&backup.shared_databases)
+        .map_err(ConfigError::Validation)?;
     let resource_name = backup.storage.as_str();
     if resource_name.is_empty() {
         return Err(ConfigError::Validation(format!(

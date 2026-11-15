@@ -21,9 +21,9 @@ unit-go:
 workspace:
     cargo test --workspace
 
-# Isolated embedded SQLite backup experiment; does not alter deployed backups.
+# Embedded SQLite capture, upload, retention, and recovery tests.
 terse:
-    cargo test --locked --manifest-path prototypes/terse-backup/Cargo.toml
+    cargo test --locked -p tako-backup
 
 # Reproduce a storage history workload; omit the seed to run the built-in corpus.
 histories seed="":

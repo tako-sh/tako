@@ -831,3 +831,9 @@ console.log(JSON.stringify(tako.secrets)); // "[REDACTED]"
 // CORRECT — access individual secrets by name
 const dbUrl = tako.secrets.DATABASE_URL;
 ```
+
+### Shared data and SQLite backups
+
+`tako.dataDir` / `TAKO_DATA_DIR` is private app data. `tako.sharedDataDir` / `TAKO_SHARED_DATA_DIR` is local shared data for apps on one server (or projects using the same local `TAKO_HOME`). SQLite supports multiple local processes with WAL mode and a busy timeout; writes are serialized. Coordinate migrations. Shared files must allow group writes.
+
+Configure automatic SQLite backups with `[envs.production].backup = { storage = "backups", databases = ["app.sqlite"], shared_databases = ["accounts.sqlite"] }`, using a declared private S3 storage resource. Paths are relative to the respective data directory. Shared declarations reuse one stream and must agree on destination. Use `tako backups list --database accounts.sqlite --shared --server <name>` to inspect capture TXIDs. Restore with `tako backups restore --database accounts.sqlite --shared --latest --server <name>` after establishing authorization; this pauses all apps on that server. Private restores pause the owning app. Full-directory archives are manual with `tako backups now`; deploys and schedules do not create archives. Do not assume app archives include shared non-SQLite files or Compose named volumes.

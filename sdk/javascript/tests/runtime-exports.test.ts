@@ -28,6 +28,7 @@ test("tako.sh named runtime exports match the app runtime object", async () => {
   expect(mod.tako.host).toBe(mod.host);
   expect(mod.tako.build).toBe(mod.build);
   expect(mod.tako.dataDir).toBe(mod.dataDir);
+  expect(mod.tako.sharedDataDir).toBe(mod.sharedDataDir);
   expect(mod.tako.logger).toBe(mod.logger);
   expect(mod.tako.secrets).toBe(mod.secrets);
   expect(mod.tako.storages).toBe(mod.storages);

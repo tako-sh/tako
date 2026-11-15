@@ -214,6 +214,12 @@ pub struct EnvConfig {
 pub struct BackupConfig {
     /// Private S3-compatible storage resource used for app data backups.
     pub storage: String,
+    /// SQLite paths relative to TAKO_DATA_DIR, captured continuously.
+    #[serde(default)]
+    pub databases: Vec<String>,
+    /// SQLite paths relative to the server's TAKO_SHARED_DATA_DIR.
+    #[serde(default)]
+    pub shared_databases: Vec<String>,
 }
 
 /// S3-compatible storage resource from [storages.*]. Credentials are stored

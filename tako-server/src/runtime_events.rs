@@ -509,16 +509,12 @@ const OPERATOR_PRIORITY_WINDOW: Duration = Duration::from_secs(60);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BackgroundWork {
     AutomaticRecovery,
-    /// Operator backups (`backups now`, the post-deploy archive in finalize)
-    /// are operator work.
-    ScheduledBackup,
 }
 
 impl BackgroundWork {
     fn busy_message(self, app_name: &str) -> String {
         let (work, pauses) = match self {
             Self::AutomaticRecovery => ("Automatic recovery", "Recovery"),
-            Self::ScheduledBackup => ("A scheduled backup", "Scheduled backups"),
         };
         format!(
             "{work} of {app_name} is in progress; retry in a moment. \
@@ -677,28 +673,6 @@ impl ServerState {
     pub(crate) async fn lock_deploy_for_backup(&self, app_name: &str) -> BackupDeployLock {
         let guard = self.get_deploy_lock(app_name).await.lock_owned().await;
         BackupDeployLock::open(self.app_manager.get_app(app_name), guard, false)
-    }
-
-    /// For scheduled backups: never waits, and yields to operators like any
-    /// background work, see `try_lock_deploy_for_background`.
-    pub(crate) async fn try_lock_deploy_for_scheduled_backup(
-        &self,
-        app_name: &str,
-        now: Instant,
-    ) -> Option<BackupDeployLock> {
-        let lock = self.get_deploy_lock(app_name).await;
-        let Some(app) = self.app_manager.get_app(app_name) else {
-            // No operator operation waits on an app that is not loaded.
-            return Some(BackupDeployLock::open(
-                None,
-                lock.try_lock_owned().ok()?,
-                false,
-            ));
-        };
-        let guard = take_for_background(&app, BackgroundWork::ScheduledBackup, now, || {
-            lock.try_lock_owned().ok()
-        })?;
-        Some(BackupDeployLock::open(Some(app), guard, true))
     }
 }
 

@@ -11,6 +11,7 @@ use tako_spawn::ProcessIsolation;
 use tokio::process::Command as TokioCommand;
 
 pub(crate) const TAKO_APP_DATA_DIR_ENV: &str = "TAKO_DATA_DIR";
+pub(crate) const TAKO_SHARED_DATA_DIR_ENV: &str = "TAKO_SHARED_DATA_DIR";
 
 /// Descriptive `app.json` fields reported with a release. None of them
 /// affects how the release runs.
@@ -40,6 +41,7 @@ pub(crate) struct AppRuntimeDataPaths {
     pub root: PathBuf,
     pub app: PathBuf,
     pub tako: PathBuf,
+    pub shared: PathBuf,
 }
 
 pub(crate) fn collect_running_build_statuses(app: &crate::instances::App) -> Vec<BuildStatus> {
@@ -83,6 +85,7 @@ pub(crate) fn app_root(data_dir: &Path, app_name: &str) -> PathBuf {
 pub(crate) fn app_runtime_data_paths(data_dir: &Path, app_name: &str) -> AppRuntimeDataPaths {
     let root = app_root(data_dir, app_name).join("data");
     AppRuntimeDataPaths {
+        shared: data_dir.join("shared/data/app"),
         app: root.join("app"),
         tako: root.join("tako"),
         root,
@@ -105,6 +108,7 @@ pub(crate) fn ensure_app_runtime_data_dirs(
             .map_err(|e| format!("create app data dir {}: {e}", paths.app.display()))?;
         std::fs::create_dir_all(&paths.tako)
             .map_err(|e| format!("create tako data dir {}: {e}", paths.tako.display()))?;
+        std::fs::create_dir_all(&paths.shared).map_err(|e| e.to_string())?;
         prepare_app_runtime_data_permissions(&paths)
             .map_err(|e| format!("prepare app data permissions {}: {e}", paths.root.display()))?;
         Ok(paths)
@@ -175,6 +179,10 @@ pub(crate) fn inject_app_data_dir_env(
     env: &mut HashMap<String, String>,
     paths: &AppRuntimeDataPaths,
 ) {
+    env.insert(
+        TAKO_SHARED_DATA_DIR_ENV.to_string(),
+        paths.shared.display().to_string(),
+    );
     env.insert(
         TAKO_APP_DATA_DIR_ENV.to_string(),
         paths.app.display().to_string(),

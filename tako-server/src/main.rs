@@ -43,6 +43,7 @@ mod protocol_compatibility;
 mod proxy;
 mod release;
 mod release_command;
+mod replica_worker;
 mod request_drain;
 mod routing;
 mod runtime_events;
@@ -366,6 +367,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().nth(1).as_deref() == Some("--provision-app") {
         return isolation::run_helper(&std::env::args().skip(2).collect::<Vec<_>>())
             .map_err(|error| std::io::Error::other(error).into());
+    }
+    if std::env::args().nth(1).as_deref() == Some("--database-capture-worker") {
+        let args: Vec<_> = std::env::args().skip(2).collect();
+        if args.len() != 3 {
+            return Err("invalid capture worker arguments".into());
+        }
+        return replica_worker::run(Path::new(&args[0]), Path::new(&args[1]), args[2].parse()?);
     }
     install_rustls_crypto_provider();
 

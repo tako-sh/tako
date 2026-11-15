@@ -9,10 +9,83 @@ use std::{fs, path::Path, sync::atomic::Ordering};
 use anyhow::Result;
 use object_store::path::Path as ObjectPath;
 use rusqlite::Connection;
-use tako_terse_prototype::{Capture, restore_remote, upload_pending};
+use tako_backup::{Capture, restore_remote, upload_pending};
 use terse_litestream::{FileStore, ReplicaStore};
 
 use support::{Process, Remote};
+
+#[tokio::test]
+async fn either_shared_consumer_key_restores_the_same_encrypted_history() -> Result<()> {
+    use std::sync::Arc;
+    use tako_backup::{encryption::Key, replica};
+    let dir = tempfile::tempdir()?;
+    let database = dir.path().join("shared.sqlite");
+    let spool = dir.path().join("spool");
+    let inner = Arc::new(object_store::memory::InMemory::new());
+    let prefix = ObjectPath::from("shared-database");
+    let first = Key::new("app-a".into(), [1; 32])?;
+    let second = Key::new("app-b".into(), [2; 32])?;
+    let (remote, key) = replica::connect(inner.clone(), &prefix, &[first.clone()], None).await?;
+    let mut writer = Process::start("writer", &database, &spool)?;
+    writer.request(&inserts(1, 10))?;
+    let mut capture = Capture::open(&database, &spool)?;
+    capture.sync()?;
+    upload_pending(&capture.spool(), remote.as_ref(), &prefix).await?;
+    replica::connect(
+        inner.clone(),
+        &prefix,
+        &[second.clone()],
+        Some(*key.bytes()),
+    )
+    .await?;
+    drop(capture);
+    drop(writer);
+    drop(remote);
+    drop(key);
+    fs::remove_dir_all(spool)?;
+    fs::remove_file(database)?;
+    for recovery in [first, second] {
+        let output = dir.path().join(format!("{}.sqlite", recovery.id));
+        let (remote, _) = replica::connect(inner.clone(), &prefix, &[recovery], None).await?;
+        restore_remote(remote.as_ref(), &prefix, &output, None).await?;
+        verify(&output, 10)?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn historical_restore_starts_a_new_capture_above_the_existing_history() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let database = dir.path().join("app.sqlite");
+    let spool = dir.path().join("spool");
+    let remote = Remote::new(&dir.path().join("remote"))?;
+    let prefix = ObjectPath::from("shared");
+    let mut writer = Process::start("writer", &database, &spool)?;
+    writer.request(&inserts(1, 5))?;
+    let mut capture = Capture::open(&database, &spool)?;
+    let older = capture.sync()?;
+    upload_pending(&capture.spool(), &remote, &prefix).await?;
+    writer.request(&inserts(6, 10))?;
+    let newer = capture.sync()?;
+    upload_pending(&capture.spool(), &remote, &prefix).await?;
+    drop(capture);
+    drop(writer);
+    let restored = dir.path().join("restored.sqlite");
+    restore_remote(&remote, &prefix, &restored, Some(older)).await?;
+    let recovered_spool = dir.path().join("recovered-spool");
+    let store = FileStore::new(&recovered_spool);
+    tako_backup::download_replica(&remote, &prefix, &store).await?;
+    let mut capture = Capture::open(&restored, &recovered_spool)?;
+    assert!(capture.sync()? > newer);
+    upload_pending(&capture.spool(), &remote, &prefix).await?;
+    let latest = dir.path().join("latest.sqlite");
+    restore_remote(&remote, &prefix, &latest, None).await?;
+    verify(&latest, 5)?;
+    let previous = dir.path().join("previous.sqlite");
+    restore_remote(&remote, &prefix, &previous, Some(newer)).await?;
+    verify(&previous, 10)?;
+    Ok(())
+}
 
 fn inserts(first: i64, last: i64) -> String {
     let mut sql = "BEGIN IMMEDIATE;".to_string();
