@@ -1,8 +1,8 @@
 use std::path::Path;
 
 use base64::{Engine, engine::general_purpose::STANDARD};
-use openssl::pkey::{Id, PKey, Private};
 use serde::{Deserialize, Serialize};
+use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroizing;
 
 use crate::{
@@ -12,8 +12,8 @@ use crate::{
 };
 
 pub struct LocalDeviceKeys {
-    pub(crate) wg: PKey<Private>,
-    pub(crate) encryption: PKey<Private>,
+    pub(crate) wg: StaticSecret,
+    pub(crate) encryption: StaticSecret,
     ssh: ssh_key::PrivateKey,
 }
 
@@ -29,8 +29,8 @@ struct SecretFile {
 impl LocalDeviceKeys {
     pub fn generate() -> Result<Self> {
         Ok(Self {
-            wg: PKey::generate_x25519()?,
-            encryption: PKey::generate_x25519()?,
+            wg: new_x25519_secret()?,
+            encryption: new_x25519_secret()?,
             ssh: ssh_key::PrivateKey::random(
                 &mut ssh_key::rand_core::OsRng,
                 ssh_key::Algorithm::Ed25519,
@@ -39,12 +39,7 @@ impl LocalDeviceKeys {
     }
 
     pub fn wg_public_key(&self) -> Result<WgPublicKey> {
-        WgPublicKey::from_bytes(
-            self.wg
-                .raw_public_key()?
-                .try_into()
-                .map_err(|_| invalid("WG public key", "expected 32 bytes"))?,
-        )
+        WgPublicKey::from_bytes(PublicKey::from(&self.wg).to_bytes())
     }
 
     pub fn ssh_public_key(&self) -> Result<SshPublicKey> {
@@ -54,12 +49,7 @@ impl LocalDeviceKeys {
     }
 
     pub fn encryption_public_key(&self) -> Result<EncryptionPublicKey> {
-        EncryptionPublicKey::from_bytes(
-            self.encryption
-                .raw_public_key()?
-                .try_into()
-                .map_err(|_| invalid("encryption public key", "expected 32 bytes"))?,
-        )
+        EncryptionPublicKey::from_bytes(PublicKey::from(&self.encryption).to_bytes())
     }
 
     pub fn device_id(&self, network: &NetworkId, kind: DeviceKind) -> Result<DeviceId> {
@@ -73,8 +63,7 @@ impl LocalDeviceKeys {
 
     /// Export only to the privileged WireGuard configurator, never a public profile.
     pub fn wireguard_private_key(&self) -> Result<Zeroizing<String>> {
-        let raw = Zeroizing::new(self.wg.raw_private_key()?);
-        Ok(Zeroizing::new(STANDARD.encode(raw.as_slice())))
+        Ok(Zeroizing::new(STANDARD.encode(self.wg.as_bytes())))
     }
 
     /// Export only to a temporary owner-only identity file for the SSH client.
@@ -133,9 +122,7 @@ impl LocalDeviceKeys {
             version: 2,
             ssh_private_key: self.ssh_private_key()?,
             wg_private_key: self.wireguard_private_key()?,
-            encryption_private_key: Zeroizing::new(
-                STANDARD.encode(Zeroizing::new(self.encryption.raw_private_key()?).as_slice()),
-            ),
+            encryption_private_key: Zeroizing::new(STANDARD.encode(self.encryption.as_bytes())),
         };
         let bytes = Zeroizing::new(serde_json::to_vec(&payload)?);
         secure_file::save_new(path, &bytes)
@@ -183,13 +170,75 @@ impl LocalDeviceKeys {
         }
         let keys = Self {
             ssh,
-            wg: PKey::private_key_from_raw_bytes(&raw, Id::X25519)?,
-            encryption: PKey::private_key_from_raw_bytes(&encryption_raw, Id::X25519)?,
+            wg: StaticSecret::from(
+                <[u8; 32]>::try_from(raw.as_slice()).expect("validated key length"),
+            ),
+            encryption: StaticSecret::from(
+                <[u8; 32]>::try_from(encryption_raw.as_slice()).expect("validated key length"),
+            ),
         };
         keys.wg_public_key()?;
         keys.ssh_public_key()?;
         keys.encryption_public_key()?;
         Ok(keys)
+    }
+}
+
+pub(crate) fn new_x25519_secret() -> Result<StaticSecret> {
+    let mut bytes = Zeroizing::new([0u8; 32]);
+    getrandom::fill(bytes.as_mut()).map_err(|_| invalid("randomness", "OS entropy unavailable"))?;
+    // Persist the same clamped scalar representation as OpenSSL and WireGuard.
+    bytes[0] &= 248;
+    bytes[31] &= 127;
+    bytes[31] |= 64;
+    Ok(StaticSecret::from(*bytes))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use openssl::pkey::PKey;
+
+    #[test]
+    fn openssl_key_files_keep_their_identity_and_private_bytes() {
+        let wg = PKey::generate_x25519().unwrap();
+        let encryption = PKey::generate_x25519().unwrap();
+        let keys = LocalDeviceKeys::generate().unwrap();
+        let payload = SecretFile {
+            version: 2,
+            ssh_private_key: keys.ssh_private_key().unwrap(),
+            wg_private_key: Zeroizing::new(STANDARD.encode(wg.raw_private_key().unwrap())),
+            encryption_private_key: Zeroizing::new(
+                STANDARD.encode(encryption.raw_private_key().unwrap()),
+            ),
+        };
+        let dir = crate::private_tempdir();
+        let original = dir.path().join("openssl.json");
+        secure_file::save_new(&original, &serde_json::to_vec(&payload).unwrap()).unwrap();
+        let loaded = LocalDeviceKeys::load(&original).unwrap();
+        assert_eq!(
+            loaded.wg_public_key().unwrap().as_bytes().as_slice(),
+            wg.raw_public_key().unwrap()
+        );
+        assert_eq!(
+            loaded
+                .encryption_public_key()
+                .unwrap()
+                .as_bytes()
+                .as_slice(),
+            encryption.raw_public_key().unwrap()
+        );
+        assert_eq!(
+            loaded.wireguard_private_key().unwrap(),
+            payload.wg_private_key
+        );
+        let saved = dir.path().join("rustcrypto.json");
+        loaded.save_new(&saved).unwrap();
+        let saved: SecretFile =
+            serde_json::from_slice(&secure_file::load(&saved).unwrap()).unwrap();
+        assert_eq!(saved.wg_private_key, payload.wg_private_key);
+        assert_eq!(saved.encryption_private_key, payload.encryption_private_key);
+        assert_eq!(saved.ssh_private_key, payload.ssh_private_key);
     }
 }
 

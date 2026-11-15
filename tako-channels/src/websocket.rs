@@ -9,8 +9,8 @@ mod integration_tests;
 use crate::{ChannelError, ChannelHeaderValue, ChannelPublishPayload};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use openssl::sha::sha1;
 use pingora_http::{RequestHeader, ResponseHeader};
+use sha1::{Digest, Sha1};
 
 const WEBSOCKET_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const MAX_WEBSOCKET_FRAME_PAYLOAD_BYTES: u64 = 128 * 1024 * 1024;
@@ -261,7 +261,7 @@ fn websocket_accept(key: &str) -> String {
     let mut input = String::with_capacity(key.len() + WEBSOCKET_GUID.len());
     input.push_str(key);
     input.push_str(WEBSOCKET_GUID);
-    BASE64_STANDARD.encode(sha1(input.as_bytes()))
+    BASE64_STANDARD.encode(Sha1::digest(input.as_bytes()))
 }
 
 fn websocket_frame(opcode: u8, payload: &[u8]) -> Vec<u8> {

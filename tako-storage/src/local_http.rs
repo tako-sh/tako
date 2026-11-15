@@ -8,12 +8,13 @@ use std::{
 };
 
 use futures_util::TryStreamExt;
+use hmac::{Hmac, KeyInit, Mac};
 use object_store::{ObjectStoreExt, buffered::BufWriter, path::Path as ObjectPath};
-use openssl::{hash::MessageDigest, pkey::PKey, sign::Signer};
 use percent_encoding::percent_decode_str;
 use pingora_core::{Error, ErrorType, Result};
 use pingora_http::ResponseHeader;
 use pingora_proxy::Session;
+use sha2::Sha256;
 use tako_core::{StorageBinding, StorageProvider};
 use tokio::io::AsyncWriteExt;
 
@@ -83,12 +84,16 @@ pub async fn serve(
         .duration_since(UNIX_EPOCH)
         .map_err(internal)?
         .as_secs();
+    // A binding without a signing key can never authorize a request.
+    let Some(secret) = binding.signing_key.as_deref().filter(|s| !s.is_empty()) else {
+        return reply(session, 403, "Forbidden").await;
+    };
     if !authorized(
         method,
         &name,
         encoded_key,
         uri.query().unwrap_or(""),
-        binding.signing_key.as_deref().unwrap_or(""),
+        secret,
         now,
     ) {
         return reply(session, 403, "Forbidden").await;
@@ -192,9 +197,6 @@ fn decode(value: &str) -> std::result::Result<String, ()> {
 }
 
 fn authorized(method: &str, name: &str, key: &str, query: &str, secret: &str, now: u64) -> bool {
-    if secret.is_empty() {
-        return false;
-    }
     let pairs: HashMap<_, _> = url::form_urlencoded::parse(query.as_bytes()).collect();
     let Some(expires) = pairs
         .get("expires")
@@ -210,13 +212,11 @@ fn authorized(method: &str, name: &str, key: &str, query: &str, secret: &str, no
         return false;
     };
     let payload = format!("{method}\n{name}\n{key}\n{expires}");
-    let signature = (|| {
-        let key = PKey::hmac(secret.as_bytes())?;
-        let mut signer = Signer::new(MessageDigest::sha256(), &key)?;
-        signer.update(payload.as_bytes())?;
-        signer.sign_to_vec()
-    })();
-    signature.is_ok_and(|s| s.len() == token.len() && openssl::memcmp::eq(&s, &token))
+    let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(secret.as_bytes()) else {
+        return false;
+    };
+    mac.update(payload.as_bytes());
+    mac.verify_slice(&token).is_ok()
 }
 
 fn internal(error: impl std::fmt::Display) -> Box<Error> {

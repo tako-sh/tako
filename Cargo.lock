@@ -1606,6 +1606,7 @@ dependencies = [
  "const-oid 0.10.2",
  "crypto-common 0.2.2",
  "ctutils",
+ "zeroize",
 ]
 
 [[package]]
@@ -2028,7 +2029,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e634e2e0ebac1ee034020da1ca582e17ffe4e0f5e985823721e168928136dcb"
 dependencies = [
  "crc32fast",
- "libz-ng-sys",
  "miniz_oxide 0.9.1",
  "zlib-rs",
 ]
@@ -3309,16 +3309,6 @@ dependencies = [
  "cc",
  "glob",
  "pkg-config",
-]
-
-[[package]]
-name = "libz-ng-sys"
-version = "1.1.29"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "879917b256f6317769b9f374b435805a8697013098aacce5a38ac106cd6a9469"
-dependencies = [
- "cmake",
- "libc",
 ]
 
 [[package]]
@@ -6634,7 +6624,6 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "jsonschema",
- "openssl",
  "parking_lot 0.13.0",
  "percent-encoding",
  "pingora-core",
@@ -6645,6 +6634,9 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha1",
+ "sha2 0.11.0",
+ "subtle",
  "tako-core",
  "tako-sqlite",
  "tempfile",
@@ -6786,18 +6778,25 @@ dependencies = [
 name = "tako-network"
 version = "0.0.0"
 dependencies = [
+ "aes-gcm",
  "base64 0.23.1",
  "ed25519-dalek 2.2.0",
+ "getrandom 0.4.3",
  "hex",
+ "hkdf",
+ "hmac 0.13.0",
  "openssl",
  "reqwest",
  "rusqlite",
  "rustix",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "ssh-key 0.6.7",
+ "subtle",
  "tempfile",
  "thiserror 2.0.20",
+ "x25519-dalek",
  "zeroize",
 ]
 
@@ -6821,6 +6820,7 @@ dependencies = [
 name = "tako-server"
 version = "0.0.0"
 dependencies = [
+ "aes-gcm",
  "async-trait",
  "base64 0.23.1",
  "brotli 9.0.0",
@@ -6830,9 +6830,11 @@ dependencies = [
  "filetime",
  "flate2",
  "futures-util",
+ "getrandom 0.4.3",
  "h2",
  "hex",
  "hickory-proto",
+ "hmac 0.13.0",
  "hostname",
  "http",
  "http-body-util",
@@ -6922,6 +6924,7 @@ dependencies = [
  "cap-std",
  "futures-util",
  "hex",
+ "hmac 0.13.0",
  "http",
  "libc",
  "object_store",

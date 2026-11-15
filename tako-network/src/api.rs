@@ -1,5 +1,6 @@
 //! Bounded, signed native RPC messages shared by clients and server transports.
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::{
     AppEnv, DeviceId, DeviceKind, EnrollmentRequest, LocalDeviceKeys, MemberKind, NetworkId,
@@ -231,7 +232,7 @@ impl SignedRequest {
         }
         bytes.extend_from_slice(&self.timestamp.to_be_bytes());
         bytes.extend_from_slice(self.nonce.as_bytes());
-        bytes.extend_from_slice(&openssl::sha::sha256(&body));
+        bytes.extend_from_slice(&Sha256::digest(&body));
         Ok(bytes)
     }
 

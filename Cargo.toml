@@ -24,6 +24,7 @@ edition = "2024"
 
 [workspace.dependencies]
 async-trait = "0.1"
+flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 openssl = { version = "0.10", features = ["vendored"] }
 pingora-core = "0.9"
 pingora-proxy = "0.9"
@@ -46,6 +47,6 @@ rusqlite = { version = "0.41", features = ["bundled"] }
 lto = "thin"
 codegen-units = 1
 
-# Pingora 0.9 buffer-lifetime fixes; provenance and removal criteria in vendor/README.md.
+# Pingora 0.9 buffer-lifetime fixes and Rust compression backend; see vendor/README.md.
 [patch.crates-io]
 pingora-core = { path = "vendor/pingora-core" }

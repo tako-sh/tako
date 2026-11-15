@@ -1,5 +1,6 @@
 //! Own only children returned by our Command::spawn. Never discover/kill PIDs.
 use super::{AgentError, MAX_HELPER_BYTES, Result};
+use sha2::{Digest, Sha256};
 use std::{
     fs::OpenOptions,
     io::Read,
@@ -48,7 +49,7 @@ impl OwnedChild {
         {
             return Err(AgentError::Invalid("unsafe Corrosion executable"));
         }
-        let mut digest = openssl::sha::Sha256::new();
+        let mut digest = Sha256::new();
         let mut chunk = [0u8; 65536];
         loop {
             let n = file.read(&mut chunk)?;
@@ -57,7 +58,7 @@ impl OwnedChild {
             }
             digest.update(&chunk[..n]);
         }
-        if hex::encode(digest.finish()) != config.corrosion_binary_sha256 {
+        if hex::encode(digest.finalize()) != config.corrosion_binary_sha256 {
             return Err(AgentError::Invalid(
                 "Corrosion executable checksum mismatch",
             ));

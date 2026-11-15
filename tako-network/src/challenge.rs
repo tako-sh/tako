@@ -2,14 +2,11 @@ use crate::{
     DeviceId, EnrollmentRequest, KeyFingerprint, LocalDeviceKeys, NetworkId, RequestId, Result,
     WgPublicKey, error::invalid,
 };
-use openssl::{
-    derive::Deriver,
-    hash::MessageDigest,
-    memcmp,
-    pkey::{Id, PKey, Private},
-    sign::Signer,
-};
+use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
+use subtle::ConstantTimeEq;
+use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroizing;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,7 +28,7 @@ pub struct WgProof {
 
 pub struct PendingWgChallenge {
     challenge: WgChallenge,
-    private: PKey<Private>,
+    private: StaticSecret,
     request: EnrollmentRequest,
 }
 
@@ -75,18 +72,13 @@ impl WgChallenge {
                 "must be live and at most 300 seconds",
             ));
         }
-        let private = PKey::generate_x25519()?;
+        let private = crate::keys::new_x25519_secret()?;
         let challenge = Self {
             device_id: request.device_id_for(&network_id)?,
             network_id,
             request_digest: KeyFingerprint::of_bytes(&request.canonical_bytes()?),
             nonce: RequestId::random()?,
-            ephemeral_public_key: WgPublicKey::from_bytes(
-                private
-                    .raw_public_key()?
-                    .try_into()
-                    .map_err(|_| invalid("challenge", "invalid public key size"))?,
-            )?,
+            ephemeral_public_key: WgPublicKey::from_bytes(PublicKey::from(&private).to_bytes())?,
             expires_at,
         };
         Ok((
@@ -154,7 +146,7 @@ impl PendingWgChallenge {
             &self.request.wg_public_key,
             &self.challenge.transcript(),
         )?;
-        if !memcmp::eq(expected.as_bytes(), proof.response.as_bytes()) {
+        if !bool::from(expected.as_bytes().ct_eq(proof.response.as_bytes())) {
             return Err(invalid(
                 "WG proof",
                 "private-key possession not demonstrated",
@@ -169,17 +161,53 @@ impl PendingWgChallenge {
 }
 
 fn response(
-    private: &PKey<Private>,
+    private: &StaticSecret,
     public: &WgPublicKey,
     transcript: &[u8],
 ) -> Result<KeyFingerprint> {
-    let peer = PKey::public_key_from_raw_bytes(public.as_bytes(), Id::X25519)?;
-    let mut derive = Deriver::new(private)?;
-    derive.set_peer(&peer)?;
-    let shared = Zeroizing::new(derive.derive_to_vec()?);
-    let hmac_key = PKey::hmac(&shared)?;
-    let mut signer = Signer::new(MessageDigest::sha256(), &hmac_key)?;
-    signer.update(transcript)?;
-    let mac = Zeroizing::new(signer.sign_to_vec()?);
+    let shared = private.diffie_hellman(&PublicKey::from(*public.as_bytes()));
+    if !shared.was_contributory() {
+        return Err(invalid("WG proof", "invalid shared key"));
+    }
+    let mut signer =
+        Hmac::<Sha256>::new_from_slice(shared.as_bytes()).expect("HMAC accepts any key length");
+    signer.update(transcript);
+    let mac = Zeroizing::new(<[u8; 32]>::from(signer.finalize().into_bytes()));
     hex::encode(mac.as_slice()).parse()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openssl::{
+        derive::Deriver,
+        hash::MessageDigest,
+        pkey::{Id, PKey},
+        sign::Signer,
+    };
+
+    #[test]
+    fn possession_proof_matches_openssl() {
+        let keys = LocalDeviceKeys::generate().unwrap();
+        let request = keys
+            .enrollment_request(None, crate::DeviceKind::Laptop, "laptop".parse().unwrap())
+            .unwrap();
+        let (challenge, _) =
+            WgChallenge::begin(&request, NetworkId::random().unwrap(), 10, 30).unwrap();
+        let proof = keys.answer_challenge(&challenge, &request, 11).unwrap();
+        let private = PKey::private_key_from_raw_bytes(keys.wg.as_bytes(), Id::X25519).unwrap();
+        let public =
+            PKey::public_key_from_raw_bytes(challenge.ephemeral_public_key.as_bytes(), Id::X25519)
+                .unwrap();
+        let mut derive = Deriver::new(&private).unwrap();
+        derive.set_peer(&public).unwrap();
+        let shared = derive.derive_to_vec().unwrap();
+        let hmac_key = PKey::hmac(&shared).unwrap();
+        let mut signer = Signer::new(MessageDigest::sha256(), &hmac_key).unwrap();
+        signer.update(&challenge.transcript()).unwrap();
+        assert_eq!(
+            proof.response.as_bytes().as_slice(),
+            signer.sign_to_vec().unwrap()
+        );
+    }
 }

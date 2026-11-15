@@ -5,6 +5,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, FileExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
+use hmac::{Hmac, KeyInit, Mac};
 use rustix::fs::{self, AtFlags, FileType, Mode, OFlags};
 use sha2::{Digest, Sha256};
 
@@ -440,9 +441,7 @@ pub(super) fn database_digest(snapshot_dir: &Path, key: &[u8]) -> Result<Databas
             .map_err(|e| format!("scan snapshot databases: {e}"))?;
     }
     databases.sort();
-    let pkey = openssl::pkey::PKey::hmac(key).map_err(|e| format!("digest key: {e}"))?;
-    let mut signer = openssl::sign::Signer::new(openssl::hash::MessageDigest::sha256(), &pkey)
-        .map_err(|e| format!("digest: {e}"))?;
+    let mut signer = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts any key length");
     let mut buf = vec![0_u8; 128 * 1024];
     for relative in &databases {
         let path = snapshot_dir.join(relative);
@@ -458,7 +457,7 @@ pub(super) fn database_digest(snapshot_dir: &Path, key: &[u8]) -> Result<Databas
             relative,
             &len.to_le_bytes()[..],
         ] {
-            signer.update(part).map_err(|e| format!("digest: {e}"))?;
+            signer.update(part);
         }
         let mut read_total = 0_u64;
         loop {
@@ -469,15 +468,13 @@ pub(super) fn database_digest(snapshot_dir: &Path, key: &[u8]) -> Result<Databas
                 break;
             }
             read_total += read as u64;
-            signer
-                .update(&buf[..read])
-                .map_err(|e| format!("digest: {e}"))?;
+            signer.update(&buf[..read]);
         }
         if read_total != len {
             return Err(format!("{} changed while hashing", path.display()));
         }
     }
-    let digest = signer.sign_to_vec().map_err(|e| format!("digest: {e}"))?;
+    let digest = signer.finalize().into_bytes();
     Ok(DatabaseDigest {
         hex: hex::encode(digest),
         databases,
@@ -788,6 +785,42 @@ pub(super) fn sha256_file_hex(path: &Path) -> Result<String, String> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// Deterministic 32-byte fixture key (`seed ^ index`), matching the
+    /// length of production keys from `database_digest_key`.
+    fn fixture_digest_key(seed: u8) -> [u8; 32] {
+        std::array::from_fn(|index| seed ^ index as u8)
+    }
+
+    #[test]
+    fn backup_digest_preserves_the_existing_hmac_format() {
+        let temp = TempDir::new().unwrap();
+        // Header-bearing fixture bytes exercise path ordering and multiple read chunks.
+        for (path, byte, len) in [("tako/z.db", 0x42, 31), ("app/a.db", 0x41, 131_073)] {
+            let path = temp.path().join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let mut bytes = b"SQLite format 3\0".to_vec();
+            bytes.extend(vec![byte; len]);
+            std::fs::write(path, bytes).unwrap();
+        }
+        std::fs::write(temp.path().join("app/ignored.txt"), b"not a database").unwrap();
+        let digest = database_digest(temp.path(), &fixture_digest_key(0x5c)).unwrap();
+        // Generated independently with Python's hmac/hashlib over the legacy framing.
+        assert_eq!(
+            digest.hex,
+            "594bddf217edb7d2107cd70e6478b90cc70003c36497e9dbcfaedb1ea1b23655"
+        );
+        assert_eq!(
+            digest.databases,
+            vec![PathBuf::from("app/a.db"), PathBuf::from("tako/z.db")]
+        );
+        assert_ne!(
+            database_digest(temp.path(), &fixture_digest_key(0x36))
+                .unwrap()
+                .hex,
+            digest.hex
+        );
+    }
 
     #[test]
     fn restore_retains_previous_data_until_restart_is_validated() {
