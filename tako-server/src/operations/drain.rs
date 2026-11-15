@@ -41,6 +41,10 @@ pub(super) fn blocked_while_draining(command: &Command) -> bool {
         | Command::RestoreDatabaseBackup { .. }
         | Command::RestoreBackup { .. }
         | Command::Scale { .. }
+        | Command::Start { .. }
+        | Command::Stop {
+            service: Some(_), ..
+        }
         | Command::Rollback { .. }
         | Command::UpdateSecrets { .. }
         | Command::EnqueueRun { .. }
@@ -59,7 +63,7 @@ pub(super) fn blocked_while_draining(command: &Command) -> bool {
         | Command::ListBackups { .. }
         | Command::BackupStatus { .. }
         | Command::BackupDownloadUrl { .. }
-        | Command::Stop { .. }
+        | Command::Stop { service: None, .. }
         | Command::Delete { .. }
         | Command::Status { .. }
         | Command::List

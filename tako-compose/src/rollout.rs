@@ -122,6 +122,14 @@ impl Rollout {
             .collect()
     }
 
+    pub fn configured_replicas(&self) -> BTreeMap<String, u32> {
+        self.plan
+            .services
+            .iter()
+            .map(|s| (s.name.clone(), s.configured_replicas))
+            .collect()
+    }
+
     pub fn ingresses(&self) -> impl Iterator<Item = &ServiceContainer> {
         self.selected
             .iter()
@@ -141,11 +149,6 @@ impl Rollout {
             return Err("A Compose rollout can only be applied once".into());
         }
         for service in &self.plan.services {
-            for (dependency, condition) in &service.dependencies {
-                for container in self.selected.iter().filter(|c| &c.service == dependency) {
-                    wait_ready(container, Some(*condition), Duration::ZERO).await?;
-                }
-            }
             for slot in 0..service.replicas {
                 let existing = self.runtime.containers().await?;
                 let matched = existing.iter().find(|c| {
@@ -153,6 +156,23 @@ impl Rollout {
                         && c.slot == slot
                         && c.fingerprint == service.fingerprint
                 });
+                // Explicit operator stops override startup dependencies. Never
+                // resume a paused app implicitly or stop its consumers.
+                if !matched.is_some_and(|c| c.healthy() || (service.completed && c.completed())) {
+                    for (dependency, condition) in &service.dependencies {
+                        if self
+                            .plan
+                            .services
+                            .iter()
+                            .any(|p| &p.name == dependency && p.stopped)
+                        {
+                            continue;
+                        }
+                        for container in self.selected.iter().filter(|c| &c.service == dependency) {
+                            wait_ready(container, Some(*condition), Duration::ZERO).await?;
+                        }
+                    }
+                }
                 let mut candidate = if let Some(container) = matched {
                     container.clone()
                 } else {

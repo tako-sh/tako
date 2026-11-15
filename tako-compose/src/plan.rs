@@ -32,6 +32,8 @@ pub(crate) struct ServicePlan {
     pub name: String,
     pub fingerprint: String,
     pub replicas: u32,
+    pub configured_replicas: u32,
+    pub stopped: bool,
     pub order: UpdateOrder,
     pub monitor: Duration,
     pub dependencies: BTreeMap<String, DependencyCondition>,
@@ -71,6 +73,7 @@ impl Plan {
                     "Compose service '{name}': HTTP ingress supports 1..128 replicas; other services support 0..128 replicas"
                 ));
             }
+            let stopped = runtime.stopped || runtime.stopped_services.contains(name);
             let writable_volumes = definition["volumes"]
                 .as_array()
                 .into_iter()
@@ -127,7 +130,9 @@ impl Plan {
                 ServicePlan {
                     name: name.clone(),
                     fingerprint: String::new(),
-                    replicas: replicas as u32,
+                    replicas: if stopped { 0 } else { replicas as u32 },
+                    configured_replicas: replicas as u32,
+                    stopped,
                     order,
                     monitor,
                     dependencies,
@@ -337,7 +342,7 @@ fn visit(
         let dependency_plan = plans
             .get(dependency)
             .ok_or_else(|| format!("Unknown Compose dependency '{dependency}'"))?;
-        if dependency_plan.replicas == 0 {
+        if dependency_plan.replicas == 0 && !dependency_plan.stopped && !plan.stopped {
             return Err(format!(
                 "Required Compose dependency '{dependency}' has zero replicas"
             ));

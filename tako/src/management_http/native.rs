@@ -160,7 +160,8 @@ pub(super) fn rpc_action(
         | Command::RestoreDatabaseBackup { app, .. }
         | Command::RestoreBackup { app, .. }
         | Command::Scale { app, .. }
-        | Command::Stop { app }
+        | Command::Stop { app, .. }
+        | Command::Start { app, .. }
         | Command::Delete { app }
         | Command::Status { app }
         | Command::ListReleases { app }

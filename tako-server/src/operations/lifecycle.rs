@@ -6,15 +6,97 @@ use std::sync::Arc;
 use std::time::Duration;
 
 impl crate::ServerState {
-    pub(crate) async fn stop_app(&self, app_name: &str) -> Response {
-        tracing::info!(app = app_name, "Stopping app");
+    pub(crate) async fn start_app(&self, app_name: &str, service: Option<&str>) -> Response {
+        self.set_app_running(app_name, service, true).await
+    }
+
+    pub(crate) async fn stop_app(&self, app_name: &str, service: Option<&str>) -> Response {
+        self.set_app_running(app_name, service, false).await
+    }
+
+    async fn set_app_running(
+        &self,
+        app_name: &str,
+        service: Option<&str>,
+        running: bool,
+    ) -> Response {
+        tracing::info!(app = app_name, service, running, "Setting app lifecycle");
         let lock = self.get_deploy_lock(app_name).await;
         let _guard = lock.lock().await;
 
         let Some(app) = self.app_manager.get_app(app_name) else {
             return Response::error(format!("App not found: {app_name}"));
         };
+        if (running || service.is_some())
+            && let Some(response) = self.refuse_unresolved_restore(app_name)
+        {
+            return response;
+        }
+        let previous = app.config.read().clone();
+        if previous.compose.is_some() {
+            return self.set_compose_running(previous, service, running).await;
+        }
+        if service.is_some() {
+            return Response::error("--service requires a Compose application group");
+        }
         let _lifecycle = app.lifecycle_gate.write().await;
+        let routes = self.routes.read().routes_for_app(app_name);
+        let mut config = previous.clone();
+        config.stopped = !running;
+        if running {
+            if !previous.stopped && app.state() == AppState::Running {
+                return Response::ok(serde_json::json!({"status":"started", "app":app_name}));
+            }
+            app.update_config(config.clone());
+            self.cold_start.reset(app_name);
+            let result = async {
+                self.app_manager
+                    .start_app_locked(&app)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if config.min_instances == 0 && app.get_instances().is_empty() {
+                    self.app_manager
+                        .spawner()
+                        .spawn(&app, app.allocate_instance())
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
+                let release = crate::release::app_release_root(
+                    &self.runtime.data_dir,
+                    app_name,
+                    &config.version,
+                );
+                let runtime_bin =
+                    crate::release::resolve_release_runtime_bin(&release, &self.runtime.data_dir)
+                        .await?;
+                self.try_sync_app_workflows(app_name, &release, runtime_bin.as_deref())
+                    .await
+                    .map_err(|e| e.to_string())?;
+                self.state_store
+                    .upsert_app(&config, &routes)
+                    .map_err(|e| e.to_string())
+            }
+            .await;
+            if let Err(error) = result {
+                self.workflows
+                    .stop(app_name, Duration::from_secs(120))
+                    .await;
+                let _ = self.app_manager.stop_app_locked(&app).await;
+                app.update_config(previous);
+                app.set_last_error(format!("Start failed: {error}"));
+                return Response::error(format!("Start failed: {error}"));
+            }
+            app.reset_recovery();
+            app.clear_last_error();
+            app.set_state(AppState::Running);
+            self.cold_start.mark_ready(app_name);
+            return Response::ok(serde_json::json!({"status":"started", "app":app_name}));
+        }
+        // Persist intent before teardown: a crash cannot silently resume the app.
+        if let Err(error) = self.state_store.upsert_app(&config, &routes) {
+            return Response::error(format!("Could not persist stopped state: {error}"));
+        }
+        app.update_config(config);
         self.cold_start.mark_failed(app_name, "app_stopped");
 
         // Drain workflow worker first so in-flight tasks get a chance to
@@ -84,6 +166,18 @@ impl crate::ServerState {
             return Response::error(message);
         }
         next_config.min_instances = effective_instances as u32;
+        if next_config.stopped {
+            let routes = self.routes.read().routes_for_app(app_name);
+            if let Err(error) = self.state_store.upsert_app(&next_config, &routes) {
+                return Response::error(format!("Could not persist replica count: {error}"));
+            }
+            app.update_config(next_config);
+            return Response::ok(serde_json::json!({
+                "status":"scaled", "app":app_name, "instances":effective_instances,
+                "requested_instances":requested_instances, "stopped":true,
+                "standby_limited":self.runtime.standby && effective_instances != requested_instances
+            }));
+        }
         app.update_config(next_config.clone());
 
         let running_before = app
@@ -193,6 +287,9 @@ impl crate::ServerState {
     }
 
     pub(crate) async fn delete_app(&self, app_name: &str) -> Response {
+        if let Some(message) = self.compose_child_delete_error(app_name) {
+            return Response::error(message);
+        }
         // A bare name denotes production. Its filesystem path alone is the
         // shared parent of every environment, so qualify it before any cleanup.
         let (name, environment) = requested_deployment_identity(app_name);
@@ -273,5 +370,15 @@ impl crate::ServerState {
             "app": app_name,
             "existed": existed
         }))
+    }
+
+    pub(crate) fn compose_child_delete_error(&self, app_name: &str) -> Option<String> {
+        let (group, service) = app_name.rsplit_once('/')?;
+        let app = self.app_manager.get_app(group)?;
+        let config = app.config.read();
+        config.compose.as_ref()?;
+        Some(format!(
+            "Cannot delete app '{service}' individually: it belongs to application group '{group}'. Remove the service from the Compose file and redeploy, or delete the whole group."
+        ))
     }
 }

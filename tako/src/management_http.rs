@@ -392,6 +392,7 @@ fn management_rpc_timeout_for_command(command: &Command) -> Duration {
         | Command::RunRelease { .. }
         | Command::Deploy { .. }
         | Command::Scale { .. }
+        | Command::Start { .. }
         | Command::BackupNow { .. }
         | Command::RestoreDatabaseBackup { .. }
         | Command::RestoreBackup { .. }
@@ -611,7 +612,8 @@ mod tests {
     fn release_lifecycle_commands_use_long_rpc_timeout() {
         assert_eq!(
             management_rpc_timeout_for_command(&Command::Stop {
-                app: "demo/production".into()
+                app: "demo/production".into(),
+                service: None,
             }),
             MANAGEMENT_DEPLOY_RPC_TIMEOUT
         );

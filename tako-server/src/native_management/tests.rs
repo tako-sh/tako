@@ -606,6 +606,7 @@ async fn queued_request_checks_authority_only_after_dispatch_lock() {
     // Mutations queue behind the lock; inspection is dispatched immediately.
     let body = serde_json::to_vec(&Command::Stop {
         app: "demo/production".into(),
+        service: None,
     })
     .unwrap();
     let signed = rpc(&body, None);

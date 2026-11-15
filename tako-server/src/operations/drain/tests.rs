@@ -297,9 +297,22 @@ async fn drained_dispatch_rejects_new_work_but_allows_inspection_and_cleanup() {
     );
     assert!(state.handle_command(Command::ServerInfo).await.is_ok());
     assert!(state.handle_command(Command::List).await.is_ok());
+    for command in [
+        Command::Start {
+            app: "app/production".into(),
+            service: None,
+        },
+        Command::Stop {
+            app: "app/production".into(),
+            service: Some("api".into()),
+        },
+    ] {
+        assert!(blocked_while_draining(&command));
+    }
     for cmd in [
         Command::Stop {
             app: "app/production".into(),
+            service: None,
         },
         Command::Delete {
             app: "app/production".into(),

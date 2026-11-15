@@ -211,6 +211,7 @@ pub(crate) fn apply_release_runtime_to_config(
     }
     if manifest.release_kind != ReleaseKind::Compose {
         config.compose_replicas.clear();
+        config.compose_stopped.clear();
     }
     config.compose = None;
     config.health_check_path = "/status".into();

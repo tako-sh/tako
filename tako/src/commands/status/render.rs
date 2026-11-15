@@ -159,23 +159,25 @@ fn format_app_lines(apps: &[super::GlobalAppStatusResult]) -> Vec<String> {
             details = segments.join("  "),
         ));
         if let Some(status) = &app.status.app_status {
-            for service in &status.services {
+            for child in &status.applications {
+                lines.push(format!(
+                    "{}{} (app)  {}  {} instance(s)",
+                    output::INDENT.repeat(3),
+                    child.service,
+                    child.state,
+                    child.instances.len()
+                ));
+            }
+            for service in status.services.iter().filter(|service| {
+                !status
+                    .applications
+                    .iter()
+                    .any(|app| app.service == service.service)
+            }) {
                 lines.push(format!(
                     "{}{}  {}  {}",
                     output::INDENT.repeat(3),
-                    format!(
-                        "{} ({})",
-                        service.service,
-                        if status
-                            .applications
-                            .iter()
-                            .any(|app| app.service == service.service)
-                        {
-                            "app"
-                        } else {
-                            "Docker service"
-                        }
-                    ),
+                    format!("{} (Docker service)", service.service),
                     service.state,
                     service.health
                 ));

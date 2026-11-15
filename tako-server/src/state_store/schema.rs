@@ -180,6 +180,12 @@ fn ensure_schema_objects(conn: &rusqlite::Connection) -> Result<(), StateStoreEr
             PRIMARY KEY (app, service)
         );
 
+        CREATE TABLE IF NOT EXISTS app_lifecycle (
+            app TEXT NOT NULL PRIMARY KEY,
+            stopped INTEGER NOT NULL CHECK (stopped IN (0, 1)),
+            compose_stopped TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS app_compose_pending (
             app TEXT NOT NULL PRIMARY KEY,
             project TEXT NOT NULL

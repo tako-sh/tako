@@ -55,7 +55,9 @@ pub(crate) fn for_config(config: &crate::instances::AppConfig) -> Result<Compose
         env,
     )
     .map(|runtime| {
-        let runtime = runtime.with_replicas(config.compose_replicas.clone());
+        let runtime = runtime
+            .with_replicas(config.compose_replicas.clone())
+            .with_stopped(config.stopped, config.compose_stopped.clone());
         match NATIVE_NETWORK.get() {
             Some(network) => runtime.with_native_network(network.clone()),
             None => runtime,

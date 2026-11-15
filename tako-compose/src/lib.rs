@@ -1,5 +1,5 @@
 //! Compose materializes containers and resources; Tako owns production updates.
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -122,6 +122,8 @@ pub struct ComposeRuntime {
     // Bound to one immutable, service-private preparation during a rollout.
     source: Option<PathBuf>,
     replicas: BTreeMap<String, u32>,
+    stopped: bool,
+    stopped_services: BTreeSet<String>,
     native_network: Option<NativeNetwork>,
     ingress_ports: BTreeMap<String, u16>,
 }
@@ -183,6 +185,8 @@ impl ComposeRuntime {
             override_file: PathBuf::from(OVERRIDE_FILE),
             source: None,
             replicas: BTreeMap::new(),
+            stopped: false,
+            stopped_services: BTreeSet::new(),
             native_network: None,
             ingress_ports: BTreeMap::new(),
         })
@@ -196,6 +200,13 @@ impl ComposeRuntime {
     /// Desired replica overrides, scoped to service names in this project.
     pub fn with_replicas(mut self, replicas: BTreeMap<String, u32>) -> Self {
         self.replicas = replicas;
+        self
+    }
+
+    /// Runtime intent survives releases without changing configured replica counts.
+    pub fn with_stopped(mut self, stopped: bool, services: BTreeSet<String>) -> Self {
+        self.stopped = stopped;
+        self.stopped_services = services;
         self
     }
 

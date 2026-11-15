@@ -39,6 +39,30 @@ fn model() -> Value {
     })
 }
 
+#[test]
+fn stopped_apps_preserve_scale_and_container_identity() {
+    let (_dir, runtime) = runtime();
+    let runtime = runtime.with_replicas(BTreeMap::from([("web".into(), 3)]));
+    let active = Plan::new(model(), &runtime).unwrap();
+    let paused = runtime
+        .clone()
+        .with_stopped(false, BTreeSet::from(["web".into()]));
+    let plan = Plan::new(model(), &paused).unwrap();
+    let web = plan.services.iter().find(|s| s.name == "web").unwrap();
+    assert_eq!((web.replicas, web.configured_replicas), (0, 3));
+    assert_eq!(fingerprint(&plan, "web"), fingerprint(&active, "web"));
+    assert_eq!(
+        plan.services
+            .iter()
+            .find(|s| s.name == "redis")
+            .unwrap()
+            .replicas,
+        1
+    );
+    let whole = Plan::new(model(), &runtime.with_stopped(true, BTreeSet::new())).unwrap();
+    assert!(whole.services.iter().all(|s| s.replicas == 0));
+}
+
 fn fingerprint(plan: &Plan, name: &str) -> String {
     plan.services
         .iter()

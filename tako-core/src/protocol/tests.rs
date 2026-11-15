@@ -84,9 +84,9 @@ fn compose_group_status_roundtrips_service_identities() {
         "kind": "application_group", "name": "shop/production", "version": "v1",
         "state": "running", "last_error": null, "instances": [], "builds": [],
         "applications": [
-            {"name": "shop/production/web", "service": "web", "routes": ["example.com"], "instances": []},
-            {"name": "shop/production/api", "service": "api", "routes": ["api.example.com"], "instances": []},
-            {"name": "shop/production/private", "service": "private", "routes": [], "instances": []}
+            {"name": "shop/production/web", "service": "web", "state": "running", "routes": ["example.com"], "instances": []},
+            {"name": "shop/production/api", "service": "api", "state": "stopped", "routes": ["api.example.com"], "instances": []},
+            {"name": "shop/production/private", "service": "private", "state": "running", "routes": [], "instances": []}
         ]
     });
     let status: AppStatus = serde_json::from_value(wire.clone()).unwrap();

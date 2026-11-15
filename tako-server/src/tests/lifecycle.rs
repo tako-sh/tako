@@ -2,6 +2,141 @@ use super::*;
 use crate::isolation::fixture::TestDataDir as TempDir;
 
 #[tokio::test]
+async fn operator_stop_survives_scale_deploy_and_server_restart() {
+    let temp = TempDir::new().unwrap();
+    let certs = Arc::new(CertManager::new(CertManagerConfig {
+        cert_dir: temp.path().join("certs"),
+        ..Default::default()
+    }));
+    let state = ServerState::new(
+        temp.path().into(),
+        certs.clone(),
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let release = crate::release::app_release_root(temp.path(), "paused/production", "v1");
+    std::fs::create_dir_all(&release).unwrap();
+    write_release_manifest(
+        &release,
+        "node",
+        "index.js",
+        &["/bin/sh", "-c", "exit 99"],
+        Some("true"),
+        300,
+    );
+    let app = state.app_manager.register_app(AppConfig {
+        name: "paused".into(),
+        environment: "production".into(),
+        version: "v1".into(),
+        path: release.clone(),
+        min_instances: 1,
+        ..Default::default()
+    });
+    state.load_balancer.register_app(app.clone());
+    state
+        .routes
+        .write()
+        .set_app_routes("paused/production".into(), vec!["paused.localhost".into()]);
+    assert!(matches!(
+        state
+            .handle_command(Command::Stop {
+                app: app.name(),
+                service: None
+            })
+            .await,
+        Response::Ok { .. }
+    ));
+    assert_eq!(app.state(), AppState::Stopped);
+    assert_eq!(app.config.read().min_instances, 1);
+    assert!(matches!(
+        state
+            .handle_command(Command::Scale {
+                app: app.name(),
+                instances: Some(0),
+                service: None,
+                reset: false
+            })
+            .await,
+        Response::Ok { .. }
+    ));
+    assert_eq!(
+        app.state(),
+        AppState::Stopped,
+        "scale-to-zero must not re-enable cold starts"
+    );
+    assert!(matches!(state.handle_command(serde_json::from_value(serde_json::json!({
+        "command":"deploy", "app":app.name(), "version":"v1", "path":release, "routes":["paused.localhost"]
+    })).unwrap()).await, Response::Ok { .. }));
+    assert!(
+        app.get_instances().is_empty(),
+        "deploy must not execute the failing command while stopped"
+    );
+    drop(app);
+    drop(state);
+    let restored =
+        ServerState::new(temp.path().into(), certs, None, empty_challenge_tokens()).unwrap();
+    restored.restore_from_state_store().await.unwrap();
+    let app = restored.app_manager.get_app("paused/production").unwrap();
+    assert_eq!(app.state(), AppState::Stopped);
+    assert!(app.config.read().stopped);
+    assert_eq!(app.config.read().min_instances, 0);
+    assert!(restored.load_balancer.get_backend(&app.name()).is_none());
+    assert!(matches!(
+        restored
+            .handle_command(Command::Start {
+                app: app.name(),
+                service: Some("api".into())
+            })
+            .await,
+        Response::Error { .. }
+    ));
+}
+
+#[tokio::test]
+async fn deleting_a_compose_child_preserves_the_group_and_files() {
+    let temp = TempDir::new().unwrap();
+    let state = ServerState::new(
+        temp.path().into(),
+        Arc::new(CertManager::new(CertManagerConfig {
+            cert_dir: temp.path().join("certs"),
+            ..Default::default()
+        })),
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let app = state.app_manager.register_app(AppConfig {
+        name: "shop".into(),
+        environment: "production".into(),
+        compose: Some(
+            serde_json::from_value(
+                serde_json::json!({"file":"compose.yaml", "services":{"api":{}}}),
+            )
+            .unwrap(),
+        ),
+        ..Default::default()
+    });
+    let root = crate::release::app_root(temp.path(), &app.name());
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("keep"), "group data").unwrap();
+    state.persist_app_state(&app.name()).await;
+    let response = state
+        .handle_command(Command::Delete {
+            app: "shop/production/api".into(),
+        })
+        .await;
+    let Response::Error { message, .. } = response else {
+        panic!("child deletion must fail")
+    };
+    assert!(message.contains("whole group"));
+    assert!(message.contains("Compose file"));
+    assert!(root.join("keep").is_file());
+    assert!(state.app_manager.get_app(&app.name()).is_some());
+    assert_eq!(state.state_store.load_apps().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn scale_command_persists_zero_instances_across_restore() {
     let temp = TempDir::new().unwrap();
     let cert_manager = Arc::new(CertManager::new(CertManagerConfig {

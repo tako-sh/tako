@@ -1,4 +1,5 @@
 use crate::instances::AppConfig;
+use rusqlite::OptionalExtension;
 
 use super::{PersistedApp, PersistedRelease, SqliteStateStore, StateStoreError};
 
@@ -52,6 +53,7 @@ impl SqliteStateStore {
             "app_backups",
             "app_compose_pending",
             "app_compose_scales",
+            "app_lifecycle",
         ] {
             conn.execute(
                 &format!("DELETE FROM {table} WHERE app = ?1;"),
@@ -113,8 +115,33 @@ impl SqliteStateStore {
                     |row| Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?)),
                 )?
                 .collect::<Result<_, _>>()?;
+            let app_id = if environment.is_empty() {
+                name.clone()
+            } else {
+                tako_core::deployment_app_id(&name, &environment)
+            };
+            let lifecycle = conn
+                .query_row(
+                    "SELECT stopped, compose_stopped FROM app_lifecycle WHERE app = ?1;",
+                    [&app_id],
+                    |row| Ok((row.get::<_, bool>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()?;
+            let (stopped, compose_stopped) = match lifecycle {
+                Some((stopped, services)) => (
+                    stopped,
+                    serde_json::from_str(&services).map_err(|e| {
+                        StateStoreError::InvalidData(format!(
+                            "Invalid stopped apps for {app_id}: {e}"
+                        ))
+                    })?,
+                ),
+                None => Default::default(),
+            };
             let config = AppConfig {
                 compose_replicas,
+                stopped,
+                compose_stopped,
                 name,
                 environment,
                 version,
@@ -161,6 +188,12 @@ pub(super) fn upsert_app_on(
     )?;
 
     let app = config.deployment_id();
+    conn.execute(
+        "INSERT INTO app_lifecycle (app, stopped, compose_stopped) VALUES (?1, ?2, ?3)
+         ON CONFLICT(app) DO UPDATE SET stopped = excluded.stopped, compose_stopped = excluded.compose_stopped;",
+        (&app, config.stopped, serde_json::to_string(&config.compose_stopped)
+            .map_err(|e| StateStoreError::InvalidData(e.to_string()))?),
+    )?;
     conn.execute("DELETE FROM app_compose_scales WHERE app = ?1;", [&app])?;
     for (service, replicas) in &config.compose_replicas {
         conn.execute(

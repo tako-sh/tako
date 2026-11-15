@@ -240,7 +240,7 @@ mod tests {
         let cmd: Command = serde_json::from_str(json).unwrap();
 
         match cmd {
-            Command::Stop { app } => {
+            Command::Stop { app, .. } => {
                 assert_eq!(app, "my-app");
             }
             _ => panic!("Expected Stop command"),

@@ -27,6 +27,19 @@ impl crate::ServerState {
                     .map(|(service, settings)| tako_core::ComposeApplicationStatus {
                         name: format!("{}/{}", app.name(), service),
                         service: service.clone(),
+                        state: if config.stopped || config.compose_stopped.contains(service) {
+                            tako_core::AppState::Stopped
+                        } else if app.get_instances().iter().any(|i| {
+                            i.compose_service().as_ref() == Some(service)
+                                && i.state() == tako_core::InstanceState::Healthy
+                        }) {
+                            tako_core::AppState::Running
+                        } else {
+                            match app.state() {
+                                tako_core::AppState::Running => tako_core::AppState::Error,
+                                state => state,
+                            }
+                        },
                         routes: settings
                             .envs
                             .get(&config.environment)

@@ -62,7 +62,8 @@ pub(crate) fn classify(command: &Command) -> CommandClass<'_> {
         | Command::RestoreDatabaseBackup { app, .. }
         | Command::RestoreBackup { app, .. }
         | Command::Scale { app, .. }
-        | Command::Stop { app }
+        | Command::Start { app, .. }
+        | Command::Stop { app, .. }
         | Command::Delete { app }
         | Command::Status { app }
         | Command::ListReleases { app }
@@ -291,6 +292,7 @@ pub(crate) fn authorize_command(
         | Command::RestoreDatabaseBackup { .. }
         | Command::RestoreBackup { .. }
         | Command::Scale { .. }
+        | Command::Start { .. }
         | Command::Stop { .. }
         | Command::Delete { .. }
         | Command::Status { .. }

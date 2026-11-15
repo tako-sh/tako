@@ -820,6 +820,9 @@ impl crate::ServerState {
         if self.is_draining() {
             return Err("Server began draining during restore".to_string());
         }
+        if config.stopped {
+            return Ok(());
+        }
         self.try_sync_app_workflows(app, release_path, runtime_bin_path)
             .await
             .map_err(|error| format!("Restart workflows after restore: {error}"))?;
@@ -838,6 +841,11 @@ impl crate::ServerState {
         app_ref: &crate::instances::App,
         config: &crate::instances::AppConfig,
     ) {
+        if config.stopped {
+            app_ref.set_state(crate::socket::AppState::Stopped);
+            self.cold_start.mark_failed(app, "app_stopped");
+            return;
+        }
         if config.min_instances == 0 {
             app_ref.set_state(crate::socket::AppState::Idle);
         }
@@ -1417,6 +1425,42 @@ mod tests {
                 .next()
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn restoring_a_backup_preserves_an_operator_stop() {
+        for minimum in [0, 1] {
+            let fixture = RestoreFixture::new();
+            let app = fixture.state.app_manager.get_app(&fixture.app).unwrap();
+            app.config.write().min_instances = minimum;
+            assert!(fixture.state.stop_app(&fixture.app, None).await.is_ok());
+            let server = fixture.serve(2);
+            fixture
+                .state
+                .restore_backup_inner(&fixture.app, &fixture.info.id)
+                .await
+                .unwrap();
+            server.await.unwrap();
+            assert_eq!(
+                sqlite_value(&fixture.data.join("app/data.sqlite")),
+                "snapshot"
+            );
+            assert_eq!(app.state(), crate::socket::AppState::Stopped);
+            assert!(app.config.read().stopped);
+            assert_eq!(app.config.read().min_instances, minimum);
+            assert!(app.get_instances().is_empty());
+            assert!(matches!(
+                crate::proxy::resolve_app_backend(
+                    &fixture.state.load_balancer,
+                    &fixture.state.cold_start,
+                    &fixture.state.drain_requested,
+                    &fixture.state.spawn_gate,
+                    &fixture.app,
+                )
+                .await,
+                crate::proxy::BackendResolution::Unavailable
+            ));
+        }
     }
 
     /// A standby serves the same app data with its own instances, which a

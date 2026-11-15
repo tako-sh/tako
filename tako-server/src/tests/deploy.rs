@@ -273,6 +273,68 @@ with os.fdopen(4"#,
         served_build(&restarted.load_balancer.get_backend(app_id).unwrap()).await,
         "v2"
     );
+    assert!(
+        restarted
+            .handle_command(Command::Stop {
+                app: app_id.into(),
+                service: None
+            })
+            .await
+            .is_ok()
+    );
+    assert!(restored.config.read().stopped);
+    assert!(matches!(
+        crate::proxy::resolve_app_backend(
+            &restarted.load_balancer,
+            &restarted.cold_start,
+            &restarted.drain_requested,
+            &restarted.spawn_gate,
+            app_id,
+        )
+        .await,
+        crate::proxy::BackendResolution::Unavailable
+    ));
+    assert!(
+        restored.get_instances().is_empty(),
+        "requests must not wake an operator-stopped app"
+    );
+    assert!(
+        restarted
+            .handle_command(Command::Start {
+                app: app_id.into(),
+                service: None
+            })
+            .await
+            .is_ok()
+    );
+    assert!(!restored.config.read().stopped);
+    assert_eq!(
+        served_build(&restarted.load_balancer.get_backend(app_id).unwrap()).await,
+        "v2"
+    );
+    let ids: Vec<_> = restored
+        .get_instances()
+        .iter()
+        .map(|i| i.id.clone())
+        .collect();
+    assert!(
+        restarted
+            .handle_command(Command::Start {
+                app: app_id.into(),
+                service: None
+            })
+            .await
+            .is_ok()
+    );
+    assert_eq!(
+        ids,
+        restored
+            .get_instances()
+            .iter()
+            .map(|i| i.id.clone())
+            .collect::<Vec<_>>(),
+        "starting a running app is idempotent"
+    );
     restarted.app_manager.shutdown_all().await;
 }
 

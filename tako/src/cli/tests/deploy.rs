@@ -151,6 +151,44 @@ fn delete_without_env_parses_env_as_none() {
 }
 
 #[test]
+fn lifecycle_commands_select_individual_compose_apps() {
+    for verb in ["start", "stop"] {
+        let cli = Cli::try_parse_from([
+            "tako",
+            verb,
+            "--service",
+            "api",
+            "--env",
+            "production",
+            "--server",
+            "prod",
+            "--app",
+            "shop",
+        ])
+        .unwrap();
+        let (service, env, server, app) = match cli.command.unwrap() {
+            Commands::Start {
+                service,
+                env,
+                server,
+                app,
+            }
+            | Commands::Stop {
+                service,
+                env,
+                server,
+                app,
+            } => (service, env, server, app),
+            _ => panic!("expected lifecycle command"),
+        };
+        assert_eq!(service.as_deref(), Some("api"));
+        assert_eq!(env.as_deref(), Some("production"));
+        assert_eq!(server.as_deref(), Some("prod"));
+        assert_eq!(app.as_deref(), Some("shop"));
+    }
+}
+
+#[test]
 fn delete_aliases_parse() {
     let cli = Cli::try_parse_from(["tako", "rm", "--env", "staging"]).unwrap();
     let Some(Commands::Delete { env, .. }) = cli.command else {

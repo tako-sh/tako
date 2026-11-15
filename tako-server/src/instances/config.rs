@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -23,6 +23,10 @@ pub struct AppConfig {
     pub compose: Option<tako_core::compose::ComposeConfig>,
     /// Persistent CLI replica overrides, separate from release defaults.
     pub compose_replicas: BTreeMap<String, u32>,
+    /// Explicit operator stop, distinct from on-demand scaling.
+    pub stopped: bool,
+    /// Individually stopped Compose apps; replica overrides remain intact.
+    pub compose_stopped: BTreeSet<String>,
     /// Non-secret environment variables (read from app.json in release dir)
     pub env_vars: HashMap<String, String>,
     /// Secret environment variables (loaded from encrypted server state)
@@ -85,6 +89,8 @@ impl Default for AppConfig {
             container_options: Default::default(),
             compose: None,
             compose_replicas: BTreeMap::new(),
+            stopped: false,
+            compose_stopped: BTreeSet::new(),
             env_vars: HashMap::new(),
             secrets: HashMap::new(),
             storages: HashMap::new(),

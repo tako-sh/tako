@@ -233,6 +233,9 @@ pub enum Commands {
     /// Delete a deployed app from a specific environment/server deployment
     #[command(visible_aliases = ["rm", "remove", "undeploy", "destroy"])]
     Delete {
+        /// Compose children cannot be deleted individually; edit Compose and redeploy
+        #[arg(long)]
+        service: Option<String>,
         /// Environment to delete from
         #[arg(long)]
         env: Option<String>,
@@ -279,13 +282,41 @@ pub enum Commands {
     /// Show version information
     Version,
 
+    /// Start a deployed app or application group
+    Start {
+        /// Start one x-tako app in a Compose group
+        #[arg(long)]
+        service: Option<String>,
+        #[arg(long)]
+        env: Option<String>,
+        #[arg(long)]
+        server: Option<String>,
+        /// App or group name (required outside a project directory)
+        #[arg(long)]
+        app: Option<String>,
+    },
+
+    /// Stop a deployed app or application group, preserving its replica counts
+    Stop {
+        /// Stop one x-tako app in a Compose group
+        #[arg(long)]
+        service: Option<String>,
+        #[arg(long)]
+        env: Option<String>,
+        #[arg(long)]
+        server: Option<String>,
+        /// App or group name (required outside a project directory)
+        #[arg(long)]
+        app: Option<String>,
+    },
+
     /// Change the desired instance count for a deployed app
     Scale {
         /// Desired instance count per targeted server
         #[arg(required_unless_present = "reset", conflicts_with = "reset")]
         instances: Option<u8>,
 
-        /// Compose service to scale (defaults to the HTTP service)
+        /// Compose service to scale (required when the group has multiple apps)
         #[arg(long)]
         service: Option<String>,
 
@@ -342,6 +373,8 @@ fn telemetry_command(command: &Commands) -> &'static str {
         Commands::Deploy { .. } => "deploy",
         Commands::Delete { .. } => "delete",
         Commands::Scale { .. } => "scale",
+        Commands::Start { .. } => "start",
+        Commands::Stop { .. } => "stop",
         Commands::Version => "version",
     }
 }
@@ -349,7 +382,15 @@ fn telemetry_command(command: &Commands) -> &'static str {
 pub(crate) fn supports_dry_run(path: &[&str]) -> bool {
     matches!(
         path,
-        ["agents" | "deploy" | "delete" | "scale" | "connect" | "disconnect" | "ssh"]
+        ["agents"
+            | "deploy"
+            | "delete"
+            | "scale"
+            | "start"
+            | "stop"
+            | "connect"
+            | "disconnect"
+            | "ssh"]
             | [
                 "network",
                 "sync"
@@ -588,7 +629,15 @@ impl Cli {
                 )?;
                 json_success(json, "deploy")
             }
-            Commands::Delete { env, server, yes } => {
+            Commands::Delete {
+                env,
+                server,
+                yes,
+                service,
+            } => {
+                if let Some(service) = service {
+                    return Err(format!("Cannot delete app '{service}' individually: it belongs to a Compose application group. Remove the service from the Compose file and redeploy, or delete the whole group.").into());
+                }
                 delete::run(
                     env.as_deref(),
                     server.as_deref(),
@@ -596,6 +645,38 @@ impl Cli {
                     self.config.as_deref(),
                 )?;
                 json_success(json, "delete")
+            }
+            Commands::Start {
+                service,
+                env,
+                server,
+                app,
+            } => {
+                commands::lifecycle::run(
+                    true,
+                    service.as_deref(),
+                    env.as_deref(),
+                    server.as_deref(),
+                    app.as_deref(),
+                    self.config.as_deref(),
+                )?;
+                json_success(json, "start")
+            }
+            Commands::Stop {
+                service,
+                env,
+                server,
+                app,
+            } => {
+                commands::lifecycle::run(
+                    false,
+                    service.as_deref(),
+                    env.as_deref(),
+                    server.as_deref(),
+                    app.as_deref(),
+                    self.config.as_deref(),
+                )?;
+                json_success(json, "stop")
             }
             Commands::Scale {
                 instances,

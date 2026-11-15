@@ -28,6 +28,18 @@ tako scale 3 --service api --env production
 
 Each app starts with one replica. Scaling it leaves the frontend and Redis at their own counts. With multiple Tako apps, `tako scale` requires `--service`.
 
+Stop and resume the API independently:
+
+```bash
+tako stop --service api --env production
+tako status --json
+tako start --service api --env production
+```
+
+While the API is stopped, the frontend and Redis keep running, but API requests are unavailable. Status still lists the API with `state: "stopped"`. Starting it restores its configured count (three after the scale command above). Stop intent and replica overrides survive redeploys, rollbacks, and server restarts; scaling a stopped API changes its next start's count without resuming it.
+
+Omit `--service` to stop or start the entire group. Group start preserves any individually stopped apps. Ordinary Docker services such as Redis have no individual start/stop command. A service cannot be deleted independently: edit `compose.yaml` and redeploy to remove it, or use `tako delete --env production` to delete the group. Named volumes remain.
+
 Call `/visits`, redeploy, and call it again to verify persistence. Deployments and rollbacks keep the Docker volume; backing up Tako app data does not back up Redis's Docker volume.
 
 `x-tako.envs.<environment>` accepts `route` or `routes`, plus optional `source_ip` (inheriting the group's setting). Settings for deployment targets, TLS credentials/provider, storage bindings and backups remain group settings in `tako.toml`; container commands, environment, health checks, resources and replica defaults remain Compose settings. Unsupported `x-tako` fields fail validation. A tagged app with no route still has its own private backend; omitting `x-tako` keeps a service entirely under Compose.

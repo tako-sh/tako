@@ -394,6 +394,7 @@ services:
   web:
     image: docker.io/library/busybox:1.37
     expose: [8080]
+    depends_on: [api]
     x-tako:
       envs:
         production:
@@ -403,6 +404,7 @@ services:
   api:
     image: docker.io/library/busybox:1.37
     expose: [9090]
+    depends_on: [database]
     x-tako:
       envs:
         production:
@@ -546,11 +548,192 @@ services:
         2,
         "sibling traffic must not skew round robin"
     );
+    // Individual lifecycle operations preserve siblings, routes and desired scale.
+    ok(server
+        .handle_command(Command::Stop {
+            app: APP.into(),
+            service: Some("api".into()),
+        })
+        .await);
+    assert!(
+        server
+            .load_balancer
+            .get_service_backend(APP, "api")
+            .is_none()
+    );
+    assert!(
+        server
+            .load_balancer
+            .get_service_backend(APP, "web")
+            .is_some()
+    );
+    assert!(
+        server
+            .routes
+            .read()
+            .select_with_route("api.localhost", "/")
+            .is_some()
+    );
+    let stopped = runtime.containers().await.unwrap();
+    assert!(stopped.iter().all(|c| c.service != "api"));
+    for service in ["web", "database"] {
+        assert_eq!(
+            after.iter().find(|c| c.service == service).unwrap().id,
+            stopped.iter().find(|c| c.service == service).unwrap().id
+        );
+    }
+    let status = ok(server.get_status(APP).await);
+    assert_eq!(
+        status["applications"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["service"] == "api")
+            .unwrap()["state"],
+        "stopped"
+    );
+    assert!(matches!(
+        server
+            .handle_command(Command::Stop {
+                app: APP.into(),
+                service: Some("database".into())
+            })
+            .await,
+        Response::Error { .. }
+    ));
+    // A failed start cannot clear durable stop intent or affect siblings.
+    rusqlite::Connection::open(dir.path().join("state.sqlite")).unwrap().execute_batch("CREATE TRIGGER fail_lifecycle BEFORE UPDATE ON app_lifecycle BEGIN SELECT RAISE(ABORT, 'injected lifecycle failure'); END;").unwrap();
+    assert!(matches!(
+        server
+            .handle_command(Command::Start {
+                app: APP.into(),
+                service: Some("api".into())
+            })
+            .await,
+        Response::Error { .. }
+    ));
+    rusqlite::Connection::open(dir.path().join("state.sqlite"))
+        .unwrap()
+        .execute_batch("DROP TRIGGER fail_lifecycle;")
+        .unwrap();
+    assert!(
+        server
+            .app_manager
+            .get_app(APP)
+            .unwrap()
+            .config
+            .read()
+            .compose_stopped
+            .contains("api")
+    );
+    assert!(
+        runtime
+            .containers()
+            .await
+            .unwrap()
+            .iter()
+            .all(|c| c.service != "api")
+    );
+    let scale_result = ok(server.handle_command(scale(Some(3), Some("api"))).await);
+    assert_eq!(scale_result["instances"], 3);
+    assert_eq!(scale_result["stopped"], true);
+    assert!(
+        runtime
+            .containers()
+            .await
+            .unwrap()
+            .iter()
+            .all(|c| c.service != "api")
+    );
+    ok(server
+        .handle_command(
+            serde_json::from_value(serde_json::json!({
+                "command":"deploy", "app":APP, "version":"v1", "path":release,
+                "routes":compose.routes("production")
+            }))
+            .unwrap(),
+        )
+        .await);
+    assert!(
+        runtime
+            .containers()
+            .await
+            .unwrap()
+            .iter()
+            .all(|c| c.service != "api")
+    );
     server.app_manager.shutdown_all().await;
     drop(server);
     let restarted = state(dir.path(), false);
     restarted.restore_from_state_store().await.unwrap();
+    assert!(
+        restarted
+            .load_balancer
+            .get_service_backend(APP, "api")
+            .is_none()
+    );
+    assert!(
+        restarted
+            .load_balancer
+            .get_service_backend(APP, "web")
+            .is_some()
+    );
+    ok(restarted
+        .handle_command(Command::Stop {
+            app: APP.into(),
+            service: None,
+        })
+        .await);
+    assert_eq!(
+        restarted.app_manager.get_app(APP).unwrap().state(),
+        AppState::Stopped
+    );
+    assert!(runtime.containers().await.unwrap().is_empty());
+    restarted.app_manager.shutdown_all().await;
+    drop(restarted);
+    let restarted = state(dir.path(), false);
+    restarted.restore_from_state_store().await.unwrap();
+    assert_eq!(
+        restarted.app_manager.get_app(APP).unwrap().state(),
+        AppState::Stopped
+    );
+    assert!(runtime.containers().await.unwrap().is_empty());
+    ok(restarted
+        .handle_command(Command::Start {
+            app: APP.into(),
+            service: None,
+        })
+        .await);
+    assert!(
+        restarted
+            .load_balancer
+            .get_service_backend(APP, "api")
+            .is_none(),
+        "group start preserves explicit child stops"
+    );
+    assert!(
+        restarted
+            .load_balancer
+            .get_service_backend(APP, "web")
+            .is_some()
+    );
+    ok(restarted
+        .handle_command(Command::Start {
+            app: APP.into(),
+            service: Some("api".into()),
+        })
+        .await);
     check(&restarted).await;
+    assert_eq!(
+        runtime
+            .containers()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|c| c.service == "api")
+            .count(),
+        3
+    );
     assert_eq!(
         restarted
             .app_manager
@@ -559,7 +742,7 @@ services:
             .config
             .read()
             .compose_replicas["api"],
-        2
+        3
     );
 
     // A Docker-only group has no app routes/backends, but still recovers its services.
