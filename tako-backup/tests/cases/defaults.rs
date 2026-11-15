@@ -5,9 +5,7 @@ use std::{
 
 use anyhow::Result;
 use object_store::{memory::InMemory, path::Path as ObjectPath};
-use tako_terse_prototype::{
-    BACKUP_INTERVAL, BackupLoop, Capture, MAX_RETRY_INTERVAL, restore_remote,
-};
+use tako_backup::{BACKUP_INTERVAL, BackupLoop, Capture, MAX_RETRY_INTERVAL, restore_remote};
 
 use crate::support::{Process, Remote};
 

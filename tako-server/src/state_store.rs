@@ -14,7 +14,7 @@ mod upgrade;
 pub(crate) use app_registry::load_persisted_releases_read_only;
 pub use device_key::load_or_create_device_key;
 
-pub const STATE_SCHEMA_VERSION: i32 = 12;
+pub const STATE_SCHEMA_VERSION: i32 = 13;
 
 #[derive(Debug, Clone)]
 pub struct PersistedApp {
@@ -148,12 +148,6 @@ impl SqliteStateStore {
             )?)),
             None => Ok(None),
         }
-    }
-
-    fn delete_row(&self, table: &str, app: &str) -> Result<(), StateStoreError> {
-        let conn = self.lock_conn()?;
-        conn.execute(&format!("DELETE FROM {table} WHERE app = ?1;"), (app,))?;
-        Ok(())
     }
 
     #[cfg(test)]

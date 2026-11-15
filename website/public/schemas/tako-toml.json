@@ -4,6 +4,22 @@
     "BackupConfig": {
       "additionalProperties": false,
       "properties": {
+        "databases": {
+          "default": [],
+          "description": "SQLite paths relative to TAKO_DATA_DIR, captured continuously.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "shared_databases": {
+          "default": [],
+          "description": "SQLite paths relative to the server's TAKO_SHARED_DATA_DIR.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "storage": {
           "description": "Private S3-compatible storage resource used for app data backups.",
           "type": "string"

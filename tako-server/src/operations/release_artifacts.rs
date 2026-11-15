@@ -60,30 +60,7 @@ impl crate::ServerState {
 
     pub(crate) async fn finalize_release(&self, app: &str, version: &str) -> Response {
         match self.finalize_release_inner(app, version).await {
-            Ok(()) => {
-                let backup = match self.backup_after_deploy(app).await {
-                    Some(super::PostDeployBackup::Created(info)) => serde_json::json!({
-                        "status": "created",
-                        "id": info.id,
-                        "size_bytes": info.size_bytes
-                    }),
-                    Some(super::PostDeployBackup::Queued) => serde_json::json!({
-                        "status": "queued",
-                        "message": "An hourly database snapshot is running; the backup starts when it finishes."
-                    }),
-                    Some(super::PostDeployBackup::Failed(error)) => {
-                        tracing::warn!(app, "Post-deploy backup failed: {error}");
-                        serde_json::json!({
-                            "status": "failed",
-                            "message": error
-                        })
-                    }
-                    None => serde_json::json!({
-                        "status": "disabled"
-                    }),
-                };
-                Response::ok(serde_json::json!({ "status": "finalized", "backup": backup }))
-            }
+            Ok(()) => Response::ok(serde_json::json!({ "status": "finalized" })),
             Err(error) => Response::error(error),
         }
     }
@@ -336,7 +313,7 @@ fn remove_release(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(unix)]
-pub(super) fn available_bytes(path: &Path) -> Result<u64, String> {
+pub(crate) fn available_bytes(path: &Path) -> Result<u64, String> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
 
@@ -352,7 +329,7 @@ pub(super) fn available_bytes(path: &Path) -> Result<u64, String> {
 }
 
 #[cfg(not(unix))]
-pub(super) fn available_bytes(_path: &Path) -> Result<u64, String> {
+pub(crate) fn available_bytes(_path: &Path) -> Result<u64, String> {
     Err("disk space checks require Unix".to_string())
 }
 

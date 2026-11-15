@@ -33,6 +33,15 @@ use tako_core::compose::ComposeConfig;
 pub(crate) fn for_config(config: &crate::instances::AppConfig) -> Result<ComposeRuntime, String> {
     let mut env = config.env_vars.clone();
     env.extend(config.secrets.clone());
+    if let Some(data) = config
+        .env_vars
+        .get(crate::release::TAKO_SHARED_DATA_DIR_ENV)
+    {
+        env.insert(
+            crate::release::TAKO_SHARED_DATA_DIR_ENV.into(),
+            data.clone(),
+        );
+    }
     if let Some(data) = config.env_vars.get(crate::release::TAKO_APP_DATA_DIR_ENV) {
         env.insert(crate::release::TAKO_APP_DATA_DIR_ENV.into(), data.clone());
     }

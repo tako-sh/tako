@@ -109,7 +109,7 @@ web  healthy 0/0  production  abc123
 
 Read the app's output with `tako logs --env production --days 1`. `tako status --json` reports the same fields under `recovery`. The server keeps retrying on its own; a fixed deploy or `tako scale` starts new instances at once without waiting for the backoff. The `Restarts` row clears once the app has stayed healthy, or idle, for about a minute.
 
-A deploy or release command that arrives while the server is repairing the app can fail with `Automatic recovery of <app> is in progress; retry in a moment.` Retry the command: recovery pauses for about a minute after turning a command away, so the retry gets through as soon as the current repair step ends. A scheduled backup can turn a command away the same way, with `A scheduled backup of <app> is in progress; retry in a moment.`; the retry gets through because scheduled backups pause for about a minute. `tako secrets sync` publishes network state without restarting the app and does not take this app lock.
+A deploy or release command that arrives while the server is repairing the app can fail with `Automatic recovery of <app> is in progress; retry in a moment.` Retry the command: recovery pauses for about a minute after turning a command away, so the retry gets through as soon as the current repair step ends. `tako secrets sync` publishes network state without restarting the app and does not take this app lock.
 
 ## TLS Or Certificate Problems
 

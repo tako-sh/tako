@@ -220,6 +220,8 @@ pub(super) fn inject_dev_data_dir(
     env: &mut std::collections::HashMap<String, String>,
 ) -> Result<(), String> {
     let app_data_dir = ensure_dev_runtime_data_dirs(project_dir)?;
+    let shared = crate::paths::shared_data_dir().map_err(|e| e.to_string())?;
+    env.insert("TAKO_SHARED_DATA_DIR".into(), shared.display().to_string());
     env.insert(
         TAKO_APP_DATA_DIR_ENV.to_string(),
         app_data_dir.display().to_string(),

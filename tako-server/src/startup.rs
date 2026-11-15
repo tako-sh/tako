@@ -296,7 +296,7 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     spawn_certificate_renewals(&rt, state.clone(), args.renewal_interval_hours);
     spawn_management_socket(&rt, state.clone(), socket_listener);
     if !standby {
-        state.clone().start_backup_scheduler(rt.handle());
+        state.clone().start_database_backups(rt.handle());
         spawn_management_http(&rt, state.clone(), args.management_host.clone());
         #[cfg(target_os = "linux")]
         if let Some(handoff) = native_handoff {

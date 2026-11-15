@@ -216,6 +216,7 @@ impl Plan {
                     serde_json::to_value(&runtime.config).map_err(|e| e.to_string())?;
                 identity["ingress"].as_object_mut().unwrap().remove("file");
             }
+            identity["managed_shared_data"] = runtime.shared_mount().unwrap_or(Value::Null);
             plan.fingerprint = hex::encode(Sha256::digest(
                 serde_json::to_vec(&identity).map_err(|e| e.to_string())?,
             ));
@@ -265,6 +266,7 @@ impl Plan {
                 options["aliases"] = json!(aliases);
             }
         }
+        runtime.inject_shared_data(&mut definition);
         definition["labels"][SERVICE_LABEL] = json!(service.name);
         definition["labels"][SLOT_LABEL] = json!(slot.to_string());
         definition["labels"][FINGERPRINT_LABEL] = json!(service.fingerprint);

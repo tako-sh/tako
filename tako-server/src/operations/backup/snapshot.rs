@@ -380,6 +380,7 @@ pub(super) fn create_backup_archive(
 /// restore, which requires both at the top level, can never apply one.
 pub(super) const DATABASE_SNAPSHOT_ARCHIVE_ROOT: &str = "databases";
 
+#[cfg(test)]
 pub(super) fn create_database_snapshot_archive(
     snapshot_dir: &Path,
     archive_path: &Path,

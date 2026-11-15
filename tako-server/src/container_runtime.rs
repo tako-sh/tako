@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 
-use crate::release::TAKO_APP_DATA_DIR_ENV;
+use crate::release::{TAKO_APP_DATA_DIR_ENV, TAKO_SHARED_DATA_DIR_ENV};
 use tako_core::StorageBinding;
 use tako_core::bootstrap::{TAKO_BOOTSTRAP_DATA_ENV, envelope_string};
 use tako_core::container::ContainerOptions;
@@ -304,6 +304,12 @@ pub(crate) fn build_container_run_env(
     if env.contains_key(TAKO_APP_DATA_DIR_ENV) {
         merged.insert(TAKO_APP_DATA_DIR_ENV.to_string(), options.data_dir.clone());
     }
+    if env.contains_key(TAKO_SHARED_DATA_DIR_ENV) {
+        merged.insert(
+            TAKO_SHARED_DATA_DIR_ENV.to_string(),
+            "/tako/shared-data".into(),
+        );
+    }
     merged.insert("HOST".to_string(), "0.0.0.0".to_string());
     merged.insert("PORT".to_string(), container_port.to_string());
     if options.sdk {
@@ -336,6 +342,23 @@ fn append_data_mount(
         args.extend([
             "--mount".into(),
             format!("type=bind,src={source},dst={}", options.data_dir),
+        ]);
+    }
+    if let Some(source) = env.get(TAKO_SHARED_DATA_DIR_ENV) {
+        if !Path::new(source).is_absolute() || source.chars().any(|c| c == ',' || c.is_control()) {
+            return Err("container shared data source must be an absolute path without commas or control characters".into());
+        }
+        let destination = Path::new("/tako/shared-data");
+        if destination.starts_with(&options.data_dir)
+            || Path::new(&options.data_dir).starts_with(destination)
+        {
+            return Err("container.data_dir must not overlap /tako/shared-data".into());
+        }
+        args.extend([
+            "--mount".into(),
+            format!("type=bind,src={source},dst=/tako/shared-data"),
+            "--group-add".into(),
+            "keep-groups".into(),
         ]);
     }
     if let Some(user) = &options.user {

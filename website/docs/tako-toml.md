@@ -74,7 +74,7 @@ idle_timeout = 300
 ssl = "letsencrypt"
 source_ip = "auto"
 storages = { uploads = "prod_uploads" }
-backup = { storage = "private_backups" }
+backup = { storage = "private_backups", databases = ["app.sqlite"], shared_databases = ["accounts.sqlite"] }
 
 [envs.staging]
 routes = ["staging.example.com", "example.com/api/*"]
@@ -191,7 +191,7 @@ Top-level storage resources store non-secret metadata. S3 resources require `buc
 
 ```toml
 [envs.production]
-backup = { storage = "private_backups" }
+backup = { storage = "private_backups", databases = ["app.sqlite"], shared_databases = ["accounts.sqlite"] }
 
 [storages.private_backups]
 provider = "s3"
@@ -199,6 +199,8 @@ bucket = "app-data"
 endpoint = "https://example.r2.cloudflarestorage.com"
 region = "auto"
 ```
+
+`databases` selects relative SQLite paths under `TAKO_DATA_DIR`; `shared_databases` selects paths under `TAKO_SHARED_DATA_DIR`. Both lists default to empty, allow up to 64 paths each, and reject duplicates, traversal, symlinks, and SQLite sidecar names. Selected databases use continuous encrypted backups. Shared declarations on the same server reuse one history and must use the same destination. Full app-directory archives are manual (`tako backups now`). See [Backups](/backups/) for restore commands and retention.
 
 Backup storage must be private S3-compatible storage. `public_base_url` and local storage are rejected for backups. Backup resources are not exposed to `tako.storages` unless they are also listed in `[envs.<env>].storages`. Backup archives preserve symlinks as symlinks.
 
@@ -259,7 +261,7 @@ API_URL = "https://staging-api.example.com"
 route = "app.example.com"
 servers = ["la", "nyc"]
 storages = { uploads = "prod_uploads" }
-backup = { storage = "private_backups" }
+backup = { storage = "private_backups", databases = ["app.sqlite"], shared_databases = ["accounts.sqlite"] }
 ssl = "letsencrypt"
 source_ip = "auto"
 

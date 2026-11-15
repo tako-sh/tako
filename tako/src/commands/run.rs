@@ -120,6 +120,8 @@ fn inject_run_data_dir(
     project_dir: &Path,
     env: &mut HashMap<String, String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let shared = crate::paths::shared_data_dir()?;
+    env.insert("TAKO_SHARED_DATA_DIR".into(), shared.display().to_string());
     let data_dir = project_dir.join(".tako").join("data").join("app");
     std::fs::create_dir_all(&data_dir)?;
     env.insert(

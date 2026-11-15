@@ -92,6 +92,7 @@ fn ensure_app_runtime_data_dirs_repairs_existing_app_data_files() {
 fn inject_app_data_dir_env_sets_tako_data_dir() {
     let mut env = HashMap::new();
     let paths = AppRuntimeDataPaths {
+        shared: PathBuf::from("/data/shared-data"),
         root: PathBuf::from("/tmp/app/data"),
         app: PathBuf::from("/tmp/app/data/app"),
         tako: PathBuf::from("/tmp/app/data/tako"),

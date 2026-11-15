@@ -24,7 +24,7 @@ fn backups_now_parses_env_and_server() {
 fn backups_list_alias_parses() {
     let cli = Cli::try_parse_from(["tako", "backups", "ls", "--env", "staging"]).unwrap();
 
-    let Some(Commands::Backups(BackupCommands::List { env, server })) = cli.command else {
+    let Some(Commands::Backups(BackupCommands::List { env, server, .. })) = cli.command else {
         panic!("expected Backups::List");
     };
     assert_eq!(env.as_deref(), Some("staging"));
@@ -77,12 +77,55 @@ fn backups_restore_parses_yes() {
         env,
         server,
         yes,
+        ..
     })) = cli.command
     else {
         panic!("expected Backups::Restore");
     };
-    assert_eq!(backup_id, "b123");
+    assert_eq!(backup_id.as_deref(), Some("b123"));
     assert!(env.is_none());
     assert_eq!(server.as_deref(), Some("la"));
     assert!(yes);
+}
+
+#[test]
+fn sqlite_restore_requires_an_explicit_recovery_point_and_scope() {
+    use clap::Parser;
+    for args in [
+        vec!["tako", "backups", "restore", "--database", "app.db"],
+        vec!["tako", "backups", "restore", "--shared", "b123"],
+        vec![
+            "tako",
+            "backups",
+            "restore",
+            "--database",
+            "app.db",
+            "--latest",
+            "--txid",
+            "1",
+        ],
+    ] {
+        assert!(Cli::try_parse_from(args).is_err());
+    }
+    let cli = Cli::try_parse_from([
+        "tako",
+        "backups",
+        "restore",
+        "--database",
+        "app.db",
+        "--shared",
+        "--latest",
+        "--yes",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        Some(Commands::Backups(BackupCommands::Restore {
+            database: Some(_),
+            shared: true,
+            latest: true,
+            txid: None,
+            ..
+        }))
+    ));
 }

@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use rusqlite::Connection;
-use tako_terse_prototype::Capture;
+use tako_backup::Capture;
 
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().collect();

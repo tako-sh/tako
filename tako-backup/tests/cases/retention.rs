@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::Result;
 use object_store::path::Path as ObjectPath;
-use tako_terse_prototype::{Capture, RETENTION, prune_expired, restore_remote, upload_pending};
+use tako_backup::{Capture, RETENTION, prune_expired, restore_remote, upload_pending};
 use terse_litestream::{FileStore, ReplicaStore};
 use terse_ltx::{Decoder, Encoder};
 

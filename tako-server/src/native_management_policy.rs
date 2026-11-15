@@ -23,6 +23,7 @@ pub(crate) enum CommandClass<'a> {
 /// Classification alone grants nothing. New protocol variants must be reviewed.
 pub(crate) fn classify(command: &Command) -> CommandClass<'_> {
     match command {
+        Command::RestoreDatabaseBackup { shared: true, .. } => CommandClass::ServerAdmin,
         Command::Hello { .. } | Command::ServerInfo => CommandClass::AuthenticatedProbe,
         Command::CheckDeploySpace { .. } => CommandClass::DeploymentPreflight,
         Command::List
@@ -54,9 +55,11 @@ pub(crate) fn classify(command: &Command) -> CommandClass<'_> {
         | Command::RunRelease { app, .. }
         | Command::Deploy { app, .. }
         | Command::BackupNow { app, .. }
+        | Command::ListDatabaseBackups { app, .. }
         | Command::ListBackups { app }
         | Command::BackupStatus { app }
         | Command::BackupDownloadUrl { app, .. }
+        | Command::RestoreDatabaseBackup { app, .. }
         | Command::RestoreBackup { app, .. }
         | Command::Scale { app, .. }
         | Command::Stop { app }
@@ -281,9 +284,11 @@ pub(crate) fn authorize_command(
                 return Err(BACKUP_DENIED);
             }
         }
-        Command::ListBackups { .. }
+        Command::ListDatabaseBackups { .. }
+        | Command::ListBackups { .. }
         | Command::BackupStatus { .. }
         | Command::BackupDownloadUrl { .. }
+        | Command::RestoreDatabaseBackup { .. }
         | Command::RestoreBackup { .. }
         | Command::Scale { .. }
         | Command::Stop { .. }
@@ -537,6 +542,8 @@ mod tests {
             object.entry("ssl").or_insert(json!(self.ssl));
             object.entry("secrets").or_insert(json!({}));
             object.entry("backup_id").or_insert(json!("backup-1"));
+            object.entry("database").or_insert(json!("app.sqlite"));
+            object.entry("shared").or_insert(json!(false));
             object.entry("command_line").or_insert(json!("true"));
             object.entry("payload").or_insert(json!({}));
             object.entry("name").or_insert(json!("job"));
@@ -565,6 +572,8 @@ mod tests {
         "run_release",
         "deploy",
         "backup_now",
+        "list_database_backups",
+        "restore_database_backup",
         "list_backups",
         "backup_status",
         "backup_download_url",
@@ -584,6 +593,16 @@ mod tests {
         "retry_workflow_run",
         "cancel_workflow_run",
     ];
+
+    #[test]
+    fn restoring_shared_data_requires_server_administrator_permission() {
+        let mut f = Fixture::new();
+        let command = f.decode_command(json!({"command":"restore_database_backup", "shared":true}));
+        assert_eq!(classify(&command), CommandClass::ServerAdmin);
+        assert!(f.authorize(&command).is_err());
+        f.permissions.server_admin = true;
+        assert!(f.authorize(&command).is_ok());
+    }
 
     #[test]
     fn all_application_commands_require_exact_explicit_app_and_environment() {

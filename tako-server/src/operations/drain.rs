@@ -38,6 +38,7 @@ pub(super) fn blocked_while_draining(command: &Command) -> bool {
         | Command::RunRelease { .. }
         | Command::Deploy { .. }
         | Command::BackupNow { .. }
+        | Command::RestoreDatabaseBackup { .. }
         | Command::RestoreBackup { .. }
         | Command::Scale { .. }
         | Command::Rollback { .. }
@@ -54,6 +55,7 @@ pub(super) fn blocked_while_draining(command: &Command) -> bool {
         | Command::CleanupPreparedDeploy { .. }
         | Command::CleanupRelease { .. }
         | Command::CheckDeploySpace { .. }
+        | Command::ListDatabaseBackups { .. }
         | Command::ListBackups { .. }
         | Command::BackupStatus { .. }
         | Command::BackupDownloadUrl { .. }
@@ -85,7 +87,7 @@ pub(super) fn blocked_while_draining(command: &Command) -> bool {
 }
 
 impl crate::ServerState {
-    fn prepare_server_drain(
+    pub(super) fn prepare_server_drain(
         &self,
         timeout_seconds: u64,
     ) -> Result<(crate::state_store::DrainLease, Instant), Response> {
@@ -151,7 +153,7 @@ impl crate::ServerState {
         self.finish_server_drain(deadline).await
     }
 
-    async fn finish_server_drain(&self, deadline: Instant) -> Response {
+    pub(super) async fn finish_server_drain(&self, deadline: Instant) -> Response {
         let mut report = self.drain_runtime_until(deadline).await;
         if report.local_completed {
             loop {

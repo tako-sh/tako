@@ -47,6 +47,8 @@ pub(crate) fn decrypt_backup_binding(
     }
     Ok(Some(tako_core::BackupBinding {
         storage,
+        databases: backup.databases.clone(),
+        shared_databases: backup.shared_databases.clone(),
         backup_keys,
         retention_days: tako_core::DEFAULT_BACKUP_RETENTION_DAYS,
     }))
