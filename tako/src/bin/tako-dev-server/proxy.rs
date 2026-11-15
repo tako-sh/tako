@@ -473,7 +473,7 @@ impl ProxyHttp for DevProxy {
                 .routes
                 .wait_for_active_port(&target.app_id, std::time::Duration::from_secs(30))
                 .await;
-            let Some(active_port) = ready_port else {
+            if ready_port.is_none() {
                 let mut header = ResponseHeader::build(503, None)?;
                 header.insert_header("Content-Type", "text/plain")?;
                 session
@@ -483,12 +483,25 @@ impl ProxyHttp for DevProxy {
                     .write_response_body(Some("Starting…".into()), true)
                     .await?;
                 return Ok(true);
+            }
+            // Activation can replace a Compose group's routes. Re-resolve so a
+            // request never reaches whichever service owns the group's first
+            // port when its own route disappeared during restart.
+            let Some(active) = self.routes.lookup(&hostname, &path) else {
+                let mut header = ResponseHeader::build(421, None)?;
+                header.insert_header("Content-Type", "text/plain")?;
+                session
+                    .write_response_header(Box::new(header), false)
+                    .await?;
+                session
+                    .write_response_body(
+                        Some(unknown_application_response_body(&hostname, &self.routes).into()),
+                        true,
+                    )
+                    .await?;
+                return Ok(true);
             };
-            target.upstream_port = self
-                .routes
-                .lookup(&hostname, &path)
-                .map(|t| t.upstream_port)
-                .unwrap_or(active_port);
+            target.upstream_port = active.upstream_port;
             target.active = true;
         }
 
