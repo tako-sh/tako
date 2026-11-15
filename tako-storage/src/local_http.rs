@@ -84,12 +84,16 @@ pub async fn serve(
         .duration_since(UNIX_EPOCH)
         .map_err(internal)?
         .as_secs();
+    // A binding without a signing key can never authorize a request.
+    let Some(secret) = binding.signing_key.as_deref().filter(|s| !s.is_empty()) else {
+        return reply(session, 403, "Forbidden").await;
+    };
     if !authorized(
         method,
         &name,
         encoded_key,
         uri.query().unwrap_or(""),
-        binding.signing_key.as_deref().unwrap_or(""),
+        secret,
         now,
     ) {
         return reply(session, 403, "Forbidden").await;
@@ -193,9 +197,6 @@ fn decode(value: &str) -> std::result::Result<String, ()> {
 }
 
 fn authorized(method: &str, name: &str, key: &str, query: &str, secret: &str, now: u64) -> bool {
-    if secret.is_empty() {
-        return false;
-    }
     let pairs: HashMap<_, _> = url::form_urlencoded::parse(query.as_bytes()).collect();
     let Some(expires) = pairs
         .get("expires")
