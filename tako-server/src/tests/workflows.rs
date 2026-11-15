@@ -265,7 +265,7 @@ async fn sync_app_workflows_injects_release_env_and_app_data_dir_into_worker() {
         }
     })
     .await;
-    state.workflows.retire(app_id).await;
+    state.workflows.retire(app_id);
     let captured = captured.expect("worker should record its environment");
     let expected_data_dir = temp
         .path()

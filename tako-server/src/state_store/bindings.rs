@@ -3,16 +3,6 @@ use std::collections::HashMap;
 use super::{SqliteStateStore, StateStoreError};
 
 impl SqliteStateStore {
-    pub fn set_storages(
-        &self,
-        app: &str,
-        storages: &HashMap<String, tako_core::StorageBinding>,
-    ) -> Result<(), StateStoreError> {
-        let json = serde_json::to_vec(storages)
-            .map_err(|e| StateStoreError::InvalidData(format!("serialize storages: {e}")))?;
-        self.set_encrypted_row("app_storages", app, &json)
-    }
-
     pub fn get_storages(
         &self,
         app: &str,
@@ -24,6 +14,7 @@ impl SqliteStateStore {
         }
     }
 
+    #[cfg(test)]
     pub fn set_ssl(&self, app: &str, ssl: &tako_core::SslBinding) -> Result<(), StateStoreError> {
         let json = serde_json::to_vec(ssl)
             .map_err(|e| StateStoreError::InvalidData(format!("serialize ssl: {e}")))?;
@@ -37,10 +28,6 @@ impl SqliteStateStore {
                 .map_err(|e| StateStoreError::InvalidData(format!("deserialize ssl: {e}"))),
             None => Ok(None),
         }
-    }
-
-    pub fn delete_ssl(&self, app: &str) -> Result<(), StateStoreError> {
-        self.delete_row("app_ssl", app)
     }
 
     pub fn set_backup(

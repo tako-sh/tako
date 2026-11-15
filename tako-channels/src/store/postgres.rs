@@ -1,5 +1,5 @@
-use ::postgres::{Client, NoTls};
-use parking_lot::Mutex;
+use ::postgres::{Client, Config, NoTls};
+use parking_lot::{Mutex, MutexGuard};
 
 use crate::{
     CLOSE_MESSAGE_TYPE, ChannelAuthResponse, ChannelError, ChannelLifecycle, ChannelMessage,
@@ -17,7 +17,9 @@ const BORN_AT_SQL: &str = "COALESCE(pg_sequence_last_value(
     pg_get_serial_sequence('{schema}.channel_messages', 'id')::regclass), 0)";
 
 pub(super) struct PostgresChannelStore {
-    pub(super) client: Mutex<Client>,
+    client: Mutex<Client>,
+    config: Config,
+    read_only: bool,
     pub(super) schema: String,
     pub(super) app_id: String,
     /// The last stream age maintenance visited; the next tick continues after it.
@@ -29,32 +31,50 @@ const MAINTENANCE_BATCH: i64 = 1_000;
 
 impl PostgresChannelStore {
     pub(super) fn open_reader(url: &str, schema: &str, app_id: &str) -> Result<Self, ChannelError> {
-        validate_pg_identifier(schema)?;
-        let mut client = connect(url)?;
-        client
-            .batch_execute("SET default_transaction_read_only = on")
-            .map_err(|e| ChannelError::Storage(e.to_string()))?;
-        client
-            .simple_query(&format!("SELECT id FROM {schema}.channel_messages LIMIT 0"))
-            .map_err(|e| ChannelError::Storage(e.to_string()))?;
-        Ok(Self {
-            client: Mutex::new(client),
-            schema: schema.into(),
-            app_id: app_id.into(),
-            prune_cursor: Mutex::default(),
-        })
+        Self::open_with_access(url, schema, app_id, true)
     }
 
     pub(super) fn open(url: &str, schema: &str, app_id: &str) -> Result<Self, ChannelError> {
+        Self::open_with_access(url, schema, app_id, false)
+    }
+
+    fn open_with_access(
+        url: &str,
+        schema: &str,
+        app_id: &str,
+        read_only: bool,
+    ) -> Result<Self, ChannelError> {
         validate_pg_identifier(schema)?;
-        let mut client = connect(url)?;
-        init_postgres(&mut client, schema)?;
+        let mut config: Config = url
+            .parse()
+            .map_err(|e: postgres::Error| ChannelError::Storage(e.to_string()))?;
+        if config.get_connect_timeout().is_none() {
+            config.connect_timeout(std::time::Duration::from_secs(10));
+        }
+        let mut client = connect(&config, read_only)?;
+        if read_only {
+            client
+                .simple_query(&format!("SELECT id FROM {schema}.channel_messages LIMIT 0"))
+                .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        } else {
+            init_postgres(&mut client, schema)?;
+        }
         Ok(Self {
             client: Mutex::new(client),
+            config,
+            read_only,
             schema: schema.to_string(),
             app_id: app_id.to_string(),
             prune_cursor: Mutex::default(),
         })
+    }
+
+    pub(super) fn client(&self) -> Result<MutexGuard<'_, Client>, ChannelError> {
+        let mut client = self.client.lock();
+        if client.is_closed() {
+            *client = connect(&self.config, self.read_only)?;
+        }
+        Ok(client)
     }
 
     /// Append one message, or close the stream when `payload` is the close
@@ -69,7 +89,7 @@ impl PostgresChannelStore {
     ) -> Result<(ChannelMessage, bool), ChannelError> {
         let data_json = serde_json::to_string(&payload.data)
             .map_err(|e| ChannelError::BadRequest(format!("serialize payload: {e}")))?;
-        let mut client = self.client.lock();
+        let mut client = self.client()?;
         let mut tx = client
             .transaction()
             .map_err(|e| ChannelError::Storage(e.to_string()))?;
@@ -168,8 +188,7 @@ impl PostgresChannelStore {
         &self,
         channel: &str,
     ) -> Result<Option<ChannelMessage>, ChannelError> {
-        self.client
-            .lock()
+        self.client()?
             .query_opt(
                 &format!(
                     "SELECT id, channel, type, data_json
@@ -217,7 +236,7 @@ impl PostgresChannelStore {
         after: Option<i64>,
         limit: u32,
     ) -> Result<Vec<ChannelMessage>, ChannelError> {
-        let mut client = self.client.lock();
+        let mut client = self.client()?;
         // Reads never prune; the computed floor hides rows still waiting for
         // it. A cursor is checked against the same snapshot, and the same
         // database time, that the page is read from.
@@ -269,7 +288,7 @@ impl PostgresChannelStore {
         channel: &str,
         requested: Option<i64>,
     ) -> Result<Option<i64>, ChannelError> {
-        let (floor, head) = self.replay_bounds(&mut *self.client.lock(), channel)?;
+        let (floor, head) = self.replay_bounds(&mut *self.client()?, channel)?;
         resolve_replay_cursor(requested, floor, head)
     }
 
@@ -278,7 +297,7 @@ impl PostgresChannelStore {
         channel: &str,
         auth: &ChannelAuthResponse,
     ) -> Result<(), ChannelError> {
-        let mut client = self.client.lock();
+        let mut client = self.client()?;
         client
             .execute(
                 &format!(
@@ -310,7 +329,7 @@ impl PostgresChannelStore {
         &self,
         channels: &[String],
     ) -> Result<Vec<(String, i64)>, ChannelError> {
-        self.client.lock().query(
+        self.client()?.query(
             &format!("SELECT channel, latest_message_id FROM {}.channel_metadata WHERE app_id = $1 AND channel = ANY($2) AND latest_message_id > 0", self.schema),
             &[&self.app_id, &channels],
         ).map(|rows| rows.into_iter().map(|row| (row.get(0), row.get(1))).collect())
@@ -325,7 +344,7 @@ impl PostgresChannelStore {
     /// serves expired history to a `from=start` or resumed reader. History age
     /// and idle release, including presence leases, follow the database clock.
     pub(super) fn prune(&self, _now: i64) -> Result<(), ChannelError> {
-        let mut client = self.client.lock();
+        let mut client = self.client()?;
         let mut cursor = self.prune_cursor.lock();
         let mut tx = client
             .transaction()
@@ -633,18 +652,16 @@ const POSTGRES_MIGRATIONS: &[&str] = &[
      SELECT app_id, COUNT(*) FROM {schema}.channel_metadata GROUP BY app_id;",
 ];
 
-/// Connections without an explicit `connect_timeout` get a bounded one, so an
-/// unreachable server fails the open instead of holding a worker thread.
-fn connect(url: &str) -> Result<Client, ChannelError> {
-    let mut config: postgres::Config = url
-        .parse()
-        .map_err(|e: postgres::Error| ChannelError::Storage(e.to_string()))?;
-    if config.get_connect_timeout().is_none() {
-        config.connect_timeout(std::time::Duration::from_secs(10));
-    }
-    config
+fn connect(config: &Config, read_only: bool) -> Result<Client, ChannelError> {
+    let mut client = config
         .connect(NoTls)
-        .map_err(|e| ChannelError::Storage(e.to_string()))
+        .map_err(|e| ChannelError::Storage(e.to_string()))?;
+    if read_only {
+        client
+            .batch_execute("SET default_transaction_read_only = on")
+            .map_err(|e| ChannelError::Storage(e.to_string()))?;
+    }
+    Ok(client)
 }
 
 fn init_postgres(client: &mut Client, schema: &str) -> Result<(), ChannelError> {
@@ -800,6 +817,41 @@ mod integration_tests {
 
     fn id(message: &ChannelMessage) -> i64 {
         message.id.parse().unwrap()
+    }
+
+    #[test]
+    fn postgres_reconnects_channel_sessions_with_their_original_permissions() {
+        let mut db = Database::new();
+        let writer = db.open("app");
+        let reader = PostgresChannelStore::open_reader(&db.url, &db.schema, "app").unwrap();
+        let first = append(&writer, "events");
+        for store in [&writer, &reader] {
+            let pid: i32 = store
+                .client
+                .lock()
+                .query_one("SELECT pg_backend_pid()", &[])
+                .unwrap()
+                .get(0);
+            assert!(
+                db.client
+                    .query_one("SELECT pg_terminate_backend($1, 5000)", &[&pid])
+                    .unwrap()
+                    .get::<_, bool>(0)
+            );
+            assert!(store.read_after("events", None, 10).is_err());
+        }
+        let second = append(&writer, "events");
+        assert_eq!(
+            reader.read_after("events", None, 10).unwrap(),
+            vec![first, second]
+        );
+        let mode: String = reader
+            .client
+            .lock()
+            .query_one("SHOW default_transaction_read_only", &[])
+            .unwrap()
+            .get(0);
+        assert_eq!(mode, "on");
     }
 
     #[test]

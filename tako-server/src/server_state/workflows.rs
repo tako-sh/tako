@@ -1,4 +1,11 @@
 use super::*;
+use tako_workflows::manager::PreparedWorkflow;
+
+pub(crate) struct WorkflowBindings<'a> {
+    pub(crate) secrets: &'a HashMap<String, String>,
+    pub(crate) storages: &'a HashMap<String, tako_core::StorageBinding>,
+    pub(crate) postgres_url: Option<&'a String>,
+}
 
 impl ServerState {
     /// Reconcile workflow + channel runtime support for the active release.
@@ -30,6 +37,39 @@ impl ServerState {
         release_path: &std::path::Path,
         runtime_bin_path: Option<&str>,
     ) -> Result<(), StateStoreError> {
+        let secrets = self.state_store.get_secrets(app_name)?;
+        let storages = self.state_store.get_storages(app_name)?;
+        let runtime_credentials = self.state_store.get_runtime_credentials(app_name)?;
+        let prepared = self
+            .prepare_app_workflows(
+                app_name,
+                release_path,
+                runtime_bin_path,
+                WorkflowBindings {
+                    secrets: &secrets,
+                    storages: &storages,
+                    postgres_url: runtime_credentials.get("postgres_url"),
+                },
+            )
+            .await?;
+        self.install_app_workflows(app_name, prepared);
+        Ok(())
+    }
+
+    pub(crate) fn install_app_workflows(&self, app_name: &str, prepared: Option<PreparedWorkflow>) {
+        match prepared {
+            Some(runtime) => self.workflows.install(app_name, runtime),
+            None => self.workflows.retire(app_name),
+        }
+    }
+
+    pub(crate) async fn prepare_app_workflows(
+        &self,
+        app_name: &str,
+        release_path: &std::path::Path,
+        runtime_bin_path: Option<&str>,
+        bindings: WorkflowBindings<'_>,
+    ) -> Result<Option<PreparedWorkflow>, StateStoreError> {
         let manifest = match crate::app_command::load_release_manifest(release_path) {
             Ok(manifest) => manifest,
             Err(e) => {
@@ -45,8 +85,7 @@ impl ServerState {
             }
         };
         if manifest.release_kind == crate::app_command::ReleaseKind::Compose {
-            self.workflows.retire(app_name).await;
-            return Ok(());
+            return Ok(None);
         }
         let data_paths = match ensure_app_runtime_data_dirs(&self.runtime.data_dir, app_name) {
             Ok(paths) => paths,
@@ -57,22 +96,23 @@ impl ServerState {
         };
         let internal_socket = self.workflows.socket_path();
 
-        let secrets = self.state_store.get_secrets(app_name)?;
-        let storages = self.state_store.get_storages(app_name)?;
+        let WorkflowBindings {
+            secrets,
+            storages,
+            postgres_url,
+        } = bindings;
         let mut worker_env = manifest.env_vars.clone();
         inject_app_data_dir_env(&mut worker_env, &data_paths);
 
         let worker_command = match manifest.runtime.as_str() {
             "container" => {
                 let Some(run) = manifest.workflow_run.as_deref() else {
-                    self.workflows.retire(app_name).await;
-                    return Ok(());
+                    return Ok(None);
                 };
                 let engine = match detect_container_engine() {
                     Ok(engine) => engine,
                     Err(error) => {
                         tracing::warn!(app = app_name, error = %error, "Skipping workflow engine: container engine not available");
-                        self.workflows.retire(app_name).await;
                         return Err(StateStoreError::InvalidData(error.to_string()));
                     }
                 };
@@ -80,7 +120,6 @@ impl ServerState {
                     Ok(image) => image,
                     Err(error) => {
                         tracing::warn!(app = app_name, error = %error, "Skipping workflow engine: invalid container image tag");
-                        self.workflows.retire(app_name).await;
                         return Err(StateStoreError::InvalidData(error.to_string()));
                     }
                 };
@@ -96,8 +135,8 @@ impl ServerState {
                 let container_env = build_container_run_env(
                     &worker_env,
                     &token,
-                    &secrets,
-                    &storages,
+                    secrets,
+                    storages,
                     crate::container_runtime::DEFAULT_CONTAINER_PORT,
                     &manifest.container_options,
                 )
@@ -107,8 +146,8 @@ impl ServerState {
                     &image,
                     &worker_env,
                     &token,
-                    &secrets,
-                    &storages,
+                    secrets,
+                    storages,
                     run,
                     &internal_socket,
                     &manifest.container_options,
@@ -116,7 +155,6 @@ impl ServerState {
                     Ok(args) => args,
                     Err(error) => {
                         tracing::warn!(app = app_name, error = %error, "Skipping workflow engine: invalid container workflow run");
-                        self.workflows.retire(app_name).await;
                         return Err(StateStoreError::InvalidData(error.to_string()));
                     }
                 };
@@ -127,8 +165,7 @@ impl ServerState {
             }
             "go" => {
                 let Some(worker_main) = manifest.workflow_worker_main.as_deref() else {
-                    self.workflows.retire(app_name).await;
-                    return Ok(());
+                    return Ok(None);
                 };
                 let worker_bin = app_path.join(worker_main);
                 if !worker_bin.exists() {
@@ -137,7 +174,6 @@ impl ServerState {
                         path = %worker_bin.display(),
                         "Skipping workflow engine: Go worker binary not found in release"
                     );
-                    self.workflows.retire(app_name).await;
                     return Err(StateStoreError::InvalidData(
                         "Go worker binary not found in release".into(),
                     ));
@@ -159,8 +195,7 @@ impl ServerState {
                     app_path.join(js_app_root).join("workflows")
                 };
                 if !workflows_dir.is_dir() {
-                    self.workflows.retire(app_name).await;
-                    return Ok(());
+                    return Ok(None);
                 }
 
                 let worker_entry = app_path
@@ -175,7 +210,6 @@ impl ServerState {
                         path = %worker_entry.display(),
                         "Skipping workflow engine: worker entrypoint not found in release"
                     );
-                    self.workflows.retire(app_name).await;
                     return Err(StateStoreError::InvalidData(
                         "worker entrypoint not found in release".into(),
                     ));
@@ -216,30 +250,30 @@ impl ServerState {
         };
 
         self.ensure_internal_socket_started()?;
-        let app = app_name.to_string();
-        let app_for_spec = app.clone();
-        let worker_cwd = app_path;
-        let manager = self.workflows.clone();
-        let result = manager
-            .ensure(&app, manifest.workflow_retention_ms, move |_db_path| {
-                let mut spec = crate::workflows::worker_spec_for_command(
-                    &app_for_spec,
-                    0,       // workers (scale-to-zero)
-                    500,     // concurrency
-                    300_000, // idle_timeout_ms (5 min)
-                    &internal_socket,
-                    worker_command,
-                    &worker_cwd,
-                    worker_env,
-                    secrets,
-                    storages,
-                    isolation,
-                );
-                spec.lanes = workflow_lanes;
-                spec
-            })
-            .await;
-
-        result.map_err(|error| StateStoreError::InvalidData(error.to_string()))
+        let store = match postgres_url {
+            Some(url) => tako_workflows::WorkflowStoreConfig::postgres(url.clone(), app_name),
+            None => tako_workflows::WorkflowStoreConfig::sqlite(
+                self.workflows.workflows_db_path(app_name),
+            ),
+        };
+        let mut spec = crate::workflows::worker_spec_for_command(
+            app_name,
+            0,
+            500,
+            300_000,
+            &internal_socket,
+            worker_command,
+            &app_path,
+            worker_env,
+            secrets.clone(),
+            storages.clone(),
+            isolation,
+        );
+        spec.lanes = workflow_lanes;
+        self.workflows
+            .prepare(store, manifest.workflow_retention_ms, spec)
+            .await
+            .map(Some)
+            .map_err(|error| StateStoreError::InvalidData(error.to_string()))
     }
 }

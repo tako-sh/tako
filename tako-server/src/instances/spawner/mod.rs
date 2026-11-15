@@ -6,7 +6,7 @@ mod health_probe;
 mod readiness;
 mod spawn_command;
 
-use super::{App, AppLaunch, Instance, InstanceError, InstanceEvent, InstanceState};
+use super::{App, AppConfig, AppLaunch, Instance, InstanceError, InstanceEvent, InstanceState};
 use health_probe::probe_endpoint_tcp;
 use readiness::{startup_timeout_detail, wait_for_ready};
 use spawn_command::{
@@ -51,6 +51,15 @@ impl Spawner {
     /// Spawn a new instance
     pub async fn spawn(&self, app: &App, instance: Arc<Instance>) -> Result<(), InstanceError> {
         let config = app.config.read().clone();
+        self.spawn_with_config(app, instance, &config).await
+    }
+
+    pub(super) async fn spawn_with_config(
+        &self,
+        app: &App,
+        instance: Arc<Instance>,
+        config: &AppConfig,
+    ) -> Result<(), InstanceError> {
         instance.set_health_probe(
             config.health_check_host.clone(),
             config.health_check_path.clone(),
@@ -75,7 +84,7 @@ impl Spawner {
             "Spawning instance"
         );
 
-        let env = build_instance_env(&config, &instance, self.internal_socket.as_deref());
+        let env = build_instance_env(config, &instance, self.internal_socket.as_deref());
         let extra_args = build_instance_args(&instance);
 
         #[cfg(unix)]
@@ -83,7 +92,7 @@ impl Spawner {
             .map_err(|error| InstanceError::SpawnError(std::io::Error::other(error)))?;
 
         let (child, readiness_fd, bootstrap) = spawn_child_process(
-            &config,
+            config,
             &env,
             &extra_args,
             #[cfg(unix)]
@@ -151,17 +160,17 @@ impl Spawner {
         &self,
         app: &App,
         instance: Arc<Instance>,
-        config: super::AppConfig,
+        config: &AppConfig,
         image: String,
         container_port: u16,
     ) -> Result<(), InstanceError> {
         let app_name = config.deployment_id();
         let instance_id = instance.id.clone();
         let host_port = allocate_loopback_port().map_err(InstanceError::SpawnError)?;
-        let env = build_container_env(&config, container_port);
+        let env = build_container_env(config, container_port);
         instance.set_sdk_health(config.container_options.sdk);
         let child = spawn_container_process(
-            &config,
+            config,
             &image,
             container_port,
             host_port,
@@ -186,7 +195,7 @@ impl Spawner {
 
         match timeout(
             config.startup_timeout,
-            wait_for_container_health(app, instance.clone(), &config),
+            wait_for_container_health(app, instance.clone(), config),
         )
         .await
         {

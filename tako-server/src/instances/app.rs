@@ -47,7 +47,7 @@ pub struct App {
     /// Channel to notify about instance changes
     pub(super) instance_tx: mpsc::Sender<InstanceEvent>,
     /// Shared log handle for all instances of this app
-    log_handle: AppLogHandle,
+    pub(super) log_handle: AppLogHandle,
 }
 
 /// Events for instance lifecycle
@@ -94,8 +94,16 @@ impl App {
         *self.state.read()
     }
 
-    pub fn set_state(&self, state: AppState) {
-        *self.state.write() = state;
+    pub fn set_state(&self, state: AppState) -> AppState {
+        std::mem::replace(&mut *self.state.write(), state)
+    }
+
+    /// A cold start of the committed release can finish during a deployment.
+    pub(crate) fn set_state_unless_deploying(&self, state: AppState) {
+        let mut current = self.state.write();
+        if *current != AppState::Deploying {
+            *current = state;
+        }
     }
 
     pub fn set_last_error(&self, message: impl Into<String>) {
@@ -229,20 +237,38 @@ impl App {
 
     pub(super) fn enable_rollout_routing(
         &self,
-        instances: &[Arc<Instance>],
-    ) -> Result<(), (String, InstanceState)> {
-        // A health transition must either fail this rollout or occur after
-        // the instances have been handed to ordinary health recovery.
+        candidates: &[Arc<Instance>],
+        predecessors: &[Arc<Instance>],
+        commit: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        // Health and routing cannot change between the final readiness check
+        // and durable activation. A failed write leaves every predecessor live.
         let _transition = self.instance_transitions.lock();
-        for instance in instances {
+        for instance in candidates {
             let state = instance.state();
             if state != InstanceState::Healthy {
-                return Err((instance.id.clone(), state));
+                return Err(format!(
+                    "Health check failed: Instance {} became {state} before rollout cutover",
+                    instance.id
+                ));
             }
         }
-        for instance in instances {
-            self.enable_instance_routing_locked(instance);
+        let mut healthy = self.healthy_instances.write();
+        commit()?;
+        for old in predecessors {
+            old.set_state(InstanceState::Draining);
         }
+        let mut suppressed = self.routing_suppressed_instances.write();
+        *healthy = candidates
+            .iter()
+            .map(|instance| {
+                suppressed.remove(&instance.id);
+                HealthyInstance {
+                    instance: instance.clone(),
+                    endpoint: instance.endpoint(),
+                }
+            })
+            .collect();
         Ok(())
     }
 
@@ -318,7 +344,6 @@ impl App {
         self.healthy_instances()
     }
 
-    #[cfg(test)]
     pub(crate) fn healthy_instance_count(&self) -> usize {
         self.healthy_instances.read().len()
     }
@@ -359,11 +384,14 @@ impl App {
 
     /// Allocate a new instance (doesn't start it yet)
     pub fn allocate_instance(&self) -> Arc<Instance> {
+        self.allocate_instance_for(&self.config.read().version)
+    }
+
+    pub(super) fn allocate_instance_for(&self, version: &str) -> Arc<Instance> {
         let id = generate_instance_id();
-        let config = self.config.read();
         let instance = Arc::new(Instance::new_inner(
             id.clone(),
-            config.version.clone(),
+            version.to_string(),
             self.log_handle.clone(),
         ));
         self.instances.insert(id, instance.clone());

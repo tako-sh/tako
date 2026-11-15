@@ -412,10 +412,11 @@ fn rollout_cutover_leaves_all_candidates_suppressed_if_any_have_died() {
         app.set_instance_state(candidate, InstanceState::Healthy);
     }
     app.set_instance_health_state(&candidates[1], InstanceState::Stopped);
-    assert_eq!(
-        app.enable_rollout_routing(&candidates),
-        Err((candidates[1].id.clone(), InstanceState::Stopped))
-    );
+    let error = app
+        .enable_rollout_routing(&candidates, &[], || panic!("must not commit"))
+        .unwrap_err();
+    assert!(error.contains(&candidates[1].id));
+    assert!(error.contains("stopped"));
     assert!(
         candidates
             .iter()
@@ -436,7 +437,7 @@ fn rollout_cutover_publishes_all_healthy_candidates() {
     let (done, result) = std::sync::mpsc::channel();
     let worker_app = app.clone();
     let worker = std::thread::spawn(move || {
-        let _ = done.send(worker_app.enable_rollout_routing(&candidates));
+        let _ = done.send(worker_app.enable_rollout_routing(&candidates, &[], || Ok(())));
     });
     assert_eq!(
         result

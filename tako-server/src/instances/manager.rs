@@ -48,13 +48,22 @@ impl AppManager {
 
     /// Register a new app
     pub fn register_app(&self, config: AppConfig) -> Arc<App> {
+        let app = self.prepare_app(config);
+        self.publish_app(&app);
+        app
+    }
+
+    pub(crate) fn prepare_app(&self, config: AppConfig) -> Arc<App> {
         let name = config.deployment_id();
         let log_dir = self.data_dir.join("apps").join(&name).join("logs");
         let log_handle = spawn_app_logger(&name, log_dir);
-        register_app_logger(&name, log_handle.clone());
-        let app = Arc::new(App::new(config, self.event_tx.clone(), log_handle));
+        Arc::new(App::new(config, self.event_tx.clone(), log_handle))
+    }
+
+    pub(crate) fn publish_app(&self, app: &Arc<App>) {
+        let name = app.name();
+        register_app_logger(&name, app.log_handle.clone());
         self.apps.insert(name, app.clone());
-        app
     }
 
     /// Get an app by name

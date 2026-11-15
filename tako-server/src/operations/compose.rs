@@ -86,7 +86,7 @@ impl crate::ServerState {
                 .await
                 .map_err(|e| e.to_string())?;
             self.state_store
-                .commit_compose_deployment(
+                .commit_deployment(
                     &config,
                     &routes,
                     &runtime_credentials,
