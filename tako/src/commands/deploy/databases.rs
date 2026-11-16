@@ -9,10 +9,13 @@ use tako_core::{Command, SnapshotReason};
 
 use crate::commands::sqlite::target::{Home, PlannedBinding, resolve_home};
 use crate::config::{SecretsStore, ServerInventory, TakoToml};
+use crate::network::databases::DatabaseRecord;
 use crate::output;
 
 pub(super) struct Preparation<'a> {
     pub plan: &'a HashMap<String, PlannedBinding>,
+    /// The network's database records.
+    pub records: &'a [DatabaseRecord],
     pub config: &'a TakoToml,
     pub servers: &'a ServerInventory,
     pub secrets: &'a SecretsStore,
@@ -49,7 +52,7 @@ pub(super) fn apply_peer_keys(
     keys: &HashMap<String, String>,
 ) {
     for planned in plan.values_mut() {
-        if planned.database.access == tako_core::DatabaseAccess::Network {
+        if planned.access == tako_core::DatabaseAccess::Network {
             planned.binding.peer_key = keys.get(&planned.home.device_id).cloned();
         }
     }
@@ -61,12 +64,15 @@ async fn run(prep: &Preparation<'_>) -> Result<Prepared, Box<dyn std::error::Err
     // Distinct databases bound by this environment.
     let mut bound: BTreeMap<String, &PlannedBinding> = BTreeMap::new();
     for planned in prep.plan.values() {
-        bound.entry(planned.database.id.clone()).or_insert(planned);
+        bound
+            .entry(planned.database_name.clone())
+            .or_insert(planned);
     }
 
     if prep.administrator {
         for planned in bound.values() {
-            // Without `backup` the server stops snapshotting the database.
+            // Without a backup storage the server stops snapshotting the
+            // database.
             let storage = crate::commands::storage::decrypt_database_backup_storage(
                 prep.env,
                 prep.config,
@@ -77,7 +83,7 @@ async fn run(prep: &Preparation<'_>) -> Result<Prepared, Box<dyn std::error::Err
             send(
                 &planned.home,
                 Command::ConfigureDatabaseBackup {
-                    id: planned.database.id.clone(),
+                    name: planned.database_name.clone(),
                     backup: storage,
                 },
             )
@@ -86,9 +92,7 @@ async fn run(prep: &Preparation<'_>) -> Result<Prepared, Box<dyn std::error::Err
         }
     }
     let (keys, warnings) = if prep.administrator {
-        let granted = grant(prep, &bound).await?;
-        sync_records(prep, &bound).await?;
-        granted
+        grant(prep, &bound).await?
     } else {
         (HashMap::new(), Vec::new())
     };
@@ -98,7 +102,7 @@ async fn run(prep: &Preparation<'_>) -> Result<Prepared, Box<dyn std::error::Err
             send(
                 &planned.home,
                 Command::SnapshotDatabase {
-                    id: planned.database.id.clone(),
+                    name: planned.database_name.clone(),
                     reason: SnapshotReason::Release,
                     // Administrators may snapshot any database, including
                     // one this deploy binds for the first time; deployers
@@ -119,8 +123,8 @@ async fn run(prep: &Preparation<'_>) -> Result<Prepared, Box<dyn std::error::Err
 }
 
 /// Grants the environment its network-access databases on their servers when
-/// it deploys elsewhere, and clears grants on servers of declared databases it
-/// no longer uses from elsewhere. Returns the peer keys of the grants, and
+/// it deploys elsewhere, and clears its grants on the other servers that host
+/// network-access databases. Returns the peer keys of the grants, and
 /// warnings for servers that could not clear a grant this deploy does not
 /// depend on.
 async fn grant(
@@ -129,11 +133,11 @@ async fn grant(
 ) -> Result<Prepared, Box<dyn std::error::Error>> {
     let network = crate::commands::sqlite::target::env_network(prep.config, prep.env)?;
     let mut homes: BTreeMap<String, (Home, BTreeSet<String>)> = BTreeMap::new();
-    for database in prep.config.databases.values() {
-        if database.access != tako_core::DatabaseAccess::Network {
+    for record in prep.records {
+        if record.access != tako_core::DatabaseAccess::Network {
             continue;
         }
-        let Ok(home) = resolve_home(prep.servers, network, &database.server, prep.env) else {
+        let Ok(home) = resolve_home(prep.servers, network, &record.server, prep.env) else {
             continue;
         };
         homes
@@ -141,26 +145,26 @@ async fn grant(
             .or_insert_with(|| (home, BTreeSet::new()));
     }
     for planned in bound.values() {
-        if planned.database.access != tako_core::DatabaseAccess::Network {
+        if planned.access != tako_core::DatabaseAccess::Network {
             continue;
         }
         let remote = prep
             .targets
             .iter()
             .any(|target| *target != planned.home.key);
-        if remote && let Some((_, ids)) = homes.get_mut(&planned.home.device_id) {
-            ids.insert(planned.database.id.clone());
+        if remote && let Some((_, names)) = homes.get_mut(&planned.home.device_id) {
+            names.insert(planned.database_name.clone());
         }
     }
     let mut keys = HashMap::new();
     let mut warnings = Vec::new();
-    for (home, ids) in homes.into_values() {
-        let needed = !ids.is_empty();
+    for (home, names) in homes.into_values() {
+        let needed = !names.is_empty();
         let result: Result<serde_json::Value, _> = crate::commands::sqlite::send(
             &home,
             Command::GrantDatabases {
                 app: prep.app.to_owned(),
-                databases: ids.into_iter().collect(),
+                databases: names.into_iter().collect(),
             },
         )
         .await;
@@ -181,44 +185,6 @@ async fn grant(
         }
     }
     Ok((keys, warnings))
-}
-
-/// Mirrors each bound database's `access` from tako.toml into its network
-/// record, which `tako sqlite list` and `link` read.
-async fn sync_records(
-    prep: &Preparation<'_>,
-    bound: &BTreeMap<String, &PlannedBinding>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    if bound.is_empty() {
-        return Ok(());
-    }
-    let network = crate::commands::sqlite::target::env_network(prep.config, prep.env)?.to_owned();
-    let wanted: HashMap<String, tako_core::DatabaseAccess> = bound
-        .iter()
-        .map(|(id, planned)| (id.clone(), planned.database.access))
-        .collect();
-    tokio::task::spawn_blocking(move || -> Result<(), String> {
-        let alias = crate::config::LocalNetworks::load()
-            .map_err(|e| e.to_string())?
-            .select(Some(&network))
-            .map_err(|e| e.to_string())?
-            .clone();
-        let records = crate::network::databases::list(&alias).map_err(|e| e.to_string())?;
-        for mut record in records {
-            match wanted.get(&record.id) {
-                Some(access) if *access != record.access => {
-                    record.access = *access;
-                    crate::network::databases::publish(&alias, &record.id.clone(), Some(&record))
-                        .map_err(|e| format!("Update the record of {}: {e}", record.name))?;
-                }
-                _ => {}
-            }
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-    Ok(())
 }
 
 async fn send(home: &Home, command: Command) -> Result<(), Box<dyn std::error::Error>> {

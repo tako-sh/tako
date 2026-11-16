@@ -43,7 +43,6 @@ fn sha256_file(path: &Path) -> std::io::Result<(String, u64)> {
 
 pub(super) async fn import(
     home: &Home,
-    id: &str,
     name: &str,
     file: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -65,7 +64,7 @@ pub(super) async fn import(
             let begin: serde_json::Value = send(
                 &mut client,
                 Command::BeginDatabaseImport {
-                    id: id.to_owned(),
+                    name: name.to_owned(),
                     size_bytes: size,
                     sha256: sha256.clone(),
                 },
@@ -87,7 +86,7 @@ pub(super) async fn import(
                 let _: serde_json::Value = send(
                     &mut client,
                     Command::DatabaseImportChunk {
-                        id: id.to_owned(),
+                        name: name.to_owned(),
                         upload_id: upload_id.clone(),
                         offset,
                         data_base64: BASE64.encode(&chunk[..want]),
@@ -100,7 +99,7 @@ pub(super) async fn import(
             send(
                 &mut client,
                 Command::FinishDatabaseImport {
-                    id: id.to_owned(),
+                    name: name.to_owned(),
                     upload_id,
                 },
             )
@@ -124,7 +123,6 @@ pub(super) async fn import(
 
 pub(super) async fn export(
     home: &Home,
-    id: &str,
     name: &str,
     file: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -153,7 +151,9 @@ pub(super) async fn export(
         async {
             let export: DatabaseExport = send(
                 &mut client,
-                Command::BeginDatabaseExport { id: id.to_owned() },
+                Command::BeginDatabaseExport {
+                    name: name.to_owned(),
+                },
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -165,7 +165,7 @@ pub(super) async fn export(
                     let chunk: serde_json::Value = send(
                         &mut client,
                         Command::DatabaseExportChunk {
-                            id: id.to_owned(),
+                            name: name.to_owned(),
                             export_id: export.export_id.clone(),
                             offset,
                         },
@@ -203,7 +203,7 @@ pub(super) async fn export(
             let _: Result<serde_json::Value, _> = send(
                 &mut client,
                 Command::FinishDatabaseExport {
-                    id: id.to_owned(),
+                    name: name.to_owned(),
                     export_id: export.export_id.clone(),
                 },
             )

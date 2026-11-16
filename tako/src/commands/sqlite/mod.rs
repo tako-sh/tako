@@ -9,7 +9,7 @@ use serde::de::DeserializeOwned;
 use tako_core::{Command, DatabaseInfo, DatabaseSnapshot, Response, SnapshotReason};
 
 use crate::commands::project_context;
-use crate::config::{DatabaseResourceConfig, ServerInventory, TakoToml};
+use crate::config::{ServerInventory, TakoToml};
 use crate::management_http::ManagementClient;
 use crate::network::databases::DatabaseRecord;
 use crate::output;
@@ -18,7 +18,7 @@ mod shell;
 pub(crate) mod target;
 mod transfer;
 
-use target::{Home, declared, env_network, resolve_home};
+use target::{Home, env_network, resolve_home};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum AccessArg {
@@ -41,7 +41,7 @@ impl From<AccessArg> for tako_core::DatabaseAccess {
 pub enum SqliteCommands {
     /// Create a database on a server and bind it to an environment
     Create {
-        /// Database name, used in tako.toml as [databases.<name>]
+        /// Database name, unique within the network
         name: String,
         /// Environment to bind it to (defaults to production)
         #[arg(long)]
@@ -52,7 +52,7 @@ pub enum SqliteCommands {
         /// Binding name the app uses, as `tako.databases.<binding>` (defaults to the name)
         #[arg(long)]
         binding: Option<String>,
-        /// Private S3 storage resource that receives snapshots (defaults to the environment's backup.storage)
+        /// Private S3 storage resource that receives snapshots, set as [databases.<name>].backup (defaults to the environment's backup.storage)
         #[arg(long)]
         backup: Option<String>,
         /// Which apps may use the database
@@ -60,7 +60,7 @@ pub enum SqliteCommands {
         access: AccessArg,
     },
 
-    /// Add a database of the network to this project
+    /// Bind a database of the network in this project
     Link {
         /// Database name
         name: String,
@@ -70,9 +70,21 @@ pub enum SqliteCommands {
         /// Binding name the app uses (defaults to the name)
         #[arg(long)]
         binding: Option<String>,
-        /// Private S3 storage resource that receives snapshots (defaults to the environment's backup.storage)
+        /// Private S3 storage resource that receives snapshots, set as [databases.<name>].backup (defaults to the environment's backup.storage)
         #[arg(long)]
         backup: Option<String>,
+    },
+
+    /// Choose which apps may use a database
+    Access {
+        /// Database name
+        name: String,
+        /// `local`: apps on the database's server; `network`: apps on any server of the network
+        #[arg(value_enum)]
+        access: AccessArg,
+        /// Environment whose network to use (defaults to production)
+        #[arg(long)]
+        env: Option<String>,
     },
 
     /// List the network's databases
@@ -85,7 +97,7 @@ pub enum SqliteCommands {
 
     /// Show a database's size, users, and backups
     Status {
-        /// Database name (all declared databases when omitted)
+        /// Database name (every database the environment binds when omitted)
         name: Option<String>,
         /// Environment whose network to query (defaults to production)
         #[arg(long)]
@@ -248,14 +260,12 @@ impl Context {
         }
     }
 
-    /// A declared database and its home server.
-    fn database(
-        &self,
-        name: &str,
-    ) -> Result<(DatabaseResourceConfig, Home), Box<dyn std::error::Error>> {
-        let database = declared(&self.config, name)?.clone();
-        let home = resolve_home(&self.servers, &self.network, &database.server, &self.env)?;
-        Ok((database, home))
+    /// A database of the network and its home server.
+    fn database(&self, name: &str) -> Result<(DatabaseRecord, Home), Box<dyn std::error::Error>> {
+        let record = self.record(name)?;
+        let home = resolve_home(&self.servers, &self.network, &record.server, &self.env)
+            .map_err(|error| format!("The server of database '{name}': {error}"))?;
+        Ok((record, home))
     }
 
     /// The environment's `backup.storage`, the default snapshot destination.
@@ -272,20 +282,44 @@ impl Context {
         tokio::task::block_in_place(|| crate::network::databases::list(&alias))
     }
 
-    fn record(&self, id: &str) -> Result<DatabaseRecord, Box<dyn std::error::Error>> {
+    fn record(&self, name: &str) -> Result<DatabaseRecord, Box<dyn std::error::Error>> {
+        tako_core::validate_database_name(name)?;
         self.records()?
             .into_iter()
-            .find(|record| record.id == id)
-            .ok_or_else(|| format!("Database {id} has no record in this network.").into())
+            .find(|record| record.name == name)
+            .ok_or_else(|| {
+                format!(
+                    "The network has no database named '{name}'. Run `tako sqlite list` to see its databases."
+                )
+                .into()
+            })
     }
 
     fn publish(
         &self,
-        id: &str,
-        record: Option<&DatabaseRecord>,
+        record: &DatabaseRecord,
+        backup_key_base64: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let alias = self.alias()?;
-        tokio::task::block_in_place(|| crate::network::databases::publish(&alias, id, record))
+        tokio::task::block_in_place(|| {
+            crate::network::databases::publish(&alias, record, backup_key_base64)
+        })
+    }
+
+    fn backup_key(&self, name: &str) -> Result<String, Box<dyn std::error::Error>> {
+        let alias = self.alias()?;
+        let key =
+            tokio::task::block_in_place(|| crate::network::databases::backup_key(&alias, name))?;
+        Ok(key.to_string())
+    }
+
+    /// Whether any environment of this project binds the database.
+    fn binds(&self, name: &str) -> bool {
+        self.config
+            .envs
+            .iter()
+            .filter(|(env, _)| env.as_str() != "development")
+            .any(|(_, env)| env.databases.values().any(|database| database == name))
     }
 
     fn backup_storage(
@@ -365,6 +399,10 @@ async fn run_async(
             let ctx = Context::load(config_path, env.as_deref()).await?;
             link(&ctx, &name, binding.as_deref(), backup)
         }
+        SqliteCommands::Access { name, access, env } => {
+            let ctx = Context::load(config_path, env.as_deref()).await?;
+            set_access(&ctx, &name, access.into())
+        }
         SqliteCommands::List { env } => {
             let ctx = Context::load(config_path, env.as_deref()).await?;
             list(&ctx)
@@ -376,8 +414,8 @@ async fn run_async(
         SqliteCommands::Shell { name, sql, env } => {
             let ctx = Context::load(config_path, env.as_deref()).await?;
             ctx.require_admin()?;
-            let (database, home) = ctx.database(&name)?;
-            shell::run(&home, &database.id, &name, sql).await
+            let (_, home) = ctx.database(&name)?;
+            shell::run(&home, &name, sql).await
         }
         SqliteCommands::Backup { name, env } => {
             let ctx = Context::load(config_path, env.as_deref()).await?;
@@ -406,7 +444,7 @@ async fn run_async(
         } => {
             let ctx = Context::load(config_path, env.as_deref()).await?;
             ctx.require_admin()?;
-            let (database, home) = ctx.database(&name)?;
+            let (_, home) = ctx.database(&name)?;
             confirm(
                 &format!("Replace {name} with {}?", file.display()),
                 "Apps' requests to the database pause while it is replaced. A snapshot of the current contents is taken first when backups are configured.",
@@ -418,19 +456,19 @@ async fn run_async(
                     serde_json::json!({"database": name, "file": file}),
                 );
             }
-            transfer::import(&home, &database.id, &name, &file).await
+            transfer::import(&home, &name, &file).await
         }
         SqliteCommands::Export { name, file, env } => {
             let ctx = Context::load(config_path, env.as_deref()).await?;
             ctx.require_admin()?;
-            let (database, home) = ctx.database(&name)?;
+            let (_, home) = ctx.database(&name)?;
             if output::is_dry_run() {
                 return dry_run(
                     &format!("Export {name} to {}", file.display()),
                     serde_json::json!({"database": name, "file": file}),
                 );
             }
-            transfer::export(&home, &database.id, &name, &file).await
+            transfer::export(&home, &name, &file).await
         }
         SqliteCommands::Delete { name, env, yes } => {
             let ctx = Context::load(config_path, env.as_deref()).await?;
@@ -450,10 +488,8 @@ async fn create(
     tako_core::validate_database_name(name)?;
     let binding = binding.unwrap_or(name);
     tako_core::validate_database_name(binding)?;
-    let backup = backup.or_else(|| ctx.env_backup_storage());
-    if ctx.config.databases.contains_key(name) {
-        return Err(format!("Database '{name}' is already declared in tako.toml.").into());
-    }
+    // `--backup` is written to tako.toml only when it is not the default.
+    let backup = backup.filter(|backup| Some(backup) != ctx.env_backup_storage().as_ref());
     ctx.require_admin()?;
     let selector = match server {
         Some(server) => server.to_owned(),
@@ -481,46 +517,39 @@ async fn create(
         }
     };
     let home = resolve_home(&ctx.servers, &ctx.network, &selector, &ctx.env)?;
+    // Names identify databases in the network.
     if ctx.records()?.iter().any(|record| record.name == name) {
         return Err(format!(
-            "The network already has a database named '{name}'. Use `tako sqlite link {name}` to add it to this project."
+            "The network already has a database named '{name}'. Use `tako sqlite link {name}` to bind it in this project."
         )
         .into());
     }
-    let resource = DatabaseResourceConfig {
-        id: tako_database::DatabaseId::generate().to_string(),
-        server: home.name.clone(),
-        backup,
-        access,
-    };
     // Validate the edit before creating anything.
     let mut preview = ctx.config.clone();
-    preview.databases.insert(name.to_owned(), resource.clone());
+    if let Some(backup) = &backup {
+        preview.databases.insert(
+            name.to_owned(),
+            crate::config::DatabaseResourceConfig {
+                backup: Some(backup.clone()),
+            },
+        );
+    }
     if let Some(env) = preview.envs.get_mut(&ctx.env) {
         env.databases.insert(binding.to_owned(), name.to_owned());
     }
     preview.validate()?;
-    let backup_storage = match &resource.backup {
-        Some(_) => {
-            let mut with_backup = ctx.config.clone();
-            with_backup
-                .databases
-                .insert(name.to_owned(), resource.clone());
-            let secrets = project_context::ProjectContext {
-                project_dir: ctx.project_dir.clone(),
-                config_path: ctx.config_path.clone(),
-            }
-            .load_secrets_for_environment(Some(&ctx.env))?;
-            crate::commands::storage::decrypt_database_backup_storage(
-                &ctx.env,
-                &with_backup,
-                name,
-                &secrets,
-                Some(&ctx.project_dir),
-            )?
-        }
-        None => None,
-    };
+    let secrets = project_context::ProjectContext {
+        project_dir: ctx.project_dir.clone(),
+        config_path: ctx.config_path.clone(),
+    }
+    .load_secrets_for_environment(Some(&ctx.env))?;
+    let backup_storage = crate::commands::storage::decrypt_database_backup_storage(
+        &ctx.env,
+        &preview,
+        name,
+        &secrets,
+        Some(&ctx.project_dir),
+    )?;
     if output::is_dry_run() {
         return dry_run(
             &format!("Create database {name} on {}", home.name),
@@ -530,14 +559,17 @@ async fn create(
 
     let mut key = [0u8; 32];
     getrandom::fill(&mut key)?;
+    let backup_key = BASE64.encode(key);
+    let mut generation = [0u8; 16];
+    getrandom::fill(&mut generation)?;
     let record = DatabaseRecord {
-        id: resource.id.clone(),
         name: name.to_owned(),
         server: home.device_id.clone(),
         access,
-        backup_key_base64: BASE64.encode(key),
+        generation: hex::encode(generation),
         created_at_unix_secs: unix_now(),
     };
+    let has_backup = backup_storage.is_some();
     let _t = output::timed(&format!("Create database {name}"));
     output::with_spinner_async(
         &format!("Creating {name} on {}", home.name),
@@ -546,9 +578,9 @@ async fn create(
             send::<DatabaseInfo>(
                 &home,
                 Command::CreateDatabase {
-                    id: record.id.clone(),
                     name: name.to_owned(),
-                    backup_key_base64: record.backup_key_base64.clone(),
+                    generation: record.generation.clone(),
+                    backup_key_base64: backup_key.clone(),
                     backup: backup_storage,
                 },
             )
@@ -557,13 +589,13 @@ async fn create(
         },
     )
     .await?;
-    // The record holds the snapshot key; without it the database cannot be
-    // recovered elsewhere, so a failure undoes the creation.
-    if let Err(error) = ctx.publish(&record.id, Some(&record)) {
+    // The snapshot key is needed to recover the database elsewhere, so a
+    // failure to record it undoes the creation.
+    if let Err(error) = ctx.publish(&record, Some(&backup_key)) {
         let _ = send::<serde_json::Value>(
             &home,
             Command::DeleteDatabase {
-                id: record.id.clone(),
+                name: name.to_owned(),
             },
         )
         .await;
@@ -572,29 +604,29 @@ async fn create(
     TakoToml::upsert_database_in_file(
         &ctx.config_path,
         name,
-        &resource,
+        backup.as_deref(),
         Some((&ctx.env, binding)),
     )?;
     if output::is_json() {
         return output::json_result(serde_json::json!({
             "ok": true,
             "command": "sqlite",
-            "database": {"name": name, "id": record.id, "server": home.name, "binding": binding, "env": ctx.env},
+            "database": {"name": name, "server": home.name, "access": access, "binding": binding, "env": ctx.env},
         }));
     }
     output::hint(&format!(
         "Bound as tako.databases.{binding} in {}. Deploy to use it.",
         ctx.env
     ));
-    warn_without_backup(name, &resource);
+    warn_without_backup(name, &ctx.env, has_backup);
     Ok(())
 }
 
 /// Hosted databases are snapshotted only to a configured backup storage.
-fn warn_without_backup(name: &str, resource: &DatabaseResourceConfig) {
-    if resource.backup.is_none() {
+fn warn_without_backup(name: &str, env: &str, has_backup: bool) {
+    if !has_backup {
         output::warning(&format!(
-            "{name} has no backup storage, so it has no snapshots. Set `backup = \"<storage>\"` in [databases.{name}] to a private S3 storage and deploy."
+            "{name} has no backup storage, so it has no snapshots. Set [envs.{env}].backup.storage, or `backup = \"<storage>\"` in [databases.{name}], to a private S3 storage and deploy."
         ));
     }
 }
@@ -607,49 +639,71 @@ fn link(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let binding = binding.unwrap_or(name);
     tako_core::validate_database_name(binding)?;
-    let backup = backup.or_else(|| ctx.env_backup_storage());
-    let records = ctx.records()?;
-    let record = records
-        .iter()
-        .find(|record| record.name == name)
-        .ok_or_else(|| format!("The network has no database named '{name}'."))?;
-    let server = ctx
-        .servers
-        .servers
-        .values()
-        .filter_map(|entry| entry.native.as_ref())
-        .find(|native| native.server_id.to_string() == record.server)
-        .map(|native| native.server_name.to_string())
-        .unwrap_or_else(|| record.server.clone());
-    let resource = DatabaseResourceConfig {
-        id: record.id.clone(),
-        server,
-        backup,
-        access: record.access,
-    };
+    let backup = backup.filter(|backup| Some(backup) != ctx.env_backup_storage().as_ref());
+    ctx.record(name)?;
     if output::is_dry_run() {
         return dry_run(
-            &format!("Add database {name} to tako.toml"),
+            &format!("Bind database {name} in tako.toml"),
             serde_json::json!({"database": name}),
         );
     }
     TakoToml::upsert_database_in_file(
         &ctx.config_path,
         name,
-        &resource,
+        backup.as_deref(),
         Some((&ctx.env, binding)),
     )?;
     if output::is_json() {
         return output::json_result(serde_json::json!({
             "ok": true, "command": "sqlite",
-            "database": {"name": name, "id": record.id, "binding": binding, "env": ctx.env},
+            "database": {"name": name, "binding": binding, "env": ctx.env},
         }));
     }
     output::success(&format!(
         "Linked {name} as tako.databases.{binding} in {}",
         ctx.env
     ));
-    warn_without_backup(name, &resource);
+    let has_backup = crate::commands::storage::database_backup_setting(&ctx.config, &ctx.env, name)
+        .is_some()
+        || backup.is_some();
+    warn_without_backup(name, &ctx.env, has_backup);
+    Ok(())
+}
+
+fn set_access(
+    ctx: &Context,
+    name: &str,
+    access: tako_core::DatabaseAccess,
+) -> Result<(), Box<dyn std::error::Error>> {
+    ctx.require_admin()?;
+    let record = ctx.record(name)?;
+    let label = match access {
+        tako_core::DatabaseAccess::Local => "local",
+        tako_core::DatabaseAccess::Network => "network",
+    };
+    if record.access == access {
+        if output::is_json() {
+            return output::json_result(serde_json::json!({
+                "ok": true, "command": "sqlite", "database": {"name": name, "access": access},
+            }));
+        }
+        output::success(&format!("{name} already has {label} access"));
+        return Ok(());
+    }
+    if output::is_dry_run() {
+        return dry_run(
+            &format!("Set {name} to {label} access"),
+            serde_json::json!({"database": name, "access": access}),
+        );
+    }
+    ctx.publish(&DatabaseRecord { access, ..record }, None)?;
+    if output::is_json() {
+        return output::json_result(serde_json::json!({
+            "ok": true, "command": "sqlite", "database": {"name": name, "access": access},
+        }));
+    }
+    output::success(&format!("{name} has {label} access"));
+    output::hint("Deploy the apps that bind it to apply the change.");
     Ok(())
 }
 
@@ -670,12 +724,11 @@ fn list(ctx: &Context) -> Result<(), Box<dyn std::error::Error>> {
             .map(|record| {
                 serde_json::json!({
                     "name": record.name,
-                    "id": record.id,
                     "server": server_name(&record.server),
                     "server_id": record.server,
                     "access": record.access,
                     "created_at_unix_secs": record.created_at_unix_secs,
-                    "in_project": ctx.config.databases.values().any(|d| d.id == record.id),
+                    "in_project": ctx.binds(&record.name),
                 })
             })
             .collect();
@@ -693,7 +746,7 @@ fn list(ctx: &Context) -> Result<(), Box<dyn std::error::Error>> {
             tako_core::DatabaseAccess::Local => "local",
             tako_core::DatabaseAccess::Network => "network",
         };
-        let project = if ctx.config.databases.values().any(|d| d.id == record.id) {
+        let project = if ctx.binds(&record.name) {
             ""
         } else {
             " · not in this project"
@@ -711,22 +764,26 @@ async fn status(ctx: &Context, name: Option<&str>) -> Result<(), Box<dyn std::er
     let names: Vec<String> = match name {
         Some(name) => vec![name.to_owned()],
         None => {
-            let mut names: Vec<_> = ctx.config.databases.keys().cloned().collect();
-            names.sort();
-            names
+            let names: std::collections::BTreeSet<String> = ctx
+                .config
+                .envs
+                .get(&ctx.env)
+                .map(|env| env.databases.values().cloned().collect())
+                .unwrap_or_default();
+            names.into_iter().collect()
         }
     };
     if names.is_empty() {
-        output::info("This project declares no databases.");
+        output::info(&format!("{} binds no databases.", ctx.env));
         return Ok(());
     }
     let mut infos = Vec::new();
     for name in &names {
-        let (database, home) = ctx.database(name)?;
+        let (_, home) = ctx.database(name)?;
         let value: serde_json::Value = send(
             &home,
             Command::DatabaseStatus {
-                id: Some(database.id.clone()),
+                name: Some(name.clone()),
             },
         )
         .await?;
@@ -781,7 +838,7 @@ async fn status(ctx: &Context, name: Option<&str>) -> Result<(), Box<dyn std::er
 
 async fn backup_now(ctx: &Context, name: &str) -> Result<(), Box<dyn std::error::Error>> {
     ctx.require_admin()?;
-    let (database, home) = ctx.database(name)?;
+    let (_, home) = ctx.database(name)?;
     if output::is_dry_run() {
         return dry_run(
             &format!("Snapshot {name}"),
@@ -796,7 +853,7 @@ async fn backup_now(ctx: &Context, name: &str) -> Result<(), Box<dyn std::error:
             send(
                 &home,
                 Command::SnapshotDatabase {
-                    id: database.id.clone(),
+                    name: name.to_owned(),
                     reason: SnapshotReason::Manual,
                     app: None,
                 },
@@ -823,11 +880,11 @@ async fn backup_now(ctx: &Context, name: &str) -> Result<(), Box<dyn std::error:
 
 async fn backups(ctx: &Context, name: &str) -> Result<(), Box<dyn std::error::Error>> {
     ctx.require_admin()?;
-    let (database, home) = ctx.database(name)?;
+    let (_, home) = ctx.database(name)?;
     let value: serde_json::Value = send(
         &home,
         Command::ListDatabaseSnapshots {
-            id: database.id.clone(),
+            name: name.to_owned(),
         },
     )
     .await?;
@@ -867,7 +924,7 @@ async fn restore(
     yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     ctx.require_admin()?;
-    let (database, home) = ctx.database(name)?;
+    let (record, home) = ctx.database(name)?;
     let target = match server {
         Some(server) => resolve_home(&ctx.servers, &ctx.network, server, &ctx.env)?,
         None => home.clone(),
@@ -891,17 +948,17 @@ async fn restore(
             serde_json::json!({"database": name}),
         );
     }
-    let record = ctx.record(&database.id)?;
+    let backup_key = ctx.backup_key(name)?;
     if moving {
         let backup = ctx.backup_storage(name)?.ok_or(
-            "Recovering onto another server needs [databases.<name>].backup in tako.toml.",
+            "Recovering onto another server needs a backup storage: set [envs.<env>].backup.storage or [databases.<name>].backup in tako.toml.",
         )?;
         send::<DatabaseInfo>(
             &target,
             Command::CreateDatabase {
-                id: database.id.clone(),
                 name: name.to_owned(),
-                backup_key_base64: record.backup_key_base64.clone(),
+                generation: record.generation.clone(),
+                backup_key_base64: backup_key.clone(),
                 backup: Some(backup),
             },
         )
@@ -915,9 +972,9 @@ async fn restore(
             send(
                 &target,
                 Command::RestoreDatabase {
-                    id: database.id.clone(),
+                    name: name.to_owned(),
                     snapshot: snapshot.clone(),
-                    backup_key_base64: Some(record.backup_key_base64.clone()),
+                    backup_key_base64: Some(backup_key.clone()),
                 },
             )
             .await
@@ -933,7 +990,7 @@ async fn restore(
                 && let Err(cleanup) = send::<serde_json::Value>(
                     &target,
                     Command::DeleteDatabase {
-                        id: database.id.clone(),
+                        name: name.to_owned(),
                     },
                 )
                 .await
@@ -951,12 +1008,7 @@ async fn restore(
             server: target.device_id.clone(),
             ..record
         };
-        ctx.publish(&moved.id, Some(&moved))?;
-        let resource = DatabaseResourceConfig {
-            server: target.name.clone(),
-            ..database
-        };
-        TakoToml::upsert_database_in_file(&ctx.config_path, name, &resource, None)?;
+        ctx.publish(&moved, None)?;
     }
     for warning in value["warnings"].as_array().into_iter().flatten() {
         if let Some(warning) = warning.as_str() {
@@ -973,7 +1025,7 @@ async fn restore(
 
 async fn delete(ctx: &Context, name: &str, yes: bool) -> Result<(), Box<dyn std::error::Error>> {
     ctx.require_admin()?;
-    let (database, home) = ctx.database(name)?;
+    let (_, home) = ctx.database(name)?;
     output::warning(&format!(
         "Deleting {name} removes its file from {}.",
         home.name
@@ -983,7 +1035,7 @@ async fn delete(ctx: &Context, name: &str, yes: bool) -> Result<(), Box<dyn std:
     let status: serde_json::Value = send(
         &home,
         Command::DatabaseStatus {
-            id: Some(database.id.clone()),
+            name: Some(name.to_owned()),
         },
     )
     .await?;
@@ -1017,7 +1069,7 @@ async fn delete(ctx: &Context, name: &str, yes: bool) -> Result<(), Box<dyn std:
             send::<serde_json::Value>(
                 &home,
                 Command::DeleteDatabase {
-                    id: database.id.clone(),
+                    name: name.to_owned(),
                 },
             )
             .await
@@ -1025,7 +1077,8 @@ async fn delete(ctx: &Context, name: &str, yes: bool) -> Result<(), Box<dyn std:
         },
     )
     .await?;
-    ctx.publish(&database.id, None)?;
+    let alias = ctx.alias()?;
+    tokio::task::block_in_place(|| crate::network::databases::remove(&alias, name))?;
     TakoToml::remove_database_from_file(&ctx.config_path, name)?;
     if output::is_json() {
         return output::json_success("sqlite");

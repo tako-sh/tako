@@ -270,11 +270,6 @@ impl TakoToml {
                 tako_core::validate_database_name(binding_name).map_err(ConfigError::Validation)?;
                 tako_core::validate_database_name(database_name)
                     .map_err(ConfigError::Validation)?;
-                if !is_development && !self.databases.contains_key(database_name) {
-                    return Err(ConfigError::Validation(format!(
-                        "Environment '{env_name}' database '{binding_name}' references missing database '{database_name}'; run `tako sqlite create {database_name}` or `tako sqlite link {database_name}`"
-                    )));
-                }
             }
             if let Some(backup) = &env_config.backup {
                 validate_backup_config(self, env_name, backup)?;
@@ -286,15 +281,8 @@ impl TakoToml {
             validate_storage_resource(resource_name, resource)?;
         }
 
-        let mut ids = std::collections::HashSet::new();
         for (name, database) in &self.databases {
             validate_database_resource(self, name, database)?;
-            if !ids.insert(&database.id) {
-                return Err(ConfigError::Validation(format!(
-                    "Database id {} is declared more than once in [databases]",
-                    database.id
-                )));
-            }
         }
 
         Ok(())
@@ -307,13 +295,6 @@ fn validate_database_resource(
     database: &DatabaseResourceConfig,
 ) -> Result<()> {
     tako_core::validate_database_name(name).map_err(ConfigError::Validation)?;
-    tako_core::validate_database_id(&database.id)
-        .map_err(|e| ConfigError::Validation(format!("[databases.{name}]: {e}")))?;
-    if database.server.trim().is_empty() {
-        return Err(ConfigError::Validation(format!(
-            "[databases.{name}].server must name the server that hosts the database"
-        )));
-    }
     if let Some(storage) = &database.backup {
         let Some(resource) = config.storages.get(storage) else {
             return Err(ConfigError::Validation(format!(

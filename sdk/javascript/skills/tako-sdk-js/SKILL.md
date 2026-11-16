@@ -209,7 +209,7 @@ object URLs.
 Tako-hosted SQLite databases are bound by name in `tako.toml` and reached over the libSQL HTTP protocol. Create one with the CLI (administrator permission), then use the binding with `@libsql/client` or `@tursodatabase/serverless`:
 
 ```bash
-tako sqlite create main --env production --server <server> --backup <private-s3-storage>
+tako sqlite create main --env production --server <server>
 ```
 
 ```typescript
@@ -224,9 +224,9 @@ const { rows } = await db.execute({ sql: "SELECT * FROM users WHERE id = ?", arg
 await db.batch([{ sql: "INSERT INTO events (kind) VALUES (?)", args: ["signup"] }], "write");
 ```
 
-- `tako.databases.<binding>` is `undefined` when the environment does not bind that name. Bindings come from `[envs.<env>].databases = { <binding> = "<database>" }`; production databases are declared in `[databases.<name>]` by `tako sqlite create` or `tako sqlite link`.
+- `tako.databases.<binding>` is `undefined` when the environment does not bind that name. Bindings come from `[envs.<env>].databases = { <binding> = "<database>" }`, which `tako sqlite create` and `tako sqlite link` write. A database's name identifies it in the network, which records its server; `tako sqlite list` shows them. Snapshots go to the environment's `backup.storage`.
 - Logging or serializing a connection redacts `authToken`. Never return it to the browser; database access is server-only.
-- `tako dev` and `tako run` serve bindings from `.tako/data/databases/<database>.sqlite`. Development bindings need no `[databases.*]` entry. `tako run --env <other>` gets no databases: hosted databases are reachable only from deployed apps.
+- `tako dev` and `tako run` serve bindings from `.tako/data/databases/<database>.sqlite`, created on first use. `tako run --env <other>` gets no databases: hosted databases are reachable only from deployed apps.
 - Run migrations from app code: as the `release` command (it receives temporary bindings) or with `tako run bun scripts/migrate.ts` locally. Workstation tools cannot connect to the server's loopback endpoint.
 - Drizzle: `drizzle(createClient(tako.databases.main))` from `drizzle-orm/libsql`. Prisma: `@prisma/adapter-libsql` with the same `url` and `authToken`.
 - Use a write transaction (`db.transaction("write")`) for read-modify-write logic. Idle transactions roll back after 10 seconds; statements stop after 30 seconds.

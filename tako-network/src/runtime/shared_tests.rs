@@ -467,6 +467,78 @@ fn secret_access_is_scoped_and_new_clients_receive_old_value_keys_via_server() {
 }
 
 #[test]
+fn deployers_pull_database_records_but_not_snapshot_keys() {
+    use crate::shared::{DATABASE_SCOPE, SecretContent, SecretKind};
+    let fixture = Fixture::new();
+    let mut runtime = fixture.open();
+    for (kind, value) in [
+        (SecretKind::Database, r#"{"name":"shop"}"#),
+        (SecretKind::DatabaseKey, "a2V5"),
+    ] {
+        let mutation = secret_mutation(&fixture, DATABASE_SCOPE, kind, "shop", Some(value));
+        fixture
+            .call(
+                &mut runtime,
+                &fixture.admin,
+                RpcRequest::PublishSecret(Box::new(mutation)),
+                10,
+            )
+            .unwrap();
+    }
+    let client = LocalDeviceKeys::generate().unwrap();
+    let mut grant = fixture.grant(&client);
+    grant
+        .permissions
+        .deployments
+        .insert("shop/production".parse().unwrap());
+    fixture.approve(&mut runtime, &grant);
+    let complete = fixture.challenge(&mut runtime, &client, &grant, 11);
+    fixture.call(&mut runtime, &client, complete, 12).unwrap();
+    let client_id = client
+        .device_id(&fixture.config.network.id, DeviceKind::Laptop)
+        .unwrap();
+    let RpcResponse::Secrets(shared) = fixture
+        .call(
+            &mut runtime,
+            &client,
+            RpcRequest::PullSecrets {
+                scope: Some(DATABASE_SCOPE.parse().unwrap()),
+            },
+            13,
+        )
+        .unwrap()
+    else {
+        panic!("secrets expected");
+    };
+    assert_eq!(shared.secrets.len(), 1, "the snapshot key is left out");
+    assert_eq!(shared.secrets[0].address.kind, SecretKind::Database);
+    let plaintext = shared.secrets[0]
+        .decrypt(&shared, &client, &client_id)
+        .unwrap()
+        .unwrap();
+    let content: SecretContent = serde_json::from_slice(&plaintext).unwrap();
+    assert_eq!(&*content.value, r#"{"name":"shop"}"#);
+    // Only administrators publish database records.
+    let forged = secret_mutation(
+        &fixture,
+        DATABASE_SCOPE,
+        SecretKind::Database,
+        "shop",
+        Some(r#"{"name":"other"}"#),
+    );
+    assert!(
+        fixture
+            .call(
+                &mut runtime,
+                &client,
+                RpcRequest::PublishSecret(Box::new(forged)),
+                14
+            )
+            .is_err()
+    );
+}
+
+#[test]
 fn secret_tampering_and_operation_reuse_fail_without_publishing() {
     use crate::shared::SecretKind;
     let fixture = Fixture::new();

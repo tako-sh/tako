@@ -2,8 +2,9 @@
 //! app SDKs.
 //!
 //! A database is a SQLite file owned by the server that hosts it (its home
-//! server). Apps reach it through a binding: the server gives each bound app
-//! process a URL and token for the SQL over HTTP protocol.
+//! server). Its name identifies it: names are unique within a network. Apps
+//! reach it through a binding: the server gives each bound app process a URL
+//! and token for the SQL over HTTP protocol.
 
 use serde::{Deserialize, Serialize};
 
@@ -18,17 +19,19 @@ pub const DATABASE_TRANSFER_CHUNK_BYTES: u64 = 512 * 1024;
 /// Rows returned by `QueryDatabase` before the result is truncated.
 pub const DATABASE_QUERY_MAX_ROWS: usize = 1000;
 
-/// Validates a database ID: 32 lowercase hexadecimal characters.
-pub fn validate_database_id(id: &str) -> Result<(), String> {
-    if id.len() == 32
-        && id
+/// Validates a database generation: 32 lowercase hexadecimal characters,
+/// chosen at random when the database is created. It tells a database apart
+/// from an earlier one with the same name, e.g. in backup storage.
+pub fn validate_database_generation(generation: &str) -> Result<(), String> {
+    if generation.len() == 32
+        && generation
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     {
         Ok(())
     } else {
         Err(format!(
-            "database id `{id}` must be 32 lowercase hexadecimal characters"
+            "database generation `{generation}` must be 32 lowercase hexadecimal characters"
         ))
     }
 }
@@ -68,7 +71,8 @@ pub enum DatabaseAccess {
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct DatabaseBinding {
-    pub id: String,
+    /// The database's name, unique within the network.
+    pub name: String,
     /// Device ID of the database's server.
     pub server: String,
     #[serde(default)]
@@ -83,14 +87,14 @@ impl DatabaseBinding {
     /// Whether two bindings name the same database the same way, ignoring
     /// the peer key a server fills in.
     pub fn same_target(&self, other: &Self) -> bool {
-        self.id == other.id && self.server == other.server && self.access == other.access
+        self.name == other.name && self.server == other.server && self.access == other.access
     }
 }
 
 impl std::fmt::Debug for DatabaseBinding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DatabaseBinding")
-            .field("id", &self.id)
+            .field("name", &self.name)
             .field("server", &self.server)
             .field("access", &self.access)
             .field("peer_key", &self.peer_key.as_ref().map(|_| "[REDACTED]"))
@@ -150,7 +154,6 @@ pub struct DatabaseBackupStatus {
 /// A database hosted on a server.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DatabaseInfo {
-    pub id: String,
     pub name: String,
     pub created_at_unix_secs: u64,
     pub size_bytes: u64,
@@ -195,10 +198,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ids_and_names_are_validated() {
-        assert!(validate_database_id("0123456789abcdef0123456789abcdef").is_ok());
-        assert!(validate_database_id("0123456789ABCDEF0123456789ABCDEF").is_err());
-        assert!(validate_database_id("short").is_err());
+    fn names_and_generations_are_validated() {
+        assert!(validate_database_generation("0123456789abcdef0123456789abcdef").is_ok());
+        assert!(validate_database_generation("0123456789ABCDEF0123456789ABCDEF").is_err());
+        assert!(validate_database_generation("short").is_err());
         assert!(validate_database_name("main").is_ok());
         assert!(validate_database_name("orders_2").is_ok());
         assert!(validate_database_name("Main").is_err());

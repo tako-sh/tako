@@ -107,7 +107,10 @@ impl<S: RegistryStore> ServerRuntime<S> {
         now: u64,
     ) -> RuntimeResult<RpcResponse> {
         mutation.address.validate()?;
-        if !mutation.address.allowed(registry.permissions(author, now)?) {
+        if !mutation
+            .address
+            .writable(registry.permissions(author, now)?)
+        {
             return Err(RuntimeError::Denied);
         }
         if mutation.expires_at <= now
@@ -230,9 +233,16 @@ impl<S: RegistryStore> ServerRuntime<S> {
     ) -> RuntimeResult<RpcResponse> {
         let effective = registry.effective_members(now)?;
         let member = effective.get(signer).ok_or(RuntimeError::Denied)?;
+        // Deployers read the database directory; the filter below leaves out
+        // what they may not read, such as snapshot keys.
+        let database_directory = |scope: &crate::AppEnv| {
+            scope.as_str() == crate::shared::DATABASE_SCOPE
+                && !member.permissions.deployments.is_empty()
+        };
         if let Some(scope) = scope
             && !(member.permissions.network_admin && member.permissions.server_admin)
             && !member.permissions.can_deploy(scope)
+            && !database_directory(scope)
         {
             return Err(RuntimeError::Denied);
         }
@@ -279,7 +289,7 @@ impl<S: RegistryStore> ServerRuntime<S> {
             let mut record = current.clone();
             for member in members.values().filter(|member| {
                 matches!(member.kind, MemberKind::Server(_))
-                    && current.address.allowed(&member.permissions)
+                    && current.address.readable(&member.permissions)
                     && !current.keys.contains_key(&member.device_id)
             }) {
                 record = record.grant(&state, &self.keys, &self.config.server_id, member)?;

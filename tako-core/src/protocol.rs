@@ -227,8 +227,9 @@ pub enum Command {
 
     /// Create a database hosted on this server.
     CreateDatabase {
-        id: String,
         name: String,
+        /// Tells this database apart from earlier ones with the same name.
+        generation: String,
         /// 32-byte key, base64, that encrypts the database's snapshots.
         backup_key_base64: String,
         /// Private S3 storage that receives snapshots.
@@ -237,17 +238,17 @@ pub enum Command {
     },
 
     /// Delete a database hosted on this server. Refused while bound.
-    DeleteDatabase { id: String },
+    DeleteDatabase { name: String },
 
     /// Describe databases hosted on this server: one, or all when `None`.
     DatabaseStatus {
         #[serde(default)]
-        id: Option<String>,
+        name: Option<String>,
     },
 
     /// Set or clear where a database's snapshots are uploaded.
     ConfigureDatabaseBackup {
-        id: String,
+        name: String,
         backup: Option<StorageBinding>,
     },
 
@@ -258,19 +259,19 @@ pub enum Command {
     /// Take and upload a snapshot now. `app` names the app environment that
     /// asks (before its release command), which must use the database.
     SnapshotDatabase {
-        id: String,
+        name: String,
         reason: SnapshotReason,
         #[serde(default)]
         app: Option<String>,
     },
 
     /// List uploaded snapshots of a database.
-    ListDatabaseSnapshots { id: String },
+    ListDatabaseSnapshots { name: String },
 
     /// Replace a database with a snapshot; `None` selects the newest. The key
     /// is needed when this server no longer has it (a replacement server).
     RestoreDatabase {
-        id: String,
+        name: String,
         #[serde(default)]
         snapshot: Option<String>,
         #[serde(default)]
@@ -278,38 +279,38 @@ pub enum Command {
     },
 
     /// Run one SQL statement as an administrator, for `tako sqlite shell`.
-    QueryDatabase { id: String, sql: String },
+    QueryDatabase { name: String, sql: String },
 
     /// Start replacing a database with an uploaded SQLite file.
     BeginDatabaseImport {
-        id: String,
+        name: String,
         size_bytes: u64,
         sha256: String,
     },
 
     /// Append one chunk of an import at `offset`.
     DatabaseImportChunk {
-        id: String,
+        name: String,
         upload_id: String,
         offset: u64,
         data_base64: String,
     },
 
     /// Verify a completed upload and replace the database with it.
-    FinishDatabaseImport { id: String, upload_id: String },
+    FinishDatabaseImport { name: String, upload_id: String },
 
     /// Write a consistent copy of a database for download.
-    BeginDatabaseExport { id: String },
+    BeginDatabaseExport { name: String },
 
     /// Read one chunk of an export.
     DatabaseExportChunk {
-        id: String,
+        name: String,
         export_id: String,
         offset: u64,
     },
 
     /// Remove an export's copy.
-    FinishDatabaseExport { id: String, export_id: String },
+    FinishDatabaseExport { name: String, export_id: String },
 
     /// Update the desired minimum number of instances for an app.
     Scale {

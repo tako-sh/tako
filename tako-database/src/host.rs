@@ -16,29 +16,34 @@ use tokio::sync::{Notify, Semaphore};
 use crate::engine::{self, EngineConfig};
 use crate::proto::Error;
 
-/// A database identifier: 32 lowercase hexadecimal characters.
+/// A database's identifier: its name, unique within a network. Names start
+/// with a lowercase letter and contain only lowercase letters, digits, `-`
+/// and `_`, at most 63 characters.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct DatabaseId(String);
 
 impl DatabaseId {
     pub fn parse(value: &str) -> Result<Self, String> {
-        if value.len() == 32
+        let valid = !value.is_empty()
+            && value.len() <= 63
+            && value.as_bytes()[0].is_ascii_lowercase()
             && value
                 .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        {
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
+        if valid {
             Ok(Self(value.to_owned()))
         } else {
             Err(format!(
-                "database id `{value}` must be 32 lowercase hexadecimal characters"
+                "database name `{value}` must start with a lowercase letter and contain only lowercase letters, digits, `-` and `_` (at most 63 characters)"
             ))
         }
     }
 
+    /// A random name, for databases nobody names (tests, local tools).
     pub fn generate() -> Self {
         let mut bytes = [0u8; 16];
         getrandom::fill(&mut bytes).expect("operating system random source");
-        Self(hex::encode(bytes))
+        Self(format!("db-{}", hex::encode(bytes)))
     }
 
     pub fn as_str(&self) -> &str {

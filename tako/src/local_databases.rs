@@ -66,7 +66,9 @@ pub(crate) fn database_path(project_dir: &Path, database: &str) -> PathBuf {
 /// A stable local ID for a database file.
 fn local_id(path: &Path) -> DatabaseId {
     let digest = Sha256::digest(path.to_string_lossy().as_bytes());
-    DatabaseId::parse(&hex::encode(&digest[..16])).expect("hex digest is a valid id")
+    // A name the file's path determines; it never leaves this process.
+    DatabaseId::parse(&format!("local-{}", hex::encode(&digest[..16])))
+        .expect("a hex digest makes a valid name")
 }
 
 /// Serves a project's local databases until dropped.
@@ -186,18 +188,6 @@ databases = { main = "shop-db" }
 [envs.staging]
 route = "staging.shop.example.com"
 databases = { main = "shop-staging", events = "events" }
-
-[databases.shop-db]
-id = "0123456789abcdef0123456789abcdef"
-server = "edge"
-
-[databases.shop-staging]
-id = "fedcba9876543210fedcba9876543210"
-server = "edge"
-
-[databases.events]
-id = "00112233445566778899aabbccddeeff"
-server = "edge"
 "#;
 
     #[test]

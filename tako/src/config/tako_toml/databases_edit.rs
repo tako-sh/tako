@@ -6,7 +6,7 @@ use std::path::Path;
 
 use toml_edit::{DocumentMut, InlineTable, Item, Table, Value, value};
 
-use super::schema::{DatabaseResourceConfig, TakoToml};
+use super::schema::TakoToml;
 use crate::config::error::{ConfigError, Result};
 
 fn load(path: &Path) -> Result<DocumentMut> {
@@ -45,27 +45,23 @@ fn table<'a>(parent: &'a mut Table, key: &str, path: &str) -> Result<&'a mut Tab
 }
 
 impl TakoToml {
-    /// Declares `[databases.<name>]` and, optionally, binds it in
-    /// `[envs.<env>].databases` as `<binding> = "<name>"`.
+    /// Binds database `name` in `[envs.<env>].databases` as
+    /// `<binding> = "<name>"` and, when `backup` is given, sets
+    /// `[databases.<name>].backup`.
     pub fn upsert_database_in_file(
         path: &Path,
         name: &str,
-        database: &DatabaseResourceConfig,
+        backup: Option<&str>,
         binding: Option<(&str, &str)>,
     ) -> Result<()> {
         let mut doc = load(path)?;
-        let root = doc.as_table_mut();
-        let databases = table(root, "databases", "[databases]")?;
-        let mut entry = Table::new();
-        entry.insert("id", value(&database.id));
-        entry.insert("server", value(&database.server));
-        if let Some(backup) = &database.backup {
+        if let Some(backup) = backup {
+            let root = doc.as_table_mut();
+            let databases = table(root, "databases", "[databases]")?;
+            let entry = table(databases, name, &format!("[databases.{name}]"))?;
+            entry.set_implicit(false);
             entry.insert("backup", value(backup));
         }
-        if database.access == tako_core::DatabaseAccess::Network {
-            entry.insert("access", value("network"));
-        }
-        databases.insert(name, Item::Table(entry));
 
         if let Some((env, binding)) = binding {
             let envs = table(doc.as_table_mut(), "envs", "[envs]")?;
@@ -139,15 +135,6 @@ mod tests {
         path
     }
 
-    fn database() -> DatabaseResourceConfig {
-        DatabaseResourceConfig {
-            id: "0123456789abcdef0123456789abcdef".into(),
-            server: "edge-a".into(),
-            backup: None,
-            access: tako_core::DatabaseAccess::Local,
-        }
-    }
-
     #[test]
     fn upsert_keeps_comments_and_adds_an_inline_binding() {
         let dir = tempfile::tempdir().unwrap();
@@ -155,16 +142,27 @@ mod tests {
             &dir,
             "# My app\nname = \"shop\"\n\n[envs.production]\n# public route\nroute = \"shop.example.com\"\n",
         );
-        TakoToml::upsert_database_in_file(&path, "main", &database(), Some(("production", "db")))
-            .unwrap();
+        TakoToml::upsert_database_in_file(&path, "main", None, Some(("production", "db"))).unwrap();
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.contains("# My app"));
         assert!(text.contains("# public route"));
         assert!(text.contains("databases = { db = \"main\" }"), "{text}");
-        assert!(text.contains("[databases.main]"), "{text}");
+        assert!(
+            !text.contains("[databases.main]"),
+            "a binding needs no declaration: {text}"
+        );
         let config = TakoToml::parse(&text).unwrap();
-        assert_eq!(config.databases["main"], database());
         assert_eq!(config.envs["production"].databases["db"], "main");
+
+        let mut text = fs::read_to_string(&path).unwrap();
+        text.push_str("\n[storages.private_backups]\nprovider = \"s3\"\nbucket = \"b\"\nendpoint = \"https://s3.example.test\"\nregion = \"auto\"\n");
+        fs::write(&path, text).unwrap();
+        TakoToml::upsert_database_in_file(&path, "main", Some("private_backups"), None).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("[databases.main]\nbackup = \"private_backups\""),
+            "{text}"
+        );
     }
 
     #[test]
@@ -172,7 +170,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write(
             &dir,
-            "name = \"shop\"\n\n[envs.production]\nroute = \"shop.example.com\"\ndatabases = { db = \"main\", other = \"orders\" }\n\n[envs.staging]\nroute = \"staging.example.com\"\ndatabases = { db = \"main\" }\n\n[databases.main]\nid = \"0123456789abcdef0123456789abcdef\"\nserver = \"edge-a\"\n\n[databases.orders]\nid = \"fedcba9876543210fedcba9876543210\"\nserver = \"edge-a\"\n",
+            "name = \"shop\"\n\n[envs.production]\nroute = \"shop.example.com\"\ndatabases = { db = \"main\", other = \"orders\" }\n\n[envs.staging]\nroute = \"staging.example.com\"\ndatabases = { db = \"main\" }\n\n[databases.main]\nbackup = \"private_backups\"\n\n[databases.orders]\nbackup = \"private_backups\"\n\n[storages.private_backups]\nprovider = \"s3\"\nbucket = \"b\"\nendpoint = \"https://s3.example.test\"\nregion = \"auto\"\n",
         );
         TakoToml::remove_database_from_file(&path, "main").unwrap();
         let config = TakoToml::load_from_file(&path).unwrap();
@@ -192,9 +190,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let original = "name = \"shop\"\n";
         let path = write(&dir, original);
-        let mut bad = database();
-        bad.id = "not-an-id".into();
-        assert!(TakoToml::upsert_database_in_file(&path, "main", &bad, None).is_err());
+        // The backup names a storage resource that does not exist.
+        assert!(TakoToml::upsert_database_in_file(&path, "main", Some("missing"), None).is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), original);
     }
 }

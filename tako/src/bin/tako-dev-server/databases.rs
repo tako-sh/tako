@@ -61,7 +61,9 @@ async fn server() -> Result<&'static Server, String> {
 /// daemon restarts.
 fn local_id(path: &Path) -> DatabaseId {
     let digest = Sha256::digest(path.to_string_lossy().as_bytes());
-    DatabaseId::parse(&hex::encode(&digest[..16])).expect("hex digest is a valid id")
+    // A name the file's path determines; it never leaves this process.
+    DatabaseId::parse(&format!("local-{}", hex::encode(&digest[..16])))
+        .expect("a hex digest makes a valid name")
 }
 
 /// Serves `bindings` (binding name → SQLite file) for the app registered at

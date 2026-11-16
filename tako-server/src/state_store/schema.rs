@@ -204,8 +204,8 @@ fn ensure_schema_objects(conn: &rusqlite::Connection) -> Result<(), StateStoreEr
         );
 
         CREATE TABLE IF NOT EXISTS databases (
-            id TEXT NOT NULL PRIMARY KEY,
-            name TEXT NOT NULL,
+            name TEXT NOT NULL PRIMARY KEY,
+            generation TEXT NOT NULL,
             created_at INTEGER NOT NULL,
             encrypted_data BLOB NOT NULL
         );

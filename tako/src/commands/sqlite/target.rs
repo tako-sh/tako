@@ -2,7 +2,8 @@
 
 use std::collections::HashMap;
 
-use crate::config::{DatabaseResourceConfig, ServerEntry, ServerInventory, TakoToml};
+use crate::config::{ServerEntry, ServerInventory, TakoToml};
+use crate::network::databases::DatabaseRecord;
 
 /// A database's home server, resolved against network membership.
 #[derive(Clone)]
@@ -62,24 +63,47 @@ pub(crate) fn resolve_home(
     })
 }
 
+/// The network's database records, for an environment that binds databases.
+/// Empty when it binds none and has no network.
+pub(crate) fn env_records(
+    config: &TakoToml,
+    env: &str,
+) -> Result<Vec<DatabaseRecord>, Box<dyn std::error::Error>> {
+    let binds = config
+        .envs
+        .get(env)
+        .is_some_and(|env| !env.databases.is_empty());
+    let Some(network) = config.envs.get(env).and_then(|env| env.network.as_deref()) else {
+        if binds {
+            env_network(config, env)?;
+        }
+        return Ok(Vec::new());
+    };
+    let alias = crate::config::LocalNetworks::load()?
+        .select(Some(network))?
+        .clone();
+    tokio::task::block_in_place(|| crate::network::databases::list(&alias))
+}
+
 /// One database binding of an environment, ready to deploy.
 #[derive(Clone)]
 pub(crate) struct PlannedBinding {
     pub database_name: String,
-    pub database: DatabaseResourceConfig,
+    pub access: tako_core::DatabaseAccess,
     pub home: Home,
     pub binding: tako_core::DatabaseBinding,
 }
 
 /// Resolves an environment's database bindings for a deploy to
-/// `target_servers` (inventory keys). A database with local access must be
-/// hosted on every target server, so only single-server placements on its
-/// home server qualify.
+/// `target_servers` (inventory keys), using the network's `records`. A
+/// database with local access must be hosted on every target server, so
+/// only single-server placements on its home server qualify.
 pub(crate) fn plan_bindings(
     config: &TakoToml,
     servers: &ServerInventory,
     env: &str,
     target_servers: &[String],
+    records: &[DatabaseRecord],
 ) -> Result<HashMap<String, PlannedBinding>, String> {
     let Some(env_config) = config.envs.get(env) else {
         return Ok(HashMap::new());
@@ -90,16 +114,21 @@ pub(crate) fn plan_bindings(
     let network = env_network(config, env)?;
     let mut planned = HashMap::new();
     for (binding, database_name) in &env_config.databases {
-        let database = config.databases.get(database_name).ok_or_else(|| {
-            format!("Database binding '{binding}' references missing [databases.{database_name}]")
-        })?;
-        let home = resolve_home(servers, network, &database.server, env)
-            .map_err(|error| format!("[databases.{database_name}].server: {error}"))?;
-        if database.access == tako_core::DatabaseAccess::Local
+        let record = records
+            .iter()
+            .find(|record| &record.name == database_name)
+            .ok_or_else(|| {
+                format!(
+                    "Database '{database_name}', bound as '{binding}' in {env}, does not exist in this network. Create it with `tako sqlite create {database_name} --env {env}`, or run `tako sqlite list` to see the network's databases."
+                )
+            })?;
+        let home = resolve_home(servers, network, &record.server, env)
+            .map_err(|error| format!("The server of database '{database_name}': {error}"))?;
+        if record.access == tako_core::DatabaseAccess::Local
             && let Some(other) = target_servers.iter().find(|target| **target != home.key)
         {
             return Err(format!(
-                "Database '{database_name}' is hosted on {}, but {env} also deploys to {other}. Set access = \"network\" in [databases.{database_name}] to let apps on other servers use it, or deploy {env} only to {}.",
+                "Database '{database_name}' is hosted on {}, but {env} also deploys to {other}. Run `tako sqlite access {database_name} network` to let apps on other servers use it, or deploy {env} only to {}.",
                 home.name, home.name
             ));
         }
@@ -107,11 +136,11 @@ pub(crate) fn plan_bindings(
             binding.clone(),
             PlannedBinding {
                 database_name: database_name.clone(),
-                database: database.clone(),
+                access: record.access,
                 binding: tako_core::DatabaseBinding {
-                    id: database.id.clone(),
+                    name: database_name.clone(),
                     server: home.device_id.clone(),
-                    access: database.access,
+                    access: record.access,
                     // Filled from the home server's grant during the deploy.
                     peer_key: None,
                 },
@@ -130,16 +159,4 @@ pub(crate) fn wire_bindings(
         .iter()
         .map(|(name, planned)| (name.clone(), planned.binding.clone()))
         .collect()
-}
-
-/// A database declared in this project.
-pub(crate) fn declared<'a>(
-    config: &'a TakoToml,
-    name: &str,
-) -> Result<&'a DatabaseResourceConfig, String> {
-    config.databases.get(name).ok_or_else(|| {
-        format!(
-            "Database '{name}' is not declared in tako.toml. Run `tako sqlite list` to see the network's databases, or `tako sqlite link {name}` to add one."
-        )
-    })
 }

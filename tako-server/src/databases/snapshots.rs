@@ -55,26 +55,32 @@ pub(crate) struct BackupState {
 #[derive(Debug, Serialize, Deserialize)]
 struct Manifest {
     format: u32,
-    database_id: String,
+    database: String,
+    generation: String,
     snapshot: DatabaseSnapshot,
     encryption: BackupEncryptionInfo,
 }
 
-fn prefix(id: &str) -> String {
-    format!("_tako/databases/{id}/snapshots")
+/// Snapshots live under the database's name and generation, so a database
+/// created again under an earlier one's name never sees its snapshots.
+fn prefix(stored: &StoredDatabase) -> String {
+    format!(
+        "_tako/databases/{}/{}/snapshots",
+        stored.name, stored.generation
+    )
 }
 
-fn manifest_key(id: &str, snapshot: &str) -> String {
-    format!("{}/{snapshot}.json", prefix(id))
+fn manifest_key(stored: &StoredDatabase, snapshot: &str) -> String {
+    format!("{}/{snapshot}.json", prefix(stored))
 }
 
-fn data_key(id: &str, snapshot: &str) -> String {
-    format!("{}/{snapshot}.sqlite.zst.enc", prefix(id))
+fn data_key(stored: &StoredDatabase, snapshot: &str) -> String {
+    format!("{}/{snapshot}.sqlite.zst.enc", prefix(stored))
 }
 
 fn key_binding(stored: &StoredDatabase, override_key: Option<&str>) -> BackupKeyBinding {
     BackupKeyBinding {
-        id: format!("database-{}", stored.id),
+        id: format!("database-{}", stored.generation),
         key_base64: override_key
             .unwrap_or(&stored.secrets.backup_key_base64)
             .to_owned(),
@@ -116,7 +122,7 @@ pub(crate) fn status(state: &ServerState, stored: &StoredDatabase) -> Option<Dat
         .databases
         .backups
         .lock()
-        .get(&stored.id)
+        .get(&stored.name)
         .cloned()
         .unwrap_or_default();
     Some(DatabaseBackupStatus {
@@ -154,7 +160,7 @@ pub(crate) fn spawn_scheduler(state: Arc<ServerState>) -> tokio::task::JoinHandl
                     continue;
                 }
                 if let Err(error) = take(&state, &stored, SnapshotReason::Scheduled, true).await {
-                    tracing::warn!(database = %stored.id, %error, "Scheduled database snapshot failed");
+                    tracing::warn!(database = %stored.name, %error, "Scheduled database snapshot failed");
                 }
             }
         }
@@ -162,7 +168,7 @@ pub(crate) fn spawn_scheduler(state: Arc<ServerState>) -> tokio::task::JoinHandl
 }
 
 async fn due(state: &ServerState, stored: &StoredDatabase) -> bool {
-    let Ok(id) = DatabaseId::parse(&stored.id) else {
+    let Ok(id) = DatabaseId::parse(&stored.name) else {
         return false;
     };
     if !state.databases.host.has_changes(&id) {
@@ -172,7 +178,7 @@ async fn due(state: &ServerState, stored: &StoredDatabase) -> bool {
         .databases
         .backups
         .lock()
-        .get(&stored.id)
+        .get(&stored.name)
         .is_some_and(|current| current.loaded);
     if !loaded {
         // Learn when the last snapshot was taken, so a restart does not
@@ -182,7 +188,7 @@ async fn due(state: &ServerState, stored: &StoredDatabase) -> bool {
             all.into_iter().next()
         });
         let mut backups = state.databases.backups.lock();
-        let current = backups.entry(stored.id.clone()).or_default();
+        let current = backups.entry(stored.name.clone()).or_default();
         current.loaded = true;
         if current.last_snapshot.is_none() {
             current.last_snapshot = latest;
@@ -193,7 +199,7 @@ async fn due(state: &ServerState, stored: &StoredDatabase) -> bool {
         .databases
         .backups
         .lock()
-        .get(&stored.id)
+        .get(&stored.name)
         .cloned()
         .unwrap_or_default();
     if current.last_error.is_some()
@@ -223,8 +229,8 @@ pub(crate) async fn take(
             stored.name
         ));
     };
-    let id = DatabaseId::parse(&stored.id)?;
-    let lock = state.databases.lock(&stored.id);
+    let id = DatabaseId::parse(&stored.name)?;
+    let lock = state.databases.lock(&stored.name);
     let _guard = lock.lock().await;
     if only_if_changed && !state.databases.host.has_changes(&id) {
         return Ok(None);
@@ -254,20 +260,20 @@ async fn record(
 ) -> Result<DatabaseSnapshot, String> {
     {
         let mut backups = state.databases.backups.lock();
-        let current = backups.entry(stored.id.clone()).or_default();
+        let current = backups.entry(stored.name.clone()).or_default();
         current.last_attempt_unix_secs = Some(started);
         match &result {
             Ok(snapshot) => {
                 current.last_snapshot = Some(snapshot.clone());
                 current.last_error = None;
-                tracing::info!(database = %stored.id, snapshot = %snapshot.id, ?reason, "Uploaded database snapshot");
+                tracing::info!(database = %stored.name, snapshot = %snapshot.id, ?reason, "Uploaded database snapshot");
             }
             Err(error) => current.last_error = Some(error.clone()),
         }
     }
     let snapshot = result?;
     if let Err(error) = prune(stored, backup).await {
-        tracing::warn!(database = %stored.id, %error, "Pruning database snapshots failed");
+        tracing::warn!(database = %stored.name, %error, "Pruning database snapshots failed");
     }
     Ok(snapshot)
 }
@@ -278,9 +284,9 @@ async fn copy_database(
     state: &ServerState,
     stored: &StoredDatabase,
 ) -> Result<(WorkDir, PathBuf), String> {
-    let id = DatabaseId::parse(&stored.id)?;
+    let id = DatabaseId::parse(&stored.name)?;
     let size = state.databases.host.size_bytes(&id).unwrap_or(0);
-    let work = fresh_work_dir(state, &stored.id, "snapshot")?;
+    let work = fresh_work_dir(state, &stored.name, "snapshot")?;
     let available = crate::operations::available_bytes(&work.path)?;
     if available < size.saturating_mul(3).saturating_add(DISK_RESERVE_BYTES) {
         return Err(format!(
@@ -337,18 +343,14 @@ async fn upload_copy(
         sha256,
     };
     let remote = store(backup)?;
-    upload_file(
-        remote.clone(),
-        &data_key(&stored.id, &snapshot_id),
-        &encrypted,
-    )
-    .await?;
+    upload_file(remote.clone(), &data_key(stored, &snapshot_id), &encrypted).await?;
     put_json_object(
         remote.as_ref(),
-        &manifest_key(&stored.id, &snapshot_id),
+        &manifest_key(stored, &snapshot_id),
         &Manifest {
             format: MANIFEST_FORMAT,
-            database_id: stored.id.clone(),
+            database: stored.name.clone(),
+            generation: stored.generation.clone(),
             snapshot: snapshot.clone(),
             encryption,
         },
@@ -357,8 +359,11 @@ async fn upload_copy(
     Ok(snapshot)
 }
 
-async fn list_manifests(remote: &dyn ObjectStore, id: &str) -> Result<Vec<Manifest>, String> {
-    let prefix = ObjectPath::parse(prefix(id)).map_err(|e| e.to_string())?;
+async fn list_manifests(
+    remote: &dyn ObjectStore,
+    stored: &StoredDatabase,
+) -> Result<Vec<Manifest>, String> {
+    let prefix = ObjectPath::parse(prefix(stored)).map_err(|e| e.to_string())?;
     let keys: Vec<ObjectPath> = with_deadline(METADATA_TIMEOUT, async {
         remote
             .list(Some(&prefix))
@@ -384,7 +389,11 @@ async fn list_manifests(remote: &dyn ObjectStore, id: &str) -> Result<Vec<Manife
         })
         .await?;
         match serde_json::from_slice::<Manifest>(&bytes) {
-            Ok(manifest) if manifest.database_id == id => manifests.push(manifest),
+            Ok(manifest)
+                if manifest.database == stored.name && manifest.generation == stored.generation =>
+            {
+                manifests.push(manifest)
+            }
             Ok(_) => tracing::warn!(%key, "Ignoring a snapshot manifest of another database"),
             Err(error) => tracing::warn!(%key, %error, "Ignoring an unreadable snapshot manifest"),
         }
@@ -401,7 +410,7 @@ async fn list(stored: &StoredDatabase) -> Result<Vec<DatabaseSnapshot>, String> 
         ));
     };
     let remote = store(backup)?;
-    Ok(list_manifests(remote.as_ref(), &stored.id)
+    Ok(list_manifests(remote.as_ref(), stored)
         .await?
         .into_iter()
         .map(|m| m.snapshot)
@@ -414,7 +423,7 @@ pub(crate) async fn list_command(
 ) -> Result<serde_json::Value, String> {
     let stored = state.hosted_database(id)?;
     let snapshots = list(&stored).await?;
-    Ok(serde_json::json!({"database": stored.id, "name": stored.name, "snapshots": snapshots}))
+    Ok(serde_json::json!({"database": stored.name, "snapshots": snapshots}))
 }
 
 /// Which snapshots retention keeps: the newest overall, every snapshot of the
@@ -448,14 +457,14 @@ fn retained(snapshots: &[DatabaseSnapshot], now: u64) -> BTreeSet<String> {
 
 async fn prune(stored: &StoredDatabase, backup: &StorageBinding) -> Result<(), String> {
     let remote = store(backup)?;
-    let manifests = list_manifests(remote.as_ref(), &stored.id).await?;
+    let manifests = list_manifests(remote.as_ref(), stored).await?;
     let snapshots: Vec<_> = manifests.iter().map(|m| m.snapshot.clone()).collect();
     let keep = retained(&snapshots, now_unix_secs());
     for snapshot in snapshots.iter().filter(|s| !keep.contains(&s.id)) {
         // The manifest goes first, so a listed snapshot always has its data.
         for key in [
-            manifest_key(&stored.id, &snapshot.id),
-            data_key(&stored.id, &snapshot.id),
+            manifest_key(stored, &snapshot.id),
+            data_key(stored, &snapshot.id),
         ] {
             let path = ObjectPath::parse(&key).map_err(|e| e.to_string())?;
             with_deadline(METADATA_TIMEOUT, async {
@@ -489,7 +498,7 @@ pub(crate) async fn restore(
         ));
     };
     let remote = store(&backup)?;
-    let manifests = list_manifests(remote.as_ref(), &stored.id).await?;
+    let manifests = list_manifests(remote.as_ref(), &stored).await?;
     let manifest = match snapshot {
         Some(wanted) => manifests
             .into_iter()
@@ -524,11 +533,11 @@ pub(crate) async fn restore(
     };
 
     // Fetch and verify the snapshot before anything changes.
-    let work = fresh_work_dir(state, &stored.id, "restore")?;
+    let work = fresh_work_dir(state, &stored.name, "restore")?;
     let encrypted = work.path.join("snapshot.sqlite.zst.enc");
     download_object(
         remote.as_ref(),
-        &data_key(&stored.id, &manifest.snapshot.id),
+        &data_key(&stored, &manifest.snapshot.id),
         &encrypted,
     )
     .await?;
@@ -553,9 +562,9 @@ pub(crate) async fn restore(
     }
 
     let warnings = replace(state, &stored, restored, "database is being restored").await?;
-    tracing::info!(database = %stored.id, snapshot = %manifest.snapshot.id, "Restored database");
+    tracing::info!(database = %stored.name, snapshot = %manifest.snapshot.id, "Restored database");
     Ok(serde_json::json!({
-        "database": stored.id,
+        "database": stored.name,
         "name": stored.name,
         "snapshot": manifest.snapshot,
         "warnings": warnings,
@@ -573,8 +582,8 @@ pub(crate) async fn replace(
     replacement: PathBuf,
     pause_reason: &str,
 ) -> Result<Vec<String>, String> {
-    let id = DatabaseId::parse(&stored.id)?;
-    let lock = state.databases.lock(&stored.id);
+    let id = DatabaseId::parse(&stored.name)?;
+    let lock = state.databases.lock(&stored.name);
     let _operation = lock.lock().await;
     let guard = state
         .databases
@@ -599,7 +608,7 @@ pub(crate) async fn replace(
     let path = guard.path().to_path_buf();
     let previous = state
         .databases
-        .database_dir(&stored.id)
+        .database_dir(&stored.name)
         .join("previous.sqlite");
     let swapped = tokio::task::spawn_blocking(move || {
         tako_database::replace_database(&path, &replacement, &previous)

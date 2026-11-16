@@ -216,7 +216,7 @@ Secrets are not raw process env vars.
 
 ## Databases In Dev
 
-`tako dev` serves each development database binding from `.tako/data/databases/<database-name>.sqlite` over the same protocol as production, on a loopback port of the dev daemon. Bind names in `[envs.development].databases`, or let development use every name the other environments bind. Development bindings need no `[databases.*]` declaration, and the file is created on first use. `tako run` serves the same files for one-off scripts such as migrations. See [Databases](/databases/#develop-locally).
+`tako dev` serves each development database binding from `.tako/data/databases/<database-name>.sqlite` over the same protocol as production, on a loopback port of the dev daemon. Bind names in `[envs.development].databases`, or let development use every name the other environments bind. The file is created on first use. `tako run` serves the same files for one-off scripts such as migrations. See [Databases](/databases/#develop-locally).
 
 ## Secrets And Storage In Dev
 

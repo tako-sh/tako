@@ -67,13 +67,17 @@ pub enum SecretKind {
     Storage,
     BackupKey,
     BackupActive,
-    /// A Tako-hosted database of the network, named by its ID under
-    /// [`DATABASE_SCOPE`]: its name, home server, and snapshot key.
+    /// A Tako-hosted database of the network, named by its name under
+    /// [`DATABASE_SCOPE`]: its home server and access. Every member that may
+    /// deploy can read it, so deploys resolve databases by name.
     Database,
+    /// The key that encrypts a database's snapshots, named like its
+    /// [`SecretKind::Database`] record. Only administrators may read it.
+    DatabaseKey,
 }
 
 /// The scope of database records. Not an app environment: database records
-/// belong to the network, and only administrators may read or write them.
+/// belong to the network, and only administrators may write them.
 pub const DATABASE_SCOPE: &str = "tako/databases";
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -98,9 +102,20 @@ impl SecretAddress {
         Ok(())
     }
 
-    pub fn allowed(&self, permissions: &Permissions) -> bool {
+    /// Whether members with `permissions` may publish to this address.
+    pub fn writable(&self, permissions: &Permissions) -> bool {
         (permissions.network_admin && permissions.server_admin)
             || (self.kind == SecretKind::App && permissions.can_deploy(&self.scope))
+    }
+
+    /// Whether members with `permissions` may read this address. Database
+    /// records hold no secrets, only where a database lives, and deploys of
+    /// any app need them.
+    pub fn readable(&self, permissions: &Permissions) -> bool {
+        self.writable(permissions)
+            || (self.kind == SecretKind::Database
+                && self.scope.as_str() == DATABASE_SCOPE
+                && !permissions.deployments.is_empty())
     }
 
     pub fn context(&self, network: &NetworkId, operation: &RequestId) -> RuntimeResult<Vec<u8>> {
@@ -308,7 +323,7 @@ impl SharedSnapshot {
             secrets: self
                 .secrets
                 .iter()
-                .filter(|record| record.address.allowed(permissions))
+                .filter(|record| record.address.readable(permissions))
                 .cloned()
                 .collect(),
         })
@@ -422,7 +437,7 @@ impl SecretRecord {
         };
         if record.value.is_some() {
             for (id, member) in registry.effective_members(now)? {
-                if record.address.allowed(&member.permissions) {
+                if record.address.readable(&member.permissions) {
                     let sealed = SealedValue::seal(
                         &member.request.encryption_public_key,
                         key.as_slice(),
@@ -484,7 +499,7 @@ impl SecretRecord {
         issuer: &DeviceId,
         recipient: &crate::Member,
     ) -> RuntimeResult<Self> {
-        if !self.address.allowed(&recipient.permissions) {
+        if !self.address.readable(&recipient.permissions) {
             return Err(RuntimeError::Denied);
         }
         let key = self.content_key(state, keys, issuer)?;

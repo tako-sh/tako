@@ -18,8 +18,10 @@ pub(crate) struct DatabaseSecrets {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct StoredDatabase {
-    pub id: String,
+    /// Unique within the network; identifies the database.
     pub name: String,
+    /// Tells this database apart from earlier ones with the same name.
+    pub generation: String,
     pub created_at_unix_secs: u64,
     pub secrets: DatabaseSecrets,
 }
@@ -46,10 +48,10 @@ impl SqliteStateStore {
     pub(crate) fn create_database(&self, database: &StoredDatabase) -> Result<(), StateStoreError> {
         let encrypted = self.encrypt_json(&database.secrets)?;
         self.lock_conn()?.execute(
-            "INSERT INTO databases (id, name, created_at, encrypted_data) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO databases (name, generation, created_at, encrypted_data) VALUES (?1, ?2, ?3, ?4)",
             (
-                &database.id,
                 &database.name,
+                &database.generation,
                 database.created_at_unix_secs as i64,
                 encrypted,
             ),
@@ -60,7 +62,7 @@ impl SqliteStateStore {
     pub(crate) fn list_databases(&self) -> Result<Vec<StoredDatabase>, StateStoreError> {
         let conn = self.lock_conn()?;
         let mut statement = conn.prepare(
-            "SELECT id, name, created_at, encrypted_data FROM databases ORDER BY name, id",
+            "SELECT name, generation, created_at, encrypted_data FROM databases ORDER BY name",
         )?;
         let rows = statement
             .query_map([], |row| {
@@ -73,10 +75,10 @@ impl SqliteStateStore {
             })?
             .collect::<Result<Vec<_>, _>>()?;
         rows.into_iter()
-            .map(|(id, name, created_at, encrypted)| {
+            .map(|(name, generation, created_at, encrypted)| {
                 Ok(StoredDatabase {
-                    id,
                     name,
+                    generation,
                     created_at_unix_secs: created_at.max(0) as u64,
                     secrets: self.decrypt_json(&encrypted)?,
                 })
@@ -84,12 +86,15 @@ impl SqliteStateStore {
             .collect()
     }
 
-    pub(crate) fn get_database(&self, id: &str) -> Result<Option<StoredDatabase>, StateStoreError> {
+    pub(crate) fn get_database(
+        &self,
+        name: &str,
+    ) -> Result<Option<StoredDatabase>, StateStoreError> {
         let row = self
             .lock_conn()?
             .query_row(
-                "SELECT name, created_at, encrypted_data FROM databases WHERE id = ?1",
-                [id],
+                "SELECT generation, created_at, encrypted_data FROM databases WHERE name = ?1",
+                [name],
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
@@ -99,10 +104,10 @@ impl SqliteStateStore {
                 },
             )
             .optional()?;
-        row.map(|(name, created_at, encrypted)| {
+        row.map(|(generation, created_at, encrypted)| {
             Ok(StoredDatabase {
-                id: id.to_owned(),
-                name,
+                name: name.to_owned(),
+                generation,
                 created_at_unix_secs: created_at.max(0) as u64,
                 secrets: self.decrypt_json(&encrypted)?,
             })
@@ -112,25 +117,25 @@ impl SqliteStateStore {
 
     pub(crate) fn set_database_secrets(
         &self,
-        id: &str,
+        name: &str,
         secrets: &DatabaseSecrets,
     ) -> Result<(), StateStoreError> {
         let encrypted = self.encrypt_json(secrets)?;
         let changed = self.lock_conn()?.execute(
-            "UPDATE databases SET encrypted_data = ?2 WHERE id = ?1",
-            (id, encrypted),
+            "UPDATE databases SET encrypted_data = ?2 WHERE name = ?1",
+            (name, encrypted),
         )?;
         if changed == 0 {
             return Err(StateStoreError::InvalidData(format!(
-                "database {id} is not hosted on this server"
+                "database {name} is not hosted on this server"
             )));
         }
         Ok(())
     }
 
-    pub(crate) fn delete_database(&self, id: &str) -> Result<(), StateStoreError> {
+    pub(crate) fn delete_database(&self, name: &str) -> Result<(), StateStoreError> {
         self.lock_conn()?
-            .execute("DELETE FROM databases WHERE id = ?1", [id])?;
+            .execute("DELETE FROM databases WHERE name = ?1", [name])?;
         Ok(())
     }
 
@@ -223,8 +228,8 @@ mod tests {
     fn databases_round_trip_with_encrypted_secrets() {
         let (_dir, store) = store();
         let database = StoredDatabase {
-            id: "0123456789abcdef0123456789abcdef".into(),
             name: "main".into(),
+            generation: "0123456789abcdef0123456789abcdef".into(),
             created_at_unix_secs: 7,
             secrets: DatabaseSecrets {
                 backup_key_base64: "a2V5".into(),
@@ -232,8 +237,14 @@ mod tests {
             },
         };
         store.create_database(&database).unwrap();
-        assert!(store.create_database(&database).is_err(), "ids are unique");
-        assert_eq!(store.get_database(&database.id).unwrap().unwrap(), database);
+        assert!(
+            store.create_database(&database).is_err(),
+            "names are unique"
+        );
+        assert_eq!(
+            store.get_database(&database.name).unwrap().unwrap(),
+            database
+        );
         let mut secrets = database.secrets.clone();
         secrets.backup = Some(tako_core::StorageBinding {
             provider: tako_core::StorageProvider::S3,
@@ -247,7 +258,9 @@ mod tests {
             path: None,
             signing_key: None,
         });
-        store.set_database_secrets(&database.id, &secrets).unwrap();
+        store
+            .set_database_secrets(&database.name, &secrets)
+            .unwrap();
         assert_eq!(store.list_databases().unwrap()[0].secrets, secrets);
         let raw: Vec<u8> = store
             .lock_conn()
@@ -255,15 +268,19 @@ mod tests {
             .query_row("SELECT encrypted_data FROM databases", [], |row| row.get(0))
             .unwrap();
         assert!(!String::from_utf8_lossy(&raw).contains("a2V5"));
-        store.delete_database(&database.id).unwrap();
-        assert!(store.get_database(&database.id).unwrap().is_none());
-        assert!(store.set_database_secrets(&database.id, &secrets).is_err());
+        store.delete_database(&database.name).unwrap();
+        assert!(store.get_database(&database.name).unwrap().is_none());
+        assert!(
+            store
+                .set_database_secrets(&database.name, &secrets)
+                .is_err()
+        );
     }
 
     #[test]
     fn grants_replace_and_clear_and_keep_their_key() {
         let (_dir, store) = store();
-        let ids = BTreeSet::from(["a".repeat(32)]);
+        let ids = BTreeSet::from(["main".to_owned()]);
         let key = store
             .set_database_grants("shop/production", &ids)
             .unwrap()
@@ -272,7 +289,7 @@ mod tests {
         assert_eq!(grants["shop/production"].databases, ids);
         assert_eq!(grants["shop/production"].key, key);
 
-        let more = BTreeSet::from(["a".repeat(32), "b".repeat(32)]);
+        let more = BTreeSet::from(["main".to_owned(), "orders".to_owned()]);
         let same = store.set_database_grants("shop/production", &more).unwrap();
         assert_eq!(same.as_deref(), Some(key.as_str()), "the key is stable");
 

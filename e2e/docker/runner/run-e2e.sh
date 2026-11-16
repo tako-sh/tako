@@ -616,8 +616,8 @@ run_store_checks() {
 create_fixture_database() {
   local server_host=$1
   local log="$TMP_ROOT/sqlite-create.log"
-  if [[ "$FIXTURE_REL" != "e2e/fixtures/javascript/channels-workflows" ]] || \
-     grep -q '^\[databases\.messages\]' "$PROJECT_DIR/tako.toml"; then
+  local list_json="$TMP_ROOT/sqlite-list.json"
+  if [[ "$FIXTURE_REL" != "e2e/fixtures/javascript/channels-workflows" || -n "${DATABASE_SERVER:-}" ]]; then
     return 0
   fi
   echo "Creating the messages database on $server_host"
@@ -626,7 +626,18 @@ create_fixture_database() {
     cat "$log" >&2 || true
     exit 1
   fi
-  require_file_contains "$PROJECT_DIR/tako.toml" '[databases.messages]' "tako sqlite create"
+  # The network records where the database lives; tako.toml only binds it.
+  if ! HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --json --config "$PROJECT_DIR/tako.toml" \
+    sqlite list --env production >"$list_json" 2>"$log" || \
+     ! jq -e '.databases | any(.name == "messages" and .access == "network" and .in_project)' \
+       "$list_json" >/dev/null; then
+    cat "$log" "$list_json" >&2 || true
+    exit 1
+  fi
+  if grep -q '^\[databases\.messages\]' "$PROJECT_DIR/tako.toml"; then
+    echo "tako sqlite create wrote [databases.messages] without an explicit backup" >&2
+    exit 1
+  fi
   DATABASE_SERVER=$server_host
 }
 

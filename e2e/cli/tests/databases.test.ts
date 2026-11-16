@@ -43,10 +43,6 @@ beforeAll(async () => {
       'route = "db.example.com"',
       'databases = { main = "prod-db" }',
       "",
-      "[databases.prod-db]",
-      'id = "0123456789abcdef0123456789abcdef"',
-      'server = "edge"',
-      "",
     ].join("\n"),
   );
 });

@@ -7,7 +7,7 @@ Tako protects two kinds of data separately:
 
 | Data | Protection | Configure |
 | --- | --- | --- |
-| [Hosted databases](/databases/) | Encrypted snapshots: hourly while changing, before release commands and restores, and on demand | `[databases.<name>].backup` |
+| [Hosted databases](/databases/) | Encrypted snapshots: hourly while changing, before release commands and restores, and on demand | `[envs.<env>].backup.storage` or `[databases.<name>].backup` |
 | Files under the app's `data/app/` and `data/tako/`, including workflow state | Manual encrypted full-directory archives | `[envs.<env>].backup` |
 | Files in the shared data directory | Not backed up; copy them separately during coordinated downtime | — |
 | Compose named volumes, external databases, S3 contents | Protect separately | — |
@@ -17,13 +17,12 @@ Use [release rollback](/operations/#logs-and-releases) to recover code and a bac
 
 ## Back up hosted databases
 
-Set `backup` on the database to a private S3-compatible storage resource and deploy. The database's server then snapshots it every hour while it changes, before a deploy's release command, and before a restore or import:
+Set the environment's `backup.storage` (or `[databases.<name>].backup` for one database) to a private S3-compatible storage resource and deploy. The database's server then snapshots it every hour while it changes, before a deploy's release command, and before a restore or import:
 
 ```toml
-[databases.main]
-id = "4f0c2a9e8b7d6c5a4f3e2d1c0b9a8f7e"
-server = "edge-a"
-backup = "private_backups"
+[envs.production]
+databases = { main = "main" }
+backup = { storage = "private_backups" }
 ```
 
 ```bash
@@ -153,7 +152,7 @@ directory. Either way, then remove the leftover directory and start the app with
 ## Recover on a fresh server
 
 1. Enroll the replacement server in the network. Restore access to the app's backup configuration, backup keys, and storage credentials.
-2. Recover each hosted database with `tako sqlite restore <name> --latest --server <new-server>`. It keeps the database's ID and points the network record and `tako.toml` at the new server.
+2. Recover each hosted database with `tako sqlite restore <name> --latest --server <new-server>`. It keeps the database's name and points its network record at the new server.
 3. Deploy the app to the replacement server.
 4. If uploads or workflow state also need recovery, restore the relevant manual archive with `tako backups restore <backup-id> --server <new-server>`.
 5. Verify known records and app behavior before sending traffic to the replacement.

@@ -359,11 +359,22 @@ async fn run_async(
     config::refresh_native_build_targets(&mut servers, &server_names).await?;
     let server_targets = resolve_deploy_server_targets(&servers, &server_names)
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    // Administrators also need the records to revoke stale grants.
+    let binds_databases = tako_config
+        .envs
+        .get(&env)
+        .is_some_and(|env| !env.databases.is_empty());
+    let database_records = if binds_databases || configure_bindings {
+        crate::commands::sqlite::target::env_records(&tako_config, &env)?
+    } else {
+        Vec::new()
+    };
     let mut database_plan = crate::commands::sqlite::target::plan_bindings(
         &tako_config,
         &servers,
         &env,
         &server_names,
+        &database_records,
     )?;
     if !database_plan.is_empty() && is_container_release {
         return Err(
@@ -579,15 +590,15 @@ async fn run_async(
         .ok_or("no servers selected for deploy")?;
     let release_command = resolve_release_command(&tako_config, &env);
     // An administrator's deploy also revokes the grants of an environment
-    // that no longer binds the network databases it declares.
+    // that no longer binds the network's network-access databases.
     let revokes_grants = configure_bindings
-        && tako_config
-            .databases
-            .values()
-            .any(|database| database.access == tako_core::DatabaseAccess::Network);
+        && database_records
+            .iter()
+            .any(|record| record.access == tako_core::DatabaseAccess::Network);
     if !database_plan.is_empty() || revokes_grants {
         let peer_keys = databases::prepare(databases::Preparation {
             plan: &database_plan,
+            records: &database_records,
             config: &tako_config,
             servers: &servers,
             secrets: &secrets,

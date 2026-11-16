@@ -12,12 +12,11 @@ const CELL_WIDTH: usize = 60;
 
 pub(super) async fn run(
     home: &Home,
-    id: &str,
     name: &str,
     command: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(sql) = command {
-        return execute(home, id, &sql).await;
+        return execute(home, name, &sql).await;
     }
     let interactive = output::is_interactive();
     if interactive {
@@ -48,7 +47,7 @@ pub(super) async fn run(
             match trimmed.split_whitespace().next() {
                 Some(".quit" | ".exit") => break,
                 Some(".tables") => {
-                    report(execute(home, id, "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").await);
+                    report(execute(home, name, "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").await);
                     continue;
                 }
                 Some(".schema") => {
@@ -59,7 +58,7 @@ pub(super) async fn run(
                         ),
                         None => "SELECT sql FROM sqlite_schema WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'".into(),
                     };
-                    report(execute(home, id, &sql).await);
+                    report(execute(home, name, &sql).await);
                     continue;
                 }
                 Some(command) if command.starts_with('.') => {
@@ -74,11 +73,11 @@ pub(super) async fn run(
         buffer.push('\n');
         if is_complete(&buffer) {
             let sql = std::mem::take(&mut buffer);
-            report(execute(home, id, sql.trim()).await);
+            report(execute(home, name, sql.trim()).await);
         }
     }
     if !buffer.trim().is_empty() {
-        report(execute(home, id, buffer.trim()).await);
+        report(execute(home, name, buffer.trim()).await);
     }
     Ok(())
 }
@@ -98,11 +97,11 @@ fn is_complete(sql: &str) -> bool {
     unsafe { rusqlite::ffi::sqlite3_complete(text.as_ptr()) != 0 }
 }
 
-async fn execute(home: &Home, id: &str, sql: &str) -> Result<(), Box<dyn std::error::Error>> {
+async fn execute(home: &Home, name: &str, sql: &str) -> Result<(), Box<dyn std::error::Error>> {
     let result: DatabaseQueryResult = send(
         home,
         Command::QueryDatabase {
-            id: id.to_owned(),
+            name: name.to_owned(),
             sql: sql.to_owned(),
         },
     )

@@ -279,8 +279,11 @@ fn merge_remote(
         .values()
         .filter(|record| {
             &record.address.scope == scope
-                && record.address.kind != SecretKind::Database
-                && record.address.allowed(permissions)
+                && !matches!(
+                    record.address.kind,
+                    SecretKind::Database | SecretKind::DatabaseKey
+                )
+                && record.address.readable(permissions)
         })
         .copied()
         .collect();

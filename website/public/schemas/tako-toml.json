@@ -165,44 +165,15 @@
       "required": ["uid", "gid"],
       "type": "object"
     },
-    "DatabaseAccess": {
-      "description": "Which apps may use a database.",
-      "oneOf": [
-        {
-          "const": "local",
-          "description": "Only apps running on the database's server.",
-          "type": "string"
-        },
-        {
-          "const": "network",
-          "description": "Apps on any server of the network. Their queries cross the private\nnetwork to the database's server.",
-          "type": "string"
-        }
-      ]
-    },
     "DatabaseResourceConfig": {
       "additionalProperties": false,
-      "description": "A Tako-hosted database from [databases.*].",
+      "description": "Settings for a Tako-hosted database, from `[databases.<name>]`. The\ndatabase itself, its server and access, live in the network's records;\nthis table is needed only to override the environment's backup storage.",
       "properties": {
-        "access": {
-          "$ref": "#/$defs/DatabaseAccess",
-          "description": "`local` (default): only apps on the database's server may use it.\n`network`: apps on any server of the network may use it."
-        },
         "backup": {
-          "description": "Private S3-compatible storage resource that receives snapshots.",
-          "type": "string"
-        },
-        "id": {
-          "description": "Stable database ID: 32 lowercase hexadecimal characters.",
-          "pattern": "^[0-9a-f]{32}$",
-          "type": "string"
-        },
-        "server": {
-          "description": "The server that hosts the database: an enrolled server name or device ID.",
+          "description": "Private S3-compatible storage resource that receives snapshots.\nDefaults to the deploying environment's `backup.storage`.",
           "type": "string"
         }
       },
-      "required": ["id", "server"],
       "type": "object"
     },
     "EnvConfig": {

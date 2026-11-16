@@ -214,24 +214,59 @@ fn scopes_and_administrative_categories_do_not_share_implicit_access() {
         deployments: ["shop/production".parse().unwrap()].into(),
         ..Default::default()
     };
-    assert!(address("API_KEY").allowed(&scoped));
+    assert!(address("API_KEY").readable(&scoped));
+    assert!(address("API_KEY").writable(&scoped));
     let mut other = address("API_KEY");
     other.scope = "shop/staging".parse().unwrap();
-    assert!(!other.allowed(&scoped));
+    assert!(!other.readable(&scoped));
     for kind in [
         SecretKind::Credential,
         SecretKind::BackupKey,
         SecretKind::Storage,
         SecretKind::BackupActive,
+        SecretKind::DatabaseKey,
     ] {
         other.kind = kind;
         other.scope = "shop/production".parse().unwrap();
-        assert!(!other.allowed(&scoped));
+        assert!(!other.readable(&scoped));
+        assert!(!other.writable(&scoped));
     }
-    assert!(!address("API_KEY").allowed(&Permissions {
+    assert!(!address("API_KEY").readable(&Permissions {
         network_admin: true,
         ..Default::default()
     }));
+}
+
+#[test]
+fn deployers_read_database_records_but_not_their_keys() {
+    let scoped = Permissions {
+        deployments: ["shop/production".parse().unwrap()].into(),
+        ..Default::default()
+    };
+    let admin = Permissions {
+        network_admin: true,
+        server_admin: true,
+        ..Default::default()
+    };
+    let record = |kind| SecretAddress {
+        scope: DATABASE_SCOPE.parse().unwrap(),
+        kind,
+        name: "shop".into(),
+    };
+    let directory = record(SecretKind::Database);
+    assert!(directory.readable(&scoped));
+    assert!(!directory.writable(&scoped), "only administrators publish");
+    assert!(
+        !directory.readable(&Permissions::default()),
+        "members that cannot deploy do not need them"
+    );
+    let key = record(SecretKind::DatabaseKey);
+    assert!(!key.readable(&scoped));
+    assert!(key.readable(&admin) && key.writable(&admin));
+    // A database record outside the database scope grants nothing.
+    let mut misplaced = directory.clone();
+    misplaced.scope = "shop/production".parse().unwrap();
+    assert!(!misplaced.readable(&scoped));
 }
 
 #[test]

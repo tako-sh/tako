@@ -1,9 +1,10 @@
 //! Database records in the network's shared state.
 //!
-//! Each Tako-hosted database has one record, named by its ID, holding its
-//! name, home server, and the key that encrypts its snapshots. Records are
-//! sealed to network administrators and replicate through the network like
-//! shared secrets. Deleting a database publishes a tombstone.
+//! A database's name identifies it within the network. Each database has two
+//! records under its name: a directory record with its home server and
+//! access, which every member that may deploy can read, and its snapshot key,
+//! which only administrators can read. Deleting a database publishes
+//! tombstones for both.
 
 use serde::{Deserialize, Serialize};
 use tako_network::api::{RpcRequest, RpcResponse};
@@ -20,17 +21,17 @@ use crate::config::LocalNetwork;
 /// How long a publication may be retried before it expires.
 const PUBLICATION_SECONDS: u64 = 10 * 60;
 
+/// Where a database lives and who may use it.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct DatabaseRecord {
-    pub id: String,
     pub name: String,
     /// Device ID of the server that hosts the database.
     pub server: String,
     #[serde(default)]
     pub access: tako_core::DatabaseAccess,
-    /// 32-byte key, base64, that encrypts the database's snapshots.
-    pub backup_key_base64: String,
+    /// Tells this database apart from earlier ones with the same name.
+    pub generation: String,
     pub created_at_unix_secs: u64,
 }
 
@@ -38,37 +39,81 @@ fn scope() -> Result<AppEnv> {
     Ok(DATABASE_SCOPE.parse()?)
 }
 
-/// The network's databases that this device may read, sorted by name.
-pub(crate) fn list(alias: &LocalNetwork) -> Result<Vec<DatabaseRecord>> {
+/// Decrypts the readable records of `kind`, by name.
+fn read(
+    alias: &LocalNetwork,
+    kind: SecretKind,
+) -> Result<std::collections::BTreeMap<String, Zeroizing<String>>> {
     let scope = scope()?;
     let (profile, cache) = super::secrets::pull(alias, Some(scope.clone()))?;
     let keys = LocalDeviceKeys::load(&super::keys_path(&profile.request().request_id)?)?;
     let device = profile.request().device_id_for(&cache.network)?;
-    let mut records = Vec::new();
+    let mut values = std::collections::BTreeMap::new();
     for record in cache.latest()?.values() {
-        if record.address.scope != scope || record.address.kind != SecretKind::Database {
+        if record.address.scope != scope || record.address.kind != kind {
             continue;
         }
-        let Some(bytes) = record.decrypt(&cache, &keys, &device)? else {
+        // Records this device may not read, and tombstones, have no value.
+        let Ok(Some(bytes)) = record.decrypt(&cache, &keys, &device) else {
             continue;
         };
         let content: SecretContent = serde_json::from_slice(&bytes)?;
-        let database: DatabaseRecord = serde_json::from_str(&content.value)?;
-        if database.id == record.address.name {
-            records.push(database);
+        values.insert(record.address.name.clone(), content.value);
+    }
+    Ok(values)
+}
+
+/// The network's databases, sorted by name.
+pub(crate) fn list(alias: &LocalNetwork) -> Result<Vec<DatabaseRecord>> {
+    let mut records = Vec::new();
+    for (name, value) in read(alias, SecretKind::Database)? {
+        let record: DatabaseRecord = serde_json::from_str(&value)?;
+        if record.name == name {
+            records.push(record);
         }
     }
-    records.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
     Ok(records)
 }
 
-/// Publishes a database record, or its tombstone when `record` is `None`.
+/// The key that encrypts a database's snapshots. Administrators only.
+pub(crate) fn backup_key(alias: &LocalNetwork, name: &str) -> Result<Zeroizing<String>> {
+    read(alias, SecretKind::DatabaseKey)?
+        .remove(name)
+        .ok_or_else(|| {
+            format!(
+                "The snapshot key of database '{name}' is not available to this device; it needs network and server administrator permission."
+            )
+            .into()
+        })
+}
+
+/// Publishes a database's records: the directory record and, when given,
+/// its snapshot key.
 pub(crate) fn publish(
     alias: &LocalNetwork,
-    id: &str,
-    record: Option<&DatabaseRecord>,
+    record: &DatabaseRecord,
+    backup_key_base64: Option<&str>,
 ) -> Result<()> {
-    tako_core::validate_database_id(id)?;
+    tako_core::validate_database_name(&record.name)?;
+    if let Some(key) = backup_key_base64 {
+        mutate(alias, SecretKind::DatabaseKey, &record.name, Some(key))?;
+    }
+    mutate(
+        alias,
+        SecretKind::Database,
+        &record.name,
+        Some(&serde_json::to_string(record)?),
+    )
+}
+
+/// Publishes tombstones for a database's records.
+pub(crate) fn remove(alias: &LocalNetwork, name: &str) -> Result<()> {
+    tako_core::validate_database_name(name)?;
+    mutate(alias, SecretKind::Database, name, None)?;
+    mutate(alias, SecretKind::DatabaseKey, name, None)
+}
+
+fn mutate(alias: &LocalNetwork, kind: SecretKind, name: &str, value: Option<&str>) -> Result<()> {
     let scope = scope()?;
     let (profile, cache) = super::secrets::pull(alias, Some(scope.clone()))?;
     let network = profile.snapshot().network.id.clone();
@@ -81,8 +126,8 @@ pub(crate) fn publish(
         .encryption_public_key;
     let address = SecretAddress {
         scope: scope.clone(),
-        kind: SecretKind::Database,
-        name: id.to_owned(),
+        kind,
+        name: name.to_owned(),
     };
     let observed_revision = cache
         .latest()?
@@ -97,9 +142,9 @@ pub(crate) fn publish(
         address,
         value: None,
     };
-    if let Some(record) = record {
+    if let Some(value) = value {
         let content = SecretContent {
-            value: Zeroizing::new(serde_json::to_string(record)?),
+            value: Zeroizing::new(value.to_owned()),
             expires_on: None,
         };
         let bytes = Zeroizing::new(serde_json::to_vec(&content)?);
@@ -132,11 +177,10 @@ mod tests {
     #[test]
     fn records_round_trip_and_reject_unknown_fields() {
         let record = DatabaseRecord {
-            id: "0123456789abcdef0123456789abcdef".into(),
             name: "main".into(),
             server: "a".repeat(64),
             access: tako_core::DatabaseAccess::Network,
-            backup_key_base64: "a2V5".into(),
+            generation: "0123456789abcdef0123456789abcdef".into(),
             created_at_unix_secs: 1,
         };
         let json = serde_json::to_string(&record).unwrap();

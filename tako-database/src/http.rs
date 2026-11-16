@@ -27,7 +27,7 @@ pub type Body = http_body_util::combinators::BoxBody<Bytes, BoxError>;
 /// Header naming the app environment a forwarding server acts for.
 pub const SCOPE_HEADER: &str = "x-tako-database-scope";
 /// Header naming the database a forwarding server addresses.
-pub const DATABASE_HEADER: &str = "x-tako-database-id";
+pub const DATABASE_HEADER: &str = "x-tako-database";
 /// Header carrying the key the database's server issued with its grant.
 pub const KEY_HEADER: &str = "x-tako-database-key";
 

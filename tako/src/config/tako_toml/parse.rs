@@ -245,6 +245,14 @@ fn parse_database_resources(raw: &toml::Value) -> Result<HashMap<String, Databas
         .as_table()
         .ok_or_else(|| ConfigError::Validation("'databases' must be a table".to_string()))?;
     for (name, value) in table {
+        if let Some(key) = ["id", "server", "access"]
+            .into_iter()
+            .find(|key| value.get(key).is_some())
+        {
+            return Err(ConfigError::Validation(format!(
+                "[databases.{name}].{key} is no longer set in tako.toml: the network records where each database lives. Remove it; `tako sqlite list` shows the network's databases."
+            )));
+        }
         let resource: DatabaseResourceConfig = toml::from_str(&toml::to_string(value)?)
             .map_err(|e| ConfigError::Validation(format!("[databases.{name}]: {e}")))?;
         resources.insert(name.clone(), resource);

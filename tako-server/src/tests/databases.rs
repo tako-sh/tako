@@ -9,7 +9,8 @@ use object_store::ObjectStoreExt as _;
 use sha2::{Digest, Sha256};
 use tako_core::{SnapshotReason, StorageBinding, StorageProvider};
 
-const ID: &str = "0123456789abcdef0123456789abcdef";
+const ID: &str = "shop";
+const GENERATION: &str = "0123456789abcdef0123456789abcdef";
 
 fn state(temp: &TempDir) -> Arc<ServerState> {
     let cert_manager = Arc::new(CertManager::new(CertManagerConfig {
@@ -65,7 +66,7 @@ async fn query(state: &ServerState, id: &str, sql: &str) -> Value {
     ok(
         state,
         Command::QueryDatabase {
-            id: id.into(),
+            name: id.into(),
             sql: sql.into(),
         },
     )
@@ -82,8 +83,8 @@ async fn create(state: &ServerState, id: &str, bucket: Option<&str>) {
     ok(
         state,
         Command::CreateDatabase {
-            id: id.into(),
-            name: "shop".into(),
+            name: id.into(),
+            generation: GENERATION.into(),
             backup_key_base64: key(),
             backup: bucket.map(backup),
         },
@@ -106,7 +107,7 @@ async fn snapshots_restore_the_contents_they_captured() {
     let first = ok(
         &state,
         Command::SnapshotDatabase {
-            id: ID.into(),
+            name: ID.into(),
             reason: SnapshotReason::Manual,
             app: None,
         },
@@ -120,7 +121,7 @@ async fn snapshots_restore_the_contents_they_captured() {
     let restored = ok(
         &state,
         Command::RestoreDatabase {
-            id: ID.into(),
+            name: ID.into(),
             snapshot: Some(first_id.clone()),
             backup_key_base64: None,
         },
@@ -138,7 +139,7 @@ async fn snapshots_restore_the_contents_they_captured() {
     );
 
     // The restore first saved the changed contents it replaced.
-    let listed = ok(&state, Command::ListDatabaseSnapshots { id: ID.into() }).await;
+    let listed = ok(&state, Command::ListDatabaseSnapshots { name: ID.into() }).await;
     let reasons: Vec<_> = listed["snapshots"]
         .as_array()
         .unwrap()
@@ -159,7 +160,7 @@ async fn snapshots_restore_the_contents_they_captured() {
     ok(
         &state,
         Command::RestoreDatabase {
-            id: ID.into(),
+            name: ID.into(),
             snapshot: Some(pre_restore),
             backup_key_base64: None,
         },
@@ -170,7 +171,7 @@ async fn snapshots_restore_the_contents_they_captured() {
     let status = ok(
         &state,
         Command::DatabaseStatus {
-            id: Some(ID.into()),
+            name: Some(ID.into()),
         },
     )
     .await;
@@ -190,7 +191,7 @@ async fn snapshots_are_encrypted_with_the_database_key() {
     ok(
         &state,
         Command::SnapshotDatabase {
-            id: ID.into(),
+            name: ID.into(),
             reason: SnapshotReason::Manual,
             app: None,
         },
@@ -209,7 +210,7 @@ async fn snapshots_are_encrypted_with_the_database_key() {
     assert!(
         data.location
             .as_ref()
-            .starts_with(&format!("_tako/databases/{ID}/snapshots/"))
+            .starts_with(&format!("_tako/databases/{ID}/{GENERATION}/snapshots/"))
     );
     let bytes = store
         .get(&data.location)
@@ -223,7 +224,7 @@ async fn snapshots_are_encrypted_with_the_database_key() {
     let wrong = error(
         &state,
         Command::RestoreDatabase {
-            id: ID.into(),
+            name: ID.into(),
             snapshot: None,
             backup_key_base64: Some(BASE64.encode([9u8; 32])),
         },
@@ -256,7 +257,7 @@ async fn release_snapshots_skip_unchanged_databases_and_foreign_apps() {
     let empty = ok(
         &state,
         Command::SnapshotDatabase {
-            id: ID.into(),
+            name: ID.into(),
             reason: SnapshotReason::Release,
             app: None,
         },
@@ -268,7 +269,7 @@ async fn release_snapshots_skip_unchanged_databases_and_foreign_apps() {
     let foreign = error(
         &state,
         Command::SnapshotDatabase {
-            id: ID.into(),
+            name: ID.into(),
             reason: SnapshotReason::Release,
             app: Some("other/production".into()),
         },
@@ -279,7 +280,7 @@ async fn release_snapshots_skip_unchanged_databases_and_foreign_apps() {
     let first = ok(
         &state,
         Command::SnapshotDatabase {
-            id: ID.into(),
+            name: ID.into(),
             reason: SnapshotReason::Release,
             app: Some("web/production".into()),
         },
@@ -292,7 +293,7 @@ async fn release_snapshots_skip_unchanged_databases_and_foreign_apps() {
     let second = ok(
         &state,
         Command::SnapshotDatabase {
-            id: ID.into(),
+            name: ID.into(),
             reason: SnapshotReason::Release,
             app: Some("web/production".into()),
         },
@@ -313,7 +314,7 @@ async fn a_failed_upload_keeps_the_database_due_for_a_snapshot() {
     let failed = error(
         &state,
         Command::SnapshotDatabase {
-            id: ID.into(),
+            name: ID.into(),
             reason: SnapshotReason::Manual,
             app: None,
         },
@@ -335,7 +336,7 @@ async fn moving_the_backup_destination_resets_snapshot_status() {
     ok(
         &state,
         Command::SnapshotDatabase {
-            id: ID.into(),
+            name: ID.into(),
             reason: SnapshotReason::Manual,
             app: None,
         },
@@ -344,7 +345,7 @@ async fn moving_the_backup_destination_resets_snapshot_status() {
     let status = ok(
         &state,
         Command::DatabaseStatus {
-            id: Some(ID.into()),
+            name: Some(ID.into()),
         },
     )
     .await;
@@ -353,7 +354,7 @@ async fn moving_the_backup_destination_resets_snapshot_status() {
     let moved = ok(
         &state,
         Command::ConfigureDatabaseBackup {
-            id: ID.into(),
+            name: ID.into(),
             backup: Some(backup("second-bucket")),
         },
     )
@@ -374,7 +375,7 @@ async fn import_and_export_round_trip_a_file() {
     query(&state, ID, "INSERT INTO items VALUES ('before')").await;
 
     // Export.
-    let export = ok(&state, Command::BeginDatabaseExport { id: ID.into() }).await;
+    let export = ok(&state, Command::BeginDatabaseExport { name: ID.into() }).await;
     let export_id = export["export_id"].as_str().unwrap().to_owned();
     let size = export["size_bytes"].as_u64().unwrap();
     let mut exported = Vec::new();
@@ -382,7 +383,7 @@ async fn import_and_export_round_trip_a_file() {
         let chunk = ok(
             &state,
             Command::DatabaseExportChunk {
-                id: ID.into(),
+                name: ID.into(),
                 export_id: export_id.clone(),
                 offset: exported.len() as u64,
             },
@@ -397,7 +398,7 @@ async fn import_and_export_round_trip_a_file() {
     ok(
         &state,
         Command::FinishDatabaseExport {
-            id: ID.into(),
+            name: ID.into(),
             export_id,
         },
     )
@@ -417,7 +418,7 @@ async fn import_and_export_round_trip_a_file() {
     let upload = ok(
         &state,
         Command::BeginDatabaseImport {
-            id: ID.into(),
+            name: ID.into(),
             size_bytes: bytes.len() as u64,
             sha256: hex::encode(Sha256::digest(&bytes)),
         },
@@ -429,7 +430,7 @@ async fn import_and_export_round_trip_a_file() {
         ok(
             &state,
             Command::DatabaseImportChunk {
-                id: ID.into(),
+                name: ID.into(),
                 upload_id: upload_id.clone(),
                 offset: (index * chunk) as u64,
                 data_base64: BASE64.encode(part),
@@ -440,7 +441,7 @@ async fn import_and_export_round_trip_a_file() {
     ok(
         &state,
         Command::FinishDatabaseImport {
-            id: ID.into(),
+            name: ID.into(),
             upload_id,
         },
     )
@@ -452,7 +453,7 @@ async fn import_and_export_round_trip_a_file() {
     let upload = ok(
         &state,
         Command::BeginDatabaseImport {
-            id: ID.into(),
+            name: ID.into(),
             size_bytes: garbage.len() as u64,
             sha256: hex::encode(Sha256::digest(&garbage)),
         },
@@ -462,7 +463,7 @@ async fn import_and_export_round_trip_a_file() {
     ok(
         &state,
         Command::DatabaseImportChunk {
-            id: ID.into(),
+            name: ID.into(),
             upload_id: upload_id.clone(),
             offset: 0,
             data_base64: BASE64.encode(&garbage),
@@ -472,7 +473,7 @@ async fn import_and_export_round_trip_a_file() {
     error(
         &state,
         Command::FinishDatabaseImport {
-            id: ID.into(),
+            name: ID.into(),
             upload_id,
         },
     )
@@ -488,8 +489,8 @@ async fn deleting_a_database_revokes_its_grants() {
     let duplicate = error(
         &state,
         Command::CreateDatabase {
-            id: ID.into(),
-            name: "shop".into(),
+            name: ID.into(),
+            generation: GENERATION.into(),
             backup_key_base64: key(),
             backup: None,
         },
@@ -497,7 +498,7 @@ async fn deleting_a_database_revokes_its_grants() {
     .await;
     assert!(duplicate.contains("already exists"));
 
-    const OTHER: &str = "fedcba9876543210fedcba9876543210";
+    const OTHER: &str = "orders";
     create(&state, OTHER, None).await;
     let granted = ok(
         &state,
@@ -509,7 +510,7 @@ async fn deleting_a_database_revokes_its_grants() {
     .await;
     // Grants can outlive the deployments that used them: deleting revokes
     // this database from them and keeps the environment's other grants.
-    ok(&state, Command::DeleteDatabase { id: ID.into() }).await;
+    ok(&state, Command::DeleteDatabase { name: ID.into() }).await;
     let grants = state.state_store.all_database_grants().unwrap();
     let grant = &grants["web/production"];
     assert_eq!(
@@ -521,7 +522,7 @@ async fn deleting_a_database_revokes_its_grants() {
     error(
         &state,
         Command::DatabaseStatus {
-            id: Some(ID.into()),
+            name: Some(ID.into()),
         },
     )
     .await;
@@ -537,7 +538,7 @@ async fn latest_restores_skip_the_safety_copies_restores_take() {
     ok(
         &state,
         Command::SnapshotDatabase {
-            id: ID.into(),
+            name: ID.into(),
             reason: SnapshotReason::Manual,
             app: None,
         },
@@ -545,7 +546,7 @@ async fn latest_restores_skip_the_safety_copies_restores_take() {
     .await;
     query(&state, ID, "INSERT INTO items VALUES ('bad')").await;
     let latest = || Command::RestoreDatabase {
-        id: ID.into(),
+        name: ID.into(),
         snapshot: None,
         backup_key_base64: None,
     };
@@ -567,7 +568,7 @@ async fn shell_statements_cannot_leave_a_transaction_open() {
     let begin = error(
         &state,
         Command::QueryDatabase {
-            id: ID.into(),
+            name: ID.into(),
             sql: "BEGIN".into(),
         },
     )
@@ -585,7 +586,7 @@ async fn admin_queries_keep_the_engine_restrictions() {
     let attach = error(
         &state,
         Command::QueryDatabase {
-            id: ID.into(),
+            name: ID.into(),
             sql: "ATTACH DATABASE '/etc/passwd' AS escape".into(),
         },
     )

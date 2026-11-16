@@ -670,19 +670,19 @@ mod tests {
 
     #[test]
     fn database_administration_requires_server_administrator_permission() {
-        let id = "0123456789abcdef0123456789abcdef";
+        let id = "shop";
         for command in [
-            json!({"command":"create_database","id":id,"name":"main","backup_key_base64":"a2V5"}),
-            json!({"command":"delete_database","id":id}),
+            json!({"command":"create_database","name":id,"generation":"0123456789abcdef0123456789abcdef","backup_key_base64":"a2V5"}),
+            json!({"command":"delete_database","name":id}),
             json!({"command":"database_status"}),
-            json!({"command":"configure_database_backup","id":id,"backup":null}),
+            json!({"command":"configure_database_backup","name":id,"backup":null}),
             json!({"command":"grant_databases","app":"demo/staging","databases":[id]}),
-            json!({"command":"snapshot_database","id":id,"reason":"manual","app":null}),
-            json!({"command":"list_database_snapshots","id":id}),
-            json!({"command":"restore_database","id":id}),
-            json!({"command":"query_database","id":id,"sql":"SELECT 1"}),
-            json!({"command":"begin_database_import","id":id,"size_bytes":1,"sha256":"00"}),
-            json!({"command":"begin_database_export","id":id}),
+            json!({"command":"snapshot_database","name":id,"reason":"manual","app":null}),
+            json!({"command":"list_database_snapshots","name":id}),
+            json!({"command":"restore_database","name":id}),
+            json!({"command":"query_database","name":id,"sql":"SELECT 1"}),
+            json!({"command":"begin_database_import","name":id,"size_bytes":1,"sha256":"00"}),
+            json!({"command":"begin_database_export","name":id}),
         ] {
             let command: Command = serde_json::from_value(command).unwrap();
             assert_eq!(classify(&command), CommandClass::ServerAdmin, "{command:?}");
@@ -690,7 +690,7 @@ mod tests {
         // The pre-release snapshot is the app deployer's; the server checks the
         // app uses the database.
         let release: Command = serde_json::from_value(json!({
-            "command": "snapshot_database", "id": id, "reason": "release", "app": "demo/staging"
+            "command": "snapshot_database", "name": id, "reason": "release", "app": "demo/staging"
         }))
         .unwrap();
         assert!(
@@ -703,7 +703,7 @@ mod tests {
     #[test]
     fn scoped_deploys_cannot_change_database_bindings() {
         let f = Fixture::new();
-        let binding = json!({"main": {"id": "0123456789abcdef0123456789abcdef", "server": "edge"}});
+        let binding = json!({"main": {"name": "shop", "server": "edge"}});
         let deploy = f.decode_command(json!({"command":"deploy","databases":binding}));
         assert_eq!(f.authorize(&deploy), Err(DATABASES_DENIED));
         let release = f.decode_command(json!({"command":"run_release","databases":binding}));
@@ -718,17 +718,17 @@ mod tests {
         f.databases.insert(
             "main".into(),
             DatabaseBinding {
-                id: "0123456789abcdef0123456789abcdef".into(),
+                name: "shop".into(),
                 server: "edge".into(),
                 access: tako_core::DatabaseAccess::Network,
                 peer_key: Some("issued-by-edge".into()),
             },
         );
         // Deployers without administration never see peer keys.
-        let same = json!({"main": {"id": "0123456789abcdef0123456789abcdef", "server": "edge", "access": "network"}});
+        let same = json!({"main": {"name": "shop", "server": "edge", "access": "network"}});
         let release = f.decode_command(json!({"command":"run_release","databases":same}));
         assert_eq!(f.authorize(&release), Ok(()));
-        let moved = json!({"main": {"id": "0123456789abcdef0123456789abcdef", "server": "other", "access": "network"}});
+        let moved = json!({"main": {"name": "shop", "server": "other", "access": "network"}});
         let release = f.decode_command(json!({"command":"run_release","databases":moved}));
         assert_eq!(f.authorize(&release), Err(DATABASES_DENIED));
     }

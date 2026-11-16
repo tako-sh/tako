@@ -163,7 +163,7 @@ impl Databases {
                 if seen.insert(binding.token.clone()) {
                     bindings.push(Binding {
                         token_hash: tako_database::hash_token(&binding.token),
-                        database: match DatabaseId::parse(&binding.binding.id) {
+                        database: match DatabaseId::parse(&binding.binding.name) {
                             Ok(id) => id,
                             Err(_) => continue,
                         },
@@ -202,17 +202,17 @@ impl Databases {
         let mut prepared = HashMap::new();
         for (name, binding) in requested {
             tako_core::validate_database_name(&name)?;
-            tako_core::validate_database_id(&binding.id)?;
+            tako_core::validate_database_name(&binding.name)?;
             let local = match &own {
                 Some(own) => own == &binding.server,
                 None => true,
             };
             if local {
-                let id = DatabaseId::parse(&binding.id)?;
+                let id = DatabaseId::parse(&binding.name)?;
                 if !self.host.is_registered(&id) {
                     return Err(format!(
                         "Database binding `{name}` names database {} that is not hosted on this server.",
-                        binding.id
+                        binding.name
                     ));
                 }
             } else if binding.access != DatabaseAccess::Network {
@@ -222,7 +222,7 @@ impl Databases {
             }
             let existing = previous
                 .get(&name)
-                .filter(|existing| existing.binding.id == binding.id);
+                .filter(|existing| existing.binding.name == binding.name);
             let token = existing
                 .map(|existing| existing.token.clone())
                 .unwrap_or_else(tako_database::generate_token);
@@ -251,7 +251,7 @@ impl Databases {
                 && let Some(current) = config
                     .databases
                     .get(name)
-                    .filter(|current| current.binding.id == binding.id)
+                    .filter(|current| current.binding.name == binding.name)
             {
                 binding.peer_key = current.binding.peer_key.clone();
             }
@@ -324,17 +324,17 @@ impl ServerState {
             .list_databases()
             .map_err(|e| format!("read databases: {e}"))?;
         for database in stored {
-            let id = DatabaseId::parse(&database.id)?;
-            let path = databases.database_path(&database.id);
+            let id = DatabaseId::parse(&database.name)?;
+            let path = databases.database_path(&database.name);
             let host = databases.host.clone();
             let registered = tokio::task::spawn_blocking(move || host.register(id, path)).await;
             match registered {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => {
-                    tracing::error!(database = %database.id, %error, "Failed to open database");
+                    tracing::error!(database = %database.name, %error, "Failed to open database");
                 }
                 Err(error) => {
-                    tracing::error!(database = %database.id, %error, "Failed to open database")
+                    tracing::error!(database = %database.name, %error, "Failed to open database")
                 }
             }
         }
@@ -465,53 +465,53 @@ impl ServerState {
         use tako_core::Command;
         let result = match command {
             Command::CreateDatabase {
-                id,
                 name,
+                generation,
                 backup_key_base64,
                 backup,
             } => {
-                self.create_database(id, name, backup_key_base64, backup)
+                self.create_database(name, generation, backup_key_base64, backup)
                     .await
             }
-            Command::DeleteDatabase { id } => self.delete_database(&id).await,
-            Command::DatabaseStatus { id } => self.database_status(id.as_deref()),
-            Command::ConfigureDatabaseBackup { id, backup } => {
-                self.configure_database_backup(&id, backup)
+            Command::DeleteDatabase { name } => self.delete_database(&name).await,
+            Command::DatabaseStatus { name } => self.database_status(name.as_deref()),
+            Command::ConfigureDatabaseBackup { name, backup } => {
+                self.configure_database_backup(&name, backup)
             }
             Command::GrantDatabases { app, databases } => self.grant_databases(&app, databases),
-            Command::SnapshotDatabase { id, reason, app } => {
-                self.snapshot_database_command(&id, reason, app.as_deref())
+            Command::SnapshotDatabase { name, reason, app } => {
+                self.snapshot_database_command(&name, reason, app.as_deref())
                     .await
             }
-            Command::ListDatabaseSnapshots { id } => snapshots::list_command(self, &id).await,
+            Command::ListDatabaseSnapshots { name } => snapshots::list_command(self, &name).await,
             Command::RestoreDatabase {
-                id,
+                name,
                 snapshot,
                 backup_key_base64,
-            } => snapshots::restore(self, &id, snapshot.as_deref(), backup_key_base64).await,
-            Command::QueryDatabase { id, sql } => self.query_database(&id, sql).await,
+            } => snapshots::restore(self, &name, snapshot.as_deref(), backup_key_base64).await,
+            Command::QueryDatabase { name, sql } => self.query_database(&name, sql).await,
             Command::BeginDatabaseImport {
-                id,
+                name,
                 size_bytes,
                 sha256,
-            } => transfer::begin_import(self, &id, size_bytes, &sha256).await,
+            } => transfer::begin_import(self, &name, size_bytes, &sha256).await,
             Command::DatabaseImportChunk {
-                id,
+                name,
                 upload_id,
                 offset,
                 data_base64,
-            } => transfer::import_chunk(self, &id, &upload_id, offset, &data_base64).await,
-            Command::FinishDatabaseImport { id, upload_id } => {
-                transfer::finish_import(self, &id, &upload_id).await
+            } => transfer::import_chunk(self, &name, &upload_id, offset, &data_base64).await,
+            Command::FinishDatabaseImport { name, upload_id } => {
+                transfer::finish_import(self, &name, &upload_id).await
             }
-            Command::BeginDatabaseExport { id } => transfer::begin_export(self, &id).await,
+            Command::BeginDatabaseExport { name } => transfer::begin_export(self, &name).await,
             Command::DatabaseExportChunk {
-                id,
+                name,
                 export_id,
                 offset,
-            } => transfer::export_chunk(self, &id, &export_id, offset).await,
-            Command::FinishDatabaseExport { id, export_id } => {
-                transfer::finish_export(self, &id, &export_id)
+            } => transfer::export_chunk(self, &name, &export_id, offset).await,
+            Command::FinishDatabaseExport { name, export_id } => {
+                transfer::finish_export(self, &name, &export_id)
             }
             _ => Err("not a database command".to_string()),
         };
@@ -522,7 +522,7 @@ impl ServerState {
     }
 
     pub(crate) fn hosted_database(&self, id: &str) -> Result<StoredDatabase, String> {
-        tako_core::validate_database_id(id)?;
+        tako_core::validate_database_name(id)?;
         self.state_store
             .get_database(id)
             .map_err(|e| format!("read database: {e}"))?
@@ -532,12 +532,12 @@ impl ServerState {
     async fn create_database(
         &self,
         id: String,
-        name: String,
+        generation: String,
         backup_key_base64: String,
         backup: Option<StorageBinding>,
     ) -> Result<serde_json::Value, String> {
-        tako_core::validate_database_id(&id)?;
-        tako_core::validate_database_name(&name)?;
+        tako_core::validate_database_name(&id)?;
+        tako_core::validate_database_generation(&generation)?;
         decode_backup_key(&backup_key_base64)?;
         if let Some(backup) = &backup {
             validate_backup_storage(backup)?;
@@ -559,8 +559,8 @@ impl ServerState {
             .map_err(|e| e.to_string())?
             .map_err(|e| format!("create database file: {e}"))?;
         let stored = StoredDatabase {
-            id: id.clone(),
-            name,
+            name: id.clone(),
+            generation,
             created_at_unix_secs: now_unix_secs(),
             secrets: DatabaseSecrets {
                 backup_key_base64,
@@ -579,7 +579,7 @@ impl ServerState {
             .map_err(|e| e.to_string())?;
         // Nothing to snapshot until something is written.
         self.databases.host.clear_changed(&DatabaseId::parse(&id)?);
-        tracing::info!(database = %id, name = %stored.name, "Created database");
+        tracing::info!(database = %id, "Created database");
         Ok(serde_json::to_value(self.database_info(&stored)).expect("info serializes"))
     }
 
@@ -649,7 +649,7 @@ impl ServerState {
                 }
             })?;
         self.databases.backups.lock().remove(id);
-        tracing::info!(database = %id, name = %stored.name, "Deleted database");
+        tracing::info!(database = %stored.name, "Deleted database");
         Ok(serde_json::json!({"deleted": id}))
     }
 
@@ -673,7 +673,7 @@ impl ServerState {
                 if config
                     .databases
                     .values()
-                    .any(|binding| binding.binding.id == stored.id)
+                    .any(|binding| binding.binding.name == stored.name)
                 {
                     bindings.insert(config.deployment_id());
                 }
@@ -684,15 +684,14 @@ impl ServerState {
             .all_database_grants()
             .unwrap_or_default()
             .into_iter()
-            .filter(|(_, grant)| grant.databases.contains(&stored.id))
+            .filter(|(_, grant)| grant.databases.contains(&stored.name))
             .map(|(scope, _)| scope)
             .collect();
-        let size_bytes = DatabaseId::parse(&stored.id)
+        let size_bytes = DatabaseId::parse(&stored.name)
             .ok()
             .and_then(|id| self.databases.host.size_bytes(&id))
             .unwrap_or(0);
         DatabaseInfo {
-            id: stored.id.clone(),
             name: stored.name.clone(),
             created_at_unix_secs: stored.created_at_unix_secs,
             size_bytes,
@@ -771,7 +770,7 @@ impl ServerState {
                 .read()
                 .databases
                 .values()
-                .any(|binding| binding.binding.id == id)
+                .any(|binding| binding.binding.name == id)
         });
         bound
             || self
@@ -911,7 +910,7 @@ mod tests {
 
     fn binding(server: &str, key: Option<&str>) -> DatabaseBinding {
         DatabaseBinding {
-            id: "0123456789abcdef0123456789abcdef".into(),
+            name: "shop".into(),
             server: server.into(),
             access: DatabaseAccess::Network,
             peer_key: key.map(str::to_owned),

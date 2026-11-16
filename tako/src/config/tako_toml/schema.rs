@@ -228,27 +228,17 @@ pub struct BackupConfig {
     pub storage: String,
 }
 
-/// A Tako-hosted database from [databases.*].
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Settings for a Tako-hosted database, from `[databases.<name>]`. The
+/// database itself, its server and access, live in the network's records;
+/// this table is needed only to override the environment's backup storage.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct DatabaseResourceConfig {
-    /// Stable database ID: 32 lowercase hexadecimal characters.
-    #[cfg_attr(test, schemars(regex(pattern = r"^[0-9a-f]{32}$")))]
-    pub id: String,
-    /// The server that hosts the database: an enrolled server name or device ID.
-    pub server: String,
     /// Private S3-compatible storage resource that receives snapshots.
+    /// Defaults to the deploying environment's `backup.storage`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backup: Option<String>,
-    /// `local` (default): only apps on the database's server may use it.
-    /// `network`: apps on any server of the network may use it.
-    #[serde(default, skip_serializing_if = "is_local_access")]
-    pub access: tako_core::DatabaseAccess,
-}
-
-fn is_local_access(access: &tako_core::DatabaseAccess) -> bool {
-    *access == tako_core::DatabaseAccess::Local
 }
 
 /// S3-compatible storage resource from [storages.*]. Credentials are stored

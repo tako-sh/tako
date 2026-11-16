@@ -434,6 +434,25 @@ fn decrypt_s3_storage_binding(
 
 /// The decrypted storage binding a database's snapshots upload to, from the
 /// `backup` storage resource of its `[databases.<name>]` entry.
+/// The storage resource that receives a database's snapshots, and the
+/// setting that names it: `[databases.<name>].backup`, else the
+/// environment's `backup.storage`.
+pub(crate) fn database_backup_setting(
+    config: &TakoToml,
+    env: &str,
+    database_name: &str,
+) -> Option<(String, String)> {
+    if let Some(backup) = config
+        .databases
+        .get(database_name)
+        .and_then(|database| database.backup.clone())
+    {
+        return Some((backup, format!("[databases.{database_name}].backup")));
+    }
+    let storage = config.envs.get(env)?.backup.as_ref()?.storage.clone();
+    Some((storage, format!("[envs.{env}].backup.storage")))
+}
+
 pub(crate) fn decrypt_database_backup_storage(
     env: &str,
     config: &TakoToml,
@@ -441,25 +460,23 @@ pub(crate) fn decrypt_database_backup_storage(
     secrets: &crate::config::SecretsStore,
     usage_path: Option<&Path>,
 ) -> Result<Option<tako_core::StorageBinding>, Box<dyn std::error::Error>> {
-    let Some(database) = config.databases.get(database_name) else {
+    let Some((resource_name, setting)) = database_backup_setting(config, env, database_name) else {
         return Ok(None);
     };
-    let Some(resource_name) = database.backup.as_deref() else {
-        return Ok(None);
-    };
-    let resource = config.storages.get(resource_name).ok_or_else(|| {
-        format!("[databases.{database_name}].backup references missing storage '{resource_name}'")
-    })?;
+    let resource = config
+        .storages
+        .get(&resource_name)
+        .ok_or_else(|| format!("{setting} references missing storage '{resource_name}'"))?;
     if resource.provider != tako_core::StorageProvider::S3 || resource.public_base_url.is_some() {
         return Err(format!(
-            "[databases.{database_name}].backup storage '{resource_name}' must be private S3-compatible storage"
+            "{setting} storage '{resource_name}' must be private S3-compatible storage"
         )
         .into());
     }
     let mut key_cache = None;
     let mut binding = decrypt_s3_storage_binding(
         env,
-        resource_name,
+        &resource_name,
         resource,
         secrets,
         usage_path,
