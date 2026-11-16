@@ -6,7 +6,7 @@ use crate::crypto::{EncryptionKey, decrypt, encrypt};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(super) struct RowKey {
-    pub kind: SecretKind,
+    pub kind: RecordKind,
     pub name: String,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,7 +38,7 @@ pub(super) fn rows(values: Option<&EnvironmentSecrets>) -> Result<Rows> {
     };
     for (name, value) in &values.app {
         add(
-            SecretKind::App,
+            RecordKind::App,
             name,
             &value.value,
             value.expires_on.clone(),
@@ -46,7 +46,7 @@ pub(super) fn rows(values: Option<&EnvironmentSecrets>) -> Result<Rows> {
     }
     for (name, value) in &values.credentials {
         add(
-            SecretKind::Credential,
+            RecordKind::Credential,
             name,
             &value.value,
             value.expires_on.clone(),
@@ -54,19 +54,35 @@ pub(super) fn rows(values: Option<&EnvironmentSecrets>) -> Result<Rows> {
     }
     for (name, value) in &values.storages {
         add(
-            SecretKind::Storage,
+            RecordKind::Storage,
             name,
             &serde_json::to_string(value)?,
             None,
         );
     }
     for value in &values.backup_keys {
-        add(SecretKind::BackupKey, &value.id, &value.value, None);
+        add(RecordKind::BackupKey, &value.id, &value.value, None);
     }
     if let Some(active) = values.backup_keys.last() {
-        add(SecretKind::BackupActive, "active", &active.id, None);
+        add(RecordKind::BackupActive, "active", &active.id, None);
     }
     Ok(rows)
+}
+
+/// The order to publish changed rows in. Pending publications drain in this
+/// order, so a backup key is published before the selection that makes it
+/// active, and is removed only after the selection stops naming it.
+pub(super) fn publication_order(dirty: BTreeSet<RowKey>, current: &Rows) -> Vec<RowKey> {
+    let mut order: Vec<_> = dirty.into_iter().collect();
+    order.sort_by_key(|key| {
+        let phase = match key.kind {
+            RecordKind::BackupActive => 1,
+            RecordKind::BackupKey if !current.contains_key(key) => 2,
+            _ => 0,
+        };
+        (phase, key.clone())
+    });
+    order
 }
 
 pub(super) fn environment(key_id: String, rows: &Rows) -> Result<EnvironmentSecrets> {
@@ -78,23 +94,23 @@ pub(super) fn environment(key_id: String, rows: &Rows) -> Result<EnvironmentSecr
     for row in rows.values() {
         let value = EncryptedSecretValue::new(row.value.clone(), row.expires_on.clone());
         match row.key.kind {
-            SecretKind::App => {
+            RecordKind::App => {
                 env.app.insert(row.key.name.clone(), value);
             }
-            SecretKind::Credential => {
+            RecordKind::Credential => {
                 env.credentials.insert(row.key.name.clone(), value);
             }
-            SecretKind::Storage => {
+            RecordKind::Storage => {
                 env.storages
                     .insert(row.key.name.clone(), serde_json::from_str(&row.value)?);
             }
-            SecretKind::BackupKey => env.backup_keys.push(EncryptedBackupKey::new(
+            RecordKind::BackupKey => env.backup_keys.push(EncryptedBackupKey::new(
                 row.key.name.clone(),
                 row.value.clone(),
             )),
-            SecretKind::BackupActive => active = Some(row.value.clone()),
+            RecordKind::BackupActive => active = Some(row.value.clone()),
             // Database records belong to the network, not an environment.
-            SecretKind::Database | SecretKind::DatabaseKey => {}
+            RecordKind::Database | RecordKind::DatabaseKey => {}
         }
     }
     if let Some(active) = active {
@@ -116,10 +132,10 @@ pub(super) fn environment(key_id: String, rows: &Rows) -> Result<EnvironmentSecr
     Ok(env)
 }
 
-pub(super) fn plaintext(row: &Row, key: &EncryptionKey) -> Result<SecretContent> {
+pub(super) fn plaintext(row: &Row, key: &EncryptionKey) -> Result<RecordContent> {
     let value = match row.key.kind {
-        SecretKind::BackupActive => row.value.clone(),
-        SecretKind::Storage => {
+        RecordKind::BackupActive => row.value.clone(),
+        RecordKind::Storage => {
             let mut credentials: EncryptedStorageCredentials = serde_json::from_str(&row.value)?;
             credentials.access_key_id.value = decrypt(&credentials.access_key_id.value, key)?;
             credentials.secret_access_key.value =
@@ -128,7 +144,7 @@ pub(super) fn plaintext(row: &Row, key: &EncryptionKey) -> Result<SecretContent>
         }
         _ => decrypt(&row.value, key)?,
     };
-    Ok(SecretContent {
+    Ok(RecordContent {
         value: Zeroizing::new(value),
         expires_on: row.expires_on.clone(),
     })
@@ -136,16 +152,16 @@ pub(super) fn plaintext(row: &Row, key: &EncryptionKey) -> Result<SecretContent>
 
 pub(super) fn encrypted(
     key: RowKey,
-    content: SecretContent,
+    content: RecordContent,
     encryption: &EncryptionKey,
 ) -> Result<Row> {
     content.validate()?;
     let value = match key.kind {
-        SecretKind::BackupActive => {
+        RecordKind::BackupActive => {
             crate::config::validate_backup_key_id(&content.value)?;
             content.value.to_string()
         }
-        SecretKind::Storage => {
+        RecordKind::Storage => {
             let mut credentials: EncryptedStorageCredentials =
                 serde_json::from_str(&content.value)?;
             credentials.access_key_id.value =

@@ -73,10 +73,10 @@ pub(super) fn worker(
                 if let Err(error) = now().and_then(|time| {
                     controller
                         .runtime
-                        .reconcile_secret_grants(time)
+                        .reconcile_record_keys(time)
                         .map_err(Into::into)
                 }) {
-                    tracing::warn!(error = %error, "shared secret key reconciliation pending");
+                    tracing::warn!(error = %error, "record key reconciliation pending");
                 }
             }
             next = Instant::now() + Duration::from_secs(2);

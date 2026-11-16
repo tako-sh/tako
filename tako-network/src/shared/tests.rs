@@ -64,10 +64,10 @@ fn admit(
     id
 }
 
-fn address(name: &str) -> SecretAddress {
-    SecretAddress {
+fn address(name: &str) -> RecordAddress {
+    RecordAddress {
         scope: "shop/production".parse().unwrap(),
-        kind: SecretKind::App,
+        kind: RecordKind::App,
         name: name.into(),
     }
 }
@@ -78,9 +78,9 @@ fn record(
     name: &str,
     revision: u64,
     value: Option<&[u8]>,
-) -> SecretRecord {
-    SecretRecord::encrypt(
-        &SecretMutation {
+) -> SharedRecord {
+    SharedRecord::create(
+        &RecordMutation {
             observed_revision: 0,
             expires_at: 86400,
             id: RequestId::random().unwrap(),
@@ -101,12 +101,12 @@ fn record(
 fn independent_names_merge_and_stale_caches_cannot_resurrect_deletions() {
     let (registry, _, admin) = bootstrap();
     let mut left = SharedSnapshot::empty(registry.network.id.clone());
-    left.append_secret(&record(&registry, &admin, "API_KEY", 1, Some(b"first")))
+    left.append_record(&record(&registry, &admin, "API_KEY", 1, Some(b"first")))
         .unwrap();
     let stale = left.clone();
     let mut right = stale.clone();
     right
-        .append_secret(&record(
+        .append_record(&record(
             &registry,
             &admin,
             "DATABASE_URL",
@@ -114,7 +114,7 @@ fn independent_names_merge_and_stale_caches_cannot_resurrect_deletions() {
             Some(b"database"),
         ))
         .unwrap();
-    left.append_secret(&record(&registry, &admin, "API_KEY", 2, None))
+    left.append_record(&record(&registry, &admin, "API_KEY", 2, None))
         .unwrap();
     let left_before = left.clone();
     left.merge(&right).unwrap();
@@ -122,7 +122,7 @@ fn independent_names_merge_and_stale_caches_cannot_resurrect_deletions() {
     left.merge(&stale).unwrap();
     assert_eq!(left.latest().unwrap(), right.latest().unwrap());
     let latest = left.latest().unwrap();
-    assert!(latest[&address("API_KEY")].value.is_none());
+    assert!(latest[&address("API_KEY")].is_deletion());
     assert!(latest[&address("DATABASE_URL")].value.is_some());
 }
 
@@ -135,15 +135,15 @@ fn concurrent_same_name_edits_converge_and_exact_redelivery_is_idempotent() {
     for values in [[&a, &b], [&b, &a]] {
         let mut state = SharedSnapshot::empty(registry.network.id.clone());
         for value in values {
-            state.append_secret(value).unwrap();
+            state.append_record(value).unwrap();
         }
-        state.append_secret(&a).unwrap();
-        assert_eq!(state.secrets.len(), 1);
+        state.append_record(&a).unwrap();
+        assert_eq!(state.records.len(), 1);
         assert_eq!(state.latest().unwrap()[&address("API_KEY")], winner);
         let mut conflict = winner.clone();
         conflict.revision += 1;
-        assert!(state.append_secret(&conflict).is_err());
-        assert_eq!(state.secrets.len(), 1);
+        assert!(state.append_record(&conflict).is_err());
+        assert_eq!(state.records.len(), 1);
     }
 }
 
@@ -152,7 +152,7 @@ fn new_members_receive_key_grants_and_revocation_excludes_future_values() {
     let (mut registry, admin_keys, admin) = bootstrap();
     let mut state = SharedSnapshot::empty(registry.network.id.clone());
     let old = record(&registry, &admin, "API_KEY", 1, Some(b"old value"));
-    state.append_secret(&old).unwrap();
+    state.append_record(&old).unwrap();
     let client = LocalDeviceKeys::generate().unwrap();
     let client_id = admit(
         &mut registry,
@@ -163,14 +163,14 @@ fn new_members_receive_key_grants_and_revocation_excludes_future_values() {
             ..Default::default()
         },
     );
-    assert!(old.decrypt(&state, &client, &client_id).is_err());
+    assert!(old.open(&state, &client, &client_id).is_err());
     let effective = registry.effective_members(2).unwrap();
     let grant = old
         .grant(&state, &admin_keys, &admin, effective[&client_id])
         .unwrap();
-    state.append_secret(&grant).unwrap();
+    state.append_record(&grant).unwrap();
     assert_eq!(
-        &*grant.decrypt(&state, &client, &client_id).unwrap().unwrap(),
+        &*grant.open(&state, &client, &client_id).unwrap().unwrap(),
         b"old value"
     );
     assert_eq!(state.latest().unwrap()[&address("API_KEY")].revision, 1);
@@ -178,8 +178,8 @@ fn new_members_receive_key_grants_and_revocation_excludes_future_values() {
         .plan_revocation(RevocationId::random().unwrap(), &admin, &client_id, 3)
         .unwrap();
     registry.revocations.push(denial);
-    let new = SecretRecord::encrypt(
-        &SecretMutation {
+    let new = SharedRecord::create(
+        &RecordMutation {
             observed_revision: 0,
             expires_at: 86400,
             id: RequestId::random().unwrap(),
@@ -195,15 +195,15 @@ fn new_members_receive_key_grants_and_revocation_excludes_future_values() {
     )
     .unwrap();
     assert!(!new.keys.contains_key(&client_id));
-    state.append_secret(&new).unwrap();
-    assert!(new.decrypt(&state, &client, &client_id).is_err());
+    state.append_record(&new).unwrap();
+    assert!(new.open(&state, &client, &client_id).is_err());
     assert_eq!(
-        &*new.decrypt(&state, &admin_keys, &admin).unwrap().unwrap(),
+        &*new.open(&state, &admin_keys, &admin).unwrap().unwrap(),
         b"new value"
     );
     // Revocation cannot make already-disclosed plaintext disappear.
     assert_eq!(
-        &*grant.decrypt(&state, &client, &client_id).unwrap().unwrap(),
+        &*grant.open(&state, &client, &client_id).unwrap().unwrap(),
         b"old value"
     );
 }
@@ -220,11 +220,11 @@ fn scopes_and_administrative_categories_do_not_share_implicit_access() {
     other.scope = "shop/staging".parse().unwrap();
     assert!(!other.readable(&scoped));
     for kind in [
-        SecretKind::Credential,
-        SecretKind::BackupKey,
-        SecretKind::Storage,
-        SecretKind::BackupActive,
-        SecretKind::DatabaseKey,
+        RecordKind::Credential,
+        RecordKind::BackupKey,
+        RecordKind::Storage,
+        RecordKind::BackupActive,
+        RecordKind::DatabaseKey,
     ] {
         other.kind = kind;
         other.scope = "shop/production".parse().unwrap();
@@ -248,19 +248,19 @@ fn deployers_read_database_records_but_not_their_keys() {
         server_admin: true,
         ..Default::default()
     };
-    let record = |kind| SecretAddress {
+    let record = |kind| RecordAddress {
         scope: DATABASE_SCOPE.parse().unwrap(),
         kind,
         name: "shop".into(),
     };
-    let directory = record(SecretKind::Database);
+    let directory = record(RecordKind::Database);
     assert!(directory.readable(&scoped));
     assert!(!directory.writable(&scoped), "only administrators publish");
     assert!(
         !directory.readable(&Permissions::default()),
         "members that cannot deploy do not need them"
     );
-    let key = record(SecretKind::DatabaseKey);
+    let key = record(RecordKind::DatabaseKey);
     assert!(!key.readable(&scoped));
     assert!(key.readable(&admin) && key.writable(&admin));
     // A database record outside the database scope grants nothing.
@@ -274,7 +274,7 @@ fn ciphertext_is_bound_to_network_scope_name_and_operation() {
     let (registry, keys, admin) = bootstrap();
     let mut state = SharedSnapshot::empty(registry.network.id.clone());
     let original = record(&registry, &admin, "API_KEY", 1, Some(b"private"));
-    state.append_secret(&original).unwrap();
+    state.append_record(&original).unwrap();
     for variant in 0..4 {
         let mut changed = original.clone();
         let mut changed_state = state.clone();
@@ -284,7 +284,7 @@ fn ciphertext_is_bound_to_network_scope_name_and_operation() {
             2 => changed.id = RequestId::random().unwrap(),
             _ => changed_state.network = NetworkId::random().unwrap(),
         }
-        assert!(changed.decrypt(&changed_state, &keys, &admin).is_err());
+        assert!(changed.open(&changed_state, &keys, &admin).is_err());
     }
 }
 
@@ -296,22 +296,22 @@ fn overwrites_do_not_consume_lifetime_capacity_and_backup_key_ids_stay_distinct(
     for revision in 1..=MAX_SHARED_RECORDS as u64 + 1 {
         deletion.id = RequestId::random().unwrap();
         deletion.revision = revision;
-        state.append_secret(&deletion).unwrap();
+        state.append_record(&deletion).unwrap();
     }
-    assert_eq!(state.secrets.len(), 1);
-    assert_eq!(state.secrets[0].revision, MAX_SHARED_RECORDS as u64 + 1);
+    assert_eq!(state.records.len(), 1);
+    assert_eq!(state.records[0].revision, MAX_SHARED_RECORDS as u64 + 1);
     for name in ["backup-key-one", "backup-key-two"] {
-        let mutation = SecretMutation {
+        let mutation = RecordMutation {
             id: RequestId::random().unwrap(),
             observed_revision: 0,
             expires_at: 86400,
-            address: SecretAddress {
-                kind: SecretKind::BackupKey,
+            address: RecordAddress {
+                kind: RecordKind::BackupKey,
                 ..address(name)
             },
             value: None,
         };
-        let value = SecretRecord::encrypt(
+        let value = SharedRecord::create(
             &mutation,
             Some(b"backup-key"),
             1,
@@ -321,16 +321,16 @@ fn overwrites_do_not_consume_lifetime_capacity_and_backup_key_ids_stay_distinct(
             2,
         )
         .unwrap();
-        state.append_secret(&value).unwrap();
+        state.append_record(&value).unwrap();
     }
-    assert_eq!(state.secrets.len(), 3);
+    assert_eq!(state.records.len(), 3);
     for value in state
-        .secrets
+        .records
         .iter()
-        .filter(|value| value.address.kind == SecretKind::BackupKey)
+        .filter(|value| value.address.kind == RecordKind::BackupKey)
     {
         assert_eq!(
-            &*value.decrypt(&state, &keys, &admin).unwrap().unwrap(),
+            &*value.open(&state, &keys, &admin).unwrap().unwrap(),
             b"backup-key"
         );
     }
@@ -342,7 +342,7 @@ fn concurrent_recipient_wraps_merge_and_legacy_grants_migrate_only_for_current_v
     let old = record(&registry, &admin, "TOKEN", 1, Some(b"obsolete"));
     let current = record(&registry, &admin, "TOKEN", 2, Some(b"current"));
     let mut initial = SharedSnapshot::empty(registry.network.id.clone());
-    initial.append_secret(&current).unwrap();
+    initial.append_record(&current).unwrap();
     let client = LocalDeviceKeys::generate().unwrap();
     let recipient = admit(
         &mut registry,
@@ -361,15 +361,15 @@ fn concurrent_recipient_wraps_merge_and_legacy_grants_migrate_only_for_current_v
         .grant(&initial, &keys, &admin, members[&recipient])
         .unwrap();
     let mut left = initial.clone();
-    left.append_secret(&a).unwrap();
-    left.append_secret(&b).unwrap();
+    left.append_record(&a).unwrap();
+    left.append_record(&b).unwrap();
     let mut right = initial.clone();
-    right.append_secret(&b).unwrap();
-    right.append_secret(&a).unwrap();
+    right.append_record(&b).unwrap();
+    right.append_record(&a).unwrap();
     assert_eq!(left, right);
     assert_eq!(
-        &*left.secrets[0]
-            .decrypt(&left, &client, &recipient)
+        &*left.records[0]
+            .open(&left, &client, &recipient)
             .unwrap()
             .unwrap(),
         b"current"
@@ -379,10 +379,10 @@ fn concurrent_recipient_wraps_merge_and_legacy_grants_migrate_only_for_current_v
         "grants": [{"record": a.id, "recipient": recipient, "issuer": admin, "key": a.keys[&recipient]}]
     });
     let migrated = SharedSnapshot::from_persisted(&serde_json::to_vec(&legacy).unwrap()).unwrap();
-    assert_eq!(migrated.secrets.len(), 1);
+    assert_eq!(migrated.records.len(), 1);
     assert_eq!(
-        &*migrated.secrets[0]
-            .decrypt(&migrated, &client, &recipient)
+        &*migrated.records[0]
+            .open(&migrated, &client, &recipient)
             .unwrap()
             .unwrap(),
         b"current"
@@ -402,7 +402,7 @@ fn legacy_grants_can_fill_the_shared_budget_without_losing_recipient_keys() {
     let current = record(&registry, &admin, "TOKEN", 1, Some(b"retained"));
     let initial = SharedSnapshot {
         network: registry.network.id.clone(),
-        secrets: vec![current.clone()],
+        records: vec![current.clone()],
     };
     let content_key = current.content_key(&initial, &admin_keys, &admin).unwrap();
     let mut recipients = Vec::new();
@@ -429,14 +429,14 @@ fn legacy_grants_can_fill_the_shared_budget_without_losing_recipient_keys() {
     .unwrap();
     assert!(legacy.len() < MAX_SHARED_BYTES);
     let migrated = SharedSnapshot::from_persisted(&legacy).unwrap();
-    assert_eq!(migrated.secrets.len(), 1);
-    assert_eq!(migrated.secrets[0].keys.len(), 801);
-    assert!(serde_json::to_vec(&migrated.secrets[0]).unwrap().len() > 128 * 1024);
+    assert_eq!(migrated.records.len(), 1);
+    assert_eq!(migrated.records[0].keys.len(), 801);
+    assert!(serde_json::to_vec(&migrated.records[0]).unwrap().len() > 128 * 1024);
     recipients.push((admin, admin_keys));
     for (id, keys) in &recipients {
         assert_eq!(
-            &*migrated.secrets[0]
-                .decrypt(&migrated, keys, id)
+            &*migrated.records[0]
+                .open(&migrated, keys, id)
                 .unwrap()
                 .unwrap(),
             b"retained"
@@ -470,12 +470,12 @@ fn folded_keys_remain_bounded_by_record_and_snapshot_capacity() {
     other.address.name = "OTHER".into();
     let mut state = SharedSnapshot {
         network: registry.network.id.clone(),
-        secrets: vec![value.clone()],
+        records: vec![value.clone()],
     };
     let before = state.clone();
     assert!(matches!(
-        state.append_secret(&other),
-        Err(RuntimeError::Capacity("shared secret state"))
+        state.append_record(&other),
+        Err(RuntimeError::Capacity("shared state"))
     ));
     assert_eq!(state, before);
     for i in 100..200 {
@@ -485,6 +485,137 @@ fn folded_keys_remain_bounded_by_record_and_snapshot_capacity() {
     }
     assert!(matches!(
         value.validate(),
-        Err(RuntimeError::Capacity("secret record"))
+        Err(RuntimeError::Capacity("shared record"))
     ));
+}
+
+fn selection(
+    registry: &RegistrySnapshot,
+    admin: &DeviceId,
+    revision: u64,
+    value: Option<&str>,
+) -> SharedRecord {
+    let content = value.map(|value| {
+        serde_json::to_vec(&RecordContent {
+            value: Zeroizing::new(value.into()),
+            expires_on: None,
+        })
+        .unwrap()
+    });
+    SharedRecord::create(
+        &RecordMutation {
+            observed_revision: 0,
+            expires_at: 86400,
+            id: RequestId::random().unwrap(),
+            address: RecordAddress {
+                scope: "shop/production".parse().unwrap(),
+                kind: RecordKind::BackupActive,
+                name: "active".into(),
+            },
+            value: None,
+        },
+        content.as_deref(),
+        revision,
+        admin.clone(),
+        admin.clone(),
+        registry,
+        2,
+    )
+    .unwrap()
+}
+
+#[test]
+fn records_that_are_not_secret_are_plaintext_and_readable_without_keys() {
+    let (registry, _, admin) = bootstrap();
+    let record = selection(&registry, &admin, 1, Some("backup-key-0123456789abcdef"));
+    assert!(record.value.is_none());
+    assert!(record.keys.is_empty());
+    assert_eq!(
+        record.plaintext.as_ref().unwrap().value,
+        "backup-key-0123456789abcdef"
+    );
+    let mut state = SharedSnapshot::empty(registry.network.id.clone());
+    state.append_record(&record).unwrap();
+    // Any device can read it; a sealed record needs that device's key.
+    let outsider = LocalDeviceKeys::generate().unwrap();
+    let outsider_id = outsider
+        .device_id(&registry.network.id, DeviceKind::Laptop)
+        .unwrap();
+    let bytes = record
+        .open(&state, &outsider, &outsider_id)
+        .unwrap()
+        .unwrap();
+    let content: RecordContent = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(&*content.value, "backup-key-0123456789abcdef");
+    let deletion = selection(&registry, &admin, 2, None);
+    assert!(deletion.is_deletion());
+    assert!(!record.is_deletion());
+    state.append_record(&deletion).unwrap();
+    assert!(state.records[0].is_deletion());
+}
+
+#[test]
+fn plaintext_is_refused_for_secrets_and_sealed_selections_stay_readable() {
+    let (registry, keys, admin) = bootstrap();
+    let mut secret = record(&registry, &admin, "API_KEY", 1, None);
+    secret.plaintext = Some(PlainContent {
+        value: "visible".into(),
+        expires_on: None,
+    });
+    assert!(secret.validate().is_err());
+    let mut keyed = selection(&registry, &admin, 1, Some("backup-key-0123456789abcdef"));
+    keyed.keys = record(&registry, &admin, "API_KEY", 1, Some(b"x")).keys;
+    assert!(keyed.validate().is_err());
+    // A selection published before plaintext records existed is sealed.
+    let content = serde_json::to_vec(&RecordContent {
+        value: Zeroizing::new("backup-key-fedcba9876543210".into()),
+        expires_on: None,
+    })
+    .unwrap();
+    let content_key = random_content_key().unwrap();
+    let id = RequestId::random().unwrap();
+    let address = RecordAddress {
+        scope: "shop/production".parse().unwrap(),
+        kind: RecordKind::BackupActive,
+        name: "active".into(),
+    };
+    let context = address.context(&registry.network.id, &id).unwrap();
+    let mut legacy = SharedRecord {
+        id,
+        address,
+        revision: 1,
+        issuer: admin.clone(),
+        author: admin.clone(),
+        value: Some(Ciphertext::encrypt(&content_key, &content, &context).unwrap()),
+        keys: BTreeMap::new(),
+        plaintext: None,
+    };
+    let wrapped = SealedValue::seal(
+        &registry.members[0].request.encryption_public_key,
+        content_key.as_slice(),
+        &legacy.key_context(&registry.network.id, &admin).unwrap(),
+    )
+    .unwrap();
+    legacy.keys.insert(admin.clone(), wrapped);
+    assert!(legacy.validate().is_ok());
+    let mut state = SharedSnapshot::empty(registry.network.id.clone());
+    state.append_record(&legacy).unwrap();
+    let bytes = legacy.open(&state, &keys, &admin).unwrap().unwrap();
+    let content: RecordContent = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(&*content.value, "backup-key-fedcba9876543210");
+}
+
+#[test]
+fn sealed_records_serialize_without_a_plaintext_field() {
+    let (registry, _, admin) = bootstrap();
+    let sealed = record(&registry, &admin, "API_KEY", 1, Some(b"x"));
+    let json: serde_json::Value = serde_json::to_value(&sealed).unwrap();
+    assert!(json.get("plaintext").is_none());
+    let deletion = record(&registry, &admin, "API_KEY", 2, None);
+    assert!(
+        serde_json::to_value(&deletion)
+            .unwrap()
+            .get("plaintext")
+            .is_none()
+    );
 }

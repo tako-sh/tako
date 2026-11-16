@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use tako_network::api::{RpcRequest, RpcResponse};
 use tako_network::sealed::SealedValue;
 use tako_network::shared::{
-    DATABASE_SCOPE, SecretAddress, SecretContent, SecretKind, SecretMutation,
+    DATABASE_SCOPE, RecordAddress, RecordContent, RecordKind, RecordMutation,
 };
 use tako_network::{AppEnv, LocalDeviceKeys, RequestId};
 use zeroize::Zeroizing;
@@ -40,10 +40,10 @@ fn scope() -> Result<AppEnv> {
 /// Decrypts the readable records of `kind`, by name.
 fn read(
     alias: &LocalNetwork,
-    kind: SecretKind,
+    kind: RecordKind,
 ) -> Result<std::collections::BTreeMap<String, Zeroizing<String>>> {
     let scope = scope()?;
-    let (profile, cache) = super::secrets::pull(alias, Some(scope.clone()))?;
+    let (profile, cache) = super::state::pull(alias, Some(scope.clone()))?;
     let keys = LocalDeviceKeys::load(&super::keys_path(&profile.request().request_id)?)?;
     let device = profile.request().device_id_for(&cache.network)?;
     let mut values = std::collections::BTreeMap::new();
@@ -52,10 +52,10 @@ fn read(
             continue;
         }
         // Records this device may not read, and tombstones, have no value.
-        let Ok(Some(bytes)) = record.decrypt(&cache, &keys, &device) else {
+        let Ok(Some(bytes)) = record.open(&cache, &keys, &device) else {
             continue;
         };
-        let content: SecretContent = serde_json::from_slice(&bytes)?;
+        let content: RecordContent = serde_json::from_slice(&bytes)?;
         values.insert(record.address.name.clone(), content.value);
     }
     Ok(values)
@@ -64,7 +64,7 @@ fn read(
 /// The network's databases, sorted by name.
 pub(crate) fn list(alias: &LocalNetwork) -> Result<Vec<DatabaseRecord>> {
     let mut records = Vec::new();
-    for (name, value) in read(alias, SecretKind::Database)? {
+    for (name, value) in read(alias, RecordKind::Database)? {
         let record: DatabaseRecord = serde_json::from_str(&value)?;
         if record.name == name {
             records.push(record);
@@ -75,7 +75,7 @@ pub(crate) fn list(alias: &LocalNetwork) -> Result<Vec<DatabaseRecord>> {
 
 /// The key that encrypts a database's snapshots. Administrators only.
 pub(crate) fn backup_key(alias: &LocalNetwork, name: &str) -> Result<Zeroizing<String>> {
-    read(alias, SecretKind::DatabaseKey)?
+    read(alias, RecordKind::DatabaseKey)?
         .remove(name)
         .ok_or_else(|| {
             format!(
@@ -94,11 +94,11 @@ pub(crate) fn publish(
 ) -> Result<()> {
     tako_core::validate_database_name(&record.name)?;
     if let Some(key) = backup_key_base64 {
-        mutate(alias, SecretKind::DatabaseKey, &record.name, Some(key))?;
+        mutate(alias, RecordKind::DatabaseKey, &record.name, Some(key))?;
     }
     mutate(
         alias,
-        SecretKind::Database,
+        RecordKind::Database,
         &record.name,
         Some(&serde_json::to_string(record)?),
     )
@@ -107,13 +107,13 @@ pub(crate) fn publish(
 /// Publishes tombstones for a database's records.
 pub(crate) fn remove(alias: &LocalNetwork, name: &str) -> Result<()> {
     tako_core::validate_database_name(name)?;
-    mutate(alias, SecretKind::Database, name, None)?;
-    mutate(alias, SecretKind::DatabaseKey, name, None)
+    mutate(alias, RecordKind::Database, name, None)?;
+    mutate(alias, RecordKind::DatabaseKey, name, None)
 }
 
-fn mutate(alias: &LocalNetwork, kind: SecretKind, name: &str, value: Option<&str>) -> Result<()> {
+fn mutate(alias: &LocalNetwork, kind: RecordKind, name: &str, value: Option<&str>) -> Result<()> {
     let scope = scope()?;
-    let (profile, cache) = super::secrets::pull(alias, Some(scope.clone()))?;
+    let (profile, cache) = super::state::pull(alias, Some(scope.clone()))?;
     let network = profile.snapshot().network.id.clone();
     let issuer = super::client::available_server(&profile)?;
     let members = profile.snapshot().effective_members(super::now()?)?;
@@ -122,7 +122,7 @@ fn mutate(alias: &LocalNetwork, kind: SecretKind, name: &str, value: Option<&str
         .ok_or("The publishing server is no longer a network member")?
         .request
         .encryption_public_key;
-    let address = SecretAddress {
+    let address = RecordAddress {
         scope: scope.clone(),
         kind,
         name: name.to_owned(),
@@ -131,7 +131,7 @@ fn mutate(alias: &LocalNetwork, kind: SecretKind, name: &str, value: Option<&str
         .latest()?
         .get(&address)
         .map_or(0, |record| record.revision);
-    let mut mutation = SecretMutation {
+    let mut mutation = RecordMutation {
         id: RequestId::random()?,
         observed_revision,
         expires_at: super::now()?
@@ -141,7 +141,7 @@ fn mutate(alias: &LocalNetwork, kind: SecretKind, name: &str, value: Option<&str
         value: None,
     };
     if let Some(value) = value {
-        let content = SecretContent {
+        let content = RecordContent {
             value: Zeroizing::new(value.to_owned()),
             expires_on: None,
         };
@@ -152,10 +152,10 @@ fn mutate(alias: &LocalNetwork, kind: SecretKind, name: &str, value: Option<&str
             &mutation.context(&network)?,
         )?);
     }
-    let RpcResponse::SecretPublished(receipt) = super::client::call(
+    let RpcResponse::RecordPublished(receipt) = super::client::call(
         &profile,
         &issuer,
-        RpcRequest::PublishSecret(Box::new(mutation.clone())),
+        RpcRequest::PublishRecord(Box::new(mutation.clone())),
     )?
     else {
         return Err("Unexpected database record publication response".into());
@@ -164,7 +164,7 @@ fn mutate(alias: &LocalNetwork, kind: SecretKind, name: &str, value: Option<&str
         return Err("Database record publication response does not match the request".into());
     }
     // Refresh the local cache so the next read sees the new record.
-    super::secrets::pull(alias, Some(scope))?;
+    super::state::pull(alias, Some(scope))?;
     Ok(())
 }
 
