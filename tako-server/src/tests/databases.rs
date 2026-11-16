@@ -1021,3 +1021,31 @@ async fn interrupted_work_directories_are_removed_once_stale() {
     );
     assert!(!root.join("restore-left-behind").exists());
 }
+
+#[tokio::test]
+async fn a_database_a_deploy_is_binding_cannot_be_deleted() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, None).await;
+    let delete = || Command::DeleteDatabase {
+        name: ID.into(),
+        keep_snapshots: false,
+    };
+    // A deploy has checked the database and is installing its binding.
+    let pins = state.databases.pin([ID]).unwrap();
+    let refused = error(&state, delete()).await;
+    assert!(
+        refused.contains("deploy that binds"),
+        "the delete waits for the deploy"
+    );
+    assert!(
+        state
+            .databases
+            .host
+            .is_registered(&tako_database::DatabaseId::parse(ID).unwrap())
+    );
+    drop(pins);
+    ok(&state, delete()).await;
+    // A deploy that starts once the database is gone fails its own check.
+    assert!(state.databases.pin([ID]).is_ok());
+}

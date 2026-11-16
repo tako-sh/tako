@@ -676,6 +676,19 @@ async fn pipelines_of_too_many_items_are_refused_while_parsed() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+    // So do the terms of a step's condition.
+    let conds: Vec<Value> = (0..=max)
+        .map(|_| json!({"type": "is_autocommit"}))
+        .collect();
+    let (status, _) = post(
+        &h,
+        "/v3/pipeline",
+        json!({"baton": null, "requests": [{"type": "batch", "batch": {"steps": [
+            {"condition": {"type": "and", "conds": conds}, "stmt": {"sql": "SELECT 1"}},
+        ]}}]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     // At the limit, the request runs.
     let requests: Vec<Value> = (0..max)
         .map(|_| json!({"type": "get_autocommit"}))

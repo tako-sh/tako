@@ -97,7 +97,7 @@ JavaScript also works with `connect` from `@tursodatabase/serverless`, which use
 
 `tako generate` adds a `TakoDatabases` interface to `tako.d.ts`, so `tako.databases.main` is typed for every bound name. Bindings are read when accessed. Logging or serializing a connection redacts its token; treat the token as a secret and never send it to a browser.
 
-Go uses `tako.GetDatabase(name)` and `tako.DatabaseNames()`. `Database.DSN()` targets the `libsql` driver from `libsql-client-go`; formatting a `Database` with `%v` or `%#v` redacts the token. Rust uses `tako::database(name)`, returning `Option<tako::Database>` with `url()` and `auth_token()`; its `Debug` output redacts the token. Tako's test suite runs the Go SDK with `libsql-client-go` (statements, blobs, transactions, and errors); no Rust driver is part of it. Use one that speaks Hrana over HTTP with JSON; clients that require the protobuf encoding are not supported.
+Go uses `tako.GetDatabase(name)` and `tako.DatabaseNames()`. `Database.DSN()` targets the `libsql` driver from `libsql-client-go`; formatting a `Database` with `%v` or `%#v`, or encoding it with `encoding/json`, redacts the token. Rust uses `tako::database(name)`, returning `Option<tako::Database>` with `url()` and `auth_token()`; its `Debug` output redacts the token. Tako's test suite runs the Go SDK with `libsql-client-go` (statements, blobs, transactions, and errors); no Rust driver is part of it. Use one that speaks Hrana over HTTP with JSON; clients that require the protobuf encoding are not supported.
 
 ### ORMs
 

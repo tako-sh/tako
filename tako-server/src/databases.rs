@@ -49,6 +49,53 @@ pub(crate) struct Databases {
     applied: Mutex<HashMap<String, Vec<HashMap<String, AppDatabase>>>>,
     transfers: Mutex<transfer::Transfers>,
     locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Databases deploys are binding, and databases being deleted, so one
+    /// cannot delete a database another is about to bind.
+    pins: Arc<Mutex<HashMap<String, Pin>>>,
+}
+
+#[derive(Default)]
+struct Pin {
+    deploys: usize,
+    deleting: bool,
+}
+
+/// Databases a deploy binds; they cannot be deleted until it is dropped.
+pub(crate) struct DatabasePins {
+    pins: Arc<Mutex<HashMap<String, Pin>>>,
+    names: Vec<String>,
+}
+
+impl Drop for DatabasePins {
+    fn drop(&mut self) {
+        let mut pins = self.pins.lock();
+        for name in &self.names {
+            if let Some(pin) = pins.get_mut(name) {
+                pin.deploys = pin.deploys.saturating_sub(1);
+                if pin.deploys == 0 && !pin.deleting {
+                    pins.remove(name);
+                }
+            }
+        }
+    }
+}
+
+/// Marks a database as being deleted until dropped.
+struct Deleting {
+    pins: Arc<Mutex<HashMap<String, Pin>>>,
+    name: String,
+}
+
+impl Drop for Deleting {
+    fn drop(&mut self) {
+        let mut pins = self.pins.lock();
+        if let Some(pin) = pins.get_mut(&self.name) {
+            pin.deleting = false;
+            if pin.deploys == 0 {
+                pins.remove(&self.name);
+            }
+        }
+    }
 }
 
 impl Databases {
@@ -67,7 +114,49 @@ impl Databases {
             applied: Mutex::new(HashMap::new()),
             transfers: Mutex::new(transfer::Transfers::default()),
             locks: Mutex::new(HashMap::new()),
+            pins: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Pins the databases a deploy binds until the returned guard drops.
+    /// Fails for a database being deleted.
+    pub(crate) fn pin<'a>(
+        &self,
+        names: impl IntoIterator<Item = &'a str>,
+    ) -> Result<DatabasePins, String> {
+        let mut names: Vec<String> = names.into_iter().map(str::to_owned).collect();
+        names.sort();
+        names.dedup();
+        let mut pins = self.pins.lock();
+        if let Some(name) = names
+            .iter()
+            .find(|name| pins.get(*name).is_some_and(|pin| pin.deleting))
+        {
+            return Err(format!("Database {name} is being deleted."));
+        }
+        for name in &names {
+            pins.entry(name.clone()).or_default().deploys += 1;
+        }
+        Ok(DatabasePins {
+            pins: self.pins.clone(),
+            names,
+        })
+    }
+
+    /// Marks a database as being deleted, unless a deploy is binding it.
+    fn start_deleting(&self, name: &str) -> Result<Deleting, String> {
+        let mut pins = self.pins.lock();
+        let pin = pins.entry(name.to_owned()).or_default();
+        if pin.deploys > 0 {
+            return Err(format!(
+                "A deploy that binds database {name} is in progress; delete it once that deploy finishes."
+            ));
+        }
+        pin.deleting = true;
+        Ok(Deleting {
+            pins: self.pins.clone(),
+            name: name.to_owned(),
+        })
     }
 
     pub(crate) fn database_dir(&self, id: &str) -> PathBuf {
@@ -634,6 +723,11 @@ impl ServerState {
         keep_snapshots: bool,
     ) -> Result<serde_json::Value, String> {
         let stored = self.hosted_database(id)?;
+        let lock = self.databases.lock(id);
+        let _guard = lock.lock().await;
+        // From here, deploys cannot start binding the database; one already
+        // binding it makes the delete wait for it to finish.
+        let _deleting = self.databases.start_deleting(id)?;
         let info = self.database_info(&stored);
         // Bindings of apps on this server are known to be current. Grants for
         // other servers can outlive the deployments that used them (deleting
@@ -646,8 +740,6 @@ impl ServerState {
                 info.bindings.join(", ")
             ));
         }
-        let lock = self.databases.lock(id);
-        let _guard = lock.lock().await;
         let database = DatabaseId::parse(id)?;
         // Unregistering can time out on a request in flight; the database is
         // then still hosted, so its grants stay until this succeeds.

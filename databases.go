@@ -1,6 +1,7 @@
 package tako
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"sort"
@@ -47,6 +48,15 @@ func (d Database) String() string {
 // GoString redacts the token for %#v as well.
 func (d Database) GoString() string {
 	return d.String()
+}
+
+// MarshalJSON redacts the token, so encoding a Database as JSON for logs or
+// diagnostics does not leak it. Pass DSN() to drivers instead.
+func (d Database) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		URL       string `json:"url"`
+		AuthToken string `json:"authToken"`
+	}{URL: d.URL, AuthToken: "[REDACTED]"})
 }
 
 // GetDatabase returns the database bound to this app as name.

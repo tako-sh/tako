@@ -231,6 +231,28 @@ fn clear_bootstrap_env() {
     }
 }
 
+/// Marks the bootstrap pipe close-on-exec as the program loads, before
+/// `main`: the SDK reads it only on first use, and a subprocess started
+/// before then must not inherit it and read the app's secrets and database
+/// tokens. The process itself can still read it.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[used]
+#[cfg_attr(target_os = "linux", unsafe(link_section = ".init_array"))]
+#[cfg_attr(target_os = "macos", unsafe(link_section = "__DATA,__mod_init_func"))]
+static CLOSE_BOOTSTRAP_ON_EXEC: extern "C" fn() = close_bootstrap_on_exec;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+extern "C" fn close_bootstrap_on_exec() {
+    if fd_is_fifo(3) {
+        unsafe {
+            let flags = libc::fcntl(3, libc::F_GETFD);
+            if flags >= 0 {
+                libc::fcntl(3, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+            }
+        }
+    }
+}
+
 #[cfg(unix)]
 fn read_bootstrap_fd() -> Result<Option<String>, BootstrapError> {
     if !fd_is_fifo(3) {

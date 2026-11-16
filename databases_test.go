@@ -1,6 +1,7 @@
 package tako
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -27,10 +28,17 @@ func TestGetDatabaseReadsBootstrapBindings(t *testing.T) {
 	if got := main.DSN(); got != "http://127.0.0.1:9845?authToken=secret-token" {
 		t.Fatalf("DSN() = %q", got)
 	}
-	for _, text := range []string{main.String(), fmt.Sprintf("%v", main), fmt.Sprintf("%#v", main)} {
+	encoded, err := json.Marshal(map[string]Database{"main": main})
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	for _, text := range []string{main.String(), fmt.Sprintf("%v", main), fmt.Sprintf("%#v", main), string(encoded)} {
 		if strings.Contains(text, "secret-token") {
 			t.Fatalf("formatted database leaks its token: %s", text)
 		}
+	}
+	if !strings.Contains(string(encoded), "http://127.0.0.1:9845") {
+		t.Fatalf("encoded database lost its URL: %s", encoded)
 	}
 	if _, ok := GetDatabase("missing"); ok {
 		t.Fatal("GetDatabase(missing) must report false")

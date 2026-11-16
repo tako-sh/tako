@@ -665,3 +665,17 @@ fn with_updates_and_deletes_report_no_insert_rowid() {
     .unwrap();
     assert_eq!(result.last_insert_rowid, Some(9));
 }
+
+#[test]
+fn long_statements_run_without_the_statement_cache() {
+    let fixture = fixture();
+    let mut conn = open(&fixture);
+    // Longer than the cache takes; runs the same, twice.
+    let sql = format!("/* {} */ SELECT 41 + 1", "x".repeat(32 * 1024));
+    for _ in 0..2 {
+        let result = run(&mut conn, &sql).unwrap();
+        assert_eq!(result.rows, vec![vec![Value::Integer(42)]]);
+    }
+    let described = conn.describe(&sql).unwrap();
+    assert!(described.is_readonly);
+}

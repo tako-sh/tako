@@ -192,6 +192,16 @@ impl crate::ServerState {
                 .map(|(name, binding)| (name.clone(), binding.binding.clone()))
                 .collect()
         });
+        // Held until this deploy ends, so a database it binds cannot be
+        // deleted between being checked here and the release using it.
+        let _database_pins = match self.databases.pin(
+            requested_databases
+                .values()
+                .map(|binding| binding.name.as_str()),
+        ) {
+            Ok(pins) => pins,
+            Err(error) => return Response::error(error),
+        };
         config.databases =
             match self
                 .databases

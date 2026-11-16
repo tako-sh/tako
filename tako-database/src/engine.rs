@@ -21,6 +21,9 @@ use crate::proto::{Col, DescribeParam, DescribeResult, Error, NamedArg, StmtResu
 const PROGRESS_INTERVAL: i32 = 1_000;
 /// Prepared statements kept per connection; ORMs repeat a small set of queries.
 const STATEMENT_CACHE: usize = 64;
+/// Longer statements are prepared without the cache, which would otherwise
+/// keep up to [`STATEMENT_CACHE`] request-sized texts on every connection.
+const MAX_CACHED_SQL_BYTES: usize = 16 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct EngineConfig {
@@ -502,7 +505,8 @@ impl Connection {
 
     pub fn describe(&mut self, sql: &str) -> Result<DescribeResult, Error> {
         check_not_empty(sql)?;
-        let stmt = self.conn.prepare_cached(sql).map_err(map_error)?;
+        let (mut cached, mut fresh) = (None, None);
+        let stmt = prepare(&self.conn, sql, &mut cached, &mut fresh)?;
         let params = (1..=stmt.parameter_count())
             .map(|index| DescribeParam {
                 name: stmt
@@ -513,7 +517,7 @@ impl Connection {
             .collect();
         Ok(DescribeResult {
             params,
-            cols: columns(&stmt),
+            cols: columns(stmt),
             is_explain: stmt.is_explain() != 0,
             is_readonly: stmt.readonly(),
         })
@@ -530,13 +534,14 @@ impl Connection {
         let before_changes = self.conn.total_changes();
         let before_rowid = self.conn.last_insert_rowid();
         let in_transaction = !self.conn.is_autocommit();
-        let mut stmt = self.conn.prepare_cached(sql).map_err(map_error)?;
-        bind(&mut stmt, args)?;
+        let (mut cached, mut fresh) = (None, None);
+        let stmt = prepare(&self.conn, sql, &mut cached, &mut fresh)?;
+        bind(stmt, args)?;
         let readonly = stmt.readonly();
         let inserts = !readonly && starts_with_insert(sql);
         // Before stepping: the statement may write and then fail.
         self.wrote |= !readonly;
-        sink(Event::Begin(columns(&stmt)))?;
+        sink(Event::Begin(columns(stmt)))?;
         let width = stmt.column_count();
 
         self.deadline.store(
@@ -584,7 +589,9 @@ impl Connection {
             }
         }
         self.deadline.store(0, Ordering::Relaxed);
-        drop(stmt);
+        // Reset the statement (returning a cached one to the cache) before
+        // reading the transaction state.
+        drop((cached, fresh));
         // COMMIT is read-only to SQLite, yet it is what makes earlier writes
         // durable; a snapshot taken mid-transaction must not lose them.
         self.wrote |= in_transaction && self.conn.is_autocommit();
@@ -698,6 +705,22 @@ fn skip_comments(sql: &str) -> &str {
         } else {
             return rest;
         }
+    }
+}
+
+/// Prepares `sql`, through the connection's statement cache when it is
+/// short enough. The statement lives in whichever slot was used.
+fn prepare<'c, 's>(
+    conn: &'c rusqlite::Connection,
+    sql: &str,
+    cached: &'s mut Option<rusqlite::CachedStatement<'c>>,
+    fresh: &'s mut Option<rusqlite::Statement<'c>>,
+) -> Result<&'s mut rusqlite::Statement<'c>, Error> {
+    if sql.len() <= MAX_CACHED_SQL_BYTES {
+        let stmt = cached.insert(conn.prepare_cached(sql).map_err(map_error)?);
+        Ok(&mut **stmt)
+    } else {
+        Ok(fresh.insert(conn.prepare(sql).map_err(map_error)?))
     }
 }
 

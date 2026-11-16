@@ -11,8 +11,8 @@ use serde::de::{self, Deserializer};
 use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
 
-/// The most requests and batch steps, together, one pipeline or cursor
-/// request may hold. Each costs far more memory parsed and answered than its
+/// The most requests, batch steps, and condition terms, together, one
+/// pipeline or cursor request may hold. Each costs far more memory parsed and answered than its
 /// few bytes of JSON, so a body of tiny items is refused while it is read.
 pub const MAX_REQUEST_ITEMS: usize = 65_536;
 
@@ -58,7 +58,7 @@ where
                 });
                 if over {
                     return Err(de::Error::custom(format!(
-                        "a request may hold at most {MAX_REQUEST_ITEMS} requests and batch steps"
+                        "a request may hold at most {MAX_REQUEST_ITEMS} requests, batch steps, and condition terms"
                     )));
                 }
                 items.push(item);
@@ -225,11 +225,23 @@ pub struct BatchStep {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BatchCond {
-    Ok { step: u32 },
-    Error { step: u32 },
-    Not { cond: Box<BatchCond> },
-    And { conds: Vec<BatchCond> },
-    Or { conds: Vec<BatchCond> },
+    Ok {
+        step: u32,
+    },
+    Error {
+        step: u32,
+    },
+    Not {
+        cond: Box<BatchCond>,
+    },
+    And {
+        #[serde(deserialize_with = "counted")]
+        conds: Vec<BatchCond>,
+    },
+    Or {
+        #[serde(deserialize_with = "counted")]
+        conds: Vec<BatchCond>,
+    },
     IsAutocommit,
 }
 
