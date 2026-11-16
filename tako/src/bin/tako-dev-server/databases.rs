@@ -173,10 +173,16 @@ async fn close_unused(server: &Server, registrations: &mut Registrations) {
         .map(|(path, id)| (path.clone(), id.clone()))
         .collect();
     for (path, id) in unused {
-        if let Err(error) = server.host.unregister(&id).await {
-            tracing::warn!(path = %path.display(), "Failed to close local database: {error}");
+        match server.host.unregister(&id).await {
+            Ok(()) => {
+                registrations.files.remove(&path);
+            }
+            // Still registered: keep the mapping, so binding the file again
+            // reuses it and a later release retries the close.
+            Err(error) => {
+                tracing::warn!(path = %path.display(), "Failed to close local database: {error}");
+            }
         }
-        registrations.files.remove(&path);
     }
 }
 

@@ -223,15 +223,17 @@ pub(crate) async fn take(
     reason: SnapshotReason,
     only_if_changed: bool,
 ) -> Result<Option<DatabaseSnapshot>, String> {
+    let id = DatabaseId::parse(&stored.name)?;
+    let lock = state.databases.lock(&stored.name);
+    let _guard = lock.lock().await;
+    // The destination may have changed while this run waited for the lock.
+    let stored = &state.hosted_database(&stored.name)?;
     let Some(backup) = stored.secrets.backup.clone() else {
         return Err(format!(
             "Backups are not configured for database {}.",
             stored.name
         ));
     };
-    let id = DatabaseId::parse(&stored.name)?;
-    let lock = state.databases.lock(&stored.name);
-    let _guard = lock.lock().await;
     if only_if_changed && !state.databases.host.has_changes(&id) {
         return Ok(None);
     }
@@ -343,8 +345,9 @@ async fn upload_copy(
         sha256,
     };
     let remote = store(backup)?;
-    upload_file(remote.clone(), &data_key(stored, &snapshot_id), &encrypted).await?;
-    put_json_object(
+    let data = data_key(stored, &snapshot_id);
+    upload_file(remote.clone(), &data, &encrypted).await?;
+    let published = put_json_object(
         remote.as_ref(),
         &manifest_key(stored, &snapshot_id),
         &Manifest {
@@ -355,7 +358,18 @@ async fn upload_copy(
             encryption,
         },
     )
-    .await?;
+    .await;
+    if let Err(error) = published {
+        // Listing and retention find data through manifests; without one the
+        // object would never be removed.
+        if let Ok(path) = ObjectPath::parse(&data) {
+            let _ = with_deadline(METADATA_TIMEOUT, async {
+                remote.delete(&path).await.map_err(|e| e.to_string())
+            })
+            .await;
+        }
+        return Err(error);
+    }
     Ok(snapshot)
 }
 
@@ -569,6 +583,19 @@ pub(crate) async fn restore(
 
     // Fetch and verify the snapshot before anything changes.
     let work = fresh_work_dir(state, &stored.name, "restore")?;
+    // The download, the restored file, and a copy of what it replaces.
+    let needed = manifest
+        .snapshot
+        .stored_bytes
+        .saturating_add(manifest.snapshot.database_bytes.saturating_mul(2))
+        .saturating_add(DISK_RESERVE_BYTES);
+    let available = crate::operations::available_bytes(&work.path)?;
+    if available < needed {
+        return Err(format!(
+            "Not enough free disk space to restore {}: {needed} bytes needed, {available} available.",
+            stored.name
+        ));
+    }
     let encrypted = work.path.join("snapshot.sqlite.zst.enc");
     download_object(
         remote.as_ref(),

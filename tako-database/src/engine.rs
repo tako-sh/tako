@@ -30,6 +30,9 @@ pub struct EngineConfig {
     pub statement_timeout: Duration,
     /// `PRAGMA synchronous` for client connections (`FULL` or `NORMAL`).
     pub synchronous: Synchronous,
+    /// The largest string, blob, or row a statement may produce. Larger
+    /// values fail with `SQLITE_TOOBIG` instead of being copied.
+    pub max_value_bytes: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,6 +47,8 @@ impl Default for EngineConfig {
             busy_timeout: Duration::from_secs(5),
             statement_timeout: Duration::from_secs(30),
             synchronous: Synchronous::Full,
+            // No larger value fits in a response.
+            max_value_bytes: 64 * 1024 * 1024,
         }
     }
 }
@@ -308,6 +313,11 @@ impl Connection {
         // VACUUM attaches one temporary database; nothing else may be attached.
         conn.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 1)
             .map_err(map_error)?;
+        conn.set_limit(
+            Limit::SQLITE_LIMIT_LENGTH,
+            i32::try_from(config.max_value_bytes).unwrap_or(i32::MAX),
+        )
+        .map_err(map_error)?;
         conn.busy_timeout(config.busy_timeout).map_err(map_error)?;
         conn.set_prepared_statement_cache_capacity(STATEMENT_CACHE);
         let synchronous = match config.synchronous {
@@ -381,7 +391,7 @@ impl Connection {
         let started = Instant::now();
         let mut rows = Vec::new();
         let mut cols = Vec::new();
-        let outcome = self.run(sql, args, |event| match event {
+        let outcome = self.run(sql, args, want_rows, |event| match event {
             Event::Begin(columns) => {
                 cols = columns;
                 Ok(())
@@ -418,7 +428,7 @@ impl Connection {
         args: &Args<'_>,
         sink: impl FnMut(Event) -> Result<(), Error>,
     ) -> Result<(u64, Option<i64>), Error> {
-        let outcome = self.run(sql, args, sink)?;
+        let outcome = self.run(sql, args, true, sink)?;
         Ok((outcome.affected, outcome.last_insert_rowid))
     }
 
@@ -482,6 +492,7 @@ impl Connection {
         &mut self,
         sql: &str,
         args: &Args<'_>,
+        copy_rows: bool,
         mut sink: impl FnMut(Event) -> Result<(), Error>,
     ) -> Result<Outcome, Error> {
         check_not_empty(sql)?;
@@ -509,6 +520,10 @@ impl Connection {
                 match rows.next() {
                     Ok(Some(row)) => {
                         count += 1;
+                        // Rows nobody reads are counted, not copied.
+                        if !copy_rows {
+                            continue;
+                        }
                         let mut values = Vec::with_capacity(width);
                         for index in 0..width {
                             values.push(match row.get_ref(index) {
@@ -625,7 +640,7 @@ fn check_not_empty(sql: &str) -> Result<(), Error> {
 }
 
 fn starts_with_insert(sql: &str) -> bool {
-    let trimmed = sql.trim_start();
+    let trimmed = skip_comments(sql);
     let keyword: String = trimmed
         .chars()
         .take_while(|c| c.is_ascii_alphabetic())
@@ -633,6 +648,26 @@ fn starts_with_insert(sql: &str) -> bool {
     keyword.eq_ignore_ascii_case("insert")
         || keyword.eq_ignore_ascii_case("replace")
         || keyword.eq_ignore_ascii_case("with")
+}
+
+/// `sql` after leading whitespace and comments.
+fn skip_comments(sql: &str) -> &str {
+    let mut rest = sql.trim_start();
+    loop {
+        if let Some(line) = rest.strip_prefix("--") {
+            rest = line
+                .split_once('\n')
+                .map_or("", |(_, after)| after)
+                .trim_start();
+        } else if let Some(block) = rest.strip_prefix("/*") {
+            rest = block
+                .split_once("*/")
+                .map_or("", |(_, after)| after)
+                .trim_start();
+        } else {
+            return rest;
+        }
+    }
 }
 
 fn bind(stmt: &mut rusqlite::Statement<'_>, args: &Args<'_>) -> Result<(), Error> {
@@ -817,6 +852,9 @@ fn authorize(action: &AuthAction<'_>, dirty: &AtomicBool) -> Authorization {
                 Authorization::Deny
             }
         }
+        // A filename computed at run time, such as a parameter, is unknown
+        // when the statement is prepared.
+        AuthAction::Unknown { code, .. } if *code == ffi::SQLITE_ATTACH => Authorization::Deny,
         // Temporary objects live on the connection, so it must not be reused
         // by another stream.
         AuthAction::CreateTempIndex { .. }

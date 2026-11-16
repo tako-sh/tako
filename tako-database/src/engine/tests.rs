@@ -583,3 +583,54 @@ fn reset_empties_a_database_that_others_hold_open() {
         .unwrap();
     assert_eq!(mode, "wal");
 }
+
+#[test]
+fn computed_attach_targets_are_refused() {
+    let fixture = fixture();
+    let mut conn = open(&fixture);
+    let other = fixture.path.with_file_name("other.sqlite");
+    let error = run_args(
+        &mut conn,
+        "ATTACH DATABASE ? AS other",
+        &[Value::Text(other.display().to_string())],
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "SQLITE_AUTH", "{}", error.message);
+    let error = run(&mut conn, "ATTACH DATABASE 'x' || '.sqlite' AS other").unwrap_err();
+    assert_eq!(error.code, "SQLITE_AUTH", "{}", error.message);
+    assert!(!other.exists());
+    // Plain VACUUM attaches an empty-named database and stays allowed.
+    run(&mut conn, "VACUUM").unwrap();
+}
+
+#[test]
+fn values_larger_than_a_response_are_refused_before_they_are_copied() {
+    let fixture = fixture();
+    let mut conn = Connection::open(
+        &fixture.path,
+        &EngineConfig {
+            max_value_bytes: 1024,
+            ..EngineConfig::default()
+        },
+    )
+    .unwrap();
+    let error = run(&mut conn, "SELECT randomblob(4096)").unwrap_err();
+    assert_eq!(error.code, "SQLITE_TOOBIG", "{}", error.message);
+    run(&mut conn, "SELECT randomblob(512)").unwrap();
+}
+
+#[test]
+fn inserts_after_comments_report_their_rowid() {
+    let fixture = fixture();
+    let mut conn = open(&fixture);
+    run(&mut conn, "CREATE TABLE t (id INTEGER PRIMARY KEY)").unwrap();
+    run(&mut conn, "INSERT INTO t VALUES (5)").unwrap();
+    run(&mut conn, "DELETE FROM t").unwrap();
+    // The same rowid again leaves last_insert_rowid() unchanged.
+    let result = run(
+        &mut conn,
+        "-- comment\n/* block */ INSERT INTO t VALUES (5)",
+    )
+    .unwrap();
+    assert_eq!(result.last_insert_rowid, Some(5));
+}

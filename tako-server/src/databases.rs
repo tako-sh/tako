@@ -484,7 +484,7 @@ impl ServerState {
             Command::DeleteDatabase { name } => self.delete_database(&name).await,
             Command::DatabaseStatus { name } => self.database_status(name.as_deref()),
             Command::ConfigureDatabaseBackup { name, backup } => {
-                self.configure_database_backup(&name, backup)
+                self.configure_database_backup(&name, backup).await
             }
             Command::GrantDatabases { app, databases } => self.grant_databases(&app, databases),
             Command::SnapshotDatabase { name, reason, app } => {
@@ -733,15 +733,20 @@ impl ServerState {
         }
     }
 
-    fn configure_database_backup(
+    async fn configure_database_backup(
         &self,
         id: &str,
         backup: Option<StorageBinding>,
     ) -> Result<serde_json::Value, String> {
-        let stored = self.hosted_database(id)?;
+        self.hosted_database(id)?;
         if let Some(backup) = &backup {
             validate_backup_storage(backup)?;
         }
+        // Waits for a snapshot in flight, which uploads to the destination
+        // it started with.
+        let lock = self.databases.lock(id);
+        let _guard = lock.lock().await;
+        let stored = self.hosted_database(id)?;
         let moved = match (&stored.secrets.backup, &backup) {
             (Some(old), Some(new)) => !tako_core::same_backup_destination(old, new),
             (None, None) => false,

@@ -471,6 +471,17 @@ async fn cursors_whose_client_stops_reading_give_up_their_slot() {
     )
     .await;
     assert!(waiting.is_err(), "the query waits for the cursor's slot");
+    // So does an app request, before its body is read.
+    let app_request = tokio::time::timeout(
+        Duration::from_millis(100),
+        post(
+            &h,
+            "/v3/pipeline",
+            json!({"baton": null, "requests": [execute("SELECT 1")]}),
+        ),
+    )
+    .await;
+    assert!(app_request.is_err(), "the request waits for a slot");
     let query = h
         .host
         .admin_query(&h.id, "SELECT 1".into(), 10)

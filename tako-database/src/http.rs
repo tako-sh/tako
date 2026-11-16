@@ -157,15 +157,21 @@ where
             database,
             principal,
         } => {
+            // The request counts against the database's concurrency limit
+            // before its body is buffered.
+            let admitted = match admit(&database).await {
+                Ok(admitted) => admitted,
+                Err(response) => return response,
+            };
             let body = match read_body(request.into_body(), host.config().max_request_bytes).await {
                 Ok(body) => body,
                 Err(response) => return response,
             };
             match endpoint {
                 Endpoint::Pipeline(version) => {
-                    pipeline(host, database, principal, version, body).await
+                    pipeline(host, database, principal, version, body, admitted).await
                 }
-                Endpoint::Cursor => cursor(host, database, principal, body).await,
+                Endpoint::Cursor => cursor(host, database, principal, body, admitted).await,
             }
         }
     }
@@ -176,13 +182,34 @@ enum Endpoint {
     Cursor,
 }
 
+/// A request admitted to a database: it is active (so pausing waits for it)
+/// and holds one of the database's request slots.
+struct Admitted {
+    active: crate::host::ActiveGuard,
+    permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+async fn admit(database: &Arc<Database>) -> Result<Admitted, Response<Body>> {
+    let active = DatabaseHost::enter(database)
+        .map_err(|unavailable| error(StatusCode::SERVICE_UNAVAILABLE, &unavailable.0))?;
+    let permit = database
+        .permits
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "database is closing"))?;
+    Ok(Admitted { active, permit })
+}
+
 async fn pipeline(
     host: &DatabaseHost,
     database: Arc<Database>,
     principal: Principal,
     version: Version,
     body: Bytes,
+    admitted: Admitted,
 ) -> Response<Body> {
+    let Admitted { active, permit } = admitted;
     let request: PipelineRequest = match serde_json::from_slice(&body) {
         Ok(request) => request,
         Err(e) => return error(StatusCode::BAD_REQUEST, &format!("invalid pipeline: {e}")),
@@ -193,14 +220,6 @@ async fn pipeline(
     {
         return error(StatusCode::BAD_REQUEST, &message);
     }
-    let active = match DatabaseHost::enter(&database) {
-        Ok(active) => active,
-        Err(unavailable) => return error(StatusCode::SERVICE_UNAVAILABLE, &unavailable.0),
-    };
-    let permit = match database.permits.clone().acquire_owned().await {
-        Ok(permit) => permit,
-        Err(_) => return error(StatusCode::SERVICE_UNAVAILABLE, "database is closing"),
-    };
     let (key, stream, existing) = match take_or_open(host, &database, &principal, request.baton) {
         Ok(taken) => taken,
         Err(response) => return response,
@@ -252,7 +271,9 @@ async fn cursor(
     database: Arc<Database>,
     principal: Principal,
     body: Bytes,
+    admitted: Admitted,
 ) -> Response<Body> {
+    let Admitted { active, permit } = admitted;
     let request: CursorRequest = match serde_json::from_slice(&body) {
         Ok(request) => request,
         Err(e) => {
@@ -267,14 +288,6 @@ async fn cursor(
     {
         return error(StatusCode::BAD_REQUEST, &message);
     }
-    let active = match DatabaseHost::enter(&database) {
-        Ok(active) => active,
-        Err(unavailable) => return error(StatusCode::SERVICE_UNAVAILABLE, &unavailable.0),
-    };
-    let permit = match database.permits.clone().acquire_owned().await {
-        Ok(permit) => permit,
-        Err(_) => return error(StatusCode::SERVICE_UNAVAILABLE, "database is closing"),
-    };
     let (key, stream, existing) = match take_or_open(host, &database, &principal, request.baton) {
         Ok(taken) => taken,
         Err(response) => return response,

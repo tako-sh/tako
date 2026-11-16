@@ -203,28 +203,41 @@ impl crate::ServerState {
             state: self,
             app: app_name,
         };
+        let mut bootstrap = None;
         if !databases.is_empty() {
-            let connections = match self.databases.begin_release(
-                app_name,
-                &crate::instances::AppConfig::default(),
-                databases,
-            ) {
-                Ok(connections) => connections,
-                Err(error) => return Response::error(format!("Release command failed: {error}")),
-            };
-            env.insert(
-                tako_core::bootstrap::TAKO_BOOTSTRAP_DATA_ENV.to_string(),
-                tako_core::bootstrap::envelope_string(
-                    "",
-                    tako_core::bootstrap::Bindings {
-                        secrets: &secrets,
-                        storages: &HashMap::new(),
-                        databases: &connections,
-                    },
-                ),
-            );
+            // The provisioned bindings supply peer keys that deployers
+            // without administration do not send.
+            let mut release_config = crate::instances::AppConfig::default();
+            if let Some(app) = self.app_manager.get_app(app_name) {
+                release_config.databases = app.config.read().databases.clone();
+            }
+            let connections =
+                match self
+                    .databases
+                    .begin_release(app_name, &release_config, databases)
+                {
+                    Ok(connections) => connections,
+                    Err(error) => {
+                        return Response::error(format!("Release command failed: {error}"));
+                    }
+                };
+            bootstrap = Some(tako_core::bootstrap::envelope_string(
+                "",
+                tako_core::bootstrap::Bindings {
+                    secrets: &secrets,
+                    storages: &HashMap::new(),
+                    databases: &connections,
+                },
+            ));
         }
         env.extend(secrets);
+        // After the secrets, so a secret of the same name cannot replace it.
+        if let Some(bootstrap) = bootstrap {
+            env.insert(
+                tako_core::bootstrap::TAKO_BOOTSTRAP_DATA_ENV.to_string(),
+                bootstrap,
+            );
+        }
         if let Ok(path) = std::env::var("PATH") {
             env.entry("PATH".to_string()).or_insert(path);
         }
