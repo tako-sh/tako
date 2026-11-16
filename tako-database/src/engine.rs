@@ -503,13 +503,14 @@ impl Connection {
             }
             Event::Row(row) => {
                 if want_rows {
-                    if !budget.charge(encoded_size(&row)) {
+                    // Charged before the values are copied out of SQLite.
+                    if !budget.charge(row.encoded_size()) {
                         return Err(Error::new(
                             "RESPONSE_TOO_LARGE",
                             "result exceeds the response size limit; use the cursor endpoint or LIMIT",
                         ));
                     }
-                    rows.push(row);
+                    rows.push(row.to_values());
                 }
                 Ok(())
             }
@@ -531,7 +532,7 @@ impl Connection {
         &mut self,
         sql: &str,
         args: &Args<'_>,
-        sink: impl FnMut(Event) -> Result<(), Error>,
+        sink: impl FnMut(Event<'_>) -> Result<(), Error>,
     ) -> Result<(u64, Option<i64>), Error> {
         let outcome = self.run(sql, args, true, sink)?;
         Ok((outcome.affected, outcome.last_insert_rowid))
@@ -616,7 +617,7 @@ impl Connection {
         sql: &str,
         args: &Args<'_>,
         copy_rows: bool,
-        mut sink: impl FnMut(Event) -> Result<(), Error>,
+        mut sink: impl FnMut(Event<'_>) -> Result<(), Error>,
     ) -> Result<Outcome, Error> {
         check_not_empty(sql)?;
         let before_changes = self.conn.total_changes();
@@ -648,20 +649,22 @@ impl Connection {
                         if !copy_rows {
                             continue;
                         }
+                        // References into SQLite's row: the sink checks the
+                        // size before anything is copied.
                         let mut values = Vec::with_capacity(width);
                         for index in 0..width {
-                            values.push(match row.get_ref(index) {
-                                Ok(value) => from_sql(value),
+                            match row.get_ref(index) {
+                                Ok(value) => values.push(value),
                                 Err(error) => {
                                     failure = Some(map_error(error));
                                     break;
                                 }
-                            });
+                            }
                         }
                         if failure.is_some() {
                             break;
                         }
-                        if let Err(error) = sink(Event::Row(values)) {
+                        if let Err(error) = sink(Event::Row(PendingRow(values))) {
                             if error.code != STOP {
                                 failure = Some(error);
                             }
@@ -732,9 +735,24 @@ impl Connection {
 }
 
 /// What a running statement produces: its columns first, then each row.
-pub enum Event {
+pub enum Event<'a> {
     Begin(Vec<Col>),
-    Row(Vec<Value>),
+    Row(PendingRow<'a>),
+}
+
+/// A row as SQLite holds it. Its size is known before its values are
+/// copied, so a sink can refuse it, or reserve memory for it, first.
+pub struct PendingRow<'a>(Vec<ValueRef<'a>>);
+
+impl PendingRow<'_> {
+    /// The row's JSON size, used for the response budget.
+    pub fn encoded_size(&self) -> usize {
+        self.0.iter().copied().map(value_size).sum()
+    }
+
+    pub fn to_values(&self) -> Vec<Value> {
+        self.0.iter().copied().map(from_sql).collect()
+    }
 }
 
 struct Outcome {
@@ -914,18 +932,19 @@ fn from_sql(value: ValueRef<'_>) -> Value {
     }
 }
 
-/// JSON size of a row, used for the response budget: exact for text and
+/// JSON size of a value, used for the response budget: exact for text and
 /// blobs, an upper bound for the fixed-size values and framing.
-pub(crate) fn encoded_size(row: &[Value]) -> usize {
-    row.iter()
-        .map(|value| {
-            24 + match value {
-                Value::Null | Value::Integer(_) | Value::Float(_) => 24,
-                Value::Text(text) => escaped_len(text),
-                Value::Blob(blob) => blob.len().div_ceil(3) * 4,
-            }
-        })
-        .sum()
+fn value_size(value: ValueRef<'_>) -> usize {
+    24 + match value {
+        ValueRef::Null | ValueRef::Integer(_) | ValueRef::Real(_) => 24,
+        ValueRef::Text(bytes) => match std::str::from_utf8(bytes) {
+            Ok(text) => escaped_len(text),
+            // Without copying: a byte becomes at most a six-byte escape or
+            // a three-byte replacement character.
+            Err(_) => bytes.len() * 6,
+        },
+        ValueRef::Blob(blob) => blob.len().div_ceil(3) * 4,
+    }
 }
 
 /// Length of `text` as a JSON string body: quotes and backslashes take two

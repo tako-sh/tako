@@ -908,6 +908,65 @@ async fn deleting_a_copy_can_keep_the_snapshots_it_shares() {
 }
 
 #[tokio::test]
+async fn a_copy_left_by_a_move_stops_publishing_snapshots() {
+    let (old_dir, new_dir) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+    let old = state(&old_dir);
+    old.open_databases(Some("server-a".into())).await.unwrap();
+    create(&old, ID, Some("fence-bucket")).await;
+    query(&old, ID, "CREATE TABLE items (name TEXT)").await;
+    query(&old, ID, "INSERT INTO items VALUES ('moved')").await;
+    let snapshot = |reason| Command::SnapshotDatabase {
+        name: ID.into(),
+        reason,
+        app: None,
+    };
+    ok(&old, snapshot(SnapshotReason::Manual)).await;
+
+    // The database moves while its old server is unreachable, so nobody
+    // tells the old copy to stop.
+    let new = state(&new_dir);
+    new.open_databases(Some("server-b".into())).await.unwrap();
+    create(&new, ID, Some("fence-bucket")).await;
+    ok(
+        &new,
+        Command::RestoreDatabase {
+            name: ID.into(),
+            snapshot: None,
+            backup_key_base64: Some(key()),
+        },
+    )
+    .await;
+    assert_eq!(count(&new, ID).await, 1);
+
+    // Back online, the old copy diverges but publishes nothing.
+    query(&old, ID, "INSERT INTO items VALUES ('stale')").await;
+    let refused = error(&old, snapshot(SnapshotReason::Manual)).await;
+    assert!(refused.contains("was moved to another server"), "{refused}");
+    let listed = ok(&new, Command::ListDatabaseSnapshots { name: ID.into() }).await;
+    let manual = listed["snapshots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|snapshot| snapshot["reason"] == "manual")
+        .count();
+    assert_eq!(manual, 1, "only the snapshot taken before the move");
+    // The new copy still snapshots.
+    query(&new, ID, "INSERT INTO items VALUES ('new')").await;
+    let taken = ok(&new, snapshot(SnapshotReason::Manual)).await;
+    ok(
+        &new,
+        Command::RestoreDatabase {
+            name: ID.into(),
+            snapshot: Some(taken["snapshot"]["id"].as_str().unwrap().into()),
+            backup_key_base64: None,
+        },
+    )
+    .await;
+    let names = query(&new, ID, "SELECT name FROM items ORDER BY rowid").await;
+    assert_eq!(names["rows"], json!([["moved"], ["new"]]));
+}
+
+#[tokio::test]
 async fn opening_databases_again_after_a_failure_retries() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp);

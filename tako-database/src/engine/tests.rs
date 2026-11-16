@@ -546,8 +546,15 @@ fn response_budget_counts_text_as_json_encodes_it() {
         let encoded = serde_json::to_string(text).unwrap();
         assert_eq!(super::escaped_len(text), encoded.len() - 2, "{text:?}");
     }
-    let controls = vec![Value::Text("\u{1}".repeat(1000))];
-    assert!(super::encoded_size(&controls) >= 6000);
+    let controls = "\u{1}".repeat(1000);
+    let row = PendingRow(vec![ValueRef::Text(controls.as_bytes())]);
+    assert!(row.encoded_size() >= 6000);
+    // Text that is not UTF-8 is sized without being copied, at most as large
+    // as its replacement characters or escapes.
+    let invalid = [0xffu8; 100];
+    let row = PendingRow(vec![ValueRef::Text(&invalid)]);
+    let copied = serde_json::to_string(&String::from_utf8_lossy(&invalid)).unwrap();
+    assert!(row.encoded_size() >= copied.len());
 }
 
 #[test]

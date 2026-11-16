@@ -965,6 +965,111 @@ async fn snapshots_track_changes() {
     assert!(h.host.has_changes(&h.id));
 }
 
+fn raw_request(token: &str, body: &Value) -> Vec<u8> {
+    let body = body.to_string();
+    format!(
+        "POST /v3/pipeline HTTP/1.1\r\nhost: db\r\nauthorization: Bearer {token}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+        body.len()
+    )
+    .into_bytes()
+}
+
+async fn serve_apps(host: &DatabaseHost) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(tako_database::http::serve(
+        host.clone(),
+        listener,
+        Access::Apps,
+    ));
+    (address, server)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn idle_connections_are_bounded_and_closed() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let h = harness(HostConfig {
+        max_connections: 2,
+        idle_connection_timeout: Duration::from_millis(500),
+        ..HostConfig::default()
+    });
+    let (address, server) = serve_apps(&h.host).await;
+    // Two connections that never send a request take every slot.
+    let mut idle = Vec::new();
+    for _ in 0..2 {
+        idle.push(tokio::net::TcpStream::connect(address).await.unwrap());
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let mut third = tokio::net::TcpStream::connect(address).await.unwrap();
+    third
+        .write_all(&raw_request(
+            &h.token,
+            &json!({"baton": null, "requests": [execute("SELECT 1")]}),
+        ))
+        .await
+        .unwrap();
+    let mut response = vec![0u8; 4096];
+    let early = tokio::time::timeout(Duration::from_millis(200), third.read(&mut response)).await;
+    assert!(early.is_err(), "the third connection waits to be accepted");
+    // The idle ones are closed, and the third is then served.
+    let read = tokio::time::timeout(Duration::from_secs(5), third.read(&mut response))
+        .await
+        .expect("the third connection is served once the idle ones close")
+        .unwrap();
+    assert!(response[..read].starts_with(b"HTTP/1.1 200"));
+    for mut connection in idle {
+        let mut buf = [0u8; 16];
+        let closed = tokio::time::timeout(Duration::from_secs(5), connection.read(&mut buf))
+            .await
+            .expect("the idle connection is closed");
+        assert!(matches!(closed, Ok(0) | Err(_)));
+    }
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_that_stops_reading_releases_its_response() {
+    use tokio::io::AsyncWriteExt;
+    let h = harness(HostConfig {
+        max_buffered_bytes: 32 * 1024 * 1024,
+        max_request_bytes: 4 * 1024,
+        write_stall_timeout: Duration::from_millis(300),
+        ..HostConfig::default()
+    });
+    let (address, server) = serve_apps(&h.host).await;
+    // A 20 MB result, more than the sockets between client and server hold.
+    let large = json!({"baton": null, "requests": [execute("SELECT hex(zeroblob(10000000))")]});
+    let mut stalled = tokio::net::TcpStream::connect(address).await.unwrap();
+    stalled
+        .write_all(&raw_request(&h.token, &large))
+        .await
+        .unwrap();
+    // While its response waits to be read, another does not fit.
+    let mut busy = false;
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let (status, _) = post(&h, "/v3/pipeline", large.clone()).await;
+        if status == StatusCode::SERVICE_UNAVAILABLE {
+            busy = true;
+            break;
+        }
+    }
+    assert!(busy, "the unread response holds the buffer");
+    // Its connection is closed once writing stalls, and the bytes return.
+    let mut served = false;
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let (status, _) = post(&h, "/v3/pipeline", large.clone()).await;
+        if status == StatusCode::OK {
+            served = true;
+            break;
+        }
+    }
+    assert!(served, "the stalled response is dropped");
+    drop(stalled);
+    server.abort();
+}
+
 #[tokio::test]
 async fn forwards_requests_to_the_server_that_hosts_the_database() {
     // The home server hosts the database and grants it to shop/production.

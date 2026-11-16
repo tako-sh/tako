@@ -252,14 +252,17 @@ fn metadata_size(result: &StreamResult) -> usize {
 /// The cursor client went away; the stream must be closed.
 pub(crate) struct Disconnected;
 
-/// Executes a batch for the cursor endpoint. `emit` returns `false` once the
-/// client has disconnected.
+/// Executes a batch for the cursor endpoint. `reserve` sets aside memory for
+/// a row before it is copied, and `emit` sends an entry with what was
+/// reserved for it; each fails once the client has disconnected or stopped
+/// reading.
 pub(crate) fn run_cursor(
     stream: &mut Stream,
     database: &Database,
     batch: &Batch,
     max_row_bytes: usize,
-    emit: &mut dyn FnMut(CursorEntry) -> bool,
+    reserve: &mut dyn FnMut(usize) -> Option<tokio::sync::OwnedSemaphorePermit>,
+    emit: &mut dyn FnMut(CursorEntry, Option<tokio::sync::OwnedSemaphorePermit>) -> bool,
 ) -> Result<(), Disconnected> {
     let mut outcomes: Vec<Option<bool>> = Vec::with_capacity(batch.steps.len());
     for (index, step) in batch.steps.iter().enumerate() {
@@ -280,24 +283,40 @@ pub(crate) fn run_cursor(
             resolve_statement(stored_sql, &step.stmt).and_then(|(sql, args)| {
                 let conn = connection(conn, database)?;
                 conn.execute_streaming(sql, &args, |event| {
-                    let entry = match event {
-                        engine::Event::Begin(cols) => CursorEntry::StepBegin {
-                            step: step_index,
-                            cols,
-                        },
+                    let (entry, reserved) = match event {
+                        engine::Event::Begin(cols) => (
+                            CursorEntry::StepBegin {
+                                step: step_index,
+                                cols,
+                            },
+                            None,
+                        ),
                         engine::Event::Row(row) => {
                             // Rows stream one at a time, but each must still
                             // fit in a response.
-                            if engine::encoded_size(&row) > max_row_bytes {
+                            let size = row.encoded_size();
+                            if size > max_row_bytes {
                                 return Err(Error::new(
                                     "RESPONSE_TOO_LARGE",
                                     "a row exceeds the response size limit",
                                 ));
                             }
-                            CursorEntry::Row { row }
+                            let Some(reserved) = reserve(size) else {
+                                disconnected = true;
+                                return Err(Error::new(
+                                    "CLIENT_DISCONNECTED",
+                                    "client disconnected",
+                                ));
+                            };
+                            (
+                                CursorEntry::Row {
+                                    row: row.to_values(),
+                                },
+                                Some(reserved),
+                            )
                         }
                     };
-                    if emit(entry) {
+                    if emit(entry, reserved) {
                         Ok(())
                     } else {
                         disconnected = true;
@@ -320,26 +339,35 @@ pub(crate) fn run_cursor(
         let delivered = match result {
             Ok((affected_row_count, last_insert_rowid)) => {
                 outcomes.push(Some(true));
-                emit(CursorEntry::StepEnd {
-                    affected_row_count,
-                    last_insert_rowid,
-                })
+                emit(
+                    CursorEntry::StepEnd {
+                        affected_row_count,
+                        last_insert_rowid,
+                    },
+                    None,
+                )
             }
             Err(error) => {
                 outcomes.push(Some(false));
-                emit(CursorEntry::StepError {
-                    step: step_index,
-                    error,
-                })
+                emit(
+                    CursorEntry::StepError {
+                        step: step_index,
+                        error,
+                    },
+                    None,
+                )
             }
         };
         if !delivered {
             return Err(Disconnected);
         }
     }
-    if emit(CursorEntry::ReplicationIndex {
-        replication_index: None,
-    }) {
+    if emit(
+        CursorEntry::ReplicationIndex {
+            replication_index: None,
+        },
+        None,
+    ) {
         Ok(())
     } else {
         Err(Disconnected)

@@ -1011,6 +1011,11 @@ async fn restore(
                 "The old copy of {name} stays on {} and no longer takes snapshots. Once every app that binds {name} is deployed, remove it with `tako sqlite delete {name} --server {}`.",
                 home.name, home.name
             ));
+        } else {
+            output::hint(&format!(
+                "{} could not be reached. Its old copy of {name} stops publishing snapshots once it sees the move; remove it later with `tako sqlite delete {name} --server {}`.",
+                home.name, home.name
+            ));
         }
     }
     for warning in value["warnings"].as_array().into_iter().flatten() {

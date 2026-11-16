@@ -107,6 +107,16 @@ pub struct HostConfig {
     pub max_concurrent_per_database: usize,
     /// How long `pause` waits for in-flight requests.
     pub pause_timeout: Duration,
+    /// Connections one listener holds open at once; further ones wait to be
+    /// accepted.
+    pub max_connections: usize,
+    /// How long a connection may wait to send a request's headers, the
+    /// first time and between requests, before it is closed.
+    pub idle_connection_timeout: Duration,
+    /// How long a response may go without any of it being written before
+    /// its connection is closed: a client that stops reading must not hold
+    /// the response, and the memory reserved for it, forever.
+    pub write_stall_timeout: Duration,
 }
 
 impl Default for HostConfig {
@@ -128,6 +138,9 @@ impl Default for HostConfig {
             max_condition_depth: 32,
             pool_size: 8,
             max_concurrent_per_database: 32,
+            max_connections: 1024,
+            idle_connection_timeout: Duration::from_secs(30),
+            write_stall_timeout: Duration::from_secs(30),
             pause_timeout: Duration::from_secs(30),
         }
     }
@@ -824,14 +837,14 @@ impl DatabaseHost {
                             truncated = true;
                             return Err(Error::new(engine::STOP, "row limit reached"));
                         } else {
-                            size += engine::encoded_size(&row);
+                            size += row.encoded_size();
                             if size > budget {
                                 return Err(Error::new(
                                     "RESPONSE_TOO_LARGE",
                                     "the result is larger than 8 MiB; select fewer rows or columns, or use `tako sqlite export`",
                                 ));
                             }
-                            rows.push(row);
+                            rows.push(row.to_values());
                         }
                     }
                 }

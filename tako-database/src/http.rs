@@ -13,7 +13,7 @@ use http_body_util::{BodyExt, Full, Limited, StreamBody};
 use hyper::body::Frame;
 use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
-use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use serde::Serialize;
 use tokio::net::TcpListener;
 
@@ -45,7 +45,16 @@ pub enum Access {
 
 /// Serves `listener` until the task is dropped.
 pub async fn serve(host: DatabaseHost, listener: TcpListener, access: Access) {
+    let config = host.config();
+    // Connections that never send a request reach none of the request
+    // limits, so their number and idle time are bounded here.
+    let connections = Arc::new(tokio::sync::Semaphore::new(config.max_connections));
+    let idle_timeout = config.idle_connection_timeout;
+    let stall_timeout = config.write_stall_timeout;
     loop {
+        let Ok(slot) = connections.clone().acquire_owned().await else {
+            return;
+        };
         let (socket, peer) = match listener.accept().await {
             Ok(accepted) => accepted,
             Err(error) => {
@@ -58,6 +67,7 @@ pub async fn serve(host: DatabaseHost, listener: TcpListener, access: Access) {
         let host = host.clone();
         let access = access.clone();
         tokio::spawn(async move {
+            let _slot = slot;
             let service = hyper::service::service_fn(move |request| {
                 let host = host.clone();
                 let access = access.clone();
@@ -65,12 +75,111 @@ pub async fn serve(host: DatabaseHost, listener: TcpListener, access: Access) {
             });
             if let Err(error) = hyper::server::conn::http1::Builder::new()
                 .keep_alive(true)
-                .serve_connection(TokioIo::new(socket), service)
+                .timer(TokioTimer::new())
+                .header_read_timeout(idle_timeout)
+                .serve_connection(
+                    TokioIo::new(WriteStall::new(socket, stall_timeout)),
+                    service,
+                )
                 .await
             {
                 tracing::debug!(%error, "database connection ended");
             }
         });
+    }
+}
+
+/// Fails writes that make no progress for `timeout`, which closes the
+/// connection. Progress of any size starts the wait again.
+struct WriteStall<S> {
+    inner: S,
+    timeout: Duration,
+    stalled: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
+}
+
+impl<S> WriteStall<S> {
+    fn new(inner: S, timeout: Duration) -> Self {
+        Self {
+            inner,
+            timeout,
+            stalled: None,
+        }
+    }
+
+    fn settle<T>(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+        poll: std::task::Poll<std::io::Result<T>>,
+    ) -> std::task::Poll<std::io::Result<T>> {
+        use std::future::Future;
+        use std::task::Poll;
+        if poll.is_ready() {
+            self.stalled = None;
+            return poll;
+        }
+        let timeout = self.timeout;
+        let stalled = self
+            .stalled
+            .get_or_insert_with(|| Box::pin(tokio::time::sleep(timeout)));
+        match stalled.as_mut().poll(cx) {
+            Poll::Ready(()) => Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "the client stopped reading the response",
+            ))),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl<S: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for WriteStall<S> {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.get_mut().inner).poll_read(cx, buf)
+    }
+}
+
+impl<S: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for WriteStall<S> {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        let this = self.get_mut();
+        let poll = std::pin::Pin::new(&mut this.inner).poll_write(cx, buf);
+        this.settle(cx, poll)
+    }
+
+    fn poll_write_vectored(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        let this = self.get_mut();
+        let poll = std::pin::Pin::new(&mut this.inner).poll_write_vectored(cx, bufs);
+        this.settle(cx, poll)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        let poll = std::pin::Pin::new(&mut this.inner).poll_flush(cx);
+        this.settle(cx, poll)
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
     }
 }
 
@@ -348,8 +457,8 @@ async fn pipeline(
                     results: outcome.results,
                 },
             );
-            // The host's bytes stay reserved until the body has been sent
-            // or the connection dropped it.
+            // The host's bytes stay reserved until the last of the body has
+            // been taken for sending, or the connection dropped it.
             if let Some(reservation) = outcome.reservation {
                 response = response.map(|body| Holding::new(body, reservation).boxed());
             }
@@ -450,14 +559,34 @@ async fn cursor(
                 .ok()
                 .and_then(Result::ok),
         };
-        let send = |line: Bytes| -> bool {
+        let host_share =
+            |bytes: usize| u32::try_from(bytes.clamp(1, max_buffered)).unwrap_or(u32::MAX);
+        // A row's share of the host's budget is reserved before the row is
+        // copied out of SQLite.
+        let mut reserve = |bytes: usize| acquire(&host_bytes, host_share(bytes));
+        let send = |line: Bytes, reserved: Option<tokio::sync::OwnedSemaphorePermit>| -> bool {
             let queued = line.len().clamp(1, CURSOR_QUEUE_BYTES) as u32;
             let Some(permit) = acquire(&queued_bytes, queued) else {
                 return false;
             };
-            let held = u32::try_from(line.len().clamp(1, max_buffered)).unwrap_or(u32::MAX);
-            let Some(host_permit) = acquire(&host_bytes, held) else {
-                return false;
+            let held = host_share(line.len()) as usize;
+            let host_permit = match reserved {
+                Some(mut reserved) => {
+                    let have = reserved.num_permits();
+                    if have > held {
+                        drop(reserved.split(have - held));
+                    } else if have < held {
+                        let Some(more) = acquire(&host_bytes, (held - have) as u32) else {
+                            return false;
+                        };
+                        reserved.merge(more);
+                    }
+                    reserved
+                }
+                None => match acquire(&host_bytes, held as u32) {
+                    Some(permit) => permit,
+                    None => return false,
+                },
             };
             match sender.try_send((line, permit, host_permit)) {
                 Ok(()) => true,
@@ -467,19 +596,22 @@ async fn cursor(
                     .is_ok_and(|sent| sent.is_ok()),
             }
         };
-        let mut emit = |entry: crate::proto::CursorEntry| -> bool {
+        let mut emit = |entry: crate::proto::CursorEntry,
+                        reserved: Option<tokio::sync::OwnedSemaphorePermit>|
+         -> bool {
             let mut line = serde_json::to_vec(&entry).expect("cursor entry serializes");
             line.push(b'\n');
-            send(Bytes::from(line))
+            send(Bytes::from(line), reserved)
         };
         let mut lead = first;
         lead.push(b'\n');
-        let connected = send(Bytes::from(lead))
+        let connected = send(Bytes::from(lead), None)
             && exec::run_cursor(
                 &mut stream,
                 &database,
                 &request.batch,
                 max_row_bytes,
+                &mut reserve,
                 &mut emit,
             )
             .is_ok();
@@ -714,8 +846,10 @@ fn client() -> &'static Client<HttpConnector, Body> {
         let mut connector = HttpConnector::new();
         connector.set_connect_timeout(Some(Duration::from_secs(5)));
         connector.set_nodelay(true);
+        // Below the home server's idle timeout, so this side lets a pooled
+        // connection go before the other side closes it.
         Client::builder(TokioExecutor::new())
-            .pool_idle_timeout(Duration::from_secs(30))
+            .pool_idle_timeout(Duration::from_secs(20))
             .build(connector)
     })
 }
@@ -788,16 +922,22 @@ fn text(status: StatusCode, message: &'static str) -> Response<Body> {
 }
 
 /// A body that keeps part of the host's buffer budget reserved for as long
-/// as it exists.
+/// as it exists. It hands its data over in chunks, so the connection only
+/// takes the next one once it has written most of the last, and the body
+/// lives until its final chunk has been taken.
 struct Holding {
     body: Body,
+    pending: Bytes,
     _reservation: tokio::sync::OwnedSemaphorePermit,
 }
+
+const HOLDING_CHUNK: usize = 64 * 1024;
 
 impl Holding {
     fn new(body: Body, reservation: tokio::sync::OwnedSemaphorePermit) -> Self {
         Self {
             body,
+            pending: Bytes::new(),
             _reservation: reservation,
         }
     }
@@ -811,15 +951,36 @@ impl http_body::Body for Holding {
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<Frame<Bytes>, BoxError>>> {
-        std::pin::Pin::new(&mut self.get_mut().body).poll_frame(cx)
+        use std::task::Poll;
+        let this = self.get_mut();
+        loop {
+            if !this.pending.is_empty() {
+                let take = this.pending.len().min(HOLDING_CHUNK);
+                return Poll::Ready(Some(Ok(Frame::data(this.pending.split_to(take)))));
+            }
+            match std::pin::Pin::new(&mut this.body).poll_frame(cx) {
+                Poll::Ready(Some(Ok(frame))) => match frame.into_data() {
+                    Ok(data) => this.pending = data,
+                    Err(frame) => return Poll::Ready(Some(Ok(frame))),
+                },
+                other => return other,
+            }
+        }
     }
 
     fn is_end_stream(&self) -> bool {
-        self.body.is_end_stream()
+        self.pending.is_empty() && self.body.is_end_stream()
     }
 
     fn size_hint(&self) -> http_body::SizeHint {
-        self.body.size_hint()
+        let inner = self.body.size_hint();
+        let pending = self.pending.len() as u64;
+        let mut hint = http_body::SizeHint::new();
+        if let Some(upper) = inner.upper() {
+            hint.set_upper(upper + pending);
+        }
+        hint.set_lower(inner.lower() + pending);
+        hint
     }
 }
 

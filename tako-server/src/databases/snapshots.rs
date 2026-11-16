@@ -85,6 +85,75 @@ fn data_key(stored: &StoredDatabase, snapshot: &str) -> String {
     format!("{}/{snapshot}.sqlite.zst.enc", prefix(stored))
 }
 
+/// Names the server that last restored the database. A copy a move left
+/// behind sees another server there and stops publishing snapshots, even
+/// when it was unreachable during the move.
+fn holder_key(stored: &StoredDatabase) -> String {
+    format!("{}/holder", prefix(stored))
+}
+
+#[derive(Serialize, Deserialize)]
+struct Holder {
+    server: String,
+    since_unix_secs: u64,
+}
+
+async fn read_holder(
+    remote: &dyn ObjectStore,
+    stored: &StoredDatabase,
+) -> Result<Option<String>, String> {
+    let key = ObjectPath::parse(holder_key(stored)).map_err(|e| e.to_string())?;
+    let bytes = with_deadline(METADATA_TIMEOUT, async {
+        match remote.get(&key).await {
+            Ok(object) => object
+                .bytes()
+                .await
+                .map(Some)
+                .map_err(|e| format!("read the database's holder: {e}")),
+            Err(object_store::Error::NotFound { .. }) => Ok(None),
+            Err(error) => Err(format!("read the database's holder: {error}")),
+        }
+    })
+    .await?;
+    Ok(bytes
+        .and_then(|bytes| serde_json::from_slice::<Holder>(&bytes).ok())
+        .map(|holder| holder.server))
+}
+
+/// Fails when another server holds the database.
+async fn check_holder(
+    remote: &dyn ObjectStore,
+    stored: &StoredDatabase,
+    own: Option<&str>,
+) -> Result<(), String> {
+    let Some(own) = own else {
+        return Ok(());
+    };
+    match read_holder(remote, stored).await? {
+        Some(holder) if holder != own => Err(format!(
+            "database {} was moved to another server ({holder}); this copy no longer publishes snapshots. Remove it with `tako sqlite delete {} --server <this server>`",
+            stored.name, stored.name
+        )),
+        _ => Ok(()),
+    }
+}
+
+async fn claim_holder(
+    remote: &dyn ObjectStore,
+    stored: &StoredDatabase,
+    own: &str,
+) -> Result<(), String> {
+    put_json_object(
+        remote,
+        &holder_key(stored),
+        &Holder {
+            server: own.to_owned(),
+            since_unix_secs: now_unix_secs(),
+        },
+    )
+    .await
+}
+
 fn key_binding(stored: &StoredDatabase, override_key: Option<&str>) -> BackupKeyBinding {
     BackupKeyBinding {
         id: format!("database-{}", stored.generation),
@@ -258,8 +327,17 @@ pub(crate) async fn take(
         return Ok(None);
     }
     let started = now_unix_secs();
-    let result = match copy_database(state, stored).await {
-        Ok((work, copy)) => upload_copy(stored, &backup, &work, &copy, reason).await,
+    let own = state.databases.server_id();
+    let result = match store(&backup) {
+        Ok(remote) => match check_holder(remote.as_ref(), stored, own.as_deref()).await {
+            Ok(()) => match copy_database(state, stored).await {
+                Ok((work, copy)) => {
+                    upload_copy(stored, &backup, &work, &copy, reason, own.as_deref()).await
+                }
+                Err(error) => Err(error),
+            },
+            Err(error) => Err(error),
+        },
         Err(error) => Err(error),
     };
     if result.is_err() {
@@ -325,13 +403,15 @@ async fn copy_database(
     Ok((work, copy))
 }
 
-/// Compresses, encrypts and uploads a copy, then its manifest.
+/// Compresses, encrypts and uploads a copy, then its manifest. With `own`,
+/// the manifest is published only while no other server holds the database.
 async fn upload_copy(
     stored: &StoredDatabase,
     backup: &StorageBinding,
     work: &WorkDir,
     copy: &Path,
     reason: SnapshotReason,
+    own: Option<&str>,
 ) -> Result<DatabaseSnapshot, String> {
     let created = now_unix_secs();
     let snapshot_id = format!(
@@ -367,18 +447,24 @@ async fn upload_copy(
     let remote = store(backup)?;
     let data = data_key(stored, &snapshot_id);
     upload_file(remote.clone(), &data, &encrypted).await?;
-    let published = put_json_object(
-        remote.as_ref(),
-        &manifest_key(stored, &snapshot_id),
-        &Manifest {
-            format: MANIFEST_FORMAT,
-            database: stored.name.clone(),
-            generation: stored.generation.clone(),
-            snapshot: snapshot.clone(),
-            encryption,
-        },
-    )
-    .await;
+    // Checked again now: the database may have moved during the upload.
+    let published = match check_holder(remote.as_ref(), stored, own).await {
+        Ok(()) => {
+            put_json_object(
+                remote.as_ref(),
+                &manifest_key(stored, &snapshot_id),
+                &Manifest {
+                    format: MANIFEST_FORMAT,
+                    database: stored.name.clone(),
+                    generation: stored.generation.clone(),
+                    snapshot: snapshot.clone(),
+                    encryption,
+                },
+            )
+            .await
+        }
+        Err(error) => Err(error),
+    };
     if let Err(error) = published {
         // Listing and retention find data through manifests; without one the
         // object would never be removed.
@@ -684,7 +770,16 @@ pub(crate) async fn restore(
         .map_err(|e| e.to_string())??;
     }
 
-    let warnings = replace(state, &stored, restored, "database is being restored").await?;
+    let mut warnings = replace(state, &stored, restored, "database is being restored").await?;
+    // This server now holds the database; a copy elsewhere that a move left
+    // behind stops publishing snapshots.
+    if let Some(own) = state.databases.server_id()
+        && let Err(error) = claim_holder(remote.as_ref(), &stored, &own).await
+    {
+        warnings.push(format!(
+            "could not record this server as the database's holder; a copy left elsewhere may keep publishing snapshots until it is removed: {error}"
+        ));
+    }
     tracing::info!(database = %stored.name, snapshot = %manifest.snapshot.id, "Restored database");
     Ok(serde_json::json!({
         "database": stored.name,
@@ -744,7 +839,11 @@ pub(crate) async fn replace(
 
     if let (Some(backup), Some((work, copy))) = (backup, copy) {
         let started = now_unix_secs();
-        let result = upload_copy(stored, &backup, &work, &copy, SnapshotReason::Restore).await;
+        // Not fenced: copies of replaced contents are left out of latest
+        // restores, and a move's new copy uploads one before it claims the
+        // database.
+        let result =
+            upload_copy(stored, &backup, &work, &copy, SnapshotReason::Restore, None).await;
         if let Err(error) = record(
             state,
             stored,
