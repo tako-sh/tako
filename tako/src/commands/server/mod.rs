@@ -30,7 +30,7 @@ pub enum ServerCommands {
         /// Server host. Use admin-user@host to install or repair with that SSH user.
         host: Option<String>,
 
-        /// Tako network alias or stable ID (defaults to the project or sole network).
+        /// Network name or stable ID (defaults to `tako network use` or the sole network).
         #[arg(long)]
         network: Option<String>,
 
@@ -62,8 +62,12 @@ pub enum ServerCommands {
     /// Remove a server
     #[command(visible_aliases = ["rm", "delete"])]
     Remove {
-        /// Server name (omit to choose interactively)
+        /// Server name or network/server selector (omit to choose interactively)
         name: Option<String>,
+
+        /// Network of a bare server name (defaults to `tako network use` or the sole network)
+        #[arg(long)]
+        network: Option<String>,
     },
 
     /// List all servers
@@ -72,8 +76,12 @@ pub enum ServerCommands {
 
     /// Reload tako-server on a server without downtime
     Reload {
-        /// Server name
+        /// Server name or network/server selector
         name: String,
+
+        /// Network of a bare server name (defaults to `tako network use` or the sole network)
+        #[arg(long)]
+        network: Option<String>,
 
         /// Force a full service restart with brief downtime
         #[arg(long)]
@@ -82,8 +90,12 @@ pub enum ServerCommands {
 
     /// Upgrade tako-server via graceful reload with rollback to the previous binary on failure
     Upgrade {
-        /// Server name (omit to upgrade all servers)
+        /// Server name or network/server selector (omit to upgrade every server in the network)
         name: Option<String>,
+
+        /// Network to upgrade (defaults to `tako network use` or the sole network)
+        #[arg(long)]
+        network: Option<String>,
 
         /// Attempt upgrade despite a protocol version mismatch
         #[arg(long)]
@@ -92,8 +104,12 @@ pub enum ServerCommands {
 
     /// Remove tako-server and all data from a server
     Uninstall {
-        /// Server name (omit to choose interactively)
+        /// Server name or network/server selector (omit to choose interactively)
         name: Option<String>,
+
+        /// Network of a bare server name (defaults to `tako network use` or the sole network)
+        #[arg(long)]
+        network: Option<String>,
 
         /// Skip confirmation prompts
         #[arg(short = 'y', long = "yes")]
@@ -101,18 +117,12 @@ pub enum ServerCommands {
     },
 }
 
-pub fn run(
-    cmd: ServerCommands,
-    config_path: Option<&std::path::Path>,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>> {
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run_async(cmd, config_path))
+    rt.block_on(run_async(cmd))
 }
 
-async fn run_async(
-    cmd: ServerCommands,
-    config_path: Option<&std::path::Path>,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_async(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
         ServerCommands::Drain {
             device,
@@ -122,7 +132,6 @@ async fn run_async(
             super::network::manage_server(
                 &device,
                 network.as_deref(),
-                config_path,
                 tako_core::Command::DrainServer {
                     timeout_seconds: timeout,
                 },
@@ -132,7 +141,6 @@ async fn run_async(
             super::network::manage_server(
                 &device,
                 network.as_deref(),
-                config_path,
                 tako_core::Command::ResumeServer,
             )
         }),
@@ -155,23 +163,33 @@ async fn run_async(
                 ssh_key.as_deref(),
                 public_ports,
                 wireguard_endpoint,
-                config_path,
             )
             .await?;
             Ok(())
         }
-        ServerCommands::Remove { name } => crud::remove_server(name.as_deref()).await,
-        ServerCommands::List => crud::list_servers().await,
-        ServerCommands::Reload { name, force } => crud::restart_server(&name, force).await,
-        ServerCommands::Upgrade { name, force } => {
-            upgrade::upgrade_servers(name.as_deref(), force).await
+        ServerCommands::Remove { name, network } => {
+            crud::remove_server(name.as_deref(), network.as_deref()).await
         }
-        ServerCommands::Uninstall { name, yes } => uninstall_server_cmd(name.as_deref(), yes).await,
+        ServerCommands::List => crud::list_servers().await,
+        ServerCommands::Reload {
+            name,
+            network,
+            force,
+        } => crud::restart_server(&name, network.as_deref(), force).await,
+        ServerCommands::Upgrade {
+            name,
+            network,
+            force,
+        } => upgrade::upgrade_servers(name.as_deref(), network.as_deref(), force).await,
+        ServerCommands::Uninstall { name, network, yes } => {
+            uninstall_server_cmd(name.as_deref(), network.as_deref(), yes).await
+        }
     }
 }
 
 async fn uninstall_server_cmd(
     name: Option<&str>,
+    network: Option<&str>,
     assume_yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let servers = crate::commands::helpers::load_management_servers(None, None).await?;
@@ -182,12 +200,7 @@ async fn uninstall_server_cmd(
     }
 
     let server_name = match name {
-        Some(n) => {
-            if !servers.contains(n) {
-                return Err(format!("Server '{}' not found.", n).into());
-            }
-            n.to_string()
-        }
+        Some(n) => crate::commands::helpers::resolve_server_selector(&servers, n, network)?,
         None => {
             if !output::is_interactive() {
                 return Err(
@@ -195,12 +208,11 @@ async fn uninstall_server_cmd(
                         .into(),
                 );
             }
-            let mut names = servers.names();
-            names.sort_unstable();
-            let options: Vec<(String, String)> = names
-                .into_iter()
-                .map(|n| (n.to_string(), n.to_string()))
-                .collect();
+            let options: Vec<(String, String)> =
+                crate::commands::helpers::server_choices(&servers, network)?
+                    .into_iter()
+                    .map(|n| (n.clone(), n))
+                    .collect();
             output::select("Select server to remove", None, options)?
         }
     };

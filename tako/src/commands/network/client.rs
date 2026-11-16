@@ -38,7 +38,7 @@ pub enum ClientCommands {
     },
 }
 
-pub(super) fn run(command: ClientCommands, config: Option<&Path>) -> Result<()> {
+pub(super) fn run(command: ClientCommands) -> Result<()> {
     match command {
         ClientCommands::Add {
             network,
@@ -47,7 +47,7 @@ pub(super) fn run(command: ClientCommands, config: Option<&Path>) -> Result<()> 
             deploy,
             expires_in,
         } => {
-            let alias = network::resolve_network(network.as_deref(), config)?;
+            let alias = network::resolve_network(network.as_deref())?;
             if output::is_dry_run() {
                 return finish(
                     "Would create a client invitation",
@@ -111,7 +111,7 @@ pub(super) fn run(command: ClientCommands, config: Option<&Path>) -> Result<()> 
             Ok(())
         }
         ClientCommands::List { network: value } => {
-            let alias = network::resolve_network(value.as_deref(), config)?;
+            let alias = network::resolve_network(value.as_deref())?;
             let profile = if output::is_dry_run() {
                 network::load_profile(&alias)?
             } else {
@@ -137,7 +137,7 @@ pub(super) fn run(command: ClientCommands, config: Option<&Path>) -> Result<()> 
             client,
             network: value,
         } => {
-            let alias = network::resolve_network(value.as_deref(), config)?;
+            let alias = network::resolve_network(value.as_deref())?;
             let profile = if output::is_dry_run() {
                 network::load_profile(&alias)?
             } else {
@@ -155,7 +155,7 @@ pub(super) fn run(command: ClientCommands, config: Option<&Path>) -> Result<()> 
             let [member] = candidates.as_slice() else {
                 return Err("Client must uniquely match a client name or device ID".into());
             };
-            super::revoke(&member.device_id.to_string(), Some(&alias.id), config)
+            super::revoke(&member.device_id.to_string(), Some(&alias.id))
         }
     }
 }

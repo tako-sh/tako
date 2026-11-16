@@ -8,7 +8,7 @@ pub(super) fn can_configure_bindings(
     let Some(id) = config.envs.get(env).and_then(|env| env.network.as_deref()) else {
         return Ok(true);
     };
-    let alias = crate::network::resolve_network(Some(id), None)?;
+    let alias = crate::network::resolve_network(Some(id))?;
     let profile = crate::network::load_profile(&alias)?;
     let device = profile
         .request()
@@ -137,6 +137,95 @@ pub fn validate_server_names(names: &[String], servers: &ServerInventory) -> Res
         }
     }
     Ok(())
+}
+
+/// Resolve a server maintenance selector. A `network/server` selector names
+/// its own network; a bare server name uses `--network`, then the network
+/// chosen with `tako network use`, then the sole network.
+pub(crate) fn resolve_server_selector(
+    servers: &ServerInventory,
+    name: &str,
+    network: Option<&str>,
+) -> Result<String, String> {
+    let networks = crate::config::LocalNetworks::load().map_err(|error| error.to_string())?;
+    // Server names cannot contain `/`, so a slash marks a full selector.
+    if name.contains('/') {
+        let local = network
+            .map(|network| networks.select(Some(network)))
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        let matches = match local {
+            Some(local) => in_network(servers, name, local),
+            None => servers.contains(name),
+        };
+        return if matches {
+            Ok(name.to_string())
+        } else {
+            Err(format!(
+                "Server '{name}' not found. Use a selector from `tako network server list`."
+            ))
+        };
+    }
+    let local = networks
+        .select(network)
+        .map_err(|error| error.to_string())?;
+    let qualified = format!("{}/{name}", networks.server_namespace(local));
+    if in_network(servers, &qualified, local) {
+        Ok(qualified)
+    } else {
+        Err(format!(
+            "Server '{name}' not found in network {}.",
+            local.name
+        ))
+    }
+}
+
+/// Server selectors for an interactive choice. An explicit or default network
+/// narrows the list; otherwise every entry is shown with its network prefix.
+pub(crate) fn server_choices(
+    servers: &ServerInventory,
+    network: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let networks = crate::config::LocalNetworks::load().map_err(|error| error.to_string())?;
+    let local = match networks.select(network) {
+        Ok(local) => Some(local),
+        Err(error) if network.is_some() => return Err(error.to_string()),
+        Err(_) => None,
+    };
+    let mut names: Vec<String> = servers
+        .names()
+        .into_iter()
+        .filter(|name| local.is_none_or(|local| in_network(servers, name, local)))
+        .map(str::to_string)
+        .collect();
+    names.sort_unstable();
+    Ok(names)
+}
+
+/// Every server selector in the network a command acts on.
+pub(crate) fn network_servers(
+    servers: &ServerInventory,
+    network: Option<&str>,
+) -> Result<(crate::config::LocalNetwork, Vec<String>), String> {
+    let networks = crate::config::LocalNetworks::load().map_err(|error| error.to_string())?;
+    let local = networks
+        .select(network)
+        .map_err(|error| error.to_string())?;
+    let mut names: Vec<String> = servers
+        .names()
+        .into_iter()
+        .filter(|name| in_network(servers, name, local))
+        .map(str::to_string)
+        .collect();
+    names.sort_unstable();
+    Ok((local.clone(), names))
+}
+
+fn in_network(servers: &ServerInventory, name: &str, local: &crate::config::LocalNetwork) -> bool {
+    servers
+        .get(name)
+        .and_then(|entry| entry.native.as_ref())
+        .is_some_and(|target| target.network.id == local.id)
 }
 
 #[cfg(test)]

@@ -236,6 +236,7 @@ tako network approve <request-file> [--network <id-or-name>] --output <file> [--
 tako network import <profile-file>
 tako network export [network] --output <file>
 tako network list --json
+tako network use <network>
 tako network status [network] --json
 tako network revoke <device> [--network <id-or-name>]
 tako network server drain <server> [--network <id-or-name>] [--timeout <seconds>]
@@ -243,6 +244,8 @@ tako network server resume <server> [--network <id-or-name>]
 tako connect [network]
 tako disconnect [network]
 ```
+
+Commands that act on one network take it from an explicit `--network` or positional network argument first, then from the network chosen with `tako network use`, then from the only configured network. With several networks and no choice, name the network in the command. The project's `tako.toml` does not select a network for these commands; deploy, secrets, and other app commands use the network of the selected environment. `network use` accepts a name or stable ID and stores the choice on this machine; `network list --json` marks the network those commands use with `"default": true`.
 
 Invitations are single-use, expire after 3600 seconds by default (`client add --expires-in` accepts 60–86400), and are redeemed through their issuing server. `join` prompts for the invitation or reads stdin. `network sync` pulls published ciphertext without publishing worktree drafts. Network names are shared and currently immutable.
 
@@ -269,20 +272,20 @@ tako network server add [admin@host] [--network <id-or-name>] [--name <name>] [-
 tako network server list
 tako network server ls
 tako status
-tako network server reload <name> [--force]
-tako network server upgrade [name] [--force]
-tako network server remove [name]
-tako network server rm [name]
-tako network server uninstall [name] [-y|--yes]
+tako network server reload <name> [--network <id-or-name>] [--force]
+tako network server upgrade [name] [--network <id-or-name>] [--force]
+tako network server remove [name] [--network <id-or-name>]
+tako network server rm [name] [--network <id-or-name>]
+tako network server uninstall [name] [--network <id-or-name>] [-y|--yes]
 ```
 
-`network server add` bootstraps over administrator SSH and enrolls the server's own keys, HTTPS pins, and endpoint in a Tako network. No `[[servers]]` entry is written. Without `--network`, selection uses the project's production network (honoring `--config`) or the sole configured network. An explicit `--network` takes precedence. Create or import a network first; ambiguous selection requires `--network`.
+`network server add` bootstraps over administrator SSH and enrolls the server's own keys, HTTPS pins, and endpoint in a Tako network. No `[[servers]]` entry is written. Without `--network`, it uses the network chosen with `tako network use` or the only configured network. Create or import a network first; with several networks and no choice, pass `--network`.
 
 Without a host, an interactive terminal prompts for `admin@host`. An omitted SSH user defaults to `root`. Public HTTP and HTTPS ports default to `80` and `443`. `--ssh-key` selects a private key for bootstrap and saves its absolute path locally for SSH maintenance (reload, upgrade, uninstall). This selection stays on the workstation; normal HTTPS management uses the enrolled device identity. External VPN providers and the old `--vpn`, `--install`, `--no-test`, and server `--description` options are removed. See [Servers](/servers/#choose-the-vpn-provider) to replace an old setup.
 
 `status` prints a deployment snapshot grouped by server, with compact server summary, routes, and app rows. An app whose instances the server had to replace shows a `Restarts` row with the restart count, the last exit (crashed, unhealthy, or failed to start, with its exit code or signal), and when the next restart is due while restarts are backing off. `--json` reports the same under `recovery` in each app status.
 
-Use the exact selector shown by `network server list --json` for maintenance commands. Usually `network-name/server-name`, it includes network or server IDs when names collide; see [Server maintenance](/servers/#server-maintenance). `network server reload` performs a zero-downtime service reload by default. Its `--force` flag performs a full restart. `network server upgrade` checks the candidate protocol against the CLI and every active app before reload, checks again after readiness, and restores and restarts the previous binary if the upgrade fails. `network server upgrade --force` attempts an incompatible upgrade but keeps readiness and rollback checks enabled. `network server uninstall` publishes a revocation of native membership and delegated approvals before removing the remote service, binaries, data, and sockets. Revocation failure stops uninstall before deletion; cleanup failure after revocation reports uninstall as incomplete. Offline peers enforce the revocation when they reconnect. `--dry-run` performs neither revocation nor deletion. `network server remove` revokes network membership and delegated approvals without deleting app data.
+Maintenance commands accept the exact selector shown by `network server list --json`, usually `network-name/server-name`, which names its own network. A bare server name resolves in `--network`, then the network chosen with `tako network use`, then the only configured network. `upgrade` without a name upgrades every server in that network. Without a name, `remove` and `uninstall` prompt with that network's servers, or with every server when no network applies; see [Server maintenance](/servers/#server-maintenance). `network server reload` performs a zero-downtime service reload by default. Its `--force` flag performs a full restart. `network server upgrade` checks the candidate protocol against the CLI and every active app before reload, checks again after readiness, and restores and restarts the previous binary if the upgrade fails. `network server upgrade --force` attempts an incompatible upgrade but keeps readiness and rollback checks enabled. `network server uninstall` publishes a revocation of native membership and delegated approvals before removing the remote service, binaries, data, and sockets. Revocation failure stops uninstall before deletion; cleanup failure after revocation reports uninstall as incomplete. Offline peers enforce the revocation when they reconnect. `--dry-run` performs neither revocation nor deletion. `network server remove` revokes network membership and delegated approvals without deleting app data.
 
 ## Secrets
 

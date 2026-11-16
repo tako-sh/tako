@@ -338,6 +338,11 @@ fn workflow_tools_follow_cli_definitions_with_read_and_write_annotations() {
         annotations("tako_workflows_cancel").destructive_hint,
         Some(true)
     );
+    assert_eq!(annotations("tako_network_use").read_only_hint, Some(false));
+    assert_eq!(
+        annotations("tako_network_use").destructive_hint,
+        Some(false)
+    );
     let clear = &catalog["tako_secrets_clear"];
     assert_eq!(
         annotations("tako_secrets_clear").destructive_hint,

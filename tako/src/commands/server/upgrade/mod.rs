@@ -195,6 +195,7 @@ async fn refresh_upgrade_companions(ssh: &SshClient) -> Result<(), String> {
 
 pub(super) async fn upgrade_servers(
     name: Option<&str>,
+    network: Option<&str>,
     force: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let servers = crate::commands::helpers::load_management_servers(None, None).await?;
@@ -208,13 +209,15 @@ pub(super) async fn upgrade_servers(
     }
 
     let names: Vec<String> = if let Some(name) = name {
-        if !servers.contains(name) {
-            return Err(format!("Server '{}' not found.", name).into());
-        }
-        vec![name.to_string()]
+        vec![crate::commands::helpers::resolve_server_selector(
+            &servers, name, network,
+        )?]
     } else {
-        let mut names: Vec<String> = servers.names().iter().map(|s| s.to_string()).collect();
-        names.sort_unstable();
+        let (local, names) = crate::commands::helpers::network_servers(&servers, network)?;
+        if names.is_empty() {
+            output::error(&format!("No servers in network {}.", local.name));
+            return Ok(());
+        }
         names
     };
 

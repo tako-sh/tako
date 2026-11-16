@@ -5,7 +5,9 @@ description: "Create a Tako network, enroll servers and devices, deploy over pin
 
 A native network identifies trusted devices and servers without an external account. Each device generates its own keys. A project selects the network by its stable 32-character hexadecimal ID; the network name is shared by every enrolled device. Human-readable commands use that name; `tako network list --json` includes the ID for `tako.toml`.
 
-Network names are currently immutable and need not be globally unique. If two enrolled networks share a name, select one by its ID. [Server maintenance selectors](/servers/#server-maintenance) include IDs when needed to distinguish names.
+Network names are currently immutable and need not be globally unique. If two enrolled networks share a name, select one by its ID.
+
+Network commands such as `network status`, `network client add`, `network server add`, `connect`, and `ssh` act on the network named in the command. Without one, they use the network chosen with `tako network use <network>`, then the only configured network; with several networks and no choice, name the network in the command. `tako network list --json` marks the network they use with `"default": true`. [Server maintenance selectors](/servers/#server-maintenance) include IDs when needed to distinguish names.
 
 Management uses signed requests over pinned HTTPS. Deploy, status, logs, releases, and scaling do not require a workstation WireGuard interface, TUN device, or SSH agent. Server installation still needs administrator SSH access. Tako networking is the supported enrollment path; see [re-enrollment](/servers/#choose-the-vpn-provider) for older installations.
 

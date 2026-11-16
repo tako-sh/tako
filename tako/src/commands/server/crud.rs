@@ -26,7 +26,10 @@ fn removal_prompt(name: &str, entry: &crate::config::ServerEntry) -> String {
     }
 }
 
-pub(super) async fn remove_server(name: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+pub(super) async fn remove_server(
+    name: Option<&str>,
+    network: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let servers = crate::commands::helpers::load_management_servers(None, None).await?;
 
     if servers.is_empty() {
@@ -39,9 +42,7 @@ pub(super) async fn remove_server(name: Option<&str>) -> Result<(), Box<dyn std:
     }
 
     if let Some(name) = name {
-        if !servers.contains(name) {
-            return Err(format!("Server '{}' not found.", name).into());
-        }
+        let name = &crate::commands::helpers::resolve_server_selector(&servers, name, network)?;
 
         if output::is_dry_run() {
             output::dry_run_skip(&format!("Remove server {}", output::strong(name)));
@@ -68,6 +69,7 @@ pub(super) async fn remove_server(name: Option<&str>) -> Result<(), Box<dyn std:
         );
     }
 
+    let choices = crate::commands::helpers::server_choices(&servers, network)?;
     let mut step = 0;
     let mut selected_name = String::new();
 
@@ -75,15 +77,13 @@ pub(super) async fn remove_server(name: Option<&str>) -> Result<(), Box<dyn std:
         match step {
             // Step 0: Select server
             0 => {
-                let mut names = servers.names();
-                names.sort_unstable();
-                let options: Vec<(String, String)> = names
-                    .into_iter()
+                let options: Vec<(String, String)> = choices
+                    .iter()
                     .filter_map(|server_name| {
                         servers.get(server_name).map(|entry| {
                             (
                                 removal_option_label(server_name, entry),
-                                server_name.to_string(),
+                                server_name.clone(),
                             )
                         })
                     })
@@ -263,12 +263,14 @@ pub(super) async fn list_servers() -> Result<(), Box<dyn std::error::Error>> {
 
 pub(super) async fn restart_server(
     name: &str,
+    network: Option<&str>,
     force: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::ssh::{SshClient, SshConfig};
 
     let servers = crate::commands::helpers::load_management_servers(None, None).await?;
 
+    let name = &crate::commands::helpers::resolve_server_selector(&servers, name, network)?;
     let server = servers
         .get(name)
         .ok_or_else(|| format!("Server '{}' not found.", name))?;

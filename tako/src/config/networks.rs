@@ -15,6 +15,14 @@ pub struct LocalNetwork {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LocalNetworks {
     pub networks: BTreeMap<String, LocalNetwork>,
+    /// Stable ID chosen with `tako network use`.
+    pub selected: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SelectedNetwork {
+    id: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -32,6 +40,9 @@ fn index_path() -> Result<PathBuf> {
         .map_err(invalid)?
         .join("networks")
         .join("identities.json"))
+}
+fn selected_path(index: &Path) -> PathBuf {
+    index.with_file_name("selected.json")
 }
 impl LocalNetwork {
     pub fn validate(&self) -> Result<()> {
@@ -97,7 +108,15 @@ impl LocalNetworks {
                 return Err(invalid("Duplicate network identity pointer"));
             }
         }
-        Ok(Self { networks })
+        let selected_path = selected_path(path);
+        let selected = if selected_path.try_exists().map_err(invalid)? {
+            let selected: SelectedNetwork =
+                crate::network::read_json(&selected_path).map_err(invalid)?;
+            Some(selected.id)
+        } else {
+            None
+        };
+        Ok(Self { networks, selected })
     }
     fn read_pointers(path: &Path) -> Result<Vec<IdentityPointer>> {
         if !path.try_exists().map_err(invalid)? {
@@ -121,15 +140,38 @@ impl LocalNetworks {
                 ))),
             };
         }
+        if let Some(id) = &self.selected {
+            return self.networks.get(id).ok_or_else(|| {
+                invalid(
+                    "The network chosen with `tako network use` is no longer configured on this machine. Run `tako network use <network>` or name the network in the command.",
+                )
+            });
+        }
         match self.networks.len() {
             0 => Err(invalid(
                 "No network configured. Run `tako network create` or `tako network join`.",
             )),
             1 => Ok(self.networks.values().next().unwrap()),
             _ => Err(invalid(
-                "More than one network is configured. Select one with --network.",
+                "More than one network is configured. Run `tako network use <network>` or name the network in the command.",
             )),
         }
+    }
+
+    /// Make a network the default for commands that do not name one.
+    pub fn use_network(&self, name_or_id: &str) -> Result<LocalNetwork> {
+        let local = self.select(Some(name_or_id))?.clone();
+        let path = selected_path(&index_path()?);
+        crate::network::private_directory(path.parent().unwrap()).map_err(invalid)?;
+        crate::network::write_json(
+            &path,
+            &SelectedNetwork {
+                id: local.id.clone(),
+            },
+            true,
+        )
+        .map_err(invalid)?;
+        Ok(local)
     }
 
     /// Keep inventory selectors unique even when shared network names collide.
@@ -174,11 +216,22 @@ mod tests {
         };
         let mut b = a.clone();
         b.id = "c".repeat(32);
-        let networks = LocalNetworks {
-            networks: BTreeMap::from([(a.id.clone(), a.clone()), (b.id.clone(), b)]),
+        let mut networks = LocalNetworks {
+            networks: BTreeMap::from([(a.id.clone(), a.clone()), (b.id.clone(), b.clone())]),
+            selected: None,
         };
         assert!(networks.select(Some("work")).is_err());
         assert_eq!(networks.select(Some(&a.id)).unwrap(), &a);
+        assert!(networks.select(None).is_err());
+        networks.selected = Some(b.id.clone());
+        assert_eq!(networks.select(None).unwrap(), &b);
+        // An explicit network always overrides the chosen default.
+        assert_eq!(networks.select(Some(&a.id)).unwrap(), &a);
+        networks.networks.remove(&b.id);
+        // A stale choice fails instead of silently selecting the sole network.
+        assert!(networks.select(None).is_err());
+        networks.selected = None;
+        assert_eq!(networks.select(None).unwrap(), &a);
         let pointer = serde_json::to_value(IdentityPointer {
             id: a.id,
             device: a.device,
