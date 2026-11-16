@@ -199,13 +199,20 @@ pub(crate) fn proxy_main() -> ! {
         super::ssh_session::control_directory()?;
         let proxies = super::ssh_session::lock(&alias, "ssh-proxies.lock")?;
         proxies.lock_shared()?;
+        // An assigned local address means connect already owns this device's
+        // WireGuard transport. Reuse it instead of stealing the peer endpoint.
+        let system = local_address_assigned(config.source)?;
+        if !system {
+            // Aliases run OpenSSH directly, bypassing `tako ssh`'s guard. The
+            // proxy starts before its own master binds, so any live master for
+            // this server means a second transport would roam the endpoint.
+            super::ssh_session::refuse_other_transport(&alias, server, None)?;
+        }
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
         let result = runtime.block_on(async {
-            // An assigned local address means connect already owns this device's
-            // WireGuard transport. Reuse it instead of stealing the peer endpoint.
-            if local_address_assigned(config.source)? {
+            if system {
                 let mut stream = tokio::time::timeout(
                     SSH_TIMEOUT,
                     tokio::net::TcpStream::connect((config.destination, config.port)),

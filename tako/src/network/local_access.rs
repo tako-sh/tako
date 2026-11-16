@@ -104,7 +104,9 @@ fn configure(
         return if write { remove(alias) } else { Ok(()) }.map(|_| vec![]);
     };
     let directory = directory(alias)?;
-    super::private_directory(&directory)?;
+    if write {
+        super::private_directory(&directory)?;
+    }
     let identity = directory.join("identity");
     let known_hosts = directory.join("known_hosts");
     let proxy = match transport {
@@ -162,24 +164,32 @@ fn render(
     let mut hosts = String::new();
     let mut settings = String::new();
     let servers = super::server_members(profile)?;
-    let mut names = std::collections::BTreeMap::<String, usize>::new();
+    let named = |name: &str| {
+        [
+            name.to_owned(),
+            format!("{name}.{}.tako.internal", alias.id),
+        ]
+    };
+    let mut uses = std::collections::BTreeMap::<String, usize>::new();
     for member in servers.values() {
-        *names
-            .entry(member.request.name.as_str().to_ascii_lowercase())
-            .or_default() += 1;
+        for pattern in named(&member.request.name.as_str().to_ascii_lowercase()) {
+            *uses.entry(pattern).or_default() += 1;
+        }
     }
     for (id, member) in servers {
         let MemberKind::Server(info) = &member.kind else {
             unreachable!()
         };
         let name = member.request.name.as_str().to_ascii_lowercase();
-        // OpenSSH applies the first matching stanza, so a shared name would
-        // reach only one server. Those servers get their device ID instead,
-        // the same identifier `tako ssh` accepts for ambiguous names.
-        let patterns = if names[&name] > 1 {
+        // OpenSSH applies the first matching stanza, so a pattern shared with
+        // another server (the same name, or `edge` beside a server literally
+        // named `edge.<network>.tako.internal`) would reach only one of them.
+        // Those servers get their device ID, which `tako ssh` also accepts.
+        let candidates = named(&name);
+        let patterns = if candidates.iter().any(|pattern| uses[pattern] > 1) {
             id.to_string()
         } else {
-            format!("{name} {name}.{}.tako.internal", alias.id)
+            candidates.join(" ")
         };
         let address = profile
             .snapshot()
@@ -253,9 +263,15 @@ fn edit_ssh_config(network: &str, settings: Option<&str>, write: bool) -> Result
     if settings.is_none() && !directory.join("config").exists() {
         return Ok(());
     }
-    super::private_directory(&directory)?;
-    let lock = super::private_file(&directory.join(".tako-config.lock"), true)?;
-    lock.lock()?;
+    // A preview only reads, so it must not create `~/.ssh` or the lock file.
+    let _lock = if write {
+        super::private_directory(&directory)?;
+        let lock = super::private_file(&directory.join(".tako-config.lock"), true)?;
+        lock.lock()?;
+        Some(lock)
+    } else {
+        None
+    };
     let path = directory.join("config");
     let mut previous = String::new();
     let mode = match OpenOptions::new()
@@ -482,6 +498,12 @@ mod tests {
 
     #[test]
     fn servers_sharing_a_name_get_distinct_device_id_aliases() {
+        colliding_aliases(|_| "SERVER".into());
+        // A dotted name can equal another server's generated private name.
+        colliding_aliases(|network| format!("server.{network}.tako.internal"));
+    }
+
+    fn colliding_aliases(twin_name: impl Fn(&str) -> String) {
         let mut fixture = crate::network::tests::fixture();
         let Profile::Active { profile } = &mut fixture.profile else {
             panic!()
@@ -491,7 +513,9 @@ mod tests {
             .enrollment_request(
                 Some(profile.snapshot.network.id.clone()),
                 tako_network::DeviceKind::Server,
-                "SERVER".parse().unwrap(),
+                twin_name(&profile.snapshot.network.id.to_string())
+                    .parse()
+                    .unwrap(),
             )
             .unwrap();
         let twin = request.device_id_for(&profile.snapshot.network.id).unwrap();

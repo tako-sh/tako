@@ -17,9 +17,12 @@ pub(super) fn lock(alias: &LocalNetwork, name: &str) -> Result<File> {
     super::private_file(&directory.join(name), true)
 }
 
+fn control_directory_path() -> Result<PathBuf> {
+    Ok(fs::canonicalize("/tmp")?.join(format!("tako-ssh-{}", unsafe { libc::geteuid() })))
+}
+
 pub(super) fn control_directory() -> Result<PathBuf> {
-    let directory =
-        fs::canonicalize("/tmp")?.join(format!("tako-ssh-{}", unsafe { libc::geteuid() }));
+    let directory = control_directory_path()?;
     super::private_directory(&directory)?;
     Ok(directory)
 }
@@ -40,8 +43,9 @@ fn server_prefix(alias: &LocalNetwork, server: &str) -> String {
 /// `tako ssh` and the aliases from `tako ssh config` derive the same path, so
 /// both share a single WireGuard transport. Approval changes yield a new path
 /// instead of reusing a connection authenticated under the old approval.
+/// Computes the path only; callers that bind or scan create the directory.
 pub(crate) fn control_path(alias: &LocalNetwork, server: &str, settings: &str) -> Result<PathBuf> {
-    Ok(control_directory()?.join(format!(
+    Ok(control_directory_path()?.join(format!(
         "{}{}",
         server_prefix(alias, server),
         &hex::encode(Sha256::digest(settings))[..12]
@@ -106,6 +110,37 @@ pub(super) fn stop_masters(alias: &LocalNetwork) -> Result<()> {
     Ok(())
 }
 
+/// Fails while a live control master for this server exists under another
+/// path: one from an earlier approval, or from a release before
+/// settings-derived paths. A second WireGuard transport would roam the
+/// server's peer endpoint away from it. `own` is the caller's control path.
+pub(super) fn refuse_other_transport(
+    alias: &LocalNetwork,
+    server: &str,
+    own: Option<&std::path::Path>,
+) -> Result<()> {
+    let siblings = server_prefix(alias, server);
+    let legacy = format!(
+        "{}-{}",
+        prefix(alias),
+        &hex::encode(Sha256::digest(server))[..24]
+    );
+    let own = own.map(|path| path.file_name().unwrap().to_string_lossy().into_owned());
+    for entry in fs::read_dir(control_directory()?)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // OpenSSH binds `<path>.<random>` before renaming it into place.
+        if !own.as_deref().is_some_and(|own| name.starts_with(own))
+            && (name.starts_with(&siblings) || name == legacy)
+            && entry.file_type()?.is_socket()
+            && control(&entry.path(), "check")?.status.success()
+        {
+            return Err("SSH approval changed. Finish existing SSH sessions to this server, wait five seconds, then retry. Rerun `tako ssh config` if you use it.".into());
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn run(
     alias: &LocalNetwork,
     server: &str,
@@ -128,26 +163,7 @@ pub(crate) fn run(
         command.args(base.get_args()).arg("-S").arg(&path);
         command
     };
-    let siblings = server_prefix(alias, server);
-    // Masters from releases before settings-derived paths, still alive during an upgrade.
-    let legacy = format!(
-        "{}-{}",
-        prefix(alias),
-        &hex::encode(Sha256::digest(server))[..24]
-    );
-    let own = path.file_name().unwrap().to_string_lossy().into_owned();
-    for entry in fs::read_dir(control_directory()?)? {
-        let entry = entry?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        // OpenSSH binds `<path>.<random>` before renaming it into place.
-        if !name.starts_with(&own)
-            && (name.starts_with(&siblings) || name == legacy)
-            && entry.file_type()?.is_socket()
-            && control(&entry.path(), "check")?.status.success()
-        {
-            return Err("SSH approval changed. Finish existing SSH sessions to this server, wait five seconds, then retry. Rerun `tako ssh config` if you use it.".into());
-        }
-    }
+    refuse_other_transport(alias, server, Some(&path))?;
     if !control(&path, "check")?.status.success() {
         match fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.file_type().is_socket() => fs::remove_file(&path)?,
