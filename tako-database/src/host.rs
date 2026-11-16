@@ -81,6 +81,10 @@ pub struct HostConfig {
     pub max_streams_per_database: usize,
     pub max_streams: usize,
     pub max_request_bytes: usize,
+    /// Request bodies and cursor output this host buffers at once, across
+    /// every database. A request reserves its `Content-Length` (or
+    /// `max_request_bytes`) before its body is read.
+    pub max_buffered_bytes: usize,
     /// How long an admitted request may take to send its body before it
     /// gives up its request slot.
     pub request_body_timeout: Duration,
@@ -112,6 +116,7 @@ impl Default for HostConfig {
             max_streams_per_database: 128,
             max_streams: 4096,
             max_request_bytes: 32 * 1024 * 1024,
+            max_buffered_bytes: 256 * 1024 * 1024,
             request_body_timeout: Duration::from_secs(30),
             admission_timeout: Duration::from_secs(30),
             max_response_bytes: 64 * 1024 * 1024,
@@ -388,6 +393,9 @@ pub(crate) struct HostInner {
     remote_grants: RwLock<HashMap<String, Grant>>,
     pub(crate) streams: Mutex<HashMap<[u8; 16], StreamEntry>>,
     pub(crate) stored_sql: Arc<StoredSqlBudget>,
+    /// Bytes of request bodies and cursor output buffered; see
+    /// [`HostConfig::max_buffered_bytes`].
+    pub(crate) buffered: Arc<Semaphore>,
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
@@ -441,6 +449,7 @@ pub enum HostError {
 impl DatabaseHost {
     pub fn new(config: HostConfig) -> Self {
         let stored_sql = Arc::new(StoredSqlBudget::new(config.max_stored_sql_bytes));
+        let buffered = Arc::new(Semaphore::new(config.max_buffered_bytes));
         Self {
             inner: Arc::new(HostInner {
                 config,
@@ -450,6 +459,7 @@ impl DatabaseHost {
                 remote_grants: RwLock::new(HashMap::new()),
                 streams: Mutex::new(HashMap::new()),
                 stored_sql,
+                buffered,
             }),
         }
     }

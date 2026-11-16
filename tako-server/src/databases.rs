@@ -453,6 +453,44 @@ impl ServerState {
         Ok(())
     }
 
+    /// Registers a stored database that is not being served, as after a
+    /// failed registration. Holds the database's lock, so it cannot race a
+    /// delete, which unregisters it under that lock before forgetting it.
+    pub(crate) async fn retry_database_registration(&self, name: &str) {
+        let databases = &self.databases;
+        if !databases.opened.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        let Ok(id) = DatabaseId::parse(name) else {
+            return;
+        };
+        if databases.host.is_registered(&id) {
+            return;
+        }
+        let lock = databases.lock(name);
+        let _guard = lock.lock().await;
+        if databases.host.is_registered(&id)
+            || !matches!(self.state_store.get_database(name), Ok(Some(_)))
+        {
+            return;
+        }
+        let path = databases.database_path(name);
+        let host = databases.host.clone();
+        let registered = tokio::task::spawn_blocking(move || host.register(id, path)).await;
+        match registered {
+            Ok(Ok(())) => {
+                tracing::info!(database = %name, "Opened database after an earlier failure");
+                self.refresh_database_routes();
+            }
+            Ok(Err(error)) => {
+                tracing::warn!(database = %name, %error, "Database still cannot be opened")
+            }
+            Err(error) => {
+                tracing::warn!(database = %name, %error, "Database still cannot be opened")
+            }
+        }
+    }
+
     /// Starts what needs the network: other servers' addresses, grants for
     /// apps on other servers, the peer listener, and snapshots. A promoted
     /// standby runs this, with [`Self::open_databases`], on promotion.

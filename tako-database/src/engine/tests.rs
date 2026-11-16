@@ -671,7 +671,7 @@ fn long_statements_run_without_the_statement_cache() {
     let fixture = fixture();
     let mut conn = open(&fixture);
     // Longer than the cache takes; runs the same, twice.
-    let sql = format!("/* {} */ SELECT 41 + 1", "x".repeat(32 * 1024));
+    let sql = format!("/* {} */ SELECT 41 + 1", "x".repeat(8 * 1024));
     for _ in 0..2 {
         let result = run(&mut conn, &sql).unwrap();
         assert_eq!(result.rows, vec![vec![Value::Integer(42)]]);

@@ -157,6 +157,10 @@ pub(crate) fn spawn_scheduler(state: Arc<ServerState>) -> tokio::task::JoinHandl
                 }
             };
             for stored in databases {
+                // A database whose registration failed at startup (or later)
+                // is retried, so a transient error does not keep it
+                // unavailable until the next restart.
+                state.retry_database_registration(&stored.name).await;
                 let work = state.databases.work_dir(&stored.name);
                 let removed = tokio::task::spawn_blocking(move || {
                     remove_stale_work_dirs(&work, std::time::SystemTime::now())

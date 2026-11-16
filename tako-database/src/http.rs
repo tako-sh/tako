@@ -157,9 +157,23 @@ where
             database,
             principal,
         } => {
-            // The request counts against the database's concurrency limit
-            // before its body is buffered.
-            let admitted = match admit(&database, host.config().admission_timeout).await {
+            // The request counts against the database's concurrency limit,
+            // and its body against the host's buffer budget, before the body
+            // is read.
+            let limit = host.config().max_request_bytes;
+            let declared = request
+                .headers()
+                .get(http::header::CONTENT_LENGTH)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<usize>().ok());
+            if declared.is_some_and(|length| length > limit) {
+                return error(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    &format!("request body exceeds {limit} bytes"),
+                );
+            }
+            let reserve = declared.unwrap_or(limit).clamp(1, limit);
+            let admitted = match admit(host, &database, reserve).await {
                 Ok(admitted) => admitted,
                 Err(response) => return response,
             };
@@ -168,7 +182,7 @@ where
             let config = host.config();
             let body = match tokio::time::timeout(
                 config.request_body_timeout,
-                read_body(request.into_body(), config.max_request_bytes),
+                read_body(request.into_body(), reserve),
             )
             .await
             {
@@ -197,36 +211,61 @@ enum Endpoint {
     Cursor,
 }
 
-/// A request admitted to a database: it is active (so pausing waits for it)
-/// and holds one of the database's request slots.
+/// A request admitted to a database: it is active (so pausing waits for it),
+/// holds one of the database's request slots, and holds its body's share of
+/// the host's buffer budget.
 struct Admitted {
     active: crate::host::ActiveGuard,
     permit: tokio::sync::OwnedSemaphorePermit,
+    buffered: tokio::sync::OwnedSemaphorePermit,
 }
 
-/// Waits, for at most `wait`, for one of the database's request slots, and
-/// then marks the request active. A request still waiting is not active, so
-/// it neither holds up a pause nor waits without a deadline.
+/// Waits, for at most the admission timeout, for one of the database's
+/// request slots and for `body_bytes` of the host's buffer budget, and then
+/// marks the request active. A request still waiting is not active, so it
+/// neither holds up a pause nor waits without a deadline.
 #[allow(clippy::result_large_err)]
-async fn admit(database: &Arc<Database>, wait: Duration) -> Result<Admitted, Response<Body>> {
-    let permit = match tokio::time::timeout(wait, database.permits.clone().acquire_owned()).await {
-        Ok(Ok(permit)) => permit,
-        Ok(Err(_)) => {
-            return Err(error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "database is closing",
-            ));
-        }
-        Err(_) => {
-            return Err(error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "the database is busy with other requests; retry",
-            ));
-        }
+async fn admit(
+    host: &DatabaseHost,
+    database: &Arc<Database>,
+    body_bytes: usize,
+) -> Result<Admitted, Response<Body>> {
+    let busy = || {
+        error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the database is busy with other requests; retry",
+        )
+    };
+    let deadline = tokio::time::Instant::now() + host.config().admission_timeout;
+    let permit =
+        match tokio::time::timeout_at(deadline, database.permits.clone().acquire_owned()).await {
+            Ok(Ok(permit)) => permit,
+            Ok(Err(_)) => {
+                return Err(error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "database is closing",
+                ));
+            }
+            Err(_) => return Err(busy()),
+        };
+    let need = u32::try_from(body_bytes.min(host.config().max_buffered_bytes)).unwrap_or(u32::MAX);
+    let buffered = match tokio::time::timeout_at(
+        deadline,
+        host.inner.buffered.clone().acquire_many_owned(need),
+    )
+    .await
+    {
+        Ok(Ok(buffered)) => buffered,
+        Ok(Err(_)) => return Err(error(StatusCode::SERVICE_UNAVAILABLE, "server is closing")),
+        Err(_) => return Err(busy()),
     };
     let active = DatabaseHost::enter(database)
         .map_err(|unavailable| error(StatusCode::SERVICE_UNAVAILABLE, &unavailable.0))?;
-    Ok(Admitted { active, permit })
+    Ok(Admitted {
+        active,
+        permit,
+        buffered,
+    })
 }
 
 async fn pipeline(
@@ -237,7 +276,11 @@ async fn pipeline(
     body: Bytes,
     admitted: Admitted,
 ) -> Response<Body> {
-    let Admitted { active, permit } = admitted;
+    let Admitted {
+        active,
+        permit,
+        buffered,
+    } = admitted;
     let request: PipelineRequest = match crate::proto::parse_request(&body) {
         Ok(request) => request,
         Err(e) => return error(StatusCode::BAD_REQUEST, &format!("invalid pipeline: {e}")),
@@ -261,6 +304,8 @@ async fn pipeline(
     let task = tokio::task::spawn_blocking(move || {
         let _active = active;
         let _permit = permit;
+        // The parsed requests live as long as the body did.
+        let _buffered = buffered;
         let mut stream = stream;
         let outcome = exec::run_pipeline(&mut stream, &database, request.requests, limits);
         let baton = settle(
@@ -306,7 +351,11 @@ async fn cursor(
     body: Bytes,
     admitted: Admitted,
 ) -> Response<Body> {
-    let Admitted { active, permit } = admitted;
+    let Admitted {
+        active,
+        permit,
+        buffered,
+    } = admitted;
     let request: CursorRequest = match crate::proto::parse_request(&body) {
         Ok(request) => request,
         Err(e) => {
@@ -338,9 +387,17 @@ async fn cursor(
 
     // Lines waiting for the client are bounded by count and by bytes; a
     // line larger than the byte budget waits until the queue is empty.
-    let (sender, receiver) =
-        tokio::sync::mpsc::channel::<(Bytes, tokio::sync::OwnedSemaphorePermit)>(64);
+    // Each line also counts, at its full size, against the host's buffer
+    // budget, so cursors across databases cannot together hold more.
+    type Queued = (
+        Bytes,
+        tokio::sync::OwnedSemaphorePermit,
+        tokio::sync::OwnedSemaphorePermit,
+    );
+    let (sender, receiver) = tokio::sync::mpsc::channel::<Queued>(64);
     let queued_bytes = Arc::new(tokio::sync::Semaphore::new(CURSOR_QUEUE_BYTES));
+    let host_bytes = host.inner.buffered.clone();
+    let max_buffered = host.config().max_buffered_bytes;
     let max_row_bytes = host.config().max_response_bytes;
     // Set when the cursor stopped before its end; the body then fails rather
     // than end as if complete.
@@ -352,25 +409,35 @@ async fn cursor(
     tokio::task::spawn_blocking(move || {
         let _active = active;
         let _permit = permit;
+        // The parsed batch lives as long as the cursor.
+        let _buffered = buffered;
         let mut stream = stream;
         // A client that stops reading must not hold the stream, its
         // transaction, and a request slot indefinitely.
+        let acquire = |budget: &Arc<tokio::sync::Semaphore>, need: u32| match budget
+            .clone()
+            .try_acquire_many_owned(need)
+        {
+            Ok(permit) => Some(permit),
+            Err(tokio::sync::TryAcquireError::Closed) => None,
+            Err(tokio::sync::TryAcquireError::NoPermits) => runtime
+                .block_on(tokio::time::timeout(
+                    send_timeout,
+                    budget.clone().acquire_many_owned(need),
+                ))
+                .ok()
+                .and_then(Result::ok),
+        };
         let send = |line: Bytes| -> bool {
-            let need = line.len().clamp(1, CURSOR_QUEUE_BYTES) as u32;
-            let permit = match queued_bytes.clone().try_acquire_many_owned(need) {
-                Ok(permit) => permit,
-                Err(tokio::sync::TryAcquireError::Closed) => return false,
-                Err(tokio::sync::TryAcquireError::NoPermits) => {
-                    match runtime.block_on(tokio::time::timeout(
-                        send_timeout,
-                        queued_bytes.clone().acquire_many_owned(need),
-                    )) {
-                        Ok(Ok(permit)) => permit,
-                        _ => return false,
-                    }
-                }
+            let queued = line.len().clamp(1, CURSOR_QUEUE_BYTES) as u32;
+            let Some(permit) = acquire(&queued_bytes, queued) else {
+                return false;
             };
-            match sender.try_send((line, permit)) {
+            let held = u32::try_from(line.len().clamp(1, max_buffered)).unwrap_or(u32::MAX);
+            let Some(host_permit) = acquire(&host_bytes, held) else {
+                return false;
+            };
+            match sender.try_send((line, permit, host_permit)) {
                 Ok(()) => true,
                 Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => false,
                 Err(tokio::sync::mpsc::error::TrySendError::Full(item)) => runtime
@@ -411,7 +478,9 @@ async fn cursor(
             }
             match receiver.recv().await {
                 // The line leaves the queue's byte budget as it is handed on.
-                Some((line, _permit)) => Some((Ok(Frame::data(line)), (receiver, aborted, false))),
+                Some((line, _permit, _host_permit)) => {
+                    Some((Ok(Frame::data(line)), (receiver, aborted, false)))
+                }
                 None if aborted.load(Ordering::Acquire) => Some((
                     Err::<Frame<Bytes>, BoxError>("the cursor was stopped before its end".into()),
                     (receiver, aborted, true),

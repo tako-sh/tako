@@ -1049,3 +1049,18 @@ async fn a_database_a_deploy_is_binding_cannot_be_deleted() {
     // A deploy that starts once the database is gone fails its own check.
     assert!(state.databases.pin([ID]).is_ok());
 }
+
+#[tokio::test]
+async fn databases_that_failed_to_open_are_retried() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    state.open_databases(None).await.unwrap();
+    create(&state, ID, None).await;
+    let id = tako_database::DatabaseId::parse(ID).unwrap();
+    // As if opening it had failed at startup.
+    state.databases.host.unregister(&id).await.unwrap();
+    assert!(!state.databases.host.is_registered(&id));
+    state.retry_database_registration(ID).await;
+    assert!(state.databases.host.is_registered(&id));
+    query(&state, ID, "SELECT 1").await;
+}

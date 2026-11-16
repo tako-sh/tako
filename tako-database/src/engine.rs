@@ -20,10 +20,11 @@ use crate::proto::{Col, DescribeParam, DescribeResult, Error, NamedArg, StmtResu
 /// How often (in virtual machine instructions) the statement deadline is checked.
 const PROGRESS_INTERVAL: i32 = 1_000;
 /// Prepared statements kept per connection; ORMs repeat a small set of queries.
-const STATEMENT_CACHE: usize = 64;
-/// Longer statements are prepared without the cache, which would otherwise
-/// keep up to [`STATEMENT_CACHE`] request-sized texts on every connection.
-const MAX_CACHED_SQL_BYTES: usize = 16 * 1024;
+const STATEMENT_CACHE: usize = 32;
+/// Longer statements are prepared without the cache, so its texts take at
+/// most 128 KiB per connection, well under SQLite's own page cache; open
+/// connections are bounded by the host's stream and pool limits.
+const MAX_CACHED_SQL_BYTES: usize = 4 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct EngineConfig {

@@ -1202,15 +1202,29 @@ async fn migrate(
         bound = BTreeMap::from([(database.to_owned(), bindings)]);
     }
     let owner = migration_owner(ctx)?;
-    let admin = ctx.is_admin()?;
+    let permissions = crate::commands::helpers::network_permissions(&ctx.network)?;
+    let admin = permissions.server_admin;
     let dry_run = dry_run || output::is_dry_run();
     let mut results = Vec::new();
     for (database, bindings) in bound {
-        // Deployers act for an environment that binds the database.
-        let app = (!admin).then(|| {
-            let env = binding_envs(&ctx.config, &database)[0];
-            tako_core::deployment_app_id(&owner, env)
-        });
+        // Deployers act for an environment that binds the database and that
+        // they may deploy.
+        let app = if admin {
+            None
+        } else {
+            let deployable = binding_envs(&ctx.config, &database)
+                .into_iter()
+                .map(|env| tako_core::deployment_app_id(&owner, env))
+                .find(|app| {
+                    app.parse::<tako_network::AppEnv>()
+                        .is_ok_and(|scope| permissions.can_deploy(&scope))
+                });
+            Some(deployable.ok_or_else(|| {
+                format!(
+                    "Applying {database}'s migrations needs permission to deploy an environment that binds it, or administrator permission."
+                )
+            })?)
+        };
         let selected = crate::database_migrations::by_database(
             &ctx.project_dir,
             &ctx.config,

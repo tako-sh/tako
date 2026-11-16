@@ -738,6 +738,59 @@ async fn requests_waiting_for_a_slot_give_up() {
     holder.abort();
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn request_bodies_share_the_hosts_buffer_budget() {
+    use futures_util::StreamExt;
+    let h = harness(HostConfig {
+        max_buffered_bytes: 1024,
+        admission_timeout: Duration::from_millis(300),
+        ..HostConfig::default()
+    });
+    // A request that declares the whole budget holds it while its body
+    // arrives.
+    let chunk = http_body::Frame::data(Bytes::from_static(b"{"));
+    let stream =
+        futures_util::stream::once(async move { Ok::<_, std::convert::Infallible>(chunk) })
+            .chain(futures_util::stream::pending());
+    let request = Request::post("/v3/pipeline")
+        .header("authorization", format!("Bearer {}", h.token))
+        .header("content-length", "1024")
+        .body(http_body_util::StreamBody::new(stream))
+        .unwrap();
+    let host = h.host.clone();
+    let holder =
+        tokio::spawn(
+            async move { handle(&host, &Access::Apps, PEER.parse().unwrap(), request).await },
+        );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Another request has a free slot but no budget left, and gives up.
+    let (status, _) = post(
+        &h,
+        "/v3/pipeline",
+        json!({"baton": null, "requests": [execute("SELECT 1")]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    holder.abort();
+}
+
+#[tokio::test]
+async fn bodies_declared_too_large_are_refused_before_they_are_read() {
+    let h = harness(HostConfig {
+        max_request_bytes: 64,
+        ..HostConfig::default()
+    });
+    let request = Request::post("/v3/pipeline")
+        .header("authorization", format!("Bearer {}", h.token))
+        .header("content-length", "100000")
+        .body(Full::new(Bytes::from_static(b"{}")))
+        .unwrap();
+    assert_eq!(
+        send(&h.host, &Access::Apps, request).await.0,
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+}
+
 #[tokio::test]
 async fn oversized_requests_are_refused() {
     let h = harness(HostConfig {

@@ -13,6 +13,13 @@ pub(super) fn can_configure_bindings(
 
 /// Whether this device is a network and server administrator of `network`.
 pub(super) fn is_network_server_admin(network: &str) -> Result<bool, Box<dyn std::error::Error>> {
+    Ok(network_permissions(network)?.server_admin)
+}
+
+/// This device's permissions in `network`.
+pub(super) fn network_permissions(
+    network: &str,
+) -> Result<tako_network::Permissions, Box<dyn std::error::Error>> {
     let alias = crate::network::resolve_network(Some(network))?;
     let profile = crate::network::load_profile(&alias)?;
     let device = profile
@@ -25,7 +32,7 @@ pub(super) fn is_network_server_admin(network: &str) -> Result<bool, Box<dyn std
         .get(&device)
         .ok_or("This device is not an active network member")?
         .permissions
-        .server_admin)
+        .clone())
 }
 
 /// Resolve which servers to target for a given environment.
