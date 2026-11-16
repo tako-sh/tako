@@ -220,11 +220,25 @@ pub(super) fn format_apps(buf: &mut Vec<String>, apps: &[crate::dev_server_clien
 
 pub(super) fn format_networks(
     buf: &mut Vec<String>,
-    networks: &[crate::network::diagnose::NetworkReport],
+    networks: &Result<Vec<crate::network::diagnose::NetworkReport>, String>,
 ) {
     use crate::network::diagnose::ServerStatus;
     use crate::network::ssh_tunnel::Reachability;
 
+    let networks = match networks {
+        Ok(networks) => networks,
+        Err(error) => {
+            heading(buf, "Networks");
+            let w = label_width(&["Status"]);
+            row(
+                buf,
+                "Status",
+                &output::theme_error(format!("error: {error}")),
+                w,
+            );
+            return;
+        }
+    };
     for network in networks {
         heading(buf, &format!("Network {}", network.name));
         let servers = match &network.result {
@@ -276,11 +290,16 @@ pub(super) fn format_networks(
 }
 
 pub(super) fn json_networks(
-    networks: &[crate::network::diagnose::NetworkReport],
+    networks: &Result<Vec<crate::network::diagnose::NetworkReport>, String>,
 ) -> serde_json::Value {
     use crate::network::diagnose::ServerStatus;
     use crate::network::ssh_tunnel::Reachability;
 
+    let networks = match networks {
+        Ok(networks) => networks,
+        // The index itself is unreadable, so no network can be named.
+        Err(error) => return serde_json::json!([{"status": "error", "message": error}]),
+    };
     networks
         .iter()
         .map(|network| match &network.result {

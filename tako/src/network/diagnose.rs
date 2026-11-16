@@ -46,10 +46,9 @@ impl ServerStatus {
 }
 
 /// Probes every server in every local network concurrently, from local state only.
-pub(crate) async fn gather() -> Vec<NetworkReport> {
-    let Ok(aliases) = LocalNetworks::load() else {
-        return vec![];
-    };
+/// Fails only when the local network index itself cannot be read.
+pub(crate) async fn gather() -> Result<Vec<NetworkReport>, String> {
+    let aliases = LocalNetworks::load().map_err(|error| error.to_string())?;
     let reports = aliases.networks.values().map(|alias| async move {
         NetworkReport {
             name: alias.name.clone(),
@@ -57,7 +56,7 @@ pub(crate) async fn gather() -> Vec<NetworkReport> {
             result: network(alias).await.map_err(|error| error.to_string()),
         }
     });
-    futures_util::future::join_all(reports).await
+    Ok(futures_util::future::join_all(reports).await)
 }
 
 async fn network(alias: &crate::config::LocalNetwork) -> super::Result<Vec<ServerReport>> {
@@ -87,13 +86,15 @@ async fn network(alias: &crate::config::LocalNetwork) -> super::Result<Vec<Serve
             })
             .collect()
     };
-    if ssh_tunnel::local_address_assigned(network.address(&keys.wg_public_key()?))? {
-        return Ok(skip("connected with `tako connect`"));
-    }
-    // Hold off new `tako ssh` transports while probing, and skip while one runs.
+    // Hold off new transports while probing, and skip while one runs. `connect`
+    // holds this lock while it brings its interface up, so the connection state
+    // is checked only once the lock is ours.
     let proxies = super::ssh_session::lock(alias, "ssh-proxies.lock")?;
     if proxies.try_lock().is_err() {
-        return Ok(skip("`tako ssh` is active"));
+        return Ok(skip("`tako ssh` or `tako connect` is active"));
+    }
+    if ssh_tunnel::local_address_assigned(network.address(&keys.wg_public_key()?))? {
+        return Ok(skip("connected with `tako connect`"));
     }
     let private_key = Zeroizing::new(ssh_tunnel::decode_key(&keys.wireguard_private_key()?)?);
     let probes = servers.into_iter().map(|(id, name, endpoint, peer)| {

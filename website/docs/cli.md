@@ -144,7 +144,7 @@ with `tako dev list` and stop with `tako dev stop`. Global `--json` skips the in
 tako doctor
 ```
 
-Prints local diagnostics for the dev daemon, local DNS, TLS files, and platform-specific proxy setup. For each local network, it completes a WireGuard handshake with every server and reports whether the UDP endpoint is reachable, gets no reply, or is refused. A server is not checked while `tako connect` or a `tako ssh` session for that network is active, because a probe would move the server's peer endpoint away from that transport. Global `--json` emits one object with `paths`, `ca`, `dev_server`, `apps`, platform `proxy` checks, and `networks` instead of the human report. Each server in `networks` has `status` (`reachable`, `no_reply`, `refused`, `skipped`, or `error`), `wireguard_endpoint`, `rtt_ms`, and `message`.
+Prints local diagnostics for the dev daemon, local DNS, TLS files, and platform-specific proxy setup. For each local network, it completes a WireGuard handshake with every server and reports whether the UDP endpoint is reachable, gets no reply, or is refused. A server is not checked while `tako connect` or a `tako ssh` session for that network is active or starting, because a probe would move the server's peer endpoint away from that transport. Global `--json` emits one object with `paths`, `ca`, `dev_server`, `apps`, platform `proxy` checks, and `networks` instead of the human report. An unreadable local network index appears as one `networks` entry with `status: "error"` and a `message`. Each server in `networks` has `status` (`reachable`, `no_reply`, `refused`, `skipped`, or `error`), `wireguard_endpoint`, `rtt_ms`, and `message`.
 
 ## `tako run`
 
