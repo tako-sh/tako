@@ -29,7 +29,7 @@ Preview changes with `--dry-run` on `agents`, `deploy`, `scale`, `delete`, `conn
 
 The config file's parent directory determines the project root and local `.tako/` state. Config files in the same directory share secret drafts; a bound environment cannot be reused for another app or network. See [alternate configurations](/secrets/#use-an-alternate-configuration).
 
-For finite commands, `--json` prints one final object. Commands without a specialized schema use `{"ok":true,"command":"<command>"}`. Failures print `{"ok":false,"error":{"message":"..."}}` on stdout and the human-readable error on stderr. Specialized objects: `status` includes `servers`; `doctor` includes paths, CA, dev server, apps, and proxy checks; `network server list`, `secrets list`, `credentials list`, `dev list`, `backups list`/`status`, and `releases list` include their collections; `backups download` and `backups restore` include the backup entry and what they wrote. Streaming exceptions keep stdout as JSONL until interrupted: `tako logs --tail --json` emits one log record per line, and `tako dev --json` emits a ready object, then log and event records, with no logo or TUI. `tako run` is also an exception: child stdout stays untouched and no JSON result object is appended.
+For finite commands, `--json` prints one final object. Commands without a specialized schema use `{"ok":true,"command":"<command>"}`. Failures print `{"ok":false,"error":{"message":"..."}}` on stdout and the human-readable error on stderr. Specialized objects: `status` includes `servers`; `doctor` includes paths, CA, dev server, apps, proxy checks, and network reachability; `network server list`, `secrets list`, `credentials list`, `dev list`, `backups list`/`status`, and `releases list` include their collections; `backups download` and `backups restore` include the backup entry and what they wrote. Streaming exceptions keep stdout as JSONL until interrupted: `tako logs --tail --json` emits one log record per line, and `tako dev --json` emits a ready object, then log and event records, with no logo or TUI. `tako run` is also an exception: child stdout stays untouched and no JSON result object is appended.
 
 Installed CLIs send an anonymous event per command so we can count unique users and see which commands run. Set `TAKO_TELEMETRY=0` to opt out. See [Usage stats](#usage-stats).
 
@@ -144,7 +144,7 @@ with `tako dev list` and stop with `tako dev stop`. Global `--json` skips the in
 tako doctor
 ```
 
-Prints local diagnostics for the dev daemon, local DNS, TLS files, and platform-specific proxy setup. Global `--json` emits one object with `paths`, `ca`, `dev_server`, `apps`, and platform `proxy` checks instead of the human report.
+Prints local diagnostics for the dev daemon, local DNS, TLS files, and platform-specific proxy setup. For each local network, it completes a WireGuard handshake with every server and reports whether the UDP endpoint is reachable, gets no reply, or is refused. A server is not checked while `tako connect` or a `tako ssh` session for that network is active, because a probe would move the server's peer endpoint away from that transport. Global `--json` emits one object with `paths`, `ca`, `dev_server`, `apps`, platform `proxy` checks, and `networks` instead of the human report. Each server in `networks` has `status` (`reachable`, `no_reply`, `refused`, `skipped`, or `error`), `wireguard_endpoint`, `rtt_ms`, and `message`.
 
 ## `tako run`
 
@@ -242,6 +242,8 @@ tako network server drain <server> [--network <id-or-name>] [--timeout <seconds>
 tako network server resume <server> [--network <id-or-name>]
 tako connect [network]
 tako disconnect [network]
+tako ssh <server> [--network <id-or-name>] [-- <command>...]
+tako ssh config [--network <id-or-name>] [--remove]
 ```
 
 Invitations are single-use, expire after 3600 seconds by default (`client add --expires-in` accepts 60–86400), and are redeemed through their issuing server. `join` prompts for the invitation or reads stdin. `network sync` pulls published ciphertext without publishing worktree drafts. Network names are shared and currently immutable.
@@ -250,7 +252,7 @@ Each device generates and retains its own keys. Repeat `--deploy` for exact app/
 
 `drain` and `resume` require server administration and a unique member name or device ID. Drain defaults to 120 seconds and accepts `0..3600`; zero requests immediate force. Inspect the structured completion report, not only the drained intent. See [Native server maintenance](/operations/#native-server-maintenance).
 
-`ssh` uses embedded WireGuard and userspace TCP without sudo or system network changes; OpenSSH is required. `connect` enables local applications, private DNS, short server names, and approved SSH aliases such as `ssh edge-a`. It explains the required administrator access before prompting. `disconnect` removes those managed settings. No external WireGuard executable is required. Normal native management uses pinned HTTPS without a tunnel or SSH agent. See [Native networks](/networks/) for platform requirements, enrollment, endpoints, and private service names.
+`ssh` uses embedded WireGuard and userspace TCP without sudo or system network changes; OpenSSH is required. When the WireGuard handshake gets no reply, it fails after 10 seconds and names the UDP port and host. `ssh config` adds `~/.ssh/config` aliases that use the same rootless transport, so scp, rsync, port forwarding, and VS Code Remote-SSH work without `connect`; `--remove` deletes them. `connect` enables local applications, private DNS, short server names, and approved SSH aliases such as `ssh edge-a`. It explains the required administrator access before prompting. `disconnect` removes those managed settings. No external WireGuard executable is required. Normal native management uses pinned HTTPS without a tunnel or SSH agent. See [Native networks](/networks/) for platform requirements, enrollment, endpoints, and private service names.
 
 ## Server administrator recovery
 

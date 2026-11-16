@@ -434,7 +434,7 @@ pub fn disconnect(value: Option<&str>, config_path: Option<&Path>) -> Result<()>
     }
     let _lifecycle = network::wireguard::lifecycle_lock(&alias)?;
     network::wireguard::disconnect(&alias, &profile)?;
-    network::local_access::remove(&alias)?;
+    network::local_access::disconnect(&alias)?;
     finish(
         &format!("Disconnected from {}", alias.name),
         serde_json::json!({"network": alias.name, "connected": false}),
@@ -538,11 +538,79 @@ pub fn ssh(
         &id.to_string(),
         &command,
         &format!("{}@{address}", user.as_str()),
-        &format!("{user}:{}:{}:{address}", info.ssh_port, info.ssh_host_key),
+        &network::ssh_session::settings(
+            user.as_str(),
+            info.ssh_port,
+            &info.ssh_host_key.to_string(),
+            &address.to_string(),
+        ),
         remote_command,
     )?;
     if !status.success() {
         return Err(format!("SSH exited with {status}").into());
+    }
+    Ok(())
+}
+
+/// Installs or removes `~/.ssh/config` aliases that reach servers over the
+/// rootless tunnel, for OpenSSH-based tools such as scp, rsync, and editors.
+pub fn ssh_config(value: Option<&str>, config_path: Option<&Path>, remove: bool) -> Result<()> {
+    let alias = network::resolve_network(value, config_path)?;
+    let profile = if output::is_dry_run() {
+        network::load_profile(&alias)?
+    } else {
+        network::client::refresh(&alias)?
+    };
+    if remove {
+        if output::is_dry_run() {
+            return finish(
+                "Would remove SSH aliases",
+                serde_json::json!({"dry_run": true, "network": alias.name}),
+            );
+        }
+        let _lifecycle = network::wireguard::lifecycle_lock(&alias)?;
+        let keys = LocalDeviceKeys::load(&network::keys_path(&profile.request().request_id)?)?;
+        let own = profile
+            .snapshot()
+            .network
+            .id
+            .address(&keys.wg_public_key()?);
+        let connected = network::ssh_tunnel::local_address_assigned(own)?;
+        network::local_access::remove_proxy(&alias, &profile, connected)?;
+        return finish(
+            &format!("Removed SSH aliases for {}", alias.name),
+            serde_json::json!({"network": alias.name, "installed": false}),
+        );
+    }
+    let _lifecycle = (!output::is_dry_run())
+        .then(|| network::wireguard::lifecycle_lock(&alias))
+        .transpose()?;
+    let hosts = network::local_access::install_proxy(&alias, &profile, !output::is_dry_run())?;
+    if output::is_dry_run() {
+        return finish(
+            "Would add SSH aliases to ~/.ssh/config",
+            serde_json::json!({"dry_run": true, "network": alias.name, "hosts": hosts}),
+        );
+    }
+    finish(
+        &format!(
+            "Added SSH aliases for {} {} to ~/.ssh/config",
+            hosts.len(),
+            if hosts.len() == 1 {
+                "server"
+            } else {
+                "servers"
+            }
+        ),
+        serde_json::json!({"network": alias.name, "installed": true, "hosts": hosts}),
+    )?;
+    for host in &hosts {
+        output::bullet(host);
+    }
+    if let Some(host) = hosts.first() {
+        output::hint(&format!(
+            "Use them with any OpenSSH tool: `ssh {host}`, `scp file {host}:`, `rsync -a dir/ {host}:dir/`, `ssh -L 5432:localhost:5432 {host}`, or VS Code Remote-SSH. Rerun after server membership changes."
+        ));
     }
     Ok(())
 }

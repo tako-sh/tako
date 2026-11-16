@@ -38,6 +38,22 @@ tako dev
 
 On macOS, doctor checks the dev proxy, boot helper, loopback alias, launchd load state, local DNS, and TCP reachability on the loopback HTTP/HTTPS ports.
 
+## `tako ssh` Cannot Reach a Server
+
+`tako ssh` needs the server's WireGuard UDP endpoint, not public TCP port 22. Run:
+
+```bash
+tako doctor
+```
+
+The network section reports each server's handshake:
+
+- **no reply**: UDP to the endpoint isn't getting through. Allow inbound UDP on the WireGuard port (default `51820`) in the server firewall and the provider's security group, and check that your current network allows outbound UDP. If those are open, the server may not have applied this device's membership yet; it drops handshakes from unknown devices without answering.
+- **refused**: nothing is listening on that UDP port, or a firewall is rejecting it. Check that `tako-server` is running and that the advertised endpoint is the server's current public address.
+- **reachable** but `tako ssh` still fails: the server's private SSH listener did not answer. Check `tako-server` on that host.
+
+There is no relay for servers behind NAT or networks that block UDP. Use the provider console or administrator SSH to recover access.
+
 ## `.test` Hostnames Do Not Resolve
 
 Tako manages DNS for `.test` and `.tako.test` only. External development routes are routed by the proxy but must resolve to your machine through your own DNS or tunnel setup.
