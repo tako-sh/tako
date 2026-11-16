@@ -53,7 +53,10 @@ fn render(
         let MemberKind::Server(info) = &member.kind else {
             unreachable!()
         };
-        let name = member.request.name.as_str().to_ascii_lowercase();
+        // Dotted names are not published as `.tako` names; use `tako ssh` for them.
+        let Some(name) = tako_network::services::server_label(member.request.name.as_str()) else {
+            continue;
+        };
         let address = profile
             .snapshot()
             .network

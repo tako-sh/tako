@@ -485,22 +485,36 @@ fn public_key(actual: &str) -> Result<String> {
     Ok(STANDARD.encode(bytes))
 }
 
-/// `<base64 peer key> <unix seconds>` per peer; zero means no handshake yet.
+/// `<base64 peer key> <last handshake unix seconds> <received bytes>` per peer.
+/// A zero handshake time means no handshake yet. Never includes key material.
 fn handshakes(response: &str) -> Result<String> {
-    let mut value = String::new();
-    let mut peer = None;
+    let mut peers: Vec<(String, u64, u64)> = Vec::new();
     for line in response.lines() {
-        if let Some(key) = line.strip_prefix("public_key=") {
-            let bytes = hex::decode(key).map_err(|_| "Invalid WireGuard peer key")?;
-            peer = Some(STANDARD.encode(bytes));
-        } else if let (Some(time), Some(key)) =
-            (line.strip_prefix("last_handshake_time_sec="), &peer)
-        {
-            let time: u64 = time.parse().map_err(|_| "Invalid WireGuard handshake time")?;
-            value.push_str(&format!("{key} {time}\n"));
+        let Some((field, value)) = line.split_once('=') else {
+            continue;
+        };
+        if field == "public_key" {
+            let bytes = hex::decode(value).map_err(|_| "Invalid WireGuard peer key")?;
+            peers.push((STANDARD.encode(bytes), 0, 0));
+            continue;
+        }
+        let Some(peer) = peers.last_mut() else {
+            continue;
+        };
+        match field {
+            "last_handshake_time_sec" => {
+                peer.1 = value.parse().map_err(|_| "Invalid WireGuard handshake time")?;
+            }
+            "rx_bytes" => {
+                peer.2 = value.parse().map_err(|_| "Invalid WireGuard byte count")?;
+            }
+            _ => {}
         }
     }
-    Ok(value)
+    Ok(peers
+        .into_iter()
+        .map(|(key, time, rx)| format!("{key} {time} {rx}\n"))
+        .collect())
 }
 
 fn require_owner(actual: &str, expected: &str) -> Result<()> {
@@ -705,9 +719,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn handshake_report_contains_only_peer_keys_and_times() {
+    fn handshake_report_contains_only_peer_keys_times_and_traffic() {
         let response = format!(
-            "private_key={}\nown_public_key={}\npublic_key={}\nlast_handshake_time_sec=0\npublic_key={}\nendpoint=192.0.2.1:51820\nlast_handshake_time_sec=1700000000\nerrno=0\n",
+            "private_key={}\nown_public_key={}\nlisten_port=0\npublic_key={}\nlast_handshake_time_sec=0\nrx_bytes=0\npublic_key={}\nendpoint=192.0.2.1:51820\nlast_handshake_time_sec=1700000000\ntx_bytes=10\nrx_bytes=92\nerrno=0\n",
             "11".repeat(32),
             "22".repeat(32),
             "aa".repeat(32),
@@ -717,12 +731,13 @@ mod tests {
         assert_eq!(
             report,
             format!(
-                "{} 0\n{} 1700000000\n",
+                "{} 0 0\n{} 1700000000 92\n",
                 STANDARD.encode([0xaa; 32]),
                 STANDARD.encode([0xbb; 32])
             )
         );
         assert!(!report.contains(&STANDARD.encode([0x11; 32])));
+        assert!(!report.contains(&STANDARD.encode([0x22; 32])));
     }
 
     #[test]
