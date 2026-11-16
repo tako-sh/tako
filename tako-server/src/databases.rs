@@ -722,14 +722,27 @@ impl ServerState {
         {
             return Err(format!("Database {id} already exists on this server."));
         }
+        let database = DatabaseId::parse(&id)?;
         let path = self.databases.database_path(&id);
         create_private_dir(&self.databases.root)?;
         create_private_dir(&self.databases.database_dir(&id))?;
+        // A create that fails part way leaves nothing behind, so it can be
+        // retried under the same name.
+        let undo = |recorded: bool| {
+            if recorded && let Err(error) = self.state_store.delete_database(&id) {
+                tracing::warn!(database = %id, %error, "Could not remove the record of a failed create");
+            }
+            let _ = std::fs::remove_dir_all(self.databases.database_dir(&id));
+        };
         let create_path = path.clone();
-        tokio::task::spawn_blocking(move || DatabaseHost::create_file(&create_path))
+        let created = tokio::task::spawn_blocking(move || DatabaseHost::create_file(&create_path))
             .await
-            .map_err(|e| e.to_string())?
-            .map_err(|e| format!("create database file: {e}"))?;
+            .map_err(|e| e.to_string())
+            .and_then(|created| created.map_err(|e| format!("create database file: {e}")));
+        if let Err(error) = created {
+            undo(false);
+            return Err(error);
+        }
         let stored = StoredDatabase {
             name: id.clone(),
             generation,
@@ -740,17 +753,21 @@ impl ServerState {
             },
         };
         if let Err(error) = self.state_store.create_database(&stored) {
-            let _ = std::fs::remove_dir_all(self.databases.database_dir(&id));
+            undo(false);
             return Err(format!("record database: {error}"));
         }
         let host = self.databases.host.clone();
-        let register_id = DatabaseId::parse(&id)?;
-        tokio::task::spawn_blocking(move || host.register(register_id, path))
+        let register_id = database.clone();
+        let registered = tokio::task::spawn_blocking(move || host.register(register_id, path))
             .await
-            .map_err(|e| e.to_string())?
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())
+            .and_then(|registered| registered.map_err(|e| e.to_string()));
+        if let Err(error) = registered {
+            undo(true);
+            return Err(format!("open database: {error}"));
+        }
         // Nothing to snapshot until something is written.
-        self.databases.host.clear_changed(&DatabaseId::parse(&id)?);
+        self.databases.host.clear_changed(&database);
         tracing::info!(database = %id, "Created database");
         Ok(serde_json::to_value(self.database_info(&stored)).expect("info serializes"))
     }

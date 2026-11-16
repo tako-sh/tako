@@ -783,15 +783,146 @@ fn check_not_empty(sql: &str) -> Result<(), Error> {
     Ok(())
 }
 
+/// Whether `sql` is an `INSERT` or `REPLACE`, also after a `WITH` clause.
 fn starts_with_insert(sql: &str) -> bool {
-    let trimmed = skip_comments(sql);
-    let keyword: String = trimmed
-        .chars()
-        .take_while(|c| c.is_ascii_alphabetic())
-        .collect();
-    // A statement starting with WITH can be an insert, update, or delete;
-    // it reports a rowid only when the rowid changed.
-    keyword.eq_ignore_ascii_case("insert") || keyword.eq_ignore_ascii_case("replace")
+    statement_verb(sql).is_some_and(|verb| {
+        verb.eq_ignore_ascii_case("insert") || verb.eq_ignore_ascii_case("replace")
+    })
+}
+
+/// The keyword a statement starts with, skipping a leading `WITH` clause:
+/// `WITH [RECURSIVE] name [(columns)] AS [[NOT] MATERIALIZED] (select), …`.
+/// `None` when the text does not have that shape.
+fn statement_verb(sql: &str) -> Option<&str> {
+    let mut tokens = SqlTokens { rest: sql };
+    let first = tokens.next()?;
+    let SqlToken::Word(first) = first else {
+        return None;
+    };
+    if !first.eq_ignore_ascii_case("with") {
+        return Some(first);
+    }
+    let mut token = tokens.next()?;
+    if matches!(token, SqlToken::Word(word) if word.eq_ignore_ascii_case("recursive")) {
+        token = tokens.next()?;
+    }
+    loop {
+        // The table name, then its optional column list.
+        if !matches!(token, SqlToken::Word(_) | SqlToken::Quoted) {
+            return None;
+        }
+        token = tokens.next()?;
+        if token == SqlToken::Open {
+            tokens.skip_group()?;
+            token = tokens.next()?;
+        }
+        if !matches!(token, SqlToken::Word(word) if word.eq_ignore_ascii_case("as")) {
+            return None;
+        }
+        token = tokens.next()?;
+        if matches!(token, SqlToken::Word(word) if word.eq_ignore_ascii_case("not")) {
+            token = tokens.next()?;
+        }
+        if matches!(token, SqlToken::Word(word) if word.eq_ignore_ascii_case("materialized")) {
+            token = tokens.next()?;
+        }
+        if token != SqlToken::Open {
+            return None;
+        }
+        tokens.skip_group()?;
+        token = tokens.next()?;
+        match token {
+            SqlToken::Comma => token = tokens.next()?,
+            SqlToken::Word(verb) => return Some(verb),
+            _ => return None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SqlToken<'a> {
+    Word(&'a str),
+    /// A quoted identifier.
+    Quoted,
+    Open,
+    Close,
+    Comma,
+    Other,
+}
+
+/// Splits SQL into the tokens [`statement_verb`] needs, skipping
+/// whitespace, comments, and the insides of strings and quoted names.
+struct SqlTokens<'a> {
+    rest: &'a str,
+}
+
+impl<'a> SqlTokens<'a> {
+    /// Skips to just past the `)` that closes an open `(`.
+    fn skip_group(&mut self) -> Option<()> {
+        let mut depth = 1usize;
+        while depth > 0 {
+            match self.next()? {
+                SqlToken::Open => depth += 1,
+                SqlToken::Close => depth -= 1,
+                _ => {}
+            }
+        }
+        Some(())
+    }
+
+    /// Advances past a quoted run that ends at `close`, where a doubled
+    /// `close` stands for itself.
+    fn skip_quoted(&mut self, close: char) {
+        let mut chars = self.rest.char_indices().skip(1).peekable();
+        while let Some((index, c)) = chars.next() {
+            if c == close {
+                if close != ']' && chars.peek().is_some_and(|&(_, next)| next == close) {
+                    chars.next();
+                    continue;
+                }
+                self.rest = &self.rest[index + c.len_utf8()..];
+                return;
+            }
+        }
+        self.rest = "";
+    }
+}
+
+impl<'a> Iterator for SqlTokens<'a> {
+    type Item = SqlToken<'a>;
+
+    fn next(&mut self) -> Option<SqlToken<'a>> {
+        self.rest = skip_comments(self.rest);
+        let c = self.rest.chars().next()?;
+        let token = match c {
+            '(' => SqlToken::Open,
+            ')' => SqlToken::Close,
+            ',' => SqlToken::Comma,
+            '\'' => {
+                self.skip_quoted('\'');
+                return Some(SqlToken::Other);
+            }
+            '"' | '`' | '[' => {
+                self.skip_quoted(match c {
+                    '[' => ']',
+                    other => other,
+                });
+                return Some(SqlToken::Quoted);
+            }
+            c if c.is_ascii_alphabetic() || c == '_' => {
+                let end = self
+                    .rest
+                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '$'))
+                    .unwrap_or(self.rest.len());
+                let (word, rest) = self.rest.split_at(end);
+                self.rest = rest;
+                return Some(SqlToken::Word(word));
+            }
+            _ => SqlToken::Other,
+        };
+        self.rest = &self.rest[c.len_utf8()..];
+        Some(token)
+    }
 }
 
 /// `sql` after leading whitespace and comments.

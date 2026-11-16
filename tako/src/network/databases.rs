@@ -73,13 +73,25 @@ pub(crate) fn list(alias: &LocalNetwork) -> Result<Vec<DatabaseRecord>> {
     Ok(records)
 }
 
+/// The key record of a database is named after its name and generation.
+/// Two records cannot be published together, so when the same name is
+/// created twice at once, each create's key keeps its own address and the
+/// directory record that wins still finds the key that matches it.
+fn key_name(record: &DatabaseRecord) -> String {
+    format!("{}.{}", record.name, record.generation)
+}
+
 /// The key that encrypts a database's snapshots. Administrators only.
-pub(crate) fn backup_key(alias: &LocalNetwork, name: &str) -> Result<Zeroizing<String>> {
+pub(crate) fn backup_key(
+    alias: &LocalNetwork,
+    record: &DatabaseRecord,
+) -> Result<Zeroizing<String>> {
     read(alias, RecordKind::DatabaseKey)?
-        .remove(name)
+        .remove(&key_name(record))
         .ok_or_else(|| {
             format!(
-                "The snapshot key of database '{name}' is not available to this device; it needs network and server administrator permission."
+                "The snapshot key of database '{}' is not available to this device; it needs network and server administrator permission.",
+                record.name
             )
             .into()
         })
@@ -94,7 +106,7 @@ pub(crate) fn publish(
 ) -> Result<()> {
     tako_core::validate_database_name(&record.name)?;
     if let Some(key) = backup_key_base64 {
-        mutate(alias, RecordKind::DatabaseKey, &record.name, Some(key))?;
+        mutate(alias, RecordKind::DatabaseKey, &key_name(record), Some(key))?;
     }
     mutate(
         alias,
@@ -105,10 +117,16 @@ pub(crate) fn publish(
 }
 
 /// Publishes tombstones for a database's records.
-pub(crate) fn remove(alias: &LocalNetwork, name: &str) -> Result<()> {
-    tako_core::validate_database_name(name)?;
-    mutate(alias, RecordKind::Database, name, None)?;
-    mutate(alias, RecordKind::DatabaseKey, name, None)
+pub(crate) fn remove(alias: &LocalNetwork, record: &DatabaseRecord) -> Result<()> {
+    tako_core::validate_database_name(&record.name)?;
+    mutate(alias, RecordKind::Database, &record.name, None)?;
+    remove_key(alias, record)
+}
+
+/// Publishes a tombstone for one generation's key record.
+pub(crate) fn remove_key(alias: &LocalNetwork, record: &DatabaseRecord) -> Result<()> {
+    tako_core::validate_database_name(&record.name)?;
+    mutate(alias, RecordKind::DatabaseKey, &key_name(record), None)
 }
 
 fn mutate(alias: &LocalNetwork, kind: RecordKind, name: &str, value: Option<&str>) -> Result<()> {
@@ -192,5 +210,17 @@ mod tests {
             scope().is_ok(),
             "the database scope is a valid address scope"
         );
+        // The longest name and its generation still make a valid address.
+        let longest = DatabaseRecord {
+            name: "a".repeat(63),
+            ..record
+        };
+        RecordAddress {
+            scope: scope().unwrap(),
+            kind: RecordKind::DatabaseKey,
+            name: key_name(&longest),
+        }
+        .validate()
+        .unwrap();
     }
 }

@@ -967,6 +967,74 @@ async fn a_copy_left_by_a_move_stops_publishing_snapshots() {
 }
 
 #[tokio::test]
+async fn a_failed_move_leaves_the_old_copy_snapshotting() {
+    let (old_dir, new_dir) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+    let old = state(&old_dir);
+    old.open_databases(Some("server-a".into())).await.unwrap();
+    create(&old, ID, Some("unfenced-bucket")).await;
+    query(&old, ID, "CREATE TABLE items (name TEXT)").await;
+    let snapshot = || Command::SnapshotDatabase {
+        name: ID.into(),
+        reason: SnapshotReason::Manual,
+        app: None,
+    };
+    ok(&old, snapshot()).await;
+    // The new server claims the database, then fails to decrypt the
+    // snapshot with the wrong key.
+    let new = state(&new_dir);
+    new.open_databases(Some("server-b".into())).await.unwrap();
+    create(&new, ID, Some("unfenced-bucket")).await;
+    error(
+        &new,
+        Command::RestoreDatabase {
+            name: ID.into(),
+            snapshot: None,
+            backup_key_base64: Some(BASE64.encode([9u8; 32])),
+        },
+    )
+    .await;
+    // The claim was given back, so the old copy still snapshots.
+    let store = crate::databases::snapshots::test_store("unfenced-bucket").unwrap();
+    let holder = object_store::path::Path::from(format!(
+        "_tako/databases/{ID}/{GENERATION}/snapshots/holder"
+    ));
+    assert!(matches!(
+        store.get(&holder).await,
+        Err(object_store::Error::NotFound { .. })
+    ));
+    query(&old, ID, "INSERT INTO items VALUES ('later')").await;
+    ok(&old, snapshot()).await;
+}
+
+#[tokio::test]
+async fn a_create_that_fails_to_open_leaves_nothing_behind() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    // Something else already holds the name in the database host, so the
+    // new file cannot be registered.
+    let other = temp.path().join("other.sqlite");
+    tako_database::DatabaseHost::create_file(&other).unwrap();
+    let id = tako_database::DatabaseId::parse(ID).unwrap();
+    state.databases.host.register(id.clone(), other).unwrap();
+    let failed = error(
+        &state,
+        Command::CreateDatabase {
+            name: ID.into(),
+            generation: GENERATION.into(),
+            backup_key_base64: key(),
+            backup: None,
+        },
+    )
+    .await;
+    assert!(failed.contains("open database"), "{failed}");
+    assert!(state.state_store.get_database(ID).unwrap().is_none());
+    assert!(!state.databases.database_dir(ID).exists());
+    // Once the obstacle is gone, the same name can be created.
+    state.databases.host.unregister(&id).await.unwrap();
+    create(&state, ID, None).await;
+}
+
+#[tokio::test]
 async fn opening_databases_again_after_a_failure_retries() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp);

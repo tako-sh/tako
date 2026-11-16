@@ -93,8 +93,9 @@ pub enum RecordKind {
     /// member that may deploy can read it, so deploys resolve databases by
     /// name.
     Database,
-    /// The key that encrypts a database's snapshots, named like its
-    /// [`RecordKind::Database`] record. Only administrators may read it.
+    /// The key that encrypts a database's snapshots, named
+    /// `<name>.<generation>` after its [`RecordKind::Database`] record. Only
+    /// administrators may read it.
     DatabaseKey,
 }
 

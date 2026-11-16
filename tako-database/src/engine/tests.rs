@@ -671,6 +671,47 @@ fn with_updates_and_deletes_report_no_insert_rowid() {
     )
     .unwrap();
     assert_eq!(result.last_insert_rowid, Some(9));
+    // So does one whose rowid equals the previous insert's.
+    run(&mut conn, "CREATE TABLE u (id INTEGER PRIMARY KEY)").unwrap();
+    let result = run(
+        &mut conn,
+        "WITH c AS (SELECT 9 AS id) INSERT INTO u SELECT id FROM c",
+    )
+    .unwrap();
+    assert_eq!(result.last_insert_rowid, Some(9));
+}
+
+#[test]
+fn statement_verbs_skip_with_clauses() {
+    for (sql, verb) in [
+        ("INSERT INTO t VALUES (1)", Some("INSERT")),
+        (
+            "  /* c */ -- c\n replace into t values (1)",
+            Some("replace"),
+        ),
+        (
+            "WITH x AS (SELECT 1) INSERT INTO t SELECT * FROM x",
+            Some("INSERT"),
+        ),
+        (
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n LIMIT 3) INSERT INTO t SELECT i FROM n",
+            Some("INSERT"),
+        ),
+        (
+            "with a as materialized (select ')' ), \"b\"\"c\" as not materialized (select (1)) insert into t select 1",
+            Some("insert"),
+        ),
+        (
+            "WITH replace AS (SELECT 1) SELECT * FROM replace",
+            Some("SELECT"),
+        ),
+        ("WITH x AS (SELECT 1) UPDATE t SET n = 1", Some("UPDATE")),
+        ("WITH [odd]] name] AS (SELECT 1) DELETE FROM t", None),
+        ("WITH x AS (SELECT 1", None),
+        ("SELECT 1", Some("SELECT")),
+    ] {
+        assert_eq!(statement_verb(sql), verb, "{sql}");
+    }
 }
 
 #[test]

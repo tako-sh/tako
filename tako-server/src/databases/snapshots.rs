@@ -728,6 +728,57 @@ pub(crate) async fn restore(
         }
     };
 
+    // This server holds the database from now on, so a copy that a move
+    // leaves behind stops publishing snapshots, also one in flight, which
+    // checks again before its manifest. A failed restore gives it back.
+    let own = state.databases.server_id();
+    let previous = match &own {
+        Some(own) => {
+            let previous = read_holder(remote.as_ref(), &stored).await?;
+            if previous.as_deref() != Some(own.as_str()) {
+                claim_holder(remote.as_ref(), &stored, own)
+                    .await
+                    .map_err(|e| {
+                        format!("record this server as the holder of {}: {e}", stored.name)
+                    })?;
+            }
+            Some(previous)
+        }
+        None => None,
+    };
+    let restored = restore_from(state, &stored, remote.as_ref(), manifest, key_override).await;
+    if let (Err(error), Some(previous)) = (&restored, previous)
+        && previous != own
+    {
+        let given_back = match &previous {
+            Some(holder) => claim_holder(remote.as_ref(), &stored, holder).await,
+            None => match ObjectPath::parse(holder_key(&stored)) {
+                Ok(key) => {
+                    with_deadline(METADATA_TIMEOUT, async {
+                        remote.delete(&key).await.map_err(|e| e.to_string())
+                    })
+                    .await
+                }
+                Err(e) => Err(e.to_string()),
+            },
+        };
+        if let Err(revert) = given_back {
+            return Err(format!(
+                "{error} (and the database's previous holder could not be recorded again: {revert})"
+            ));
+        }
+    }
+    restored
+}
+
+/// Downloads, verifies, and swaps in a snapshot.
+async fn restore_from(
+    state: &ServerState,
+    stored: &StoredDatabase,
+    remote: &dyn ObjectStore,
+    manifest: Manifest,
+    key_override: Option<String>,
+) -> Result<serde_json::Value, String> {
     // Fetch and verify the snapshot before anything changes.
     let work = fresh_work_dir(state, &stored.name, "restore")?;
     // The download, the restored file, and a copy of what it replaces.
@@ -744,13 +795,8 @@ pub(crate) async fn restore(
         ));
     }
     let encrypted = work.path.join("snapshot.sqlite.zst.enc");
-    download_object(
-        remote.as_ref(),
-        &data_key(&stored, &manifest.snapshot.id),
-        &encrypted,
-    )
-    .await?;
-    let key = key_binding(&stored, key_override.as_deref());
+    download_object(remote, &data_key(stored, &manifest.snapshot.id), &encrypted).await?;
+    let key = key_binding(stored, key_override.as_deref());
     let restored = work.path.join("restored.sqlite");
     {
         let (encrypted, restored) = (encrypted.clone(), restored.clone());
@@ -770,16 +816,7 @@ pub(crate) async fn restore(
         .map_err(|e| e.to_string())??;
     }
 
-    let mut warnings = replace(state, &stored, restored, "database is being restored").await?;
-    // This server now holds the database; a copy elsewhere that a move left
-    // behind stops publishing snapshots.
-    if let Some(own) = state.databases.server_id()
-        && let Err(error) = claim_holder(remote.as_ref(), &stored, &own).await
-    {
-        warnings.push(format!(
-            "could not record this server as the database's holder; a copy left elsewhere may keep publishing snapshots until it is removed: {error}"
-        ));
-    }
+    let warnings = replace(state, stored, restored, "database is being restored").await?;
     tracing::info!(database = %stored.name, snapshot = %manifest.snapshot.id, "Restored database");
     Ok(serde_json::json!({
         "database": stored.name,

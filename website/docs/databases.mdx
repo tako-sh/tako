@@ -285,7 +285,7 @@ Each remote query adds a private-network round trip, so place a database on the 
 - Database bindings are available to native releases. [Container and Compose releases](/docker/) cannot use them yet.
 - A scoped deploy client cannot change an environment's database bindings; an administrator must deploy the change.
 - Managing databases (`create`, `status`, `shell`, `backup`, `backups`, `restore`, `import`, `export`, `reset`, `delete`) requires network and server administrator permission. Every member that may deploy can read where databases live (`list` and deploys) and apply their own app's migrations; snapshot keys are readable only by administrators.
-- `create` refuses a name the network already has. Two administrators creating the same name at the same moment are not detected; the later record wins.
+- `create` refuses a name the network already has. When two administrators create the same name at the same moment, one record wins; the other create undoes itself when it sees the winner, and otherwise leaves an unused copy on its server that `tako sqlite delete <name> --server <server>` removes.
 
 ## Verify
 

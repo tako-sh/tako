@@ -344,10 +344,10 @@ impl Context {
         })
     }
 
-    fn backup_key(&self, name: &str) -> Result<String, Box<dyn std::error::Error>> {
+    fn backup_key(&self, record: &DatabaseRecord) -> Result<String, Box<dyn std::error::Error>> {
         let alias = self.alias()?;
         let key =
-            tokio::task::block_in_place(|| crate::network::databases::backup_key(&alias, name))?;
+            tokio::task::block_in_place(|| crate::network::databases::backup_key(&alias, record))?;
         Ok(key.to_string())
     }
 
@@ -677,6 +677,30 @@ async fn create(
         .await;
         return Err(format!("Could not record the database in the network: {error}").into());
     }
+    // Another administrator may have created the same name at the same
+    // moment. Its key has its own address; the directory record decides.
+    let won = ctx
+        .records()?
+        .into_iter()
+        .find(|published| published.name == name)
+        .is_none_or(|published| published.generation == record.generation);
+    if !won {
+        let alias = ctx.alias()?;
+        let _ =
+            tokio::task::block_in_place(|| crate::network::databases::remove_key(&alias, &record));
+        let _ = send::<serde_json::Value>(
+            &home,
+            Command::DeleteDatabase {
+                name: name.to_owned(),
+                keep_snapshots: false,
+            },
+        )
+        .await;
+        return Err(format!(
+            "Another administrator created a database named '{name}' at the same time, and theirs was recorded. This create was undone; use theirs, or pick another name."
+        )
+        .into());
+    }
     if output::is_json() {
         return output::json_result(serde_json::json!({
             "ok": true,
@@ -919,7 +943,7 @@ async fn restore(
             serde_json::json!({"database": name}),
         );
     }
-    let backup_key = ctx.backup_key(name)?;
+    let backup_key = ctx.backup_key(&record)?;
     if moving {
         // Ask the current server where the snapshots are; it may be gone.
         let source = send::<serde_json::Value>(
@@ -1033,7 +1057,7 @@ async fn restore(
 
 async fn delete(ctx: &Context, name: &str, yes: bool) -> Result<(), Box<dyn std::error::Error>> {
     ctx.require_admin()?;
-    let (_, home) = ctx.database(name)?;
+    let (record, home) = ctx.database(name)?;
     let status: serde_json::Value = send(&home, Command::DatabaseStatus { name: None }).await?;
     // A delete whose network record could not be removed leaves the record
     // behind; deleting again finishes it.
@@ -1098,7 +1122,7 @@ async fn delete(ctx: &Context, name: &str, yes: bool) -> Result<(), Box<dyn std:
         print_warnings(&deleted);
     }
     let alias = ctx.alias()?;
-    tokio::task::block_in_place(|| crate::network::databases::remove(&alias, name))?;
+    tokio::task::block_in_place(|| crate::network::databases::remove(&alias, &record))?;
     TakoToml::remove_database_from_file(&ctx.config_path, name)?;
     if output::is_json() {
         return output::json_success("sqlite");
