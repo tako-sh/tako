@@ -322,14 +322,53 @@ def firewall(state):
     return '\n'.join(lines) + '\n'
 
 
-def ssh_authorizations(state):
+LOOPBACK_FORWARDING = ('permitopen="127.0.0.1:*",permitopen="localhost:*",permitopen="[::1]:*",'
+                       'permitlisten="localhost:1"')
+NO_FORWARDING = 'no-port-forwarding'
+_forwarding = None
+
+
+def sshd_version(output):
+    match = re.search(r'OpenSSH_(\d+)\.(\d+)', output)
+    return (int(match.group(1)), int(match.group(2))) if match else None
+
+
+def forwarding_options():
+    """Key options for port forwarding that this host's sshd can parse.
+
+    sshd ignores a key line with an option it does not know, so an unsupported
+    option would lock every network administrator out. permitlisten needs
+    OpenSSH 7.8; older or unidentified servers keep forwarding disabled.
+    """
+    global _forwarding
+    if _forwarding is None:
+        try:
+            # Recent sshd prints its version for -V; older ones print it in
+            # the usage text for the unknown option.
+            result = subprocess.run(['/usr/sbin/sshd', '-V'], capture_output=True, text=True,
+                                    timeout=5, check=False)
+            version = sshd_version(result.stdout + result.stderr)
+        except (OSError, subprocess.SubprocessError):
+            version = None
+        _forwarding = LOOPBACK_FORWARDING if version and version >= (7, 8) else NO_FORWARDING
+    return _forwarding
+
+
+def ssh_authorizations(state, forwarding=None):
+    forwarding = forwarding or forwarding_options()
     lines = []
     for config in state['networks'].values():
         for peer in config['peers']:
             if 'ssh_public_key' in peer:
                 ip = peer['address'].split('/')[0]
-                lines.append(f'from="{ip}",no-agent-forwarding,no-X11-forwarding,no-port-forwarding '
-                             f'{peer["ssh_public_key"]}')
+                # Local forwarding reaches only the server's loopback, which the
+                # shell this key grants can already reach; it lets `ssh -L` and
+                # editors such as VS Code Remote-SSH work. OpenSSH has no key
+                # option that disables remote forwarding alone, so permitlisten
+                # names privileged port 1, which the unprivileged tako account
+                # can never bind: every `-R` request is refused.
+                lines.append(f'from="{ip}",no-agent-forwarding,no-X11-forwarding,'
+                             f'{forwarding} {peer["ssh_public_key"]}')
     return '\n'.join(sorted(set(lines))) + ('\n' if lines else '')
 
 

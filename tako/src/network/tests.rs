@@ -108,7 +108,7 @@ fn snapshot_refresh_keeps_denials_but_allows_ack_compaction() {
     assert!(incoming.acks.is_empty());
 }
 
-fn add_member(
+pub(crate) fn add_member(
     snapshot: &mut RegistrySnapshot,
     keys: &LocalDeviceKeys,
     request: EnrollmentRequest,

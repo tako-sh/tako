@@ -6,6 +6,7 @@ import io
 import json
 import os
 import struct
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -489,8 +490,28 @@ class ReconcileTests(unittest.TestCase):
         self.assertIn('udp dport 8787 drop', self.runner.policy)
         self.assertIn('tcp dport 9850 drop', self.runner.policy)
         self.assertIn(f'iifname "{DEV}" drop', self.runner.policy)
-        self.apply()
-        self.assertIn('from="fd00:1234:5678::2",no-agent-forwarding,no-X11-forwarding,no-port-forwarding', self.ssh)
+        with patch.object(helper, 'forwarding_options', return_value=helper.LOOPBACK_FORWARDING):
+            self.apply()
+        self.assertIn('from="fd00:1234:5678::2",no-agent-forwarding,no-X11-forwarding,'
+                      'permitopen="127.0.0.1:*",permitopen="localhost:*",permitopen="[::1]:*",'
+                      'permitlisten="localhost:1" ssh-ed25519 ', self.ssh)
+
+    def test_forwarding_options_match_the_sshd_parser(self):
+        self.assertEqual(helper.sshd_version('OpenSSH_9.6p1 Ubuntu-3ubuntu13, OpenSSL 3.0.13'), (9, 6))
+        self.assertEqual(helper.sshd_version('unknown option -- V\nOpenSSH_7.4p1, OpenSSL 1.0.2k'), (7, 4))
+        self.assertIsNone(helper.sshd_version('sshd: command not found'))
+        for output, expected in [('OpenSSH_7.8p1', helper.LOOPBACK_FORWARDING),
+                                 ('OpenSSH_10.0p2', helper.LOOPBACK_FORWARDING),
+                                 # permitlisten is unknown before 7.8 and voids the whole key.
+                                 ('OpenSSH_7.7p1', helper.NO_FORWARDING),
+                                 ('', helper.NO_FORWARDING)]:
+            with self.subTest(output=output), patch.object(helper, '_forwarding', None), \
+                    patch.object(helper.subprocess, 'run',
+                                 return_value=subprocess.CompletedProcess([], 1, '', output)):
+                self.assertEqual(helper.forwarding_options(), expected)
+        with patch.object(helper, '_forwarding', None), \
+                patch.object(helper.subprocess, 'run', side_effect=FileNotFoundError):
+            self.assertEqual(helper.forwarding_options(), helper.NO_FORWARDING)
 
     def test_mutation_failure_brings_owned_interface_down_and_retry_recovers(self):
         self.apply()
