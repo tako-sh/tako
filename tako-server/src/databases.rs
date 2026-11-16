@@ -503,7 +503,11 @@ impl ServerState {
             Command::ConfigureDatabaseBackup { name, backup } => {
                 self.configure_database_backup(&name, backup).await
             }
-            Command::GrantDatabases { app, databases } => self.grant_databases(&app, databases),
+            Command::GrantDatabases {
+                app,
+                databases,
+                keep_existing,
+            } => self.grant_databases(&app, databases, keep_existing),
             Command::SnapshotDatabase { name, reason, app } => {
                 self.snapshot_database_command(&name, reason, app.as_deref())
                     .await
@@ -804,7 +808,12 @@ impl ServerState {
         Ok(serde_json::to_value(self.database_info(&updated)).expect("info serializes"))
     }
 
-    fn grant_databases(&self, app: &str, ids: Vec<String>) -> Result<serde_json::Value, String> {
+    fn grant_databases(
+        &self,
+        app: &str,
+        ids: Vec<String>,
+        keep_existing: bool,
+    ) -> Result<serde_json::Value, String> {
         crate::release::validate_app_name(app)?;
         if !app.contains('/') {
             return Err("Grants name an app environment as `<app>/<env>`.".into());
@@ -813,6 +822,15 @@ impl ServerState {
         for id in ids {
             self.hosted_database(&id)?;
             granted.insert(id);
+        }
+        if keep_existing
+            && let Some(existing) = self
+                .state_store
+                .all_database_grants()
+                .map_err(|e| format!("read grants: {e}"))?
+                .remove(app)
+        {
+            granted.extend(existing.databases);
         }
         let key = self
             .state_store

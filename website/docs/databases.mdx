@@ -123,7 +123,7 @@ migrations/
   20261116143000_add_orders.sql
 ```
 
-Any number works as a prefix, up to 18 digits; files run in numeric order, so dated files sort after `0001`-style ones. When the project binds more than one database name, give each binding its own folder, `migrations/<binding>/…`, and pass `--binding` to `migrations new`; loose files in `migrations/` are then an error. Two files with one number are rejected, and other file types in the folder are ignored.
+Any number works as a prefix, up to 18 digits; files run in numeric order, so dated files sort after `0001`-style ones. When the project binds more than one database name, give each binding its own folder, `migrations/<binding>/…`, and pass `--binding` to `migrations new`; loose files in `migrations/` are then an error. Two files with one number are rejected, and other file types in the folder are ignored. One binding's migrations are sent to the server in one request, so together they may take at most 960 KiB as JSON; squash applied files, or load large data with `tako sqlite import`.
 
 Tako applies pending migrations:
 
@@ -270,7 +270,7 @@ tako sqlite delete main
 
 ## Apps on other servers
 
-An app on another server than its database's connects to its own server as usual. That server forwards the request over the network's private WireGuard transport to the database's server on port 9847, which the network firewall opens only to other servers. An administrator's deploy grants the app environment the database on its server; the grant comes with a key that the deploy hands to the app's servers, and forwarded requests must carry it, so other processes on a granted server cannot act for the environment. Tokens never leave the app's server. A deploy without administration keeps the bindings and keys an administrator provisioned.
+An app on another server than its database's connects to its own server as usual. That server forwards the request over the network's private WireGuard transport to the database's server on port 9847, which the network firewall opens only to other servers. An administrator's deploy grants the app environment the database on its server, and revokes grants the new release no longer uses only after its rollout succeeds, so the previous release keeps working until then; the grant comes with a key that the deploy hands to the app's servers, and forwarded requests must carry it, so other processes on a granted server cannot act for the environment. Tokens never leave the app's server. A deploy without administration keeps the bindings and keys an administrator provisioned.
 
 Each remote query adds a private-network round trip, so place a database on the server where most of its traffic runs. The database is unavailable to every server while its home server is down; forwarded requests then fail with `502`. Writes are serialized on one server: there is no replication or failover.
 

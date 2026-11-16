@@ -8,9 +8,9 @@ use tako_database::Migration;
 
 use crate::config::TakoToml;
 
-/// The most SQL one binding's migrations may hold, so they fit in one
-/// management request.
-const MAX_TOTAL_BYTES: usize = 8 * 1024 * 1024;
+/// The most one binding's migrations may take as JSON, so they fit in one
+/// management request, whose JSON body is limited to 1 MiB.
+const MAX_ENCODED_BYTES: usize = 960 * 1024;
 
 /// Every binding name the project uses, in any environment.
 pub(crate) fn binding_names(config: &TakoToml) -> BTreeSet<String> {
@@ -79,7 +79,6 @@ pub(crate) fn load(
         return Ok(Vec::new());
     };
     let mut migrations = Vec::new();
-    let mut total = 0usize;
     for path in sql_files(&dir)? {
         let name = path
             .file_name()
@@ -88,13 +87,18 @@ pub(crate) fn load(
             .to_owned();
         let sql =
             std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
-        total += sql.len();
         migrations.push(Migration { name, sql });
     }
-    if total > MAX_TOTAL_BYTES {
+    // Counted as sent: escaping makes JSON larger than the files.
+    let encoded = serde_json::to_vec(&migrations)
+        .map_err(|e| e.to_string())?
+        .len();
+    if encoded > MAX_ENCODED_BYTES {
         return Err(format!(
-            "The migrations in {} add up to more than 8 MiB; load large data with `tako sqlite import` instead.",
-            dir.display()
+            "The migrations in {} take {} KiB, more than the {} KiB one request carries; squash applied ones, or load large data with `tako sqlite import` instead.",
+            dir.display(),
+            encoded / 1024,
+            MAX_ENCODED_BYTES / 1024
         ));
     }
     tako_database::migrate::order(&migrations)
@@ -225,6 +229,20 @@ mod tests {
             error.contains("bound as `main` and as `reports`"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn migrations_must_fit_in_one_request() {
+        let dir = tempfile::tempdir().unwrap();
+        // Under the limit as files, but escaped quotes double in JSON.
+        let quotes = "\"".repeat(500 * 1024);
+        write(
+            dir.path(),
+            "migrations/0001_big.sql",
+            &format!("SELECT '{quotes}';"),
+        );
+        let error = load(dir.path(), &config(ONE), "main").unwrap_err();
+        assert!(error.contains("one request carries"), "{error}");
     }
 
     #[test]

@@ -261,7 +261,15 @@ pub enum Command {
 
     /// Let an app environment running on other servers use databases hosted
     /// on this server. Replaces the environment's previous grants.
-    GrantDatabases { app: String, databases: Vec<String> },
+    /// With `keep_existing`, the databases already granted stay granted: a
+    /// deploy widens grants before its rollout, while the previous release
+    /// still runs, and narrows them once the rollout succeeds.
+    GrantDatabases {
+        app: String,
+        databases: Vec<String>,
+        #[serde(default)]
+        keep_existing: bool,
+    },
 
     /// Take and upload a snapshot now. `app` names the app environment that
     /// asks (before its release command), which must use the database.

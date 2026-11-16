@@ -591,8 +591,9 @@ async fn run_async(
     // An administrator's deploy also revokes the grants of an environment
     // that no longer binds the network's databases.
     let revokes_grants = configure_bindings && !database_records.is_empty();
+    let mut granted = None;
     if !database_plan.is_empty() || revokes_grants {
-        let peer_keys = databases::prepare(databases::Preparation {
+        let prepared = databases::prepare(databases::Preparation {
             plan: &database_plan,
             records: &database_records,
             config: &tako_config,
@@ -606,7 +607,8 @@ async fn run_async(
             release: release_command.is_some(),
         })
         .await?;
-        databases::apply_peer_keys(&mut database_plan, &peer_keys);
+        databases::apply_peer_keys(&mut database_plan, &prepared.peer_keys);
+        granted = Some(prepared);
     }
     let deploy_config = Arc::new(DeployConfig {
         app_name: deployment_app_name.clone(),
@@ -764,6 +766,11 @@ async fn run_async(
 
     // ===== Summary =====
     if errors.is_empty() {
+        // Every server runs the new release; grants only the old one used
+        // can go.
+        if let Some(granted) = granted {
+            databases::narrow_grants(&deployment_app_name, granted).await;
+        }
         if let Some(task_tree) = &deploy_task_tree {
             let https_port = common_https_port_for_servers(&server_names, &servers);
             task_tree.set_success_summary(&version, &routes, https_port);

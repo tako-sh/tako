@@ -503,14 +503,14 @@ async fn run_async(
             }
             MigrationCommands::List { database, local } => {
                 if local {
-                    return migrate_local(config_path, true);
+                    return migrate_local(config_path, database.as_deref(), true);
                 }
                 let ctx = Context::load(config_path, network).await?;
                 migrate(&ctx, database.as_deref(), true).await
             }
             MigrationCommands::Apply { database, local } => {
                 if local {
-                    return migrate_local(config_path, false);
+                    return migrate_local(config_path, database.as_deref(), false);
                 }
                 let ctx = Context::load(config_path, network).await?;
                 migrate(&ctx, database.as_deref(), false).await
@@ -1268,15 +1268,23 @@ fn load_project(
 
 fn migrate_local(
     config_path: Option<&Path>,
+    database: Option<&str>,
     dry_run: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (project, config) = load_project(config_path)?;
+    if let Some(database) = database
+        && !crate::local_databases::development_bindings(&config)
+            .values()
+            .any(|name| name == database)
+    {
+        return Err(format!("This project binds no local database named '{database}'.").into());
+    }
     let dry_run = dry_run || output::is_dry_run();
     let migrated = crate::local_databases::development_migrations(
         &project.project_dir,
         &config,
         dry_run,
-        None,
+        database,
     )?;
     for warning in &migrated.warnings {
         output::warning(warning);

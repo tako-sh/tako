@@ -249,6 +249,7 @@ async fn release_snapshots_skip_unchanged_databases_and_foreign_apps() {
         Command::GrantDatabases {
             app: "web/production".into(),
             databases: vec![ID.into()],
+            keep_existing: false,
         },
     )
     .await;
@@ -542,6 +543,7 @@ async fn deleting_a_database_revokes_its_grants() {
         Command::GrantDatabases {
             app: "web/production".into(),
             databases: vec![ID.into(), OTHER.into()],
+            keep_existing: false,
         },
     )
     .await;
@@ -770,6 +772,7 @@ async fn deployers_migrate_only_their_own_apps_databases() {
         Command::GrantDatabases {
             app: "web/production".into(),
             databases: vec![ID.into()],
+            keep_existing: false,
         },
     )
     .await;
@@ -961,4 +964,37 @@ async fn bindings_keep_their_token_only_for_the_same_home() {
         moved.binding.peer_key, None,
         "the old home's key is not reused"
     );
+}
+
+#[tokio::test]
+async fn deploys_widen_grants_before_a_rollout_and_narrow_them_after() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, None).await;
+    create(&state, "orders", None).await;
+    let grant = |databases: &[&str], keep_existing| Command::GrantDatabases {
+        app: "web/production".into(),
+        databases: databases.iter().map(|d| (*d).to_owned()).collect(),
+        keep_existing,
+    };
+    let granted = |state: &ServerState| {
+        state.state_store.all_database_grants().unwrap()["web/production"]
+            .databases
+            .clone()
+    };
+    ok(&state, grant(&[ID], false)).await;
+    // The new release binds orders instead; the running one still uses shop.
+    let widened = ok(&state, grant(&["orders"], true)).await;
+    assert_eq!(
+        granted(&state),
+        std::collections::BTreeSet::from([ID.to_owned(), "orders".to_owned()])
+    );
+    // Once the rollout succeeds, only what the new release uses remains,
+    // under the same peer key.
+    let narrowed = ok(&state, grant(&["orders"], false)).await;
+    assert_eq!(
+        granted(&state),
+        std::collections::BTreeSet::from(["orders".to_owned()])
+    );
+    assert_eq!(widened["peer_key"], narrowed["peer_key"]);
 }

@@ -30,11 +30,19 @@ pub(super) struct Preparation<'a> {
     pub release: bool,
 }
 
-/// Prepares the environment's databases and returns the peer keys their
-/// servers issued with grants, by server device ID.
-pub(super) async fn prepare(
-    prep: Preparation<'_>,
-) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
+/// What preparing the databases leaves for the deploy.
+pub(super) struct Granted {
+    /// Peer keys the databases' servers issued with grants, by server
+    /// device ID.
+    pub peer_keys: HashMap<String, String>,
+    /// The exact grant each database server should end with. Grants are only
+    /// widened before the rollout, since the previous release keeps serving
+    /// until it succeeds; [`narrow_grants`] applies these afterwards.
+    narrow: Vec<(Home, Vec<String>)>,
+}
+
+/// Prepares the environment's databases.
+pub(super) async fn prepare(prep: Preparation<'_>) -> Result<Granted, Box<dyn std::error::Error>> {
     let _t = output::timed("Prepare databases");
     let prepared = output::with_spinner_async("Preparing databases", "Prepared databases", async {
         run(&prep).await.map_err(|error| error.to_string())
@@ -46,7 +54,32 @@ pub(super) async fn prepare(
     for line in prepared.migrated {
         output::info(&line);
     }
-    Ok(prepared.keys)
+    Ok(Granted {
+        peer_keys: prepared.keys,
+        narrow: prepared.narrow,
+    })
+}
+
+/// After a successful rollout, revokes the grants the new release no longer
+/// uses. A server that cannot be reached keeps a stale grant, with a warning.
+pub(super) async fn narrow_grants(app: &str, granted: Granted) {
+    for (home, databases) in granted.narrow {
+        let result: Result<serde_json::Value, _> = crate::commands::sqlite::send(
+            &home,
+            Command::GrantDatabases {
+                app: app.to_owned(),
+                databases,
+                keep_existing: false,
+            },
+        )
+        .await;
+        if let Err(error) = result {
+            output::warning(&format!(
+                "Could not clear {app}'s unused database grants on {}: {error}",
+                home.name
+            ));
+        }
+    }
 }
 
 /// Sets each binding's peer key from the grant of its database's server.
@@ -66,6 +99,7 @@ struct Prepared {
     warnings: Vec<String>,
     /// One line per binding that applied migrations.
     migrated: Vec<String>,
+    narrow: Vec<(Home, Vec<String>)>,
 }
 
 async fn run(prep: &Preparation<'_>) -> Result<Prepared, Box<dyn std::error::Error>> {
@@ -169,9 +203,10 @@ async fn run(prep: &Preparation<'_>) -> Result<Prepared, Box<dyn std::error::Err
 }
 
 /// Grants the environment its databases on their servers when it deploys
-/// elsewhere, and clears its grants on the other servers that host the
-/// network's databases. Returns the peer keys of the grants, and
-/// warnings for servers that could not clear a grant this deploy does not
+/// elsewhere, keeping the grants its running release uses, and records the
+/// exact grant each server of the network's databases should end with once
+/// the rollout succeeds. Returns the peer keys of the grants, and warnings
+/// for servers that could not be reached for a grant this deploy does not
 /// depend on.
 async fn grant(
     prep: &Preparation<'_>,
@@ -199,14 +234,19 @@ async fn grant(
     let mut prepared = Prepared::default();
     for (home, names) in homes.into_values() {
         let needed = !names.is_empty();
+        let names: Vec<String> = names.into_iter().collect();
+        // Old instances keep running until the rollout succeeds, so grants
+        // they use stay until then.
         let result: Result<serde_json::Value, _> = crate::commands::sqlite::send(
             &home,
             Command::GrantDatabases {
                 app: prep.app.to_owned(),
-                databases: names.into_iter().collect(),
+                databases: names.clone(),
+                keep_existing: true,
             },
         )
         .await;
+        prepared.narrow.push((home.clone(), names));
         match result {
             Ok(response) => {
                 if let Some(key) = response["peer_key"].as_str() {
@@ -216,10 +256,11 @@ async fn grant(
             Err(error) if needed => {
                 return Err(format!("Grant databases on {}: {error}", home.name).into());
             }
-            // Only a stale grant is left behind; this deploy does not use it.
+            // This deploy uses nothing there; clearing its grant is retried
+            // after the rollout.
             Err(error) => prepared.warnings.push(format!(
-                "Could not clear {}'s database grant on {}: {error}",
-                prep.app, home.name
+                "Could not reach {} to update {}'s database grant: {error}",
+                home.name, prep.app
             )),
         }
     }
