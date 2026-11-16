@@ -17,6 +17,28 @@ pub(super) fn lock(alias: &LocalNetwork, name: &str) -> Result<File> {
     super::private_file(&directory.join(name), true)
 }
 
+/// Holds this device's only userspace WireGuard transport to `server`.
+///
+/// Two transports with the same device key make the server roam its peer
+/// endpoint between them. OpenSSH clients that start before a shared control
+/// socket exists each run a proxy, so the proxy itself must refuse to open a
+/// second transport. The lock lives as long as the returned file.
+pub(crate) fn claim_transport(alias: &LocalNetwork, server: &str) -> Result<File> {
+    let name = format!(
+        "ssh-transport-{}.lock",
+        &hex::encode(Sha256::digest(server))[..12]
+    );
+    let transport = lock(alias, &name)?;
+    match transport.try_lock() {
+        Ok(()) => Ok(transport),
+        Err(std::fs::TryLockError::WouldBlock) => Err(
+            "Another SSH connection to this server is starting or open without a shared connection. Retry in a moment; `tako ssh` and `tako ssh config` aliases reuse one connection per server."
+                .into(),
+        ),
+        Err(std::fs::TryLockError::Error(error)) => Err(error.into()),
+    }
+}
+
 fn control_directory_path() -> Result<PathBuf> {
     Ok(fs::canonicalize("/tmp")?.join(format!("tako-ssh-{}", unsafe { libc::geteuid() })))
 }
@@ -204,6 +226,23 @@ pub(crate) fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_one_transport_per_server_and_device() {
+        let _home = crate::network::tests::TestHome::new();
+        let alias = LocalNetwork {
+            name: "test".into(),
+            id: "11".repeat(16),
+            device: "22".repeat(32),
+        };
+        let first = claim_transport(&alias, "server-a").unwrap();
+        assert!(claim_transport(&alias, "server-a").is_err());
+        // Other servers have their own transports.
+        let other = claim_transport(&alias, "server-b").unwrap();
+        drop(first);
+        claim_transport(&alias, "server-a").unwrap();
+        drop(other);
+    }
     use std::path::Path;
 
     #[test]

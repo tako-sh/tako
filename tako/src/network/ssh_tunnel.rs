@@ -202,12 +202,18 @@ pub(crate) fn proxy_main() -> ! {
         // An assigned local address means connect already owns this device's
         // WireGuard transport. Reuse it instead of stealing the peer endpoint.
         let system = local_address_assigned(config.source)?;
-        if !system {
+        // Held until this process exits, which ends the transport.
+        let _transport = if system {
+            None
+        } else {
             // Aliases run OpenSSH directly, bypassing `tako ssh`'s guard. The
             // proxy starts before its own master binds, so any live master for
             // this server means a second transport would roam the endpoint.
+            // Masters from earlier releases hold no transport lock.
             super::ssh_session::refuse_other_transport(&alias, server, None)?;
-        }
+            // Clients that start together see no master yet; only one wins.
+            Some(super::ssh_session::claim_transport(&alias, server)?)
+        };
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
