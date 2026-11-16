@@ -31,20 +31,23 @@ const layout = new Channel("shared", "ws").connect({
 (layout.raw as EventTarget).addEventListener("message", (event) => {
   events.push(JSON.parse((event as MessageEvent<string>).data));
 });
-const memberships: Array<{ connectionId: string; subject: string }> = [];
-function presence() {
+type Member = { connectionId: string; subject: string };
+// Each connection's own view: a connection reports membership only when it
+// changes between its periodic snapshots, so a join and leave that both fall
+// between two of the observer's snapshots would never reach it.
+function presence(view: Member[]) {
   const channel = new Channel("tako.presence:lobby", "ws").connect(options);
   (channel.raw as EventTarget).addEventListener("message", (event) => {
     const message = JSON.parse((event as MessageEvent<string>).data);
     if (message.type === "tako.presence.ready")
       channel.send({ type: "tako.presence", data: { page: "chat" } });
-    if (message.type === "tako.presence")
-      memberships.splice(0, memberships.length, ...message.members);
+    if (message.type === "tako.presence") view.splice(0, view.length, ...message.members);
   });
   return channel;
 }
-const observer = presence();
-const page = presence();
+const memberships: Member[] = [];
+const observer = presence(memberships);
+const page = presence([]);
 async function until(stage: string, check: () => boolean) {
   const deadline = Date.now() + 15_000;
   while (!check()) {
@@ -54,7 +57,8 @@ async function until(stage: string, check: () => boolean) {
   }
 }
 try {
-  await until("both presence members joined", () => memberships.length === 2);
+  // The observer must see the page before the page leaves.
+  await until("observer sees both presence members", () => memberships.length === 2);
   assert.equal(sockets.length, 1, "WebSocket channels and presence must share a socket");
   assert.ok(memberships.every((member) => member.subject === "e2e-user"));
   page.close();
