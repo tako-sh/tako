@@ -14,24 +14,6 @@ import { EMPTY_RETRIES, EMPTY_STEPS } from "./types";
 const l = tako.logger.child("db");
 export const RECORD_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
 
-const SCHEMA = [
-  `CREATE TABLE IF NOT EXISTS bases (
-     slug TEXT PRIMARY KEY,
-     created_at INTEGER NOT NULL
-   )`,
-  `CREATE TABLE IF NOT EXISTS supply_requests (
-     request_id TEXT PRIMARY KEY,
-     base_slug TEXT NOT NULL,
-     item TEXT NOT NULL,
-     is_complete INTEGER NOT NULL,
-     steps_json TEXT NOT NULL,
-     retries_json TEXT NOT NULL,
-     created_at INTEGER NOT NULL,
-     updated_at INTEGER NOT NULL
-   )`,
-  "CREATE INDEX IF NOT EXISTS idx_requests_base ON supply_requests(base_slug, created_at DESC)",
-];
-
 const REQUEST_COLUMNS =
   "request_id, base_slug, item, is_complete, steps_json, retries_json, created_at, updated_at";
 
@@ -39,13 +21,11 @@ let connection: Promise<Client> | undefined;
 
 /**
  * The `mission` database bound in tako.toml. Tako serves it next to the app,
- * from a local file under `tako dev` and from its server once deployed.
+ * from a local file under `tako dev` and from its server once deployed, and
+ * applies `migrations/` to it before the app starts.
  */
 function db(): Promise<Client> {
-  connection ??= migrate(createClient(missionDatabase())).catch((error: unknown) => {
-    connection = undefined;
-    throw error;
-  });
+  connection ??= Promise.resolve(createClient(missionDatabase()));
   return connection;
 }
 
@@ -59,14 +39,9 @@ function missionDatabase() {
   return database;
 }
 
-async function migrate(client: Client): Promise<Client> {
-  await client.batch(SCHEMA, "write");
-  return client;
-}
-
 /** Uses `client` instead of the bound database. For tests. */
 export function useClient(client: Client): Promise<Client> {
-  connection = migrate(client);
+  connection = Promise.resolve(client);
   return connection;
 }
 

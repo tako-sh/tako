@@ -178,3 +178,98 @@ describe("tako run with a database binding", () => {
     180_000,
   );
 });
+
+describe("migrations", () => {
+  let dir: string;
+  const env = () => ({
+    ...process.env,
+    HOME: dir,
+    TAKO_HOME: join(dir, ".tako-home"),
+    NO_COLOR: "1",
+  });
+  const tako = async (...args: string[]) => {
+    const child = Bun.spawn([TAKO_BIN, ...args], {
+      cwd: dir,
+      env: env(),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [code, out, err] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    return { code, out, err };
+  };
+  const rows = () => {
+    const { Database } = require("bun:sqlite");
+    const db = new Database(join(dir, ".tako", "data", "databases", "app-db.sqlite"));
+    try {
+      return db
+        .query("SELECT name FROM items ORDER BY name")
+        .all()
+        .map((r: { name: string }) => r.name);
+    } finally {
+      db.close();
+    }
+  };
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), "tako-migrations-"));
+    await writeFile(
+      join(dir, "tako.toml"),
+      [
+        'name = "migrating"',
+        'runtime = "bun"',
+        "",
+        "[envs.development]",
+        'databases = { main = "app-db" }',
+        "",
+      ].join("\n"),
+    );
+    await Bun.write(
+      join(dir, "migrations", "0001_items.sql"),
+      "CREATE TABLE items (name TEXT);\nINSERT INTO items VALUES ('seed');\n",
+    );
+  });
+
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("tako run applies pending migrations once", async () => {
+    expect((await tako("run", "--", "true")).code).toBe(0);
+    expect(rows()).toEqual(["seed"]);
+    expect((await tako("run", "--", "true")).code).toBe(0);
+    expect(rows()).toEqual(["seed"]);
+
+    await Bun.write(
+      join(dir, "migrations", "0002_more.sql"),
+      "INSERT INTO items VALUES ('more');\n",
+    );
+    const migrated = await tako("sqlite", "migrate", "--env", "development");
+    expect(migrated.code).toBe(0);
+    expect(migrated.err).toContain("0002_more.sql");
+    expect(rows()).toEqual(["more", "seed"]);
+  });
+
+  test("reset empties the local database and migrates it again", async () => {
+    const { Database } = require("bun:sqlite");
+    const db = new Database(join(dir, ".tako", "data", "databases", "app-db.sqlite"));
+    db.run("INSERT INTO items VALUES ('scratch')");
+    db.close();
+    const reset = await tako("sqlite", "reset", "app-db", "--env", "development", "--yes");
+    expect(reset.code).toBe(0);
+    expect(rows()).toEqual(["more", "seed"]);
+  });
+
+  test("an applied migration that changed stops the run", async () => {
+    await Bun.write(
+      join(dir, "migrations", "0001_items.sql"),
+      "CREATE TABLE items (name TEXT, extra INTEGER);\n",
+    );
+    const run = await tako("run", "--", "true");
+    expect(run.code).not.toBe(0);
+    expect(run.err).toContain("changed after it was applied");
+  });
+});

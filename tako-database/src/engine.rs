@@ -75,6 +75,69 @@ impl Budget {
     }
 }
 
+/// Empties a database in place: drops every table, view, and trigger and
+/// resets `user_version`. Connections other processes hold stay valid and
+/// see the new, empty schema.
+pub fn reset_database_file(path: &Path) -> Result<(), String> {
+    let mut conn = rusqlite::Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_EXRESCODE,
+    )
+    .map_err(|e| e.to_string())?;
+    conn.busy_timeout(Duration::from_secs(5))
+        .map_err(|e| e.to_string())?;
+    conn.execute_batch("PRAGMA foreign_keys = OFF")
+        .map_err(|e| e.to_string())?;
+    let objects = |conn: &rusqlite::Connection,
+                   filter: &str|
+     -> Result<Vec<(String, String)>, String> {
+        let mut statement = conn
+            .prepare(&format!(
+                "SELECT type, name FROM sqlite_schema WHERE name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND {filter}"
+            ))
+            .map_err(|e| e.to_string())?;
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())
+    };
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    // Virtual tables first: dropping one drops its shadow tables.
+    for filter in [
+        "type IN ('view', 'trigger')",
+        "type = 'table' AND sql LIKE 'CREATE VIRTUAL TABLE%'",
+        "type = 'table'",
+    ] {
+        for (kind, name) in objects(&tx, filter)? {
+            let kind = kind.to_uppercase();
+            let quoted = name.replace('"', "\"\"");
+            tx.execute_batch(&format!("DROP {kind} IF EXISTS \"{quoted}\""))
+                .map_err(|e| format!("drop {name}: {e}"))?;
+        }
+    }
+    let sequence: bool = tx
+        .query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE name = 'sqlite_sequence'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|count| count > 0)
+        .map_err(|e| e.to_string())?;
+    if sequence {
+        tx.execute_batch("DELETE FROM sqlite_sequence")
+            .map_err(|e| e.to_string())?;
+    }
+    tx.execute_batch("PRAGMA user_version = 0")
+        .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    // Returns the freed pages; other readers may delay it, which is harmless.
+    let _ = conn.execute_batch("VACUUM");
+    Ok(())
+}
+
 /// Creates an empty database in WAL mode. Fails if the file already exists.
 pub fn create_database(path: &Path) -> Result<(), String> {
     if path.exists() {

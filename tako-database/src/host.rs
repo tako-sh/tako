@@ -692,6 +692,42 @@ impl DatabaseHost {
         .map_err(|e| HostError::Engine(e.to_string()))?
     }
 
+    /// Applies `app`'s pending migrations to a database, or reports them
+    /// when `dry_run` is set. Runs under the database's request limit, with
+    /// the same restrictions as apps.
+    pub async fn migrate(
+        &self,
+        id: &DatabaseId,
+        app: String,
+        migrations: Vec<crate::Migration>,
+        dry_run: bool,
+    ) -> Result<crate::MigrationReport, HostError> {
+        let database = self.database(id)?;
+        let active = DatabaseHost::enter(&database).map_err(|e| HostError::Engine(e.0))?;
+        let permit = database
+            .permits
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| HostError::Engine("database is closing".into()))?;
+        tokio::task::spawn_blocking(move || {
+            let _active = active;
+            let _permit = permit;
+            let mut conn = database
+                .acquire()
+                .map_err(|e| HostError::Engine(e.message))?;
+            let result = crate::migrate::run(&mut conn, &app, &migrations, dry_run);
+            if conn.take_wrote() {
+                database.mark_changed();
+            }
+            conn.rollback();
+            database.release(conn);
+            result.map_err(HostError::Engine)
+        })
+        .await
+        .map_err(|e| HostError::Engine(e.to_string()))?
+    }
+
     /// Size of a database's files (database and write-ahead log) in bytes.
     pub fn size_bytes(&self, id: &DatabaseId) -> Option<u64> {
         let path = self.path(id)?;

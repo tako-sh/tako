@@ -55,6 +55,48 @@ pub(crate) fn dev_files(project_dir: &Path, config: &TakoToml) -> BTreeMap<Strin
         .collect()
 }
 
+/// What applying development migrations did.
+#[derive(Debug, Default)]
+pub(crate) struct DevMigrations {
+    /// One line per binding that applied migrations.
+    pub applied: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+/// Applies each development binding's pending migrations to its local file.
+pub(crate) fn migrate_development(
+    project_dir: &Path,
+    config: &TakoToml,
+) -> Result<DevMigrations, String> {
+    let project_dir = project_dir
+        .canonicalize()
+        .unwrap_or_else(|_| project_dir.to_path_buf());
+    let owner = config.name.as_deref().unwrap_or("app");
+    let mut result = DevMigrations::default();
+    for (binding, database) in development_bindings(config) {
+        let migrations = crate::database_migrations::load(&project_dir, config, &binding)?;
+        if migrations.is_empty() {
+            continue;
+        }
+        let path = database_path(&project_dir, &database);
+        let report = tako_database::migrate::migrate_file(&path, owner, &migrations, false)
+            .map_err(|error| format!("Database `{binding}`: {error}"))?;
+        result.warnings.extend(
+            report
+                .warnings
+                .into_iter()
+                .map(|warning| format!("Database `{binding}`: {warning}")),
+        );
+        if !report.applied.is_empty() {
+            result.applied.push(format!(
+                "Applied {} to `{binding}`",
+                report.applied.join(", ")
+            ));
+        }
+    }
+    Ok(result)
+}
+
 pub(crate) fn database_path(project_dir: &Path, database: &str) -> PathBuf {
     project_dir
         .join(".tako")

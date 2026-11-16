@@ -6,6 +6,7 @@ use crate::isolation::fixture::TestDataDir as TempDir;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use object_store::ObjectStoreExt as _;
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use tako_core::{SnapshotReason, StorageBinding, StorageProvider};
 
@@ -602,4 +603,215 @@ async fn admin_queries_keep_the_engine_restrictions() {
     .await;
     assert_eq!(rows["rows"].as_array().unwrap().len(), 1000);
     assert_eq!(rows["truncated"], true);
+}
+
+fn migration(name: &str, sql: &str) -> tako_core::DatabaseMigration {
+    tako_core::DatabaseMigration {
+        name: name.into(),
+        sql: sql.into(),
+    }
+}
+
+async fn migrate(
+    state: &ServerState,
+    migrations: Vec<tako_core::DatabaseMigration>,
+    dry_run: bool,
+    app: Option<&str>,
+) -> Response {
+    state
+        .handle_command(Command::MigrateDatabase {
+            name: ID.into(),
+            owner: "web".into(),
+            migrations,
+            dry_run,
+            app: app.map(str::to_owned),
+        })
+        .await
+}
+
+async fn snapshot_reasons(state: &ServerState) -> Vec<String> {
+    let listed = ok(state, Command::ListDatabaseSnapshots { name: ID.into() }).await;
+    listed["snapshots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["reason"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[tokio::test]
+async fn migrations_apply_once_after_a_snapshot_of_what_they_change() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, Some("migrate-bucket")).await;
+    let migrations = vec![
+        migration("0001_items.sql", "CREATE TABLE items (name TEXT);"),
+        migration("0002_seed.sql", "INSERT INTO items VALUES ('first');"),
+    ];
+    let Response::Ok { data: preview } = migrate(&state, migrations.clone(), true, None).await
+    else {
+        panic!("a dry run succeeds");
+    };
+    assert_eq!(
+        preview["pending"],
+        json!(["0001_items.sql", "0002_seed.sql"])
+    );
+    assert!(
+        error(
+            &state,
+            Command::QueryDatabase {
+                name: ID.into(),
+                sql: "SELECT * FROM items".into()
+            }
+        )
+        .await
+        .contains("no such table")
+    );
+
+    let Response::Ok { data: report } = migrate(&state, migrations.clone(), false, None).await
+    else {
+        panic!("migrations apply");
+    };
+    assert_eq!(
+        report["applied"],
+        json!(["0001_items.sql", "0002_seed.sql"])
+    );
+    assert_eq!(count(&state, ID).await, 1);
+    // The fresh database had nothing to copy.
+    assert!(snapshot_reasons(&state).await.is_empty());
+
+    let mut more = migrations.clone();
+    more.push(migration(
+        "0003_more.sql",
+        "INSERT INTO items VALUES ('second');",
+    ));
+    let Response::Ok { data: report } = migrate(&state, more.clone(), false, None).await else {
+        panic!("the new migration applies");
+    };
+    assert_eq!(report["applied"], json!(["0003_more.sql"]));
+    assert_eq!(snapshot_reasons(&state).await, ["migration"]);
+
+    let Response::Ok { data: report } = migrate(&state, more, false, None).await else {
+        panic!("nothing is pending");
+    };
+    assert_eq!(report["applied"], json!([]));
+    assert_eq!(
+        snapshot_reasons(&state).await.len(),
+        1,
+        "no snapshot without pending migrations"
+    );
+}
+
+#[tokio::test]
+async fn deployers_migrate_only_their_own_apps_databases() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, None).await;
+    let migrations = vec![migration(
+        "0001_items.sql",
+        "CREATE TABLE items (name TEXT);",
+    )];
+    let Response::Error { message, .. } =
+        migrate(&state, migrations.clone(), false, Some("web/production")).await
+    else {
+        panic!("an app that does not use the database is refused");
+    };
+    assert!(message.contains("does not use database"), "{message}");
+
+    ok(
+        &state,
+        Command::GrantDatabases {
+            app: "web/production".into(),
+            databases: vec![ID.into()],
+        },
+    )
+    .await;
+    let Response::Ok { .. } =
+        migrate(&state, migrations.clone(), false, Some("web/production")).await
+    else {
+        panic!("the app's own migrations apply");
+    };
+    let Response::Error { message, .. } = state
+        .handle_command(Command::MigrateDatabase {
+            name: ID.into(),
+            owner: "other".into(),
+            migrations,
+            dry_run: false,
+            app: Some("web/production".into()),
+        })
+        .await
+    else {
+        panic!("another app's migrations are refused");
+    };
+    assert!(
+        message.contains("cannot apply migrations of other"),
+        "{message}"
+    );
+}
+
+#[tokio::test]
+async fn reset_empties_a_database_after_a_safety_copy() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, Some("reset-bucket")).await;
+    query(&state, ID, "CREATE TABLE items (name TEXT)").await;
+    query(&state, ID, "INSERT INTO items VALUES ('gone')").await;
+    ok(&state, Command::ResetDatabase { name: ID.into() }).await;
+    let missing = error(
+        &state,
+        Command::QueryDatabase {
+            name: ID.into(),
+            sql: "SELECT * FROM items".into(),
+        },
+    )
+    .await;
+    assert!(missing.contains("no such table"), "{missing}");
+    assert_eq!(snapshot_reasons(&state).await, ["restore"]);
+    // The safety copy restores the contents.
+    let snapshot =
+        ok(&state, Command::ListDatabaseSnapshots { name: ID.into() }).await["snapshots"][0]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+    ok(
+        &state,
+        Command::RestoreDatabase {
+            name: ID.into(),
+            snapshot: Some(snapshot),
+            backup_key_base64: None,
+        },
+    )
+    .await;
+    assert_eq!(count(&state, ID).await, 1);
+}
+
+#[tokio::test]
+async fn deleting_a_database_deletes_its_snapshots() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, Some("delete-bucket")).await;
+    query(&state, ID, "CREATE TABLE items (name TEXT)").await;
+    ok(
+        &state,
+        Command::SnapshotDatabase {
+            name: ID.into(),
+            reason: SnapshotReason::Manual,
+            app: None,
+        },
+    )
+    .await;
+    let store = crate::databases::snapshots::test_store("delete-bucket").unwrap();
+    let objects = || async {
+        use futures_util::TryStreamExt;
+        store
+            .list(None)
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap()
+            .len()
+    };
+    assert_eq!(objects().await, 2, "a manifest and its data");
+    let deleted = ok(&state, Command::DeleteDatabase { name: ID.into() }).await;
+    assert_eq!(deleted["warnings"], json!([]));
+    assert_eq!(objects().await, 0);
 }

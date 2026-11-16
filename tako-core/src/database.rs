@@ -120,8 +120,31 @@ pub enum SnapshotReason {
     Manual,
     /// Before a deploy's release command.
     Release,
-    /// Before a restore or import replaced the database.
+    /// Before a restore, import, or reset replaced the database.
     Restore,
+    /// Before migrations were applied.
+    Migration,
+}
+
+/// One SQL migration file, sent with `MigrateDatabase`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DatabaseMigration {
+    /// The file name, such as `0001_initial.sql`, which orders it.
+    pub name: String,
+    pub sql: String,
+}
+
+/// The reply to `MigrateDatabase`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DatabaseMigrationReport {
+    /// Migrations applied, in order.
+    #[serde(default)]
+    pub applied: Vec<String>,
+    /// Migrations a dry run would apply, in order.
+    #[serde(default)]
+    pub pending: Vec<String>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 /// One uploaded snapshot of a database.

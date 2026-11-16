@@ -545,3 +545,41 @@ fn response_budget_counts_text_as_json_encodes_it() {
     let controls = vec![Value::Text("\u{1}".repeat(1000))];
     assert!(super::encoded_size(&controls) >= 6000);
 }
+
+#[test]
+fn reset_empties_a_database_that_others_hold_open() {
+    let fixture = fixture();
+    let mut conn = open(&fixture);
+    run(&mut conn, "CREATE TABLE t (x)").unwrap();
+    run(&mut conn, "INSERT INTO t VALUES (1)").unwrap();
+    run(
+        &mut conn,
+        "CREATE TABLE seq (id INTEGER PRIMARY KEY AUTOINCREMENT)",
+    )
+    .unwrap();
+    run(&mut conn, "CREATE VIEW v AS SELECT x FROM t").unwrap();
+    run(&mut conn, "CREATE VIRTUAL TABLE docs USING fts5(body)").unwrap();
+    run(&mut conn, "PRAGMA user_version = 7").unwrap();
+    super::reset_database_file(&fixture.path).unwrap();
+    let error = run(&mut conn, "SELECT * FROM t").unwrap_err();
+    assert!(error.message.contains("no such table"), "{}", error.message);
+    run(&mut conn, "CREATE TABLE t (x)").unwrap();
+    let raw = rusqlite::Connection::open(&fixture.path).unwrap();
+    let left: i64 = raw
+        .query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' AND name <> 't'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(left, 0);
+    let version: i64 = raw
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 0);
+    let mode: String = rusqlite::Connection::open(&fixture.path)
+        .unwrap()
+        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(mode, "wal");
+}

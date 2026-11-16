@@ -7,7 +7,7 @@ Tako protects two kinds of data separately:
 
 | Data | Protection | Configure |
 | --- | --- | --- |
-| [Hosted databases](/databases/) | Encrypted snapshots: hourly while changing, before release commands and restores, and on demand | `[envs.<env>].backup.storage` or `[databases.<name>].backup` |
+| [Hosted databases](/databases/) | Encrypted snapshots: hourly while changing, before release commands, migrations, and restores, and on demand | `[envs.<env>].backup.storage` or `[databases.<name>].backup` |
 | Files under the app's `data/app/` and `data/tako/`, including workflow state | Manual encrypted full-directory archives | `[envs.<env>].backup` |
 | Files in the shared data directory | Not backed up; copy them separately during coordinated downtime | — |
 | Compose named volumes, external databases, S3 contents | Protect separately | — |

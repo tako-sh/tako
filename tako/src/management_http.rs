@@ -407,6 +407,8 @@ fn management_rpc_timeout_for_command(command: &Command) -> Duration {
         | Command::ListDatabaseSnapshots { .. }
         | Command::RestoreDatabase { .. }
         | Command::QueryDatabase { .. }
+        | Command::MigrateDatabase { .. }
+        | Command::ResetDatabase { .. }
         | Command::BeginDatabaseImport { .. }
         | Command::DatabaseImportChunk { .. }
         | Command::FinishDatabaseImport { .. }

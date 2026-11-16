@@ -17,6 +17,10 @@ let db: DbModule;
 beforeAll(async () => {
   dir = await mkdtemp(path.join(tmpdir(), "tako-demo-db-"));
   sql = createClient({ url: `file:${path.join(dir, "mission.sqlite")}` });
+  // Tako applies these before the app starts; tests apply them themselves.
+  await sql.executeMultiple(
+    await Bun.file(path.join(import.meta.dirname, "..", "migrations", "0001_initial.sql")).text(),
+  );
   db = await import("../src/server/db");
   await db.useClient(sql);
 });

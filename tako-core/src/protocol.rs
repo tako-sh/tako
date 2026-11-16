@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 
-use crate::database::{DatabaseBinding, SnapshotReason};
+use crate::database::{DatabaseBinding, DatabaseMigration, SnapshotReason};
 use crate::storage::StorageBinding;
 
 pub const PROTOCOL_VERSION: u32 = 0;
@@ -280,6 +280,28 @@ pub enum Command {
 
     /// Run one SQL statement as an administrator, for `tako sqlite shell`.
     QueryDatabase { name: String, sql: String },
+
+    /// Apply an app's SQL migrations: each pending file in order, once,
+    /// after a snapshot when any are pending. Replies with a
+    /// `DatabaseMigrationReport`. `app` names the app environment that asks
+    /// (a deployer), which must use the database and own the migrations;
+    /// administrators send none.
+    MigrateDatabase {
+        name: String,
+        /// The app the migrations belong to. Apps that share a database
+        /// keep separate histories.
+        owner: String,
+        migrations: Vec<DatabaseMigration>,
+        /// Report the pending migrations without applying them.
+        #[serde(default)]
+        dry_run: bool,
+        #[serde(default)]
+        app: Option<String>,
+    },
+
+    /// Replace a database with an empty one, after a snapshot of its
+    /// contents when backups are configured.
+    ResetDatabase { name: String },
 
     /// Start replacing a database with an uploaded SQLite file.
     BeginDatabaseImport {

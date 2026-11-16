@@ -455,6 +455,41 @@ fn retained(snapshots: &[DatabaseSnapshot], now: u64) -> BTreeSet<String> {
     keep
 }
 
+/// Deletes every snapshot object of a database from its backup storage and
+/// returns how many objects were removed.
+pub(crate) async fn delete_all(stored: &StoredDatabase) -> Result<usize, String> {
+    let Some(backup) = &stored.secrets.backup else {
+        return Ok(0);
+    };
+    let remote = store(backup)?;
+    let prefix = ObjectPath::parse(prefix(stored)).map_err(|e| e.to_string())?;
+    let keys: Vec<ObjectPath> = with_deadline(METADATA_TIMEOUT, async {
+        remote
+            .list(Some(&prefix))
+            .map_ok(|meta| meta.location)
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(|e| format!("list database snapshots: {e}"))
+    })
+    .await?;
+    // Manifests first, so a partial deletion lists no snapshot without data.
+    let (manifests, data): (Vec<_>, Vec<_>) = keys
+        .into_iter()
+        .partition(|key| key.as_ref().ends_with(".json"));
+    let mut deleted = 0;
+    for key in manifests.into_iter().chain(data) {
+        with_deadline(METADATA_TIMEOUT, async {
+            match remote.delete(&key).await {
+                Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
+                Err(error) => Err(format!("delete {key}: {error}")),
+            }
+        })
+        .await?;
+        deleted += 1;
+    }
+    Ok(deleted)
+}
+
 async fn prune(stored: &StoredDatabase, backup: &StorageBinding) -> Result<(), String> {
     let remote = store(backup)?;
     let manifests = list_manifests(remote.as_ref(), stored).await?;

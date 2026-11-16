@@ -154,6 +154,7 @@ pub(super) fn rpc_action(
         | Command::Deploy { app, .. }
         | Command::BackupNow { app, .. }
         | Command::SnapshotDatabase { app: Some(app), .. }
+        | Command::MigrateDatabase { app: Some(app), .. }
         | Command::ListBackups { app }
         | Command::BackupStatus { app }
         | Command::BackupDownloadUrl { app, .. }
@@ -197,6 +198,8 @@ pub(super) fn rpc_action(
         | Command::ListDatabaseSnapshots { .. }
         | Command::RestoreDatabase { .. }
         | Command::QueryDatabase { .. }
+        | Command::MigrateDatabase { app: None, .. }
+        | Command::ResetDatabase { .. }
         | Command::BeginDatabaseImport { .. }
         | Command::DatabaseImportChunk { .. }
         | Command::FinishDatabaseImport { .. }

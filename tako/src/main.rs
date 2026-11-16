@@ -1,5 +1,6 @@
 mod cli;
 mod commands;
+mod database_migrations;
 mod dev_server_client;
 mod github;
 mod keychain;

@@ -205,6 +205,25 @@ async fn register_updated_app(
         }
     };
     let databases = crate::local_databases::dev_files(&ctx.project_dir, cfg);
+    match crate::local_databases::migrate_development(&ctx.project_dir, cfg) {
+        Ok(migrated) => {
+            for warning in migrated.warnings {
+                let _ = ctx.log_tx.send(ScopedLog::warn("tako", warning)).await;
+            }
+            for line in migrated.applied {
+                let _ = ctx.log_tx.send(ScopedLog::info("tako", line)).await;
+            }
+        }
+        Err(error) => {
+            let _ = ctx
+                .log_tx
+                .send(ScopedLog::error(
+                    "tako",
+                    format!("Migrations failed: {error}"),
+                ))
+                .await;
+        }
+    }
     let project_dir_display = ctx.project_dir.to_string_lossy();
     let reg_result =
         crate::dev_server_client::register_app(crate::dev_server_client::RegisterAppRequest {

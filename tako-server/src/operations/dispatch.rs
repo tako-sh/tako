@@ -28,6 +28,8 @@ pub(crate) fn command_is_read_only(command: &Command) -> bool {
             | Command::SnapshotDatabase { .. }
             | Command::RestoreDatabase { .. }
             | Command::QueryDatabase { .. }
+            | Command::MigrateDatabase { .. }
+            | Command::ResetDatabase { .. }
             | Command::BeginDatabaseImport { .. }
             | Command::DatabaseImportChunk { .. }
             | Command::FinishDatabaseImport { .. }
@@ -292,6 +294,8 @@ impl crate::ServerState {
             | Command::ListDatabaseSnapshots { .. }
             | Command::RestoreDatabase { .. }
             | Command::QueryDatabase { .. }
+            | Command::MigrateDatabase { .. }
+            | Command::ResetDatabase { .. }
             | Command::BeginDatabaseImport { .. }
             | Command::DatabaseImportChunk { .. }
             | Command::FinishDatabaseImport { .. }

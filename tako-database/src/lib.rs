@@ -10,11 +10,15 @@ mod engine;
 mod exec;
 mod host;
 pub mod http;
+pub mod migrate;
 pub mod proto;
 
-pub use engine::{EngineConfig, Synchronous, replace_database, verify_database};
+pub use engine::{
+    EngineConfig, Synchronous, replace_database, reset_database_file, verify_database,
+};
 pub use host::{
     AdminQuery, Binding, DatabaseHost, DatabaseId, Home, HostConfig, HostError, PauseGuard,
     TokenHash, generate_token, hash_token,
 };
+pub use migrate::{Migration, MigrationReport};
 pub use proto::Value;

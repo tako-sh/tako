@@ -35,6 +35,13 @@ pub fn run(
     // databases; hosted ones are reachable only from deployed apps.
     let bindings = crate::local_databases::development_bindings(&config);
     let databases = if env == DEFAULT_RUN_ENV {
+        let migrated = crate::local_databases::migrate_development(&context.project_dir, &config)?;
+        for warning in &migrated.warnings {
+            crate::output::warning(warning);
+        }
+        for line in &migrated.applied {
+            crate::output::muted(line);
+        }
         crate::local_databases::LocalDatabases::start(&context.project_dir, &bindings)?
     } else {
         if config

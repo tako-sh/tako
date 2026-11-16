@@ -44,6 +44,8 @@ pub(crate) fn classify(command: &Command) -> CommandClass<'_> {
         | Command::ListDatabaseSnapshots { .. }
         | Command::RestoreDatabase { .. }
         | Command::QueryDatabase { .. }
+        | Command::MigrateDatabase { app: None, .. }
+        | Command::ResetDatabase { .. }
         | Command::BeginDatabaseImport { .. }
         | Command::DatabaseImportChunk { .. }
         | Command::FinishDatabaseImport { .. }
@@ -52,7 +54,8 @@ pub(crate) fn classify(command: &Command) -> CommandClass<'_> {
         | Command::FinishDatabaseExport { .. } => CommandClass::ServerAdmin,
         // Before its release command, a deployer may snapshot a database its
         // app environment uses; the handler checks that relationship.
-        Command::SnapshotDatabase { app: Some(app), .. } => CommandClass::Application { app },
+        Command::SnapshotDatabase { app: Some(app), .. }
+        | Command::MigrateDatabase { app: Some(app), .. } => CommandClass::Application { app },
         Command::RegisterSchedules { .. }
         | Command::ClaimRun { .. }
         | Command::HeartbeatRun { .. }
@@ -315,7 +318,7 @@ pub(crate) fn authorize_command(
                 }
             }
         }
-        Command::SnapshotDatabase { .. } => {}
+        Command::SnapshotDatabase { .. } | Command::MigrateDatabase { .. } => {}
         Command::PrepareReleaseUpload { version, .. }
         | Command::CleanupPreparedDeploy { version, .. }
         | Command::CleanupRelease { version, .. }
@@ -390,6 +393,7 @@ pub(crate) fn authorize_command(
         | Command::ListDatabaseSnapshots { .. }
         | Command::RestoreDatabase { .. }
         | Command::QueryDatabase { .. }
+        | Command::ResetDatabase { .. }
         | Command::BeginDatabaseImport { .. }
         | Command::DatabaseImportChunk { .. }
         | Command::FinishDatabaseImport { .. }
@@ -681,6 +685,8 @@ mod tests {
             json!({"command":"list_database_snapshots","name":id}),
             json!({"command":"restore_database","name":id}),
             json!({"command":"query_database","name":id,"sql":"SELECT 1"}),
+            json!({"command":"migrate_database","name":id,"owner":"demo","migrations":[]}),
+            json!({"command":"reset_database","name":id}),
             json!({"command":"begin_database_import","name":id,"size_bytes":1,"sha256":"00"}),
             json!({"command":"begin_database_export","name":id}),
         ] {
@@ -697,6 +703,19 @@ mod tests {
             matches!(classify(&release), CommandClass::Application { .. }),
             "{:?}",
             classify(&release)
+        );
+        // So are its own app's migrations, on a database its app uses.
+        let migrations: Command = serde_json::from_value(json!({
+            "command": "migrate_database", "name": id, "owner": "demo",
+            "migrations": [{"name": "0001_initial.sql", "sql": "SELECT 1"}],
+            "app": "demo/staging"
+        }))
+        .unwrap();
+        assert_eq!(
+            classify(&migrations),
+            CommandClass::Application {
+                app: "demo/staging"
+            }
         );
     }
 

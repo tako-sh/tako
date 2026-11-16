@@ -183,7 +183,29 @@ pub enum SqliteCommands {
         env: Option<String>,
     },
 
-    /// Delete a database. Its snapshots stay in backup storage
+    /// Apply the environment's pending SQL migrations to its databases
+    Migrate {
+        /// Environment whose bindings to migrate (defaults to production)
+        #[arg(long)]
+        env: Option<String>,
+    },
+
+    /// Replace a database with an empty one and apply its migrations
+    Reset {
+        /// Database name
+        name: String,
+        /// Environment whose network to use (defaults to production); `development` resets the local file
+        #[arg(long)]
+        env: Option<String>,
+        /// Reset a database a production environment binds
+        #[arg(long)]
+        force: bool,
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
+    },
+
+    /// Delete a database and its snapshots
     #[command(visible_alias = "rm")]
     Delete {
         /// Database name
@@ -473,6 +495,25 @@ async fn run_async(
         SqliteCommands::Delete { name, env, yes } => {
             let ctx = Context::load(config_path, env.as_deref()).await?;
             delete(&ctx, &name, yes).await
+        }
+        SqliteCommands::Migrate { env } => {
+            if crate::commands::helpers::resolve_env(env.as_deref()) == "development" {
+                return migrate_local(config_path);
+            }
+            let ctx = Context::load(config_path, env.as_deref()).await?;
+            migrate(&ctx).await
+        }
+        SqliteCommands::Reset {
+            name,
+            env,
+            force,
+            yes,
+        } => {
+            if crate::commands::helpers::resolve_env(env.as_deref()) == "development" {
+                return reset_local(config_path, &name, yes);
+            }
+            let ctx = Context::load(config_path, env.as_deref()).await?;
+            reset(&ctx, &name, force, yes).await
         }
     }
 }
@@ -905,6 +946,7 @@ async fn backups(ctx: &Context, name: &str) -> Result<(), Box<dyn std::error::Er
             SnapshotReason::Manual => "manual",
             SnapshotReason::Release => "before release",
             SnapshotReason::Restore => "before restore",
+            SnapshotReason::Migration => "before migrations",
         };
         output::bullet(&format!(
             "{} · {} · {} · {reason}",
@@ -1052,8 +1094,8 @@ async fn delete(ctx: &Context, name: &str, yes: bool) -> Result<(), Box<dyn std:
         ));
     }
     confirm(
-        &format!("Delete database {name}?"),
-        "Its snapshots stay in backup storage. Apps must not bind it anymore.",
+        &format!("Delete database {name} and its snapshots?"),
+        "The database and every snapshot of it are deleted permanently. Apps must not bind it anymore.",
         yes,
     )?;
     if output::is_dry_run() {
@@ -1062,7 +1104,7 @@ async fn delete(ctx: &Context, name: &str, yes: bool) -> Result<(), Box<dyn std:
             serde_json::json!({"database": name}),
         );
     }
-    output::with_spinner_async(
+    let deleted: serde_json::Value = output::with_spinner_async(
         &format!("Deleting {name}"),
         &format!("Deleted {name}"),
         async {
@@ -1077,11 +1119,279 @@ async fn delete(ctx: &Context, name: &str, yes: bool) -> Result<(), Box<dyn std:
         },
     )
     .await?;
+    print_warnings(&deleted);
     let alias = ctx.alias()?;
     tokio::task::block_in_place(|| crate::network::databases::remove(&alias, name))?;
     TakoToml::remove_database_from_file(&ctx.config_path, name)?;
     if output::is_json() {
         return output::json_success("sqlite");
+    }
+    Ok(())
+}
+
+fn print_warnings(value: &serde_json::Value) {
+    for warning in value["warnings"].as_array().into_iter().flatten() {
+        if let Some(warning) = warning.as_str() {
+            output::warning(warning);
+        }
+    }
+}
+
+/// Sends a binding's migrations to its database's server. `app` names the
+/// deploying app environment, for deployers without server administration.
+pub(crate) async fn apply_migrations(
+    home: &Home,
+    database: &str,
+    owner: &str,
+    migrations: Vec<tako_database::Migration>,
+    dry_run: bool,
+    app: Option<String>,
+) -> Result<tako_core::DatabaseMigrationReport, Box<dyn std::error::Error>> {
+    send(
+        home,
+        Command::MigrateDatabase {
+            name: database.to_owned(),
+            owner: owner.to_owned(),
+            migrations: crate::database_migrations::to_wire(migrations),
+            dry_run,
+            app,
+        },
+    )
+    .await
+}
+
+/// The app the project's migrations belong to.
+fn migration_owner(ctx: &Context) -> Result<String, Box<dyn std::error::Error>> {
+    Ok(crate::app::require_app_name_from_config_path(
+        &ctx.config_path,
+    )?)
+}
+
+async fn migrate(ctx: &Context) -> Result<(), Box<dyn std::error::Error>> {
+    let bindings: Vec<(String, String)> = ctx
+        .config
+        .envs
+        .get(&ctx.env)
+        .map(|env| {
+            env.databases
+                .iter()
+                .map(|(binding, database)| (binding.clone(), database.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let owner = migration_owner(ctx)?;
+    let admin = crate::commands::helpers::can_configure_bindings(&ctx.config, &ctx.env)?;
+    let app = (!admin).then(|| tako_core::deployment_app_id(&owner, &ctx.env));
+    let mut results = Vec::new();
+    for (binding, database) in bindings {
+        let migrations = crate::database_migrations::load(&ctx.project_dir, &ctx.config, &binding)?;
+        if migrations.is_empty() {
+            continue;
+        }
+        let (_, home) = ctx.database(&database)?;
+        let report = apply_migrations(
+            &home,
+            &database,
+            &owner,
+            migrations,
+            output::is_dry_run(),
+            app.clone(),
+        )
+        .await
+        .map_err(|e| format!("Migrate {binding} ({database}): {e}"))?;
+        for warning in &report.warnings {
+            output::warning(&format!("{binding}: {warning}"));
+        }
+        results.push((binding, database, report));
+    }
+    if output::is_json() {
+        let databases: Vec<_> = results
+            .iter()
+            .map(|(binding, database, report)| serde_json::json!({"binding": binding, "database": database, "report": report}))
+            .collect();
+        return output::json_result(serde_json::json!({
+            "ok": true, "command": "sqlite", "dry_run": output::is_dry_run(), "migrations": databases,
+        }));
+    }
+    if results.is_empty() {
+        output::info(&format!("{} has no migrations to apply.", ctx.env));
+    }
+    for (binding, _, report) in &results {
+        let (verb, names) = if output::is_dry_run() {
+            ("Would apply", &report.pending)
+        } else {
+            ("Applied", &report.applied)
+        };
+        if names.is_empty() {
+            output::success(&format!("{binding} is up to date"));
+        } else {
+            output::success(&format!("{verb} {} to {binding}", names.join(", ")));
+        }
+    }
+    Ok(())
+}
+
+fn load_project(
+    config_path: Option<&Path>,
+) -> Result<(project_context::ProjectContext, TakoToml), Box<dyn std::error::Error>> {
+    let project = project_context::resolve_existing(config_path)?;
+    let config = TakoToml::load_from_file(&project.config_path)?;
+    Ok((project, config))
+}
+
+fn migrate_local(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>> {
+    let (project, config) = load_project(config_path)?;
+    if output::is_dry_run() {
+        return dry_run(
+            "Apply development migrations",
+            serde_json::json!({"env": "development"}),
+        );
+    }
+    let migrated = crate::local_databases::migrate_development(&project.project_dir, &config)?;
+    for warning in &migrated.warnings {
+        output::warning(warning);
+    }
+    if output::is_json() {
+        return output::json_result(serde_json::json!({
+            "ok": true, "command": "sqlite", "applied": migrated.applied,
+        }));
+    }
+    if migrated.applied.is_empty() {
+        output::success("Development databases are up to date");
+    }
+    for line in &migrated.applied {
+        output::success(line);
+    }
+    Ok(())
+}
+
+fn reset_local(
+    config_path: Option<&Path>,
+    name: &str,
+    yes: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    tako_core::validate_database_name(name)?;
+    let (project, config) = load_project(config_path)?;
+    let project_dir = project
+        .project_dir
+        .canonicalize()
+        .unwrap_or_else(|_| project.project_dir.clone());
+    let path = crate::local_databases::database_path(&project_dir, name);
+    confirm(
+        &format!("Reset the local database {name}?"),
+        "Every table in it is dropped; then the development migrations run again.",
+        yes,
+    )?;
+    if output::is_dry_run() {
+        return dry_run(
+            &format!("Reset the local database {name}"),
+            serde_json::json!({"database": name}),
+        );
+    }
+    if path.exists() {
+        tako_database::reset_database_file(&path)?;
+    }
+    let migrated = crate::local_databases::migrate_development(&project.project_dir, &config)?;
+    for warning in &migrated.warnings {
+        output::warning(warning);
+    }
+    if output::is_json() {
+        return output::json_result(serde_json::json!({
+            "ok": true, "command": "sqlite", "reset": name, "applied": migrated.applied,
+        }));
+    }
+    output::success(&format!("Reset the local database {name}"));
+    for line in &migrated.applied {
+        output::info(line);
+    }
+    Ok(())
+}
+
+async fn reset(
+    ctx: &Context,
+    name: &str,
+    force: bool,
+    yes: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    ctx.require_admin()?;
+    let (_, home) = ctx.database(name)?;
+    let production: Vec<&str> = ctx
+        .config
+        .envs
+        .iter()
+        .filter(|(env, config)| {
+            env.as_str() == "production" && config.databases.values().any(|d| d == name)
+        })
+        .map(|(env, _)| env.as_str())
+        .collect();
+    if !production.is_empty() && !force {
+        return Err(format!(
+            "{name} is bound by the production environment. Pass --force to reset it anyway."
+        )
+        .into());
+    }
+    confirm(
+        &format!("Reset {name} on {}?", home.name),
+        "Every table in it is deleted; then this environment's migrations run again. A snapshot of the current contents is taken first when backups are configured.",
+        yes,
+    )?;
+    if output::is_dry_run() {
+        return dry_run(
+            &format!("Reset {name}"),
+            serde_json::json!({"database": name}),
+        );
+    }
+    let reset: serde_json::Value = output::with_spinner_async(
+        &format!("Resetting {name}"),
+        &format!("Reset {name}"),
+        async {
+            send::<serde_json::Value>(
+                &home,
+                Command::ResetDatabase {
+                    name: name.to_owned(),
+                },
+            )
+            .await
+            .map_err(|e| e.to_string())
+        },
+    )
+    .await?;
+    print_warnings(&reset);
+    // Bring the schema back for this environment's bindings to it.
+    let owner = migration_owner(ctx)?;
+    let mut applied = Vec::new();
+    let bindings: Vec<String> = ctx
+        .config
+        .envs
+        .get(&ctx.env)
+        .map(|env| {
+            env.databases
+                .iter()
+                .filter(|(_, database)| database.as_str() == name)
+                .map(|(binding, _)| binding.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    for binding in bindings {
+        let migrations = crate::database_migrations::load(&ctx.project_dir, &ctx.config, &binding)?;
+        if migrations.is_empty() {
+            continue;
+        }
+        let report = apply_migrations(&home, name, &owner, migrations, false, None)
+            .await
+            .map_err(|e| format!("{name} was reset, but its migrations failed: {e}"))?;
+        for warning in &report.warnings {
+            output::warning(&format!("{binding}: {warning}"));
+        }
+        applied.extend(report.applied);
+    }
+    if output::is_json() {
+        return output::json_result(serde_json::json!({
+            "ok": true, "command": "sqlite", "reset": name, "applied": applied,
+        }));
+    }
+    if !applied.is_empty() {
+        output::info(&format!("Applied {}", applied.join(", ")));
     }
     Ok(())
 }

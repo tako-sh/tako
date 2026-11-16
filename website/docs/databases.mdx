@@ -115,9 +115,33 @@ Go uses `tako.GetDatabase(name)` and `tako.DatabaseNames()`. `Database.DSN()` ta
 ORMs that run on `@libsql/client` reach Tako through it:
 
 - Drizzle: `drizzle(createClient(tako.databases.main))` from `drizzle-orm/libsql`, with `migrate` from `drizzle-orm/libsql/migrator` for migrations run by app code.
-- Prisma: `@prisma/adapter-libsql` with the same `url` and `authToken`. Prisma Migrate cannot open a Tako database directly; generate SQL (for example with `prisma migrate diff --script`) and apply it from a script.
+- Prisma: `@prisma/adapter-libsql` with the same `url` and `authToken`. Prisma Migrate cannot open a Tako database directly; generate SQL (for example with `prisma migrate diff --script`) into a [migration file](#migrations).
 
-Tako's test suite applies Drizzle migrations with `migrate` and queries through Drizzle, including a rolled-back transaction and a cascading delete; Prisma is not part of it. Migration tools that connect from your workstation cannot reach the database: the endpoint listens on the server's loopback interface. Run migrations as a [release command](/deployment/#release-commands) or through `tako run` in development.
+Tako's test suite applies Drizzle migrations with `migrate` and queries through Drizzle, including a rolled-back transaction and a cascading delete; Prisma is not part of it. Migration tools that connect from your workstation cannot reach the database: the endpoint listens on the server's loopback interface. Use [Tako's migrations](#migrations), or run a tool's migrator as a [release command](/deployment/#release-commands) or through `tako run` in development.
+
+## Migrations
+
+Put SQL files in `migrations/`, named with an order number:
+
+```text
+migrations/
+  0001_initial.sql
+  0002_add_orders.sql
+```
+
+When the project binds more than one database name, give each binding its own folder, `migrations/<binding>/0001_initial.sql`; loose files in `migrations/` are then an error. Files are applied in numeric order, each once. Two files with one number are rejected, and other file types in the folder are ignored.
+
+Tako applies pending migrations:
+
+- on `tako deploy`, on the database's server, after the snapshot before the release command and before the release command and rollout. A failing migration stops the deploy before any new instance starts. The previous release keeps serving while migrations run, so keep them compatible with it (add a column before code depends on it; drop it in a later deploy).
+- in `tako dev` (before the app starts and on each reload) and `tako run`, on the local file.
+- on `tako sqlite migrate --env <env>`. With `--dry-run` it lists pending migrations without applying them.
+
+Each file runs in one `BEGIN IMMEDIATE` transaction together with its record in the database's `_tako_migrations` table (`app`, `name`, `sha256`, `applied_at`), so a failing file leaves nothing behind and the files before it stay applied. Files must not contain `BEGIN`, `COMMIT`, or `ROLLBACK`. Foreign keys are not enforced while a file runs, so it can rebuild a table that others reference ([SQLite's 12 steps](https://sqlite.org/lang_altertable.html#otheralter)), but `PRAGMA foreign_key_check` must pass before it commits. Statements have the same 30-second limit and restrictions as app queries. When backups are configured and something is pending, the server snapshots the database first (reason `migration`).
+
+An applied migration must not change: a file whose contents differ from what was applied stops the deploy (or `tako dev`); restore it and put the change in a new file. A file that was applied and then deleted produces a warning, so old migrations can be squashed once every database has them. A new file numbered below the latest applied one runs, with a warning. There are no down migrations; write a new migration that undoes the change, or [restore a snapshot](#back-up-and-restore).
+
+History is kept per app: apps that share a database each track their own migrations, so both can have a `0001_initial.sql`. Prefer letting one app own a shared database's schema.
 
 ## Develop locally
 
@@ -187,7 +211,8 @@ The server then takes snapshots:
 
 - every hour while the database changes; an unchanged database uploads nothing,
 - before a deploy's release command, when the database changed since the last snapshot,
-- before a restore or import replaces the database,
+- before a restore, import, or reset replaces the database,
+- before migrations, when any are pending,
 - on demand with `tako sqlite backup <name>`.
 
 A snapshot is a consistent copy (`VACUUM INTO`) that passes `PRAGMA integrity_check`, compressed with zstd and encrypted with AES-256-GCM using the database's own key. The key is generated at `create` and kept in the network's encrypted shared state, readable only by administrators. Objects are written under `_tako/databases/<name>/<generation>/snapshots/`, where the generation is a random ID chosen at `create`, so a database created again under an earlier one's name never sees its snapshots. The manifest is written last, so only complete snapshots are listed. A failed snapshot is retried after five minutes.
@@ -250,13 +275,22 @@ An app on another server connects to its own server as usual. That server forwar
 - Managing databases (`create`, `access`, `status`, `shell`, `backup`, `backups`, `restore`, `import`, `export`, `delete`) requires network and server administrator permission. Every member that may deploy can read where databases live (`list`, `link`, and deploys); snapshot keys are readable only by administrators.
 - `create` refuses a name the network already has. Two administrators creating the same name at the same moment are not detected; the later record wins.
 
+## Reset a database
+
+```bash
+tako sqlite reset main --env staging
+tako sqlite reset main --env development
+```
+
+`reset` replaces the database with an empty one, then applies the environment's migrations to it. On a server it pauses requests like a restore and, when backups are configured, first uploads a snapshot of the contents it replaces (reason `restore`), so `tako sqlite restore --snapshot <id>` undoes it. It asks for confirmation (`--yes` skips it) and refuses a database the `production` environment binds unless `--force` is passed. With `--env development` it empties the local file, which `tako dev` may keep serving, and applies the development migrations.
+
 ## Delete a database
 
 ```bash
 tako sqlite delete main --env production
 ```
 
-`delete` (alias `rm`) removes the file from its server, the network records, and the database's bindings and `[databases.<name>]` settings from `tako.toml`. Snapshots stay in backup storage. Remove the code that uses the binding and deploy first: a deploy that still binds a deleted database fails. Apps on the database's server that still bind it block the delete. Grants to app environments on other servers are revoked, since they can outlive the deployments that used them; `delete` names those environments before asking to confirm.
+`delete` (alias `rm`) removes the file from its server, every snapshot of it from backup storage, the network records, and the database's bindings and `[databases.<name>]` settings from `tako.toml`. It asks for confirmation; `--yes` skips it. When backup storage cannot be reached the database is still deleted, and a warning names the snapshot prefix to remove by hand. Remove the code that uses the binding and deploy first: a deploy that still binds a deleted database fails. Apps on the database's server that still bind it block the delete. Grants to app environments on other servers are revoked, since they can outlive the deployments that used them; `delete` names those environments before asking to confirm.
 
 ## Verify
 

@@ -1,6 +1,7 @@
 //! Preparing an environment's databases before its release command and
 //! rollout: backup destinations and grants on the databases' servers (for
-//! administrators), and a snapshot before the release command.
+//! administrators), a snapshot before the release command, and the
+//! project's migrations.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
@@ -35,15 +36,17 @@ pub(super) async fn prepare(
     prep: Preparation<'_>,
 ) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
     let _t = output::timed("Prepare databases");
-    let (keys, warnings) =
-        output::with_spinner_async("Preparing databases", "Prepared databases", async {
-            run(&prep).await.map_err(|error| error.to_string())
-        })
-        .await?;
-    for warning in warnings {
+    let prepared = output::with_spinner_async("Preparing databases", "Prepared databases", async {
+        run(&prep).await.map_err(|error| error.to_string())
+    })
+    .await?;
+    for warning in prepared.warnings {
         output::warning(&warning);
     }
-    Ok(keys)
+    for line in prepared.migrated {
+        output::info(&line);
+    }
+    Ok(prepared.keys)
 }
 
 /// Sets each binding's peer key from the grant of its database's server.
@@ -58,7 +61,14 @@ pub(super) fn apply_peer_keys(
     }
 }
 
-type Prepared = (HashMap<String, String>, Vec<String>);
+#[derive(Default)]
+struct Prepared {
+    /// Peer keys of the grants, by server device ID.
+    keys: HashMap<String, String>,
+    warnings: Vec<String>,
+    /// One line per binding that applied migrations.
+    migrated: Vec<String>,
+}
 
 async fn run(prep: &Preparation<'_>) -> Result<Prepared, Box<dyn std::error::Error>> {
     // Distinct databases bound by this environment.
@@ -91,10 +101,10 @@ async fn run(prep: &Preparation<'_>) -> Result<Prepared, Box<dyn std::error::Err
             .map_err(|e| format!("Configure backups of {}: {e}", planned.database_name))?;
         }
     }
-    let (keys, warnings) = if prep.administrator {
+    let mut prepared = if prep.administrator {
         grant(prep, &bound).await?
     } else {
-        (HashMap::new(), Vec::new())
+        Prepared::default()
     };
 
     if prep.release {
@@ -119,7 +129,41 @@ async fn run(prep: &Preparation<'_>) -> Result<Prepared, Box<dyn std::error::Err
             })?;
         }
     }
-    Ok((keys, warnings))
+
+    // Migrations run before the release command and the rollout, so new
+    // instances start on the new schema; old ones keep serving meanwhile.
+    let owner = prep.app.split('/').next().unwrap_or(prep.app);
+    let mut bindings: Vec<_> = prep.plan.iter().collect();
+    bindings.sort_by(|a, b| a.0.cmp(b.0));
+    for (binding, planned) in bindings {
+        let migrations = crate::database_migrations::load(prep.project_dir, prep.config, binding)?;
+        if migrations.is_empty() {
+            continue;
+        }
+        let report = crate::commands::sqlite::apply_migrations(
+            &planned.home,
+            &planned.database_name,
+            owner,
+            migrations,
+            false,
+            (!prep.administrator).then(|| prep.app.to_owned()),
+        )
+        .await
+        .map_err(|e| format!("Migrate {binding} ({}): {e}", planned.database_name))?;
+        prepared.warnings.extend(
+            report
+                .warnings
+                .iter()
+                .map(|warning| format!("{binding}: {warning}")),
+        );
+        if !report.applied.is_empty() {
+            prepared.migrated.push(format!(
+                "Applied {} to {binding}",
+                report.applied.join(", ")
+            ));
+        }
+    }
+    Ok(prepared)
 }
 
 /// Grants the environment its network-access databases on their servers when
@@ -156,8 +200,7 @@ async fn grant(
             names.insert(planned.database_name.clone());
         }
     }
-    let mut keys = HashMap::new();
-    let mut warnings = Vec::new();
+    let mut prepared = Prepared::default();
     for (home, names) in homes.into_values() {
         let needed = !names.is_empty();
         let result: Result<serde_json::Value, _> = crate::commands::sqlite::send(
@@ -171,20 +214,20 @@ async fn grant(
         match result {
             Ok(response) => {
                 if let Some(key) = response["peer_key"].as_str() {
-                    keys.insert(home.device_id.clone(), key.to_owned());
+                    prepared.keys.insert(home.device_id.clone(), key.to_owned());
                 }
             }
             Err(error) if needed => {
                 return Err(format!("Grant databases on {}: {error}", home.name).into());
             }
             // Only a stale grant is left behind; this deploy does not use it.
-            Err(error) => warnings.push(format!(
+            Err(error) => prepared.warnings.push(format!(
                 "Could not clear {}'s database grant on {}: {error}",
                 prep.app, home.name
             )),
         }
     }
-    Ok((keys, warnings))
+    Ok(prepared)
 }
 
 async fn send(home: &Home, command: Command) -> Result<(), Box<dyn std::error::Error>> {

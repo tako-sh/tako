@@ -270,6 +270,14 @@ impl Databases {
     }
 }
 
+fn report(report: tako_database::MigrationReport) -> tako_core::DatabaseMigrationReport {
+    tako_core::DatabaseMigrationReport {
+        applied: report.applied,
+        pending: report.pending,
+        warnings: report.warnings,
+    }
+}
+
 /// The loopback port apps reach databases on.
 pub(crate) fn app_port() -> u16 {
     static PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
@@ -490,6 +498,17 @@ impl ServerState {
                 backup_key_base64,
             } => snapshots::restore(self, &name, snapshot.as_deref(), backup_key_base64).await,
             Command::QueryDatabase { name, sql } => self.query_database(&name, sql).await,
+            Command::MigrateDatabase {
+                name,
+                owner,
+                migrations,
+                dry_run,
+                app,
+            } => {
+                self.migrate_database(&name, owner, migrations, dry_run, app.as_deref())
+                    .await
+            }
+            Command::ResetDatabase { name } => self.reset_database(&name).await,
             Command::BeginDatabaseImport {
                 name,
                 size_bytes,
@@ -650,7 +669,20 @@ impl ServerState {
             })?;
         self.databases.backups.lock().remove(id);
         tracing::info!(database = %stored.name, "Deleted database");
-        Ok(serde_json::json!({"deleted": id}))
+        // Without the database's records its snapshots cannot be decrypted;
+        // they go with it.
+        let mut warnings = Vec::new();
+        match snapshots::delete_all(&stored).await {
+            Ok(0) => {}
+            Ok(count) => {
+                tracing::info!(database = %stored.name, objects = count, "Deleted database snapshots");
+            }
+            Err(error) => warnings.push(format!(
+                "Could not delete every snapshot of {}: {error}. Remove `_tako/databases/{}/{}/` from the backup storage.",
+                stored.name, stored.name, stored.generation
+            )),
+        }
+        Ok(serde_json::json!({"deleted": id, "warnings": warnings}))
     }
 
     fn database_status(&self, id: Option<&str>) -> Result<serde_json::Value, String> {
@@ -806,6 +838,77 @@ impl ServerState {
             Some(snapshot) => Ok(serde_json::json!({ "snapshot": snapshot })),
             None => Ok(serde_json::json!({"skipped": "no changes since the last snapshot"})),
         }
+    }
+
+    async fn migrate_database(
+        &self,
+        id: &str,
+        owner: String,
+        migrations: Vec<tako_core::DatabaseMigration>,
+        dry_run: bool,
+        app: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        let stored = self.hosted_database(id)?;
+        // A deployer applies only its own app's migrations, and only to a
+        // database its app environment uses.
+        if let Some(app) = app {
+            if !self.app_uses_database(app, id) {
+                return Err(format!("{app} does not use database {}.", stored.name));
+            }
+            if app.split('/').next() != Some(owner.as_str()) {
+                return Err(format!("{app} cannot apply migrations of {owner}."));
+            }
+        }
+        let database = DatabaseId::parse(id)?;
+        let migrations: Vec<tako_database::Migration> = migrations
+            .into_iter()
+            .map(|m| tako_database::Migration {
+                name: m.name,
+                sql: m.sql,
+            })
+            .collect();
+        let plan = self
+            .databases
+            .host
+            .migrate(&database, owner.clone(), migrations.clone(), true)
+            .await
+            .map_err(|e| e.to_string())?;
+        if dry_run || plan.pending.is_empty() {
+            return Ok(serde_json::to_value(report(plan)).expect("report serializes"));
+        }
+        // A copy of what the migrations change, when backups are configured.
+        if stored.secrets.backup.is_some() {
+            snapshots::take(self, &stored, tako_core::SnapshotReason::Migration, true)
+                .await
+                .map_err(|e| format!("Snapshot {} before migrations: {e}", stored.name))?;
+        }
+        let lock = self.databases.lock(id);
+        let _guard = lock.lock().await;
+        let applied = self
+            .databases
+            .host
+            .migrate(&database, owner, migrations, false)
+            .await
+            .map_err(|e| e.to_string())?;
+        if !applied.applied.is_empty() {
+            tracing::info!(database = %id, migrations = ?applied.applied, "Applied migrations");
+        }
+        Ok(serde_json::to_value(report(applied)).expect("report serializes"))
+    }
+
+    async fn reset_database(&self, id: &str) -> Result<serde_json::Value, String> {
+        let stored = self.hosted_database(id)?;
+        let work = snapshots::fresh_work_dir(self, id, "reset")?;
+        let empty = work.path.join("empty.sqlite");
+        let create = empty.clone();
+        tokio::task::spawn_blocking(move || DatabaseHost::create_file(&create))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| format!("create an empty database: {e}"))?;
+        let warnings = snapshots::replace(self, &stored, empty, "database is being reset").await?;
+        drop(work);
+        tracing::info!(database = %id, "Reset database");
+        Ok(serde_json::json!({"database": id, "warnings": warnings}))
     }
 
     async fn query_database(&self, id: &str, sql: String) -> Result<serde_json::Value, String> {
