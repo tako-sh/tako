@@ -50,7 +50,7 @@ pub fn run(
             .is_some_and(|env_config| !env_config.databases.is_empty())
         {
             crate::output::warning(&format!(
-                "{env}'s databases are not available to `tako run`; they are reachable only from deployed apps. Use `tako sqlite shell` or `tako sqlite export --env {env}`."
+                "{env}'s databases are not available to `tako run`; they are reachable only from deployed apps. Use `tako sqlite shell <name>` or `tako sqlite export <name> <file>`."
             ));
         }
         crate::local_databases::LocalDatabases::start(&context.project_dir, &Default::default())?

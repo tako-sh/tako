@@ -202,7 +202,7 @@ databases = { main = "main" }
 backup = "private_backups"
 ```
 
-`[envs.<env>].databases` maps app-facing binding names, read as `tako.databases.<binding>`, to database names. A database's name identifies it within the network, whose records hold its server and access; outside `development`, the environment needs `network`, and a deploy fails when the network has no database with a bound name. Development bindings need nothing else: `tako dev` and `tako run` serve them from `.tako/data/databases/<database-name>.sqlite`. Without `[envs.development].databases`, development binds every name used by any environment.
+`[envs.<env>].databases` maps app-facing binding names, read as `tako.databases.<binding>`, to database names. A database's name identifies it within the network, whose records hold its server; outside `development`, the environment needs `network`, and a deploy fails when the network has no database with a bound name. Development bindings need nothing else: `tako dev` and `tako run` serve them from `.tako/data/databases/<database-name>.sqlite`. Without `[envs.development].databases`, development binds every name used by any environment.
 
 `[databases.<name>]` is optional and has one field:
 
@@ -210,7 +210,7 @@ backup = "private_backups"
 | -------- | --------------------------------------------------------------------------------------------------------------------------- |
 | `backup` | Private S3 storage resource that receives the database's encrypted snapshots, instead of the deploying environment's `backup.storage`. It must use provider `s3` and no `public_base_url`. Without either, the database has no snapshots; removing them and deploying stops them. |
 
-`id`, `server`, and `access` are rejected: run `tako sqlite list` to see where databases live and `tako sqlite access` to change who may use one. Binding and database names start with a lowercase letter and contain lowercase letters, digits, `-`, and `_`, at most 63 characters. `tako sqlite create`, `link`, and `delete` edit bindings and these tables and preserve the rest of the file. Container and Compose releases cannot bind databases yet. See [Databases](/databases/).
+`id`, `server`, and `access` are rejected: run `tako sqlite list` to see where databases live; every database is usable from every server of its network. Binding and database names start with a lowercase letter and contain lowercase letters, digits, `-`, and `_`, at most 63 characters. `tako sqlite link` and `delete` edit bindings and these tables and preserve the rest of the file. SQL migrations live in `migrations/` (see [Migrations](/databases/#migrations)). Container and Compose releases cannot bind databases yet. See [Databases](/databases/).
 
 ## Backups
 

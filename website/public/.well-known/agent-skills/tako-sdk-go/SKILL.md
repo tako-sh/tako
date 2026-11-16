@@ -133,7 +133,7 @@ if !ok {
 db, err := sql.Open("libsql", main.DSN())
 ```
 
-Formatting a `Database` with `%v` or `%#v` redacts the token; do not log `DSN()`. `tako dev` and `tako run` serve bindings from `.tako/data/databases/<database>.sqlite`. Run migrations from the release command or `tako run -- go run ./cmd/migrate`: the endpoint is loopback-only on the server. Tako tests `libsql-client-go` with `DSN()`; other Go drivers must speak Hrana over HTTP with JSON. Container releases cannot bind databases yet.
+Formatting a `Database` with `%v` or `%#v` redacts the token; do not log `DSN()`. `tako dev` and `tako run` serve bindings from `.tako/data/databases/<database>.sqlite`. Put SQL migrations in `migrations/` (`migrations/<binding>/` for several bindings); Tako applies pending ones on deploy, in `tako dev`, and in `tako run`. A migration tool of your own runs as the release command: the endpoint is loopback-only on the server. Tako tests `libsql-client-go` with `DSN()`; other Go drivers must speak Hrana over HTTP with JSON. Container releases cannot bind databases yet.
 
 ## Secrets
 

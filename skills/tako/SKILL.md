@@ -193,9 +193,10 @@ validation.
 - Application SQLite belongs in a hosted database (`tako sqlite create`, read as
   `tako.databases.<binding>`), not in the data directory, which is plain files
   and not captured. Database commands need administrator permission;
-  `tako sqlite restore`, `import`, and `delete` replace or remove data, so
-  confirm the database and environment first and take `tako sqlite backup`
-  before risky changes.
+  `tako sqlite restore`, `import`, and `reset` replace data, and `delete`
+  removes the database with its snapshots, so confirm the database and the
+  environments that bind it first, and take `tako sqlite backup` before risky
+  changes. Schema changes go in `migrations/` SQL files, applied on deploy.
 
 ## Channels, presence, stores, and workflows
 

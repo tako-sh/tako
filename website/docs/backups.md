@@ -26,9 +26,9 @@ backup = { storage = "private_backups" }
 ```
 
 ```bash
-tako sqlite backup main --env production
-tako sqlite backups main --env production --json
-tako sqlite restore main --latest --env production
+tako sqlite backup main
+tako sqlite backups main --json
+tako sqlite restore main --latest
 ```
 
 Snapshots are consistent, integrity-checked copies, compressed with zstd and encrypted with the database's own key, which the network stores for administrators. Retention keeps every snapshot of the last 24 hours, then one per day for 7 days and one per week for 4 weeks. See [Databases](/databases/#back-up-and-restore) for the full behavior, import and export, and recovery onto another server.
@@ -57,7 +57,7 @@ The destination must be private S3-compatible storage without `public_base_url`.
 
 Earlier versions listed SQLite files in `backup = { databases = [...], shared_databases = [...] }` and captured them continuously. Those fields are rejected now. Move each database to a hosted database:
 
-1. `tako sqlite create <name> --env production --server <server> --backup private_backups`.
+1. `tako sqlite create <name> --server <server>`, then `tako sqlite link <name> production`. Its snapshots go to the environment's `backup.storage`, or to `[databases.<name>].backup`.
 2. During a write freeze, copy the existing file to your machine, checkpoint it (`PRAGMA wal_checkpoint(TRUNCATE)`), and run `tako sqlite import <name> <file>`.
 3. Change the app to use `tako.databases.<binding>` and deploy.
 
