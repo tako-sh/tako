@@ -19,6 +19,7 @@ pub(crate) mod secrets;
 pub(crate) mod server_access;
 pub(crate) mod ssh_session;
 pub(crate) mod ssh_tunnel;
+pub(crate) mod state;
 pub(crate) mod wireguard;
 
 pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;

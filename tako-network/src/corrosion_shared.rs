@@ -1,7 +1,7 @@
 use super::{CorrosionStore, parse_query, parse_transaction, record_key, record_payload};
 use crate::api::{RuntimeError, RuntimeResult};
 use crate::shared::{
-    LegacySecretGrant, MAX_SHARED_RECORD_BYTES, SecretRecord, SharedSnapshot, SharedStore,
+    LegacyKeyGrant, MAX_SHARED_RECORD_BYTES, SharedRecord, SharedSnapshot, SharedStore,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -16,10 +16,10 @@ impl SharedStore for CorrosionStore {
         Ok(snapshot)
     }
 
-    fn append_secret(&mut self, record: &SecretRecord) -> RuntimeResult<()> {
+    fn append_record(&mut self, record: &SharedRecord) -> RuntimeResult<()> {
         let (mut snapshot, observed) = self.load_shared()?;
         let mut addition = SharedSnapshot::empty(self.network.id.clone());
-        addition.secrets.push(record.clone());
+        addition.records.push(record.clone());
         snapshot.merge(&addition)?;
         self.replace_shared(&snapshot, &observed)?;
         Ok(())
@@ -33,6 +33,8 @@ impl CorrosionStore {
         let mut seen_ids = BTreeSet::new();
         // Read values first so persisted legacy grants can be folded into their
         // current value. New writers never create separate grant rows.
+        // Record rows, plaintext ones included, keep the replicated `secret`
+        // tag; renaming it would mean rewriting every server's rows.
         for kind in ["secret", "grant"] {
             let high = parse_query(&self.post("/v1/queries", &json!([
                 "SELECT kind, record_id, digest, payload FROM tako_shared_records WHERE kind=? ORDER BY record_id DESC, digest DESC LIMIT 1", [kind]
@@ -65,18 +67,18 @@ impl CorrosionStore {
                         return Err(RuntimeError::Capacity("shared record"));
                     }
                     if kind == "secret" {
-                        let record: SecretRecord = serde_json::from_str(payload)?;
+                        let record: SharedRecord = serde_json::from_str(payload)?;
                         if record.id.to_string() != key.1 {
-                            return Err(RuntimeError::Corrosion("secret operation ID"));
+                            return Err(RuntimeError::Corrosion("record operation ID"));
                         }
                         seen_ids.insert(record.id.clone());
-                        values.secrets.push(record);
+                        values.records.push(record);
                         observed.push(key);
                     } else {
-                        let grant: LegacySecretGrant = serde_json::from_str(payload)?;
+                        let grant: LegacyKeyGrant = serde_json::from_str(payload)?;
                         if format!("{}:{}:{}", grant.record, grant.recipient, grant.issuer) != key.1
                         {
-                            return Err(RuntimeError::Corrosion("secret grant ID"));
+                            return Err(RuntimeError::Corrosion("key grant ID"));
                         }
                         snapshot.import_grant(&grant)?;
                         // An old grant may arrive before its value. Leave that
@@ -99,7 +101,7 @@ impl CorrosionStore {
         let seen: BTreeSet<_> = observed.iter().collect();
         let mut keep = BTreeSet::new();
         let mut statements = Vec::new();
-        for record in &snapshot.secrets {
+        for record in &snapshot.records {
             let payload = serde_json::to_string(record)?;
             let digest = hex::encode(Sha256::digest(payload.as_bytes()));
             let key = ("secret".to_string(), record.id.to_string(), digest);
@@ -135,7 +137,7 @@ mod tests {
     use super::*;
     use crate::{
         DeviceKind, LocalDeviceKeys, NetworkDescriptor, NetworkId, RequestId,
-        shared::{SHARED_SCHEMA, SecretAddress, SecretKind},
+        shared::{RecordAddress, RecordKind, SHARED_SCHEMA},
     };
     use std::cell::RefCell;
     thread_local! { static DB: RefCell<rusqlite::Connection> = RefCell::new(rusqlite::Connection::open_in_memory().unwrap()); }
@@ -213,11 +215,11 @@ mod tests {
         store.transport = Some(transport);
         let mut last = None;
         for revision in 1..=65 {
-            let record = SecretRecord {
+            let record = SharedRecord {
                 id: RequestId::random().unwrap(),
-                address: SecretAddress {
+                address: RecordAddress {
                     scope: "app/production".parse().unwrap(),
-                    kind: SecretKind::App,
+                    kind: RecordKind::App,
                     name: "TOKEN".into(),
                 },
                 revision,
@@ -225,14 +227,15 @@ mod tests {
                 author: id.clone(),
                 value: None,
                 keys: Default::default(),
+                plaintext: None,
             };
-            SharedStore::append_secret(&mut store, &record).unwrap();
+            SharedStore::append_record(&mut store, &record).unwrap();
             last = Some(record);
         }
         let record = last.unwrap();
-        SharedStore::append_secret(&mut store, &record).unwrap();
+        SharedStore::append_record(&mut store, &record).unwrap();
         let snapshot = SharedStore::shared_snapshot(&mut store).unwrap();
-        assert_eq!(snapshot.secrets.len(), 1);
+        assert_eq!(snapshot.records.len(), 1);
         assert_eq!(snapshot.latest().unwrap()[&record.address].revision, 65);
         DB.with_borrow(|db| {
             assert_eq!(
@@ -244,7 +247,7 @@ mod tests {
         });
         let mut conflict = record.clone();
         conflict.revision += 1;
-        assert!(SharedStore::append_secret(&mut store, &conflict).is_err());
+        assert!(SharedStore::append_record(&mut store, &conflict).is_err());
         // Corrosion can merge two immutable payloads for one operation; fail closed.
         let payload = serde_json::to_string(&conflict).unwrap();
         let digest = hex::encode(Sha256::digest(payload.as_bytes()));
@@ -286,9 +289,9 @@ mod tests {
         store.transport = Some(transport);
         let content_key = crate::sealed::random_content_key().unwrap();
         let operation = RequestId::random().unwrap();
-        let address = SecretAddress {
+        let address = RecordAddress {
             scope: "app/production".parse().unwrap(),
-            kind: SecretKind::App,
+            kind: RecordKind::App,
             name: "TOKEN".into(),
         };
         let context = address.context(&network, &operation).unwrap();
@@ -298,7 +301,7 @@ mod tests {
             &context,
         )
         .unwrap();
-        let record = SecretRecord {
+        let record = SharedRecord {
             id: operation,
             address,
             revision: 1,
@@ -308,6 +311,7 @@ mod tests {
                 crate::sealed::Ciphertext::encrypt(&content_key, b"retained", &context).unwrap(),
             ),
             keys: [(id.clone(), wrapped)].into(),
+            plaintext: None,
         };
         let recipient = LocalDeviceKeys::generate().unwrap();
         let recipient_id = recipient.device_id(&network, DeviceKind::Laptop).unwrap();
@@ -343,7 +347,7 @@ mod tests {
             format!("{}:{}:{}", record.id, recipient_id, id),
             grant.to_string(),
         );
-        assert!(store.shared_snapshot().unwrap().secrets.is_empty());
+        assert!(store.shared_snapshot().unwrap().records.is_empty());
         DB.with_borrow(|db| {
             assert_eq!(
                 db.query_row("SELECT count(*) FROM tako_shared_records", [], |row| row
@@ -385,13 +389,13 @@ mod tests {
             );
         }
         let state = store.shared_snapshot().unwrap();
-        assert_eq!(state.secrets[0].keys.len(), 802);
-        assert!(serde_json::to_vec(&state.secrets[0]).unwrap().len() > 128 * 1024);
+        assert_eq!(state.records[0].keys.len(), 802);
+        assert!(serde_json::to_vec(&state.records[0]).unwrap().len() > 128 * 1024);
         // Read the newly compacted row back through the Corrosion payload limit.
         assert_eq!(store.shared_snapshot().unwrap(), state);
         assert_eq!(
-            &*state.secrets[0]
-                .decrypt(&state, &recipient, &recipient_id)
+            &*state.records[0]
+                .open(&state, &recipient, &recipient_id)
                 .unwrap()
                 .unwrap(),
             b"retained"
@@ -402,9 +406,9 @@ mod tests {
         deletion.revision = 2;
         deletion.value = None;
         deletion.keys.clear();
-        store.append_secret(&deletion).unwrap();
+        store.append_record(&deletion).unwrap();
         let final_state = store.shared_snapshot().unwrap();
-        assert_eq!(final_state.secrets, [deletion]);
+        assert_eq!(final_state.records, [deletion]);
         DB.with_borrow(|db| {
             let rows: Vec<String> = db
                 .prepare("SELECT payload FROM tako_shared_records")

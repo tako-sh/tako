@@ -86,11 +86,11 @@ impl<S: RegistryStore> RegistryStore for MonotonicStore<S> {
         self.inner.borrow_mut().shared_snapshot()
     }
 
-    fn append_secret(&mut self, record: &tako_network::shared::SecretRecord) -> RuntimeResult<()> {
+    fn append_record(&mut self, record: &tako_network::shared::SharedRecord) -> RuntimeResult<()> {
         if self.stop.load(Ordering::Acquire) {
             return Err(RuntimeError::Transport);
         }
-        self.inner.borrow_mut().append_secret(record)
+        self.inner.borrow_mut().append_record(record)
     }
 
     fn snapshot(&mut self) -> RuntimeResult<RegistrySnapshot> {

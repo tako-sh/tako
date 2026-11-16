@@ -109,7 +109,7 @@ The administrator creates a single-use invitation with `--admin` or exact
 `--deploy app/env` scopes. Joining generates fresh device keys and pulls published
 state through servers. Never copy an existing device's private keys. `--ssh`
 additionally grants shell access to an administrator. Clients never connect to
-other clients and do not run Corrosion. Servers replicate shared ciphertext.
+other clients and do not run Corrosion. Servers replicate network state.
 
 Keep `tako.toml` in Git; keep `.tako/` ignored. Each worktree has separate secret
 drafts. Set/remove changes remain local until deploy or `secrets sync` publishes
@@ -119,8 +119,8 @@ storage keys, and backup keys. Use it when an environment is retired or moves to
 another network; `tako delete` never removes secrets. `network sync` only refreshes the device cache. Sync
 does not restart running apps. Different keys merge independently; the same key
 uses deterministic logical last-write-wins. Coordinate concurrent releases and
-multi-key rotations. Shared state retains only each key's current encrypted value
-and a versioned deletion marker. Backup encryption keys have distinct IDs and
+multi-key rotations. Network state retains only each key's current encrypted
+value and a versioned deletion marker. Backup encryption keys have distinct IDs and
 remain available for retained backups. A publication request can be retried for
 seven days; after expiry, review preserved drafts before explicitly publishing
 with `secrets sync --retry-expired`. That action can overwrite remote changes.

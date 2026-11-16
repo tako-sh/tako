@@ -95,7 +95,7 @@ pub fn run(command: NetworkCommands) -> Result<()> {
         NetworkCommands::Sync { network: value } => {
             let alias = network::resolve_network(value.as_deref())?;
             if !output::is_dry_run() {
-                network::secrets::pull(&alias, None)?;
+                network::state::pull(&alias, None)?;
             }
             finish(
                 "Synchronized network state",
@@ -634,9 +634,9 @@ fn revoke(device: &str, value: Option<&str>) -> Result<()> {
     }
     let revocation = network::revocation::run(&alias, device)?;
     if alias.device != revocation.target.to_string() {
-        if let Err(error) = network::secrets::pull(&alias, None) {
+        if let Err(error) = network::state::pull(&alias, None) {
             output::hint(&format!(
-                "Membership changed; refresh the secret cache later with `tako network sync`: {error}"
+                "Membership changed; refresh network state later with `tako network sync`: {error}"
             ));
         }
     }
