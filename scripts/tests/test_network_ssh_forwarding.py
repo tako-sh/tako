@@ -69,7 +69,7 @@ class ForwardingPolicyTests(unittest.TestCase):
         state = {'networks': {'ab' * 16: {'peers': [
             {'address': '127.0.0.1/128', 'ssh_public_key': f'{public[0]} {public[1]}'}]}}}
         authorized = root / 'authorized_keys'
-        authorized.write_text(helper.ssh_authorizations(state))
+        authorized.write_text(helper.ssh_authorizations(state, helper.LOOPBACK_FORWARDING))
         port = free_port()
         (root / 'known_hosts').write_text(f'[127.0.0.1]:{port} ' + (root / 'host.pub').read_text())
         self.sshd = subprocess.Popen(
