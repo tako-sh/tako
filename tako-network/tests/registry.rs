@@ -761,7 +761,12 @@ fn active_servers_cannot_share_a_name_but_retired_names_can_be_reused() {
     snapshot
         .approve(
             verified_named(&keys, &snapshot.network.id, DeviceKind::Laptop, "edge-a", 3),
-            approval(MemberKind::Laptop, Permissions::default(), Some(root.clone()), 3),
+            approval(
+                MemberKind::Laptop,
+                Permissions::default(),
+                Some(root.clone()),
+                3,
+            ),
         )
         .unwrap();
     revoke(&mut snapshot, &root, &first, 4);

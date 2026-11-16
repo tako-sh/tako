@@ -513,7 +513,10 @@ mod tests {
         assert!(is_internal_status_request(Some("app.tako:3000"), "/status"));
         assert!(!is_internal_status_request(Some("example.com"), "/status"));
         assert!(!is_internal_status_request(Some("app.tako"), "/"));
-        assert!(!is_internal_status_request(Some("api.prod.tako"), "/status"));
+        assert!(!is_internal_status_request(
+            Some("api.prod.tako"),
+            "/status"
+        ));
         assert!(!is_internal_status_request(Some(".tako"), "/status"));
     }
 
