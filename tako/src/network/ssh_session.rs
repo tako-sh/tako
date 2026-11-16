@@ -129,13 +129,19 @@ pub(crate) fn run(
         command
     };
     let siblings = server_prefix(alias, server);
+    // Masters from releases before settings-derived paths, still alive during an upgrade.
+    let legacy = format!(
+        "{}-{}",
+        prefix(alias),
+        &hex::encode(Sha256::digest(server))[..24]
+    );
     let own = path.file_name().unwrap().to_string_lossy().into_owned();
     for entry in fs::read_dir(control_directory()?)? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
         // OpenSSH binds `<path>.<random>` before renaming it into place.
         if !name.starts_with(&own)
-            && name.starts_with(&siblings)
+            && (name.starts_with(&siblings) || name == legacy)
             && entry.file_type()?.is_socket()
             && control(&entry.path(), "check")?.status.success()
         {

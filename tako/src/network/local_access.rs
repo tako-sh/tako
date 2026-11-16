@@ -71,11 +71,11 @@ pub(crate) fn remove_proxy(alias: &LocalNetwork, profile: &Profile, connected: b
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
-    if connected {
-        configure(alias, profile, Transport::Direct, true).map(|_| ())
-    } else {
-        remove(alias)
+    // Direct aliases need current membership; without it, removal still succeeds.
+    if connected && configure(alias, profile, Transport::Direct, true).is_ok() {
+        return Ok(());
     }
+    remove(alias)
 }
 
 /// Removes direct aliases on disconnect. Proxied aliases keep working.
@@ -161,11 +161,26 @@ fn render(
 ) -> Result<(String, String)> {
     let mut hosts = String::new();
     let mut settings = String::new();
-    for (id, member) in super::server_members(profile)? {
+    let servers = super::server_members(profile)?;
+    let mut names = std::collections::BTreeMap::<String, usize>::new();
+    for member in servers.values() {
+        *names
+            .entry(member.request.name.as_str().to_ascii_lowercase())
+            .or_default() += 1;
+    }
+    for (id, member) in servers {
         let MemberKind::Server(info) = &member.kind else {
             unreachable!()
         };
         let name = member.request.name.as_str().to_ascii_lowercase();
+        // OpenSSH applies the first matching stanza, so a shared name would
+        // reach only one server. Those servers get their device ID instead,
+        // the same identifier `tako ssh` accepts for ambiguous names.
+        let patterns = if names[&name] > 1 {
+            id.to_string()
+        } else {
+            format!("{name} {name}.{}.tako.internal", alias.id)
+        };
         let address = profile
             .snapshot()
             .network
@@ -191,14 +206,14 @@ fn render(
                 )?;
                 format!(
                     "  ProxyCommand {}\n  ProxyJump none\n  ControlMaster auto\n  ControlPath {}\n  ControlPersist 5\n",
-                    super::ssh_tunnel::proxy_command(executable, &alias.name, &id.to_string())?,
+                    super::ssh_tunnel::proxy_command(executable, &alias.id, &id.to_string())?,
                     quote_path(&control)?,
                 )
             }
         };
         settings.push_str(&format!(
-            "Host {name} {name}.{}.tako.internal\n  HostName {address}\n  User {user}\n  Port {}\n  IdentityFile {}\n  IdentitiesOnly yes\n  IdentityAgent none\n  HostKeyAlias {host_alias}\n  UserKnownHostsFile {}\n  GlobalKnownHostsFile /dev/null\n  StrictHostKeyChecking yes\n  UpdateHostKeys no\n{transport}  ForwardAgent no\n  ForwardX11 no\n",
-            alias.id, info.ssh_port, quote_path(identity)?, quote_path(known_hosts)?,
+            "Host {patterns}\n  HostName {address}\n  User {user}\n  Port {}\n  IdentityFile {}\n  IdentitiesOnly yes\n  IdentityAgent none\n  HostKeyAlias {host_alias}\n  UserKnownHostsFile {}\n  GlobalKnownHostsFile /dev/null\n  StrictHostKeyChecking yes\n  UpdateHostKeys no\n{transport}  ForwardAgent no\n  ForwardX11 no\n",
+            info.ssh_port, quote_path(identity)?, quote_path(known_hosts)?,
         ));
     }
     Ok((hosts, settings))
@@ -432,8 +447,9 @@ mod tests {
         assert_eq!(
             value("proxycommand"),
             format!(
-                "'{}' '__ssh-proxy' 'test' '{}'",
+                "'{}' '__ssh-proxy' '{}' '{}'",
                 executable.display(),
+                alias.id,
                 fixture.server
             )
         );
@@ -462,6 +478,63 @@ mod tests {
         .unwrap();
         assert_eq!(value("controlpath"), expected.display().to_string());
         assert_eq!(value("forwardagent"), "no");
+    }
+
+    #[test]
+    fn servers_sharing_a_name_get_distinct_device_id_aliases() {
+        let mut fixture = crate::network::tests::fixture();
+        let Profile::Active { profile } = &mut fixture.profile else {
+            panic!()
+        };
+        let keys = tako_network::LocalDeviceKeys::generate().unwrap();
+        let request = keys
+            .enrollment_request(
+                Some(profile.snapshot.network.id.clone()),
+                tako_network::DeviceKind::Server,
+                "SERVER".parse().unwrap(),
+            )
+            .unwrap();
+        let twin = request.device_id_for(&profile.snapshot.network.id).unwrap();
+        let existing = crate::network::server_members(&fixture.profile).unwrap();
+        let MemberKind::Server(info) = &existing[&fixture.server].kind else {
+            unreachable!()
+        };
+        let mut info = info.clone();
+        info.ssh_host_key = keys.ssh_public_key().unwrap();
+        let Profile::Active { profile } = &mut fixture.profile else {
+            panic!()
+        };
+        let admin = profile.snapshot.network.initial_admin.clone();
+        crate::network::tests::add_member(
+            &mut profile.snapshot,
+            &keys,
+            request,
+            MemberKind::Server(info),
+            Some(admin),
+        );
+        let alias = LocalNetwork {
+            name: "test".into(),
+            id: fixture.profile.snapshot().network.id.to_string(),
+            device: "11".repeat(32),
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let (_, settings) = render(
+            &alias,
+            &fixture.profile,
+            "tako",
+            &directory.path().join("identity"),
+            &directory.path().join("known_hosts"),
+            None,
+        )
+        .unwrap();
+        let mut patterns: Vec<_> = settings
+            .lines()
+            .filter_map(|line| line.strip_prefix("Host "))
+            .collect();
+        patterns.sort();
+        let mut expected = vec![fixture.server.to_string(), twin.to_string()];
+        expected.sort();
+        assert_eq!(patterns, expected);
     }
 
     #[test]

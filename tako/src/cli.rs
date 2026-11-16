@@ -430,6 +430,7 @@ pub(crate) fn supports_dry_run(path: &[&str]) -> bool {
                 "drain" | "resume" | "add" | "remove" | "list" | "uninstall"
             ]
             | ["network", "client", "add" | "remove" | "list"]
+            | ["ssh", "config"]
             | ["secrets", "migrate" | "sync"]
             | ["backups", "now" | "download" | "restore"]
             | ["workflows", "retry" | "cancel"]

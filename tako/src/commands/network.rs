@@ -492,11 +492,8 @@ pub fn ssh(
         .network
         .id
         .address(&member.request.wg_public_key);
-    let proxy = network::ssh_tunnel::proxy_command(
-        &std::env::current_exe()?,
-        &alias.name,
-        &id.to_string(),
-    )?;
+    let proxy =
+        network::ssh_tunnel::proxy_command(&std::env::current_exe()?, &alias.id, &id.to_string())?;
     let mut command = std::process::Command::new("ssh");
     command
         .args([
@@ -556,12 +553,10 @@ pub fn ssh(
 /// rootless tunnel, for OpenSSH-based tools such as scp, rsync, and editors.
 pub fn ssh_config(value: Option<&str>, config_path: Option<&Path>, remove: bool) -> Result<()> {
     let alias = network::resolve_network(value, config_path)?;
-    let profile = if output::is_dry_run() {
-        network::load_profile(&alias)?
-    } else {
-        network::client::refresh(&alias)?
-    };
     if remove {
+        // Local cleanup must work while servers are unreachable or after the
+        // device's membership expired or was revoked.
+        let profile: Profile = network::read_json(&alias.profile_path()?)?;
         if output::is_dry_run() {
             return finish(
                 "Would remove SSH aliases",
@@ -582,6 +577,11 @@ pub fn ssh_config(value: Option<&str>, config_path: Option<&Path>, remove: bool)
             serde_json::json!({"network": alias.name, "installed": false}),
         );
     }
+    let profile = if output::is_dry_run() {
+        network::load_profile(&alias)?
+    } else {
+        network::client::refresh(&alias)?
+    };
     let _lifecycle = (!output::is_dry_run())
         .then(|| network::wireguard::lifecycle_lock(&alias))
         .transpose()?;
