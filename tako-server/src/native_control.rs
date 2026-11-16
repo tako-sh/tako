@@ -376,8 +376,8 @@ fn is_rpc_path(path: &str) -> bool {
             | "/v1/network/snapshot"
             | "/v1/network/invitation/create"
             | "/v1/network/invitation/claim"
-            | "/v1/network/secrets/pull"
-            | "/v1/network/secrets/publish"
+            | "/v1/network/records/pull"
+            | "/v1/network/records/publish"
             | "/v1/network/revoke"
     )
 }

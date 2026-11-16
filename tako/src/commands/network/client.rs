@@ -54,7 +54,7 @@ pub(super) fn run(command: ClientCommands, config: Option<&Path>) -> Result<()> 
                     serde_json::json!({"dry_run":true,"network":alias.name}),
                 );
             }
-            let profile = network::secrets::pull(&alias, None)?.0;
+            let profile = network::state::pull(&alias, None)?.0;
             let server = network::client::available_server(&profile)?;
             let info = network::server_members(&profile)?
                 .get(&server)
@@ -115,7 +115,7 @@ pub(super) fn run(command: ClientCommands, config: Option<&Path>) -> Result<()> 
             let profile = if output::is_dry_run() {
                 network::load_profile(&alias)?
             } else {
-                network::secrets::pull(&alias, None)?.0
+                network::state::pull(&alias, None)?.0
             };
             let members = profile.snapshot().effective_members(network::now()?)?;
             let clients: Vec<_> = members
@@ -259,7 +259,7 @@ pub(super) fn join(name: Option<&str>, from_stdin: bool) -> Result<()> {
         pending.validate_for(&keys, network::now()?)?;
         network::save_profile(&Profile::Pending { profile: pending })?
     };
-    network::secrets::pull(&alias, None)?;
+    network::state::pull(&alias, None)?;
     finish(
         &format!("Joined network {}", alias.name),
         serde_json::to_value(&alias)?,

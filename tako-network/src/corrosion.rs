@@ -66,11 +66,11 @@ pub trait RegistryStore {
     fn append_ack(&mut self, ack: &Ack) -> RuntimeResult<()>;
 
     fn shared_snapshot(&mut self) -> RuntimeResult<crate::shared::SharedSnapshot> {
-        Err(RuntimeError::Invalid("shared secret store unavailable"))
+        Err(RuntimeError::Invalid("shared record store unavailable"))
     }
 
-    fn append_secret(&mut self, _record: &crate::shared::SecretRecord) -> RuntimeResult<()> {
-        Err(RuntimeError::Invalid("shared secret store unavailable"))
+    fn append_record(&mut self, _record: &crate::shared::SharedRecord) -> RuntimeResult<()> {
+        Err(RuntimeError::Invalid("shared record store unavailable"))
     }
 }
 
@@ -273,8 +273,8 @@ impl RegistryStore for CorrosionStore {
         crate::shared::SharedStore::shared_snapshot(self)
     }
 
-    fn append_secret(&mut self, record: &crate::shared::SecretRecord) -> RuntimeResult<()> {
-        crate::shared::SharedStore::append_secret(self, record)
+    fn append_record(&mut self, record: &crate::shared::SharedRecord) -> RuntimeResult<()> {
+        crate::shared::SharedStore::append_record(self, record)
     }
 
     fn snapshot(&mut self) -> RuntimeResult<RegistrySnapshot> {
