@@ -1,5 +1,6 @@
 use super::{
-    Decoded, Layout, Raster, SourceFormat, TransformLimits, avif, enforce_dimension_limits, webp,
+    Decoded, Layout, Raster, SourceFormat, TransformLimits, avif, color, enforce_dimension_limits,
+    webp,
 };
 use crate::ImageError;
 use image::codecs::gif::GifDecoder;
@@ -18,25 +19,29 @@ pub(super) fn decode(
     match format {
         SourceFormat::Jpeg => {
             let decoder = JpegDecoder::new(Cursor::new(source)).map_err(decode_error)?;
-            decode_still(decoder, None, limits).map(Decoded::still)
+            decode_still(decoder, None, limits)
         }
         SourceFormat::Png => {
             let decoder = PngDecoder::new(Cursor::new(source)).map_err(decode_error)?;
-            decode_still(decoder, None, limits).map(Decoded::still)
+            decode_still(decoder, None, limits)
         }
         SourceFormat::Gif => decode_gif(source, limits),
         SourceFormat::Webp => decode_webp(source, limits),
-        SourceFormat::Avif => avif::decode(source, limits).map(Decoded::still),
+        SourceFormat::Avif => {
+            let (raster, profile) = avif::decode(source, limits)?;
+            Ok(Decoded::still(raster).with_color_profile(profile))
+        }
     }
 }
 
-/// Decodes a still image and applies its orientation. `orientation`
-/// overrides the decoder's own EXIF reading when the caller parsed it.
+/// Decodes a still image, applies its orientation and records its embedded
+/// color profile. `orientation` overrides the decoder's own EXIF reading when
+/// the caller parsed it.
 fn decode_still(
     mut decoder: impl ImageDecoder,
     orientation: Option<Orientation>,
     limits: &TransformLimits,
-) -> Result<Raster, ImageError> {
+) -> Result<Decoded, ImageError> {
     let (width, height) = decoder.dimensions();
     enforce_dimension_limits(width, height, 1, limits)?;
     decoder
@@ -47,9 +52,15 @@ fn decode_still(
         Some(orientation) => orientation,
         None => decoder.orientation().unwrap_or(Orientation::NoTransforms),
     };
+    // Likewise, an unreadable or unusable profile only skips color conversion.
+    let profile = decoder
+        .icc_profile()
+        .ok()
+        .flatten()
+        .and_then(|icc| color::profile_from_icc(&icc));
     let mut image = DynamicImage::from_decoder(decoder).map_err(decode_error)?;
     image.apply_orientation(orientation);
-    raster_from_dynamic(image)
+    Ok(Decoded::still(raster_from_dynamic(image)?).with_color_profile(profile))
 }
 
 fn raster_from_dynamic(image: DynamicImage) -> Result<Raster, ImageError> {
@@ -92,6 +103,8 @@ fn decode_gif(source: &[u8], limits: &TransformLimits) -> Result<Decoded, ImageE
         frames,
         delays_ms,
         loop_count: gif_loop_count(source)?,
+        // GIF has no standard color profile; palettes are treated as sRGB.
+        color_profile: None,
     })
 }
 
@@ -122,7 +135,7 @@ fn decode_webp(source: &[u8], limits: &TransformLimits) -> Result<Decoded, Image
     let orientation = webp_orientation(&mut decoder);
     if !decoder.is_animated() || decoder.num_frames() <= 1 {
         let decoder = WebPDecoder::new(Cursor::new(source)).map_err(decode_error)?;
-        return decode_still(decoder, Some(orientation), limits).map(Decoded::still);
+        return decode_still(decoder, Some(orientation), limits);
     }
 
     // Header dimensions and frame count bound the work before decoding.
@@ -145,7 +158,12 @@ fn decode_webp(source: &[u8], limits: &TransformLimits) -> Result<Decoded, Image
             orient_raster(frame, orientation)
         })
         .collect::<Result<_, _>>()?;
-    Ok(animation)
+    let profile = decoder
+        .icc_profile()
+        .ok()
+        .flatten()
+        .and_then(|icc| color::profile_from_icc(&icc));
+    Ok(animation.with_color_profile(profile))
 }
 
 fn drop_alpha(raster: Raster) -> Result<Raster, ImageError> {

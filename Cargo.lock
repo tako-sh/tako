@@ -6764,6 +6764,7 @@ dependencies = [
  "imgref",
  "libavif-sys",
  "libwebp-sys",
+ "moxcms",
  "ravif",
  "rgb",
  "schemars",

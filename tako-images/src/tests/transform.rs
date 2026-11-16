@@ -423,6 +423,137 @@ fn decodes_ycck_jpeg_colors_without_inversion() {
     assert!(close(dark, [20, 40, 120]), "dark half decoded as {dark:?}");
 }
 
+/// Encodes a uniform image, optionally tagged with an ICC profile.
+fn tagged_source(format: ImageFormat, pixel: &[u8], icc: Option<Vec<u8>>) -> Vec<u8> {
+    use image::{ExtendedColorType, ImageEncoder};
+    let (width, height) = (64, 32);
+    let color = if pixel.len() == 4 {
+        ExtendedColorType::Rgba8
+    } else {
+        ExtendedColorType::Rgb8
+    };
+    let data = pixel.repeat((width * height) as usize);
+    let mut bytes = Vec::new();
+    match format {
+        ImageFormat::Jpeg => {
+            let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 100);
+            if let Some(icc) = icc {
+                encoder.set_icc_profile(icc).expect("embed icc");
+            }
+            encoder
+                .write_image(&data, width, height, color)
+                .expect("encode jpeg");
+        }
+        ImageFormat::Png => {
+            let mut encoder = image::codecs::png::PngEncoder::new(&mut bytes);
+            if let Some(icc) = icc {
+                encoder.set_icc_profile(icc).expect("embed icc");
+            }
+            encoder
+                .write_image(&data, width, height, color)
+                .expect("encode png");
+        }
+        other => panic!("unsupported fixture format {other:?}"),
+    }
+    bytes
+}
+
+fn display_p3_icc() -> Vec<u8> {
+    moxcms::ColorProfile::new_display_p3()
+        .encode()
+        .expect("encode Display P3")
+}
+
+fn transform_to_rgba(source: &[u8]) -> image::RgbaImage {
+    let transformed = transform_image(
+        source,
+        None,
+        transform_options(OutputFormat::Webp, 64, 100),
+        &TransformLimits::default(),
+    )
+    .expect("transform image");
+    image::load_from_memory_with_format(&transformed.bytes, ImageFormat::WebP)
+        .expect("decode webp")
+        .into_rgba8()
+}
+
+fn assert_close(actual: &[u8], expected: &[u8], tolerance: u8) {
+    assert!(
+        actual
+            .iter()
+            .zip(expected)
+            .all(|(actual, expected)| actual.abs_diff(*expected) <= tolerance),
+        "expected {expected:?} within {tolerance}, got {actual:?}"
+    );
+}
+
+#[test]
+fn converts_display_p3_jpeg_to_srgb() {
+    // Reference values come from littlecms (Pillow ImageCms), converting the
+    // same Display P3 profile to sRGB with the relative colorimetric intent.
+    let tagged = tagged_source(ImageFormat::Jpeg, &[200, 100, 50], Some(display_p3_icc()));
+    let converted = transform_to_rgba(&tagged);
+    assert_close(&converted.get_pixel(32, 16).0[..3], &[215, 93, 31], 5);
+
+    // Without the profile the same pixels pass through as sRGB.
+    let untagged = tagged_source(ImageFormat::Jpeg, &[200, 100, 50], None);
+    let passthrough = transform_to_rgba(&untagged);
+    assert_close(&passthrough.get_pixel(32, 16).0[..3], &[200, 100, 50], 5);
+}
+
+#[test]
+fn converts_display_p3_png_and_keeps_alpha() {
+    let tagged = tagged_source(
+        ImageFormat::Png,
+        &[120, 160, 200, 255],
+        Some(display_p3_icc()),
+    );
+    let converted = transform_to_rgba(&tagged);
+    assert_close(&converted.get_pixel(32, 16).0, &[108, 161, 204, 255], 5);
+
+    let translucent = tagged_source(
+        ImageFormat::Png,
+        &[120, 160, 200, 128],
+        Some(display_p3_icc()),
+    );
+    let converted = transform_to_rgba(&translucent);
+    let pixel = converted.get_pixel(32, 16).0;
+    assert_close(&[pixel[3]], &[128], 2);
+    // Translucent colors convert too (within lossy alpha precision).
+    assert_close(&pixel[..3], &[108, 161, 204], 8);
+}
+
+#[test]
+fn leaves_srgb_and_malformed_profiles_byte_identical() {
+    let untagged = tagged_source(ImageFormat::Jpeg, &[200, 100, 50], None);
+    let srgb_icc = moxcms::ColorProfile::new_srgb()
+        .encode()
+        .expect("encode sRGB");
+    let srgb = tagged_source(ImageFormat::Jpeg, &[200, 100, 50], Some(srgb_icc));
+    let malformed = tagged_source(
+        ImageFormat::Jpeg,
+        &[200, 100, 50],
+        Some(b"not an icc profile".to_vec()),
+    );
+    let transform = |source: &[u8]| {
+        transform_image(
+            source,
+            None,
+            transform_options(OutputFormat::Webp, 64, 80),
+            &TransformLimits::default(),
+        )
+        .expect("transform image")
+        .bytes
+    };
+    let baseline = transform(&untagged);
+    assert_eq!(transform(&srgb), baseline, "sRGB-tagged output changed");
+    assert_eq!(
+        transform(&malformed),
+        baseline,
+        "malformed profile changed output"
+    );
+}
+
 #[test]
 fn applies_exif_orientation_when_no_resize_needed() {
     let img = ImageBuffer::from_fn(32, 16, |_x, _y| Rgb([255_u8, 0, 0]));

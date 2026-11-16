@@ -26,10 +26,15 @@ pub(super) fn encode(raster: &Raster, quality: u8) -> Result<Vec<u8>, ImageError
 }
 
 /// Decodes the primary (or first) AVIF image and applies its clean aperture,
-/// rotation and mirror properties. Metadata is ignored.
-pub(super) fn decode(source: &[u8], limits: &TransformLimits) -> Result<Raster, ImageError> {
+/// rotation and mirror properties. Returns the image's color profile when it
+/// may differ from sRGB: an embedded ICC profile, else its CICP color tags.
+/// Other metadata is ignored.
+pub(super) fn decode(
+    source: &[u8],
+    limits: &TransformLimits,
+) -> Result<(Raster, Option<moxcms::ColorProfile>), ImageError> {
     let decoder = Decoder::new()?;
-    let raster = {
+    let decoded = {
         // SAFETY: `decoder.0` is a live decoder owned by `decoder` for this
         // whole block. `source` outlives every libavif call that reads it,
         // because the decoder is dropped at the end of this function.
@@ -60,10 +65,38 @@ pub(super) fn decode(source: &[u8], limits: &TransformLimits) -> Result<Raster, 
                 return Err(ImageError::TransformFailed);
             }
             let raster = image_to_raster(image)?;
-            apply_transforms(raster, image, raw)?
+            let profile = color_profile(image);
+            (apply_transforms(raster, image, raw)?, profile)
         }
     };
-    Ok(raster)
+    Ok(decoded)
+}
+
+/// Reads the color space an AVIF image declares.
+///
+/// # Safety
+/// `image` must point at a valid decoded `avifImage`.
+unsafe fn color_profile(image: *const sys::avifImage) -> Option<moxcms::ColorProfile> {
+    // SAFETY: `image` is valid per this function's contract, and libavif
+    // keeps `icc.size` readable bytes at `icc.data` while the image lives.
+    let (icc, primaries, transfer) = unsafe {
+        let icc = (*image).icc;
+        let icc = if icc.data.is_null() || icc.size == 0 {
+            None
+        } else {
+            Some(std::slice::from_raw_parts(icc.data, icc.size))
+        };
+        (
+            icc,
+            (*image).colorPrimaries,
+            (*image).transferCharacteristics,
+        )
+    };
+    match icc {
+        // An embedded profile overrides the CICP tags, as in libavif.
+        Some(icc) => super::color::profile_from_icc(icc),
+        None => super::color::profile_from_cicp(primaries, transfer),
+    }
 }
 
 /// Converts a decoded YUV(A) image to 8-bit interleaved RGB(A).
