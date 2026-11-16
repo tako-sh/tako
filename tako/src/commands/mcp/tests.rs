@@ -252,6 +252,7 @@ fn dev_start_is_finite_and_dry_run_is_exposed_only_where_supported() {
         "tako_deploy",
         "tako_scale",
         "tako_secrets_sync",
+        "tako_secrets_clear",
         "tako_network_server_uninstall",
         "tako_workflows_retry",
     ] {
@@ -337,6 +338,17 @@ fn workflow_tools_follow_cli_definitions_with_read_and_write_annotations() {
         annotations("tako_workflows_cancel").destructive_hint,
         Some(true)
     );
+    assert_eq!(annotations("tako_network_use").read_only_hint, Some(false));
+    assert_eq!(
+        annotations("tako_network_use").destructive_hint,
+        Some(false)
+    );
+    let clear = &catalog["tako_secrets_clear"];
+    assert_eq!(
+        annotations("tako_secrets_clear").destructive_hint,
+        Some(true)
+    );
+    assert_eq!(clear.tool.input_schema["required"], json!(["env"]));
 
     let list = &catalog["tako_workflows_list"];
     assert_eq!(

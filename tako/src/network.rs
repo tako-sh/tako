@@ -6,8 +6,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tako_network::{
-    DeviceKind, EnrollmentRequest, LocalDeviceKeys, NetworkId, NetworkPublicProfile,
-    PendingApprovalProfile, RegistrySnapshot, RequestId,
+    DeviceKind, EnrollmentRequest, LocalDeviceKeys, NetworkPublicProfile, PendingApprovalProfile,
+    RegistrySnapshot, RequestId,
 };
 
 use crate::config::{LocalNetwork, LocalNetworks};
@@ -561,26 +561,10 @@ pub(crate) fn server_members(
         .collect())
 }
 
-pub(crate) fn resolve_network(
-    value: Option<&str>,
-    config_path: Option<&Path>,
-) -> Result<LocalNetwork> {
-    let aliases = LocalNetworks::load()?;
-    if value.is_some() {
-        return Ok(aliases.select(value)?.clone());
-    }
-    if let Some(context) = crate::commands::project_context::resolve_optional(config_path)? {
-        let project = crate::config::TakoToml::load_from_file(context.config_path)?;
-        if let Some(network) = project
-            .envs
-            .get("production")
-            .and_then(|env| env.network.as_deref())
-        {
-            let _: NetworkId = network.parse()?;
-            return Ok(aliases.select(Some(network))?.clone());
-        }
-    }
-    Ok(aliases.select(None)?.clone())
+/// Select a network for commands that act on one: an explicit name or ID,
+/// then the network chosen with `tako network use`, then the sole network.
+pub(crate) fn resolve_network(value: Option<&str>) -> Result<LocalNetwork> {
+    Ok(LocalNetworks::load()?.select(value)?.clone())
 }
 
 #[cfg(test)]

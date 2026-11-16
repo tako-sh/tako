@@ -5,6 +5,7 @@ use clap::Subcommand;
 use std::collections::BTreeSet;
 use std::path::Path;
 
+mod clear;
 mod key;
 mod sync;
 #[cfg(test)]
@@ -100,6 +101,17 @@ pub enum SecretCommands {
         /// Publish current drafts as new operations when a previous retry expired
         #[arg(long)]
         retry_expired: bool,
+    },
+
+    /// Delete every app secret in an environment from its network now
+    Clear {
+        /// Environment to clear
+        #[arg(long)]
+        env: String,
+
+        /// Confirm without prompting
+        #[arg(short = 'y', long)]
+        yes: bool,
     },
 
     /// Manage encryption keys used for secrets
@@ -261,6 +273,7 @@ async fn run_async(
         SecretCommands::Sync { env, retry_expired } => {
             sync_secrets(&context, env.as_deref(), retry_expired).await
         }
+        SecretCommands::Clear { env, yes } => clear::clear_secrets(&context, &env, yes).await,
         SecretCommands::Key(SecretKeyCommands::Export { env }) => {
             let env = resolve_secret_environment(&context, env.as_deref(), "Key environment")?;
             export_key(&context, &env).await

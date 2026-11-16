@@ -49,8 +49,10 @@ fn visit(command: &Command, path: Vec<String>, tools: &mut BTreeMap<String, Comm
         let name = format!("tako_{}", path.join("_").replace('-', "_"));
         let names: Vec<_> = path.iter().map(String::as_str).collect();
         let read_only = crate::cli::is_read_only(&names);
-        // Retrying a run only adds work; every other write may stop or remove it.
-        let destructive = !read_only && path != ["workflows", "retry"];
+        // Retrying a run only adds work and choosing a default network only
+        // changes a local preference; every other write may stop or remove work.
+        let destructive =
+            !read_only && !matches!(names[..], ["workflows", "retry"] | ["network", "use"]);
         let description = format!(
             "{}\nUses the configured Tako project and CLI credentials. {}{}",
             command

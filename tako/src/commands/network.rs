@@ -83,12 +83,17 @@ pub enum NetworkCommands {
     /// List this machine's networks and stable IDs
     #[command(visible_alias = "ls")]
     List,
+    /// Use this network when a command does not name one
+    Use {
+        /// Network name or stable ID
+        network: String,
+    },
 }
 
-pub fn run(command: NetworkCommands, config_path: Option<&Path>) -> Result<()> {
+pub fn run(command: NetworkCommands) -> Result<()> {
     match command {
         NetworkCommands::Sync { network: value } => {
-            let alias = network::resolve_network(value.as_deref(), config_path)?;
+            let alias = network::resolve_network(value.as_deref())?;
             if !output::is_dry_run() {
                 network::state::pull(&alias, None)?;
             }
@@ -97,8 +102,8 @@ pub fn run(command: NetworkCommands, config_path: Option<&Path>) -> Result<()> {
                 serde_json::json!({"network":alias.name,"dry_run":output::is_dry_run()}),
             )
         }
-        NetworkCommands::Server(command) => super::server::run(command, config_path),
-        NetworkCommands::Client(command) => client::run(command, config_path),
+        NetworkCommands::Server(command) => super::server::run(command),
+        NetworkCommands::Client(command) => client::run(command),
         NetworkCommands::Join {
             name,
             invitation_stdin,
@@ -110,10 +115,15 @@ pub fn run(command: NetworkCommands, config_path: Option<&Path>) -> Result<()> {
             output,
         } => request(name.as_deref(), network.as_deref(), &output),
         NetworkCommands::Import { file } => import(&file),
-        NetworkCommands::Export { network, output } => {
-            export(network.as_deref(), config_path, &output)
-        }
+        NetworkCommands::Export { network, output } => export(network.as_deref(), &output),
         NetworkCommands::List => list(),
+        NetworkCommands::Use { network } => {
+            let alias = LocalNetworks::use_network(&network)?;
+            finish(
+                &format!("Using network {}", alias.name),
+                serde_json::to_value(&alias)?,
+            )
+        }
         NetworkCommands::Approve {
             file,
             network,
@@ -125,7 +135,6 @@ pub fn run(command: NetworkCommands, config_path: Option<&Path>) -> Result<()> {
         } => approve(
             &file,
             network.as_deref(),
-            config_path,
             &output,
             Permissions {
                 network_admin: admin,
@@ -135,21 +144,18 @@ pub fn run(command: NetworkCommands, config_path: Option<&Path>) -> Result<()> {
             },
             expires_in,
         ),
-        NetworkCommands::Revoke { device, network } => {
-            revoke(&device, network.as_deref(), config_path)
-        }
-        NetworkCommands::Status { network } => status(network.as_deref(), config_path),
+        NetworkCommands::Revoke { device, network } => revoke(&device, network.as_deref()),
+        NetworkCommands::Status { network } => status(network.as_deref()),
     }
 }
 
 pub(super) fn manage_server(
     device: &str,
     value: Option<&str>,
-    config_path: Option<&Path>,
     command: tako_core::Command,
 ) -> Result<()> {
     use crate::management_http::{ManagementClient, ManagementTarget, NativeTarget, parse_ok_data};
-    let alias = network::resolve_network(value, config_path)?;
+    let alias = network::resolve_network(value)?;
     let profile = if output::is_dry_run() {
         network::load_profile(&alias)?
     } else {
@@ -327,8 +333,8 @@ fn import(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn export(value: Option<&str>, config_path: Option<&Path>, destination: &Path) -> Result<()> {
-    let alias = network::resolve_network(value, config_path)?;
+fn export(value: Option<&str>, destination: &Path) -> Result<()> {
+    let alias = network::resolve_network(value)?;
     let profile = network::load_profile(&alias)?;
     if output::is_dry_run() {
         return finish(
@@ -349,14 +355,28 @@ fn export(value: Option<&str>, config_path: Option<&Path>, destination: &Path) -
 
 fn list() -> Result<()> {
     let networks = LocalNetworks::load()?;
+    // The network commands use when they do not name one, if any.
+    let default = networks.select(None).ok().map(|network| network.id.clone());
     if output::is_json() {
-        return output::json_result(
-            serde_json::json!({"networks": networks.networks.values().collect::<Vec<_>>()}),
-        );
+        let listed: Vec<_> = networks
+            .networks
+            .values()
+            .map(|network| {
+                let mut value = serde_json::to_value(network)?;
+                value["default"] = serde_json::json!(default.as_ref() == Some(&network.id));
+                Ok(value)
+            })
+            .collect::<Result<_>>()?;
+        return output::json_result(serde_json::json!({ "networks": listed }));
     }
     for network in networks.networks.values() {
-        output::info(&network.name);
-        tracing::info!("{}", network.name);
+        if default.as_ref() == Some(&network.id) {
+            output::info(&format!("{} (default)", network.name));
+            tracing::info!("{} (default)", network.name);
+        } else {
+            output::info(&network.name);
+            tracing::info!("{}", network.name);
+        }
     }
     if networks.networks.is_empty() {
         output::hint("No networks configured. Run `tako network create <name>`.");
@@ -389,8 +409,8 @@ fn finish(message: &str, value: serde_json::Value) -> Result<()> {
     Ok(())
 }
 
-pub fn connect(value: Option<&str>, config_path: Option<&Path>) -> Result<()> {
-    let alias = network::resolve_network(value, config_path)?;
+pub fn connect(value: Option<&str>) -> Result<()> {
+    let alias = network::resolve_network(value)?;
     if output::is_dry_run() {
         network::load_profile(&alias)?;
         return finish(
@@ -411,8 +431,8 @@ pub fn connect(value: Option<&str>, config_path: Option<&Path>) -> Result<()> {
     )
 }
 
-pub fn disconnect(value: Option<&str>, config_path: Option<&Path>) -> Result<()> {
-    let alias = network::resolve_network(value, config_path)?;
+pub fn disconnect(value: Option<&str>) -> Result<()> {
+    let alias = network::resolve_network(value)?;
     // Local teardown must remain possible after membership expires or is revoked.
     let profile: Profile = network::read_json(&alias.profile_path()?)?;
     if profile.snapshot().network.id.to_string() != alias.id
@@ -441,13 +461,8 @@ pub fn disconnect(value: Option<&str>, config_path: Option<&Path>) -> Result<()>
     )
 }
 
-pub fn ssh(
-    server: &str,
-    value: Option<&str>,
-    config_path: Option<&Path>,
-    remote_command: &[String],
-) -> Result<()> {
-    let alias = network::resolve_network(value, config_path)?;
+pub fn ssh(server: &str, value: Option<&str>, remote_command: &[String]) -> Result<()> {
+    let alias = network::resolve_network(value)?;
     let profile = if output::is_dry_run() {
         network::load_profile(&alias)?
     } else {
@@ -550,7 +565,6 @@ pub fn ssh(
 fn approve(
     file: &Path,
     value: Option<&str>,
-    config_path: Option<&Path>,
     destination: &Path,
     permissions: Permissions,
     expires_in: Option<u64>,
@@ -562,7 +576,7 @@ fn approve(
     if request.kind != DeviceKind::Laptop {
         return Err("Use `tako network server add --network` to enroll a server".into());
     }
-    let alias = network::resolve_network(value, config_path)?;
+    let alias = network::resolve_network(value)?;
     request.device_id_for(&alias.id.parse()?)?;
     if output::is_dry_run() {
         return finish(
@@ -609,8 +623,8 @@ fn approve(
     Ok(())
 }
 
-fn revoke(device: &str, value: Option<&str>, config_path: Option<&Path>) -> Result<()> {
-    let alias = network::resolve_network(value, config_path)?;
+fn revoke(device: &str, value: Option<&str>) -> Result<()> {
+    let alias = network::resolve_network(value)?;
     if output::is_dry_run() {
         let revocation = network::revocation::project(&alias, device)?;
         return finish(
@@ -672,8 +686,8 @@ pub(crate) fn validate_pending_approval(
     Ok(())
 }
 
-fn status(value: Option<&str>, config_path: Option<&Path>) -> Result<()> {
-    let alias = network::resolve_network(value, config_path)?;
+fn status(value: Option<&str>) -> Result<()> {
+    let alias = network::resolve_network(value)?;
     let profile = if output::is_dry_run() {
         network::load_profile(&alias)?
     } else {
