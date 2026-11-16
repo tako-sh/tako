@@ -750,3 +750,21 @@ fn shared_budgets_reserve_what_they_charge_from_the_host() {
     drop(budget);
     assert_eq!(host.available_permits(), 100_000, "dropping releases");
 }
+
+#[test]
+fn connections_keep_a_small_page_cache() {
+    let fixture = fixture();
+    let mut conn = open(&fixture);
+    let result = run(&mut conn, "PRAGMA cache_size").unwrap();
+    assert_eq!(result.rows, vec![vec![Value::Integer(-1024)]]);
+    // Apps cannot raise it.
+    assert!(run(&mut conn, "PRAGMA cache_size = -1000000").is_err());
+}
+
+#[test]
+fn the_soft_heap_limit_is_set_for_the_process() {
+    set_soft_heap_limit(256 * 1024 * 1024);
+    // SAFETY: a negative argument only reads the current limit.
+    let current = unsafe { ffi::sqlite3_soft_heap_limit64(-1) };
+    assert_eq!(current, 256 * 1024 * 1024);
+}

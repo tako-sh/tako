@@ -37,6 +37,22 @@ pub struct EngineConfig {
     /// The largest string, blob, or row a statement may produce. Larger
     /// values fail with `SQLITE_TOOBIG` instead of being copied.
     pub max_value_bytes: usize,
+    /// Page cache each connection may keep (`PRAGMA cache_size`). Every
+    /// stream holds a connection, so this bounds what thousands of them
+    /// retain; apps cannot raise it.
+    pub cache_bytes: usize,
+}
+
+/// Caps the memory SQLite uses across every connection in this process:
+/// past `bytes`, page caches reuse their pages instead of growing. It is
+/// process-wide, so the last host created sets it.
+pub fn set_soft_heap_limit(bytes: usize) {
+    let bytes = i64::try_from(bytes).unwrap_or(i64::MAX);
+    // SAFETY: sqlite3_soft_heap_limit64 takes a plain integer and is safe
+    // to call at any time from any thread.
+    unsafe {
+        ffi::sqlite3_soft_heap_limit64(bytes);
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,6 +69,7 @@ impl Default for EngineConfig {
             synchronous: Synchronous::Full,
             // No larger value fits in a response.
             max_value_bytes: 64 * 1024 * 1024,
+            cache_bytes: 1024 * 1024,
         }
     }
 }
@@ -418,8 +435,10 @@ impl Connection {
             Synchronous::Normal => "NORMAL",
             Synchronous::Full => "FULL",
         };
+        // A negative cache_size is in KiB.
+        let cache_kib = (config.cache_bytes / 1024).max(1);
         conn.execute_batch(&format!(
-            "PRAGMA synchronous = {synchronous}; PRAGMA foreign_keys = ON;"
+            "PRAGMA synchronous = {synchronous}; PRAGMA foreign_keys = ON; PRAGMA cache_size = -{cache_kib};"
         ))
         .map_err(map_error)?;
 

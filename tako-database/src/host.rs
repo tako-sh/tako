@@ -117,6 +117,9 @@ pub struct HostConfig {
     /// its connection is closed: a client that stops reading must not hold
     /// the response, and the memory reserved for it, forever.
     pub write_stall_timeout: Duration,
+    /// SQLite's memory across this process, past which page caches stop
+    /// growing; see [`crate::engine::set_soft_heap_limit`].
+    pub sqlite_soft_heap_limit_bytes: usize,
 }
 
 impl Default for HostConfig {
@@ -141,6 +144,7 @@ impl Default for HostConfig {
             max_connections: 1024,
             idle_connection_timeout: Duration::from_secs(30),
             write_stall_timeout: Duration::from_secs(30),
+            sqlite_soft_heap_limit_bytes: 256 * 1024 * 1024,
             pause_timeout: Duration::from_secs(30),
         }
     }
@@ -470,6 +474,7 @@ pub enum HostError {
 
 impl DatabaseHost {
     pub fn new(config: HostConfig) -> Self {
+        crate::engine::set_soft_heap_limit(config.sqlite_soft_heap_limit_bytes);
         let stored_sql = Arc::new(StoredSqlBudget::new(config.max_stored_sql_bytes));
         let buffered = Arc::new(Semaphore::new(config.max_buffered_bytes));
         Self {

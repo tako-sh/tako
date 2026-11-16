@@ -465,6 +465,24 @@ async fn upload_copy(
         }
         Err(error) => Err(error),
     };
+    // The check and the write are separate requests, so a move can land
+    // between them: checking once more after writing takes the manifest
+    // back. Only a server stopping in that moment leaves one behind.
+    let published = match published {
+        Ok(()) if own.is_some() => match check_holder(remote.as_ref(), stored, own).await {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                if let Ok(path) = ObjectPath::parse(manifest_key(stored, &snapshot_id)) {
+                    let _ = with_deadline(METADATA_TIMEOUT, async {
+                        remote.delete(&path).await.map_err(|e| e.to_string())
+                    })
+                    .await;
+                }
+                Err(error)
+            }
+        },
+        other => other,
+    };
     if let Err(error) = published {
         // Listing and retention find data through manifests; without one the
         // object would never be removed.
@@ -924,6 +942,20 @@ pub(crate) fn remove_stale_work_dirs(root: &Path, now: std::time::SystemTime) ->
 /// A work directory removed when dropped.
 pub(crate) struct WorkDir {
     pub path: PathBuf,
+}
+
+impl WorkDir {
+    /// Marks the directory as in use now, so the cleanup of interrupted
+    /// work, which goes by its age, leaves it alone. Writing a file inside
+    /// does not change the directory's own modification time.
+    pub(crate) fn touch(&self) {
+        let touched = std::fs::File::open(&self.path).and_then(|dir| {
+            dir.set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()))
+        });
+        if let Err(error) = touched {
+            tracing::debug!(path = %self.path.display(), %error, "Could not refresh a work directory's age");
+        }
+    }
 }
 
 impl Drop for WorkDir {

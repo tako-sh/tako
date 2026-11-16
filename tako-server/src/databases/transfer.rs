@@ -145,6 +145,8 @@ pub(crate) async fn import_chunk(
     import.hasher.update(&data);
     import.received += data.len() as u64;
     import.touched = Instant::now();
+    // A transfer stays alive while chunks arrive; so does its directory.
+    import.work.touch();
     Ok(serde_json::json!({"received": import.received}))
 }
 
@@ -258,6 +260,7 @@ pub(crate) async fn export_chunk(
             .filter(|export| export.database == id)
             .ok_or("Export not found or expired.")?;
         export.touched = Instant::now();
+        export.work.touch();
         (export.path.clone(), export.size)
     };
     if offset >= size {

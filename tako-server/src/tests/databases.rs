@@ -1150,6 +1150,50 @@ async fn interrupted_work_directories_are_removed_once_stale() {
 }
 
 #[tokio::test]
+async fn transfers_still_receiving_chunks_keep_their_work_directory() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, None).await;
+    let bytes = b"0123456789".repeat(10);
+    let upload = ok(
+        &state,
+        Command::BeginDatabaseImport {
+            name: ID.into(),
+            size_bytes: bytes.len() as u64,
+            sha256: hex::encode(Sha256::digest(&bytes)),
+        },
+    )
+    .await;
+    let upload_id = upload["upload_id"].as_str().unwrap().to_owned();
+    // The transfer started more than a day ago.
+    let root = state.databases.work_dir(ID);
+    let dirs: Vec<_> = std::fs::read_dir(&root).unwrap().flatten().collect();
+    assert_eq!(dirs.len(), 1);
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 24 * 60 * 60);
+    std::fs::File::open(dirs[0].path())
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+    // A chunk arriving now marks it as in use.
+    ok(
+        &state,
+        Command::DatabaseImportChunk {
+            name: ID.into(),
+            upload_id,
+            offset: 0,
+            data_base64: BASE64.encode(&bytes[..10]),
+        },
+    )
+    .await;
+    let now = std::time::SystemTime::now();
+    assert_eq!(
+        crate::databases::snapshots::remove_stale_work_dirs(&root, now),
+        0
+    );
+    assert!(dirs[0].path().exists());
+}
+
+#[tokio::test]
 async fn a_database_a_deploy_is_binding_cannot_be_deleted() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp);
