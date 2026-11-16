@@ -8,7 +8,7 @@ pub(super) fn can_configure_bindings(
     let Some(id) = config.envs.get(env).and_then(|env| env.network.as_deref()) else {
         return Ok(true);
     };
-    let alias = crate::network::resolve_network(Some(id), None)?;
+    let alias = crate::network::resolve_network(Some(id))?;
     let profile = crate::network::load_profile(&alias)?;
     let device = profile
         .request()
@@ -137,6 +137,104 @@ pub fn validate_server_names(names: &[String], servers: &ServerInventory) -> Res
         }
     }
     Ok(())
+}
+
+/// Resolve a server maintenance selector. A `network/server` selector names
+/// its own network; a bare server name uses `--network`, then the network
+/// chosen with `tako network use`, then the sole network.
+pub(crate) fn resolve_server_selector(
+    networks: &crate::config::LocalNetworks,
+    servers: &ServerInventory,
+    name: &str,
+    network: Option<&str>,
+) -> Result<String, String> {
+    // Server names cannot contain `/`, so a slash marks a full selector.
+    if name.contains('/') {
+        let local = network
+            .map(|network| networks.select(Some(network)))
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        let matches = match local {
+            Some(local) => in_network(servers, name, local),
+            None => servers.contains(name),
+        };
+        return if matches {
+            Ok(name.to_string())
+        } else {
+            Err(format!(
+                "Server '{name}' not found. Use a selector from `tako network server list`."
+            ))
+        };
+    }
+    let (local, names) = network_servers(networks, servers, network)?;
+    let qualified = format!("{}/{name}", networks.server_namespace(&local));
+    if names.contains(&qualified) {
+        return Ok(qualified);
+    }
+    // Servers that share a name within one network carry their device ID.
+    let shared: Vec<_> = names
+        .iter()
+        .filter(|candidate| candidate.starts_with(&format!("{qualified}/")))
+        .map(String::as_str)
+        .collect();
+    if shared.is_empty() {
+        Err(format!(
+            "Server '{name}' not found in network {}.",
+            local.name
+        ))
+    } else {
+        Err(format!(
+            "Several servers in network {} are named '{name}'. Use one of: {}.",
+            local.name,
+            shared.join(", ")
+        ))
+    }
+}
+
+/// Every server selector in the network a command acts on.
+pub(crate) fn network_servers(
+    networks: &crate::config::LocalNetworks,
+    servers: &ServerInventory,
+    network: Option<&str>,
+) -> Result<(crate::config::LocalNetwork, Vec<String>), String> {
+    let local = networks
+        .select(network)
+        .map_err(|error| error.to_string())?;
+    let mut names: Vec<String> = servers
+        .names()
+        .into_iter()
+        .filter(|name| in_network(servers, name, local))
+        .map(str::to_string)
+        .collect();
+    names.sort_unstable();
+    Ok((local.clone(), names))
+}
+
+/// Server selectors for an interactive choice: the servers of the selected
+/// network, or every server when several networks exist and none is chosen.
+pub(crate) fn server_choices(
+    networks: &crate::config::LocalNetworks,
+    servers: &ServerInventory,
+    network: Option<&str>,
+) -> Result<Vec<String>, String> {
+    if network.is_none() && !networks.has_choice() && networks.networks.len() > 1 {
+        // Each selector names its network, so picking one is explicit.
+        let mut names: Vec<String> = servers.names().into_iter().map(str::to_string).collect();
+        names.sort_unstable();
+        return Ok(names);
+    }
+    let (local, names) = network_servers(networks, servers, network)?;
+    if names.is_empty() {
+        return Err(format!("No servers in network {}.", local.name));
+    }
+    Ok(names)
+}
+
+fn in_network(servers: &ServerInventory, name: &str, local: &crate::config::LocalNetwork) -> bool {
+    servers
+        .get(name)
+        .and_then(|entry| entry.native.as_ref())
+        .is_some_and(|target| target.network.id == local.id)
 }
 
 #[cfg(test)]
@@ -304,6 +402,93 @@ mod tests {
             host: "192.0.2.10".into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn maintenance_selectors_follow_explicit_then_chosen_then_sole_network() {
+        let (fleet, other, empty) = ("a".repeat(32), "b".repeat(32), "c".repeat(32));
+        let local = |id: &str, name: &str| crate::config::LocalNetwork {
+            name: name.into(),
+            id: id.into(),
+            device: "1".repeat(64),
+        };
+        let networks = |selected: Option<&str>| {
+            crate::config::LocalNetworks::with_choice(
+                [
+                    local(&fleet, "fleet"),
+                    local(&other, "other"),
+                    local(&empty, "empty"),
+                ],
+                selected,
+            )
+        };
+        let mut servers = ServerInventory::default();
+        for (selector, network, name, device) in [
+            ("fleet/edge".to_string(), &fleet, "edge", "2"),
+            ("other/edge".to_string(), &other, "edge", "3"),
+            (format!("other/api/{}", "4".repeat(64)), &other, "api", "4"),
+            (format!("other/api/{}", "5".repeat(64)), &other, "api", "5"),
+        ] {
+            servers
+                .servers
+                .insert(selector, native_entry(network, name, &device.repeat(64)));
+        }
+
+        // Several networks and no choice: bare names need a network, while
+        // the picker lists every selector because each names its network.
+        let unchosen = networks(None);
+        assert!(
+            resolve_server_selector(&unchosen, &servers, "edge", None)
+                .unwrap_err()
+                .contains("tako network use")
+        );
+        assert_eq!(server_choices(&unchosen, &servers, None).unwrap().len(), 4);
+        assert!(network_servers(&unchosen, &servers, None).is_err());
+        assert_eq!(
+            resolve_server_selector(&unchosen, &servers, "edge", Some("other")).unwrap(),
+            "other/edge"
+        );
+
+        let chosen = networks(Some(&other));
+        assert_eq!(
+            resolve_server_selector(&chosen, &servers, "edge", None).unwrap(),
+            "other/edge"
+        );
+        // Arguments always override the chosen network.
+        assert_eq!(
+            resolve_server_selector(&chosen, &servers, "edge", Some("fleet")).unwrap(),
+            "fleet/edge"
+        );
+        assert_eq!(
+            resolve_server_selector(&chosen, &servers, "fleet/edge", None).unwrap(),
+            "fleet/edge"
+        );
+        assert!(resolve_server_selector(&chosen, &servers, "fleet/edge", Some("other")).is_err());
+        let shared = resolve_server_selector(&chosen, &servers, "api", None).unwrap_err();
+        assert!(shared.contains("Several servers"), "{shared}");
+        assert!(shared.contains(&format!("other/api/{}", "4".repeat(64))));
+        let (network, names) = network_servers(&chosen, &servers, None).unwrap();
+        assert_eq!(network.name, "other");
+        assert_eq!(names.len(), 3);
+        assert_eq!(server_choices(&chosen, &servers, None).unwrap(), names);
+
+        let quiet = networks(Some(&empty));
+        assert!(
+            network_servers(&quiet, &servers, None)
+                .unwrap()
+                .1
+                .is_empty()
+        );
+        assert!(
+            server_choices(&quiet, &servers, None)
+                .unwrap_err()
+                .contains("No servers in network empty")
+        );
+
+        // A stale choice is reported rather than widening the picker.
+        let stale = networks(Some(&"d".repeat(32)));
+        assert!(server_choices(&stale, &servers, None).is_err());
+        assert!(resolve_server_selector(&stale, &servers, "edge", None).is_err());
     }
 
     #[test]

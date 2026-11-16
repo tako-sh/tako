@@ -126,48 +126,14 @@ fn legacy_inventory_does_not_grant_server_membership() {
 }
 
 #[test]
-fn native_server_add_honors_selected_project_config_and_explicit_network() {
+fn network_commands_use_explicit_then_chosen_then_sole_network() {
     let temp = TempDir::new().unwrap();
     let tako_home = temp.path().join("tako-home");
-    for alias in ["default", "selected"] {
-        let out = run_tako_with_env(
-            &["network", "create", alias],
-            temp.path(),
-            temp.path(),
-            &tako_home,
-        );
-        assert!(out.status.success(), "{}", stderr_str(&out));
-    }
-    let inventory_before = fs::read(tako_home.join("networks/identities.json")).unwrap();
-    let listed = run_tako_with_env(
-        &["--json", "network", "list"],
-        temp.path(),
-        temp.path(),
-        &tako_home,
-    );
-    let config: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
-    for (alias, file) in [("default", "tako.toml"), ("selected", "other.toml")] {
-        let network = config["networks"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|network| network["name"].as_str() == Some(alias))
-            .unwrap();
-        fs::write(
-            temp.path().join(file),
-            format!(
-                "name = 'test-app'\n[envs.production]\nroute = 'test.example.com'\nnetwork = '{}'\n",
-                network["id"].as_str().unwrap(),
-            ),
-        )
-        .unwrap();
-    }
+    let run = |args: &[&str]| run_tako_with_env(args, temp.path(), temp.path(), &tako_home);
     let add = |extra: &[&str]| {
         let mut args = vec![
             "--dry-run",
             "--json",
-            "--config",
-            "other.toml",
             "network",
             "server",
             "add",
@@ -176,17 +142,118 @@ fn native_server_add_honors_selected_project_config_and_explicit_network() {
             "edge",
         ];
         args.extend_from_slice(extra);
-        let out = run_tako_with_env(&args, temp.path(), temp.path(), &tako_home);
-        assert!(out.status.success(), "{}", stderr_str(&out));
-        serde_json::from_str::<serde_json::Value>(&stdout_str(&out)).unwrap()
+        run(&args)
     };
-    assert_eq!(add(&[])["network"], "selected");
-    assert_eq!(add(&["--network", "default"])["network"], "default");
-    fs::remove_file(temp.path().join("tako.toml")).unwrap();
-    assert_eq!(add(&[])["network"], "selected");
+    let network_of = |out: std::process::Output| {
+        assert!(out.status.success(), "{}", stderr_str(&out));
+        serde_json::from_str::<serde_json::Value>(&stdout_str(&out)).unwrap()["network"].clone()
+    };
+
+    assert!(run(&["network", "create", "default"]).status.success());
+    // A sole network is selected without naming it.
+    assert_eq!(network_of(add(&[])), "default");
+
+    assert!(run(&["network", "create", "selected"]).status.success());
+    let listed: serde_json::Value =
+        serde_json::from_slice(&run(&["--json", "network", "list"]).stdout).unwrap();
+    let selected_id = listed["networks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|network| network["name"] == "selected")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // A project's production network no longer selects one implicitly.
+    fs::write(
+        temp.path().join("tako.toml"),
+        format!(
+            "name = 'test-app'\n[envs.production]\nroute = 'test.example.com'\nnetwork = '{selected_id}'\n"
+        ),
+    )
+    .unwrap();
+    let ambiguous = add(&[]);
+    assert!(!ambiguous.status.success());
+    assert!(
+        stderr_str(&ambiguous).contains("tako network use"),
+        "{}",
+        stderr_str(&ambiguous)
+    );
+    assert!(
+        listed["networks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|network| network["default"] == false)
+    );
+
+    let inventory_before = fs::read(tako_home.join("networks/identities.json")).unwrap();
+    let used = run(&["--json", "network", "use", "selected"]);
+    assert!(used.status.success(), "{}", stderr_str(&used));
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&used.stdout).unwrap()["id"],
+        selected_id.as_str()
+    );
+    assert_eq!(network_of(add(&[])), "selected");
+    // Explicit arguments always override the chosen network.
+    assert_eq!(network_of(add(&["--network", "default"])), "default");
+    let listed: serde_json::Value =
+        serde_json::from_slice(&run(&["--json", "network", "list"]).stdout).unwrap();
+    for network in listed["networks"].as_array().unwrap() {
+        assert_eq!(network["default"], network["name"] == "selected");
+    }
+    assert!(!run(&["network", "use", "missing"]).status.success());
     assert_eq!(
         fs::read(tako_home.join("networks/identities.json")).unwrap(),
         inventory_before
+    );
+}
+
+#[test]
+fn bare_server_names_resolve_in_the_selected_network() {
+    let fixture = super::native_management::Fixture::with_servers(&["edge"]);
+    let run = |args: &[&str]| {
+        run_tako_with_env(
+            args,
+            fixture.directory.path(),
+            &fixture.home,
+            &fixture.tako_home,
+        )
+    };
+    let bare = run(&["--ci", "--dry-run", "network", "server", "remove", "edge"]);
+    assert!(bare.status.success(), "{}", stderr_str(&bare));
+    assert!(
+        stderr_str(&bare).contains("fleet/edge"),
+        "{}",
+        stderr_str(&bare)
+    );
+    let explicit = run(&[
+        "--ci",
+        "--dry-run",
+        "network",
+        "server",
+        "remove",
+        "edge",
+        "--network",
+        "fleet",
+    ]);
+    assert!(explicit.status.success(), "{}", stderr_str(&explicit));
+    let unknown = run(&[
+        "--ci",
+        "--dry-run",
+        "network",
+        "server",
+        "remove",
+        "edge",
+        "--network",
+        "missing",
+    ]);
+    assert!(!unknown.status.success());
+    assert!(
+        stderr_str(&unknown).contains("not configured"),
+        "{}",
+        stderr_str(&unknown)
     );
 }
 

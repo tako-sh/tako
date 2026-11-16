@@ -113,7 +113,10 @@ other clients and do not run Corrosion. Servers replicate network state.
 
 Keep `tako.toml` in Git; keep `.tako/` ignored. Each worktree has separate secret
 drafts. Set/remove changes remain local until deploy or `secrets sync` publishes
-the selected environment. `network sync` only refreshes the device cache. Sync
+the selected environment. `secrets clear --env <env>` is the exception: it deletes
+every app secret of that environment from its network at once, keeping credentials,
+storage keys, and backup keys. Use it when an environment is retired or moves to
+another network; `tako delete` never removes secrets. `network sync` only refreshes the device cache. Sync
 does not restart running apps. Different keys merge independently; the same key
 uses deterministic logical last-write-wins. Coordinate concurrent releases and
 multi-key rotations. Network state retains only each key's current encrypted
@@ -175,6 +178,9 @@ Ordinary Cloudflare HTTP forwarding headers remain supported.
 
 Use `tako network server drain <server> --network <alias> --timeout 120 --json` and
 `tako network server resume <server> --network <alias> --json` for server maintenance.
+Network commands without a network argument use the network chosen with
+`tako network use <network>`, then the only configured network; pass `--network`
+when several networks exist. Check `tako network list --json` for the default.
 For server drain, `status = "draining"` means cleanup is pending. Completion requires
 all proxy processes on the server to be quiescent. Inspect completion, timeout,
 forced work, remaining work, and errors. Do not describe forced or incomplete
