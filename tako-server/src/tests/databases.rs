@@ -822,3 +822,16 @@ async fn deleting_a_database_deletes_its_snapshots() {
     assert_eq!(deleted["warnings"], json!([]));
     assert_eq!(objects().await, 0);
 }
+
+#[tokio::test]
+async fn opening_databases_again_after_a_failure_retries() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    // The databases directory cannot be created while a file is in its place.
+    let root = temp.path().join("databases");
+    std::fs::write(&root, "").unwrap();
+    assert!(state.open_databases(None).await.is_err());
+    std::fs::remove_file(&root).unwrap();
+    state.open_databases(None).await.unwrap();
+    assert!(root.is_dir(), "the second call opened the databases");
+}

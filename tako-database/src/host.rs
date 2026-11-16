@@ -837,23 +837,34 @@ impl DatabaseHost {
         database.enter()
     }
 
-    /// Counts a new retained stream against the limits.
-    pub(crate) fn reserve_stream(&self, database: &Database) -> Result<(), Error> {
+    /// Retains a new stream, counting it against the server's and the
+    /// database's limits. The check and the insertion happen under one
+    /// lock, so concurrent requests cannot exceed the server's limit.
+    pub(crate) fn insert_stream(
+        &self,
+        database: &Database,
+        key: [u8; 16],
+        entry: StreamEntry,
+    ) -> Result<(), Error> {
         let config = &self.inner.config;
-        if self.inner.streams.lock().len() >= config.max_streams {
+        let mut streams = self.inner.streams.lock();
+        if streams.len() >= config.max_streams {
             return Err(Error::new(
                 "STREAM_LIMIT",
                 "too many open streams on this server",
             ));
         }
-        let mut state = database.state.lock();
-        if state.streams >= config.max_streams_per_database {
-            return Err(Error::new(
-                "STREAM_LIMIT",
-                "too many open streams on this database",
-            ));
+        {
+            let mut state = database.state.lock();
+            if state.streams >= config.max_streams_per_database {
+                return Err(Error::new(
+                    "STREAM_LIMIT",
+                    "too many open streams on this database",
+                ));
+            }
+            state.streams += 1;
         }
-        state.streams += 1;
+        streams.insert(key, entry);
         Ok(())
     }
 

@@ -322,13 +322,28 @@ impl ServerState {
         if let Some(server_id) = server_id {
             *databases.server_id.write() = Some(server_id);
         }
-        create_private_dir(&databases.root)?;
-        let stored = self
-            .state_store
-            .list_databases()
-            .map_err(|e| format!("read databases: {e}"))?;
+        let prepared = create_private_dir(&databases.root).and_then(|()| {
+            self.state_store
+                .list_databases()
+                .map_err(|e| format!("read databases: {e}"))
+        });
+        let stored = match prepared {
+            Ok(stored) => stored,
+            Err(error) => {
+                // Nothing was opened, so a later call (such as
+                // `start_databases`) tries again.
+                databases.opened.store(false, Ordering::Release);
+                return Err(error);
+            }
+        };
         for database in stored {
-            let id = DatabaseId::parse(&database.name)?;
+            let id = match DatabaseId::parse(&database.name) {
+                Ok(id) => id,
+                Err(error) => {
+                    tracing::error!(database = %database.name, %error, "Failed to open database");
+                    continue;
+                }
+            };
             let path = databases.database_path(&database.name);
             let host = databases.host.clone();
             let registered = tokio::task::spawn_blocking(move || host.register(id, path)).await;

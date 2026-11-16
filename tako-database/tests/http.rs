@@ -524,6 +524,67 @@ async fn requests_whose_body_stalls_give_up_their_slot() {
 }
 
 #[tokio::test]
+async fn repeated_results_count_their_columns_against_the_response_limit() {
+    let h = harness(HostConfig {
+        max_response_bytes: 64 * 1024,
+        ..HostConfig::default()
+    });
+    // A stored statement with a 10 KiB column name, executed by id: each
+    // request is small, but each result repeats the name.
+    let alias = "c".repeat(10 * 1024);
+    let mut requests =
+        vec![json!({"type": "store_sql", "sql_id": 1, "sql": format!("SELECT 1 AS \"{alias}\"")})];
+    requests.extend((0..20).map(|_| json!({"type": "execute", "stmt": {"sql_id": 1}})));
+    let body = pipeline(&h, Value::Null, requests).await;
+    let results = body["results"].as_array().unwrap();
+    assert_eq!(results[1]["type"], "ok", "the first results fit");
+    let last = &results[20];
+    assert_eq!(last["type"], "error", "{last}");
+    assert_eq!(last["error"]["code"], "RESPONSE_TOO_LARGE");
+    let size = serde_json::to_vec(&body).unwrap().len();
+    assert!(
+        size < 2 * 64 * 1024,
+        "the response stays near its limit: {size}"
+    );
+}
+
+#[tokio::test]
+async fn cursor_rows_larger_than_a_response_are_refused() {
+    let h = harness(HostConfig {
+        max_response_bytes: 4 * 1024,
+        ..HostConfig::default()
+    });
+    let request = Request::post("/v3/cursor")
+        .header("authorization", format!("Bearer {}", h.token))
+        .body(Full::new(Bytes::from(
+            json!({"baton": null, "batch": {"steps": [
+                {"stmt": {"sql": "SELECT randomblob(16384)"}},
+                {"stmt": {"sql": "SELECT 1"}},
+            ]}})
+            .to_string(),
+        )))
+        .unwrap();
+    let response = handle(&h.host, &Access::Apps, PEER.parse().unwrap(), request).await;
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let lines: Vec<Value> = std::str::from_utf8(&bytes)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let error = lines
+        .iter()
+        .find(|line| line["type"] == "step_error")
+        .expect("the oversized row fails its step");
+    assert_eq!(error["error"]["code"], "RESPONSE_TOO_LARGE");
+    assert!(
+        lines
+            .iter()
+            .any(|line| line["type"] == "row" && line["row"][0]["value"] == "1"),
+        "later steps still run: {lines:?}"
+    );
+}
+
+#[tokio::test]
 async fn oversized_requests_are_refused() {
     let h = harness(HostConfig {
         max_request_bytes: 64,

@@ -129,12 +129,79 @@ pub(crate) fn run_pipeline(
                 is_autocommit: is_autocommit(stream),
             }),
         };
-        results.push(match result {
+        let result = match result {
             Ok(response) => StreamResult::Ok { response },
             Err(error) => StreamResult::Error { error },
-        });
+        };
+        // Rows are charged as they are read; everything else in a result
+        // (columns, errors, framing) is charged here, so repeating a stored
+        // statement cannot grow the response past its limit.
+        let result = if budget.charge(metadata_size(&result)) {
+            result
+        } else {
+            StreamResult::Error {
+                error: Error::new(
+                    "RESPONSE_TOO_LARGE",
+                    "the response exceeds its size limit; send fewer requests at a time",
+                ),
+            }
+        };
+        results.push(result);
     }
     PipelineOutcome { results, closed }
+}
+
+/// The JSON size of a result apart from its rows: an upper bound for the
+/// fixed fields and framing, and the exact length of names and messages.
+fn metadata_size(result: &StreamResult) -> usize {
+    const FRAMING: usize = 64;
+    fn text(text: &Option<String>) -> usize {
+        text.as_deref().map_or(4, engine::escaped_len) + 2
+    }
+    fn cols(cols: &[crate::proto::Col]) -> usize {
+        cols.iter()
+            .map(|col| 32 + text(&col.name) + text(&col.decltype))
+            .sum()
+    }
+    fn error(error: &Error) -> usize {
+        FRAMING
+            + engine::escaped_len(&error.message)
+            + error.code.len()
+            + error.extended_code.as_deref().map_or(0, str::len)
+    }
+    fn stmt(result: &StmtResult) -> usize {
+        // affected_row_count, last_insert_rowid, rows_read, rows_written,
+        // query_duration_ms, and the keys around the rows.
+        192 + cols(&result.cols)
+    }
+    FRAMING
+        + match result {
+            StreamResult::Error { error: e } => error(e),
+            StreamResult::Ok { response } => match response {
+                StreamResponse::Execute { result } => stmt(result),
+                StreamResponse::Batch { result } => {
+                    result
+                        .step_results
+                        .iter()
+                        .map(|step| step.as_ref().map_or(8, stmt))
+                        .sum::<usize>()
+                        + result
+                            .step_errors
+                            .iter()
+                            .map(|step| step.as_ref().map_or(8, error))
+                            .sum::<usize>()
+                }
+                StreamResponse::Describe { result } => {
+                    64 + cols(&result.cols)
+                        + result
+                            .params
+                            .iter()
+                            .map(|param| 16 + text(&param.name))
+                            .sum::<usize>()
+                }
+                _ => 32,
+            },
+        }
 }
 
 /// The cursor client went away; the stream must be closed.
@@ -146,6 +213,7 @@ pub(crate) fn run_cursor(
     stream: &mut Stream,
     database: &Database,
     batch: &Batch,
+    max_row_bytes: usize,
     emit: &mut dyn FnMut(CursorEntry) -> bool,
 ) -> Result<(), Disconnected> {
     let mut outcomes: Vec<Option<bool>> = Vec::with_capacity(batch.steps.len());
@@ -170,7 +238,17 @@ pub(crate) fn run_cursor(
                             step: step_index,
                             cols,
                         },
-                        engine::Event::Row(row) => CursorEntry::Row { row },
+                        engine::Event::Row(row) => {
+                            // Rows stream one at a time, but each must still
+                            // fit in a response.
+                            if engine::encoded_size(&row) > max_row_bytes {
+                                return Err(Error::new(
+                                    "RESPONSE_TOO_LARGE",
+                                    "a row exceeds the response size limit",
+                                ));
+                            }
+                            CursorEntry::Row { row }
+                        }
                     };
                     if emit(entry) {
                         Ok(())

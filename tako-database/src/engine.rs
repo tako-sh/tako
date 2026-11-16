@@ -69,7 +69,7 @@ impl Budget {
         Self { remaining: limit }
     }
 
-    fn charge(&mut self, bytes: usize) -> bool {
+    pub(crate) fn charge(&mut self, bytes: usize) -> bool {
         match self.remaining.checked_sub(bytes) {
             Some(remaining) => {
                 self.remaining = remaining;
@@ -740,6 +740,9 @@ fn bind(stmt: &mut rusqlite::Statement<'_>, args: &Args<'_>) -> Result<(), Error
                     ));
                 }
             }
+            // With as many arguments as parameters, each parameter bound
+            // once means every parameter is bound.
+            let mut bound = vec![false; expected + 1];
             for NamedArg { name, value } in values.iter() {
                 // A prefixed name binds exactly that parameter; a bare one
                 // binds whichever of `:name`, `@name` and `$name` exists.
@@ -763,6 +766,14 @@ fn bind(stmt: &mut rusqlite::Statement<'_>, args: &Args<'_>) -> Result<(), Error
                         format!("statement has no parameter named `{name}`"),
                     ));
                 };
+                if std::mem::replace(&mut bound[index], true) {
+                    return Err(Error::new(
+                        "ARGS_INVALID",
+                        format!(
+                            "argument `{name}` names a parameter that another argument already binds"
+                        ),
+                    ));
+                }
                 stmt.raw_bind_parameter(index, value).map_err(map_error)?;
             }
         }
@@ -808,7 +819,7 @@ pub(crate) fn encoded_size(row: &[Value]) -> usize {
 
 /// Length of `text` as a JSON string body: quotes and backslashes take two
 /// bytes, control characters two or six.
-fn escaped_len(text: &str) -> usize {
+pub(crate) fn escaped_len(text: &str) -> usize {
     text.len()
         + text
             .bytes()

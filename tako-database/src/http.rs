@@ -319,7 +319,12 @@ async fn cursor(
     })
     .expect("cursor response serializes");
 
-    let (sender, receiver) = tokio::sync::mpsc::channel::<Bytes>(64);
+    // Lines waiting for the client are bounded by count and by bytes; a
+    // line larger than the byte budget waits until the queue is empty.
+    let (sender, receiver) =
+        tokio::sync::mpsc::channel::<(Bytes, tokio::sync::OwnedSemaphorePermit)>(64);
+    let queued_bytes = Arc::new(tokio::sync::Semaphore::new(CURSOR_QUEUE_BYTES));
+    let max_row_bytes = host.config().max_response_bytes;
     // Set when the cursor stopped before its end; the body then fails rather
     // than end as if complete.
     let aborted = Arc::new(AtomicBool::new(false));
@@ -334,11 +339,25 @@ async fn cursor(
         // A client that stops reading must not hold the stream, its
         // transaction, and a request slot indefinitely.
         let send = |line: Bytes| -> bool {
-            match sender.try_send(line) {
+            let need = line.len().clamp(1, CURSOR_QUEUE_BYTES) as u32;
+            let permit = match queued_bytes.clone().try_acquire_many_owned(need) {
+                Ok(permit) => permit,
+                Err(tokio::sync::TryAcquireError::Closed) => return false,
+                Err(tokio::sync::TryAcquireError::NoPermits) => {
+                    match runtime.block_on(tokio::time::timeout(
+                        send_timeout,
+                        queued_bytes.clone().acquire_many_owned(need),
+                    )) {
+                        Ok(Ok(permit)) => permit,
+                        _ => return false,
+                    }
+                }
+            };
+            match sender.try_send((line, permit)) {
                 Ok(()) => true,
                 Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => false,
-                Err(tokio::sync::mpsc::error::TrySendError::Full(line)) => runtime
-                    .block_on(tokio::time::timeout(send_timeout, sender.send(line)))
+                Err(tokio::sync::mpsc::error::TrySendError::Full(item)) => runtime
+                    .block_on(tokio::time::timeout(send_timeout, sender.send(item)))
                     .is_ok_and(|sent| sent.is_ok()),
             }
         };
@@ -350,7 +369,14 @@ async fn cursor(
         let mut lead = first;
         lead.push(b'\n');
         let connected = send(Bytes::from(lead))
-            && exec::run_cursor(&mut stream, &database, &request.batch, &mut emit).is_ok();
+            && exec::run_cursor(
+                &mut stream,
+                &database,
+                &request.batch,
+                max_row_bytes,
+                &mut emit,
+            )
+            .is_ok();
         if connected {
             restore_entry(&task_host, key, stream);
         } else {
@@ -367,7 +393,8 @@ async fn cursor(
                 return None;
             }
             match receiver.recv().await {
-                Some(line) => Some((Ok(Frame::data(line)), (receiver, aborted, false))),
+                // The line leaves the queue's byte budget as it is handed on.
+                Some((line, _permit)) => Some((Ok(Frame::data(line)), (receiver, aborted, false))),
                 None if aborted.load(Ordering::Acquire) => Some((
                     Err::<Frame<Bytes>, BoxError>("the cursor was stopped before its end".into()),
                     (receiver, aborted, true),
@@ -385,6 +412,9 @@ async fn cursor(
 }
 
 type StreamKey = [u8; 16];
+
+/// Bytes of cursor output queued for a client that has not read them yet.
+const CURSOR_QUEUE_BYTES: usize = 4 * 1024 * 1024;
 
 /// Takes the stream named by `baton`, or starts a new one.
 #[allow(clippy::result_large_err)]
@@ -452,11 +482,9 @@ fn settle(
             None => None,
         });
     }
-    if let Err(limit) = host.reserve_stream(database) {
-        // Dropping the stream rolls back its transaction.
-        return Err(limit.message);
-    }
-    host.inner.streams.lock().insert(
+    // On failure the stream is dropped, which rolls back its transaction.
+    host.insert_stream(
+        database,
         key,
         StreamEntry {
             database: database.id.clone(),
@@ -465,7 +493,8 @@ fn settle(
             last_used: Instant::now(),
             stream: Some(stream),
         },
-    );
+    )
+    .map_err(|limit| limit.message)?;
     Ok(Some(baton(key, 1)))
 }
 
@@ -486,9 +515,8 @@ fn retain_busy(
         entry.last_used = Instant::now();
         return Ok(entry.sequence);
     }
-    host.reserve_stream(database)
-        .map_err(|limit| limit.message)?;
-    host.inner.streams.lock().insert(
+    host.insert_stream(
+        database,
         key,
         StreamEntry {
             database: database.id.clone(),
@@ -497,7 +525,8 @@ fn retain_busy(
             last_used: Instant::now(),
             stream: None,
         },
-    );
+    )
+    .map_err(|limit| limit.message)?;
     Ok(1)
 }
 

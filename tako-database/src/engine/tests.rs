@@ -156,6 +156,10 @@ fn binds_bare_names_to_any_prefix_and_prefixed_names_exactly() {
     assert_eq!(result.rows, vec![vec![Value::Integer(12)]]);
     let error = execute("SELECT $c", &[arg(":c", 3)]).unwrap_err();
     assert_eq!(error.code, "ARGS_INVALID");
+    // Two arguments for `:x` would leave `:y` unbound (NULL).
+    let error = execute("SELECT :x, :y", &[arg(":x", 1), arg("x", 2)]).unwrap_err();
+    assert_eq!(error.code, "ARGS_INVALID");
+    assert!(error.message.contains("already binds"), "{}", error.message);
 }
 
 #[test]
