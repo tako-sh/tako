@@ -113,7 +113,10 @@ other clients and do not run Corrosion. Servers replicate shared ciphertext.
 
 Keep `tako.toml` in Git; keep `.tako/` ignored. Each worktree has separate secret
 drafts. Set/remove changes remain local until deploy or `secrets sync` publishes
-the selected environment. `network sync` only refreshes the device cache. Sync
+the selected environment. `secrets clear --env <env>` is the exception: it deletes
+every app secret of that environment from its network at once, keeping credentials,
+storage keys, and backup keys. Use it when an environment is retired or moves to
+another network; `tako delete` never removes secrets. `network sync` only refreshes the device cache. Sync
 does not restart running apps. Different keys merge independently; the same key
 uses deterministic logical last-write-wins. Coordinate concurrent releases and
 multi-key rotations. Shared state retains only each key's current encrypted value

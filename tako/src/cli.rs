@@ -410,7 +410,7 @@ pub(crate) fn supports_dry_run(path: &[&str]) -> bool {
                 "drain" | "resume" | "add" | "remove" | "list" | "uninstall"
             ]
             | ["network", "client", "add" | "remove" | "list"]
-            | ["secrets", "migrate" | "sync"]
+            | ["secrets", "migrate" | "sync" | "clear"]
             | ["backups", "now" | "download" | "restore"]
             | ["workflows", "retry" | "cancel"]
     )
@@ -545,7 +545,11 @@ impl Cli {
                 &command,
             ),
             Commands::Secrets(cmd) => {
-                let emit_generic = json && !matches!(cmd, secret::SecretCommands::List);
+                let emit_generic = json
+                    && !matches!(
+                        cmd,
+                        secret::SecretCommands::List | secret::SecretCommands::Clear { .. }
+                    );
                 secret::run(cmd, self.config.as_deref())?;
                 if emit_generic {
                     json_success(true, "secrets")

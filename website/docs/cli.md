@@ -25,11 +25,11 @@ Use `tako <command> --help` or the connected MCP tool's schema for the exact arg
 
 App-scoped commands that honor `-c`: `agents`, `mcp`, `init`, `dev`, `run`, `logs`, `deploy`, `releases`, `backups`, `delete`, `secrets`, `credentials`, `storages`, `generate`, and project-context `scale`.
 
-Preview changes with `--dry-run` on `agents`, `deploy`, `scale`, `delete`, `connect`, `disconnect`, `ssh`, `secrets sync`, `secrets migrate`, `backups now/download/restore`, and `workflows retry/cancel`. Network membership commands also support previews, including server add, remove, drain, resume, and uninstall. Read-only commands still report their results.
+Preview changes with `--dry-run` on `agents`, `deploy`, `scale`, `delete`, `connect`, `disconnect`, `ssh`, `secrets sync`, `secrets migrate`, `secrets clear`, `backups now/download/restore`, and `workflows retry/cancel`. Network membership commands also support previews, including server add, remove, drain, resume, and uninstall. Read-only commands still report their results.
 
 The config file's parent directory determines the project root and local `.tako/` state. Config files in the same directory share secret drafts; a bound environment cannot be reused for another app or network. See [alternate configurations](/secrets/#use-an-alternate-configuration).
 
-For finite commands, `--json` prints one final object. Commands without a specialized schema use `{"ok":true,"command":"<command>"}`. Failures print `{"ok":false,"error":{"message":"..."}}` on stdout and the human-readable error on stderr. Specialized objects: `status` includes `servers`; `doctor` includes paths, CA, dev server, apps, and proxy checks; `network server list`, `secrets list`, `credentials list`, `dev list`, `backups list`/`status`, and `releases list` include their collections; `backups download` and `backups restore` include the backup entry and what they wrote. Streaming exceptions keep stdout as JSONL until interrupted: `tako logs --tail --json` emits one log record per line, and `tako dev --json` emits a ready object, then log and event records, with no logo or TUI. `tako run` is also an exception: child stdout stays untouched and no JSON result object is appended.
+For finite commands, `--json` prints one final object. Commands without a specialized schema use `{"ok":true,"command":"<command>"}`. Failures print `{"ok":false,"error":{"message":"..."}}` on stdout and the human-readable error on stderr. Specialized objects: `status` includes `servers`; `doctor` includes paths, CA, dev server, apps, and proxy checks; `network server list`, `secrets list`, `credentials list`, `dev list`, `backups list`/`status`, and `releases list` include their collections; `backups download` and `backups restore` include the backup entry and what they wrote; `secrets clear` includes `environment`, the `cleared` secret names, and `dry_run`. Streaming exceptions keep stdout as JSONL until interrupted: `tako logs --tail --json` emits one log record per line, and `tako dev --json` emits a ready object, then log and event records, with no logo or TUI. `tako run` is also an exception: child stdout stays untouched and no JSON result object is appended.
 
 Installed CLIs send an anonymous event per command so we can count unique users and see which commands run. Set `TAKO_TELEMETRY=0` to opt out. See [Usage stats](#usage-stats).
 
@@ -292,12 +292,15 @@ tako secrets add <NAME> ...
 tako secrets rm <NAME> [--env <env>] [--yes]
 tako secrets list
 tako secrets sync [--env <env>] [--retry-expired]
+tako secrets clear --env <env> [--yes]
 tako secrets migrate
 tako secrets key export [--env <env>]
 tako secrets key import [--env <env>] [--passphrase]
 ```
 
 Secrets are app-facing values delivered to SDKs. Values are encrypted in ignored worktree-local `.tako/secrets.local.json`; keys are stored outside the project. Interactive prompts accept pasted multiline values and ask before trimming surrounding whitespace; non-interactive commands read the full stdin stream. Set/remove commands only edit local drafts. Deploy and `secrets sync` pull published state, preserve local edits, and publish per-key changes for the selected environment. Sync does not restart running apps; deploy to apply values. Network-bound secrets, provider credentials, storage credentials, and backup keys are replicated as ciphertext between servers. Authorized clients cache them through HTTPS.
+
+`secrets clear` deletes every app secret of one environment from that environment's network and publishes the deletions immediately, unlike `set` and `rm`. It first pulls published state, so values published from other devices or worktrees are deleted too, and it discards this worktree's unpublished app drafts for the environment. Other unpublished drafts, such as provider credentials, stay local. Storage credentials and backup keys are kept. Interactive runs list the names and ask for confirmation; non-interactive runs require `--yes`. `--dry-run` previews from local drafts and the device cache without contacting the network. Running apps keep their values until their next deployment.
 
 Secret state retains the current value per key and versioned deletions. Pending publication requests expire after seven days; `--retry-expired` explicitly replaces expired requests with the current local drafts as new changes. Review the drafts first, since they can overwrite remote changes to those keys.
 

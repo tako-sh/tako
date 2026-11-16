@@ -143,7 +143,9 @@ pub(super) async fn sync_secrets(
     Ok(())
 }
 
-fn resolve_app_name(config_path: &std::path::Path) -> Result<String, Box<dyn std::error::Error>> {
+pub(super) fn resolve_app_name(
+    config_path: &std::path::Path,
+) -> Result<String, Box<dyn std::error::Error>> {
     crate::app::require_app_name_from_config_path(config_path)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()).into())
 }

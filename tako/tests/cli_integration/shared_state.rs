@@ -957,3 +957,159 @@ fn expired_publication_preserves_current_draft_and_requires_explicit_retry() {
         );
     }
 }
+
+#[test]
+fn clearing_an_environment_publishes_deletions_and_leaves_other_drafts_local() {
+    let server = ApiServer::new();
+    let owner = server.project("clear-owner");
+    let other = server.project("clear-other");
+    for name in ["ALPHA", "BETA"] {
+        server.ok(
+            &server.owner_home,
+            &owner,
+            &["secrets", "set", name, "--env", "production"],
+            Some("published"),
+        );
+    }
+    server.ok(
+        &server.owner_home,
+        &owner,
+        &["secrets", "sync", "--env", "production"],
+        None,
+    );
+    // Published from another worktree, so it is absent from the owner's drafts.
+    server.ok(
+        &server.owner_home,
+        &other,
+        &["secrets", "set", "GAMMA", "--env", "production"],
+        Some("from-other-worktree"),
+    );
+    server.ok(
+        &server.owner_home,
+        &other,
+        &["secrets", "sync", "--env", "production"],
+        None,
+    );
+    server.ok(
+        &server.owner_home,
+        &owner,
+        &["secrets", "set", "DRAFT_ONLY", "--env", "production"],
+        Some("unpublished"),
+    );
+    // A draft-only removal of a published value is still reported and deleted.
+    server.ok(
+        &server.owner_home,
+        &owner,
+        &["secrets", "rm", "BETA", "--env", "production", "--yes"],
+        None,
+    );
+    server.ok(
+        &server.owner_home,
+        &owner,
+        &["credentials", "set", "postgres_url", "--env", "production"],
+        Some("postgres://fixture:example@db.example.test/app"),
+    );
+    let published = server.store.0.lock().unwrap().1.secrets.len();
+    let expected = ["ALPHA", "BETA", "DRAFT_ONLY", "GAMMA"];
+
+    let unconfirmed = server.run(
+        &server.owner_home,
+        &owner,
+        &["secrets", "clear", "--env", "production"],
+        None,
+    );
+    assert!(!unconfirmed.status.success());
+    assert!(
+        stderr_str(&unconfirmed).contains("requires --yes"),
+        "{}",
+        stderr_str(&unconfirmed)
+    );
+
+    let preview = server.ok(
+        &server.owner_home,
+        &owner,
+        &["--dry-run", "secrets", "clear", "--env", "production"],
+        None,
+    );
+    assert_eq!(preview["cleared"], serde_json::json!(expected));
+    assert_eq!(preview["dry_run"], true);
+    assert_eq!(server.store.0.lock().unwrap().1.secrets.len(), published);
+
+    let cleared = server.ok(
+        &server.owner_home,
+        &owner,
+        &["secrets", "clear", "--env", "production", "--yes"],
+        None,
+    );
+    assert_eq!(cleared["command"], "secrets");
+    assert_eq!(cleared["environment"], "production");
+    assert_eq!(cleared["cleared"], serde_json::json!(expected));
+    assert_eq!(cleared["dry_run"], false);
+
+    let state = server.store.0.lock().unwrap().1.clone();
+    let latest = state.latest().unwrap();
+    for name in ["ALPHA", "BETA", "GAMMA"] {
+        let record = latest
+            .values()
+            .find(|record| record.address.name == name)
+            .unwrap();
+        assert!(record.value.is_none(), "{name} was not deleted");
+    }
+    // Deletion markers replace the published values. The unpublished app draft
+    // is discarded, and the credential draft stays local.
+    assert_eq!(state.secrets.len(), published);
+    assert!(
+        latest
+            .values()
+            .all(|record| record.address.name != "DRAFT_ONLY"
+                && record.address.name != "postgres_url")
+    );
+    let local: serde_json::Value =
+        serde_json::from_slice(&fs::read(owner.join(".tako/secrets.local.json")).unwrap()).unwrap();
+    let values = &local["values"]["production"];
+    assert!(values["app"].as_object().is_none_or(|app| app.is_empty()));
+    assert!(values["credentials"].get("postgres_url").is_some());
+
+    // Other worktrees drop the deleted values on their next sync.
+    server.ok(
+        &server.owner_home,
+        &other,
+        &["secrets", "sync", "--env", "production"],
+        None,
+    );
+    let listed = server.ok(&server.owner_home, &other, &["secrets", "list"], None);
+    assert_eq!(listed["secrets"], serde_json::json!([]));
+
+    // Clearing again publishes nothing new.
+    let again = server.ok(
+        &server.owner_home,
+        &owner,
+        &["secrets", "clear", "--env", "production", "--yes"],
+        None,
+    );
+    assert_eq!(again["cleared"], serde_json::json!([]));
+    assert_eq!(server.store.0.lock().unwrap().1, state);
+}
+
+#[test]
+fn clearing_requires_an_environment_bound_to_a_network() {
+    let server = ApiServer::new();
+    let project = server.project("clear-unbound");
+    fs::write(
+        project.join("tako.toml"),
+        "name='demo'\n[envs.production]\nroute='demo.example.test'\n",
+    )
+    .unwrap();
+    let result = server.run(
+        &server.owner_home,
+        &project,
+        &["secrets", "clear", "--env", "production", "--yes"],
+        None,
+    );
+    assert!(!result.status.success());
+    assert!(
+        stderr_str(&result).contains("has no network in tako.toml"),
+        "{}",
+        stderr_str(&result)
+    );
+}
