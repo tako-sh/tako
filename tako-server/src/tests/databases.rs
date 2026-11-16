@@ -716,7 +716,11 @@ async fn deployers_migrate_only_their_own_apps_databases() {
     else {
         panic!("an app that does not use the database is refused");
     };
-    assert!(message.contains("does not use database"), "{message}");
+    // Command responses are not printed: CodeQL treats them as secret-bearing (rust/cleartext-logging).
+    assert!(
+        message.contains("does not use database"),
+        "the refusal names the missing grant"
+    );
 
     ok(
         &state,
@@ -745,7 +749,7 @@ async fn deployers_migrate_only_their_own_apps_databases() {
     };
     assert!(
         message.contains("cannot apply migrations of other"),
-        "{message}"
+        "the refusal names the other app"
     );
 }
 
@@ -765,7 +769,10 @@ async fn reset_empties_a_database_after_a_safety_copy() {
         },
     )
     .await;
-    assert!(missing.contains("no such table"), "{missing}");
+    assert!(
+        missing.contains("no such table"),
+        "the reset dropped the table"
+    );
     assert_eq!(snapshot_reasons(&state).await, ["restore"]);
     // The safety copy restores the contents.
     let snapshot =
