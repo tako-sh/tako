@@ -225,7 +225,9 @@ fn render(
                     ),
                 )?;
                 format!(
-                    "  ProxyCommand {}\n  ProxyJump none\n  ControlMaster auto\n  ControlPath {}\n  ControlPersist 5\n",
+                    // ConnectTimeout also bounds OpenSSH's wait for the server
+                    // banner, which the proxy cannot see once TCP is up.
+                    "  ProxyCommand {}\n  ProxyJump none\n  ConnectTimeout 15\n  ControlMaster auto\n  ControlPath {}\n  ControlPersist 5\n",
                     super::ssh_tunnel::proxy_command(executable, &alias.id, &id.to_string())?,
                     quote_path(&control)?,
                 )
@@ -480,6 +482,7 @@ mod tests {
             )
         );
         assert_eq!(value("controlmaster"), "auto");
+        assert_eq!(value("connecttimeout"), "15");
         let members = crate::network::server_members(&fixture.profile).unwrap();
         let member = &members[&fixture.server];
         let MemberKind::Server(info) = &member.kind else {

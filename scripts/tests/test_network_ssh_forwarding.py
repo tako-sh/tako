@@ -117,6 +117,30 @@ class ForwardingPolicyTests(unittest.TestCase):
             self.assertEqual(direct.recv(16), b'banner\n')
         self.assertEqual(self.forward(address, other.port).stdout, '', 'non-loopback forward must be refused')
 
+        # permitopen also governs Unix-socket forwards, and a socket path never
+        # matches a host:port entry, so those stay refused.
+        with tempfile.TemporaryDirectory() as sockets:
+            target = Path(sockets, 'target.sock')
+            unix = socket.socket(socket.AF_UNIX)
+            self.addCleanup(unix.close)
+            unix.bind(str(target))
+            unix.listen()
+            threading.Thread(target=lambda: unix.accept()[0].sendall(b'unix\n'), daemon=True).start()
+            local = Path(sockets, 'local.sock')
+            forward = subprocess.Popen([*self.ssh[:-1], '-N', '-o', 'ExitOnForwardFailure=yes', '-L',
+                                        f'{local}:{target}', self.ssh[-1]], stdin=subprocess.DEVNULL,
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.addCleanup(forward.wait, 5)
+            self.addCleanup(forward.terminate)
+            deadline = time.monotonic() + 10
+            while not local.exists():
+                self.assertLess(time.monotonic(), deadline, 'local forward did not start')
+                time.sleep(0.05)
+            with socket.socket(socket.AF_UNIX) as client:
+                client.connect(str(local))
+                client.settimeout(5)
+                self.assertEqual(client.recv(16), b'', 'Unix-socket forwarding must be refused')
+
         remote = subprocess.run([*self.ssh[:-1], '-o', 'ExitOnForwardFailure=yes', '-R',
                                  f'{free_port()}:127.0.0.1:{loopback.port}', self.ssh[-1], 'true'],
                                 stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20)
