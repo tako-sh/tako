@@ -609,7 +609,7 @@ pub fn ssh_config(value: Option<&str>, config_path: Option<&Path>, remove: bool)
     }
     if let Some(host) = hosts.first() {
         output::hint(&format!(
-            "Use them with any OpenSSH tool: `ssh {host}`, `scp file {host}:`, `rsync -a dir/ {host}:dir/`, `ssh -L 5432:localhost:5432 {host}`, or VS Code Remote-SSH. Rerun after server membership changes."
+            "Use them with any OpenSSH tool: `ssh {host}`, `scp file {host}:`, `rsync -a dir/ {host}:dir/`, `ssh -L 5432:localhost:5432 {host}` (server loopback only), or VS Code Remote-SSH. Rerun after server membership changes."
         ));
     }
     Ok(())

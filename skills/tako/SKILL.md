@@ -160,7 +160,7 @@ WireGuard private traffic needs the advertised UDP endpoint; there is no hosted
 relay. `tako ssh` uses embedded WireGuard without sudo or system network changes.
 When the handshake gets no reply it fails fast naming the UDP port and host;
 `tako doctor` checks every server's handshake. `tako ssh config` adds
-`~/.ssh/config` aliases on the same transport for scp, rsync, port forwarding,
+`~/.ssh/config` aliases on the same transport for scp, rsync, loopback port forwarding,
 and editors.
 `connect` needs network privileges and enables private DNS, short server names,
 and approved SSH aliases for local applications; `disconnect` removes these

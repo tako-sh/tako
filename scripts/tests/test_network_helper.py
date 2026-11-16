@@ -490,7 +490,9 @@ class ReconcileTests(unittest.TestCase):
         self.assertIn('tcp dport 9850 drop', self.runner.policy)
         self.assertIn(f'iifname "{DEV}" drop', self.runner.policy)
         self.apply()
-        self.assertIn('from="fd00:1234:5678::2",no-agent-forwarding,no-X11-forwarding,no-port-forwarding', self.ssh)
+        self.assertIn('from="fd00:1234:5678::2",no-agent-forwarding,no-X11-forwarding,'
+                      'permitopen="127.0.0.1:*",permitopen="localhost:*",permitopen="[::1]:*",'
+                      'permitlisten="localhost:1" ssh-ed25519 ', self.ssh)
 
     def test_mutation_failure_brings_owned_interface_down_and_retry_recovers(self):
         self.apply()

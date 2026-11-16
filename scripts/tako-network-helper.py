@@ -322,14 +322,24 @@ def firewall(state):
     return '\n'.join(lines) + '\n'
 
 
+LOOPBACK_FORWARDING = ('permitopen="127.0.0.1:*",permitopen="localhost:*",permitopen="[::1]:*",'
+                       'permitlisten="localhost:1"')
+
+
 def ssh_authorizations(state):
     lines = []
     for config in state['networks'].values():
         for peer in config['peers']:
             if 'ssh_public_key' in peer:
                 ip = peer['address'].split('/')[0]
-                lines.append(f'from="{ip}",no-agent-forwarding,no-X11-forwarding,no-port-forwarding '
-                             f'{peer["ssh_public_key"]}')
+                # Local forwarding reaches only the server's loopback, which the
+                # shell this key grants can already reach; it lets `ssh -L` and
+                # editors such as VS Code Remote-SSH work. OpenSSH has no key
+                # option that disables remote forwarding alone, so permitlisten
+                # names privileged port 1, which the unprivileged tako account
+                # can never bind: every `-R` request is refused.
+                lines.append(f'from="{ip}",no-agent-forwarding,no-X11-forwarding,'
+                             f'{LOOPBACK_FORWARDING} {peer["ssh_public_key"]}')
     return '\n'.join(sorted(set(lines))) + ('\n' if lines else '')
 
 
