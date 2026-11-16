@@ -322,3 +322,49 @@ fn postgres_presence_ignores_each_servers_clock() {
         .get(0);
     assert_eq!(count, 0);
 }
+
+// Snapshots are sampled and deduplicated per session. A member that joins and
+// leaves between two samples is never reported to another session, so callers
+// must judge membership from one session's own view (see e2e/shared-channels.ts).
+#[tokio::test]
+async fn a_member_between_two_samples_is_not_reported_to_other_sessions() {
+    use crate::PresenceSession;
+    use std::sync::Arc;
+    let store = Arc::new(ChannelStore::open_in_memory().unwrap());
+    let update = br#"{"type":"tako.presence","data":{"page":"chat"}}"#;
+    let mut observer = PresenceSession::new(store.clone(), "lobby", None).unwrap();
+    observer.update(update).await.unwrap();
+    let first = observer.snapshot().await.unwrap().expect("first sample");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&first).unwrap()["members"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let mut page = PresenceSession::new(store.clone(), "lobby", None).unwrap();
+    page.update(update).await.unwrap();
+    let both = page.snapshot().await.unwrap().expect("page sees both");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&both).unwrap()["members"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    drop(page);
+    // Drop removes membership on a spawned task.
+    for _ in 0..100 {
+        if store
+            .presence("lobby", crate::store::now_unix_ms())
+            .unwrap()
+            .len()
+            == 1
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(observer.snapshot().await.unwrap(), None);
+}
