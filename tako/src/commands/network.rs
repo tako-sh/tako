@@ -473,6 +473,12 @@ pub fn connect(value: Option<&str>, config_path: Option<&Path>) -> Result<()> {
 const HANDSHAKE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub fn disconnect(value: Option<&str>, config_path: Option<&Path>) -> Result<()> {
+    // Read connected networks under the same lock that connect switches with.
+    let _switch = if output::is_dry_run() {
+        None
+    } else {
+        Some(switch_lock()?)
+    };
     let targets = match value {
         Some(_) => {
             let alias = network::resolve_network(value, config_path)?;
@@ -494,7 +500,6 @@ pub fn disconnect(value: Option<&str>, config_path: Option<&Path>) -> Result<()>
             serde_json::json!({"networks": names, "connected": false}),
         );
     }
-    let _switch = switch_lock()?;
     for (alias, profile) in &targets {
         teardown(alias, profile)?;
         output::success(&format!("Disconnected from {}", alias.name));
