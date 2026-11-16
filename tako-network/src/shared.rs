@@ -1,4 +1,5 @@
-//! Versioned encrypted values. Membership remains in its own immutable registry.
+//! Versioned shared records: sealed values for secrets and plaintext for
+//! non-secret kinds. Membership remains in its own immutable registry.
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
@@ -19,7 +20,7 @@ mod tests;
 
 pub const MAX_SHARED_RECORDS: usize = 10_000;
 /// Published commands can be retried for seven days, independently of value retention.
-pub const SECRET_RETRY_SECONDS: u64 = 7 * 86400;
+pub const PUBLICATION_RETRY_SECONDS: u64 = 7 * 86400;
 pub const MAX_SHARED_BYTES: usize = 8 * 1024 * 1024;
 // A current value now includes recipient keys that used to occupy separate
 // grant records. Allow those keys to use the existing shared-state budget;
@@ -31,53 +32,81 @@ pub const SHARED_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS tako_shared_records 
     PRIMARY KEY (kind, record_id, digest)\n\
 );";
 
-/// Plaintext exists only inside authorized clients and server agents. It has
-/// no Debug implementation and is never a public RPC field.
+/// A record's content. The content of a secret exists in the clear only inside
+/// authorized clients and server agents. It has no Debug implementation and is
+/// never a public RPC field.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SecretContent {
+pub struct RecordContent {
     pub value: Zeroizing<String>,
     pub expires_on: Option<String>,
 }
 
-impl SecretContent {
+impl RecordContent {
     pub fn validate(&self) -> RuntimeResult<()> {
-        if self.value.len() > crate::sealed::MAX_SECRET_BYTES - 256
-            || self.expires_on.as_ref().is_some_and(|date| {
-                date.len() != 10
-                    || date.as_bytes()[4] != b'-'
-                    || date.as_bytes()[7] != b'-'
-                    || !date
-                        .bytes()
-                        .enumerate()
-                        .all(|(i, b)| i == 4 || i == 7 || b.is_ascii_digit())
-            })
-        {
-            return Err(RuntimeError::Invalid("secret content"));
-        }
-        Ok(())
+        validate_content(&self.value, self.expires_on.as_deref())
     }
+}
+
+/// The stored content of a record whose kind is not secret.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlainContent {
+    pub value: String,
+    pub expires_on: Option<String>,
+}
+
+impl PlainContent {
+    pub fn validate(&self) -> RuntimeResult<()> {
+        validate_content(&self.value, self.expires_on.as_deref())
+    }
+}
+
+fn validate_content(value: &str, expires_on: Option<&str>) -> RuntimeResult<()> {
+    if value.len() > crate::sealed::MAX_SECRET_BYTES - 256
+        || expires_on.is_some_and(|date| {
+            date.len() != 10
+                || date.as_bytes()[4] != b'-'
+                || date.as_bytes()[7] != b'-'
+                || !date
+                    .bytes()
+                    .enumerate()
+                    .all(|(i, b)| i == 4 || i == 7 || b.is_ascii_digit())
+        })
+    {
+        return Err(RuntimeError::Invalid("record content"));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum SecretKind {
+pub enum RecordKind {
     App,
     Credential,
     Storage,
     BackupKey,
+    /// The ID of the environment's active backup key. Not secret.
     BackupActive,
+}
+
+impl RecordKind {
+    /// Secret records are sealed to each reader. Other records are stored as
+    /// plaintext, so they need no per-reader keys and every server can read them.
+    pub fn is_secret(self) -> bool {
+        !matches!(self, Self::BackupActive)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SecretAddress {
+pub struct RecordAddress {
     pub scope: AppEnv,
-    pub kind: SecretKind,
+    pub kind: RecordKind,
     pub name: String,
 }
 
-impl SecretAddress {
+impl RecordAddress {
     pub fn validate(&self) -> RuntimeResult<()> {
         if self.name.is_empty()
             || self.name.len() > 128
@@ -86,16 +115,18 @@ impl SecretAddress {
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
         {
-            return Err(RuntimeError::Invalid("secret name"));
+            return Err(RuntimeError::Invalid("record name"));
         }
         Ok(())
     }
 
     pub fn allowed(&self, permissions: &Permissions) -> bool {
         (permissions.network_admin && permissions.server_admin)
-            || (self.kind == SecretKind::App && permissions.can_deploy(&self.scope))
+            || (self.kind == RecordKind::App && permissions.can_deploy(&self.scope))
     }
 
+    // Context labels are bound into stored ciphertexts, so they keep the names
+    // they were created with.
     pub fn context(&self, network: &NetworkId, operation: &RequestId) -> RuntimeResult<Vec<u8>> {
         self.validate()?;
         Ok(serde_json::to_vec(&(
@@ -107,21 +138,22 @@ impl SecretAddress {
     }
 }
 
-/// No plaintext is accepted by the public RPC. The ingress server decrypts the
-/// proposed value and publishes one canonical ciphertext for its recipients.
+/// No plaintext is accepted by the public RPC. The ingress server opens the
+/// proposed value and publishes one canonical record: a ciphertext for its
+/// recipients, or plaintext for a kind that is not secret.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SecretMutation {
+pub struct RecordMutation {
     pub id: RequestId,
     /// Highest published revision this writer has observed for the address.
     pub observed_revision: u64,
     /// A fixed deadline; retrying must not extend the operation's lifetime.
     pub expires_at: u64,
-    pub address: SecretAddress,
+    pub address: RecordAddress,
     pub value: Option<SealedValue>,
 }
 
-impl SecretMutation {
+impl RecordMutation {
     pub fn context(&self, network: &NetworkId) -> RuntimeResult<Vec<u8>> {
         Ok(serde_json::to_vec(&(
             "tako-secret-command-v2",
@@ -138,33 +170,38 @@ impl SecretMutation {
 /// A retry retains this exact record, including its ciphertext and revision.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SecretRecord {
+pub struct SharedRecord {
     pub id: RequestId,
-    pub address: SecretAddress,
+    pub address: RecordAddress,
     pub revision: u64,
     pub issuer: DeviceId,
     pub author: DeviceId,
+    /// The sealed value of a secret record.
     pub value: Option<Ciphertext>,
     pub keys: BTreeMap<DeviceId, SealedValue>,
+    /// The value of a record whose kind is not secret. A record with neither
+    /// value is a deletion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plaintext: Option<PlainContent>,
 }
 
 /// Publication acknowledgement without a historical ciphertext.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SecretReceipt {
+pub struct RecordReceipt {
     pub id: RequestId,
-    pub address: SecretAddress,
+    pub address: RecordAddress,
     pub revision: u64,
     pub issuer: DeviceId,
     pub author: DeviceId,
 }
-impl SecretReceipt {
+impl RecordReceipt {
     pub fn order(&self) -> (u64, &DeviceId, &RequestId) {
         (self.revision, &self.issuer, &self.id)
     }
 }
-impl From<&SecretRecord> for SecretReceipt {
-    fn from(record: &SecretRecord) -> Self {
+impl From<&SharedRecord> for RecordReceipt {
+    fn from(record: &SharedRecord) -> Self {
         Self {
             id: record.id.clone(),
             address: record.address.clone(),
@@ -179,7 +216,7 @@ impl From<&SecretRecord> for SecretReceipt {
 /// included in current records. It is not an RPC or new-write format.
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct LegacySecretGrant {
+pub(crate) struct LegacyKeyGrant {
     pub record: RequestId,
     pub recipient: DeviceId,
     pub issuer: DeviceId,
@@ -190,31 +227,31 @@ pub(crate) struct LegacySecretGrant {
 #[serde(deny_unknown_fields)]
 pub struct SharedSnapshot {
     pub network: NetworkId,
-    pub secrets: Vec<SecretRecord>,
+    pub records: Vec<SharedRecord>,
 }
 
 impl SharedSnapshot {
     pub fn empty(network: NetworkId) -> Self {
         Self {
             network,
-            secrets: Vec::new(),
+            records: Vec::new(),
         }
     }
 
     pub fn validate(&self) -> RuntimeResult<()> {
-        if self.secrets.len() > MAX_SHARED_RECORDS
+        if self.records.len() > MAX_SHARED_RECORDS
             || serde_json::to_vec(self)?.len() > MAX_SHARED_BYTES
         {
-            return Err(RuntimeError::Capacity("shared secret state"));
+            return Err(RuntimeError::Capacity("shared state"));
         }
         let mut ids = BTreeMap::new();
         let mut addresses = BTreeMap::new();
-        for record in &self.secrets {
+        for record in &self.records {
             record.validate()?;
             if ids.insert(&record.id, record).is_some()
                 || addresses.insert(&record.address, record).is_some()
             {
-                return Err(RuntimeError::Conflict("duplicate current secret"));
+                return Err(RuntimeError::Conflict("duplicate current record"));
             }
         }
         Ok(())
@@ -224,14 +261,14 @@ impl SharedSnapshot {
         if self.network != other.network {
             return Err(RuntimeError::Conflict("shared state network"));
         }
-        let mut current = BTreeMap::<SecretAddress, SecretRecord>::new();
+        let mut current = BTreeMap::<RecordAddress, SharedRecord>::new();
         let mut ids = BTreeMap::new();
-        for record in self.secrets.iter().chain(&other.secrets) {
+        for record in self.records.iter().chain(&other.records) {
             record.validate()?;
             if let Some(previous) = ids.insert(&record.id, record)
                 && !record.same_value(previous)
             {
-                return Err(RuntimeError::Conflict("secret operation"));
+                return Err(RuntimeError::Conflict("record operation"));
             }
             match current.get_mut(&record.address) {
                 Some(previous) if previous.id == record.id => previous.merge_keys(record)?,
@@ -243,7 +280,7 @@ impl SharedSnapshot {
         }
         let merged = Self {
             network: self.network.clone(),
-            secrets: current.into_values().collect(),
+            records: current.into_values().collect(),
         };
         merged.validate()?;
         *self = merged;
@@ -256,15 +293,16 @@ impl SharedSnapshot {
         #[serde(deny_unknown_fields)]
         struct Persisted {
             network: NetworkId,
-            secrets: Vec<SecretRecord>,
+            #[serde(alias = "secrets")]
+            records: Vec<SharedRecord>,
             #[serde(default)]
-            grants: Vec<LegacySecretGrant>,
+            grants: Vec<LegacyKeyGrant>,
         }
         let old: Persisted = serde_json::from_slice(bytes)?;
         let mut state = Self::empty(old.network.clone());
         state.merge(&Self {
             network: old.network,
-            secrets: old.secrets,
+            records: old.records,
         })?;
         for grant in old.grants {
             state.import_grant(&grant)?;
@@ -273,9 +311,9 @@ impl SharedSnapshot {
         Ok(state)
     }
 
-    pub(crate) fn import_grant(&mut self, grant: &LegacySecretGrant) -> RuntimeResult<bool> {
+    pub(crate) fn import_grant(&mut self, grant: &LegacyKeyGrant) -> RuntimeResult<bool> {
         if let Some(record) = self
-            .secrets
+            .records
             .iter_mut()
             .find(|record| record.id == grant.record)
         {
@@ -285,10 +323,10 @@ impl SharedSnapshot {
         Ok(false)
     }
 
-    pub fn latest(&self) -> RuntimeResult<BTreeMap<SecretAddress, &SecretRecord>> {
+    pub fn latest(&self) -> RuntimeResult<BTreeMap<RecordAddress, &SharedRecord>> {
         self.validate()?;
         Ok(self
-            .secrets
+            .records
             .iter()
             .map(|record| (record.address.clone(), record))
             .collect())
@@ -298,8 +336,8 @@ impl SharedSnapshot {
         self.validate()?;
         Ok(Self {
             network: self.network.clone(),
-            secrets: self
-                .secrets
+            records: self
+                .records
                 .iter()
                 .filter(|record| record.address.allowed(permissions))
                 .cloned()
@@ -308,7 +346,7 @@ impl SharedSnapshot {
     }
 }
 
-impl SecretRecord {
+impl SharedRecord {
     pub fn same_value(&self, other: &Self) -> bool {
         self.id == other.id
             && self.address == other.address
@@ -316,11 +354,17 @@ impl SecretRecord {
             && self.issuer == other.issuer
             && self.author == other.author
             && self.value == other.value
+            && self.plaintext == other.plaintext
+    }
+
+    /// Whether this record marks its address as deleted.
+    pub fn is_deletion(&self) -> bool {
+        self.value.is_none() && self.plaintext.is_none()
     }
 
     fn merge_keys(&mut self, other: &Self) -> RuntimeResult<()> {
         if !self.same_value(other) {
-            return Err(RuntimeError::Conflict("secret operation"));
+            return Err(RuntimeError::Conflict("record operation"));
         }
         for (recipient, key) in &other.keys {
             self.merge_key(recipient, key)?;
@@ -330,7 +374,7 @@ impl SecretRecord {
 
     fn merge_key(&mut self, recipient: &DeviceId, key: &SealedValue) -> RuntimeResult<()> {
         if self.value.is_none() {
-            return Err(RuntimeError::Invalid("deletion key grants"));
+            return Err(RuntimeError::Invalid("keys for an unsealed record"));
         }
         key.ciphertext.validate()?;
         // Different servers can wrap the same content key concurrently. Select
@@ -355,25 +399,39 @@ impl SecretRecord {
     pub fn validate(&self) -> RuntimeResult<()> {
         self.address.validate()?;
         if self.revision == 0 || self.revision > i64::MAX as u64 {
-            return Err(RuntimeError::Invalid("secret revision"));
+            return Err(RuntimeError::Invalid("record revision"));
         }
         if serde_json::to_vec(self)?.len() > MAX_SHARED_RECORD_BYTES {
-            return Err(RuntimeError::Capacity("secret record"));
+            return Err(RuntimeError::Capacity("shared record"));
         }
-        match &self.value {
-            None if !self.keys.is_empty() => {
-                return Err(RuntimeError::Invalid("deletion key grants"));
+        match (&self.value, &self.plaintext) {
+            (Some(_), Some(_)) => {
+                return Err(RuntimeError::Invalid("sealed and plaintext record value"));
             }
-            Some(value) => {
+            // Records of a kind that is not secret were sealed before plaintext
+            // records existed, so a sealed value stays valid for every kind.
+            (Some(value), None) => {
                 value.validate()?;
                 if !self.keys.contains_key(&self.issuer) {
-                    return Err(RuntimeError::Invalid("missing issuer secret key"));
+                    return Err(RuntimeError::Invalid("missing issuer record key"));
                 }
                 for key in self.keys.values() {
                     key.ciphertext.validate()?;
                 }
             }
-            None => (),
+            (None, Some(plaintext)) => {
+                if self.address.kind.is_secret() {
+                    return Err(RuntimeError::Invalid("plaintext secret record"));
+                }
+                if !self.keys.is_empty() {
+                    return Err(RuntimeError::Invalid("keys for an unsealed record"));
+                }
+                plaintext.validate()?;
+            }
+            (None, None) if !self.keys.is_empty() => {
+                return Err(RuntimeError::Invalid("keys for an unsealed record"));
+            }
+            (None, None) => (),
         }
         Ok(())
     }
@@ -389,39 +447,50 @@ impl SecretRecord {
         ))?)
     }
 
-    pub fn encrypt(
-        mutation: &SecretMutation,
-        plaintext: Option<&[u8]>,
+    /// Builds the record a mutation publishes. `content` is a serialized
+    /// [`RecordContent`], or `None` for a deletion. Secret content is sealed to
+    /// every member allowed to read it; other content is stored as plaintext.
+    pub fn create(
+        mutation: &RecordMutation,
+        content: Option<&[u8]>,
         revision: u64,
         issuer: DeviceId,
         author: DeviceId,
         registry: &RegistrySnapshot,
         now: u64,
     ) -> RuntimeResult<Self> {
-        let key = random_content_key()?;
-        let context = mutation
-            .address
-            .context(&registry.network.id, &mutation.id)?;
         let mut record = Self {
             id: mutation.id.clone(),
             address: mutation.address.clone(),
             revision,
             issuer,
             author,
-            value: plaintext
-                .map(|bytes| Ciphertext::encrypt(&key, bytes, &context))
-                .transpose()?,
+            value: None,
             keys: BTreeMap::new(),
+            plaintext: None,
         };
-        if record.value.is_some() {
-            for (id, member) in registry.effective_members(now)? {
-                if record.address.allowed(&member.permissions) {
-                    let sealed = SealedValue::seal(
-                        &member.request.encryption_public_key,
-                        key.as_slice(),
-                        &record.key_context(&registry.network.id, &id)?,
-                    )?;
-                    record.keys.insert(id, sealed);
+        match content {
+            None => (),
+            Some(bytes) if !record.address.kind.is_secret() => {
+                let content: RecordContent = serde_json::from_slice(bytes)?;
+                record.plaintext = Some(PlainContent {
+                    value: content.value.to_string(),
+                    expires_on: content.expires_on,
+                });
+            }
+            Some(bytes) => {
+                let key = random_content_key()?;
+                let context = record.address.context(&registry.network.id, &record.id)?;
+                record.value = Some(Ciphertext::encrypt(&key, bytes, &context)?);
+                for (id, member) in registry.effective_members(now)? {
+                    if record.address.allowed(&member.permissions) {
+                        let sealed = SealedValue::seal(
+                            &member.request.encryption_public_key,
+                            key.as_slice(),
+                            &record.key_context(&registry.network.id, &id)?,
+                        )?;
+                        record.keys.insert(id, sealed);
+                    }
                 }
             }
         }
@@ -436,7 +505,7 @@ impl SecretRecord {
         device: &DeviceId,
     ) -> RuntimeResult<Zeroizing<[u8; 32]>> {
         if self.value.is_none() {
-            return Err(RuntimeError::Invalid("deleted secret"));
+            return Err(RuntimeError::Invalid("record has no sealed value"));
         }
         let context = self.key_context(&state.network, device)?;
         let candidates = self.keys.get(device).into_iter();
@@ -450,16 +519,24 @@ impl SecretRecord {
             }
         }
         Err(RuntimeError::Invalid(
-            "secret decryption key unavailable; synchronize through an existing authorized server",
+            "record key unavailable; synchronize through an existing authorized server",
         ))
     }
 
-    pub fn decrypt(
+    /// The record's serialized [`RecordContent`], or `None` for a deletion.
+    pub fn open(
         &self,
         state: &SharedSnapshot,
         keys: &LocalDeviceKeys,
         device: &DeviceId,
     ) -> RuntimeResult<Option<Zeroizing<Vec<u8>>>> {
+        if let Some(plaintext) = &self.plaintext {
+            let content = RecordContent {
+                value: Zeroizing::new(plaintext.value.clone()),
+                expires_on: plaintext.expires_on.clone(),
+            };
+            return Ok(Some(Zeroizing::new(serde_json::to_vec(&content)?)));
+        }
         let Some(value) = &self.value else {
             return Ok(None);
         };
@@ -495,5 +572,5 @@ impl SecretRecord {
 
 pub trait SharedStore {
     fn shared_snapshot(&mut self) -> RuntimeResult<SharedSnapshot>;
-    fn append_secret(&mut self, record: &SecretRecord) -> RuntimeResult<()>;
+    fn append_record(&mut self, record: &SharedRecord) -> RuntimeResult<()>;
 }

@@ -1,4 +1,4 @@
-use super::{SecretRecord, SharedSnapshot, SharedStore};
+use super::{SharedRecord, SharedSnapshot, SharedStore};
 use crate::api::RuntimeResult;
 
 impl SharedStore for SharedSnapshot {
@@ -7,9 +7,9 @@ impl SharedStore for SharedSnapshot {
         Ok(self.clone())
     }
 
-    fn append_secret(&mut self, record: &SecretRecord) -> RuntimeResult<()> {
+    fn append_record(&mut self, record: &SharedRecord) -> RuntimeResult<()> {
         let mut addition = Self::empty(self.network.clone());
-        addition.secrets.push(record.clone());
+        addition.records.push(record.clone());
         self.merge(&addition)
     }
 }
