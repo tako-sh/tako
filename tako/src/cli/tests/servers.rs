@@ -139,7 +139,7 @@ fn servers_add_rejects_user_flag() {
 fn servers_remove_parses() {
     let cli = Cli::try_parse_from(["tako", "network", "server", "remove", "prod"]).unwrap();
     let Commands::Network(commands::network::NetworkCommands::Server(
-        server::ServerCommands::Remove { name },
+        server::ServerCommands::Remove { name, .. },
     )) = cli.command.expect("command")
     else {
         panic!("expected Servers::Remove");
@@ -151,7 +151,7 @@ fn servers_remove_parses() {
 fn servers_remove_aliases_parse() {
     let cli = Cli::try_parse_from(["tako", "network", "server", "rm", "prod"]).unwrap();
     let Commands::Network(commands::network::NetworkCommands::Server(
-        server::ServerCommands::Remove { name },
+        server::ServerCommands::Remove { name, .. },
     )) = cli.command.expect("command")
     else {
         panic!("expected Servers::Remove");
@@ -160,7 +160,7 @@ fn servers_remove_aliases_parse() {
 
     let cli = Cli::try_parse_from(["tako", "network", "server", "delete", "prod"]).unwrap();
     let Commands::Network(commands::network::NetworkCommands::Server(
-        server::ServerCommands::Remove { name },
+        server::ServerCommands::Remove { name, .. },
     )) = cli.command.expect("command")
     else {
         panic!("expected Servers::Remove");
@@ -172,7 +172,7 @@ fn servers_remove_aliases_parse() {
 fn servers_remove_without_name_parses_for_selector() {
     let cli = Cli::try_parse_from(["tako", "network", "server", "remove"]).unwrap();
     let Commands::Network(commands::network::NetworkCommands::Server(
-        server::ServerCommands::Remove { name },
+        server::ServerCommands::Remove { name, .. },
     )) = cli.command.expect("command")
     else {
         panic!("expected Servers::Remove");
@@ -230,7 +230,7 @@ fn servers_ls_alias_parses() {
 fn servers_reload_parses_without_force() {
     let cli = Cli::try_parse_from(["tako", "network", "server", "reload", "prod"]).unwrap();
     let Commands::Network(commands::network::NetworkCommands::Server(
-        server::ServerCommands::Reload { name, force },
+        server::ServerCommands::Reload { name, force, .. },
     )) = cli.command.expect("command")
     else {
         panic!("expected Servers::Reload");
@@ -244,7 +244,7 @@ fn servers_reload_parses_with_force() {
     let cli =
         Cli::try_parse_from(["tako", "network", "server", "reload", "prod", "--force"]).unwrap();
     let Commands::Network(commands::network::NetworkCommands::Server(
-        server::ServerCommands::Reload { name, force },
+        server::ServerCommands::Reload { name, force, .. },
     )) = cli.command.expect("command")
     else {
         panic!("expected Servers::Reload");
@@ -257,7 +257,7 @@ fn servers_reload_parses_with_force() {
 fn servers_upgrade_parses_without_name() {
     let cli = Cli::try_parse_from(["tako", "network", "server", "upgrade"]).unwrap();
     let Commands::Network(commands::network::NetworkCommands::Server(
-        server::ServerCommands::Upgrade { name, force },
+        server::ServerCommands::Upgrade { name, force, .. },
     )) = cli.command.expect("command")
     else {
         panic!("expected Servers::Upgrade");
@@ -270,7 +270,7 @@ fn servers_upgrade_parses_without_name() {
 fn servers_upgrade_parses_with_name() {
     let cli = Cli::try_parse_from(["tako", "network", "server", "upgrade", "prod"]).unwrap();
     let Commands::Network(commands::network::NetworkCommands::Server(
-        server::ServerCommands::Upgrade { name, force },
+        server::ServerCommands::Upgrade { name, force, .. },
     )) = cli.command.expect("command")
     else {
         panic!("expected Servers::Upgrade");
@@ -284,11 +284,51 @@ fn servers_upgrade_parses_force() {
     let cli =
         Cli::try_parse_from(["tako", "network", "server", "upgrade", "prod", "--force"]).unwrap();
     let Commands::Network(commands::network::NetworkCommands::Server(
-        server::ServerCommands::Upgrade { name, force },
+        server::ServerCommands::Upgrade { name, force, .. },
     )) = cli.command.expect("command")
     else {
         panic!("expected Servers::Upgrade");
     };
     assert_eq!(name, Some("prod".to_string()));
     assert!(force);
+}
+
+#[test]
+fn server_maintenance_commands_accept_a_network() {
+    for (args, expected) in [
+        (vec!["remove", "edge", "--network", "staging"], "remove"),
+        (vec!["reload", "edge", "--network", "staging"], "reload"),
+        (vec!["upgrade", "--network", "staging"], "upgrade"),
+        (
+            vec!["uninstall", "edge", "--network", "staging"],
+            "uninstall",
+        ),
+    ] {
+        let cli =
+            Cli::try_parse_from(["tako", "network", "server"].into_iter().chain(args)).unwrap();
+        let Commands::Network(commands::network::NetworkCommands::Server(command)) =
+            cli.command.expect("command")
+        else {
+            panic!("expected a server command");
+        };
+        let network = match command {
+            server::ServerCommands::Remove { network, .. }
+            | server::ServerCommands::Reload { network, .. }
+            | server::ServerCommands::Upgrade { network, .. }
+            | server::ServerCommands::Uninstall { network, .. } => network,
+            _ => panic!("unexpected command for {expected}"),
+        };
+        assert_eq!(network.as_deref(), Some("staging"), "{expected}");
+    }
+}
+
+#[test]
+fn network_use_parses() {
+    let cli = Cli::try_parse_from(["tako", "network", "use", "staging"]).unwrap();
+    let Commands::Network(commands::network::NetworkCommands::Use { network }) =
+        cli.command.expect("command")
+    else {
+        panic!("expected Network::Use");
+    };
+    assert_eq!(network, "staging");
 }

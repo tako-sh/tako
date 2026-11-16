@@ -83,12 +83,17 @@ pub enum NetworkCommands {
     /// List this machine's networks and stable IDs
     #[command(visible_alias = "ls")]
     List,
+    /// Use this network when a command does not name one
+    Use {
+        /// Network name or stable ID
+        network: String,
+    },
 }
 
-pub fn run(command: NetworkCommands, config_path: Option<&Path>) -> Result<()> {
+pub fn run(command: NetworkCommands) -> Result<()> {
     match command {
         NetworkCommands::Sync { network: value } => {
-            let alias = network::resolve_network(value.as_deref(), config_path)?;
+            let alias = network::resolve_network(value.as_deref())?;
             if !output::is_dry_run() {
                 network::state::pull(&alias, None)?;
             }
@@ -97,8 +102,8 @@ pub fn run(command: NetworkCommands, config_path: Option<&Path>) -> Result<()> {
                 serde_json::json!({"network":alias.name,"dry_run":output::is_dry_run()}),
             )
         }
-        NetworkCommands::Server(command) => super::server::run(command, config_path),
-        NetworkCommands::Client(command) => client::run(command, config_path),
+        NetworkCommands::Server(command) => super::server::run(command),
+        NetworkCommands::Client(command) => client::run(command),
         NetworkCommands::Join {
             name,
             invitation_stdin,
@@ -110,10 +115,15 @@ pub fn run(command: NetworkCommands, config_path: Option<&Path>) -> Result<()> {
             output,
         } => request(name.as_deref(), network.as_deref(), &output),
         NetworkCommands::Import { file } => import(&file),
-        NetworkCommands::Export { network, output } => {
-            export(network.as_deref(), config_path, &output)
-        }
+        NetworkCommands::Export { network, output } => export(network.as_deref(), &output),
         NetworkCommands::List => list(),
+        NetworkCommands::Use { network } => {
+            let alias = LocalNetworks::use_network(&network)?;
+            finish(
+                &format!("Using network {}", alias.name),
+                serde_json::to_value(&alias)?,
+            )
+        }
         NetworkCommands::Approve {
             file,
             network,
@@ -125,7 +135,6 @@ pub fn run(command: NetworkCommands, config_path: Option<&Path>) -> Result<()> {
         } => approve(
             &file,
             network.as_deref(),
-            config_path,
             &output,
             Permissions {
                 network_admin: admin,
@@ -135,21 +144,18 @@ pub fn run(command: NetworkCommands, config_path: Option<&Path>) -> Result<()> {
             },
             expires_in,
         ),
-        NetworkCommands::Revoke { device, network } => {
-            revoke(&device, network.as_deref(), config_path)
-        }
-        NetworkCommands::Status { network } => status(network.as_deref(), config_path),
+        NetworkCommands::Revoke { device, network } => revoke(&device, network.as_deref()),
+        NetworkCommands::Status { network } => status(network.as_deref()),
     }
 }
 
 pub(super) fn manage_server(
     device: &str,
     value: Option<&str>,
-    config_path: Option<&Path>,
     command: tako_core::Command,
 ) -> Result<()> {
     use crate::management_http::{ManagementClient, ManagementTarget, NativeTarget, parse_ok_data};
-    let alias = network::resolve_network(value, config_path)?;
+    let alias = network::resolve_network(value)?;
     let profile = if output::is_dry_run() {
         network::load_profile(&alias)?
     } else {
@@ -327,8 +333,8 @@ fn import(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn export(value: Option<&str>, config_path: Option<&Path>, destination: &Path) -> Result<()> {
-    let alias = network::resolve_network(value, config_path)?;
+fn export(value: Option<&str>, destination: &Path) -> Result<()> {
+    let alias = network::resolve_network(value)?;
     let profile = network::load_profile(&alias)?;
     if output::is_dry_run() {
         return finish(
@@ -349,14 +355,28 @@ fn export(value: Option<&str>, config_path: Option<&Path>, destination: &Path) -
 
 fn list() -> Result<()> {
     let networks = LocalNetworks::load()?;
+    // The network commands use when they do not name one, if any.
+    let default = networks.select(None).ok().map(|network| network.id.clone());
     if output::is_json() {
-        return output::json_result(
-            serde_json::json!({"networks": networks.networks.values().collect::<Vec<_>>()}),
-        );
+        let listed: Vec<_> = networks
+            .networks
+            .values()
+            .map(|network| {
+                let mut value = serde_json::to_value(network)?;
+                value["default"] = serde_json::json!(default.as_ref() == Some(&network.id));
+                Ok(value)
+            })
+            .collect::<Result<_>>()?;
+        return output::json_result(serde_json::json!({ "networks": listed }));
     }
     for network in networks.networks.values() {
-        output::info(&network.name);
-        tracing::info!("{}", network.name);
+        if default.as_ref() == Some(&network.id) {
+            output::info(&format!("{} (default)", network.name));
+            tracing::info!("{} (default)", network.name);
+        } else {
+            output::info(&network.name);
+            tracing::info!("{}", network.name);
+        }
     }
     if networks.networks.is_empty() {
         output::hint("No networks configured. Run `tako network create <name>`.");
@@ -389,8 +409,8 @@ fn finish(message: &str, value: serde_json::Value) -> Result<()> {
     Ok(())
 }
 
-pub fn connect(value: Option<&str>, config_path: Option<&Path>) -> Result<()> {
-    let alias = network::resolve_network(value, config_path)?;
+pub fn connect(value: Option<&str>) -> Result<()> {
+    let alias = network::resolve_network(value)?;
     if output::is_dry_run() {
         network::load_profile(&alias)?;
         return finish(
@@ -407,7 +427,13 @@ pub fn connect(value: Option<&str>, config_path: Option<&Path>) -> Result<()> {
         .into_iter()
         .filter(|(other, _)| other.id != alias.id)
         .collect();
-    let replacing: Vec<&str> = others.iter().map(|(other, _)| other.id.as_str()).collect();
+    // Aliases from `tako ssh config` survive disconnect, so they still count.
+    let mut replacing = Vec::new();
+    for (other, _) in &others {
+        if !network::local_access::is_proxied(other)? {
+            replacing.push(other.id.as_str());
+        }
+    }
     let _lifecycle = network::wireguard::lifecycle_lock(&alias)?;
     network::local_access::preflight(&alias, &profile, &replacing)?;
     for (other, other_profile) in &others {
@@ -472,7 +498,7 @@ pub fn connect(value: Option<&str>, config_path: Option<&Path>) -> Result<()> {
 /// Long enough for a first handshake across continents, short enough to wait on.
 const HANDSHAKE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
-pub fn disconnect(value: Option<&str>, config_path: Option<&Path>) -> Result<()> {
+pub fn disconnect(value: Option<&str>) -> Result<()> {
     // Read connected networks under the same lock that connect switches with.
     let _switch = if output::is_dry_run() {
         None
@@ -481,13 +507,16 @@ pub fn disconnect(value: Option<&str>, config_path: Option<&Path>) -> Result<()>
     };
     let targets = match value {
         Some(_) => {
-            let alias = network::resolve_network(value, config_path)?;
+            let alias = network::resolve_network(value)?;
             let profile = local_profile(&alias)?;
             vec![(alias, profile)]
         }
         None => connected_networks()?,
     };
-    let names: Vec<_> = targets.iter().map(|(alias, _)| alias.name.clone()).collect();
+    let names: Vec<_> = targets
+        .iter()
+        .map(|(alias, _)| alias.name.clone())
+        .collect();
     if output::is_dry_run() {
         return finish(
             "Would disconnect from the network",
@@ -513,7 +542,7 @@ pub fn disconnect(value: Option<&str>, config_path: Option<&Path>) -> Result<()>
 fn teardown(alias: &crate::config::LocalNetwork, profile: &Profile) -> Result<()> {
     let _lifecycle = network::wireguard::lifecycle_lock(alias)?;
     network::wireguard::disconnect(alias, profile)?;
-    network::local_access::remove(alias)
+    network::local_access::disconnect(alias)
 }
 
 /// Serializes network switches on this machine; one network owns `.tako`.
@@ -560,13 +589,8 @@ fn local_profile(alias: &crate::config::LocalNetwork) -> Result<Profile> {
     Ok(profile)
 }
 
-pub fn ssh(
-    server: &str,
-    value: Option<&str>,
-    config_path: Option<&Path>,
-    remote_command: &[String],
-) -> Result<()> {
-    let alias = network::resolve_network(value, config_path)?;
+pub fn ssh(server: &str, value: Option<&str>, remote_command: &[String]) -> Result<()> {
+    let alias = network::resolve_network(value)?;
     let profile = if output::is_dry_run() {
         network::load_profile(&alias)?
     } else {
@@ -611,11 +635,8 @@ pub fn ssh(
         .network
         .id
         .address(&member.request.wg_public_key);
-    let proxy = network::ssh_tunnel::proxy_command(
-        &std::env::current_exe()?,
-        &alias.name,
-        &id.to_string(),
-    )?;
+    let proxy =
+        network::ssh_tunnel::proxy_command(&std::env::current_exe()?, &alias.id, &id.to_string())?;
     let mut command = std::process::Command::new("ssh");
     command
         .args([
@@ -657,7 +678,12 @@ pub fn ssh(
         &id.to_string(),
         &command,
         &format!("{}@{address}", user.as_str()),
-        &format!("{user}:{}:{}:{address}", info.ssh_port, info.ssh_host_key),
+        &network::ssh_session::settings(
+            user.as_str(),
+            info.ssh_port,
+            &info.ssh_host_key.to_string(),
+            &address.to_string(),
+        ),
         remote_command,
     )?;
     if !status.success() {
@@ -666,10 +692,75 @@ pub fn ssh(
     Ok(())
 }
 
+/// Installs or removes `~/.ssh/config` aliases that reach servers over the
+/// rootless tunnel, for OpenSSH-based tools such as scp, rsync, and editors.
+pub fn ssh_config(value: Option<&str>, remove: bool) -> Result<()> {
+    let alias = network::resolve_network(value)?;
+    if remove {
+        // Local cleanup must work while servers are unreachable or after the
+        // device's membership expired or was revoked.
+        let profile: Profile = network::read_json(&alias.profile_path()?)?;
+        if output::is_dry_run() {
+            return finish(
+                "Would remove SSH aliases",
+                serde_json::json!({"dry_run": true, "network": alias.name}),
+            );
+        }
+        let _lifecycle = network::wireguard::lifecycle_lock(&alias)?;
+        let keys = LocalDeviceKeys::load(&network::keys_path(&profile.request().request_id)?)?;
+        let own = profile
+            .snapshot()
+            .network
+            .id
+            .address(&keys.wg_public_key()?);
+        let connected = network::ssh_tunnel::local_address_assigned(own)?;
+        network::local_access::remove_proxy(&alias, &profile, connected)?;
+        return finish(
+            &format!("Removed SSH aliases for {}", alias.name),
+            serde_json::json!({"network": alias.name, "installed": false}),
+        );
+    }
+    let profile = if output::is_dry_run() {
+        network::load_profile(&alias)?
+    } else {
+        network::client::refresh(&alias)?
+    };
+    let _lifecycle = (!output::is_dry_run())
+        .then(|| network::wireguard::lifecycle_lock(&alias))
+        .transpose()?;
+    let hosts = network::local_access::install_proxy(&alias, &profile, !output::is_dry_run())?;
+    if output::is_dry_run() {
+        return finish(
+            "Would add SSH aliases to ~/.ssh/config",
+            serde_json::json!({"dry_run": true, "network": alias.name, "hosts": hosts}),
+        );
+    }
+    finish(
+        &format!(
+            "Added SSH aliases for {} {} to ~/.ssh/config",
+            hosts.len(),
+            if hosts.len() == 1 {
+                "server"
+            } else {
+                "servers"
+            }
+        ),
+        serde_json::json!({"network": alias.name, "installed": true, "hosts": hosts}),
+    )?;
+    for host in &hosts {
+        output::bullet(host);
+    }
+    if let Some(host) = hosts.first() {
+        output::hint(&format!(
+            "Use them with any OpenSSH tool: `ssh {host}`, `scp file {host}:`, `rsync -a dir/ {host}:dir/`, `ssh -L 5432:localhost:5432 {host}` (server loopback only), or VS Code Remote-SSH. Rerun after server membership changes."
+        ));
+    }
+    Ok(())
+}
+
 fn approve(
     file: &Path,
     value: Option<&str>,
-    config_path: Option<&Path>,
     destination: &Path,
     permissions: Permissions,
     expires_in: Option<u64>,
@@ -681,7 +772,7 @@ fn approve(
     if request.kind != DeviceKind::Laptop {
         return Err("Use `tako network server add --network` to enroll a server".into());
     }
-    let alias = network::resolve_network(value, config_path)?;
+    let alias = network::resolve_network(value)?;
     request.device_id_for(&alias.id.parse()?)?;
     if output::is_dry_run() {
         return finish(
@@ -728,8 +819,8 @@ fn approve(
     Ok(())
 }
 
-fn revoke(device: &str, value: Option<&str>, config_path: Option<&Path>) -> Result<()> {
-    let alias = network::resolve_network(value, config_path)?;
+fn revoke(device: &str, value: Option<&str>) -> Result<()> {
+    let alias = network::resolve_network(value)?;
     if output::is_dry_run() {
         let revocation = network::revocation::project(&alias, device)?;
         return finish(
@@ -791,8 +882,8 @@ pub(crate) fn validate_pending_approval(
     Ok(())
 }
 
-fn status(value: Option<&str>, config_path: Option<&Path>) -> Result<()> {
-    let alias = network::resolve_network(value, config_path)?;
+fn status(value: Option<&str>) -> Result<()> {
+    let alias = network::resolve_network(value)?;
     let profile = if output::is_dry_run() {
         network::load_profile(&alias)?
     } else {

@@ -180,10 +180,8 @@ fn unreachable_with(
     // attempt: a newer handshake or new inbound traffic proves the peer answered.
     let baseline = report()?;
     for server in &servers {
-        let address = std::net::SocketAddr::new(
-            network.address(&server.request.wg_public_key).into(),
-            53,
-        );
+        let address =
+            std::net::SocketAddr::new(network.address(&server.request.wg_public_key).into(), 53);
         // Every member may reach the server resolver port; a reply is traffic.
         std::thread::spawn(move || {
             let _ =
@@ -397,9 +395,15 @@ mod tests {
         let baseline = PeerReport::parse("a 100 50\nb 100 50\nc 0 0\nd 100 50\n");
         let current = PeerReport::parse("a 160 50\nb 100 90\nc 0 0\nd 100 50\n");
         assert!(current.answered_since(&baseline, "a"), "new handshake");
-        assert!(current.answered_since(&baseline, "b"), "new inbound traffic");
+        assert!(
+            current.answered_since(&baseline, "b"),
+            "new inbound traffic"
+        );
         assert!(!current.answered_since(&baseline, "c"), "never answered");
-        assert!(!current.answered_since(&baseline, "d"), "stale handshake only");
+        assert!(
+            !current.answered_since(&baseline, "d"),
+            "stale handshake only"
+        );
         assert!(!current.answered_since(&baseline, "missing"));
     }
 
@@ -417,30 +421,24 @@ mod tests {
             .wg_public_key
             .to_string();
         let stale = format!("{server} 1700000000 500\n");
-        let unreachable = unreachable_with(
-            &fixture.profile,
-            std::time::Duration::ZERO,
-            |operation| {
+        let unreachable =
+            unreachable_with(&fixture.profile, std::time::Duration::ZERO, |operation| {
                 assert!(matches!(operation, Operation::Handshakes { .. }));
                 Ok(Some(stale.clone()))
-            },
-        )
-        .unwrap();
+            })
+            .unwrap();
         assert_eq!(unreachable.len(), 1);
         let mut calls = 0;
-        let reachable = unreachable_with(
-            &fixture.profile,
-            std::time::Duration::from_secs(5),
-            |_| {
+        let reachable =
+            unreachable_with(&fixture.profile, std::time::Duration::from_secs(5), |_| {
                 calls += 1;
                 Ok(Some(if calls == 1 {
                     stale.clone()
                 } else {
                     format!("{server} 1700000000 600\n")
                 }))
-            },
-        )
-        .unwrap();
+            })
+            .unwrap();
         assert!(reachable.is_empty());
     }
 

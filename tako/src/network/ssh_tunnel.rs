@@ -30,6 +30,146 @@ use super::{Profile, Result};
 
 pub(crate) const PROXY_COMMAND: &str = "__ssh-proxy";
 
+/// Two handshake attempts: BoringTun retries an unanswered initiation after
+/// five seconds. This stays below OpenSSH's 15-second banner timeout so the
+/// specific UDP diagnosis prints instead of a generic SSH failure.
+pub(crate) const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+const SSH_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Result of a WireGuard handshake with a server endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reachability {
+    /// The server answered the handshake. RTT is BoringTun's measurement.
+    Reachable { rtt: Option<Duration> },
+    /// Nothing came back. Servers silently drop handshakes they cannot
+    /// authenticate, so a firewall and an unknown peer look the same.
+    NoReply,
+    /// The host answered with ICMP port unreachable.
+    Refused,
+}
+
+pub(crate) fn no_reply_message(endpoint: SocketAddr, waited: Duration) -> String {
+    format!(
+        "UDP {port} to {host} isn't getting through: no WireGuard reply in {secs}s. \
+         Allow inbound UDP {port} in the server's firewall and provider security group, \
+         and check that this network allows outbound UDP. If the port is open, the server \
+         may not have applied this device's membership yet.",
+        port = endpoint.port(),
+        host = endpoint.ip(),
+        secs = waited.as_secs(),
+    )
+}
+
+pub(crate) fn refused_message(endpoint: SocketAddr) -> String {
+    format!(
+        "UDP {port} to {host} was refused: nothing is listening on that port, or a firewall \
+         is rejecting it. Check that tako-server is running, that {endpoint} is the server's \
+         WireGuard endpoint, and that inbound UDP {port} is allowed.",
+        port = endpoint.port(),
+        host = endpoint.ip(),
+    )
+}
+
+fn udp_error(endpoint: SocketAddr, error: std::io::Error) -> Box<dyn std::error::Error> {
+    if error.kind() == std::io::ErrorKind::ConnectionRefused {
+        refused_message(endpoint).into()
+    } else {
+        format!(
+            "UDP {} to {} isn't getting through: {error}",
+            endpoint.port(),
+            endpoint.ip()
+        )
+        .into()
+    }
+}
+
+async fn open_tunnel(
+    private_key: &Zeroizing<[u8; 32]>,
+    peer_key: [u8; 32],
+    endpoint: SocketAddr,
+    random: [u8; 8],
+) -> Result<(UdpSocket, Tunn)> {
+    let udp = UdpSocket::bind(if endpoint.is_ipv4() {
+        "0.0.0.0:0"
+    } else {
+        "[::]:0"
+    })
+    .await?;
+    udp.connect(endpoint).await?;
+    let tunnel = Tunn::new(
+        StaticSecret::from(**private_key),
+        PublicKey::from(peer_key),
+        None,
+        Some(25),
+        u32::from_le_bytes(random[..4].try_into().unwrap()) & 0xffffff,
+        None,
+    );
+    Ok((udp, tunnel))
+}
+
+/// Completes one WireGuard handshake without sending any tunnel traffic.
+///
+/// Callers must not probe while another transport for the same device is
+/// active: the server roams its peer endpoint to the probe's socket.
+pub(crate) async fn probe(
+    private_key: &Zeroizing<[u8; 32]>,
+    peer_key: [u8; 32],
+    endpoint: SocketAddr,
+    timeout: Duration,
+) -> Result<Reachability> {
+    let mut random = [0u8; 8];
+    getrandom::fill(&mut random)?;
+    let (udp, mut tunnel) = open_tunnel(private_key, peer_key, endpoint, random).await?;
+    let refused = |error: &std::io::Error| error.kind() == std::io::ErrorKind::ConnectionRefused;
+    let mut packet = vec![0; 2048];
+    let mut datagram = vec![0; 2048];
+    if let TunnResult::WriteToNetwork(bytes) =
+        tunnel.format_handshake_initiation(&mut packet, false)
+    {
+        match udp.send(bytes).await {
+            Err(error) if refused(&error) => return Ok(Reachability::Refused),
+            result => {
+                result.map_err(|error| udp_error(endpoint, error))?;
+            }
+        }
+    }
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut tick = tokio::time::interval(Duration::from_millis(100));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            read = udp.recv(&mut datagram) => {
+                let size = match read {
+                    Ok(size) => size,
+                    Err(error) if refused(&error) => return Ok(Reachability::Refused),
+                    Err(error) => return Err(udp_error(endpoint, error)),
+                };
+                let mut received = &datagram[..size];
+                while let TunnResult::WriteToNetwork(bytes) =
+                    tunnel.decapsulate(Some(endpoint.ip()), received, &mut packet)
+                {
+                    // Confirm the session so the server does not keep retrying.
+                    let _ = udp.send(bytes).await;
+                    received = &[];
+                }
+                if tunnel.time_since_last_handshake().is_some() {
+                    let rtt = tunnel.stats().4.map(|ms| Duration::from_millis(ms.into()));
+                    return Ok(Reachability::Reachable { rtt });
+                }
+            }
+            _ = tokio::time::sleep_until(deadline) => return Ok(Reachability::NoReply),
+            _ = tick.tick() => {
+                if let TunnResult::WriteToNetwork(bytes) = tunnel.update_timers(&mut packet) {
+                    match udp.send(bytes).await {
+                        Err(error) if refused(&error) => return Ok(Reachability::Refused),
+                        result => { result.map_err(|error| udp_error(endpoint, error))?; }
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub(crate) fn proxy_command(executable: &Path, network: &str, server: &str) -> Result<String> {
     let executable = executable
         .to_str()
@@ -50,24 +190,50 @@ pub(crate) fn proxy_main() -> ! {
         let [network, server] = args.as_slice() else {
             return Err("Invalid private SSH proxy arguments".into());
         };
-        let alias = super::resolve_network(Some(network), None)?;
+        let alias = super::resolve_network(Some(network))?;
         let profile = super::load_profile(&alias)?;
         let keys = LocalDeviceKeys::load(&super::keys_path(&profile.request().request_id)?)?;
         let config = configuration(&profile, &keys, &server.parse()?)?;
+        // OpenSSH aliases from `tako ssh config` place their ControlPath here
+        // and start the proxy before creating the socket, so ensure it exists.
+        super::ssh_session::control_directory()?;
         let proxies = super::ssh_session::lock(&alias, "ssh-proxies.lock")?;
         proxies.lock_shared()?;
+        // An assigned local address means connect already owns this device's
+        // WireGuard transport. Reuse it instead of stealing the peer endpoint.
+        let system = local_address_assigned(config.source)?;
+        // Held until this process exits, which ends the transport.
+        let _transport = if system {
+            None
+        } else {
+            // Aliases run OpenSSH directly, bypassing `tako ssh`'s guard. The
+            // proxy starts before its own master binds, so any live master for
+            // this server means a second transport would roam the endpoint.
+            // Masters from earlier releases hold no transport lock.
+            super::ssh_session::refuse_other_transport(&alias, server, None)?;
+            // Clients that start together see no master yet; only one wins.
+            Some(super::ssh_session::claim_transport(&alias, server)?)
+        };
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
         let result = runtime.block_on(async {
-            // An assigned local address means connect already owns this device's
-            // WireGuard transport. Reuse it instead of stealing the peer endpoint.
-            if local_address_assigned(config.source)? {
+            if system {
                 let mut stream = tokio::time::timeout(
-                    Duration::from_secs(15),
+                    SSH_TIMEOUT,
                     tokio::net::TcpStream::connect((config.destination, config.port)),
                 )
-                .await??;
+                .await
+                .map_err(|_| {
+                    format!(
+                        "Timed out reaching SSH on [{}]:{} through the `tako connect` interface. \
+                         Run `tako disconnect`, then retry `tako ssh` to diagnose UDP {} to {}.",
+                        config.destination,
+                        config.port,
+                        config.endpoint.port(),
+                        config.endpoint.ip(),
+                    )
+                })??;
                 let mut io = tokio::io::join(tokio::io::stdin(), tokio::io::stdout());
                 tokio::io::copy_bidirectional(&mut io, &mut stream).await?;
                 Ok(())
@@ -96,7 +262,7 @@ struct TunnelConfig {
     port: u16,
 }
 
-fn local_address_assigned(address: Ipv6Addr) -> Result<bool> {
+pub(crate) fn local_address_assigned(address: Ipv6Addr) -> Result<bool> {
     // Binding is not a reliable test: Linux can allow nonlocal binds globally.
     Ok(nix::ifaddrs::getifaddrs()?.any(|interface| {
         interface
@@ -110,7 +276,7 @@ fn local_address_assigned(address: Ipv6Addr) -> Result<bool> {
     }))
 }
 
-fn decode_key(value: &str) -> Result<[u8; 32]> {
+pub(super) fn decode_key(value: &str) -> Result<[u8; 32]> {
     let bytes = Zeroizing::new(
         STANDARD
             .decode(value)
@@ -178,23 +344,16 @@ async fn forward(
     mut input: impl AsyncRead + Unpin + Send + 'static,
     mut output: impl AsyncWrite + Unpin + Send + 'static,
 ) -> Result<()> {
-    let udp = UdpSocket::bind(if config.endpoint.is_ipv4() {
-        "0.0.0.0:0"
-    } else {
-        "[::]:0"
-    })
-    .await?;
-    udp.connect(config.endpoint).await?;
     let mut random = [0u8; 8];
     getrandom::fill(&mut random)?;
-    let mut tunnel = Tunn::new(
-        StaticSecret::from(*config.private_key),
-        PublicKey::from(config.peer_key),
-        None,
-        Some(25),
-        u32::from_le_bytes(random[..4].try_into().unwrap()) & 0xffffff,
-        None,
-    );
+    let (udp, mut tunnel) = open_tunnel(
+        &config.private_key,
+        config.peer_key,
+        config.endpoint,
+        random,
+    )
+    .await?;
+    let endpoint = config.endpoint;
     let mut device = IpDevice::default();
     let mut stack_config = Config::new(HardwareAddress::Ip);
     stack_config.random_seed = u64::from_le_bytes(random);
@@ -268,8 +427,19 @@ async fn forward(
             socket.state(),
             tcp::State::Established | tcp::State::CloseWait
         );
-        if !established && started.elapsed() > Duration::from_secs(15) {
-            return Err("Timed out reaching SSH over WireGuard. Check the server's UDP endpoint and private SSH listener.".into());
+        if !established {
+            let handshake = tunnel.time_since_last_handshake().is_some();
+            if !handshake && started.elapsed() > HANDSHAKE_TIMEOUT {
+                return Err(no_reply_message(endpoint, HANDSHAKE_TIMEOUT).into());
+            }
+            if started.elapsed() > SSH_TIMEOUT {
+                return Err(format!(
+                    "WireGuard reached {endpoint}, but the server's private SSH listener on port {} \
+                     did not answer. Check that tako-server is running on the server.",
+                    config.port
+                )
+                .into());
+            }
         }
         if socket.can_send() && !pending.is_empty() {
             let sent = socket
@@ -317,16 +487,20 @@ async fn forward(
         }
         while let Some(ip) = device.outgoing.pop_front() {
             if let TunnResult::WriteToNetwork(bytes) = tunnel.encapsulate(&ip, &mut packet) {
-                udp.send(bytes).await?;
+                udp.send(bytes)
+                    .await
+                    .map_err(|error| udp_error(endpoint, error))?;
             }
         }
         tokio::select! {
             read = udp.recv(&mut datagram) => {
-                let size = read.map_err(|error| format!("WireGuard endpoint {}: {error}", config.endpoint))?;
+                let size = read.map_err(|error| udp_error(endpoint, error))?;
                 let mut received = &datagram[..size];
                 loop {
-                    match tunnel.decapsulate(Some(config.endpoint.ip()), received, &mut packet) {
-                        TunnResult::WriteToNetwork(bytes) => { udp.send(bytes).await?; }
+                    match tunnel.decapsulate(Some(endpoint.ip()), received, &mut packet) {
+                        TunnResult::WriteToNetwork(bytes) => {
+                            udp.send(bytes).await.map_err(|error| udp_error(endpoint, error))?;
+                        }
                         TunnResult::WriteToTunnelV6(bytes, source) if source == config.destination => {
                             device.incoming.push_back(bytes.to_vec());
                         }
@@ -344,7 +518,7 @@ async fn forward(
             }
             _ = tick.tick() => {
                 if let TunnResult::WriteToNetwork(bytes) = tunnel.update_timers(&mut packet) {
-                    udp.send(bytes).await?;
+                    udp.send(bytes).await.map_err(|error| udp_error(endpoint, error))?;
                 }
             }
             result = &mut tasks.writer => {
@@ -403,6 +577,108 @@ impl Device for IpDevice {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn key_pair() -> (Zeroizing<[u8; 32]>, [u8; 32]) {
+        let mut private = Zeroizing::new([0u8; 32]);
+        getrandom::fill(private.as_mut()).unwrap();
+        let public = PublicKey::from(&StaticSecret::from(*private)).to_bytes();
+        (private, public)
+    }
+
+    #[tokio::test]
+    async fn probe_distinguishes_refused_silent_and_answering_endpoints() {
+        let (client_private, client_public) = key_pair();
+        let (server_private, server_public) = key_pair();
+
+        // Nothing bound: the kernel answers with ICMP port unreachable.
+        let closed = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let closed_endpoint = closed.local_addr().unwrap();
+        drop(closed);
+        assert_eq!(
+            probe(
+                &client_private,
+                server_public,
+                closed_endpoint,
+                Duration::from_secs(2)
+            )
+            .await
+            .unwrap(),
+            Reachability::Refused
+        );
+
+        // Bound but silent, like a firewall that drops UDP.
+        let silent = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        assert_eq!(
+            probe(
+                &client_private,
+                server_public,
+                silent.local_addr().unwrap(),
+                Duration::from_millis(300)
+            )
+            .await
+            .unwrap(),
+            Reachability::NoReply
+        );
+
+        // A WireGuard responder that knows the client's key.
+        let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = server.local_addr().unwrap();
+        let responder = tokio::spawn(async move {
+            let mut tunnel = Tunn::new(
+                StaticSecret::from(*server_private),
+                PublicKey::from(client_public),
+                None,
+                None,
+                1,
+                None,
+            );
+            let mut datagram = vec![0; 2048];
+            let mut packet = vec![0; 2048];
+            loop {
+                let (size, from) = server.recv_from(&mut datagram).await.unwrap();
+                if let TunnResult::WriteToNetwork(bytes) =
+                    tunnel.decapsulate(Some(from.ip()), &datagram[..size], &mut packet)
+                {
+                    server.send_to(bytes, from).await.unwrap();
+                }
+            }
+        });
+        let result = probe(
+            &client_private,
+            server_public,
+            endpoint,
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(result, Reachability::Reachable { .. }),
+            "{result:?}"
+        );
+        // The wrong server key is silently dropped, as on a real server.
+        let (_, stranger) = key_pair();
+        assert_eq!(
+            probe(
+                &client_private,
+                stranger,
+                endpoint,
+                Duration::from_millis(300)
+            )
+            .await
+            .unwrap(),
+            Reachability::NoReply
+        );
+        responder.abort();
+    }
+
+    #[test]
+    fn unreachable_messages_name_the_port_and_host() {
+        let endpoint: SocketAddr = "203.0.113.5:51820".parse().unwrap();
+        let message = no_reply_message(endpoint, HANDSHAKE_TIMEOUT);
+        assert!(message.starts_with("UDP 51820 to 203.0.113.5 isn't getting through"));
+        assert!(message.contains("10s"));
+        assert!(refused_message(endpoint).starts_with("UDP 51820 to 203.0.113.5 was refused"));
+    }
 
     #[test]
     fn proxy_arguments_survive_shell_and_ssh_expansion() {

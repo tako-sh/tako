@@ -7,7 +7,8 @@ mod macos;
 mod tests;
 
 use common::{
-    CaStatus, format_apps, format_certificate, format_dev_server, format_paths, gather_ca_status,
+    CaStatus, format_apps, format_certificate, format_dev_server, format_networks, format_paths,
+    gather_ca_status, json_networks,
 };
 #[cfg(target_os = "linux")]
 use linux::{format_linux_dns, format_linux_sections, gather_linux_data};
@@ -32,13 +33,15 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .await
         .unwrap_or_default();
 
+    let networks = crate::network::diagnose::gather().await;
+
     #[cfg(target_os = "macos")]
     let macos_data = gather_macos_data(&dev_info, &apps);
     #[cfg(target_os = "linux")]
     let linux_data = gather_linux_data(&dev_info, &apps);
 
     if crate::output::is_json() {
-        return crate::output::json_result(json_report(
+        let mut report = json_report(
             &config_dir,
             &data_dir,
             &ca_status,
@@ -48,7 +51,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             &macos_data,
             #[cfg(target_os = "linux")]
             &linux_data,
-        ));
+        );
+        report["networks"] = json_networks(&networks);
+        return crate::output::json_result(report);
     }
 
     // ── Format output ────────────────────────────────────────────────────
@@ -65,6 +70,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     format_linux_sections(&mut buf, &linux_data);
 
     format_apps(&mut buf, &apps);
+    format_networks(&mut buf, &networks);
 
     #[cfg(target_os = "macos")]
     format_local_dns(&mut buf, &dev_info, &apps, &macos_data);

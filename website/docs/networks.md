@@ -5,7 +5,9 @@ description: "Create a Tako network, enroll servers and devices, deploy over pin
 
 A native network identifies trusted devices and servers without an external account. Each device generates its own keys. A project selects the network by its stable 32-character hexadecimal ID; the network name is shared by every enrolled device. Human-readable commands use that name; `tako network list --json` includes the ID for `tako.toml`.
 
-Network names are currently immutable and need not be globally unique. If two enrolled networks share a name, select one by its ID. [Server maintenance selectors](/servers/#server-maintenance) include IDs when needed to distinguish names.
+Network names are currently immutable and need not be globally unique. If two enrolled networks share a name, select one by its ID.
+
+Network commands such as `network status`, `network client add`, `network server add`, `connect`, and `ssh` act on the network named in the command. Without one, they use the network chosen with `tako network use <network>`, then the only configured network; with several networks and no choice, name the network in the command. `tako network list --json` marks the network they use with `"default": true`. [Server maintenance selectors](/servers/#server-maintenance) include IDs when needed to distinguish names.
 
 Management uses signed requests over pinned HTTPS. Deploy, status, logs, releases, and scaling do not require a workstation WireGuard interface, TUN device, or SSH agent. Server installation still needs administrator SSH access. Tako networking is the supported enrollment path; see [re-enrollment](/servers/#choose-the-vpn-provider) for older installations.
 
@@ -143,6 +145,22 @@ The device needs an approved SSH permission (`--admin --ssh` during approval). T
 
 Tako embeds BoringTun and a userspace TCP stack. `tako ssh` needs OpenSSH but no WireGuard executable, sudo, TUN device, system routes, or DNS changes. Concurrent sessions to the same server share an SSH transport. If `tako connect` is already active, SSH uses that system connection.
 
+If the server never answers the WireGuard handshake, `tako ssh` stops after 10 seconds with `UDP 51820 to 203.0.113.10 isn't getting through` instead of waiting on OpenSSH. A firewall that drops UDP and a server that does not yet know this device look the same from outside, so check the server's firewall and provider security group first, then membership. A refused port means nothing is listening there or a firewall is rejecting it. If the handshake succeeds but SSH does not answer, the error says so. `tako doctor` runs the same handshake check against every server in every local network.
+
+### Use scp, rsync, and editors
+
+```bash
+tako ssh config --network production
+scp backup.tar edge-a:
+rsync -a ./data/ edge-a:data/
+ssh -L 5432:localhost:5432 edge-a
+tako ssh config --network production --remove
+```
+
+`ssh config` adds a managed block to `~/.ssh/config` with an alias for each server: `edge-a` and `edge-a.tako`. Each alias uses the same approved identity, username, host-key pin, and rootless tunnel as `tako ssh`, so any OpenSSH-based tool works without `tako connect`, sudo, or public port 22. That includes scp, rsync, sftp, local port forwarding, and VS Code Remote-SSH. Aliases share one SSH connection per server with `tako ssh`. Rerun the command after membership or approval changes. The aliases call the Tako executable by its path, so rerun it after moving Tako. The aliases stay through `tako connect` and `disconnect`, but changing the connection closes open alias sessions; reconnect afterwards.
+
+Network SSH keys allow local forwarding (`ssh -L`, `ssh -D`) only to the server's own loopback addresses, such as a database bound to `127.0.0.1`. That is no more than the granted shell can already reach. Remote forwarding (`-R`), agent forwarding, and X11 stay disabled. Servers on earlier releases refuse all forwarding until upgraded. Servers running OpenSSH older than 7.8, and servers whose sshd sets `AllowTcpForwarding no`, keep refusing it. `--remove` deletes them; while connected, the direct aliases from `connect` take their place. A server literally named `config` is still reachable with `tako ssh <device-id>`.
+
 ## Connect local applications
 
 ```bash
@@ -159,7 +177,7 @@ While connected, ordinary applications can resolve server names such as `edge-a`
 
 After connecting, Tako waits a few seconds for a WireGuard handshake with each server and names any server that did not answer, with the UDP endpoint to check. Management keeps working over HTTPS even when that UDP port is blocked.
 
-One network owns `.tako` names on a workstation at a time, so `connect` disconnects any other connected network first. `disconnect` removes Tako's routes, resolver settings, host entries, and SSH aliases while preserving unrelated settings. Without a network argument it disconnects whichever network is connected. Server peers, names, and SSH settings are refreshed by each `connect`; rerun it after membership changes. Finish active `tako ssh` sessions before changing the system connection. If upgrading from the old external WireGuard implementation with a connection still active, disconnect it using the previous Tako version first.
+One network owns `.tako` names on a workstation at a time, so `connect` disconnects any other connected network first. `disconnect` removes Tako's routes, resolver settings, host entries, and SSH aliases while preserving unrelated settings. Aliases from `tako ssh config` stay. Without a network argument it disconnects whichever network is connected. Server peers, names, and SSH settings are refreshed by each `connect`; rerun it after membership changes. Finish active `tako ssh` sessions before changing the system connection. If upgrading from the old external WireGuard implementation with a connection still active, disconnect it using the previous Tako version first.
 
 ## Use private service addresses
 

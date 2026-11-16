@@ -503,7 +503,9 @@ fn handshakes(response: &str) -> Result<String> {
         };
         match field {
             "last_handshake_time_sec" => {
-                peer.1 = value.parse().map_err(|_| "Invalid WireGuard handshake time")?;
+                peer.1 = value
+                    .parse()
+                    .map_err(|_| "Invalid WireGuard handshake time")?;
             }
             "rx_bytes" => {
                 peer.2 = value.parse().map_err(|_| "Invalid WireGuard byte count")?;

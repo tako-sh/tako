@@ -17,15 +17,66 @@ pub(super) fn lock(alias: &LocalNetwork, name: &str) -> Result<File> {
     super::private_file(&directory.join(name), true)
 }
 
-fn control_directory() -> Result<PathBuf> {
-    let directory =
-        fs::canonicalize("/tmp")?.join(format!("tako-ssh-{}", unsafe { libc::geteuid() }));
+/// Holds this device's only userspace WireGuard transport to `server`.
+///
+/// Two transports with the same device key make the server roam its peer
+/// endpoint between them. OpenSSH clients that start before a shared control
+/// socket exists each run a proxy, so the proxy itself must refuse to open a
+/// second transport. The lock lives as long as the returned file.
+pub(crate) fn claim_transport(alias: &LocalNetwork, server: &str) -> Result<File> {
+    let name = format!(
+        "ssh-transport-{}.lock",
+        &hex::encode(Sha256::digest(server))[..12]
+    );
+    let transport = lock(alias, &name)?;
+    match transport.try_lock() {
+        Ok(()) => Ok(transport),
+        Err(std::fs::TryLockError::WouldBlock) => Err(
+            "Another SSH connection to this server is starting or open without a shared connection. Retry in a moment; `tako ssh` and `tako ssh config` aliases reuse one connection per server."
+                .into(),
+        ),
+        Err(std::fs::TryLockError::Error(error)) => Err(error.into()),
+    }
+}
+
+fn control_directory_path() -> Result<PathBuf> {
+    Ok(fs::canonicalize("/tmp")?.join(format!("tako-ssh-{}", unsafe { libc::geteuid() })))
+}
+
+pub(super) fn control_directory() -> Result<PathBuf> {
+    let directory = control_directory_path()?;
     super::private_directory(&directory)?;
     Ok(directory)
 }
 
 fn prefix(alias: &LocalNetwork) -> String {
     hex::encode(Sha256::digest(format!("{}:{}", alias.id, alias.device)))[..24].to_string()
+}
+
+fn server_prefix(alias: &LocalNetwork, server: &str) -> String {
+    format!(
+        "{}-{}-",
+        prefix(alias),
+        &hex::encode(Sha256::digest(server))[..12]
+    )
+}
+
+/// The OpenSSH control socket for one server and one approved SSH setting.
+/// `tako ssh` and the aliases from `tako ssh config` derive the same path, so
+/// both share a single WireGuard transport. Approval changes yield a new path
+/// instead of reusing a connection authenticated under the old approval.
+/// Computes the path only; callers that bind or scan create the directory.
+pub(crate) fn control_path(alias: &LocalNetwork, server: &str, settings: &str) -> Result<PathBuf> {
+    Ok(control_directory_path()?.join(format!(
+        "{}{}",
+        server_prefix(alias, server),
+        &hex::encode(Sha256::digest(settings))[..12]
+    )))
+}
+
+/// The settings string that identifies an approved SSH destination.
+pub(crate) fn settings(user: &str, port: u16, host_key: &str, address: &str) -> String {
+    format!("{user}:{port}:{host_key}:{address}")
 }
 
 fn control(path: &std::path::Path, operation: &str) -> Result<std::process::Output> {
@@ -81,6 +132,37 @@ pub(super) fn stop_masters(alias: &LocalNetwork) -> Result<()> {
     Ok(())
 }
 
+/// Fails while a live control master for this server exists under another
+/// path: one from an earlier approval, or from a release before
+/// settings-derived paths. A second WireGuard transport would roam the
+/// server's peer endpoint away from it. `own` is the caller's control path.
+pub(super) fn refuse_other_transport(
+    alias: &LocalNetwork,
+    server: &str,
+    own: Option<&std::path::Path>,
+) -> Result<()> {
+    let siblings = server_prefix(alias, server);
+    let legacy = format!(
+        "{}-{}",
+        prefix(alias),
+        &hex::encode(Sha256::digest(server))[..24]
+    );
+    let own = own.map(|path| path.file_name().unwrap().to_string_lossy().into_owned());
+    for entry in fs::read_dir(control_directory()?)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // OpenSSH binds `<path>.<random>` before renaming it into place.
+        if !own.as_deref().is_some_and(|own| name.starts_with(own))
+            && (name.starts_with(&siblings) || name == legacy)
+            && entry.file_type()?.is_socket()
+            && control(&entry.path(), "check")?.status.success()
+        {
+            return Err("SSH approval changed. Finish existing SSH sessions to this server, wait five seconds, then retry. Rerun `tako ssh config` if you use it.".into());
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn run(
     alias: &LocalNetwork,
     server: &str,
@@ -93,11 +175,7 @@ pub(crate) fn run(
     gate.lock()?;
     let sessions = lock(alias, "ssh-sessions.lock")?;
     sessions.lock_shared()?;
-    let path = control_directory()?.join(format!(
-        "{}-{}",
-        prefix(alias),
-        &hex::encode(Sha256::digest(server))[..24]
-    ));
+    let path = control_path(alias, server, settings)?;
     let command = |multiplex_only: bool| {
         let mut command = Command::new(base.get_program());
         if multiplex_only {
@@ -107,25 +185,14 @@ pub(crate) fn run(
         command.args(base.get_args()).arg("-S").arg(&path);
         command
     };
-    let fingerprint = hex::encode(Sha256::digest(settings));
-    let metadata_path = path.with_extension("settings");
-    if control(&path, "check")?.status.success() {
-        let mut previous = String::new();
-        use std::io::Read;
-        super::private_file(&metadata_path, false)?
-            .take(65)
-            .read_to_string(&mut previous)?;
-        if previous != fingerprint {
-            return Err("SSH approval changed. Finish existing SSH sessions, wait five seconds, then retry.".into());
-        }
-    } else {
+    refuse_other_transport(alias, server, Some(&path))?;
+    if !control(&path, "check")?.status.success() {
         match fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.file_type().is_socket() => fs::remove_file(&path)?,
             Ok(_) => return Err("The SSH control path is not a socket".into()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
-        super::write_bytes(&metadata_path, fingerprint.as_bytes(), true)?;
         let status = command(false)
             .args([
                 "-M",
@@ -159,6 +226,23 @@ pub(crate) fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_one_transport_per_server_and_device() {
+        let _home = crate::network::tests::TestHome::new();
+        let alias = LocalNetwork {
+            name: "test".into(),
+            id: "11".repeat(16),
+            device: "22".repeat(32),
+        };
+        let first = claim_transport(&alias, "server-a").unwrap();
+        assert!(claim_transport(&alias, "server-a").is_err());
+        // Other servers have their own transports.
+        let other = claim_transport(&alias, "server-b").unwrap();
+        drop(first);
+        claim_transport(&alias, "server-a").unwrap();
+        drop(other);
+    }
     use std::path::Path;
 
     #[test]

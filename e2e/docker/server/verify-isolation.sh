@@ -7,7 +7,10 @@ printf '%s\n' "$$" > /sys/fs/cgroup/control/cgroup.procs
 printf '%s\n' '+cpu +memory +pids' > /sys/fs/cgroup/cgroup.subtree_control
 
 install -m 0755 "${TAKO_TEST_SERVER_BIN:-/workspace/target/e2e-linux-glibc/release/tako-server}" /tmp/tako-server
-tar -cf - -C /tmp tako-server | zstd -f -o /tmp/tako-isolation.tar.zst
+# Bundle the checked-out helper, as the server images do, so the installer
+# verifies this tree's helper against its pinned checksum instead of
+# downloading a published one that predates helper changes.
+tar -cf - -C /tmp tako-server -C /workspace scripts/tako-network-helper.py | zstd -f -o /tmp/tako-isolation.tar.zst
 sha256sum /tmp/tako-isolation.tar.zst | awk '{print $1}' > /tmp/tako-isolation.tar.zst.sha256
 TAKO_SERVER_URL=file:///tmp/tako-isolation.tar.zst TAKO_RESTART_SERVICE=0 TAKO_SERVER_NAME=isolation-test sh /workspace/scripts/install-tako-server.sh
 

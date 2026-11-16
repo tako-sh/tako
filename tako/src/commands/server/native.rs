@@ -57,7 +57,7 @@ pub(super) async fn add(
     ports: ServerInstallPorts,
     endpoint: Option<SocketAddr>,
 ) -> Result<()> {
-    let alias = network::resolve_network(Some(network), None)?;
+    let alias = network::resolve_network(Some(network))?;
     let profile = network::load_profile(&alias)?;
     let default_name = host.split('.').next().unwrap_or("server").replace(':', "-");
     let name: DeviceName = name.unwrap_or(&default_name).parse()?;

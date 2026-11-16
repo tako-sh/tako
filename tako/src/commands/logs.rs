@@ -78,9 +78,7 @@ async fn run_async(
         .into());
     }
 
-    let server_names =
-        resolve_log_server_names(&tako_config, &mut servers, &env, Some(&context.config_path))
-            .await?;
+    let server_names = resolve_log_server_names(&tako_config, &mut servers, &env).await?;
 
     let interactive_stdout = logs_stdout_is_interactive();
     let colorize = interactive_stdout;
@@ -498,7 +496,6 @@ async fn resolve_log_server_names(
     tako_config: &TakoToml,
     servers: &mut ServerInventory,
     env: &str,
-    config_path: Option<&Path>,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     match super::helpers::resolve_servers_for_env(tako_config, servers, env) {
         Ok(mut resolved) => {
@@ -518,7 +515,6 @@ async fn resolve_log_server_names(
         {
             if server::prompt_to_add_server(
                 "No servers have been added. Logs need at least one server.",
-                config_path,
             )
             .await?
             .is_some()
@@ -565,7 +561,7 @@ servers = ["solo"]
             },
         );
 
-        let names = resolve_log_server_names(&tako_config, &mut servers, "production", None)
+        let names = resolve_log_server_names(&tako_config, &mut servers, "production")
             .await
             .expect("should resolve explicit mapping");
         assert_eq!(names, vec!["solo".to_string()]);
@@ -585,7 +581,7 @@ servers = ["solo"]
             },
         );
 
-        let err = resolve_log_server_names(&tako_config, &mut servers, "staging", None)
+        let err = resolve_log_server_names(&tako_config, &mut servers, "staging")
             .await
             .expect_err("should fail for non-production");
         assert!(
