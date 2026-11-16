@@ -51,6 +51,8 @@ tako sqlite list --json
 
 `list` shows every database recorded in the network, its server and access, and whether this project declares it.
 
+Each environment can bind a different database under the same name, such as `main = "shop"` in production and `main = "shop_staging"` in staging; app code reads the binding name. When an environment lacks a binding name that another environment has, `tako deploy` warns, since that database is missing when the app runs there. Development is checked only when `[envs.development].databases` is set.
+
 ## Use it from application code
 
 Each binding is a connection: a URL on the app's own server plus a token for that binding. Pass it to a libSQL driver.

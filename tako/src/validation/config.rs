@@ -1,3 +1,5 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use crate::config::{ConfigError, Result, ServerInventory, TakoToml};
 
 /// Validation result with warnings
@@ -112,8 +114,46 @@ pub fn validate_tako_toml(config: &TakoToml) -> ValidationResult {
     for warning in config.ignored_reserved_var_warnings() {
         result.warn(warning);
     }
+    for warning in database_binding_gaps(config) {
+        result.warn(warning);
+    }
 
     result
+}
+
+/// Database bindings that some environments declare and others do not. App
+/// code reads databases by binding name, so one missing from an environment
+/// fails only once the app runs there. Development counts only when it lists
+/// its own bindings; otherwise it binds every name the others use.
+fn database_binding_gaps(config: &TakoToml) -> Vec<String> {
+    let envs: BTreeMap<&str, BTreeSet<&str>> = config
+        .envs
+        .iter()
+        .filter(|(name, env)| name.as_str() != "development" || !env.databases.is_empty())
+        .map(|(name, env)| {
+            (
+                name.as_str(),
+                env.databases.keys().map(String::as_str).collect(),
+            )
+        })
+        .collect();
+    let all: BTreeSet<&str> = envs.values().flatten().copied().collect();
+    let mut warnings = Vec::new();
+    for (env, bound) in &envs {
+        for binding in all.difference(bound) {
+            let others: Vec<String> = envs
+                .iter()
+                .filter(|(_, other)| other.contains(binding))
+                .map(|(name, _)| format!("'{name}'"))
+                .collect();
+            warnings.push(format!(
+                "Environment '{env}' does not bind database '{binding}', which {} {}; the app has no '{binding}' database in '{env}'. Bind one with `tako sqlite create` or `tako sqlite link` and `--binding {binding}`",
+                others.join(", "),
+                if others.len() == 1 { "binds" } else { "bind" },
+            ));
+        }
+    }
+    warnings
 }
 
 /// Validate global server inventory configuration.
@@ -190,6 +230,73 @@ pub fn validate_full_config(
 mod tests {
     use super::*;
     use crate::config::{EnvConfig, ServerEntry, ServerInventory, TakoToml};
+
+    fn env_with_databases(bindings: &[(&str, &str)]) -> EnvConfig {
+        EnvConfig {
+            databases: bindings
+                .iter()
+                .map(|(binding, database)| (binding.to_string(), database.to_string()))
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    fn binding_warnings(config: &TakoToml) -> Vec<String> {
+        validate_tako_toml(config)
+            .warnings
+            .into_iter()
+            .filter(|w| w.contains("does not bind database"))
+            .collect()
+    }
+
+    #[test]
+    fn warns_when_an_environment_lacks_a_database_binding_others_have() {
+        let mut config = TakoToml::default();
+        config.envs.insert(
+            "production".into(),
+            env_with_databases(&[("main", "shop"), ("analytics", "events")]),
+        );
+        config.envs.insert(
+            "staging".into(),
+            env_with_databases(&[("main", "shop_staging")]),
+        );
+        config.envs.insert("preview".into(), EnvConfig::default());
+
+        assert_eq!(
+            binding_warnings(&config),
+            [
+                "Environment 'preview' does not bind database 'analytics', which 'production' binds; the app has no 'analytics' database in 'preview'. Bind one with `tako sqlite create` or `tako sqlite link` and `--binding analytics`",
+                "Environment 'preview' does not bind database 'main', which 'production', 'staging' bind; the app has no 'main' database in 'preview'. Bind one with `tako sqlite create` or `tako sqlite link` and `--binding main`",
+                "Environment 'staging' does not bind database 'analytics', which 'production' binds; the app has no 'analytics' database in 'staging'. Bind one with `tako sqlite create` or `tako sqlite link` and `--binding analytics`",
+            ]
+        );
+    }
+
+    #[test]
+    fn different_databases_under_the_same_binding_are_expected() {
+        let mut config = TakoToml::default();
+        config
+            .envs
+            .insert("production".into(), env_with_databases(&[("main", "shop")]));
+        config.envs.insert(
+            "staging".into(),
+            env_with_databases(&[("main", "shop_staging")]),
+        );
+        // Development without its own bindings binds every name.
+        config
+            .envs
+            .insert("development".into(), EnvConfig::default());
+        assert!(binding_warnings(&config).is_empty());
+
+        // With its own bindings, development must cover the same names.
+        config.envs.insert(
+            "development".into(),
+            env_with_databases(&[("cache", "cache")]),
+        );
+        let warnings = binding_warnings(&config);
+        assert_eq!(warnings.len(), 3, "{warnings:?}");
+        assert!(warnings[0].starts_with("Environment 'development' does not bind database 'main'"));
+    }
 
     #[test]
     fn validate_tako_toml_rejects_environment_without_routes() {
