@@ -201,7 +201,7 @@ pub fn transform_image(
     // Output drops color metadata, so convert tagged sources to sRGB. Doing
     // it after resizing keeps the cost proportional to the output size.
     if let Some(profile) = image.color_profile.take() {
-        color::convert_to_srgb(&mut image.frames, &profile);
+        color::convert_to_srgb(&mut image.frames, &profile)?;
     }
 
     let output = image.first()?;
