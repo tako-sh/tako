@@ -341,13 +341,27 @@ fn foreign_key_violations(conn: &mut Connection) -> Result<Option<String>, crate
 
 /// Applies migrations to a database file directly, creating the file when it
 /// does not exist. For local databases (`tako dev`, `tako run`); hosted
-/// databases go through [`crate::DatabaseHost::migrate`].
+/// databases go through [`crate::DatabaseHost::migrate`]. A dry run creates
+/// nothing: without a file, every migration is pending.
 pub fn migrate_file(
     path: &Path,
     app: &str,
     migrations: &[Migration],
     dry_run: bool,
 ) -> Result<MigrationReport, String> {
+    if dry_run && !path.exists() {
+        if app.is_empty() || app.len() > 128 {
+            return Err("migrations must name the app they belong to".into());
+        }
+        return Ok(MigrationReport {
+            applied: Vec::new(),
+            pending: order(migrations)?
+                .into_iter()
+                .map(|(_, migration)| migration.name.clone())
+                .collect(),
+            warnings: Vec::new(),
+        });
+    }
     if !path.exists() {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)

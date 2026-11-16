@@ -42,6 +42,22 @@ fn names_need_an_order_number() {
 }
 
 #[test]
+fn previews_create_no_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("data").join("shop.sqlite");
+    let migrations = [
+        migration("0002_items.sql", "SELECT 1;"),
+        migration("0001_users.sql", "SELECT 1;"),
+    ];
+    let preview = migrate_file(&path, "shop", &migrations, true).unwrap();
+    assert_eq!(preview.pending, ["0001_users.sql", "0002_items.sql"]);
+    assert!(!path.exists() && !path.parent().unwrap().exists());
+    // Names are still checked.
+    let invalid = migrate_file(&path, "shop", &[migration("initial.sql", "")], true);
+    assert!(invalid.is_err());
+}
+
+#[test]
 fn applies_pending_migrations_in_order_once() {
     let (_dir, path) = database();
     let migrations = [
