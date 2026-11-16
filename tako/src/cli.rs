@@ -89,6 +89,18 @@ pub struct DevArgs {
 }
 
 #[derive(Subcommand, Debug)]
+pub enum SshCommands {
+    /// Add `~/.ssh/config` aliases so scp, rsync, port forwarding, and editors reach servers privately
+    Config {
+        #[arg(long)]
+        network: Option<String>,
+        /// Remove the aliases instead
+        #[arg(long)]
+        remove: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 pub enum DevSubcommands {
     /// Stop a running dev app
     Stop {
@@ -167,8 +179,12 @@ pub enum Commands {
     Disconnect { network: Option<String> },
 
     /// SSH to an approved server using this machine's network identity
+    #[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
     Ssh {
-        server: String,
+        #[command(subcommand)]
+        subcommand: Option<SshCommands>,
+        #[arg(required = true)]
+        server: Option<String>,
         #[arg(long)]
         network: Option<String>,
         #[arg(last = true)]
@@ -363,6 +379,10 @@ fn telemetry_command(command: &Commands) -> &'static str {
         Commands::Network(_) => "network",
         Commands::Connect { .. } => "connect",
         Commands::Disconnect { .. } => "disconnect",
+        Commands::Ssh {
+            subcommand: Some(SshCommands::Config { .. }),
+            ..
+        } => "ssh config",
         Commands::Ssh { .. } => "ssh",
         Commands::Secrets(_) => "secrets",
         Commands::Storages(_) => "storages",
@@ -416,6 +436,7 @@ pub(crate) fn supports_dry_run(path: &[&str]) -> bool {
                 "drain" | "resume" | "add" | "remove" | "list" | "uninstall"
             ]
             | ["network", "client", "add" | "remove" | "list"]
+            | ["ssh", "config"]
             | ["secrets", "migrate" | "sync" | "clear"]
             | ["backups", "now" | "download" | "restore"]
             | [
@@ -542,10 +563,19 @@ impl Cli {
             Commands::Connect { network } => commands::network::connect(network.as_deref()),
             Commands::Disconnect { network } => commands::network::disconnect(network.as_deref()),
             Commands::Ssh {
+                subcommand: Some(SshCommands::Config { network, remove }),
+                ..
+            } => commands::network::ssh_config(network.as_deref(), remove),
+            Commands::Ssh {
+                subcommand: None,
                 server,
                 network,
                 command,
-            } => commands::network::ssh(&server, network.as_deref(), &command),
+            } => commands::network::ssh(
+                server.as_deref().ok_or("A server is required")?,
+                network.as_deref(),
+                &command,
+            ),
             Commands::Secrets(cmd) => {
                 let emit_generic = json
                     && !matches!(

@@ -15,3 +15,9 @@ mod secrets;
 mod servers;
 mod storages;
 mod workflows;
+
+#[test]
+fn ssh_config_accepts_dry_run() {
+    assert!(supports_dry_run(&["ssh", "config"]));
+    assert!(supports_dry_run(&["ssh"]));
+}

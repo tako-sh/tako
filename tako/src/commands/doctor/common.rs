@@ -215,3 +215,125 @@ pub(super) fn format_apps(buf: &mut Vec<String>, apps: &[crate::dev_server_clien
         ));
     }
 }
+
+// ─── Private networks ────────────────────────────────────────────────────────
+
+pub(super) fn format_networks(
+    buf: &mut Vec<String>,
+    networks: &Result<Vec<crate::network::diagnose::NetworkReport>, String>,
+) {
+    use crate::network::diagnose::ServerStatus;
+    use crate::network::ssh_tunnel::Reachability;
+
+    let networks = match networks {
+        Ok(networks) => networks,
+        Err(error) => {
+            heading(buf, "Networks");
+            let w = label_width(&["Status"]);
+            row(
+                buf,
+                "Status",
+                &output::theme_error(format!("error: {error}")),
+                w,
+            );
+            return;
+        }
+    };
+    for network in networks {
+        heading(buf, &format!("Network {}", network.name));
+        let servers = match &network.result {
+            Ok(servers) => servers,
+            Err(error) => {
+                let w = label_width(&["Status"]);
+                row(
+                    buf,
+                    "Status",
+                    &output::theme_error(format!("error: {error}")),
+                    w,
+                );
+                continue;
+            }
+        };
+        if servers.is_empty() {
+            let w = label_width(&["Servers"]);
+            row(buf, "Servers", &output::theme_muted("none"), w);
+            continue;
+        }
+        let labels: Vec<&str> = servers.iter().map(|server| server.name.as_str()).collect();
+        let w = label_width(&labels);
+        for server in servers {
+            let udp = format!("UDP {}", server.endpoint);
+            let value = match &server.status {
+                ServerStatus::Checked(Reachability::Reachable { rtt }) => {
+                    output::theme_success(match rtt {
+                        Some(rtt) => format!("{udp} reachable {}ms", rtt.as_millis()),
+                        None => format!("{udp} reachable"),
+                    })
+                }
+                ServerStatus::Checked(Reachability::NoReply) => {
+                    output::theme_error(format!("{udp} no reply"))
+                }
+                ServerStatus::Checked(Reachability::Refused) => {
+                    output::theme_error(format!("{udp} refused"))
+                }
+                ServerStatus::Skipped(reason) => {
+                    output::theme_muted(format!("{udp} not checked: {reason}"))
+                }
+                ServerStatus::Error(_) => output::theme_error(format!("{udp} error")),
+            };
+            match server.status.message(server.endpoint) {
+                Some(message) => hinted_row(buf, &server.name, &value, w, &message),
+                None => row(buf, &server.name, &value, w),
+            }
+        }
+    }
+}
+
+pub(super) fn json_networks(
+    networks: &Result<Vec<crate::network::diagnose::NetworkReport>, String>,
+) -> serde_json::Value {
+    use crate::network::diagnose::ServerStatus;
+    use crate::network::ssh_tunnel::Reachability;
+
+    let networks = match networks {
+        Ok(networks) => networks,
+        // The index itself is unreadable, so no network can be named.
+        Err(error) => return serde_json::json!([{"status": "error", "message": error}]),
+    };
+    networks
+        .iter()
+        .map(|network| match &network.result {
+            Err(error) => serde_json::json!({
+                "name": network.name,
+                "id": network.id,
+                "status": "error",
+                "message": error,
+            }),
+            Ok(servers) => serde_json::json!({
+                "name": network.name,
+                "id": network.id,
+                "status": "ok",
+                "servers": servers.iter().map(|server| {
+                    let (status, rtt_ms, reason) = match &server.status {
+                        ServerStatus::Checked(Reachability::Reachable { rtt }) => {
+                            ("reachable", rtt.map(|rtt| rtt.as_millis() as u64), None)
+                        }
+                        ServerStatus::Checked(Reachability::NoReply) => ("no_reply", None, None),
+                        ServerStatus::Checked(Reachability::Refused) => ("refused", None, None),
+                        ServerStatus::Skipped(reason) => ("skipped", None, Some(*reason)),
+                        ServerStatus::Error(_) => ("error", None, None),
+                    };
+                    serde_json::json!({
+                        "name": server.name,
+                        "id": server.id,
+                        "wireguard_endpoint": server.endpoint.to_string(),
+                        "status": status,
+                        "rtt_ms": rtt_ms,
+                        "skipped_reason": reason,
+                        "message": server.status.message(server.endpoint),
+                    })
+                }).collect::<Vec<_>>(),
+            }),
+        })
+        .collect()
+}

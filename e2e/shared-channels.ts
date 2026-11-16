@@ -32,22 +32,23 @@ const layout = new Channel("shared", "ws").connect({
   events.push(JSON.parse((event as MessageEvent<string>).data));
 });
 type Member = { connectionId: string; subject: string };
-// Each connection's own view: a connection reports membership only when it
-// changes between its periodic snapshots, so a join and leave that both fall
-// between two of the observer's snapshots would never reach it.
-function presence(view: Member[]) {
+// Each subscription samples membership about once a second and sends only
+// changes, so a member that joins and leaves between two samples is never
+// reported to the other subscription. Track each view separately and assert on
+// the observer's own view rather than whichever subscription spoke last.
+function presence() {
+  const members: Member[] = [];
   const channel = new Channel("tako.presence:lobby", "ws").connect(options);
   (channel.raw as EventTarget).addEventListener("message", (event) => {
     const message = JSON.parse((event as MessageEvent<string>).data);
     if (message.type === "tako.presence.ready")
       channel.send({ type: "tako.presence", data: { page: "chat" } });
-    if (message.type === "tako.presence") view.splice(0, view.length, ...message.members);
+    if (message.type === "tako.presence") members.splice(0, members.length, ...message.members);
   });
-  return channel;
+  return { channel, members };
 }
-const memberships: Member[] = [];
-const observer = presence(memberships);
-const page = presence([]);
+const observer = presence();
+const page = presence();
 async function until(stage: string, check: () => boolean) {
   const deadline = Date.now() + 15_000;
   while (!check()) {
@@ -57,12 +58,11 @@ async function until(stage: string, check: () => boolean) {
   }
 }
 try {
-  // The observer must see the page before the page leaves.
-  await until("observer sees both presence members", () => memberships.length === 2);
+  await until("observer sees both presence members", () => observer.members.length === 2);
   assert.equal(sockets.length, 1, "WebSocket channels and presence must share a socket");
-  assert.ok(memberships.every((member) => member.subject === "e2e-user"));
-  page.close();
-  await until("page presence removed", () => memberships.length === 1);
+  assert.ok(observer.members.every((member) => member.subject === "e2e-user"));
+  page.channel.close();
+  await until("observer sees page presence removed", () => observer.members.length === 1);
   assert.equal(
     sockets[0]?.readyState,
     WebSocket.OPEN,
@@ -76,8 +76,8 @@ try {
   assert.equal(sockets.length, 1);
   console.log(`Shared WebSocket and page-presence checks passed on ${server}`);
 } finally {
-  page.close();
-  observer.close();
+  page.channel.close();
+  observer.channel.close();
   layout.close();
 }
 await until("last subscriber releases socket", () => sockets[0]?.readyState === WebSocket.CLOSED);
