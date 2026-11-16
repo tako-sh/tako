@@ -520,3 +520,70 @@ fn backup_selection_publishes_after_new_keys_and_before_removed_keys() {
         [selection, removed]
     );
 }
+
+#[test]
+fn last_changes_name_the_publishing_device_and_mark_unpublished_drafts() {
+    let home = TestHome::new();
+    let fixture = fixture();
+    super::super::store_keys(&fixture.profile.request().request_id, &fixture.keys).unwrap();
+    let alias = super::super::save_profile(&fixture.profile).unwrap();
+    let mut cache = SharedSnapshot::empty(fixture.profile.snapshot().network.id.clone());
+    for name in ["TOKEN", "EDITED", "REMOVED"] {
+        cache
+            .records
+            .push(published(&fixture.profile, name, Some("published"), 1));
+    }
+    cache_merge(&alias, &cache, &fixture.profile).unwrap();
+    let project = home.directory.path().join("checkout");
+    std::fs::create_dir_all(&project).unwrap();
+    let toml = format!(
+        "name = 'demo'\n[envs.production]\nnetwork = '{}'\nroute = 'example.test'\n",
+        alias.id
+    );
+    std::fs::write(project.join("tako.toml"), &toml).unwrap();
+    let config = TakoToml::parse(&toml).unwrap();
+
+    let mut values = load_local(&project).unwrap();
+    let key = crate::crypto::KeyStore::for_key_id(values.get_key_id("production").unwrap())
+        .unwrap()
+        .load_key()
+        .unwrap();
+    for (name, value) in [("EDITED", "draft"), ("NEW", "draft")] {
+        values
+            .set(
+                "production",
+                name,
+                crate::crypto::encrypt(value, &key).unwrap(),
+            )
+            .unwrap();
+    }
+    values.remove("production", "REMOVED").unwrap();
+    save_local(&project, &values).unwrap();
+
+    let changes = last_changes(&project, &config, "production").unwrap();
+    let device = fixture
+        .profile
+        .request()
+        .device_id_for(&fixture.profile.snapshot().network.id)
+        .unwrap();
+    assert_eq!(
+        changes["TOKEN"],
+        LastChange::Published {
+            device,
+            name: Some(fixture.profile.request().name.as_str().to_owned()),
+        }
+    );
+    assert_eq!(changes["EDITED"], LastChange::Draft);
+    assert_eq!(changes["NEW"], LastChange::Draft);
+    // A local removal keeps the published entry; the listing shows it unset.
+    assert!(matches!(
+        changes.get("REMOVED"),
+        Some(LastChange::Published { .. })
+    ));
+    // An environment without a network has no record of who changed it.
+    assert!(
+        last_changes(&project, &config, "staging")
+            .unwrap()
+            .is_empty()
+    );
+}

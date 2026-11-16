@@ -196,6 +196,106 @@ fn bind<'a>(
     }
     Ok(entry)
 }
+/// Rows whose local value differs from the last published one, including
+/// rows whose publication is not confirmed yet.
+fn unpublished(entry: &EnvironmentState, current: &Rows) -> BTreeSet<RowKey> {
+    let previous: Rows = entry
+        .base
+        .iter()
+        .map(|row| (row.key.clone(), row.clone()))
+        .collect();
+    let mut dirty: BTreeSet<_> = current
+        .keys()
+        .chain(previous.keys())
+        .filter(|key| current.get(*key) != previous.get(*key))
+        .cloned()
+        .collect();
+    dirty.extend(entry.pending.iter().map(|pending| RowKey {
+        kind: pending.mutation.address.kind,
+        name: pending.mutation.address.name.clone(),
+    }));
+    dirty
+}
+
+/// Who last changed an app secret, as this worktree knows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum LastChange {
+    /// A change in this worktree that is not published yet.
+    Draft,
+    /// The device that published the current value, with its name while it
+    /// is still in the network's membership.
+    Published {
+        device: DeviceId,
+        name: Option<String>,
+    },
+}
+
+/// The last change of each app secret of a network-bound environment, by
+/// secret name, read from local state only. Secrets of an environment without
+/// a network, or without a cached network state, have no entry.
+pub(crate) fn last_changes(
+    project: &Path,
+    config: &TakoToml,
+    env: &str,
+) -> Result<BTreeMap<String, LastChange>> {
+    let mut changes = BTreeMap::new();
+    let (Some(app), Some(id)) = (
+        config.name.as_deref(),
+        config
+            .envs
+            .get(env)
+            .and_then(|spec| spec.network.as_deref()),
+    ) else {
+        return Ok(changes);
+    };
+    let scope: AppEnv = format!("{app}/{env}").parse()?;
+    let networks = LocalNetworks::load()?;
+    let Ok(alias) = networks.select(Some(id)) else {
+        return Ok(changes);
+    };
+    if let Some(cache) = read_cache(alias)? {
+        let profile = super::load_profile(alias)?;
+        let names: BTreeMap<_, _> = profile
+            .snapshot()
+            .members
+            .iter()
+            .map(|member| (&member.device_id, member.request.name.as_str()))
+            .collect();
+        for record in &cache.records {
+            if record.address.scope == scope
+                && record.address.kind == RecordKind::App
+                && !record.is_deletion()
+            {
+                changes.insert(
+                    record.address.name.clone(),
+                    LastChange::Published {
+                        device: record.author.clone(),
+                        name: names.get(&record.author).map(|name| (*name).to_owned()),
+                    },
+                );
+            }
+        }
+    }
+    let _lock = if crate::output::is_dry_run() {
+        None
+    } else {
+        Some(lock(project)?)
+    };
+    let state = read_workspace(project)?;
+    let current = local::rows(state.values.environments.get(env))?;
+    let drafts = match state.environments.get(env) {
+        Some(entry) => unpublished(entry, &current),
+        // Nothing in this worktree has been published for the environment.
+        None => current.keys().cloned().collect(),
+    };
+    for key in drafts {
+        if key.kind == RecordKind::App && current.contains_key(&key) {
+            changes.insert(key.name, LastChange::Draft);
+        }
+    }
+    Ok(changes)
+}
+
 fn merge_remote(
     state: &mut Workspace,
     env: &str,
@@ -203,27 +303,8 @@ fn merge_remote(
     profile: &Profile,
     cache: &SharedSnapshot,
 ) -> Result<()> {
-    let previous = bind(state, env, scope, &cache.network)?
-        .base
-        .iter()
-        .map(|row| (row.key.clone(), row.clone()))
-        .collect::<Rows>();
     let current = local::rows(state.values.environments.get(env))?;
-    let mut dirty: BTreeSet<_> = current
-        .keys()
-        .chain(previous.keys())
-        .filter(|key| current.get(*key) != previous.get(*key))
-        .cloned()
-        .collect();
-    dirty.extend(
-        bind(state, env, scope, &cache.network)?
-            .pending
-            .iter()
-            .map(|pending| RowKey {
-                kind: pending.mutation.address.kind,
-                name: pending.mutation.address.name.clone(),
-            }),
-    );
+    let dirty = unpublished(bind(state, env, scope, &cache.network)?, &current);
     let keys = LocalDeviceKeys::load(&super::keys_path(&profile.request().request_id)?)?;
     let device = profile.request().device_id_for(&cache.network)?;
     let permissions = profile.snapshot().permissions(&device, super::now()?)?;
@@ -378,18 +459,9 @@ fn publish_changes(
         entry.pending.remove(0);
         write_workspace(project, state)?;
     }
-    let previous: Rows = bind(state, env, scope, network)?
-        .base
-        .iter()
-        .map(|row| (row.key.clone(), row.clone()))
-        .collect();
+    // Every pending command has drained, so only edits remain unpublished.
     let current = local::rows(state.values.environments.get(env))?;
-    let dirty: BTreeSet<_> = current
-        .keys()
-        .chain(previous.keys())
-        .filter(|key| current.get(*key) != previous.get(*key))
-        .cloned()
-        .collect();
+    let dirty = unpublished(bind(state, env, scope, network)?, &current);
     if dirty.is_empty() {
         return Ok(());
     }
