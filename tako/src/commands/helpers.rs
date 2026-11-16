@@ -8,7 +8,12 @@ pub(super) fn can_configure_bindings(
     let Some(id) = config.envs.get(env).and_then(|env| env.network.as_deref()) else {
         return Ok(true);
     };
-    let alias = crate::network::resolve_network(Some(id), None)?;
+    is_network_server_admin(id)
+}
+
+/// Whether this device is a network and server administrator of `network`.
+pub(super) fn is_network_server_admin(network: &str) -> Result<bool, Box<dyn std::error::Error>> {
+    let alias = crate::network::resolve_network(Some(network), None)?;
     let profile = crate::network::load_profile(&alias)?;
     let device = profile
         .request()

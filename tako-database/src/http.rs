@@ -189,6 +189,7 @@ struct Admitted {
     permit: tokio::sync::OwnedSemaphorePermit,
 }
 
+#[allow(clippy::result_large_err)]
 async fn admit(database: &Arc<Database>) -> Result<Admitted, Response<Body>> {
     let active = DatabaseHost::enter(database)
         .map_err(|unavailable| error(StatusCode::SERVICE_UNAVAILABLE, &unavailable.0))?;

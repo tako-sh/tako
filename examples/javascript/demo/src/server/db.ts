@@ -33,7 +33,7 @@ function missionDatabase() {
   const database = tako.databases.mission;
   if (!database) {
     throw new Error(
-      "No database is bound as `mission`. Create one with `tako sqlite create mission --env <env>`.",
+      "No database is bound as `mission`. Create one with `tako sqlite create mission` and bind it with `tako sqlite link mission <env>`.",
     );
   }
   return database;

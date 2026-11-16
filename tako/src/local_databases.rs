@@ -60,6 +60,8 @@ pub(crate) fn dev_files(project_dir: &Path, config: &TakoToml) -> BTreeMap<Strin
 pub(crate) struct DevMigrations {
     /// One line per binding that applied migrations.
     pub applied: Vec<String>,
+    /// One line per binding with pending migrations, for a dry run.
+    pub pending: Vec<String>,
     pub warnings: Vec<String>,
 }
 
@@ -67,6 +69,16 @@ pub(crate) struct DevMigrations {
 pub(crate) fn migrate_development(
     project_dir: &Path,
     config: &TakoToml,
+) -> Result<DevMigrations, String> {
+    development_migrations(project_dir, config, false)
+}
+
+/// Applies each development binding's pending migrations, or lists them
+/// when `dry_run` is set.
+pub(crate) fn development_migrations(
+    project_dir: &Path,
+    config: &TakoToml,
+    dry_run: bool,
 ) -> Result<DevMigrations, String> {
     let project_dir = project_dir
         .canonicalize()
@@ -79,7 +91,7 @@ pub(crate) fn migrate_development(
             continue;
         }
         let path = database_path(&project_dir, &database);
-        let report = tako_database::migrate::migrate_file(&path, owner, &migrations, false)
+        let report = tako_database::migrate::migrate_file(&path, owner, &migrations, dry_run)
             .map_err(|error| format!("Database `{binding}`: {error}"))?;
         result.warnings.extend(
             report
@@ -91,6 +103,13 @@ pub(crate) fn migrate_development(
             result.applied.push(format!(
                 "Applied {} to `{binding}`",
                 report.applied.join(", ")
+            ));
+        }
+        if !report.pending.is_empty() {
+            result.pending.push(format!(
+                "`{binding}` has {} pending: {}",
+                report.pending.len(),
+                report.pending.join(", ")
             ));
         }
     }

@@ -20,15 +20,17 @@ The `dev` script runs `tako dev bunx --bun vite dev`, so it wraps Vite in the re
 
 Supply requests live in the `mission` database, which the app reaches as
 `tako.databases.mission` through `@libsql/client`. `tako dev` serves it from a
-local file. To deploy, create the database on one of the network's servers and
-bind it to production:
+local file, after applying `migrations/`. To deploy, create the database on one
+of the network's servers and bind it to production:
 
 ```bash
-tako sqlite create mission --env production --server <server> --access network
+tako sqlite create mission --server <server>
+tako sqlite link mission production
 ```
 
-`--access network` lets instances on every server of the network use it. Tako
-takes hourly snapshots once a backup storage is configured with `--backup`.
+Instances on every server of the network can use it. Deploys apply
+`migrations/` to it, and it gets hourly snapshots once production has a
+`backup.storage`.
 
 Secret values are not stored in Git. Set development values using
 `tako secrets set NAME --env development`. To access published production values,

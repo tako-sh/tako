@@ -1,8 +1,8 @@
 //! Database records in the network's shared state.
 //!
 //! A database's name identifies it within the network. Each database has two
-//! records under its name: a directory record with its home server and
-//! access, which every member that may deploy can read, and its snapshot key,
+//! records under its name: a directory record with its home server, which
+//! every member that may deploy can read, and its snapshot key,
 //! which only administrators can read. Deleting a database publishes
 //! tombstones for both.
 
@@ -21,15 +21,13 @@ use crate::config::LocalNetwork;
 /// How long a publication may be retried before it expires.
 const PUBLICATION_SECONDS: u64 = 10 * 60;
 
-/// Where a database lives and who may use it.
+/// Where a database lives.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct DatabaseRecord {
     pub name: String,
     /// Device ID of the server that hosts the database.
     pub server: String,
-    #[serde(default)]
-    pub access: tako_core::DatabaseAccess,
     /// Tells this database apart from earlier ones with the same name.
     pub generation: String,
     pub created_at_unix_secs: u64,
@@ -179,7 +177,6 @@ mod tests {
         let record = DatabaseRecord {
             name: "main".into(),
             server: "a".repeat(64),
-            access: tako_core::DatabaseAccess::Network,
             generation: "0123456789abcdef0123456789abcdef".into(),
             created_at_unix_secs: 1,
         };

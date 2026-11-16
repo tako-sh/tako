@@ -54,19 +54,6 @@ pub fn validate_database_name(name: &str) -> Result<(), String> {
     }
 }
 
-/// Which apps may use a database.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub enum DatabaseAccess {
-    /// Only apps running on the database's server.
-    #[default]
-    Local,
-    /// Apps on any server of the network. Their queries cross the private
-    /// network to the database's server.
-    Network,
-}
-
 /// A database bound to an app environment, sent with `Command::Deploy`.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -75,8 +62,6 @@ pub struct DatabaseBinding {
     pub name: String,
     /// Device ID of the database's server.
     pub server: String,
-    #[serde(default)]
-    pub access: DatabaseAccess,
     /// Key the database's server issued with its grant to this app
     /// environment. Other servers present it when they forward requests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -87,7 +72,7 @@ impl DatabaseBinding {
     /// Whether two bindings name the same database the same way, ignoring
     /// the peer key a server fills in.
     pub fn same_target(&self, other: &Self) -> bool {
-        self.name == other.name && self.server == other.server && self.access == other.access
+        self.name == other.name && self.server == other.server
     }
 }
 
@@ -96,7 +81,6 @@ impl std::fmt::Debug for DatabaseBinding {
         f.debug_struct("DatabaseBinding")
             .field("name", &self.name)
             .field("server", &self.server)
-            .field("access", &self.access)
             .field("peer_key", &self.peer_key.as_ref().map(|_| "[REDACTED]"))
             .finish()
     }

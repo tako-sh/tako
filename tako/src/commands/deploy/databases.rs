@@ -55,9 +55,7 @@ pub(super) fn apply_peer_keys(
     keys: &HashMap<String, String>,
 ) {
     for planned in plan.values_mut() {
-        if planned.access == tako_core::DatabaseAccess::Network {
-            planned.binding.peer_key = keys.get(&planned.home.device_id).cloned();
-        }
+        planned.binding.peer_key = keys.get(&planned.home.device_id).cloned();
     }
 }
 
@@ -166,9 +164,9 @@ async fn run(prep: &Preparation<'_>) -> Result<Prepared, Box<dyn std::error::Err
     Ok(prepared)
 }
 
-/// Grants the environment its network-access databases on their servers when
-/// it deploys elsewhere, and clears its grants on the other servers that host
-/// network-access databases. Returns the peer keys of the grants, and
+/// Grants the environment its databases on their servers when it deploys
+/// elsewhere, and clears its grants on the other servers that host the
+/// network's databases. Returns the peer keys of the grants, and
 /// warnings for servers that could not clear a grant this deploy does not
 /// depend on.
 async fn grant(
@@ -178,9 +176,6 @@ async fn grant(
     let network = crate::commands::sqlite::target::env_network(prep.config, prep.env)?;
     let mut homes: BTreeMap<String, (Home, BTreeSet<String>)> = BTreeMap::new();
     for record in prep.records {
-        if record.access != tako_core::DatabaseAccess::Network {
-            continue;
-        }
         let Ok(home) = resolve_home(prep.servers, network, &record.server, prep.env) else {
             continue;
         };
@@ -189,9 +184,6 @@ async fn grant(
             .or_insert_with(|| (home, BTreeSet::new()));
     }
     for planned in bound.values() {
-        if planned.access != tako_core::DatabaseAccess::Network {
-            continue;
-        }
         let remote = prep
             .targets
             .iter()

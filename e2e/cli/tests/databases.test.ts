@@ -247,7 +247,10 @@ describe("migrations", () => {
       join(dir, "migrations", "0002_more.sql"),
       "INSERT INTO items VALUES ('more');\n",
     );
-    const migrated = await tako("sqlite", "migrate", "--env", "development");
+    const pending = await tako("sqlite", "migrations", "list", "--local");
+    expect(pending.code).toBe(0);
+    expect(pending.err).toContain("0002_more.sql");
+    const migrated = await tako("sqlite", "migrations", "apply", "--local");
     expect(migrated.code).toBe(0);
     expect(migrated.err).toContain("0002_more.sql");
     expect(rows()).toEqual(["more", "seed"]);
@@ -258,7 +261,7 @@ describe("migrations", () => {
     const db = new Database(join(dir, ".tako", "data", "databases", "app-db.sqlite"));
     db.run("INSERT INTO items VALUES ('scratch')");
     db.close();
-    const reset = await tako("sqlite", "reset", "app-db", "--env", "development", "--yes");
+    const reset = await tako("sqlite", "reset", "app-db", "--local", "--yes");
     expect(reset.code).toBe(0);
     expect(rows()).toEqual(["more", "seed"]);
   });

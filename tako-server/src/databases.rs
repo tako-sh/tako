@@ -15,8 +15,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use parking_lot::{Mutex, RwLock};
 use tako_core::{
-    DatabaseAccess, DatabaseBinding, DatabaseConnection, DatabaseInfo, DatabaseQueryResult,
-    Response, StorageBinding, StorageProvider,
+    DatabaseBinding, DatabaseConnection, DatabaseInfo, DatabaseQueryResult, Response,
+    StorageBinding, StorageProvider,
 };
 use tako_database::{Binding, DatabaseHost, DatabaseId, Home, HostConfig};
 
@@ -215,10 +215,6 @@ impl Databases {
                         binding.name
                     ));
                 }
-            } else if binding.access != DatabaseAccess::Network {
-                return Err(format!(
-                    "Database binding `{name}` names a database on another server; set `access = \"network\"` on the database to allow that."
-                ));
             }
             let existing = previous
                 .get(&name)
@@ -1020,7 +1016,6 @@ mod tests {
         DatabaseBinding {
             name: "shop".into(),
             server: server.into(),
-            access: DatabaseAccess::Network,
             peer_key: key.map(str::to_owned),
         }
     }

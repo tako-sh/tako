@@ -188,8 +188,8 @@ pub enum Commands {
     Backups(backups::BackupCommands),
 
     /// Tako-hosted SQLite databases
-    #[command(subcommand, visible_alias = "db")]
-    Sqlite(sqlite::SqliteCommands),
+    #[command(visible_alias = "db")]
+    Sqlite(sqlite::SqliteArgs),
 
     /// Provider credentials used by Tako
     #[command(visible_alias = "creds")]

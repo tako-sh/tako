@@ -622,20 +622,22 @@ create_fixture_database() {
   fi
   echo "Creating the messages database on $server_host"
   if ! HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" \
-    sqlite create messages --env production --server "$server_host" --access network >"$log" 2>&1; then
+    sqlite create messages --server "$server_host" >"$log" 2>&1 || \
+    ! HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" \
+    sqlite link messages production >>"$log" 2>&1; then
     cat "$log" >&2 || true
     exit 1
   fi
   # The network records where the database lives; tako.toml only binds it.
   if ! HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --json --config "$PROJECT_DIR/tako.toml" \
-    sqlite list --env production >"$list_json" 2>"$log" || \
-     ! jq -e '.databases | any(.name == "messages" and .access == "network" and .in_project)' \
+    sqlite list >"$list_json" 2>"$log" || \
+     ! jq -e '.databases | any(.name == "messages" and .in_project)' \
        "$list_json" >/dev/null; then
     cat "$log" "$list_json" >&2 || true
     exit 1
   fi
   if grep -q '^\[databases\.messages\]' "$PROJECT_DIR/tako.toml"; then
-    echo "tako sqlite create wrote [databases.messages] without an explicit backup" >&2
+    echo "tako sqlite link wrote [databases.messages]" >&2
     exit 1
   fi
   DATABASE_SERVER=$server_host
@@ -651,7 +653,7 @@ run_database_checks() {
   local -a tako=(env HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml")
 
   echo "Running hosted database checks after deploying to $server_host"
-  if ! "${tako[@]}" --json sqlite status messages --env production >"$status_json" 2>"$log"; then
+  if ! "${tako[@]}" --json sqlite status messages >"$status_json" 2>"$log"; then
     cat "$log" "$status_json" >&2 || true
     exit 1
   fi
@@ -664,7 +666,7 @@ run_database_checks() {
     jq -e '.databases[0].status.remote_grants | index("cw-e2e/production") != null' "$status_json" >/dev/null
   fi
 
-  if ! "${tako[@]}" --json sqlite shell messages "SELECT count(*) AS n FROM messages" --env production \
+  if ! "${tako[@]}" --json sqlite shell messages "SELECT count(*) AS n FROM messages" \
     >"$query_json" 2>"$log"; then
     cat "$log" "$query_json" >&2 || true
     exit 1
@@ -676,7 +678,7 @@ run_database_checks() {
     exit 1
   fi
 
-  if ! "${tako[@]}" sqlite export messages "$export_file" --env production >"$log" 2>&1; then
+  if ! "${tako[@]}" sqlite export messages "$export_file" >"$log" 2>&1; then
     cat "$log" >&2 || true
     exit 1
   fi
@@ -688,7 +690,7 @@ run_database_checks() {
   fi
 
   # Replacing the database with its own export pauses and resumes app access.
-  if ! "${tako[@]}" sqlite import messages "$export_file" --env production --yes >"$log" 2>&1; then
+  if ! "${tako[@]}" sqlite import messages "$export_file" --yes >"$log" 2>&1; then
     cat "$log" >&2 || true
     exit 1
   fi

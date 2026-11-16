@@ -739,15 +739,14 @@ mod tests {
             DatabaseBinding {
                 name: "shop".into(),
                 server: "edge".into(),
-                access: tako_core::DatabaseAccess::Network,
                 peer_key: Some("issued-by-edge".into()),
             },
         );
         // Deployers without administration never see peer keys.
-        let same = json!({"main": {"name": "shop", "server": "edge", "access": "network"}});
+        let same = json!({"main": {"name": "shop", "server": "edge"}});
         let release = f.decode_command(json!({"command":"run_release","databases":same}));
         assert_eq!(f.authorize(&release), Ok(()));
-        let moved = json!({"main": {"name": "shop", "server": "other", "access": "network"}});
+        let moved = json!({"main": {"name": "shop", "server": "other"}});
         let release = f.decode_command(json!({"command":"run_release","databases":moved}));
         assert_eq!(f.authorize(&release), Err(DATABASES_DENIED));
     }

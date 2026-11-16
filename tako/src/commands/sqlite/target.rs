@@ -89,20 +89,17 @@ pub(crate) fn env_records(
 #[derive(Clone)]
 pub(crate) struct PlannedBinding {
     pub database_name: String,
-    pub access: tako_core::DatabaseAccess,
     pub home: Home,
     pub binding: tako_core::DatabaseBinding,
 }
 
-/// Resolves an environment's database bindings for a deploy to
-/// `target_servers` (inventory keys), using the network's `records`. A
-/// database with local access must be hosted on every target server, so
-/// only single-server placements on its home server qualify.
+/// Resolves an environment's database bindings for a deploy, using the
+/// network's `records`. Apps on other servers than a database's reach it
+/// over the private network.
 pub(crate) fn plan_bindings(
     config: &TakoToml,
     servers: &ServerInventory,
     env: &str,
-    target_servers: &[String],
     records: &[DatabaseRecord],
 ) -> Result<HashMap<String, PlannedBinding>, String> {
     let Some(env_config) = config.envs.get(env) else {
@@ -119,28 +116,18 @@ pub(crate) fn plan_bindings(
             .find(|record| &record.name == database_name)
             .ok_or_else(|| {
                 format!(
-                    "Database '{database_name}', bound as '{binding}' in {env}, does not exist in this network. Create it with `tako sqlite create {database_name} --env {env}`, or run `tako sqlite list` to see the network's databases."
+                    "Database '{database_name}', bound as '{binding}' in {env}, does not exist in this network. Create it with `tako sqlite create {database_name}`, or run `tako sqlite list` to see the network's databases."
                 )
             })?;
         let home = resolve_home(servers, network, &record.server, env)
             .map_err(|error| format!("The server of database '{database_name}': {error}"))?;
-        if record.access == tako_core::DatabaseAccess::Local
-            && let Some(other) = target_servers.iter().find(|target| **target != home.key)
-        {
-            return Err(format!(
-                "Database '{database_name}' is hosted on {}, but {env} also deploys to {other}. Run `tako sqlite access {database_name} network` to let apps on other servers use it, or deploy {env} only to {}.",
-                home.name, home.name
-            ));
-        }
         planned.insert(
             binding.clone(),
             PlannedBinding {
                 database_name: database_name.clone(),
-                access: record.access,
                 binding: tako_core::DatabaseBinding {
                     name: database_name.clone(),
                     server: home.device_id.clone(),
-                    access: record.access,
                     // Filled from the home server's grant during the deploy.
                     peer_key: None,
                 },

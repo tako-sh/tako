@@ -373,7 +373,6 @@ async fn run_async(
         &tako_config,
         &servers,
         &env,
-        &server_names,
         &database_records,
     )?;
     if !database_plan.is_empty() && is_container_release {
@@ -590,11 +589,8 @@ async fn run_async(
         .ok_or("no servers selected for deploy")?;
     let release_command = resolve_release_command(&tako_config, &env);
     // An administrator's deploy also revokes the grants of an environment
-    // that no longer binds the network's network-access databases.
-    let revokes_grants = configure_bindings
-        && database_records
-            .iter()
-            .any(|record| record.access == tako_core::DatabaseAccess::Network);
+    // that no longer binds the network's databases.
+    let revokes_grants = configure_bindings && !database_records.is_empty();
     if !database_plan.is_empty() || revokes_grants {
         let peer_keys = databases::prepare(databases::Preparation {
             plan: &database_plan,
