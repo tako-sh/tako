@@ -1064,3 +1064,25 @@ async fn databases_that_failed_to_open_are_retried() {
     assert!(state.databases.host.is_registered(&id));
     query(&state, ID, "SELECT 1").await;
 }
+
+#[tokio::test]
+async fn administrator_query_results_fit_through_the_management_relay() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, None).await;
+    // About 12 MiB as JSON: under the app response limit, over what the
+    // 16 MiB relay could return with its envelope.
+    let refused = error(
+        &state,
+        Command::QueryDatabase {
+            name: ID.into(),
+            sql: "SELECT randomblob(9 * 1024 * 1024)".into(),
+        },
+    )
+    .await;
+    assert!(
+        refused.contains("larger than 8 MiB"),
+        "refused as too large"
+    );
+    query(&state, ID, "SELECT randomblob(1024)").await;
+}

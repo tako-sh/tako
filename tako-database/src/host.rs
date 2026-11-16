@@ -686,29 +686,48 @@ impl DatabaseHost {
         // New requests no longer find these databases. Requests already
         // running keep a connection to the file, so its lock is held until
         // they finish: a successor that replaced the file meanwhile would
-        // lose their writes. A request still running after the pause timeout
-        // is left to fail.
+        // lose their writes. Closing waits for them up to the pause timeout;
+        // a database still busy then keeps its lock in the background until
+        // its last request ends (or this process exits, which ends both).
         let deadline = tokio::time::Instant::now() + self.inner.config.pause_timeout;
-        for database in &databases {
-            loop {
-                let idle = database.idle.notified();
+        let mut busy = Vec::new();
+        let mut idle = Vec::new();
+        for database in databases {
+            let finished = loop {
+                let notified = database.idle.notified();
                 if database.state.lock().active == 0 {
-                    break;
+                    break true;
                 }
-                if tokio::time::timeout_at(deadline, idle).await.is_err() {
-                    tracing::warn!(
-                        database = %database.id,
-                        "closing a database with requests still running"
-                    );
-                    break;
+                if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                    break false;
                 }
+            };
+            if finished {
+                idle.push(database);
+            } else {
+                busy.push(database);
             }
+        }
+        for database in busy {
+            tracing::warn!(
+                database = %database.id,
+                "closing a database with requests still running; its file stays locked until they finish"
+            );
+            tokio::spawn(async move {
+                loop {
+                    let notified = database.idle.notified();
+                    if database.state.lock().active == 0 {
+                        break;
+                    }
+                    notified.await;
+                }
+                let _ = tokio::task::spawn_blocking(move || release(&database)).await;
+            });
         }
         tokio::task::spawn_blocking(move || {
             drop(streams);
-            for database in databases {
-                database.pool.lock().clear();
-                database.lock.lock().take();
+            for database in idle {
+                release(&database);
             }
         })
         .await
@@ -758,7 +777,13 @@ impl DatabaseHost {
             .acquire_owned()
             .await
             .map_err(|_| HostError::Engine("database is closing".into()))?;
-        let budget = self.inner.config.max_response_bytes;
+        // Results go back through the management relay, which carries at
+        // most 16 MiB; leave room for its envelope.
+        let budget = self
+            .inner
+            .config
+            .max_response_bytes
+            .min(MAX_ADMIN_QUERY_BYTES);
         tokio::task::spawn_blocking(move || {
             let _active = active;
             let _permit = permit;
@@ -787,7 +812,7 @@ impl DatabaseHost {
                             if size > budget {
                                 return Err(Error::new(
                                     "RESPONSE_TOO_LARGE",
-                                    "result exceeds the response size limit",
+                                    "the result is larger than 8 MiB; select fewer rows or columns, or use `tako sqlite export`",
                                 ));
                             }
                             rows.push(row);
@@ -1001,6 +1026,16 @@ impl DatabaseHost {
         state.streams = state.streams.saturating_sub(1);
     }
 }
+
+/// Drops a closed database's connections and its file lock.
+fn release(database: &Database) {
+    database.pool.lock().clear();
+    database.lock.lock().take();
+}
+
+/// The most an administrator query returns, so its result fits through the
+/// 16 MiB management relay.
+const MAX_ADMIN_QUERY_BYTES: usize = 8 * 1024 * 1024;
 
 /// The result of [`DatabaseHost::admin_query`].
 #[derive(Debug)]

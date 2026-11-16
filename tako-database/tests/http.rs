@@ -645,6 +645,54 @@ async fn closing_waits_for_requests_still_running() {
         .unwrap();
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_database_busy_past_the_timeout_keeps_its_lock_until_its_requests_end() {
+    let h = harness(HostConfig {
+        pause_timeout: Duration::from_millis(200),
+        ..HostConfig::default()
+    });
+    let lock = h._dir.path().join("db.sqlite.lock");
+    let exclusive = || {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock)
+            .unwrap();
+        file.try_lock().is_ok()
+    };
+    let (tx, rx) =
+        tokio::sync::mpsc::channel::<Result<http_body::Frame<Bytes>, std::convert::Infallible>>(1);
+    let request = Request::post("/v3/pipeline")
+        .header("authorization", format!("Bearer {}", h.token))
+        .body(http_body_util::StreamBody::new(tokio_stream_from(rx)))
+        .unwrap();
+    let host = h.host.clone();
+    let running =
+        tokio::spawn(
+            async move { handle(&host, &Access::Apps, PEER.parse().unwrap(), request).await },
+        );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Closing gives up waiting, but the file stays locked: a successor
+    // cannot replace it under the request still running.
+    h.host.close_all().await;
+    assert!(!exclusive(), "the running request still holds the file");
+    let rest = json!({"baton": null, "requests": [execute("SELECT 1")]}).to_string();
+    tx.send(Ok(http_body::Frame::data(Bytes::from(rest))))
+        .await
+        .unwrap();
+    drop(tx);
+    running.await.unwrap();
+    let mut released = false;
+    for _ in 0..50 {
+        if exclusive() {
+            released = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(released, "the lock is released once the request ends");
+}
+
 fn tokio_stream_from<T: Send + 'static>(
     mut rx: tokio::sync::mpsc::Receiver<T>,
 ) -> impl futures_util::Stream<Item = T> + Send + Sync {
