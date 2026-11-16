@@ -12,15 +12,16 @@ The signed-URL helpers below are currently JavaScript/TypeScript APIs. Go and Ru
 | Need                                    | Use                                      | Boundary                                                                      |
 | --------------------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------- |
 | Files uploaded or downloaded by clients | A local or S3-compatible storage binding | Local storage requires a single production server.                            |
-| App-owned local files or SQLite         | `tako.dataDir` / `TAKO_DATA_DIR`         | Data is per server; container releases receive the same directory as a mount. |
+| Relational app data                     | A [hosted database](/databases/)         | Bound by name; snapshots go to private S3 storage.                            |
+| App-owned local files                   | `tako.dataDir` / `TAKO_DATA_DIR`         | Data is per server; container releases receive the same directory as a mount. |
 | Recover the deployed app data tree      | [Backups](/backups/)                     | A backup destination is a separate private S3 resource.                       |
 | Disposable computed JSON                | [Cache](/cache/)                         | Cache entries are excluded from app backups.                                  |
 
-An application database and Tako's shared runtime-state Postgres credential are separate choices. A storage binding does not provision a database.
+A storage binding does not provision a database. Use a [hosted database](/databases/) for relational data; Tako's shared runtime-state Postgres credential is a separate choice.
 
 ## App-owned local files
 
-Resolve a file inside the persistent app data directory. Fail when the directory is unavailable instead of silently writing into the release directory:
+Resolve a file inside the persistent app data directory. Fail when the directory is unavailable instead of silently writing into the release directory. The directory holds plain files: Tako does not capture or snapshot databases placed in it, so prefer a [hosted database](/databases/) for SQLite.
 
 <CodeGroup>
 
@@ -29,7 +30,7 @@ import { join } from "node:path";
 import { tako } from "tako.sh";
 
 if (!tako.dataDir) throw new Error("Tako data directory is unavailable");
-const databaseFile = join(tako.dataDir, "app.sqlite");
+const exportFile = join(tako.dataDir, "exports", "latest.csv");
 ```
 
 ```go Go
@@ -39,27 +40,27 @@ import (
     "path/filepath"
 )
 
-func databasePath() (string, error) {
+func exportPath() (string, error) {
     dataDir := os.Getenv("TAKO_DATA_DIR")
     if dataDir == "" { return "", fmt.Errorf("Tako data directory is unavailable") }
-    return filepath.Join(dataDir, "app.sqlite"), nil
+    return filepath.Join(dataDir, "exports", "latest.csv"), nil
 }
 ```
 
 ```rust Rust
 use std::{io, path::PathBuf};
 
-fn database_path() -> io::Result<PathBuf> {
+fn export_path() -> io::Result<PathBuf> {
     let data_dir = std::env::var_os("TAKO_DATA_DIR")
         .filter(|value| !value.is_empty())
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Tako data directory is unavailable"))?;
-    Ok(PathBuf::from(data_dir).join("app.sqlite"))
+    Ok(PathBuf::from(data_dir).join("exports").join("latest.csv"))
 }
 ```
 
 </CodeGroup>
 
-Pass the path to your database or filesystem library; these snippets do not open a database. Files remain local to that server. Container releases receive the same directory as a mount, at `/tako/data` by default, and `TAKO_DATA_DIR` names the path inside the container; see [Docker](/docker/).
+These snippets only resolve a path; create parent directories before writing. Files remain local to that server. Container releases receive the same directory as a mount, at `/tako/data` by default, and `TAKO_DATA_DIR` names the path inside the container; see [Docker](/docker/).
 
 ## Bind local development storage
 

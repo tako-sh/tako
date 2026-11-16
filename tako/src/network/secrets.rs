@@ -277,7 +277,11 @@ fn merge_remote(
     let latest = cache.latest()?;
     let records: Vec<_> = latest
         .values()
-        .filter(|record| &record.address.scope == scope && record.address.allowed(permissions))
+        .filter(|record| {
+            &record.address.scope == scope
+                && record.address.kind != SecretKind::Database
+                && record.address.allowed(permissions)
+        })
         .copied()
         .collect();
     if records.is_empty() && current.is_empty() {

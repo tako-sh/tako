@@ -203,6 +203,7 @@ async fn register_updated_app(
             HashMap::new()
         }
     };
+    let databases = crate::local_databases::dev_files(&ctx.project_dir, cfg);
     let project_dir_display = ctx.project_dir.to_string_lossy();
     let reg_result =
         crate::dev_server_client::register_app(crate::dev_server_client::RegisterAppRequest {
@@ -219,6 +220,7 @@ async fn register_updated_app(
             secrets: new_secrets,
             images: &cfg.images,
             storages: &storages,
+            databases: &databases,
             readiness_failure_hint: ctx.readiness_failure_hint.as_deref(),
             worker_command: ctx.worker_command.as_deref(),
             workflow_retention_ms: cfg.workflows.retention_ms,

@@ -109,6 +109,32 @@ Returns time since process start.
 
 Returns a secret value by name. Prefer the generated `Secrets` struct instead of calling this directly.
 
+### `tako.GetDatabase(name string) (tako.Database, bool)`
+
+Returns the hosted database bound as `name` in `[envs.<env>].databases`, or `false` when the environment does not bind it. `tako.DatabaseNames()` lists bound names.
+
+## Databases
+
+Tako-hosted SQLite databases are created with `tako sqlite create <name>` (administrator permission) and served over the libSQL HTTP protocol next to the app. `Database` has `URL` and `AuthToken`; `DSN()` returns the URL with `authToken` as a query parameter for the `libsql` driver of `libsql-client-go`:
+
+```go
+import (
+	"database/sql"
+	"log"
+
+	_ "github.com/tursodatabase/libsql-client-go/libsql"
+	"tako.sh"
+)
+
+main, ok := tako.GetDatabase("main")
+if !ok {
+	log.Fatal("no database is bound as main")
+}
+db, err := sql.Open("libsql", main.DSN())
+```
+
+Formatting a `Database` with `%v` or `%#v` redacts the token; do not log `DSN()`. `tako dev` and `tako run` serve bindings from `.tako/data/databases/<database>.sqlite`. Run migrations from the release command or `tako run -- go run ./cmd/migrate`: the endpoint is loopback-only on the server. Tako tests `libsql-client-go` with `DSN()`; other Go drivers must speak Hrana over HTTP with JSON. Container releases cannot bind databases yet.
+
 ## Secrets
 
 Secrets are accessed via a generated struct — type-safe with autocompletion:

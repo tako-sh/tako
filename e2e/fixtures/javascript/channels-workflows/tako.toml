@@ -1,5 +1,8 @@
 name = "cw-e2e"
 runtime = "bun"
 
+[envs.development]
+databases = { messages = "messages" }
+
 [envs.production]
 route = "cw-e2e.example.com"

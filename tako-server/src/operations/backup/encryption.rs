@@ -13,7 +13,7 @@ const NONCE_SIZE: usize = 12;
 const TAG_SIZE: usize = 16;
 const BUFFER_SIZE: usize = 64 * 1024;
 
-pub(super) fn encrypt_backup_file(
+pub(crate) fn encrypt_backup_file(
     plaintext_path: &Path,
     encrypted_path: &Path,
     key: &BackupKeyBinding,
@@ -57,7 +57,7 @@ pub(super) fn encrypt_backup_file(
     })
 }
 
-pub(super) fn decrypt_backup_file(
+pub(crate) fn decrypt_backup_file(
     encrypted_path: &Path,
     plaintext_path: &Path,
     key: &BackupKeyBinding,

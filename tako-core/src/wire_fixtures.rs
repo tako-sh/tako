@@ -16,7 +16,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
-use crate::bootstrap::envelope_bytes;
+use crate::bootstrap::{Bindings, envelope_bytes};
+use crate::database::DatabaseConnection;
 use crate::network::NetworkRequest;
 use crate::{
     Command, EnqueueOpts, EnqueueRunResponse, ErrorCode, Response, RunPayload, RunResult,
@@ -476,7 +477,22 @@ fn bootstrap() -> Fixture {
             },
         ),
     ]);
-    let json = serde_json::from_slice(&envelope_bytes("tok-abc", &secrets, &storages)).unwrap();
+    let databases = HashMap::from([(
+        "main".to_string(),
+        DatabaseConnection {
+            url: "http://127.0.0.1:9845".into(),
+            auth_token: "token-example".into(),
+        },
+    )]);
+    let json = serde_json::from_slice(&envelope_bytes(
+        "tok-abc",
+        Bindings {
+            secrets: &secrets,
+            storages: &storages,
+            databases: &databases,
+        },
+    ))
+    .unwrap();
     Fixture {
         path: "bootstrap.json".into(),
         json,
@@ -486,8 +502,17 @@ fn bootstrap() -> Fixture {
                 serde_json::from_value(file["secrets"].clone()).unwrap();
             let storages: HashMap<String, StorageBinding> =
                 serde_json::from_value(file["storages"].clone()).unwrap();
-            let rebuilt: Value =
-                serde_json::from_slice(&envelope_bytes(token, &secrets, &storages)).unwrap();
+            let databases: HashMap<String, DatabaseConnection> =
+                serde_json::from_value(file["databases"].clone()).unwrap();
+            let rebuilt: Value = serde_json::from_slice(&envelope_bytes(
+                token,
+                Bindings {
+                    secrets: &secrets,
+                    storages: &storages,
+                    databases: &databases,
+                },
+            ))
+            .unwrap();
             assert_eq!(
                 &rebuilt, file,
                 "bootstrap.json is not the envelope it describes"

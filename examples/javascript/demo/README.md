@@ -1,6 +1,6 @@
 # Planetary Supply Desk — Tako demo
 
-A TanStack Start demo app that doubles as a live tour of Tako's primitives: **wildcard routing**, **durable workflows**, **channels**, and **image optimization**.
+A TanStack Start demo app that doubles as a live tour of Tako's primitives: **wildcard routing**, **durable workflows**, **channels**, **hosted databases**, and **image optimization**.
 
 Each planet base has a mission page at `<base>.demo.tako.sh`. Submitting a supply request enqueues a five-step sequential workflow (check → pack → load → ship → deliver) where the late steps occasionally throw and Tako retries them via `ctx.run`'s `retries` option. Every step publishes to the `mission-log` channel, so the right-rail log streams live to every connected client. Base artwork lives in `public/images/`; the app uses `imageUrl()` so Tako serves resized, cached images from `/_tako/image`. A daily cron workflow deletes demo database records older than three days.
 
@@ -14,7 +14,21 @@ bun install
 bun run dev
 ```
 
-The `dev` script runs `tako dev bunx --bun vite dev`, so it wraps Vite in the real Tako path: workflows are enqueued through the internal socket, events flow through the actual `mission-log` channel, and base artwork is served through `/_tako/image`.
+The `dev` script runs `tako dev bunx --bun vite dev`, so it wraps Vite in the real Tako path: workflows are enqueued through the internal socket, events flow through the actual `mission-log` channel, base artwork is served through `/_tako/image`, and the `mission` database binding is served from `.tako/data/databases/mission.sqlite`.
+
+## Database
+
+Supply requests live in the `mission` database, which the app reaches as
+`tako.databases.mission` through `@libsql/client`. `tako dev` serves it from a
+local file. To deploy, create the database on one of the network's servers and
+bind it to production:
+
+```bash
+tako sqlite create mission --env production --server <server> --access network
+```
+
+`--access network` lets instances on every server of the network use it. Tako
+takes hourly snapshots once a backup storage is configured with `--backup`.
 
 Secret values are not stored in Git. Set development values using
 `tako secrets set NAME --env development`. To access published production values,
@@ -60,7 +74,7 @@ channels, or workflow execution. The schedule activates on the default branch.
 - `src/channels/mission-log.ts` — pub/sub channel for live events
 - `src/routes/index.tsx` — landing route, wildcard base loader, and image URL signing
 - `src/components/mission-controller.tsx` — workflow enqueueing and live channel state
-- `src/server/db.ts` — SQLite persistence and retention cleanup
+- `src/server/db.ts` — `mission` database access and retention cleanup
 - `src/lib/bases.ts` — planet base catalog and source image paths
 - `public/images/` — generated source artwork for the base previews
 - `src/components/` — all UI components (MissionControl, Landing, Sidebar, etc.)

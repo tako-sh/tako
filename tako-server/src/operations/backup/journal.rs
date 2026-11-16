@@ -1141,15 +1141,6 @@ pub(super) struct DatabaseSwap {
 }
 
 impl DatabaseSwap {
-    /// A shared restore must reopen apps through normal startup validation.
-    /// Record that every swap completed, retaining the originals until health
-    /// checks finish. A crash here leaves a complete database and a drain intent.
-    pub(super) fn prepare_restart(&self) -> Result<(), String> {
-        let mut intent = read_intent(self.dir.path())?.ok_or("missing restore intent")?;
-        intent.state = IntentState::Restored;
-        write_intent(self.dir.path(), &intent).map_err(|e| e.to_string())
-    }
-
     pub(super) fn summary(&self) -> &RestoredDatabases {
         &self.summary
     }

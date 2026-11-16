@@ -432,6 +432,43 @@ fn decrypt_s3_storage_binding(
     })
 }
 
+/// The decrypted storage binding a database's snapshots upload to, from the
+/// `backup` storage resource of its `[databases.<name>]` entry.
+pub(crate) fn decrypt_database_backup_storage(
+    env: &str,
+    config: &TakoToml,
+    database_name: &str,
+    secrets: &crate::config::SecretsStore,
+    usage_path: Option<&Path>,
+) -> Result<Option<tako_core::StorageBinding>, Box<dyn std::error::Error>> {
+    let Some(database) = config.databases.get(database_name) else {
+        return Ok(None);
+    };
+    let Some(resource_name) = database.backup.as_deref() else {
+        return Ok(None);
+    };
+    let resource = config.storages.get(resource_name).ok_or_else(|| {
+        format!("[databases.{database_name}].backup references missing storage '{resource_name}'")
+    })?;
+    if resource.provider != tako_core::StorageProvider::S3 || resource.public_base_url.is_some() {
+        return Err(format!(
+            "[databases.{database_name}].backup storage '{resource_name}' must be private S3-compatible storage"
+        )
+        .into());
+    }
+    let mut key_cache = None;
+    let mut binding = decrypt_s3_storage_binding(
+        env,
+        resource_name,
+        resource,
+        secrets,
+        usage_path,
+        &mut key_cache,
+    )?;
+    binding.public_base_url = None;
+    Ok(Some(binding))
+}
+
 fn generate_local_storage_signing_key() -> Result<String, getrandom::Error> {
     let mut bytes = [0_u8; 32];
     getrandom::fill(&mut bytes)?;

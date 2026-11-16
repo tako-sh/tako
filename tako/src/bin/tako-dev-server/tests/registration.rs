@@ -780,6 +780,7 @@ async fn unregister_app_kills_running_process() {
                 bootstrap_token: "dev-token".to_string(),
                 secrets: std::collections::HashMap::new(),
                 storages: std::collections::HashMap::new(),
+                databases: Default::default(),
             },
         );
     }
@@ -876,6 +877,7 @@ async fn wake_on_request_spawns_exactly_one_process() {
                 bootstrap_token: "dev-token".to_string(),
                 secrets: std::collections::HashMap::new(),
                 storages: std::collections::HashMap::new(),
+                databases: Default::default(),
             },
         );
         s.routes.set_routes(

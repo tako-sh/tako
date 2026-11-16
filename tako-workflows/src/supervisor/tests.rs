@@ -23,6 +23,7 @@ fn sleep_spec(cwd: PathBuf, workers: u32, sleep_secs: &str) -> WorkerSpec {
         env: HashMap::new(),
         secrets: HashMap::new(),
         storages: HashMap::new(),
+        databases: HashMap::new(),
         log_sink: None,
         isolation: None,
         lanes: Vec::new(),
@@ -121,6 +122,7 @@ async fn shutdown_reaps_children_that_ignore_sigterm() {
         env: HashMap::new(),
         secrets: HashMap::new(),
         storages: HashMap::new(),
+        databases: HashMap::new(),
         log_sink: None,
         isolation: None,
         lanes: Vec::new(),
@@ -159,6 +161,7 @@ fn failing_spec(cwd: PathBuf) -> WorkerSpec {
         env: HashMap::new(),
         secrets: HashMap::new(),
         storages: HashMap::new(),
+        databases: HashMap::new(),
         log_sink: None,
         isolation: None,
         lanes: Vec::new(),
@@ -223,6 +226,7 @@ async fn clean_idle_exit_does_not_mark_unhealthy() {
         env: HashMap::new(),
         secrets: HashMap::new(),
         storages: HashMap::new(),
+        databases: HashMap::new(),
         log_sink: None,
         isolation: None,
         lanes: Vec::new(),
@@ -246,6 +250,7 @@ async fn background_reaper_collects_clean_idle_exit_without_poll() {
         env: HashMap::new(),
         secrets: HashMap::new(),
         storages: HashMap::new(),
+        databases: HashMap::new(),
         log_sink: None,
         isolation: None,
         lanes: Vec::new(),
@@ -275,6 +280,7 @@ async fn wake_accepts_clean_exit_when_worker_closes_bootstrap_pipe() {
         env: HashMap::new(),
         secrets: HashMap::from([("BIG_SECRET".to_string(), "x".repeat(1024 * 1024))]),
         storages: HashMap::new(),
+        databases: HashMap::new(),
         log_sink: None,
         isolation: None,
         lanes: Vec::new(),
@@ -313,8 +319,15 @@ fn bootstrap_pipe_envelope_has_token_and_secrets() {
     )]);
     let token = "worker-token-abc";
 
-    let (read_end, writer) =
-        create_bootstrap_pipe(token, &secrets, &storages).expect("create pipe");
+    let (read_end, writer) = create_bootstrap_pipe(
+        token,
+        tako_core::bootstrap::Bindings {
+            secrets: &secrets,
+            storages: &storages,
+            databases: &HashMap::new(),
+        },
+    )
+    .expect("create pipe");
 
     let mut buf = String::new();
     let mut file = std::fs::File::from(read_end);
@@ -347,8 +360,15 @@ fn bootstrap_pipe_is_always_created_even_with_empty_secrets() {
     let token = "still-has-a-token";
 
     let storages = HashMap::new();
-    let (read_end, writer) =
-        create_bootstrap_pipe(token, &secrets, &storages).expect("create pipe");
+    let (read_end, writer) = create_bootstrap_pipe(
+        token,
+        tako_core::bootstrap::Bindings {
+            secrets: &secrets,
+            storages: &storages,
+            databases: &HashMap::new(),
+        },
+    )
+    .expect("create pipe");
 
     let mut buf = String::new();
     let mut file = std::fs::File::from(read_end);
@@ -373,6 +393,7 @@ async fn effective_env_sets_concurrency_and_idle_timeout() {
         env: HashMap::from([("FOO".to_string(), "bar".to_string())]),
         secrets: HashMap::new(),
         storages: HashMap::new(),
+        databases: HashMap::new(),
         log_sink: None,
         isolation: None,
         lanes: Vec::new(),

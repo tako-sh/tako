@@ -1,0 +1,847 @@
+//! The SQLite engine behind Tako databases.
+//!
+//! Everything that depends on `rusqlite` lives in this module. The protocol
+//! layer only sees [`Connection`] and protocol values, so the engine can be
+//! replaced without touching streams, batons, or HTTP handling.
+
+use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
+
+use fallible_iterator::FallibleIterator as _;
+use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+use rusqlite::limits::Limit;
+use rusqlite::types::{ToSql, ToSqlOutput, ValueRef};
+use rusqlite::{OpenFlags, ffi};
+
+use crate::proto::{Col, DescribeParam, DescribeResult, Error, NamedArg, StmtResult, Value};
+
+/// How often (in virtual machine instructions) the statement deadline is checked.
+const PROGRESS_INTERVAL: i32 = 1_000;
+/// Prepared statements kept per connection; ORMs repeat a small set of queries.
+const STATEMENT_CACHE: usize = 64;
+
+#[derive(Clone, Debug)]
+pub struct EngineConfig {
+    /// How long a statement waits for another connection's write lock.
+    pub busy_timeout: Duration,
+    /// The longest a single statement may run, including reading its rows.
+    pub statement_timeout: Duration,
+    /// `PRAGMA synchronous` for client connections (`FULL` or `NORMAL`).
+    pub synchronous: Synchronous,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Synchronous {
+    Normal,
+    Full,
+}
+
+impl Default for EngineConfig {
+    fn default() -> Self {
+        Self {
+            busy_timeout: Duration::from_secs(5),
+            statement_timeout: Duration::from_secs(30),
+            synchronous: Synchronous::Full,
+        }
+    }
+}
+
+/// Positional or named statement arguments.
+pub enum Args<'a> {
+    Positional(&'a [Value]),
+    Named(&'a [NamedArg]),
+}
+
+/// Bounds the encoded size of one response.
+pub struct Budget {
+    remaining: usize,
+}
+
+impl Budget {
+    pub fn new(limit: usize) -> Self {
+        Self { remaining: limit }
+    }
+
+    fn charge(&mut self, bytes: usize) -> bool {
+        match self.remaining.checked_sub(bytes) {
+            Some(remaining) => {
+                self.remaining = remaining;
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+/// Creates an empty database in WAL mode. Fails if the file already exists.
+pub fn create_database(path: &Path) -> Result<(), String> {
+    if path.exists() {
+        return Err(format!("{} already exists", path.display()));
+    }
+    let conn = rusqlite::Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_CREATE
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_EXRESCODE,
+    )
+    .map_err(|e| e.to_string())?;
+    let mode: String = conn
+        .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    if !mode.eq_ignore_ascii_case("wal") {
+        return Err(format!("database refused WAL mode ({mode})"));
+    }
+    conn.execute_batch("PRAGMA user_version = 0")
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Checks that a file is a SQLite database that passes `PRAGMA integrity_check`,
+/// and switches it to WAL mode so it can be served.
+pub fn verify_database(path: &Path) -> Result<(), String> {
+    let conn = rusqlite::Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_EXRESCODE,
+    )
+    .map_err(|e| e.to_string())?;
+    let _ = conn.set_db_config(
+        rusqlite::config::DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA,
+        false,
+    );
+    let result: String = conn
+        .query_row("PRAGMA integrity_check(1)", [], |row| row.get(0))
+        .map_err(|e| format!("not a readable SQLite database: {e}"))?;
+    if result != "ok" {
+        return Err(format!("integrity check failed: {result}"));
+    }
+    let mode: String = conn
+        .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    if !mode.eq_ignore_ascii_case("wal") {
+        return Err(format!("database refused WAL mode ({mode})"));
+    }
+    Ok(())
+}
+
+/// Replaces the database at `path` with the verified file `replacement`.
+///
+/// The caller must hold the database paused, with every connection in every
+/// process closed. The current file is kept as `previous` (a hard link) until
+/// the next replacement. The write-ahead log is checkpointed first, so a crash
+/// at any step leaves either the old or the new database complete.
+pub fn replace_database(path: &Path, replacement: &Path, previous: &Path) -> Result<(), String> {
+    if path.exists() {
+        let conn = rusqlite::Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_EXRESCODE,
+        )
+        .map_err(|e| e.to_string())?;
+        let (busy, _, _): (i64, i64, i64) = conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .map_err(|e| format!("checkpoint before replacing: {e}"))?;
+        if busy != 0 {
+            return Err("the database is still in use; cannot replace it".into());
+        }
+        drop(conn);
+        let _ = std::fs::remove_file(previous);
+        std::fs::hard_link(path, previous)
+            .map_err(|e| format!("keep the previous database: {e}"))?;
+    }
+    std::fs::rename(replacement, path).map_err(|e| format!("replace the database: {e}"))?;
+    for suffix in ["-wal", "-shm"] {
+        let mut sidecar = path.as_os_str().to_owned();
+        sidecar.push(suffix);
+        match std::fs::remove_file(&sidecar) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("remove stale {suffix} file: {error}")),
+        }
+    }
+    if let Some(parent) = path.parent()
+        && let Ok(dir) = std::fs::File::open(parent)
+    {
+        let _ = dir.sync_all();
+    }
+    Ok(())
+}
+
+/// Writes a compact, transactionally consistent copy of `source` to `dest`
+/// with `VACUUM INTO`, then verifies the copy. `dest` must not exist.
+pub fn snapshot_database(source: &Path, dest: &Path, busy_timeout: Duration) -> Result<(), String> {
+    if dest.exists() {
+        return Err(format!("{} already exists", dest.display()));
+    }
+    let conn = rusqlite::Connection::open_with_flags(
+        source,
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_EXRESCODE,
+    )
+    .map_err(|e| e.to_string())?;
+    conn.busy_timeout(busy_timeout).map_err(|e| e.to_string())?;
+    let _ = conn.set_db_config(
+        rusqlite::config::DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA,
+        false,
+    );
+    let dest_text = dest
+        .to_str()
+        .ok_or_else(|| "snapshot path is not UTF-8".to_string())?;
+    conn.execute("VACUUM main INTO ?1", [dest_text])
+        .map_err(|e| e.to_string())?;
+    drop(conn);
+    let copy = rusqlite::Connection::open_with_flags(
+        dest,
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_EXRESCODE,
+    )
+    .map_err(|e| e.to_string())?;
+    let result: String = copy
+        .query_row("PRAGMA integrity_check(1)", [], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    if result != "ok" {
+        return Err(format!("snapshot integrity check failed: {result}"));
+    }
+    Ok(())
+}
+
+/// A client connection: one SQLite connection hardened for untrusted SQL.
+pub struct Connection {
+    conn: rusqlite::Connection,
+    epoch: Instant,
+    /// Deadline in nanoseconds since `epoch`; zero means none.
+    deadline: Arc<AtomicU64>,
+    /// Set when a statement changed session state that outlives a stream.
+    dirty: Arc<AtomicBool>,
+    statement_timeout: Duration,
+}
+
+impl Connection {
+    pub fn open(path: &Path, config: &EngineConfig) -> Result<Self, Error> {
+        let mut conn = rusqlite::Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_EXRESCODE,
+        )
+        .map_err(map_error)?;
+        use rusqlite::config::DbConfig;
+        conn.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)
+            .map_err(map_error)?;
+        conn.set_db_config(DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false)
+            .map_err(map_error)?;
+        // VACUUM attaches one temporary database; nothing else may be attached.
+        conn.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 1)
+            .map_err(map_error)?;
+        conn.busy_timeout(config.busy_timeout).map_err(map_error)?;
+        conn.set_prepared_statement_cache_capacity(STATEMENT_CACHE);
+        let synchronous = match config.synchronous {
+            Synchronous::Normal => "NORMAL",
+            Synchronous::Full => "FULL",
+        };
+        conn.execute_batch(&format!(
+            "PRAGMA synchronous = {synchronous}; PRAGMA foreign_keys = ON;"
+        ))
+        .map_err(map_error)?;
+
+        let dirty = Arc::new(AtomicBool::new(false));
+        let authorizer_dirty = dirty.clone();
+        conn.authorizer(Some(move |ctx: AuthContext<'_>| {
+            authorize(&ctx.action, &authorizer_dirty)
+        }))
+        .map_err(map_error)?;
+
+        let epoch = Instant::now();
+        let deadline = Arc::new(AtomicU64::new(0));
+        let progress_deadline = deadline.clone();
+        conn.progress_handler(
+            PROGRESS_INTERVAL,
+            Some(move || {
+                let deadline = progress_deadline.load(Ordering::Relaxed);
+                deadline != 0 && epoch.elapsed().as_nanos() as u64 > deadline
+            }),
+        )
+        .map_err(map_error)?;
+
+        Ok(Self {
+            conn,
+            epoch,
+            deadline,
+            dirty,
+            statement_timeout: config.statement_timeout,
+        })
+    }
+
+    pub fn is_autocommit(&self) -> bool {
+        self.conn.is_autocommit()
+    }
+
+    /// Whether this connection carries session state (from a PRAGMA) that a
+    /// later stream must not inherit.
+    pub fn is_dirty(&self) -> bool {
+        self.dirty.load(Ordering::Relaxed)
+    }
+
+    /// Rolls back any open transaction.
+    pub fn rollback(&mut self) {
+        if !self.conn.is_autocommit() {
+            let _ = self.conn.execute_batch("ROLLBACK");
+        }
+    }
+
+    pub fn execute(
+        &mut self,
+        sql: &str,
+        args: &Args<'_>,
+        want_rows: bool,
+        budget: &mut Budget,
+    ) -> Result<(StmtResult, bool), Error> {
+        let started = Instant::now();
+        let mut rows = Vec::new();
+        let mut cols = Vec::new();
+        let outcome = self.run(sql, args, |event| match event {
+            Event::Begin(columns) => {
+                cols = columns;
+                Ok(())
+            }
+            Event::Row(row) => {
+                if want_rows {
+                    if !budget.charge(encoded_size(&row)) {
+                        return Err(Error::new(
+                            "RESPONSE_TOO_LARGE",
+                            "result exceeds the response size limit; use the cursor endpoint or LIMIT",
+                        ));
+                    }
+                    rows.push(row);
+                }
+                Ok(())
+            }
+        })?;
+        let read = outcome.rows;
+        Ok((
+            StmtResult {
+                cols,
+                rows,
+                affected_row_count: outcome.affected,
+                last_insert_rowid: outcome.last_insert_rowid,
+                rows_read: read,
+                rows_written: outcome.affected,
+                query_duration_ms: started.elapsed().as_secs_f64() * 1000.0,
+            },
+            outcome.wrote,
+        ))
+    }
+
+    /// Executes a statement, passing its columns and then its rows to `sink`
+    /// as they are produced. Returns `(affected_row_count, last_insert_rowid,
+    /// wrote)`.
+    pub fn execute_streaming(
+        &mut self,
+        sql: &str,
+        args: &Args<'_>,
+        sink: impl FnMut(Event) -> Result<(), Error>,
+    ) -> Result<(u64, Option<i64>, bool), Error> {
+        let outcome = self.run(sql, args, sink)?;
+        Ok((outcome.affected, outcome.last_insert_rowid, outcome.wrote))
+    }
+
+    /// Executes semicolon-separated statements, discarding rows, and stops at
+    /// the first failure. Returns whether any statement could write.
+    pub fn sequence(&mut self, sql: &str) -> Result<bool, Error> {
+        let mut wrote = false;
+        let mut batch = rusqlite::Batch::new(&self.conn, sql);
+        loop {
+            self.arm_deadline();
+            let next = batch.next();
+            let result = match next {
+                Ok(Some(mut stmt)) => {
+                    wrote |= !stmt.readonly();
+                    let mut rows = stmt.raw_query();
+                    loop {
+                        match rows.next() {
+                            Ok(Some(_)) => continue,
+                            Ok(None) => break Ok(true),
+                            Err(error) => break Err(error),
+                        }
+                    }
+                }
+                Ok(None) => Ok(false),
+                Err(error) => Err(error),
+            };
+            self.disarm_deadline();
+            match result {
+                Ok(true) => continue,
+                Ok(false) => return Ok(wrote),
+                Err(error) => return Err(self.map_run_error(error)),
+            }
+        }
+    }
+
+    pub fn describe(&mut self, sql: &str) -> Result<DescribeResult, Error> {
+        check_not_empty(sql)?;
+        let stmt = self.conn.prepare_cached(sql).map_err(map_error)?;
+        let params = (1..=stmt.parameter_count())
+            .map(|index| DescribeParam {
+                name: stmt
+                    .parameter_name(index)
+                    .filter(|name| !name.starts_with('?'))
+                    .map(str::to_owned),
+            })
+            .collect();
+        Ok(DescribeResult {
+            params,
+            cols: columns(&stmt),
+            is_explain: stmt.is_explain() != 0,
+            is_readonly: stmt.readonly(),
+        })
+    }
+
+    fn run(
+        &mut self,
+        sql: &str,
+        args: &Args<'_>,
+        mut sink: impl FnMut(Event) -> Result<(), Error>,
+    ) -> Result<Outcome, Error> {
+        check_not_empty(sql)?;
+        let before_changes = self.conn.total_changes();
+        let before_rowid = self.conn.last_insert_rowid();
+        let mut stmt = self.conn.prepare_cached(sql).map_err(map_error)?;
+        bind(&mut stmt, args)?;
+        let readonly = stmt.readonly();
+        let inserts = !readonly && starts_with_insert(sql);
+        sink(Event::Begin(columns(&stmt)))?;
+        let width = stmt.column_count();
+
+        self.deadline.store(
+            (self.epoch.elapsed() + self.statement_timeout).as_nanos() as u64,
+            Ordering::Relaxed,
+        );
+        let mut count = 0u64;
+        let mut failure = None;
+        {
+            let mut rows = stmt.raw_query();
+            loop {
+                match rows.next() {
+                    Ok(Some(row)) => {
+                        count += 1;
+                        let mut values = Vec::with_capacity(width);
+                        for index in 0..width {
+                            values.push(match row.get_ref(index) {
+                                Ok(value) => from_sql(value),
+                                Err(error) => {
+                                    failure = Some(map_error(error));
+                                    break;
+                                }
+                            });
+                        }
+                        if failure.is_some() {
+                            break;
+                        }
+                        if let Err(error) = sink(Event::Row(values)) {
+                            failure = Some(error);
+                            break;
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(error) => {
+                        failure = Some(self.map_timeout(error));
+                        break;
+                    }
+                }
+            }
+        }
+        self.deadline.store(0, Ordering::Relaxed);
+        drop(stmt);
+        if let Some(error) = failure {
+            return Err(error);
+        }
+
+        let changed = self.conn.total_changes() > before_changes;
+        let affected = if changed { self.conn.changes() } else { 0 };
+        let after_rowid = self.conn.last_insert_rowid();
+        let last_insert_rowid =
+            (after_rowid != before_rowid || (inserts && changed)).then_some(after_rowid);
+        Ok(Outcome {
+            rows: count,
+            affected,
+            last_insert_rowid,
+            wrote: !readonly,
+        })
+    }
+
+    fn arm_deadline(&self) {
+        self.deadline.store(
+            (self.epoch.elapsed() + self.statement_timeout).as_nanos() as u64,
+            Ordering::Relaxed,
+        );
+    }
+
+    fn disarm_deadline(&self) {
+        self.deadline.store(0, Ordering::Relaxed);
+    }
+
+    fn map_run_error(&self, error: rusqlite::Error) -> Error {
+        self.map_timeout(error)
+    }
+
+    fn map_timeout(&self, error: rusqlite::Error) -> Error {
+        if let rusqlite::Error::SqliteFailure(failure, _) = &error
+            && failure.code == ffi::ErrorCode::OperationInterrupted
+        {
+            return Error {
+                message: format!(
+                    "statement exceeded the {}s time limit",
+                    self.statement_timeout.as_secs()
+                ),
+                code: "SQLITE_INTERRUPT".into(),
+                extended_code: None,
+            };
+        }
+        map_error(error)
+    }
+}
+
+/// What a running statement produces: its columns first, then each row.
+pub enum Event {
+    Begin(Vec<Col>),
+    Row(Vec<Value>),
+}
+
+struct Outcome {
+    rows: u64,
+    affected: u64,
+    last_insert_rowid: Option<i64>,
+    wrote: bool,
+}
+
+fn columns(stmt: &rusqlite::Statement<'_>) -> Vec<Col> {
+    stmt.columns()
+        .map(|column| Col {
+            name: Some(column.name().to_owned()),
+            decltype: column.decl_type().map(str::to_owned),
+        })
+        .collect()
+}
+
+fn check_not_empty(sql: &str) -> Result<(), Error> {
+    if sql
+        .trim_matches(|c: char| c.is_whitespace() || c == ';')
+        .is_empty()
+    {
+        return Err(Error::new(
+            "SQL_PARSE_ERROR",
+            "SQL string does not contain any statement",
+        ));
+    }
+    Ok(())
+}
+
+fn starts_with_insert(sql: &str) -> bool {
+    let trimmed = sql.trim_start();
+    let keyword: String = trimmed
+        .chars()
+        .take_while(|c| c.is_ascii_alphabetic())
+        .collect();
+    keyword.eq_ignore_ascii_case("insert")
+        || keyword.eq_ignore_ascii_case("replace")
+        || keyword.eq_ignore_ascii_case("with")
+}
+
+fn bind(stmt: &mut rusqlite::Statement<'_>, args: &Args<'_>) -> Result<(), Error> {
+    let expected = stmt.parameter_count();
+    match args {
+        Args::Positional(values) => {
+            if values.len() != expected {
+                return Err(Error::new(
+                    "ARGS_INVALID",
+                    format!(
+                        "statement expects {expected} argument(s) but {} were provided",
+                        values.len()
+                    ),
+                ));
+            }
+            for (index, value) in values.iter().enumerate() {
+                stmt.raw_bind_parameter(index + 1, value)
+                    .map_err(map_error)?;
+            }
+        }
+        Args::Named(values) => {
+            if values.len() != expected {
+                return Err(Error::new(
+                    "ARGS_INVALID",
+                    format!(
+                        "statement expects {expected} argument(s) but {} were provided",
+                        values.len()
+                    ),
+                ));
+            }
+            for index in 1..=expected {
+                if stmt
+                    .parameter_name(index)
+                    .is_none_or(|name| name.starts_with('?'))
+                {
+                    return Err(Error::new(
+                        "ARGS_INVALID",
+                        "named arguments cannot bind positional `?` parameters",
+                    ));
+                }
+            }
+            for NamedArg { name, value } in values.iter() {
+                let bare = name.trim_start_matches([':', '@', '$']);
+                let mut index = None;
+                for prefix in [':', '@', '$'] {
+                    if let Some(found) = stmt
+                        .parameter_index(&format!("{prefix}{bare}"))
+                        .map_err(map_error)?
+                    {
+                        index = Some(found);
+                        break;
+                    }
+                }
+                let Some(index) = index else {
+                    return Err(Error::new(
+                        "ARGS_INVALID",
+                        format!("statement has no parameter named `{bare}`"),
+                    ));
+                };
+                stmt.raw_bind_parameter(index, value).map_err(map_error)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+impl ToSql for Value {
+    fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+        Ok(match self {
+            Value::Null => ToSqlOutput::Borrowed(ValueRef::Null),
+            Value::Integer(value) => ToSqlOutput::Borrowed(ValueRef::Integer(*value)),
+            Value::Float(value) => ToSqlOutput::Borrowed(ValueRef::Real(*value)),
+            Value::Text(value) => ToSqlOutput::Borrowed(ValueRef::Text(value.as_bytes())),
+            Value::Blob(value) => ToSqlOutput::Borrowed(ValueRef::Blob(value)),
+        })
+    }
+}
+
+fn from_sql(value: ValueRef<'_>) -> Value {
+    match value {
+        ValueRef::Null => Value::Null,
+        ValueRef::Integer(value) => Value::Integer(value),
+        ValueRef::Real(value) => Value::Float(value),
+        ValueRef::Text(bytes) => Value::Text(String::from_utf8_lossy(bytes).into_owned()),
+        ValueRef::Blob(bytes) => Value::Blob(bytes.to_vec()),
+    }
+}
+
+/// Approximate JSON size of a row, used for the response budget.
+fn encoded_size(row: &[Value]) -> usize {
+    row.iter()
+        .map(|value| {
+            24 + match value {
+                Value::Null | Value::Integer(_) | Value::Float(_) => 24,
+                Value::Text(text) => text.len() + text.len() / 8,
+                Value::Blob(blob) => blob.len() * 4 / 3,
+            }
+        })
+        .sum()
+}
+
+/// PRAGMAs that only read schema or run checks, with or without an argument.
+const INTROSPECTION_PRAGMAS: &[&str] = &[
+    "analysis_limit",
+    "collation_list",
+    "compile_options",
+    "database_list",
+    "foreign_key_check",
+    "foreign_key_list",
+    "freelist_count",
+    "function_list",
+    "incremental_vacuum",
+    "index_info",
+    "index_list",
+    "index_xinfo",
+    "integrity_check",
+    "module_list",
+    "optimize",
+    "page_count",
+    "pragma_list",
+    "quick_check",
+    "table_info",
+    "table_list",
+    "table_xinfo",
+];
+
+/// PRAGMAs that change state of the current connection only. Setting one marks
+/// the connection so it is not reused by another stream.
+const SESSION_PRAGMAS: &[&str] = &[
+    "automatic_index",
+    "case_sensitive_like",
+    "cell_size_check",
+    "count_changes",
+    "defer_foreign_keys",
+    "foreign_keys",
+    "full_column_names",
+    "ignore_check_constraints",
+    "legacy_alter_table",
+    "max_page_count",
+    "query_only",
+    "recursive_triggers",
+    "reverse_unordered_selects",
+    "secure_delete",
+    "short_column_names",
+];
+
+/// PRAGMAs that write a persistent database setting the app owns.
+const PERSISTENT_PRAGMAS: &[&str] = &["application_id", "auto_vacuum", "user_version"];
+
+fn authorize(action: &AuthAction<'_>, dirty: &AtomicBool) -> Authorization {
+    match action {
+        // VACUUM attaches an empty-named temporary database. Any other
+        // attachment, including `VACUUM INTO '<path>'`, could reach server files.
+        AuthAction::Attach { filename } => {
+            if filename.is_empty() {
+                Authorization::Allow
+            } else {
+                Authorization::Deny
+            }
+        }
+        AuthAction::Function { function_name } => {
+            if function_name.eq_ignore_ascii_case("load_extension")
+                || function_name.eq_ignore_ascii_case("fts3_tokenizer")
+            {
+                Authorization::Deny
+            } else {
+                Authorization::Allow
+            }
+        }
+        AuthAction::Pragma {
+            pragma_name,
+            pragma_value,
+        } => {
+            let name = pragma_name.to_ascii_lowercase();
+            if INTROSPECTION_PRAGMAS.contains(&name.as_str()) || pragma_value.is_none() {
+                Authorization::Allow
+            } else if SESSION_PRAGMAS.contains(&name.as_str()) {
+                dirty.store(true, Ordering::Relaxed);
+                Authorization::Allow
+            } else if PERSISTENT_PRAGMAS.contains(&name.as_str()) {
+                Authorization::Allow
+            } else {
+                Authorization::Deny
+            }
+        }
+        _ => Authorization::Allow,
+    }
+}
+
+/// Maps an engine error to a protocol error with SQLite result code names.
+pub fn map_error(error: rusqlite::Error) -> Error {
+    match error {
+        rusqlite::Error::SqliteFailure(failure, message) => {
+            let primary = failure.extended_code & 0xff;
+            Error {
+                message: message.unwrap_or_else(|| failure.to_string()),
+                code: primary_code_name(primary).to_owned(),
+                extended_code: extended_code_name(failure.extended_code).map(str::to_owned),
+            }
+        }
+        // Prepare errors with a source offset: syntax errors, but also
+        // authorization denials and others with their own result code.
+        rusqlite::Error::SqlInputError { error, msg, .. } => {
+            let primary = error.extended_code & 0xff;
+            if primary == ffi::SQLITE_ERROR {
+                Error::new("SQL_PARSE_ERROR", msg)
+            } else {
+                Error {
+                    message: msg,
+                    code: primary_code_name(primary).to_owned(),
+                    extended_code: extended_code_name(error.extended_code).map(str::to_owned),
+                }
+            }
+        }
+        rusqlite::Error::MultipleStatement => Error::new(
+            "SQL_MANY_STATEMENTS",
+            "SQL string contains more than one statement",
+        ),
+        rusqlite::Error::InvalidParameterCount(given, expected) => Error::new(
+            "ARGS_INVALID",
+            format!("statement expects {expected} argument(s) but {given} were provided"),
+        ),
+        rusqlite::Error::InvalidParameterName(name) => Error::new(
+            "ARGS_INVALID",
+            format!("statement has no parameter named `{name}`"),
+        ),
+        rusqlite::Error::NulError(_) => {
+            Error::new("SQL_INPUT_ERROR", "SQL text contains a NUL byte")
+        }
+        rusqlite::Error::Utf8Error(_, _) => Error::new("SQL_INPUT_ERROR", "invalid UTF-8"),
+        other => Error::new("SQLITE_ERROR", other.to_string()),
+    }
+}
+
+fn primary_code_name(code: i32) -> &'static str {
+    match code {
+        ffi::SQLITE_ERROR => "SQLITE_ERROR",
+        ffi::SQLITE_INTERNAL => "SQLITE_INTERNAL",
+        ffi::SQLITE_PERM => "SQLITE_PERM",
+        ffi::SQLITE_ABORT => "SQLITE_ABORT",
+        ffi::SQLITE_BUSY => "SQLITE_BUSY",
+        ffi::SQLITE_LOCKED => "SQLITE_LOCKED",
+        ffi::SQLITE_NOMEM => "SQLITE_NOMEM",
+        ffi::SQLITE_READONLY => "SQLITE_READONLY",
+        ffi::SQLITE_INTERRUPT => "SQLITE_INTERRUPT",
+        ffi::SQLITE_IOERR => "SQLITE_IOERR",
+        ffi::SQLITE_CORRUPT => "SQLITE_CORRUPT",
+        ffi::SQLITE_NOTFOUND => "SQLITE_NOTFOUND",
+        ffi::SQLITE_FULL => "SQLITE_FULL",
+        ffi::SQLITE_CANTOPEN => "SQLITE_CANTOPEN",
+        ffi::SQLITE_PROTOCOL => "SQLITE_PROTOCOL",
+        ffi::SQLITE_SCHEMA => "SQLITE_SCHEMA",
+        ffi::SQLITE_TOOBIG => "SQLITE_TOOBIG",
+        ffi::SQLITE_CONSTRAINT => "SQLITE_CONSTRAINT",
+        ffi::SQLITE_MISMATCH => "SQLITE_MISMATCH",
+        ffi::SQLITE_MISUSE => "SQLITE_MISUSE",
+        ffi::SQLITE_NOLFS => "SQLITE_NOLFS",
+        ffi::SQLITE_AUTH => "SQLITE_AUTH",
+        ffi::SQLITE_RANGE => "SQLITE_RANGE",
+        ffi::SQLITE_NOTADB => "SQLITE_NOTADB",
+        _ => "SQLITE_UNKNOWN",
+    }
+}
+
+fn extended_code_name(code: i32) -> Option<&'static str> {
+    Some(match code {
+        ffi::SQLITE_CONSTRAINT_CHECK => "SQLITE_CONSTRAINT_CHECK",
+        ffi::SQLITE_CONSTRAINT_COMMITHOOK => "SQLITE_CONSTRAINT_COMMITHOOK",
+        ffi::SQLITE_CONSTRAINT_DATATYPE => "SQLITE_CONSTRAINT_DATATYPE",
+        ffi::SQLITE_CONSTRAINT_FOREIGNKEY => "SQLITE_CONSTRAINT_FOREIGNKEY",
+        ffi::SQLITE_CONSTRAINT_FUNCTION => "SQLITE_CONSTRAINT_FUNCTION",
+        ffi::SQLITE_CONSTRAINT_NOTNULL => "SQLITE_CONSTRAINT_NOTNULL",
+        ffi::SQLITE_CONSTRAINT_PINNED => "SQLITE_CONSTRAINT_PINNED",
+        ffi::SQLITE_CONSTRAINT_PRIMARYKEY => "SQLITE_CONSTRAINT_PRIMARYKEY",
+        ffi::SQLITE_CONSTRAINT_ROWID => "SQLITE_CONSTRAINT_ROWID",
+        ffi::SQLITE_CONSTRAINT_TRIGGER => "SQLITE_CONSTRAINT_TRIGGER",
+        ffi::SQLITE_CONSTRAINT_UNIQUE => "SQLITE_CONSTRAINT_UNIQUE",
+        ffi::SQLITE_CONSTRAINT_VTAB => "SQLITE_CONSTRAINT_VTAB",
+        ffi::SQLITE_BUSY_SNAPSHOT => "SQLITE_BUSY_SNAPSHOT",
+        ffi::SQLITE_BUSY_RECOVERY => "SQLITE_BUSY_RECOVERY",
+        ffi::SQLITE_BUSY_TIMEOUT => "SQLITE_BUSY_TIMEOUT",
+        ffi::SQLITE_LOCKED_SHAREDCACHE => "SQLITE_LOCKED_SHAREDCACHE",
+        ffi::SQLITE_READONLY_DBMOVED => "SQLITE_READONLY_DBMOVED",
+        ffi::SQLITE_ABORT_ROLLBACK => "SQLITE_ABORT_ROLLBACK",
+        ffi::SQLITE_AUTH_USER => "SQLITE_AUTH_USER",
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod tests;

@@ -611,6 +611,79 @@ run_store_checks() {
   cleanup_store_sse
 }
 
+# The channels-workflows Store keeps its rows in the `messages` database. It
+# lives on the first server; later servers reach it over the private network.
+create_fixture_database() {
+  local server_host=$1
+  local log="$TMP_ROOT/sqlite-create.log"
+  if [[ "$FIXTURE_REL" != "e2e/fixtures/javascript/channels-workflows" ]] || \
+     grep -q '^\[databases\.messages\]' "$PROJECT_DIR/tako.toml"; then
+    return 0
+  fi
+  echo "Creating the messages database on $server_host"
+  if ! HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" \
+    sqlite create messages --env production --server "$server_host" --access network >"$log" 2>&1; then
+    cat "$log" >&2 || true
+    exit 1
+  fi
+  require_file_contains "$PROJECT_DIR/tako.toml" '[databases.messages]' "tako sqlite create"
+  DATABASE_SERVER=$server_host
+}
+
+run_database_checks() {
+  local server_host=$1
+  local route_host=$2
+  local status_json="$TMP_ROOT/sqlite-status-${server_host}.json"
+  local query_json="$TMP_ROOT/sqlite-query-${server_host}.json"
+  local export_file="$TMP_ROOT/messages-${server_host}.sqlite"
+  local log="$TMP_ROOT/sqlite-${server_host}.log"
+  local -a tako=(env HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml")
+
+  echo "Running hosted database checks after deploying to $server_host"
+  if ! "${tako[@]}" --json sqlite status messages --env production >"$status_json" 2>"$log"; then
+    cat "$log" "$status_json" >&2 || true
+    exit 1
+  fi
+  jq -e --arg server "$DATABASE_SERVER" '.databases[0].name == "messages" and .databases[0].server == $server' \
+    "$status_json" >/dev/null
+  if [[ "$server_host" == "$DATABASE_SERVER" ]]; then
+    jq -e '.databases[0].status.bindings | index("cw-e2e/production") != null' "$status_json" >/dev/null
+  else
+    # Instances on this server reach the database through its home server.
+    jq -e '.databases[0].status.remote_grants | index("cw-e2e/production") != null' "$status_json" >/dev/null
+  fi
+
+  if ! "${tako[@]}" --json sqlite shell messages "SELECT count(*) AS n FROM messages" --env production \
+    >"$query_json" 2>"$log"; then
+    cat "$log" "$query_json" >&2 || true
+    exit 1
+  fi
+  local rows
+  rows=$(jq -r '.rows[0][0]' "$query_json")
+  if (( rows < 1 )); then
+    echo "The Store write did not reach the messages database ($rows rows)" >&2
+    exit 1
+  fi
+
+  if ! "${tako[@]}" sqlite export messages "$export_file" --env production >"$log" 2>&1; then
+    cat "$log" >&2 || true
+    exit 1
+  fi
+  local exported
+  exported=$(bun -e 'const { Database } = require("bun:sqlite"); const db = new Database(process.argv[1], { readonly: true }); console.log(db.query("SELECT count(*) AS n FROM messages").get().n)' "$export_file")
+  if [[ "$exported" != "$rows" ]]; then
+    echo "Exported database has $exported rows, expected $rows" >&2
+    exit 1
+  fi
+
+  # Replacing the database with its own export pauses and resumes app access.
+  if ! "${tako[@]}" sqlite import messages "$export_file" --env production --yes >"$log" 2>&1; then
+    cat "$log" >&2 || true
+    exit 1
+  fi
+  run_store_checks "$server_host" "$route_host"
+}
+
 run_cli_post_deploy_checks() {
   local server_host=$1
   local app_name=$2
@@ -1102,6 +1175,7 @@ if [[ -z "$APP_NAME" ]]; then
 fi
 
 seed_fixture_secrets
+DATABASE_SERVER=""
 
 for entry in "${SERVERS[@]}"; do
   server="${entry%%:*}"
@@ -1110,6 +1184,7 @@ for entry in "${SERVERS[@]}"; do
   echo "=== Testing deploy on $server ($libc) ==="
 
   bind_fixture_target "$PROJECT_DIR/tako.toml" "$server"
+  create_fixture_database "$server"
 
   DEPLOY_LOG="$TMP_ROOT/deploy-${server}.log"
 
@@ -1153,6 +1228,7 @@ for entry in "${SERVERS[@]}"; do
     (cd "$PROJECT_DIR" && bun check-shared-channels.ts "$server" "$ROUTE_HOST")
     run_network_primitive_checks "$server"
     run_store_checks "$server" "$ROUTE_HOST"
+    run_database_checks "$server" "$ROUTE_HOST"
   fi
   run_cli_post_deploy_checks "$server" "$APP_NAME" "$ROUTE_HOST" "$CURRENT_VERSION"
   if [[ "$FIXTURE_REL" == "examples/compose/bun-redis" ]]; then

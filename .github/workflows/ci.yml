@@ -165,7 +165,7 @@ jobs:
           cargo test --workspace --locked --lib --bins
           cargo test -p tako-network --locked --test '*'
           cargo test -p tako-server --locked --test backup_snapshot --test backup_live_wal --test backup_standby
-          cargo test -p tako-backup --locked --test recovery
+          cargo test -p tako-database --locked
 
       - name: Run Compose integration tests
         run: |

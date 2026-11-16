@@ -60,7 +60,7 @@ pub fn resolve_servers_for_env(
     ))
 }
 
-fn resolve_network_servers(
+pub(crate) fn resolve_network_servers(
     servers: &ServerInventory,
     network: &str,
     selectors: &[String],

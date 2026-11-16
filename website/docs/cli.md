@@ -160,7 +160,7 @@ Runs a one-off command locally from the app directory with Tako project context.
 
 Script files are expanded by the selected runtime. Bun runs JS/TS scripts with Bun, Node runs TS scripts with type stripping, and Go runs `.go` files with `go run`. `--eval` runs inline source when the runtime supports it; JS runtimes support inline TypeScript. Use `-- {command...}` for exact commands and runtimes without a bare script rule.
 
-The child process receives `[vars]` plus `[vars.<env>]`, `ENV`, `TAKO_BUILD=local`, `TAKO_DATA_DIR`, runtime defaults, and `TAKO_APP_ROOT` for JS apps. Tako decrypts local app secrets for the selected environment and passes the normal bootstrap envelope through `TAKO_BOOTSTRAP_DATA`. SDK-aware scripts use the same app SDK surfaces; JS/TS scripts can import `tako` and use `tako.secrets` and `tako.storages`.
+The child process receives `[vars]` plus `[vars.<env>]`, `ENV`, `TAKO_BUILD=local`, `TAKO_DATA_DIR`, runtime defaults, and `TAKO_APP_ROOT` for JS apps. Tako decrypts local app secrets for the selected environment and passes the normal bootstrap envelope through `TAKO_BOOTSTRAP_DATA`. SDK-aware scripts use the same app SDK surfaces; JS/TS scripts can import `tako` and use `tako.secrets`, `tako.storages`, and `tako.databases`. Development database bindings are served from local files under `.tako/data/databases/`. Other environments get no databases, with a warning: `tako run` never connects to hosted databases.
 
 Secrets are not process env vars. `tako run` is local-only in v0; it does not run commands on deployed servers.
 
@@ -170,7 +170,7 @@ Secrets are not process env vars. `tako run` is local-only in v0; it does not ru
 tako deploy [--env <env>] [-y|--yes] [--force] [--description <text>]
 ```
 
-Builds locally, uploads artifacts over signed HTTP management, prepares every mapped server, runs the optional release command on the leader, rolls instances, and finalizes the release. Configured SQLite databases are backed up continuously; deploys do not create full-directory archives. `--env` defaults to `production`. `development` is reserved for `tako dev`. Deploy requires the CLI, server, and release artifact to use the same protocol version; a mismatch fails before release commands, workflows, or app processes start. `--force` attempts the deploy despite a mismatch but does not skip normal validation or readiness checks. It is separate from `--yes`, which only skips confirmation.
+Builds locally, uploads artifacts over signed HTTP management, prepares every mapped server, runs the optional release command on the leader, rolls instances, and finalizes the release. Before the release command, it snapshots each bound [hosted database](/databases/) that changed and has backups configured; deploys do not create full-directory archives. `--env` defaults to `production`. `development` is reserved for `tako dev`. Deploy requires the CLI, server, and release artifact to use the same protocol version; a mismatch fails before release commands, workflows, or app processes start. `--force` attempts the deploy despite a mismatch but does not skip normal validation or readiness checks. It is separate from `--yes`, which only skips confirmation.
 
 ```bash
 tako logs [--env <env>] [--tail] [--days N]
@@ -206,7 +206,7 @@ tako undeploy ...
 tako destroy ...
 ```
 
-Deletes one deployment target, drains and stops the app, removes runtime state, and removes the server-side app data tree for that app/environment on the selected server.
+Deletes one deployment target, drains and stops the app, removes runtime state and its database bindings, and removes the server-side app data tree for that app/environment on the selected server. Hosted databases are not deleted; use `tako sqlite delete`.
 
 A Compose service cannot be deleted independently: `tako delete --service <service>` is rejected before contacting a server. Remove the service from the Compose file and redeploy, or delete the whole group. Docker named volumes remain after group deletion.
 
@@ -337,19 +337,42 @@ Storage commands default to `--env production` and `--provider s3`.
 
 ```bash
 tako backups now [--env <env>] [--server <server>]
-tako backups list [--database <path> [--shared]] [--env <env>] [--server <server>]
+tako backups list [--env <env>] [--server <server>]
 tako backups ls [--env <env>] [--server <server>]
 tako backups status [--env <env>]
 tako backups download <backup-id> [--env <env>] [--server <server>] [--output <path>]
 tako backups restore <backup-id> [--env <env>] [--server <server>] [-y|--yes]
-tako backups restore --database <path> (--latest|--txid <capture-id>) [--shared] [--env <env>] [--server <server>] [-y|--yes]
 ```
 
 Backup commands default to `production`, require project context, and target the deployment id `{app}/{env}` over signed HTTP management. Multi-server download and restore require `--server`.
 
-`backups now` creates a manual full app-directory archive; deploys and timers do not create one. `backups list` lists these archives and older `databases` archives. Add `--database <path>` to list continuous SQLite recovery points and `--shared` for paths relative to `TAKO_SHARED_DATA_DIR`. `backups status` shows capture/upload progress, errors, and consuming apps for each selected database, plus manual archive and unfinished-restore status.
+`backups now` creates a manual full app-directory archive; deploys and timers do not create one. `backups list` lists these archives and older `databases` archives. `backups status` shows the last archive, the last failed attempt, retention, and unfinished restores.
 
-Use `backups restore --database <path> --latest` or `--txid <capture-id>` to restore SQLite. Add `--shared` for a shared database; this requires server-admin permission and pauses all apps on that server. Private database restores pause the owning app. Use `--server` when multiple servers are mapped. `backups restore <backup-id>` restores a manual archive, including workflow state when present. `download` saves an encrypted archive; continuous SQLite history uses the database restore commands. See [Backups](/backups/) for retention, restore locks, and recovery on a replacement server.
+`backups restore <backup-id>` restores a manual archive, including workflow state when present, and pauses the owning app. Use `--server` when multiple servers are mapped. `download` saves an encrypted archive. Hosted databases have their own snapshots; use `tako sqlite backups` and `tako sqlite restore`. See [Backups](/backups/) for retention, restore locks, and recovery on a replacement server.
+
+## Databases
+
+```bash
+tako sqlite create <name> [--env <env>] [--server <server>] [--binding <binding>] [--backup <storage>] [--access local|network]
+tako sqlite link <name> [--env <env>] [--binding <binding>] [--backup <storage>]
+tako sqlite list [--env <env>]
+tako sqlite ls ...
+tako sqlite status [<name>] [--env <env>]
+tako sqlite shell <name> [<sql>] [--env <env>]
+tako sqlite backup <name> [--env <env>]
+tako sqlite backups <name> [--env <env>]
+tako sqlite restore <name> (--latest|--snapshot <snapshot-id>) [--server <server>] [--env <env>] [-y|--yes]
+tako sqlite import <name> <file> [--env <env>] [-y|--yes]
+tako sqlite export <name> <file> [--env <env>]
+tako sqlite delete <name> [--env <env>] [-y|--yes]
+tako sqlite rm ...
+```
+
+`tako db` is an alias for `tako sqlite`. Commands default to `--env production` and use that environment's `network`; they require network and server administrator permission. `create` makes the database on `--server` (optional when the environment deploys to one server), records it in the network, and writes `[databases.<name>]` plus the binding to `tako.toml`. `--binding` defaults to the name; `--access` defaults to `local`. `link` adds a database already in the network to this project. `list` reads the network's records; `status` asks each database's server for size, users, and backup state.
+
+`shell` runs one statement when `<sql>` is given and otherwise reads statements from stdin, with `.tables`, `.schema [table]`, and `.quit` in an interactive terminal. Results stop at 1,000 rows. `backup` takes a snapshot now; `backups` lists snapshots with their reason (`scheduled`, `manual`, `before release`, `before restore`). `restore` replaces the database with a snapshot; with `--server` it recovers the database onto another server, which becomes its server. `import` replaces the database with a local SQLite file; `export` writes a consistent copy and refuses to overwrite an existing file. `delete` removes the database file, its network record, and its `tako.toml` entries; snapshots stay in backup storage. `restore`, `import`, and `delete` ask for confirmation; non-interactive runs need `--yes`.
+
+Global `--json` prints `{"ok":true,"command":"sqlite",...}`: `databases` for `list` and `status`, `snapshots` for `backups`, and the created or linked `database` for `create` and `link`. `shell --json` prints one query result per statement. See [Databases](/databases/).
 
 ## Workflows
 

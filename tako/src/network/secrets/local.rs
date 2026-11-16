@@ -93,6 +93,8 @@ pub(super) fn environment(key_id: String, rows: &Rows) -> Result<EnvironmentSecr
                 row.value.clone(),
             )),
             SecretKind::BackupActive => active = Some(row.value.clone()),
+            // Database records belong to the network, not an environment.
+            SecretKind::Database => {}
         }
     }
     if let Some(active) = active {

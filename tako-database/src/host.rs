@@ -1,0 +1,831 @@
+//! The database host: databases on this server, who may use them, and the
+//! streams currently open on them.
+
+use std::collections::{BTreeSet, HashMap};
+use std::fs::File;
+use std::net::{IpAddr, SocketAddr};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+
+use parking_lot::{Mutex, RwLock};
+use sha2::{Digest, Sha256};
+use tokio::sync::{Notify, Semaphore};
+
+use crate::engine::{self, EngineConfig};
+use crate::proto::Error;
+
+/// A database identifier: 32 lowercase hexadecimal characters.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct DatabaseId(String);
+
+impl DatabaseId {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        if value.len() == 32
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            Ok(Self(value.to_owned()))
+        } else {
+            Err(format!(
+                "database id `{value}` must be 32 lowercase hexadecimal characters"
+            ))
+        }
+    }
+
+    pub fn generate() -> Self {
+        let mut bytes = [0u8; 16];
+        getrandom::fill(&mut bytes).expect("operating system random source");
+        Self(hex::encode(bytes))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for DatabaseId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+pub type TokenHash = [u8; 32];
+
+pub fn hash_token(token: &str) -> TokenHash {
+    Sha256::digest(token.as_bytes()).into()
+}
+
+/// Generates a binding token: 32 random bytes, hex encoded.
+pub fn generate_token() -> String {
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).expect("operating system random source");
+    hex::encode(bytes)
+}
+
+#[derive(Clone, Debug)]
+pub struct HostConfig {
+    pub engine: EngineConfig,
+    /// Streams idle for longer are closed and their transactions rolled back.
+    pub stream_idle_timeout: Duration,
+    pub max_streams_per_database: usize,
+    pub max_streams: usize,
+    pub max_request_bytes: usize,
+    pub max_response_bytes: usize,
+    pub max_stored_sql_per_stream: usize,
+    pub max_condition_depth: usize,
+    /// Idle connections kept per database for stateless requests.
+    pub pool_size: usize,
+    /// Requests executing at once on one database.
+    pub max_concurrent_per_database: usize,
+    /// How long `pause` waits for in-flight requests.
+    pub pause_timeout: Duration,
+}
+
+impl Default for HostConfig {
+    fn default() -> Self {
+        Self {
+            engine: EngineConfig::default(),
+            stream_idle_timeout: Duration::from_secs(10),
+            max_streams_per_database: 128,
+            max_streams: 4096,
+            max_request_bytes: 32 * 1024 * 1024,
+            max_response_bytes: 64 * 1024 * 1024,
+            max_stored_sql_per_stream: 256,
+            max_condition_depth: 32,
+            pool_size: 8,
+            max_concurrent_per_database: 32,
+            pause_timeout: Duration::from_secs(30),
+        }
+    }
+}
+
+/// Where a binding's database lives.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Home {
+    /// On this server.
+    Local,
+    /// On another server of the network, reached at `upstream`.
+    Remote { upstream: SocketAddr },
+    /// On another server whose address is not known right now.
+    Unavailable { reason: String },
+}
+
+/// A binding of one app environment on this server.
+#[derive(Clone, Debug)]
+pub struct Binding {
+    pub token_hash: TokenHash,
+    pub database: DatabaseId,
+    pub home: Home,
+}
+
+#[derive(Clone, Debug)]
+struct ScopedBinding {
+    scope: String,
+    binding: Binding,
+}
+
+/// Who is executing a request.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Principal {
+    /// An app on this server, identified by its binding token.
+    Local(TokenHash),
+    /// An app on another server, forwarded by that server.
+    Remote { server: IpAddr, scope: String },
+}
+
+pub(crate) struct Database {
+    pub(crate) id: DatabaseId,
+    path: PathBuf,
+    engine: EngineConfig,
+    pool_size: usize,
+    state: Mutex<DatabaseState>,
+    idle: Notify,
+    pool: Mutex<Vec<engine::Connection>>,
+    /// Changed since the last snapshot. Starts set: the history is unknown.
+    changed: AtomicBool,
+    pub(crate) permits: Arc<Semaphore>,
+    /// Shared while this process serves the file; exclusive during a swap.
+    lock: Mutex<Option<File>>,
+}
+
+struct DatabaseState {
+    paused: Option<String>,
+    active: usize,
+    streams: usize,
+}
+
+impl Database {
+    pub(crate) fn acquire(&self) -> Result<engine::Connection, Error> {
+        if let Some(conn) = self.pool.lock().pop() {
+            return Ok(conn);
+        }
+        engine::Connection::open(&self.path, &self.engine)
+    }
+
+    /// Returns a connection for reuse when it carries no stream state.
+    pub(crate) fn release(&self, mut conn: engine::Connection) {
+        conn.rollback();
+        if conn.is_dirty() || !conn.is_autocommit() {
+            return;
+        }
+        let mut pool = self.pool.lock();
+        if pool.len() < self.pool_size {
+            pool.push(conn);
+        }
+    }
+
+    pub(crate) fn mark_changed(&self) {
+        self.changed.store(true, Ordering::Relaxed);
+    }
+
+    fn enter(self: &Arc<Self>) -> Result<ActiveGuard, Unavailable> {
+        let mut state = self.state.lock();
+        if let Some(reason) = &state.paused {
+            return Err(Unavailable(reason.clone()));
+        }
+        state.active += 1;
+        Ok(ActiveGuard {
+            database: self.clone(),
+        })
+    }
+}
+
+pub(crate) struct Unavailable(pub String);
+
+/// Counts an in-flight request on a database.
+pub(crate) struct ActiveGuard {
+    database: Arc<Database>,
+}
+
+impl Drop for ActiveGuard {
+    fn drop(&mut self) {
+        let mut state = self.database.state.lock();
+        state.active -= 1;
+        if state.active == 0 {
+            self.database.idle.notify_waiters();
+        }
+    }
+}
+
+/// An open stream: one connection plus its stored SQL texts.
+pub(crate) struct Stream {
+    pub(crate) conn: Option<engine::Connection>,
+    pub(crate) stored_sql: HashMap<i32, String>,
+}
+
+impl Stream {
+    pub(crate) fn new() -> Self {
+        Self {
+            conn: None,
+            stored_sql: HashMap::new(),
+        }
+    }
+
+    /// Whether the stream carries client-visible state (spec section 4.3).
+    pub(crate) fn has_state(&self) -> bool {
+        !self.stored_sql.is_empty()
+            || self
+                .conn
+                .as_ref()
+                .is_some_and(|conn| !conn.is_autocommit() || conn.is_dirty())
+    }
+}
+
+pub(crate) struct StreamEntry {
+    pub(crate) database: DatabaseId,
+    pub(crate) principal: Principal,
+    pub(crate) sequence: u64,
+    pub(crate) last_used: Instant,
+    /// `None` while a request is executing on the stream.
+    pub(crate) stream: Option<Stream>,
+}
+
+pub(crate) struct HostInner {
+    pub(crate) config: HostConfig,
+    databases: RwLock<HashMap<DatabaseId, Arc<Database>>>,
+    /// Bindings of apps on this server, by app environment scope.
+    bindings: RwLock<HashMap<String, Vec<Binding>>>,
+    by_token: RwLock<HashMap<TokenHash, ScopedBinding>>,
+    /// Databases on this server that apps on other servers may use.
+    remote_grants: RwLock<HashMap<String, BTreeSet<DatabaseId>>>,
+    pub(crate) streams: Mutex<HashMap<[u8; 16], StreamEntry>>,
+}
+
+/// The database host. Cheap to clone.
+#[derive(Clone)]
+pub struct DatabaseHost {
+    pub(crate) inner: Arc<HostInner>,
+}
+
+/// What a request resolved to.
+pub(crate) enum Resolved {
+    Serve {
+        database: Arc<Database>,
+        principal: Principal,
+    },
+    Forward {
+        database: DatabaseId,
+        upstream: SocketAddr,
+        scope: String,
+    },
+    Unavailable(String),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum HostError {
+    #[error("database {0} is not hosted on this server")]
+    UnknownDatabase(DatabaseId),
+    #[error("database {0} is already registered")]
+    AlreadyRegistered(DatabaseId),
+    #[error("{0}")]
+    Engine(String),
+    #[error("database {database} is still in use after {seconds}s")]
+    Busy { database: DatabaseId, seconds: u64 },
+    #[error("{0}")]
+    Io(#[from] std::io::Error),
+}
+
+impl DatabaseHost {
+    pub fn new(config: HostConfig) -> Self {
+        Self {
+            inner: Arc::new(HostInner {
+                config,
+                databases: RwLock::new(HashMap::new()),
+                bindings: RwLock::new(HashMap::new()),
+                by_token: RwLock::new(HashMap::new()),
+                remote_grants: RwLock::new(HashMap::new()),
+                streams: Mutex::new(HashMap::new()),
+            }),
+        }
+    }
+
+    pub fn config(&self) -> &HostConfig {
+        &self.inner.config
+    }
+
+    /// Creates the database file at `path` (which must not exist).
+    pub fn create_file(path: &Path) -> Result<(), HostError> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        engine::create_database(path).map_err(HostError::Engine)
+    }
+
+    /// Serves an existing database file. Takes a shared lock on
+    /// `<path>.lock` so a swap in another process waits for this one.
+    pub fn register(&self, id: DatabaseId, path: PathBuf) -> Result<(), HostError> {
+        let mut databases = self.inner.databases.write();
+        if databases.contains_key(&id) {
+            return Err(HostError::AlreadyRegistered(id));
+        }
+        let lock = open_lock(&path)?;
+        lock.lock_shared()?;
+        let config = &self.inner.config;
+        databases.insert(
+            id.clone(),
+            Arc::new(Database {
+                id,
+                path,
+                engine: config.engine.clone(),
+                pool_size: config.pool_size,
+                state: Mutex::new(DatabaseState {
+                    paused: None,
+                    active: 0,
+                    streams: 0,
+                }),
+                idle: Notify::new(),
+                pool: Mutex::new(Vec::new()),
+                changed: AtomicBool::new(true),
+                permits: Arc::new(Semaphore::new(config.max_concurrent_per_database)),
+                lock: Mutex::new(Some(lock)),
+            }),
+        );
+        Ok(())
+    }
+
+    pub fn is_registered(&self, id: &DatabaseId) -> bool {
+        self.inner.databases.read().contains_key(id)
+    }
+
+    pub fn registered(&self) -> Vec<DatabaseId> {
+        let mut ids: Vec<_> = self.inner.databases.read().keys().cloned().collect();
+        ids.sort();
+        ids
+    }
+
+    pub fn path(&self, id: &DatabaseId) -> Option<PathBuf> {
+        self.inner
+            .databases
+            .read()
+            .get(id)
+            .map(|database| database.path.clone())
+    }
+
+    /// Stops serving a database: waits for in-flight requests, rolls back its
+    /// streams, closes its connections, and releases the file lock.
+    pub async fn unregister(&self, id: &DatabaseId) -> Result<(), HostError> {
+        let mut guard = self.pause(id, "database is being removed").await?;
+        guard.database.lock.lock().take();
+        self.inner.databases.write().remove(id);
+        guard.resume = false;
+        Ok(())
+    }
+
+    /// Replaces the bindings of one app environment on this server.
+    pub fn set_bindings(&self, scope: &str, bindings: Vec<Binding>) {
+        let mut all = self.inner.bindings.write();
+        let mut by_token = self.inner.by_token.write();
+        if let Some(previous) = all.remove(scope) {
+            for binding in previous {
+                by_token.remove(&binding.token_hash);
+            }
+        }
+        if !bindings.is_empty() {
+            for binding in &bindings {
+                by_token.insert(
+                    binding.token_hash,
+                    ScopedBinding {
+                        scope: scope.to_owned(),
+                        binding: binding.clone(),
+                    },
+                );
+            }
+            all.insert(scope.to_owned(), bindings);
+        }
+    }
+
+    /// Replaces which databases on this server an app environment running on
+    /// other servers may use.
+    pub fn set_remote_grants(&self, scope: &str, databases: BTreeSet<DatabaseId>) {
+        let mut grants = self.inner.remote_grants.write();
+        if databases.is_empty() {
+            grants.remove(scope);
+        } else {
+            grants.insert(scope.to_owned(), databases);
+        }
+    }
+
+    /// Whether a database changed since the last successful snapshot.
+    pub fn has_changes(&self, id: &DatabaseId) -> bool {
+        self.inner
+            .databases
+            .read()
+            .get(id)
+            .is_some_and(|database| database.changed.load(Ordering::Relaxed))
+    }
+
+    /// Records that a database differs from its last snapshot.
+    pub fn mark_changed(&self, id: &DatabaseId) {
+        if let Some(database) = self.inner.databases.read().get(id) {
+            database.mark_changed();
+        }
+    }
+
+    /// Writes a verified, compacted copy of a database to `dest`. Concurrent
+    /// requests keep running; the copy is one consistent read transaction.
+    pub async fn snapshot(&self, id: &DatabaseId, dest: &Path) -> Result<(), HostError> {
+        let database = self.database(id)?;
+        let was_changed = database.changed.swap(false, Ordering::Relaxed);
+        let path = database.path.clone();
+        let dest = dest.to_path_buf();
+        let busy = self.inner.config.engine.busy_timeout;
+        let result =
+            tokio::task::spawn_blocking(move || engine::snapshot_database(&path, &dest, busy))
+                .await
+                .map_err(|e| HostError::Engine(e.to_string()))?;
+        if result.is_err() && was_changed {
+            database.mark_changed();
+        }
+        result.map_err(HostError::Engine)
+    }
+
+    /// Stops new requests on a database, waits for in-flight ones, rolls back
+    /// and closes its streams and connections, and takes the file lock
+    /// exclusively. Requests get `503` with `reason` until the guard drops.
+    pub async fn pause(&self, id: &DatabaseId, reason: &str) -> Result<PauseGuard, HostError> {
+        let database = self.database(id)?;
+        let deadline = tokio::time::Instant::now() + self.inner.config.pause_timeout;
+        {
+            let mut state = database.state.lock();
+            if state.paused.is_some() {
+                return Err(HostError::Busy {
+                    database: id.clone(),
+                    seconds: 0,
+                });
+            }
+            state.paused = Some(reason.to_owned());
+        }
+        let guard = PauseGuard {
+            database: database.clone(),
+            resume: true,
+        };
+        loop {
+            let notified = database.idle.notified();
+            if database.state.lock().active == 0 {
+                break;
+            }
+            if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                return Err(HostError::Busy {
+                    database: id.clone(),
+                    seconds: self.inner.config.pause_timeout.as_secs(),
+                });
+            }
+        }
+        let streams = self.take_streams(|entry| &entry.database == id);
+        let pool = std::mem::take(&mut *database.pool.lock());
+        let lock_path = lock_path(&database.path);
+        let lock = database.lock.lock().take();
+        let timeout = self.inner.config.pause_timeout;
+        let exclusive = tokio::task::spawn_blocking(move || {
+            drop(streams);
+            drop(pool);
+            drop(lock);
+            exclusive_lock(&lock_path, timeout)
+        })
+        .await
+        .map_err(|e| HostError::Engine(e.to_string()))?;
+        match exclusive {
+            Ok(file) => {
+                *database.lock.lock() = Some(file);
+                Ok(guard)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Rolls back every stream and closes every connection, releasing file
+    /// locks. Used when this process stops serving (drain or reload).
+    pub async fn close_all(&self) {
+        let streams = self.take_streams(|_| true);
+        let databases: Vec<_> = self
+            .inner
+            .databases
+            .write()
+            .drain()
+            .map(|(_, db)| db)
+            .collect();
+        tokio::task::spawn_blocking(move || {
+            drop(streams);
+            for database in databases {
+                database.pool.lock().clear();
+                database.lock.lock().take();
+            }
+        })
+        .await
+        .ok();
+    }
+
+    /// Closes streams idle for longer than the configured timeout.
+    pub fn expire_idle_streams(&self) {
+        let timeout = self.inner.config.stream_idle_timeout;
+        let expired = self
+            .take_streams(|entry| entry.stream.is_some() && entry.last_used.elapsed() > timeout);
+        if !expired.is_empty() {
+            tracing::debug!(count = expired.len(), "closing idle database streams");
+            // Rolling back can wait on the disk; keep it off the async runtime.
+            std::thread::spawn(move || drop(expired));
+        }
+    }
+
+    /// Runs `expire_idle_streams` every second until the host is dropped.
+    pub fn spawn_reaper(&self) -> tokio::task::JoinHandle<()> {
+        let weak = Arc::downgrade(&self.inner);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(1));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                let Some(inner) = weak.upgrade() else { return };
+                DatabaseHost { inner }.expire_idle_streams();
+            }
+        })
+    }
+
+    /// Runs one statement as an administrator, with the same restrictions as
+    /// apps, returning at most `max_rows` rows.
+    pub async fn admin_query(
+        &self,
+        id: &DatabaseId,
+        sql: String,
+        max_rows: usize,
+    ) -> Result<AdminQuery, HostError> {
+        let database = self.database(id)?;
+        let active = DatabaseHost::enter(&database).map_err(|e| HostError::Engine(e.0))?;
+        let budget = self.inner.config.max_response_bytes;
+        tokio::task::spawn_blocking(move || {
+            let _active = active;
+            let mut conn = database
+                .acquire()
+                .map_err(|e| HostError::Engine(e.message))?;
+            let mut rows = Vec::new();
+            let mut columns = Vec::new();
+            let mut truncated = false;
+            let mut size = 0usize;
+            let outcome = conn.execute_streaming(&sql, &engine::Args::Positional(&[]), |event| {
+                match event {
+                    engine::Event::Begin(cols) => {
+                        columns = cols
+                            .into_iter()
+                            .map(|c| c.name.unwrap_or_default())
+                            .collect();
+                    }
+                    engine::Event::Row(row) => {
+                        if rows.len() >= max_rows {
+                            truncated = true;
+                        } else {
+                            size += row
+                                .iter()
+                                .map(|v| match v {
+                                    crate::proto::Value::Text(t) => t.len(),
+                                    crate::proto::Value::Blob(b) => b.len(),
+                                    _ => 8,
+                                })
+                                .sum::<usize>();
+                            if size > budget {
+                                return Err(Error::new(
+                                    "RESPONSE_TOO_LARGE",
+                                    "result exceeds the response size limit",
+                                ));
+                            }
+                            rows.push(row);
+                        }
+                    }
+                }
+                Ok(())
+            });
+            let result = match outcome {
+                Ok((affected, _, wrote)) => {
+                    if wrote {
+                        database.mark_changed();
+                    }
+                    Ok(AdminQuery {
+                        columns,
+                        rows,
+                        affected_row_count: affected,
+                        truncated,
+                    })
+                }
+                Err(error) => Err(HostError::Engine(match error.extended_code {
+                    Some(code) => format!("{} ({code})", error.message),
+                    None => format!("{} ({})", error.message, error.code),
+                })),
+            };
+            database.release(conn);
+            result
+        })
+        .await
+        .map_err(|e| HostError::Engine(e.to_string()))?
+    }
+
+    /// Size of a database's files (database and write-ahead log) in bytes.
+    pub fn size_bytes(&self, id: &DatabaseId) -> Option<u64> {
+        let path = self.path(id)?;
+        let mut wal = path.clone().into_os_string();
+        wal.push("-wal");
+        let size = |p: &Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+        Some(size(&path) + size(Path::new(&wal)))
+    }
+
+    pub fn open_streams(&self) -> usize {
+        self.inner.streams.lock().len()
+    }
+
+    /// Removes matching entries from the stream table and releases their
+    /// slots. Entries of busy streams are removed too; their request finds the
+    /// entry gone and drops the stream when it finishes.
+    fn take_streams(
+        &self,
+        mut select: impl FnMut(&StreamEntry) -> bool,
+    ) -> Vec<(DatabaseId, Stream)> {
+        let removed: Vec<StreamEntry> = {
+            let mut streams = self.inner.streams.lock();
+            let keys: Vec<_> = streams
+                .iter()
+                .filter(|(_, entry)| select(entry))
+                .map(|(key, _)| *key)
+                .collect();
+            keys.into_iter()
+                .filter_map(|key| streams.remove(&key))
+                .collect()
+        };
+        let databases = self.inner.databases.read();
+        removed
+            .into_iter()
+            .filter_map(|entry| {
+                if let Some(database) = databases.get(&entry.database) {
+                    self.unreserve_stream(database);
+                }
+                entry.stream.map(|stream| (entry.database, stream))
+            })
+            .collect()
+    }
+
+    pub(crate) fn database(&self, id: &DatabaseId) -> Result<Arc<Database>, HostError> {
+        self.inner
+            .databases
+            .read()
+            .get(id)
+            .cloned()
+            .ok_or_else(|| HostError::UnknownDatabase(id.clone()))
+    }
+
+    pub(crate) fn resolve_token(&self, token: &str) -> Option<Resolved> {
+        let hash = hash_token(token);
+        let ScopedBinding { scope, binding } = self.inner.by_token.read().get(&hash).cloned()?;
+        match binding.home {
+            Home::Local => Some(Resolved::Serve {
+                database: self.database(&binding.database).ok()?,
+                principal: Principal::Local(hash),
+            }),
+            Home::Remote { upstream } => Some(Resolved::Forward {
+                database: binding.database,
+                upstream,
+                scope,
+            }),
+            Home::Unavailable { reason } => Some(Resolved::Unavailable(reason)),
+        }
+    }
+
+    pub(crate) fn resolve_remote(
+        &self,
+        server: IpAddr,
+        scope: &str,
+        database: &DatabaseId,
+    ) -> Option<Resolved> {
+        let allowed = self
+            .inner
+            .remote_grants
+            .read()
+            .get(scope)
+            .is_some_and(|grants| grants.contains(database));
+        if !allowed {
+            return None;
+        }
+        Some(Resolved::Serve {
+            database: self.database(database).ok()?,
+            principal: Principal::Remote {
+                server,
+                scope: scope.to_owned(),
+            },
+        })
+    }
+
+    pub(crate) fn enter(database: &Arc<Database>) -> Result<ActiveGuard, Unavailable> {
+        database.enter()
+    }
+
+    /// Counts a new retained stream against the limits.
+    pub(crate) fn reserve_stream(&self, database: &Database) -> Result<(), Error> {
+        let config = &self.inner.config;
+        if self.inner.streams.lock().len() >= config.max_streams {
+            return Err(Error::new(
+                "STREAM_LIMIT",
+                "too many open streams on this server",
+            ));
+        }
+        let mut state = database.state.lock();
+        if state.streams >= config.max_streams_per_database {
+            return Err(Error::new(
+                "STREAM_LIMIT",
+                "too many open streams on this database",
+            ));
+        }
+        state.streams += 1;
+        Ok(())
+    }
+
+    pub(crate) fn unreserve_stream(&self, database: &Database) {
+        let mut state = database.state.lock();
+        state.streams = state.streams.saturating_sub(1);
+    }
+}
+
+/// The result of [`DatabaseHost::admin_query`].
+#[derive(Debug)]
+pub struct AdminQuery {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<crate::proto::Value>>,
+    pub affected_row_count: u64,
+    pub truncated: bool,
+}
+
+/// Holds a database paused. Dropping it resumes service.
+pub struct PauseGuard {
+    database: Arc<Database>,
+    resume: bool,
+}
+
+impl PauseGuard {
+    pub fn path(&self) -> &Path {
+        &self.database.path
+    }
+
+    /// The database is known to differ from the last snapshot (after a swap).
+    pub fn mark_changed(&self) {
+        self.database.mark_changed();
+    }
+}
+
+impl Drop for PauseGuard {
+    fn drop(&mut self) {
+        if !self.resume {
+            return;
+        }
+        let mut lock = self.database.lock.lock();
+        if let Some(file) = lock.as_ref() {
+            let _ = file.unlock();
+            if file.lock_shared().is_err() {
+                *lock = None;
+            }
+        } else if let Ok(file) = open_lock(&self.database.path)
+            && file.lock_shared().is_ok()
+        {
+            *lock = Some(file);
+        }
+        drop(lock);
+        self.database.state.lock().paused = None;
+    }
+}
+
+fn lock_path(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".lock");
+    path.with_file_name(name)
+}
+
+fn open_lock(path: &Path) -> std::io::Result<File> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_path(path))
+}
+
+fn exclusive_lock(path: &Path, timeout: Duration) -> Result<File, HostError> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)?;
+    let started = Instant::now();
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(std::fs::TryLockError::WouldBlock) if started.elapsed() < timeout => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(HostError::Engine(format!(
+                    "another server process still has {} open",
+                    path.display()
+                )));
+            }
+            Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
+        }
+    }
+}

@@ -88,6 +88,11 @@ pub struct TakoToml {
     #[serde(default)]
     pub storages: HashMap<String, StorageResourceConfig>,
 
+    /// [databases.*] sections - Tako-hosted SQLite databases this project
+    /// uses, written by `tako sqlite create` and `tako sqlite link`.
+    #[serde(default)]
+    pub databases: HashMap<String, DatabaseResourceConfig>,
+
     /// Release command run once on the deploy leader server during the "Preparing"
     /// phase, before any rolling update starts (e.g. `"bun run db:migrate"`).
     /// Can be overridden per environment via `[envs.<name>].release`.
@@ -186,7 +191,14 @@ pub struct EnvConfig {
     #[serde(default)]
     pub storages: HashMap<String, String>,
 
-    /// Autopilot backup target for this environment.
+    /// Database bindings assigned to this environment.
+    ///
+    /// Key = app binding name exposed as `tako.databases.<key>`.
+    /// Value = database name from `[databases.<value>]`.
+    #[serde(default)]
+    pub databases: HashMap<String, String>,
+
+    /// Private storage for manual app-directory archives (`tako backups now`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backup: Option<BackupConfig>,
 
@@ -214,12 +226,29 @@ pub struct EnvConfig {
 pub struct BackupConfig {
     /// Private S3-compatible storage resource used for app data backups.
     pub storage: String,
-    /// SQLite paths relative to TAKO_DATA_DIR, captured continuously.
-    #[serde(default)]
-    pub databases: Vec<String>,
-    /// SQLite paths relative to the server's TAKO_SHARED_DATA_DIR.
-    #[serde(default)]
-    pub shared_databases: Vec<String>,
+}
+
+/// A Tako-hosted database from [databases.*].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct DatabaseResourceConfig {
+    /// Stable database ID: 32 lowercase hexadecimal characters.
+    #[cfg_attr(test, schemars(regex(pattern = r"^[0-9a-f]{32}$")))]
+    pub id: String,
+    /// The server that hosts the database: an enrolled server name or device ID.
+    pub server: String,
+    /// Private S3-compatible storage resource that receives snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup: Option<String>,
+    /// `local` (default): only apps on the database's server may use it.
+    /// `network`: apps on any server of the network may use it.
+    #[serde(default, skip_serializing_if = "is_local_access")]
+    pub access: tako_core::DatabaseAccess,
+}
+
+fn is_local_access(access: &tako_core::DatabaseAccess) -> bool {
+    *access == tako_core::DatabaseAccess::Local
 }
 
 /// S3-compatible storage resource from [storages.*]. Credentials are stored

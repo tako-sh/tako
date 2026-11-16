@@ -86,7 +86,8 @@ fn resolve_binary_from_env(binary: &str, env: &HashMap<String, String>) -> Strin
 }
 
 /// Create the bootstrap pipe on fd 3: the child reads a JSON envelope
-/// `{"token": ..., "secrets": {...}}` and closes the fd.
+/// `{"token": ..., "secrets": {...}, "storages": {...}, "databases": {...}}`
+/// and closes the fd.
 ///
 /// The envelope travels on a pipe (not env/args) so the internal auth
 /// token doesn't inherit into subprocesses the app spawns. The pipe is
@@ -97,10 +98,9 @@ fn resolve_binary_from_env(binary: &str, env: &HashMap<String, String>) -> Strin
 #[cfg(unix)]
 pub(super) fn create_bootstrap_pipe(
     token: &str,
-    secrets: &HashMap<String, String>,
-    storages: &HashMap<String, tako_core::StorageBinding>,
+    bindings: tako_core::bootstrap::Bindings<'_>,
 ) -> std::io::Result<(OwnedFd, super::bootstrap::BootstrapWriter)> {
-    let bytes = tako_core::bootstrap::envelope_bytes(token, secrets, storages);
+    let bytes = tako_core::bootstrap::envelope_bytes(token, bindings);
     super::bootstrap::pipe(bytes)
 }
 
@@ -186,8 +186,15 @@ pub(super) fn spawn_child_process(
     // Bootstrap pipe on fd 3: always present, carries `{token, secrets}`.
     // The OwnedFd must stay alive until after spawn (fork copies the fd table).
     // Return the writer so delivery runs asynchronously under the startup timeout.
-    let (bootstrap_pipe, bootstrap_writer) =
-        create_bootstrap_pipe(token, secrets, &config.storages)?;
+    let databases = crate::databases::connections(&config.databases);
+    let (bootstrap_pipe, bootstrap_writer) = create_bootstrap_pipe(
+        token,
+        tako_core::bootstrap::Bindings {
+            secrets,
+            storages: &config.storages,
+            databases: &databases,
+        },
+    )?;
     #[cfg(unix)]
     let raw_fd = Some(bootstrap_pipe.as_raw_fd());
     #[cfg(not(unix))]

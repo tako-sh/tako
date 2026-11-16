@@ -172,6 +172,12 @@ tako backups now --env production
 
 Backup storage must not use `public_base_url`, and `local` cannot be used as a backup target.
 
+For a hosted database, check `backup.last_error` and `backup.last_snapshot` in `tako sqlite status <name> --json`. A database snapshot uses the storage named in `[databases.<name>].backup`; deploy as an administrator after changing it or its credentials so the database's server receives them. Then take one with `tako sqlite backup <name>`. A snapshot also needs free space for about three copies of the database on the server.
+
+## Database Requests Fail
+
+`tako.databases.<binding>` is `undefined` (or `GetDatabase` reports false) when the environment does not bind that name: check `[envs.<env>].databases` and deploy. A `401` means the token is not valid on this server, usually from a connection copied from another environment or session. A `503` means the database is being restored, imported, or removed; retry. A `502` means this server could not reach the database's server over the private network: check `tako network status --json`. A deploy fails with "not hosted on this server" when a `local` database is bound by a release on another server: set `access = "network"` or deploy only to the database's server. See [Databases](/databases/#limits-and-security).
+
 ## Secret Or Credential Key Problems
 
 For shared network values, check `tako network status --json`, device permissions, and `tako network sync` first. A newly enrolled administrator can decrypt published values; a scoped client can decrypt app secrets only for its granted app/environments. Unpublished drafts remain on the original worktree.

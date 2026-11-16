@@ -272,6 +272,26 @@ storages = { uploads = "local_uploads", "profile-images" = "profile_images" }
 }
 
 #[test]
+fn write_tako_declarations_type_database_bindings() {
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("tako.toml"),
+        r#"
+[envs.production]
+databases = { main = "shop", "audit-log" = "audit" }
+"#,
+    )
+    .unwrap();
+
+    write_tako_declarations(dir.path()).unwrap();
+
+    let content = fs::read_to_string(dir.path().join("tako.d.ts")).unwrap();
+    assert!(content.contains("export interface TakoDatabases {"));
+    assert!(content.contains("readonly main: import(\"tako.sh\").TakoDatabase;"));
+    assert!(content.contains("readonly \"audit-log\": import(\"tako.sh\").TakoDatabase;"));
+}
+
+#[test]
 #[cfg(unix)]
 fn write_tako_declarations_include_takochannels_augmentation_when_channels_present() {
     let dir = TempDir::new().unwrap();

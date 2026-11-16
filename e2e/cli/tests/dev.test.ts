@@ -3,7 +3,7 @@
  * Skipped unless TAKO_DEV_E2E=1 is set.
  */
 import { describe, test, expect } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, cpSync, symlinkSync } from "fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, cpSync, symlinkSync } from "fs";
 import { join, resolve } from "path";
 import { tmpdir } from "os";
 
@@ -13,6 +13,7 @@ const TAKO_BIN =
   resolve(import.meta.dirname, "..", "..", "..", "target", "debug", "tako");
 const FIXTURES_DIR = resolve(import.meta.dirname, "..", "..", "fixtures", "javascript");
 const SDK_DIR = resolve(import.meta.dirname, "..", "..", "..", "sdk", "javascript");
+const CLI_MODULES = resolve(import.meta.dirname, "..", "node_modules");
 
 function safeRead(path: string): string {
   try {
@@ -33,6 +34,12 @@ function prepareFixture(name: string) {
   const sdkLink = join(pd, "node_modules", "tako.sh");
   rmSync(sdkLink, { recursive: true, force: true });
   symlinkSync(SDK_DIR, sdkLink);
+  // Fixtures reach their database bindings through @libsql/client.
+  mkdirSync(join(pd, "node_modules", "@libsql"), { recursive: true });
+  symlinkSync(
+    join(CLI_MODULES, "@libsql", "client"),
+    join(pd, "node_modules", "@libsql", "client"),
+  );
   // An install also links the SDK's bin entries. A release build of `tako`
   // runs the type generators through them, and dev refuses to start when
   // generation fails.
@@ -304,6 +311,40 @@ describe.skipIf(SKIP)("tako dev fixtures", () => {
       rmSync(tempDir, { recursive: true, force: true });
     }
   }, 120_000);
+
+  test("channels-workflows: Store writes persist in the dev database binding", async () => {
+    const { tempDir, pd, lf } = prepareFixture("channels-workflows");
+    const proc = startDev(pd, lf);
+    try {
+      const devUrl = await waitForApp(lf);
+      await waitForHttpOk(devUrl, lf);
+      const message = `stored-${Date.now()}`;
+      const headers = { authorization: "Bearer e2e", "content-type": "application/json" };
+      const write = await fetch(appUrl(devUrl, "/store/messages"), {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ chatId: "chat-a", message }),
+        // @ts-ignore - Bun extension: skip TLS verification for the self-signed dev CA.
+        tls: { rejectUnauthorized: false },
+      });
+      expect(write.status).toBe(200);
+      const params = encodeURIComponent(JSON.stringify({ chat: { id: "chat-a" } }));
+      const read = await fetch(appUrl(devUrl, `/_tako/stores/messages?params=${params}`), {
+        headers,
+        // @ts-ignore - Bun extension: skip TLS verification for the self-signed dev CA.
+        tls: { rejectUnauthorized: false },
+      });
+      expect(read.status).toBe(200);
+      const body = (await read.json()) as { data: { messages: { message: string }[] } };
+      expect(body.data.messages.map((row) => row.message)).toContain(message);
+      expect(existsSync(join(pd, ".tako", "data", "databases", "messages.sqlite"))).toBe(true);
+    } finally {
+      try {
+        process.kill(proc.pid, "SIGKILL");
+      } catch {}
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  }, 90_000);
 
   test("presence: joins and removes disconnected tabs", async () => {
     const { tempDir, pd, lf } = prepareFixture("channels-workflows");

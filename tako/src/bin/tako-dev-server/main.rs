@@ -1,6 +1,7 @@
 mod bootstrap;
 mod compose;
 mod control;
+mod databases;
 mod dev_channels;
 mod identity;
 mod image;

@@ -334,6 +334,7 @@ impl crate::ServerState {
             }
         }
         self.app_manager.remove_app(app_name);
+        self.databases.remove_bindings(app_name);
 
         self.load_balancer.unregister_app(app_name);
         self.cold_start.reset(app_name);

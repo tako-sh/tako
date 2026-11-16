@@ -5,9 +5,11 @@
  * `loadSecrets` without dragging `node:fs` into consumer graphs.
  *
  * Tako spawns each app process with a pipe on fd 3 containing a JSON
- * envelope `{"token": ..., "secrets": {...}, "storages": {...}}`.
+ * envelope `{"token": ..., "secrets": {...}, "storages": {...}, "databases": {...}}`.
  * Server/worker entrypoints read the envelope and call `injectBootstrap(...)`
- * before the user's module is imported.
+ * before the user's module is imported. Processes without an entrypoint, such
+ * as scripts under `tako run`, receive it in `TAKO_BOOTSTRAP_DATA`, which is
+ * read on first access.
  *
  * The token is kept in module scope and used by the SDK to authenticate
  * server-issued `Host: <app>.tako` requests — it is not exposed to
@@ -29,33 +31,101 @@ export interface BootstrapEnvelope {
   secrets: Record<string, string>;
   /** Storage binding metadata keyed by binding name. */
   storages?: Record<string, unknown> | undefined;
+  /** Database connections keyed by binding name. */
+  databases?: Record<string, unknown> | undefined;
 }
 
 interface BootstrapState {
   token: string | null;
   secrets: Record<string, string>;
   storages: Record<string, unknown>;
+  databases: Record<string, unknown>;
 }
 
-let bootstrap: BootstrapState = { token: null, secrets: {}, storages: {} };
+const BOOTSTRAP_ENV = "TAKO_BOOTSTRAP_DATA";
+
+let bootstrap: BootstrapState = { token: null, secrets: {}, storages: {}, databases: {} };
+let injected = false;
 
 /** Low-level: replace the whole bootstrap state (tests + fd-reader init). */
 export function injectBootstrap(next: BootstrapEnvelope): void {
+  injected = true;
   bootstrap = {
     token: next.token,
     secrets: Object.assign(Object.create(null), next.secrets ?? {}),
     storages: Object.assign(Object.create(null), next.storages ?? {}),
+    databases: Object.assign(Object.create(null), next.databases ?? {}),
   };
+}
+
+/**
+ * Parse a bootstrap envelope. Throws an `Error` that describes the expected
+ * shape when `data` is not a valid envelope.
+ */
+export function parseBootstrapEnvelope(data: string): BootstrapEnvelope {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(data);
+  } catch {
+    throw new Error("Tako: invalid bootstrap JSON");
+  }
+  if (
+    !isObject(parsed) ||
+    typeof parsed["token"] !== "string" ||
+    !isObject(parsed["secrets"]) ||
+    !optionalObject(parsed, "storages") ||
+    !optionalObject(parsed, "databases")
+  ) {
+    throw new Error(
+      "Tako: bootstrap must be {token: string, secrets: object, storages?: object, databases?: object}",
+    );
+  }
+  return {
+    token: parsed["token"],
+    secrets: parsed["secrets"] as Record<string, string>,
+    storages: parsed["storages"] as Record<string, unknown> | undefined,
+    databases: parsed["databases"] as Record<string, unknown> | undefined,
+  };
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function optionalObject(value: Record<string, unknown>, key: string): boolean {
+  return !(key in value) || isObject(value[key]);
+}
+
+/**
+ * The bootstrap state. Without an injected envelope, consumes
+ * `TAKO_BOOTSTRAP_DATA` once, which `tako run` sets for plain scripts.
+ */
+function current(): BootstrapState {
+  if (!injected) {
+    injected = true;
+    const env = typeof process !== "undefined" ? process.env : undefined;
+    const data = env?.[BOOTSTRAP_ENV];
+    if (typeof data === "string" && data.length > 0) {
+      delete env![BOOTSTRAP_ENV];
+      injectBootstrap(parseBootstrapEnvelope(data));
+    }
+  }
+  return bootstrap;
 }
 
 /** Returns the internal auth token, or `null` when running outside Tako. */
 export function getInternalToken(): string | null {
-  return bootstrap.token;
+  return current().token;
 }
 
 /** Returns storage binding payloads injected by Tako at process startup. */
 export function getStorageBindings(): Record<string, unknown> {
-  return bootstrap.storages;
+  return current().storages;
+}
+
+/** Returns database connection payloads injected by Tako at process startup. */
+export function getDatabaseBindings(): Record<string, unknown> {
+  return current().databases;
 }
 
 /**
@@ -70,20 +140,21 @@ export function loadSecrets<T = Record<string, string>>(): Readonly<T> {
       if (prop === "toString" || prop === "toJSON") return () => "[REDACTED]";
       if (prop === Symbol.for("nodejs.util.inspect.custom")) return () => "[REDACTED]";
       if (prop === Symbol.toPrimitive) return () => "[REDACTED]";
-      if (typeof prop === "string") return bootstrap.secrets[prop];
+      if (typeof prop === "string") return current().secrets[prop];
       return undefined;
     },
     ownKeys(): string[] {
-      return Object.keys(bootstrap.secrets);
+      return Object.keys(current().secrets);
     },
     getOwnPropertyDescriptor(_target, prop: string | symbol) {
-      if (typeof prop === "string" && prop in bootstrap.secrets) {
-        return { configurable: true, enumerable: false, value: bootstrap.secrets[prop] };
+      const secrets = current().secrets;
+      if (typeof prop === "string" && prop in secrets) {
+        return { configurable: true, enumerable: false, value: secrets[prop] };
       }
       return undefined;
     },
     has(_target, prop: string | symbol): boolean {
-      return typeof prop === "string" && prop in bootstrap.secrets;
+      return typeof prop === "string" && prop in current().secrets;
     },
   }) as Readonly<T>;
 }

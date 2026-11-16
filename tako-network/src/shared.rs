@@ -67,7 +67,14 @@ pub enum SecretKind {
     Storage,
     BackupKey,
     BackupActive,
+    /// A Tako-hosted database of the network, named by its ID under
+    /// [`DATABASE_SCOPE`]: its name, home server, and snapshot key.
+    Database,
 }
+
+/// The scope of database records. Not an app environment: database records
+/// belong to the network, and only administrators may read or write them.
+pub const DATABASE_SCOPE: &str = "tako/databases";
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

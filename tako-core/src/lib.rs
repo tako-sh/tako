@@ -9,7 +9,7 @@
 pub mod bootstrap;
 pub mod compose;
 pub mod container;
-mod database_backup;
+pub mod database;
 mod error_code;
 mod error_codes;
 pub mod instance_env;
@@ -19,7 +19,7 @@ pub mod storage;
 #[cfg(test)]
 mod wire_fixtures;
 
-pub use database_backup::*;
+pub use database::*;
 pub use error_code::{ErrorCode, SocketError};
 pub use protocol::*;
 pub use storage::*;

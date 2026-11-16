@@ -191,6 +191,7 @@ pub async fn run(
         tracing::warn!("Failed to load development storages: {error}");
         std::collections::HashMap::new()
     });
+    let databases = crate::local_databases::dev_files(&project_dir, &cfg);
     let project_dir_display = project_dir.to_string_lossy();
     let reg_url =
         crate::dev_server_client::register_app(crate::dev_server_client::RegisterAppRequest {
@@ -207,6 +208,7 @@ pub async fn run(
             secrets: &secrets,
             images: &cfg.images,
             storages: &storages,
+            databases: &databases,
             readiness_failure_hint: readiness_failure_hint.as_deref(),
             worker_command: worker_command.as_deref(),
             workflow_retention_ms: cfg.workflows.retention_ms,

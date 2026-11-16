@@ -118,11 +118,6 @@ pub struct ServerState {
     pub(crate) channel_registry: Arc<crate::channels::registry::ChannelRegistry>,
     pub(crate) deploy_locks: AsyncRwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     pub(crate) backup_locks: SyncRwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
-    /// Latest hourly database snapshot attempt per app. Not persisted: the
-    /// remote index keeps the cadence across restarts.
-    pub(crate) database_replica_status:
-        SyncRwLock<std::collections::BTreeMap<String, tako_core::DatabaseBackupStatus>>,
-    pub(crate) database_replicas: tokio::sync::Mutex<crate::operations::DatabaseReplicas>,
     pub(crate) manual_backup_states:
         SyncRwLock<HashMap<String, crate::operations::ManualBackupState>>,
     prepared_deploy_ssl: AsyncRwLock<HashMap<PreparedDeployKey, PreparedDeploySsl>>,
@@ -139,6 +134,8 @@ pub struct ServerState {
     pub(crate) proxy_requests: Arc<crate::request_drain::RequestDrain>,
     pub(crate) runtime: ServerRuntimeConfig,
     pub(crate) workflows: Arc<crate::workflows::WorkflowManager>,
+    /// Hosted databases and the database bindings of apps on this server.
+    pub(crate) databases: Arc<crate::databases::Databases>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

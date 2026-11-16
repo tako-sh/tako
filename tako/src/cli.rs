@@ -3,7 +3,8 @@ use clap::{Parser, Subcommand};
 #[cfg(test)]
 use crate::commands::server;
 use crate::commands::{
-    self, backups, credentials, delete, releases, scale, secret, storage, upgrade, workflows,
+    self, backups, credentials, delete, releases, scale, secret, sqlite, storage, upgrade,
+    workflows,
 };
 use clap::CommandFactory;
 
@@ -186,6 +187,10 @@ pub enum Commands {
     #[command(subcommand)]
     Backups(backups::BackupCommands),
 
+    /// Tako-hosted SQLite databases
+    #[command(subcommand, visible_alias = "db")]
+    Sqlite(sqlite::SqliteCommands),
+
     /// Provider credentials used by Tako
     #[command(visible_alias = "creds")]
     Credentials {
@@ -362,6 +367,7 @@ fn telemetry_command(command: &Commands) -> &'static str {
         Commands::Secrets(_) => "secrets",
         Commands::Storages(_) => "storages",
         Commands::Backups(_) => "backups",
+        Commands::Sqlite(_) => "sqlite",
         Commands::Credentials { .. } => "credentials",
         Commands::Releases(_) => "releases",
         Commands::Workflows(_) => "workflows",
@@ -412,6 +418,10 @@ pub(crate) fn supports_dry_run(path: &[&str]) -> bool {
             | ["network", "client", "add" | "remove" | "list"]
             | ["secrets", "migrate" | "sync"]
             | ["backups", "now" | "download" | "restore"]
+            | [
+                "sqlite",
+                "create" | "link" | "backup" | "restore" | "import" | "export" | "delete"
+            ]
             | ["workflows", "retry" | "cancel"]
     )
 }
@@ -426,6 +436,7 @@ pub(crate) fn is_read_only(path: &[&str]) -> bool {
             ]
             | ["workflows", "show"]
             | ["backups" | "network", "list" | "status"]
+            | ["sqlite", "list" | "status" | "backups"]
             | ["network", "client" | "server", "list"]
     )
 }
@@ -570,6 +581,10 @@ impl Cli {
                 } else {
                     Ok(())
                 }
+            }
+            Commands::Sqlite(cmd) => {
+                // Each subcommand prints its own JSON result.
+                sqlite::run(cmd, self.config.as_deref())
             }
             Commands::Credentials { command } => {
                 let emit_generic =

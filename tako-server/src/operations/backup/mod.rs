@@ -12,9 +12,7 @@ use crate::release::{
 use object_store::{ObjectStore, path::Path as ObjectPath, signer::Signer};
 use std::sync::Arc;
 
-mod continuous;
 mod databases;
-pub(crate) use continuous::DatabaseReplicas;
 mod encryption;
 mod index;
 mod journal;
@@ -25,10 +23,8 @@ mod worker;
 
 use databases::DISK_RESERVE_BYTES;
 pub(crate) use databases::ManualBackupState;
-use encryption::{
-    active_backup_key, database_digest_key, decrypt_backup_file, encrypt_backup_file,
-    find_backup_key, validate_backup_key,
-};
+use encryption::{active_backup_key, database_digest_key, find_backup_key, validate_backup_key};
+pub(crate) use encryption::{decrypt_backup_file, encrypt_backup_file};
 use index::{backup_index_key, backup_object_prefix, latest_backup};
 use journal::{
     DatabaseSwap, RESTORE_WORKER_TIMEOUT, refuse_unfinished_restores, swap_databases_off_runtime,
@@ -37,9 +33,9 @@ use journal::{
 pub(crate) use journal::{
     RecoveryMode, recover_interrupted_restores, run_restore_worker, sweep_backup_work_dirs,
 };
-use objects::{
-    DOWNLOAD_URL_EXPIRES_SECONDS, backup_store, download_object, prune_retention, put_json_object,
-    queue_retention, upload_file,
+use objects::{DOWNLOAD_URL_EXPIRES_SECONDS, prune_retention, queue_retention};
+pub(crate) use objects::{
+    METADATA_TIMEOUT, backup_store, download_object, put_json_object, upload_file, with_deadline,
 };
 use snapshot::{
     DATABASE_SNAPSHOT_ARCHIVE_ROOT, RestoredData, SwapError, create_backup_archive,
@@ -423,7 +419,6 @@ impl crate::ServerState {
             .map_err(|error| format!("read backup config: {error}"))?
         else {
             return Ok(BackupStatusResponse {
-                databases: self.database_backup_status(app).await,
                 app: app.to_string(),
                 enabled: false,
                 retention_days: None,
@@ -439,9 +434,8 @@ impl crate::ServerState {
             Ok(index) => index,
             Err(error) => {
                 // Report the index itself as the problem: nothing it lists
-                // can be shown. Continuous replicas have independent histories.
+                // can be shown.
                 return Ok(BackupStatusResponse {
-                    databases: self.database_backup_status(app).await,
                     app: app.to_string(),
                     enabled: true,
                     retention_days: Some(backup.retention_days),
@@ -458,7 +452,6 @@ impl crate::ServerState {
         };
         let mut status = enabled_backup_status(app, backup.retention_days, &index.backups, &manual);
         status.unfinished_restores = unfinished_restores;
-        status.databases = self.database_backup_status(app).await;
         Ok(status)
     }
 
@@ -494,8 +487,6 @@ impl crate::ServerState {
         app: &str,
         backup_id: &str,
     ) -> Result<BackupRestoreResponse, String> {
-        let mut replicas = self.database_replicas.lock().await;
-        let _replica_leases = self.pause_app_database_backups(app, &mut replicas).await?;
         let _backup = self.acquire_backup_lock(app)?;
         // Held until the restore ends, so no standby starts meanwhile.
         let _standby = self.lock_out_standby()?;
@@ -934,7 +925,6 @@ fn enabled_backup_status(
     let last_backup = latest_of(BackupKind::Full).cloned();
     let last_backup_failure = manual.failure().cloned();
     BackupStatusResponse {
-        databases: Vec::new(),
         app: app.to_string(),
         enabled: true,
         retention_days: Some(retention_days),
@@ -1023,8 +1013,6 @@ async fn create_private_work_dir(path: &std::path::Path) -> Result<std::fs::File
 }
 
 fn validate_backup_binding(backup: &tako_core::BackupBinding) -> Result<(), String> {
-    tako_core::validate_database_paths(&backup.databases)?;
-    tako_core::validate_database_paths(&backup.shared_databases)?;
     if backup.storage.provider != tako_core::StorageProvider::S3 {
         return Err("Backup storage must be S3-compatible.".to_string());
     }
@@ -1207,55 +1195,6 @@ mod tests {
         data: std::path::PathBuf,
         info: BackupInfo,
         objects: std::collections::HashMap<String, Vec<u8>>,
-    }
-
-    #[tokio::test]
-    async fn shared_database_restore_resumes_every_app_and_preserves_private_data() {
-        let fixture = RestoreFixture::new();
-        let second_config = crate::instances::AppConfig {
-            name: "another".into(),
-            environment: "production".into(),
-            version: "v1".into(),
-            min_instances: 0,
-            ..Default::default()
-        };
-        let release = release_app_path(fixture.temp.path(), &second_config);
-        std::fs::create_dir_all(&release).unwrap();
-        std::fs::write(release.join("app.json"), r#"{"protocol_version":0,"runtime":"node","main":"index.js","idle_timeout":300,"start":["/bin/sh","-lc","sleep 600"]}"#).unwrap();
-        fixture
-            .state
-            .state_store
-            .upsert_app(&second_config, &[])
-            .unwrap();
-        fixture
-            .state
-            .app_manager
-            .register_app(crate::instances::AppConfig {
-                path: release,
-                ..second_config
-            });
-        let root = fixture.temp.path().join("shared/data");
-        sqlite(&root.join("app/accounts.sqlite"), "live shared");
-        std::fs::write(root.join("app/keep.bin"), b"shared upload").unwrap();
-        let stage = fixture.temp.path().join("staged");
-        sqlite(&stage.join("app/accounts.sqlite"), "restored shared");
-        fixture
-            .state
-            .apply_shared_database_restore(stage, "app/accounts.sqlite".into(), root.clone())
-            .await
-            .unwrap();
-        assert_eq!(
-            sqlite_value(&root.join("app/accounts.sqlite")),
-            "restored shared"
-        );
-        assert_eq!(
-            std::fs::read(root.join("app/keep.bin")).unwrap(),
-            b"shared upload"
-        );
-        assert_eq!(sqlite_value(&fixture.data.join("app/data.sqlite")), "live");
-        assert_eq!(fixture.state.app_manager.list_apps().len(), 2);
-        assert!(!fixture.state.is_draining());
-        assert!(journal::unfinished_restores(&root).is_empty());
     }
 
     impl RestoreFixture {
@@ -1642,6 +1581,7 @@ mod tests {
             env: Default::default(),
             secrets: Default::default(),
             storages: Default::default(),
+            databases: Default::default(),
             log_sink: None,
             isolation: None,
             lanes: Vec::new(),

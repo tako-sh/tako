@@ -95,6 +95,17 @@ fn read_secret_names(
 /// Read storage binding names from `tako.toml` environment assignments.
 /// Development names are preferred because that is what `tako dev` injects.
 fn read_storage_names(project_dir: &Path) -> Vec<String> {
+    read_binding_names(project_dir, "storages")
+}
+
+/// Read database binding names, with the same preference as storages.
+fn read_database_names(project_dir: &Path) -> Vec<String> {
+    read_binding_names(project_dir, "databases")
+}
+
+/// Binding names from `[envs.development].<key>` when present, otherwise
+/// from every environment.
+fn read_binding_names(project_dir: &Path, key: &str) -> Vec<String> {
     let config_path = project_dir.join("tako.toml");
     let Ok(content) = fs::read_to_string(&config_path) else {
         return Vec::new();
@@ -109,17 +120,18 @@ fn read_storage_names(project_dir: &Path) -> Vec<String> {
     };
 
     if let Some(dev) = envs.get("development")
-        && let Some(storages) = dev.get("storages").and_then(|s| s.as_table())
+        && let Some(bindings) = dev.get(key).and_then(|s| s.as_table())
+        && !bindings.is_empty()
     {
-        let mut names: Vec<String> = storages.keys().cloned().collect();
+        let mut names: Vec<String> = bindings.keys().cloned().collect();
         names.sort();
         return names;
     }
 
     let mut names_set = std::collections::BTreeSet::new();
     for env_value in envs.values() {
-        if let Some(storages) = env_value.get("storages").and_then(|s| s.as_table()) {
-            for name in storages.keys() {
+        if let Some(bindings) = env_value.get(key).and_then(|s| s.as_table()) {
+            for name in bindings.keys() {
                 names_set.insert(name.clone());
             }
         }
@@ -260,6 +272,28 @@ fn build_storages_block(names: &[String]) -> String {
     out
 }
 
+fn build_databases_block(names: &[String]) -> String {
+    if names.is_empty() {
+        return "  /**\n   * Project-specific database bindings from `tako.toml`.\n   *\n   * No databases are currently bound for this project. After you bind one,\n   * this interface is regenerated with typed readonly bindings.\n   */\n  export interface TakoDatabases {}\n\n".to_string();
+    }
+
+    let mut out = String::from(
+        "  /**\n   * Project-specific database bindings from `tako.toml`.\n   *\n   * Each binding is `{ url, authToken }`, ready for `createClient` from\n   * `@libsql/client` or `connect` from `@tursodatabase/serverless`.\n   */\n  export interface TakoDatabases {\n",
+    );
+    for name in names {
+        out.push_str(&format!(
+            "    /** Database binding `{name}`. Read it with `tako.databases.{}`. */\n",
+            ts_property_name(name)
+        ));
+        out.push_str(&format!(
+            "    readonly {}: import(\"tako.sh\").TakoDatabase;\n",
+            ts_property_name(name)
+        ));
+    }
+    out.push_str("  }\n\n");
+    out
+}
+
 fn push_indented_block(out: &mut String, block: &str, spaces: usize) {
     let indent = " ".repeat(spaces);
     for line in block.lines() {
@@ -352,6 +386,7 @@ declare global {
 fn build_declarations(
     secret_names: &[String],
     storage_names: &[String],
+    database_names: &[String],
     env_names: &[String],
     var_names: &[String],
     channel_types: &str,
@@ -362,6 +397,7 @@ fn build_declarations(
     out.push_str(&build_type_registry_block(env_names));
     out.push_str(&build_secrets_block(secret_names));
     out.push_str(&build_storages_block(storage_names));
+    out.push_str(&build_databases_block(database_names));
     if !channel_types.trim().is_empty() {
         push_indented_block(&mut out, channel_types, 2);
         out.push('\n');
@@ -442,6 +478,7 @@ fn write_tako_declarations_with_network_options(
 ) -> std::io::Result<JsGeneratedFilesResult> {
     let secret_names = read_secret_names(project_dir, config, environment);
     let storage_names = read_storage_names(project_dir);
+    let database_names = read_database_names(project_dir);
     let env_names = read_env_names(project_dir);
     let var_names = read_var_names(project_dir);
     let path = resolve_declaration_path(project_dir);
@@ -476,6 +513,7 @@ fn write_tako_declarations_with_network_options(
     let content = build_declarations(
         &secret_names,
         &storage_names,
+        &database_names,
         &env_names,
         &var_names,
         &channel_types,

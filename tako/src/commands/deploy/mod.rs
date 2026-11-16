@@ -1,6 +1,7 @@
 mod artifacts;
 mod cache;
 mod config;
+mod databases;
 mod format;
 mod manifest;
 mod preflight;
@@ -62,6 +63,8 @@ struct DeployConfig {
     storages: HashMap<String, tako_core::StorageBinding>,
     ssl: tako_core::SslBinding,
     backup: Option<tako_core::BackupBinding>,
+    /// Database bindings, sent with the release command and the deploy.
+    databases: HashMap<String, tako_core::DatabaseBinding>,
     force: bool,
     /// SHA-256 hash of the decrypted secrets for this deploy.
     secrets_hash: String,
@@ -145,6 +148,7 @@ impl DeployConfig {
             command_line: command_line.clone(),
             vars: HashMap::new(),
             secrets: self.secrets.clone(),
+            databases: self.databases.clone(),
             force: self.force,
         })
     }
@@ -355,6 +359,18 @@ async fn run_async(
     config::refresh_native_build_targets(&mut servers, &server_names).await?;
     let server_targets = resolve_deploy_server_targets(&servers, &server_names)
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    let database_plan = crate::commands::sqlite::target::plan_bindings(
+        &tako_config,
+        &servers,
+        &env,
+        &server_names,
+    )?;
+    if !database_plan.is_empty() && is_container_release {
+        return Err(
+            "Database bindings are available to native releases only; container and Compose releases cannot use them yet."
+                .into(),
+        );
+    }
     tracing::debug!("{}", format_servers_summary(&server_names));
 
     if configure_bindings {
@@ -562,6 +578,21 @@ async fn run_async(
         .cloned()
         .ok_or("no servers selected for deploy")?;
     let release_command = resolve_release_command(&tako_config, &env);
+    if !database_plan.is_empty() {
+        databases::prepare(databases::Preparation {
+            plan: &database_plan,
+            config: &tako_config,
+            servers: &servers,
+            secrets: &secrets,
+            project_dir: &project_dir,
+            env: &env,
+            app: &deployment_app_name,
+            targets: &server_names,
+            administrator: configure_bindings,
+            release: release_command.is_some(),
+        })
+        .await?;
+    }
     let deploy_config = Arc::new(DeployConfig {
         app_name: deployment_app_name.clone(),
         version: version.clone(),
@@ -572,6 +603,7 @@ async fn run_async(
         storages: deploy_storages,
         ssl: deploy_ssl,
         backup: deploy_backup,
+        databases: crate::commands::sqlite::target::wire_bindings(&database_plan),
         force,
         secrets_hash,
         main: manifest_main,

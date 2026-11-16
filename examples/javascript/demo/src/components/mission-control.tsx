@@ -163,7 +163,7 @@ function BaseHeader({
           >
             <Info
               label="persistent state"
-              description="Requests are stored in SQLite under Tako's data directory, so each base reloads with its recent shipment history."
+              description="Requests are stored in a Tako-hosted SQLite database bound to the app, so each base reloads with its recent shipment history."
               sourcePath="src/server/db.ts"
             />
           </div>

@@ -3,6 +3,7 @@ mod commands;
 mod dev_server_client;
 mod github;
 mod keychain;
+mod local_databases;
 mod management_http;
 mod network;
 mod output;

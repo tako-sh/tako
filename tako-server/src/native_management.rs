@@ -373,6 +373,16 @@ fn authorize_command(
         .map(|scope| state.state_store.get_storages(scope.as_str()))
         .transpose()
         .map_err(fail)?;
+    let databases: Option<std::collections::HashMap<String, tako_core::DatabaseBinding>> = scope
+        .map(|scope| state.state_store.get_app_databases(scope.as_str()))
+        .transpose()
+        .map_err(fail)?
+        .map(|bindings| {
+            bindings
+                .into_iter()
+                .map(|(name, binding)| (name, binding.binding))
+                .collect()
+        });
     let backup = scope
         .map(|scope| state.state_store.get_backup(scope.as_str()))
         .transpose()
@@ -383,14 +393,16 @@ fn authorize_command(
         stored.as_ref(),
         credentials.as_ref(),
         storages.as_ref(),
+        databases.as_ref(),
     ) {
-        (Some(scope), Some(stored), Some(runtime_credentials), Some(storages)) => {
+        (Some(scope), Some(stored), Some(runtime_credentials), Some(storages), Some(databases)) => {
             Some(ProvisionedApp {
                 scope,
                 routes: &stored.routes,
                 ssl: &ssl,
                 runtime_credentials,
                 storages,
+                databases,
                 backup: backup.as_ref(),
             })
         }

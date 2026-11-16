@@ -315,7 +315,16 @@ pub(crate) fn build_container_run_env(
     if options.sdk {
         merged.insert(
             TAKO_BOOTSTRAP_DATA_ENV.to_string(),
-            envelope_string(token, secrets, storages),
+            // Containers have no loopback route to the database host; deploy
+            // refuses database bindings for container releases.
+            envelope_string(
+                token,
+                tako_core::bootstrap::Bindings {
+                    secrets,
+                    storages,
+                    databases: &HashMap::new(),
+                },
+            ),
         );
     } else {
         merged.remove(TAKO_BOOTSTRAP_DATA_ENV);

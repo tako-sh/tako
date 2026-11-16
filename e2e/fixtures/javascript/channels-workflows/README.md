@@ -30,8 +30,11 @@ token and supplies the `e2e-user` subject; local dev permits anonymous joins.
 
 The `/enqueue` JSON body accepts an optional `id`. Repeated requests with the same ID and message return that run ID while its history is retained.
 
-`src/stores/messages.ts` defines an authenticated Store with nested chat params
-and a lazy SQLite backend shared by app instances. `GET /_tako/stores/messages?params={"chat":{"id":"chat-a"}}`
+`src/stores/messages.ts` defines an authenticated Store with nested chat params,
+backed by the `messages` database binding. `tako dev` serves it from a local
+file; the deployment harness creates it with `tako sqlite create` on the first
+server with network access, so the second server reaches it over the private
+network. `GET /_tako/stores/messages?params={"chat":{"id":"chat-a"}}`
 requires `Authorization: Bearer e2e` and returns the trusted subject and current
 messages. `POST /store/messages` with that header and `{ "chatId": "chat-a", "message": "hello" }`
 commits a row, then invalidates only that chat's Store subscription. The deployment

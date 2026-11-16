@@ -38,7 +38,6 @@ pub(super) fn blocked_while_draining(command: &Command) -> bool {
         | Command::RunRelease { .. }
         | Command::Deploy { .. }
         | Command::BackupNow { .. }
-        | Command::RestoreDatabaseBackup { .. }
         | Command::RestoreBackup { .. }
         | Command::Scale { .. }
         | Command::Start { .. }
@@ -59,7 +58,6 @@ pub(super) fn blocked_while_draining(command: &Command) -> bool {
         | Command::CleanupPreparedDeploy { .. }
         | Command::CleanupRelease { .. }
         | Command::CheckDeploySpace { .. }
-        | Command::ListDatabaseBackups { .. }
         | Command::ListBackups { .. }
         | Command::BackupStatus { .. }
         | Command::BackupDownloadUrl { .. }
@@ -86,7 +84,24 @@ pub(super) fn blocked_while_draining(command: &Command) -> bool {
         | Command::WaitForEvent { .. }
         | Command::NetworkCall { .. }
         | Command::ChannelPublish { .. }
-        | Command::ChannelClose { .. } => false,
+        | Command::ChannelClose { .. }
+        // Database operations neither start app processes nor touch
+        // releases; restores pause the database themselves.
+        | Command::CreateDatabase { .. }
+        | Command::DeleteDatabase { .. }
+        | Command::DatabaseStatus { .. }
+        | Command::ConfigureDatabaseBackup { .. }
+        | Command::GrantDatabases { .. }
+        | Command::SnapshotDatabase { .. }
+        | Command::ListDatabaseSnapshots { .. }
+        | Command::RestoreDatabase { .. }
+        | Command::QueryDatabase { .. }
+        | Command::BeginDatabaseImport { .. }
+        | Command::DatabaseImportChunk { .. }
+        | Command::FinishDatabaseImport { .. }
+        | Command::BeginDatabaseExport { .. }
+        | Command::DatabaseExportChunk { .. }
+        | Command::FinishDatabaseExport { .. } => false,
     }
 }
 

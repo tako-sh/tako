@@ -43,7 +43,7 @@ Tako builds with Podman, starts the image's default command, probes the app, and
 
 Using an SDK preserves the runtime contract; binding port 3000 alone is insufficient. Rust/Axum and Go apps use their SDK servers. JavaScript fetch apps start through the packaged SDK entrypoint shown in [Dockerfiles](/dockerfile/).
 
-HTTP containers receive the app data directory, including across replacement and rollback. The existing app-data backup includes this directory; SQLite files use the SQLite snapshot path. Each server has its own data, and instances on that server share the app directory. App deletion removes this data. Workflow RPC calls from the HTTP process need the internal socket and therefore cannot be assumed to work in this v0 container path. Separate [container workflow workers](/docker-workflows/) receive the socket and the same data mount.
+HTTP containers receive the app data directory, including across replacement and rollback. Manual app-data archives include this directory; SQLite files in it are copied through a consistent SQLite snapshot. Container and Compose releases cannot bind [hosted databases](/databases/) yet. Each server has its own data, and instances on that server share the app directory. App deletion removes this data. Workflow RPC calls from the HTTP process need the internal socket and therefore cannot be assumed to work in this v0 container path. Separate [container workflow workers](/docker-workflows/) receive the socket and the same data mount.
 
 ## Existing images and runtime options
 
@@ -79,4 +79,4 @@ Pulled images receive a release-specific local tag so rollback uses the prepared
 
 After a deployment, request the real hostname, test an application route, and inspect finite logs. Confirm that the image's SDK handles health checks and private values, and check persistence separately from container lifetime. See [container troubleshooting](/troubleshooting/#container-release-does-not-start).
 
-Shared SQLite files use `/tako/shared-data` and `TAKO_SHARED_DATA_DIR`. Declare backed-up paths with `shared_databases` in the environment backup configuration. Tako pre-creates selected files with group write permissions. Standalone Podman containers retain the service user's supplementary groups with `keep-groups` (requires crun). Compose adds the shared directory's group to each service. Files created by apps outside these declarations must also grant group write access when other app identities need to write them.
+Shared files use `/tako/shared-data` and `TAKO_SHARED_DATA_DIR`. Tako does not back up this directory. Standalone Podman containers retain the service user's supplementary groups with `keep-groups` (requires crun). Compose adds the shared directory's group to each service. Files must grant group write access when other app identities need to write them.

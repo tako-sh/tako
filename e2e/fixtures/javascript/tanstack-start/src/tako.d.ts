@@ -47,6 +47,14 @@ declare module "tako.sh" {
    * this interface is regenerated with typed readonly bindings.
    */
   export interface TakoStorages {}
+
+  /**
+   * Project-specific database bindings from `tako.toml`.
+   *
+   * No databases are currently bound for this project. After you bind one,
+   * this interface is regenerated with typed readonly bindings.
+   */
+  export interface TakoDatabases {}
 }
 
 interface TakoUserEnv {}

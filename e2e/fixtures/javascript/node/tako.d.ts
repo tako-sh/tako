@@ -50,6 +50,14 @@ declare module "tako.sh" {
     /** Storage `uploads`. Read it with `tako.storages.uploads`. */
     readonly uploads: import("tako.sh").TakoStorage;
   }
+
+  /**
+   * Project-specific database bindings from `tako.toml`.
+   *
+   * No databases are currently bound for this project. After you bind one,
+   * this interface is regenerated with typed readonly bindings.
+   */
+  export interface TakoDatabases {}
 }
 
 interface TakoUserEnv {}

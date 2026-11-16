@@ -1,0 +1,449 @@
+use super::*;
+use crate::proto::NamedArg;
+
+struct Fixture {
+    _dir: tempfile::TempDir,
+    path: std::path::PathBuf,
+}
+
+fn fixture() -> Fixture {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.sqlite");
+    create_database(&path).unwrap();
+    Fixture { _dir: dir, path }
+}
+
+fn open(fixture: &Fixture) -> Connection {
+    Connection::open(&fixture.path, &EngineConfig::default()).unwrap()
+}
+
+fn run(conn: &mut Connection, sql: &str) -> Result<StmtResult, Error> {
+    conn.execute(
+        sql,
+        &Args::Positional(&[]),
+        true,
+        &mut Budget::new(usize::MAX),
+    )
+    .map(|(result, _)| result)
+}
+
+fn run_args(conn: &mut Connection, sql: &str, args: &[Value]) -> Result<StmtResult, Error> {
+    conn.execute(
+        sql,
+        &Args::Positional(args),
+        true,
+        &mut Budget::new(usize::MAX),
+    )
+    .map(|(result, _)| result)
+}
+
+#[test]
+fn created_databases_use_wal_and_refuse_to_overwrite() {
+    let fixture = fixture();
+    let conn = rusqlite::Connection::open(&fixture.path).unwrap();
+    let mode: String = conn
+        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(mode, "wal");
+    assert!(create_database(&fixture.path).is_err());
+}
+
+#[test]
+fn executes_statements_and_reports_columns_rows_and_changes() {
+    let fixture = fixture();
+    let mut conn = open(&fixture);
+    run(
+        &mut conn,
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, score REAL, data BLOB)",
+    )
+    .unwrap();
+    let insert = run_args(
+        &mut conn,
+        "INSERT INTO users (name, score, data) VALUES (?, ?, ?)",
+        &[
+            Value::Text("ada".into()),
+            Value::Float(1.5),
+            Value::Blob(vec![1, 2]),
+        ],
+    )
+    .unwrap();
+    assert_eq!(insert.affected_row_count, 1);
+    assert_eq!(insert.last_insert_rowid, Some(1));
+
+    let select = run(
+        &mut conn,
+        "SELECT id, name, score, data, NULL AS empty FROM users",
+    )
+    .unwrap();
+    assert_eq!(
+        select.cols,
+        vec![
+            Col {
+                name: Some("id".into()),
+                decltype: Some("INTEGER".into())
+            },
+            Col {
+                name: Some("name".into()),
+                decltype: Some("TEXT".into())
+            },
+            Col {
+                name: Some("score".into()),
+                decltype: Some("REAL".into())
+            },
+            Col {
+                name: Some("data".into()),
+                decltype: Some("BLOB".into())
+            },
+            Col {
+                name: Some("empty".into()),
+                decltype: None
+            },
+        ]
+    );
+    assert_eq!(
+        select.rows,
+        vec![vec![
+            Value::Integer(1),
+            Value::Text("ada".into()),
+            Value::Float(1.5),
+            Value::Blob(vec![1, 2]),
+            Value::Null,
+        ]]
+    );
+    // A read after a write reports no changes of its own.
+    assert_eq!(select.affected_row_count, 0);
+    assert_eq!(select.last_insert_rowid, None);
+
+    let update = run(&mut conn, "UPDATE users SET score = 2").unwrap();
+    assert_eq!(update.affected_row_count, 1);
+    assert_eq!(update.last_insert_rowid, None);
+}
+
+#[test]
+fn want_rows_false_executes_without_returning_rows() {
+    let fixture = fixture();
+    let mut conn = open(&fixture);
+    let (result, wrote) = conn
+        .execute(
+            "SELECT 1",
+            &Args::Positional(&[]),
+            false,
+            &mut Budget::new(usize::MAX),
+        )
+        .unwrap();
+    assert!(result.rows.is_empty());
+    assert_eq!(result.rows_read, 1);
+    assert!(!wrote);
+}
+
+#[test]
+fn binds_named_arguments_with_any_prefix() {
+    let fixture = fixture();
+    let mut conn = open(&fixture);
+    let named = [
+        NamedArg {
+            name: "a".into(),
+            value: Value::Integer(1),
+        },
+        NamedArg {
+            name: "@b".into(),
+            value: Value::Integer(2),
+        },
+        NamedArg {
+            name: ":c".into(),
+            value: Value::Integer(3),
+        },
+    ];
+    let (result, _) = conn
+        .execute(
+            "SELECT :a + @b + $c",
+            &Args::Named(&named),
+            true,
+            &mut Budget::new(usize::MAX),
+        )
+        .unwrap();
+    assert_eq!(result.rows, vec![vec![Value::Integer(6)]]);
+}
+
+#[test]
+fn rejects_argument_mismatches() {
+    let fixture = fixture();
+    let mut conn = open(&fixture);
+    let error = run_args(&mut conn, "SELECT ?", &[]).unwrap_err();
+    assert_eq!(error.code, "ARGS_INVALID");
+    let error = run_args(&mut conn, "SELECT 1", &[Value::Integer(1)]).unwrap_err();
+    assert_eq!(error.code, "ARGS_INVALID");
+    let named = [NamedArg {
+        name: "a".into(),
+        value: Value::Null,
+    }];
+    let error = conn
+        .execute(
+            "SELECT ?",
+            &Args::Named(&named),
+            true,
+            &mut Budget::new(usize::MAX),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "ARGS_INVALID");
+    let error = conn
+        .execute(
+            "SELECT :b",
+            &Args::Named(&named),
+            true,
+            &mut Budget::new(usize::MAX),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "ARGS_INVALID");
+}
+
+#[test]
+fn maps_sqlite_errors_to_protocol_codes() {
+    let fixture = fixture();
+    let mut conn = open(&fixture);
+    run(&mut conn, "CREATE TABLE t (email TEXT UNIQUE NOT NULL)").unwrap();
+    run(&mut conn, "INSERT INTO t VALUES ('a')").unwrap();
+    let unique = run(&mut conn, "INSERT INTO t VALUES ('a')").unwrap_err();
+    assert_eq!(unique.code, "SQLITE_CONSTRAINT");
+    assert_eq!(
+        unique.extended_code.as_deref(),
+        Some("SQLITE_CONSTRAINT_UNIQUE")
+    );
+    assert!(
+        unique.message.contains("UNIQUE constraint failed"),
+        "{}",
+        unique.message
+    );
+    let not_null = run(&mut conn, "INSERT INTO t VALUES (NULL)").unwrap_err();
+    assert_eq!(
+        not_null.extended_code.as_deref(),
+        Some("SQLITE_CONSTRAINT_NOTNULL")
+    );
+    assert_eq!(
+        run(&mut conn, "SELEC 1").unwrap_err().code,
+        "SQL_PARSE_ERROR"
+    );
+    assert_eq!(
+        run(&mut conn, "SELECT * FROM missing").unwrap_err().code,
+        "SQLITE_ERROR"
+    );
+    assert_eq!(
+        run(&mut conn, "SELECT 1; SELECT 2").unwrap_err().code,
+        "SQL_MANY_STATEMENTS"
+    );
+    assert_eq!(run(&mut conn, "  ;; ").unwrap_err().code, "SQL_PARSE_ERROR");
+}
+
+#[test]
+fn enforces_foreign_keys_by_default() {
+    let fixture = fixture();
+    let mut conn = open(&fixture);
+    run(&mut conn, "CREATE TABLE a (id INTEGER PRIMARY KEY)").unwrap();
+    run(&mut conn, "CREATE TABLE b (a_id INTEGER REFERENCES a(id))").unwrap();
+    let error = run(&mut conn, "INSERT INTO b VALUES (7)").unwrap_err();
+    assert_eq!(
+        error.extended_code.as_deref(),
+        Some("SQLITE_CONSTRAINT_FOREIGNKEY")
+    );
+}
+
+#[test]
+fn refuses_to_reach_files_outside_the_database() {
+    let fixture = fixture();
+    let mut conn = open(&fixture);
+    let outside = fixture.path.with_file_name("stolen.sqlite");
+    let into = run(&mut conn, &format!("VACUUM INTO '{}'", outside.display())).unwrap_err();
+    assert_eq!(into.code, "SQLITE_AUTH", "{into:?}");
+    assert!(!outside.exists());
+    let attach = run(
+        &mut conn,
+        &format!("ATTACH '{}' AS other", outside.display()),
+    )
+    .unwrap_err();
+    assert_eq!(attach.code, "SQLITE_AUTH");
+    assert!(!outside.exists());
+    // SQLite reports denied functions as a plain error.
+    let extension = run(&mut conn, "SELECT load_extension('x')").unwrap_err();
+    assert!(
+        extension.message.contains("not authorized"),
+        "{extension:?}"
+    );
+    // A plain VACUUM attaches only an anonymous temporary database.
+    run(&mut conn, "VACUUM").unwrap();
+}
+
+#[test]
+fn allows_introspection_and_session_pragmas_but_not_server_settings() {
+    let fixture = fixture();
+    let mut conn = open(&fixture);
+    run(&mut conn, "CREATE TABLE t (x)").unwrap();
+    run(&mut conn, "PRAGMA table_info(t)").unwrap();
+    run(&mut conn, "SELECT * FROM pragma_table_info('t')").unwrap();
+    run(&mut conn, "PRAGMA journal_mode").unwrap();
+    run(&mut conn, "PRAGMA user_version = 3").unwrap();
+    assert!(!conn.is_dirty());
+    for denied in [
+        "PRAGMA journal_mode = DELETE",
+        "PRAGMA synchronous = OFF",
+        "PRAGMA locking_mode = EXCLUSIVE",
+        "PRAGMA writable_schema = ON",
+        "PRAGMA cache_size = -10000000",
+        "PRAGMA mmap_size = 1000000000",
+        "PRAGMA busy_timeout = 100000",
+        "PRAGMA temp_store_directory = '/tmp'",
+    ] {
+        assert_eq!(
+            run(&mut conn, denied).unwrap_err().code,
+            "SQLITE_AUTH",
+            "{denied}"
+        );
+    }
+    run(&mut conn, "PRAGMA foreign_keys = OFF").unwrap();
+    assert!(conn.is_dirty(), "session pragmas mark the connection");
+}
+
+#[test]
+fn statements_stop_at_the_time_limit() {
+    let fixture = fixture();
+    let config = EngineConfig {
+        statement_timeout: Duration::from_millis(200),
+        ..EngineConfig::default()
+    };
+    let mut conn = Connection::open(&fixture.path, &config).unwrap();
+    let started = Instant::now();
+    let error = run(
+        &mut conn,
+        "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n) SELECT count(*) FROM n",
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "SQLITE_INTERRUPT");
+    assert!(started.elapsed() < Duration::from_secs(5));
+    // The connection remains usable.
+    assert_eq!(run(&mut conn, "SELECT 1").unwrap().rows.len(), 1);
+}
+
+#[test]
+fn response_budget_stops_large_results() {
+    let fixture = fixture();
+    let mut conn = open(&fixture);
+    let error = conn
+        .execute(
+            "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n LIMIT 10000) SELECT x FROM n",
+            &Args::Positional(&[]),
+            true,
+            &mut Budget::new(10_000),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "RESPONSE_TOO_LARGE");
+}
+
+#[test]
+fn sequence_runs_statements_and_stops_at_the_first_failure() {
+    let fixture = fixture();
+    let mut conn = open(&fixture);
+    assert!(
+        conn.sequence("CREATE TABLE t (x); INSERT INTO t VALUES (1); SELECT * FROM t;")
+            .unwrap()
+    );
+    let error = conn
+        .sequence(
+            "INSERT INTO t VALUES (2); INSERT INTO missing VALUES (3); INSERT INTO t VALUES (4)",
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "SQLITE_ERROR");
+    let count = run(&mut conn, "SELECT count(*) FROM t").unwrap();
+    assert_eq!(count.rows, vec![vec![Value::Integer(2)]]);
+    assert!(!conn.sequence("SELECT 1; SELECT 2").unwrap());
+}
+
+#[test]
+fn describe_reports_parameters_and_columns() {
+    let fixture = fixture();
+    let mut conn = open(&fixture);
+    run(&mut conn, "CREATE TABLE users (id INTEGER, name TEXT)").unwrap();
+    let described = conn
+        .describe("SELECT id, name FROM users WHERE id = :id AND name = ?")
+        .unwrap();
+    assert_eq!(described.params.len(), 2);
+    assert_eq!(described.params[0].name.as_deref(), Some(":id"));
+    assert_eq!(described.params[1].name, None);
+    assert_eq!(described.cols.len(), 2);
+    assert!(described.is_readonly);
+    assert!(!described.is_explain);
+    assert!(conn.describe("EXPLAIN SELECT 1").unwrap().is_explain);
+    assert!(!conn.describe("DELETE FROM users").unwrap().is_readonly);
+}
+
+#[test]
+fn transactions_span_statements_and_roll_back() {
+    let fixture = fixture();
+    let mut conn = open(&fixture);
+    run(&mut conn, "CREATE TABLE t (x)").unwrap();
+    run(&mut conn, "BEGIN").unwrap();
+    assert!(!conn.is_autocommit());
+    run(&mut conn, "INSERT INTO t VALUES (1)").unwrap();
+    conn.rollback();
+    assert!(conn.is_autocommit());
+    let count = run(&mut conn, "SELECT count(*) FROM t").unwrap();
+    assert_eq!(count.rows, vec![vec![Value::Integer(0)]]);
+}
+
+#[test]
+fn snapshots_are_consistent_verified_copies() {
+    let fixture = fixture();
+    let mut conn = open(&fixture);
+    run(&mut conn, "CREATE TABLE t (x)").unwrap();
+    run(&mut conn, "INSERT INTO t VALUES (1), (2)").unwrap();
+    run(&mut conn, "BEGIN").unwrap();
+    run(&mut conn, "INSERT INTO t VALUES (3)").unwrap();
+    let dest = fixture.path.with_file_name("copy.sqlite");
+    snapshot_database(&fixture.path, &dest, Duration::from_secs(1)).unwrap();
+    conn.rollback();
+    let copy = rusqlite::Connection::open(&dest).unwrap();
+    let count: i64 = copy
+        .query_row("SELECT count(*) FROM t", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 2, "the open transaction is not part of the snapshot");
+    assert!(snapshot_database(&fixture.path, &dest, Duration::from_secs(1)).is_err());
+    verify_database(&dest).unwrap();
+}
+
+#[test]
+fn verify_rejects_files_that_are_not_databases() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("junk.sqlite");
+    std::fs::write(
+        &path,
+        b"definitely not sqlite, just a long enough header to look at",
+    )
+    .unwrap();
+    assert!(verify_database(&path).is_err());
+}
+
+#[test]
+fn replacing_keeps_the_previous_file_and_drops_stale_sidecars() {
+    let fixture = fixture();
+    {
+        let mut conn = open(&fixture);
+        run(&mut conn, "CREATE TABLE t (x)").unwrap();
+        run(&mut conn, "INSERT INTO t VALUES ('old')").unwrap();
+    }
+    let replacement = fixture.path.with_file_name("new.sqlite");
+    create_database(&replacement).unwrap();
+    {
+        let conn = rusqlite::Connection::open(&replacement).unwrap();
+        conn.execute_batch("CREATE TABLE t (x); INSERT INTO t VALUES ('new');")
+            .unwrap();
+    }
+    let previous = fixture.path.with_file_name("previous.sqlite");
+    replace_database(&fixture.path, &replacement, &previous).unwrap();
+    let read = |path: &std::path::Path| -> String {
+        rusqlite::Connection::open(path)
+            .unwrap()
+            .query_row("SELECT x FROM t", [], |row| row.get(0))
+            .unwrap()
+    };
+    assert_eq!(read(&fixture.path), "new");
+    assert_eq!(read(&previous), "old");
+    assert!(!replacement.exists());
+}

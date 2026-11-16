@@ -556,6 +556,7 @@ async fn successful_deploy_resets_the_backoff() {
         secrets: Some(HashMap::new()),
         runtime_credentials: None,
         storages: Some(HashMap::new()),
+        databases: None,
         ssl: tako_core::SslBinding::default(),
         backup: None,
         force: false,
@@ -750,15 +751,16 @@ async fn operators_get_through_automatic_recovery_without_waiting_for_it() {
     .unwrap();
     let release_path = release_dir.to_string_lossy().into_owned();
     let run_release = || {
-        state.run_release(
-            &name,
-            "v1",
-            &release_path,
-            "true",
-            HashMap::new(),
-            HashMap::new(),
-            false,
-        )
+        state.run_release(crate::operations::ReleaseRun {
+            app_name: &name,
+            version: "v1",
+            path: &release_path,
+            command_line: "true",
+            vars: HashMap::new(),
+            secrets: HashMap::new(),
+            databases: HashMap::new(),
+            force: false,
+        })
     };
     let error = |response: Response| match response {
         Response::Error { message, .. } => message,

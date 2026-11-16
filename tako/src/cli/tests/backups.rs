@@ -82,50 +82,16 @@ fn backups_restore_parses_yes() {
     else {
         panic!("expected Backups::Restore");
     };
-    assert_eq!(backup_id.as_deref(), Some("b123"));
+    assert_eq!(backup_id, "b123");
     assert!(env.is_none());
     assert_eq!(server.as_deref(), Some("la"));
     assert!(yes);
 }
 
 #[test]
-fn sqlite_restore_requires_an_explicit_recovery_point_and_scope() {
+fn backups_restore_no_longer_takes_database_flags() {
     use clap::Parser;
-    for args in [
-        vec!["tako", "backups", "restore", "--database", "app.db"],
-        vec!["tako", "backups", "restore", "--shared", "b123"],
-        vec![
-            "tako",
-            "backups",
-            "restore",
-            "--database",
-            "app.db",
-            "--latest",
-            "--txid",
-            "1",
-        ],
-    ] {
-        assert!(Cli::try_parse_from(args).is_err());
+    for flag in ["--database", "--shared", "--latest", "--txid"] {
+        assert!(Cli::try_parse_from(["tako", "backups", "restore", "b123", flag]).is_err());
     }
-    let cli = Cli::try_parse_from([
-        "tako",
-        "backups",
-        "restore",
-        "--database",
-        "app.db",
-        "--shared",
-        "--latest",
-        "--yes",
-    ])
-    .unwrap();
-    assert!(matches!(
-        cli.command,
-        Some(Commands::Backups(BackupCommands::Restore {
-            database: Some(_),
-            shared: true,
-            latest: true,
-            txid: None,
-            ..
-        }))
-    ));
 }

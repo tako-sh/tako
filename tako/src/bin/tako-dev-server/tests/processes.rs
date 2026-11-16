@@ -36,6 +36,7 @@ fn kill_all_app_processes_sends_sigterm_to_tracked_pids() {
                 bootstrap_token: "dev-token".to_string(),
                 secrets: std::collections::HashMap::new(),
                 storages: std::collections::HashMap::new(),
+                databases: Default::default(),
             },
         );
     }

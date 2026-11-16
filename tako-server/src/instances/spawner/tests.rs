@@ -321,8 +321,15 @@ async fn bootstrap_pipe_envelope_has_token_and_secrets() {
     let token = "test-token-abc";
 
     let storages = HashMap::new();
-    let (read_end, writer) =
-        create_bootstrap_pipe(token, &secrets, &storages).expect("create pipe");
+    let (read_end, writer) = create_bootstrap_pipe(
+        token,
+        tako_core::bootstrap::Bindings {
+            secrets: &secrets,
+            storages: &storages,
+            databases: &HashMap::new(),
+        },
+    )
+    .expect("create pipe");
 
     let reader = tokio::task::spawn_blocking(move || {
         let mut buf = String::new();
@@ -353,8 +360,15 @@ async fn bootstrap_pipe_is_created_even_with_empty_secrets() {
     let token = "still-has-a-token";
 
     let storages = HashMap::new();
-    let (read_end, writer) =
-        create_bootstrap_pipe(token, &secrets, &storages).expect("create pipe");
+    let (read_end, writer) = create_bootstrap_pipe(
+        token,
+        tako_core::bootstrap::Bindings {
+            secrets: &secrets,
+            storages: &storages,
+            databases: &HashMap::new(),
+        },
+    )
+    .expect("create pipe");
 
     let reader = tokio::task::spawn_blocking(move || {
         let mut buf = String::new();

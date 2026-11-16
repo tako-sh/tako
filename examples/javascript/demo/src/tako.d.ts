@@ -59,6 +59,17 @@ declare module "tako.sh" {
   export interface TakoStorages {}
 
   /**
+   * Project-specific database bindings from `tako.toml`.
+   *
+   * Each binding is `{ url, authToken }`, ready for `createClient` from
+   * `@libsql/client` or `connect` from `@tursodatabase/serverless`.
+   */
+  export interface TakoDatabases {
+    /** Database binding `mission`. Read it with `tako.databases.mission`. */
+    readonly mission: import("tako.sh").TakoDatabase;
+  }
+
+  /**
    * Project-specific channel metadata discovered from `<app_root>/channels/`.
    *
    * Used by `tako.sh/client` and `tako.sh/react` to type route params, messages, and transports.

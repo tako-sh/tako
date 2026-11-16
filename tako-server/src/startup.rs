@@ -296,7 +296,13 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     spawn_certificate_renewals(&rt, state.clone(), args.renewal_interval_hours);
     spawn_management_socket(&rt, state.clone(), socket_listener);
     if !standby {
-        state.clone().start_database_backups(rt.handle());
+        let database_network = native_config
+            .as_ref()
+            .zip(native_services.as_ref())
+            .map(|(config, proxy)| (config.server_id.to_string(), proxy.clone()));
+        if let Err(error) = rt.block_on(state.start_databases(database_network)) {
+            tracing::error!(%error, "Failed to start hosted databases");
+        }
         spawn_management_http(&rt, state.clone(), args.management_host.clone());
         #[cfg(target_os = "linux")]
         if let Some(handoff) = native_handoff {

@@ -42,6 +42,8 @@ pub struct RegisterAppRequest<'a> {
     pub secrets: &'a std::collections::HashMap<String, String>,
     pub images: &'a tako_images::ImagesConfig,
     pub storages: &'a std::collections::HashMap<String, tako_core::StorageBinding>,
+    /// Binding name → absolute path of the local SQLite file the daemon serves.
+    pub databases: &'a std::collections::BTreeMap<String, String>,
     pub readiness_failure_hint: Option<&'a str>,
     pub worker_command: Option<&'a [String]>,
     pub workflow_retention_ms: Option<i64>,
@@ -159,6 +161,7 @@ pub async fn register_app(
         "secrets": args.secrets,
         "images": args.images,
         "storages": args.storages,
+        "databases": args.databases,
         "client_pid": std::process::id(),
     });
     if let Some(v) = args.variant {

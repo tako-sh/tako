@@ -377,10 +377,9 @@ pub(crate) fn create_readiness_pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
 #[cfg(unix)]
 fn create_bootstrap_pipe(
     token: &str,
-    secrets: &std::collections::HashMap<String, String>,
-    storages: &std::collections::HashMap<String, tako_core::StorageBinding>,
+    bindings: tako_core::bootstrap::Bindings<'_>,
 ) -> std::io::Result<(OwnedFd, std::thread::JoinHandle<std::io::Result<()>>)> {
-    let bytes = tako_core::bootstrap::envelope_bytes(token, secrets, storages);
+    let bytes = tako_core::bootstrap::envelope_bytes(token, bindings);
     tako_spawn::create_payload_pipe(bytes)
 }
 
@@ -532,8 +531,14 @@ async fn spawn_app(
     #[cfg(unix)]
     let write_raw: Option<std::os::fd::RawFd> = readiness_pipe.as_ref().map(|(_, w)| w.as_raw_fd());
     #[cfg(unix)]
-    let (bootstrap_read, bootstrap_writer) =
-        create_bootstrap_pipe(&app.bootstrap_token, &app.secrets, &app.storages)?;
+    let (bootstrap_read, bootstrap_writer) = create_bootstrap_pipe(
+        &app.bootstrap_token,
+        tako_core::bootstrap::Bindings {
+            secrets: &app.secrets,
+            storages: &app.storages,
+            databases: &app.databases,
+        },
+    )?;
     #[cfg(unix)]
     let bootstrap_raw: std::os::fd::RawFd = bootstrap_read.as_raw_fd();
 
@@ -784,15 +789,18 @@ pub(crate) async fn stale_app_cleanup_loop(state: Arc<Mutex<State>>) {
                 tracing::warn!(%error, "failed to stop stale Compose app; will retry");
                 continue;
             }
-            let mut s = state.lock().unwrap();
-            s.events.forget_app(&config_path);
-            if let Some(app) = s.apps.remove(&config_path) {
-                if let Some(pid) = app.pid {
-                    kill_app_process(pid);
+            {
+                let mut s = state.lock().unwrap();
+                s.events.forget_app(&config_path);
+                if let Some(app) = s.apps.remove(&config_path) {
+                    if let Some(pid) = app.pid {
+                        kill_app_process(pid);
+                    }
+                    state::remove_pid_file(&app.project_dir, &config_path);
                 }
-                state::remove_pid_file(&app.project_dir, &config_path);
+                s.routes.remove_app(&format!("reg:{config_path}"));
             }
-            s.routes.remove_app(&format!("reg:{config_path}"));
+            crate::databases::release(&config_path).await;
         }
     }
 }

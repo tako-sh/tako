@@ -209,9 +209,12 @@ backup = { storage = "r2" }
 }
 
 #[test]
-fn backup_database_paths_are_explicit_and_validated_in_each_scope() {
-    let config = |paths: &str| {
-        format!(
+fn backup_database_lists_point_to_hosted_databases() {
+    for paths in [
+        r#"databases = ["app.sqlite"]"#,
+        r#"shared_databases = ["team/orders.db"]"#,
+    ] {
+        let err = TakoToml::parse(&format!(
             r#"
 name = "demo"
 [storages.backups]
@@ -223,22 +226,10 @@ region = "local"
 route = "demo.example.test"
 backup = {{ storage = "backups", {paths} }}
 "#
-        )
-    };
-    let parsed = TakoToml::parse(&config(
-        r#"databases = ["app.sqlite"], shared_databases = ["team/orders.db"]"#,
-    ))
-    .unwrap();
-    let backup = parsed.envs["production"].backup.as_ref().unwrap();
-    assert_eq!(backup.databases, ["app.sqlite"]);
-    assert_eq!(backup.shared_databases, ["team/orders.db"]);
-    for paths in [
-        r#"databases = ["../private.db"]"#,
-        r#"shared_databases = ["/absolute.db"]"#,
-        r#"shared_databases = ["a.db", "a.db"]"#,
-        r#"databases = ["a.db-wal"]"#,
-    ] {
-        assert!(TakoToml::parse(&config(paths)).is_err(), "{paths}");
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("tako sqlite import"), "{err}");
     }
 }
 

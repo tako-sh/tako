@@ -4,22 +4,6 @@
     "BackupConfig": {
       "additionalProperties": false,
       "properties": {
-        "databases": {
-          "default": [],
-          "description": "SQLite paths relative to TAKO_DATA_DIR, captured continuously.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "shared_databases": {
-          "default": [],
-          "description": "SQLite paths relative to the server's TAKO_SHARED_DATA_DIR.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
         "storage": {
           "description": "Private S3-compatible storage resource used for app data backups.",
           "type": "string"
@@ -181,6 +165,46 @@
       "required": ["uid", "gid"],
       "type": "object"
     },
+    "DatabaseAccess": {
+      "description": "Which apps may use a database.",
+      "oneOf": [
+        {
+          "const": "local",
+          "description": "Only apps running on the database's server.",
+          "type": "string"
+        },
+        {
+          "const": "network",
+          "description": "Apps on any server of the network. Their queries cross the private\nnetwork to the database's server.",
+          "type": "string"
+        }
+      ]
+    },
+    "DatabaseResourceConfig": {
+      "additionalProperties": false,
+      "description": "A Tako-hosted database from [databases.*].",
+      "properties": {
+        "access": {
+          "$ref": "#/$defs/DatabaseAccess",
+          "description": "`local` (default): only apps on the database's server may use it.\n`network`: apps on any server of the network may use it."
+        },
+        "backup": {
+          "description": "Private S3-compatible storage resource that receives snapshots.",
+          "type": "string"
+        },
+        "id": {
+          "description": "Stable database ID: 32 lowercase hexadecimal characters.",
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "server": {
+          "description": "The server that hosts the database: an enrolled server name or device ID.",
+          "type": "string"
+        }
+      },
+      "required": ["id", "server"],
+      "type": "object"
+    },
     "EnvConfig": {
       "additionalProperties": false,
       "description": "Deploy environment from `[envs.<name>]`. Use either `route` or `routes`, not both. Put environment variables in `[vars.<name>]`.",
@@ -190,7 +214,15 @@
       "properties": {
         "backup": {
           "$ref": "#/$defs/BackupConfig",
-          "description": "Autopilot backup target for this environment."
+          "description": "Private storage for manual app-directory archives (`tako backups now`)."
+        },
+        "databases": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Database bindings assigned to this environment.\n\nKey = app binding name exposed as `tako.databases.<key>`.\nValue = database name from `[databases.<value>]`.",
+          "type": "object"
         },
         "idle_timeout": {
           "default": 300,
@@ -494,6 +526,16 @@
     "container_options": {
       "$ref": "#/$defs/ContainerOptions",
       "description": "Container release options. Require `container` or `image`."
+    },
+    "databases": {
+      "additionalProperties": {
+        "$ref": "#/$defs/DatabaseResourceConfig"
+      },
+      "description": "Tako-hosted SQLite databases, bound to environments with `[envs.<env>].databases`. `tako sqlite create` and `tako sqlite link` write these entries.",
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]{0,62}$"
+      },
+      "type": "object"
     },
     "dev": {
       "description": "Custom `tako dev` command, such as `[\"vite\", \"dev\"]`. Overrides preset and runtime defaults unless a CLI command is passed.",

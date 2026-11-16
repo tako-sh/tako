@@ -1,6 +1,7 @@
 //! Bootstrap envelope passed to every Tako-managed process.
 //!
-//! The SDK reads a JSON object `{"token": ..., "secrets": {...}}` from
+//! The SDK reads a JSON object
+//! `{"token": ..., "secrets": {...}, "storages": {...}, "databases": {...}}` from
 //! the inherited read end of a pipe at startup for native processes, or
 //! from `TAKO_BOOTSTRAP_DATA` for container processes. It uses that
 //! envelope to populate `tako.secrets` from `tako.sh` and the internal
@@ -14,47 +15,64 @@
 
 use std::collections::HashMap;
 
+use crate::database::DatabaseConnection;
 use crate::storage::StorageBinding;
 
 /// Environment variable used to deliver the bootstrap envelope to container
 /// processes. Native app processes receive the same bytes through fd 3.
 pub const TAKO_BOOTSTRAP_DATA_ENV: &str = "TAKO_BOOTSTRAP_DATA";
 
-/// Serialize a Tako bootstrap envelope (`{token, secrets, storages}`) to the
-/// JSON bytes that go onto fd 3. Infallible for the concrete input types.
-pub fn envelope_bytes(
-    token: &str,
-    secrets: &HashMap<String, String>,
-    storages: &HashMap<String, StorageBinding>,
-) -> Vec<u8> {
+/// The per-process bindings carried by a bootstrap envelope.
+#[derive(Clone, Copy)]
+pub struct Bindings<'a> {
+    pub secrets: &'a HashMap<String, String>,
+    pub storages: &'a HashMap<String, StorageBinding>,
+    pub databases: &'a HashMap<String, DatabaseConnection>,
+}
+
+/// Serialize a Tako bootstrap envelope (`{token, secrets, storages,
+/// databases}`) to the JSON bytes that go onto fd 3. Infallible for the
+/// concrete input types.
+pub fn envelope_bytes(token: &str, bindings: Bindings<'_>) -> Vec<u8> {
     let envelope = serde_json::json!({
         "token": token,
-        "secrets": secrets,
-        "storages": storages,
+        "secrets": bindings.secrets,
+        "storages": bindings.storages,
+        "databases": bindings.databases,
     });
     serde_json::to_vec(&envelope).expect("string/string map always serializes")
 }
 
 /// Serialize a Tako bootstrap envelope to a UTF-8 string for transports that
 /// carry environment variables instead of bytes.
-pub fn envelope_string(
-    token: &str,
-    secrets: &HashMap<String, String>,
-    storages: &HashMap<String, StorageBinding>,
-) -> String {
-    String::from_utf8(envelope_bytes(token, secrets, storages))
-        .expect("JSON envelope is always UTF-8")
+pub fn envelope_string(token: &str, bindings: Bindings<'_>) -> String {
+    String::from_utf8(envelope_bytes(token, bindings)).expect("JSON envelope is always UTF-8")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn bindings<'a>(
+        secrets: &'a HashMap<String, String>,
+        storages: &'a HashMap<String, StorageBinding>,
+        databases: &'a HashMap<String, DatabaseConnection>,
+    ) -> Bindings<'a> {
+        Bindings {
+            secrets,
+            storages,
+            databases,
+        }
+    }
+
     #[test]
     fn envelope_bytes_produces_token_and_secrets_object() {
         let secrets =
             HashMap::from([("DATABASE_URL".to_string(), "postgres://host/db".to_string())]);
-        let bytes = envelope_bytes("tok-abc", &secrets, &HashMap::new());
+        let bytes = envelope_bytes(
+            "tok-abc",
+            bindings(&secrets, &HashMap::new(), &HashMap::new()),
+        );
         let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(parsed["token"], "tok-abc");
         assert_eq!(parsed["secrets"]["DATABASE_URL"], "postgres://host/db");
@@ -62,7 +80,10 @@ mod tests {
 
     #[test]
     fn envelope_bytes_with_empty_secrets_still_emits_object() {
-        let bytes = envelope_bytes("tok-xyz", &HashMap::new(), &HashMap::new());
+        let bytes = envelope_bytes(
+            "tok-xyz",
+            bindings(&HashMap::new(), &HashMap::new(), &HashMap::new()),
+        );
         let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(parsed["token"], "tok-xyz");
         assert!(
@@ -80,12 +101,24 @@ mod tests {
         // SDK requires. This test pins the shape so a future refactor
         // can't silently drop the outer object.
         let secrets = HashMap::from([("K".to_string(), "V".to_string())]);
-        let bytes = envelope_bytes("T", &secrets, &HashMap::new());
+        let databases = HashMap::from([(
+            "main".to_string(),
+            DatabaseConnection {
+                url: "http://127.0.0.1:9845".to_string(),
+                auth_token: "secret".to_string(),
+            },
+        )]);
+        let bytes = envelope_bytes("T", bindings(&secrets, &HashMap::new(), &databases));
         let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let obj = parsed.as_object().expect("top level must be object");
-        assert_eq!(obj.len(), 3, "exactly token + secrets + storages keys");
+        assert_eq!(
+            obj.len(),
+            4,
+            "exactly token, secrets, storages, and databases keys"
+        );
         assert!(obj.contains_key("token"));
         assert!(obj.contains_key("secrets"));
         assert!(obj.contains_key("storages"));
+        assert_eq!(parsed["databases"]["main"]["authToken"], "secret");
     }
 }

@@ -24,6 +24,7 @@ pub(crate) struct DeployRequest<'a> {
     pub(crate) secrets: Option<HashMap<String, String>>,
     pub(crate) runtime_credentials: Option<HashMap<String, String>>,
     pub(crate) storages: Option<HashMap<String, tako_core::StorageBinding>>,
+    pub(crate) databases: Option<HashMap<String, tako_core::DatabaseBinding>>,
     pub(crate) ssl: tako_core::SslBinding,
     pub(super) backup: BackupUpdate,
     pub(crate) force: bool,
@@ -40,6 +41,7 @@ impl crate::ServerState {
             secrets,
             runtime_credentials,
             storages,
+            databases,
             ssl,
             backup,
             force,
@@ -151,9 +153,6 @@ impl crate::ServerState {
             },
             BackupUpdate::Replace(binding) => binding.map(|binding| *binding),
         };
-        if let Err(error) = self.validate_database_registration(app_name, backup.as_ref()) {
-            return Response::error(error);
-        }
         let mut config = existing.as_ref().map_or_else(
             || {
                 let (name, environment) = requested_deployment_identity(app_name);
@@ -181,22 +180,26 @@ impl crate::ServerState {
         {
             return Response::error(msg);
         }
-        if let Some(binding) = &backup {
-            if let Err(error) =
-                crate::replica_worker::prepare_sources(&data_paths.app, &binding.databases)
-                    .and_then(|()| {
-                        crate::replica_worker::prepare_sources(
-                            &data_paths.shared,
-                            &binding.shared_databases,
-                        )
-                    })
-            {
-                return Response::error(error);
-            }
-        }
         inject_app_data_dir_env(&mut config.env_vars, &data_paths);
         config.secrets = secrets;
         config.storages = storages;
+        // Without new bindings the existing ones stay, but they are checked
+        // against this release again (a container release cannot use them).
+        let previous_databases = config.databases.clone();
+        let requested_databases = databases.unwrap_or_else(|| {
+            previous_databases
+                .iter()
+                .map(|(name, binding)| (name.clone(), binding.binding.clone()))
+                .collect()
+        });
+        config.databases =
+            match self
+                .databases
+                .prepare_bindings(&previous_databases, requested_databases, &config)
+            {
+                Ok(bindings) => bindings,
+                Err(error) => return Response::error(error),
+            };
         let ssl = ssl.cloudflare_api_token.is_some().then_some(ssl);
         if config.compose.is_some() {
             return self
@@ -214,6 +217,7 @@ impl crate::ServerState {
             return Response::error(format!("Deploy failed: {error}"));
         }
         config.apply_internal_defaults();
+        let database_connections = self.databases.connections(&config.databases);
         let workflows = match self
             .prepare_app_workflows(
                 app_name,
@@ -222,6 +226,7 @@ impl crate::ServerState {
                 crate::server_state::WorkflowBindings {
                     secrets: &config.secrets,
                     storages: &config.storages,
+                    databases: &database_connections,
                     postgres_url: runtime_credentials.get("postgres_url"),
                 },
                 tako_workflows::manager::ScheduleActivation::Deploy,
@@ -256,6 +261,8 @@ impl crate::ServerState {
             ) {
                 return Response::error(format!("Could not commit stopped deployment: {error}"));
             }
+            self.databases
+                .apply_bindings(app_name, &[&config.databases]);
             let app = existing.unwrap_or_else(|| self.app_manager.register_app(config.clone()));
             app.update_config(config.clone());
             self.load_balancer.register_app(app.clone());
@@ -301,6 +308,9 @@ impl crate::ServerState {
             }
             app.set_state(AppState::Deploying);
         }
+        // Old and new instances run side by side during the rollout.
+        self.databases
+            .apply_bindings(app_name, &[&previous_databases, &config.databases]);
         let old_count = app.get_instances().len();
         let target = target_new_instances_for_build(config.min_instances, old_count);
         let updater =
@@ -341,8 +351,14 @@ impl crate::ServerState {
             })
             .await;
         let result = match rollout {
-            Ok(result) if result.success => result,
+            Ok(result) if result.success => {
+                self.databases
+                    .apply_bindings(app_name, &[&config.databases]);
+                result
+            }
             failed => {
+                self.databases
+                    .apply_bindings(app_name, &[&previous_databases]);
                 let error = match failed {
                     Ok(result) => result
                         .error

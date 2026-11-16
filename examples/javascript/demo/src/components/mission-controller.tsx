@@ -34,7 +34,7 @@ const enqueueSupplyRequest = createServerFn()
         import("@/channels/mission-log"),
         import("@/workflows/order-shipment"),
       ]);
-    const request = createRequest({
+    const request = await createRequest({
       requestId: data.requestId,
       baseSlug: data.base,
       item: data.item,
