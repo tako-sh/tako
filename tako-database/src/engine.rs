@@ -222,6 +222,9 @@ pub struct Connection {
     deadline: Arc<AtomicU64>,
     /// Set when a statement changed session state that outlives a stream.
     dirty: Arc<AtomicBool>,
+    /// Set when a statement that may have changed the database ran, whether
+    /// or not it succeeded. Cleared by `take_wrote`.
+    wrote: bool,
     statement_timeout: Duration,
 }
 
@@ -277,6 +280,7 @@ impl Connection {
             epoch,
             deadline,
             dirty,
+            wrote: false,
             statement_timeout: config.statement_timeout,
         })
     }
@@ -289,6 +293,12 @@ impl Connection {
     /// later stream must not inherit.
     pub fn is_dirty(&self) -> bool {
         self.dirty.load(Ordering::Relaxed)
+    }
+
+    /// Whether a statement since the last call may have changed the database,
+    /// including one that then failed or was stopped early.
+    pub fn take_wrote(&mut self) -> bool {
+        std::mem::take(&mut self.wrote)
     }
 
     /// Rolls back any open transaction.
@@ -304,7 +314,7 @@ impl Connection {
         args: &Args<'_>,
         want_rows: bool,
         budget: &mut Budget,
-    ) -> Result<(StmtResult, bool), Error> {
+    ) -> Result<StmtResult, Error> {
         let started = Instant::now();
         let mut rows = Vec::new();
         let mut cols = Vec::new();
@@ -326,37 +336,32 @@ impl Connection {
                 Ok(())
             }
         })?;
-        let read = outcome.rows;
-        Ok((
-            StmtResult {
-                cols,
-                rows,
-                affected_row_count: outcome.affected,
-                last_insert_rowid: outcome.last_insert_rowid,
-                rows_read: read,
-                rows_written: outcome.affected,
-                query_duration_ms: started.elapsed().as_secs_f64() * 1000.0,
-            },
-            outcome.wrote,
-        ))
+        Ok(StmtResult {
+            cols,
+            rows,
+            affected_row_count: outcome.affected,
+            last_insert_rowid: outcome.last_insert_rowid,
+            rows_read: outcome.rows,
+            rows_written: outcome.affected,
+            query_duration_ms: started.elapsed().as_secs_f64() * 1000.0,
+        })
     }
 
     /// Executes a statement, passing its columns and then its rows to `sink`
-    /// as they are produced. Returns `(affected_row_count, last_insert_rowid,
-    /// wrote)`.
+    /// as they are produced. Returns `(affected_row_count, last_insert_rowid)`.
     pub fn execute_streaming(
         &mut self,
         sql: &str,
         args: &Args<'_>,
         sink: impl FnMut(Event) -> Result<(), Error>,
-    ) -> Result<(u64, Option<i64>, bool), Error> {
+    ) -> Result<(u64, Option<i64>), Error> {
         let outcome = self.run(sql, args, sink)?;
-        Ok((outcome.affected, outcome.last_insert_rowid, outcome.wrote))
+        Ok((outcome.affected, outcome.last_insert_rowid))
     }
 
     /// Executes semicolon-separated statements, discarding rows, and stops at
-    /// the first failure. Returns whether any statement could write.
-    pub fn sequence(&mut self, sql: &str) -> Result<bool, Error> {
+    /// the first failure.
+    pub fn sequence(&mut self, sql: &str) -> Result<(), Error> {
         let mut wrote = false;
         let mut batch = rusqlite::Batch::new(&self.conn, sql);
         loop {
@@ -382,9 +387,10 @@ impl Connection {
                 Err(error) => Err(error),
             };
             self.disarm_deadline();
+            self.wrote |= wrote;
             match result {
                 Ok(true) => continue,
-                Ok(false) => return Ok(wrote),
+                Ok(false) => return Ok(()),
                 Err(error) => return Err(self.map_run_error(error)),
             }
         }
@@ -423,6 +429,8 @@ impl Connection {
         bind(&mut stmt, args)?;
         let readonly = stmt.readonly();
         let inserts = !readonly && starts_with_insert(sql);
+        // Before stepping: the statement may write and then fail.
+        self.wrote |= !readonly;
         sink(Event::Begin(columns(&stmt)))?;
         let width = stmt.column_count();
 
@@ -468,6 +476,9 @@ impl Connection {
         }
         self.deadline.store(0, Ordering::Relaxed);
         drop(stmt);
+        // COMMIT is read-only to SQLite, yet it is what makes earlier writes
+        // durable; a snapshot taken mid-transaction must not lose them.
+        self.wrote |= in_transaction && self.conn.is_autocommit();
         if let Some(error) = failure {
             return Err(error);
         }
@@ -477,14 +488,10 @@ impl Connection {
         let after_rowid = self.conn.last_insert_rowid();
         let last_insert_rowid =
             (after_rowid != before_rowid || (inserts && changed)).then_some(after_rowid);
-        // COMMIT is read-only to SQLite, yet it is what makes earlier writes
-        // durable; a snapshot taken mid-transaction must not lose them.
-        let committed = in_transaction && self.conn.is_autocommit();
         Ok(Outcome {
             rows: count,
             affected,
             last_insert_rowid,
-            wrote: !readonly || committed,
         })
     }
 
@@ -530,7 +537,6 @@ struct Outcome {
     rows: u64,
     affected: u64,
     last_insert_rowid: Option<i64>,
-    wrote: bool,
 }
 
 fn columns(stmt: &rusqlite::Statement<'_>) -> Vec<Col> {
@@ -606,21 +612,26 @@ fn bind(stmt: &mut rusqlite::Statement<'_>, args: &Args<'_>) -> Result<(), Error
                 }
             }
             for NamedArg { name, value } in values.iter() {
-                let bare = name.trim_start_matches([':', '@', '$']);
-                let mut index = None;
-                for prefix in [':', '@', '$'] {
-                    if let Some(found) = stmt
-                        .parameter_index(&format!("{prefix}{bare}"))
-                        .map_err(map_error)?
-                    {
-                        index = Some(found);
-                        break;
+                // A prefixed name binds exactly that parameter; a bare one
+                // binds whichever of `:name`, `@name` and `$name` exists.
+                let index = if name.starts_with([':', '@', '$']) {
+                    stmt.parameter_index(name).map_err(map_error)?
+                } else {
+                    let mut found = None;
+                    for prefix in [':', '@', '$'] {
+                        found = stmt
+                            .parameter_index(&format!("{prefix}{name}"))
+                            .map_err(map_error)?;
+                        if found.is_some() {
+                            break;
+                        }
                     }
-                }
+                    found
+                };
                 let Some(index) = index else {
                     return Err(Error::new(
                         "ARGS_INVALID",
-                        format!("statement has no parameter named `{bare}`"),
+                        format!("statement has no parameter named `{name}`"),
                     ));
                 };
                 stmt.raw_bind_parameter(index, value).map_err(map_error)?;
@@ -652,17 +663,32 @@ fn from_sql(value: ValueRef<'_>) -> Value {
     }
 }
 
-/// Approximate JSON size of a row, used for the response budget.
-fn encoded_size(row: &[Value]) -> usize {
+/// JSON size of a row, used for the response budget: exact for text and
+/// blobs, an upper bound for the fixed-size values and framing.
+pub(crate) fn encoded_size(row: &[Value]) -> usize {
     row.iter()
         .map(|value| {
             24 + match value {
                 Value::Null | Value::Integer(_) | Value::Float(_) => 24,
-                Value::Text(text) => text.len() + text.len() / 8,
-                Value::Blob(blob) => blob.len() * 4 / 3,
+                Value::Text(text) => escaped_len(text),
+                Value::Blob(blob) => blob.len().div_ceil(3) * 4,
             }
         })
         .sum()
+}
+
+/// Length of `text` as a JSON string body: quotes and backslashes take two
+/// bytes, control characters two or six.
+fn escaped_len(text: &str) -> usize {
+    text.len()
+        + text
+            .bytes()
+            .map(|byte| match byte {
+                b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 0x08 | 0x0c => 1,
+                0x00..=0x1f => 5,
+                _ => 0,
+            })
+            .sum::<usize>()
 }
 
 /// PRAGMAs that only read schema or run checks, with or without an argument.

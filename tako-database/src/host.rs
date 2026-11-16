@@ -70,11 +70,16 @@ pub struct HostConfig {
     pub engine: EngineConfig,
     /// Streams idle for longer are closed and their transactions rolled back.
     pub stream_idle_timeout: Duration,
+    /// How long a cursor waits for its client to read more before it stops
+    /// and closes its stream.
+    pub cursor_send_timeout: Duration,
     pub max_streams_per_database: usize,
     pub max_streams: usize,
     pub max_request_bytes: usize,
     pub max_response_bytes: usize,
     pub max_stored_sql_per_stream: usize,
+    /// Total length of the SQL texts one stream may store.
+    pub max_stored_sql_bytes_per_stream: usize,
     pub max_condition_depth: usize,
     /// Idle connections kept per database for stateless requests.
     pub pool_size: usize,
@@ -89,11 +94,13 @@ impl Default for HostConfig {
         Self {
             engine: EngineConfig::default(),
             stream_idle_timeout: Duration::from_secs(10),
+            cursor_send_timeout: Duration::from_secs(30),
             max_streams_per_database: 128,
             max_streams: 4096,
             max_request_bytes: 32 * 1024 * 1024,
             max_response_bytes: 64 * 1024 * 1024,
             max_stored_sql_per_stream: 256,
+            max_stored_sql_bytes_per_stream: 1024 * 1024,
             max_condition_depth: 32,
             pool_size: 8,
             max_concurrent_per_database: 32,
@@ -607,9 +614,17 @@ impl DatabaseHost {
     ) -> Result<AdminQuery, HostError> {
         let database = self.database(id)?;
         let active = DatabaseHost::enter(&database).map_err(|e| HostError::Engine(e.0))?;
+        // Counts against the database's concurrency limit, like app requests.
+        let permit = database
+            .permits
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| HostError::Engine("database is closing".into()))?;
         let budget = self.inner.config.max_response_bytes;
         tokio::task::spawn_blocking(move || {
             let _active = active;
+            let _permit = permit;
             let mut conn = database
                 .acquire()
                 .map_err(|e| HostError::Engine(e.message))?;
@@ -631,14 +646,7 @@ impl DatabaseHost {
                             truncated = true;
                             return Err(Error::new(engine::STOP, "row limit reached"));
                         } else {
-                            size += row
-                                .iter()
-                                .map(|v| match v {
-                                    crate::proto::Value::Text(t) => t.len(),
-                                    crate::proto::Value::Blob(b) => b.len(),
-                                    _ => 8,
-                                })
-                                .sum::<usize>();
+                            size += engine::encoded_size(&row);
                             if size > budget {
                                 return Err(Error::new(
                                     "RESPONSE_TOO_LARGE",
@@ -651,6 +659,9 @@ impl DatabaseHost {
                 }
                 Ok(())
             });
+            if conn.take_wrote() {
+                database.mark_changed();
+            }
             let result = match outcome {
                 // Each statement is its own transaction here: the connection
                 // is released (and rolled back) before the next one runs.
@@ -658,17 +669,12 @@ impl DatabaseHost {
                     "Transactions cannot span statements here; each statement commits on its own."
                         .into(),
                 )),
-                Ok((affected, _, wrote)) => {
-                    if wrote {
-                        database.mark_changed();
-                    }
-                    Ok(AdminQuery {
-                        columns,
-                        rows,
-                        affected_row_count: affected,
-                        truncated,
-                    })
-                }
+                Ok((affected, _)) => Ok(AdminQuery {
+                    columns,
+                    rows,
+                    affected_row_count: affected,
+                    truncated,
+                }),
                 Err(error) => Err(HostError::Engine(match error.extended_code {
                     Some(code) => format!("{} ({code})", error.message),
                     None => format!("{} ({})", error.message, error.code),

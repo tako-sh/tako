@@ -24,7 +24,6 @@ fn run(conn: &mut Connection, sql: &str) -> Result<StmtResult, Error> {
         true,
         &mut Budget::new(usize::MAX),
     )
-    .map(|(result, _)| result)
 }
 
 fn run_args(conn: &mut Connection, sql: &str, args: &[Value]) -> Result<StmtResult, Error> {
@@ -34,7 +33,6 @@ fn run_args(conn: &mut Connection, sql: &str, args: &[Value]) -> Result<StmtResu
         true,
         &mut Budget::new(usize::MAX),
     )
-    .map(|(result, _)| result)
 }
 
 #[test]
@@ -123,7 +121,7 @@ fn executes_statements_and_reports_columns_rows_and_changes() {
 fn want_rows_false_executes_without_returning_rows() {
     let fixture = fixture();
     let mut conn = open(&fixture);
-    let (result, wrote) = conn
+    let result = conn
         .execute(
             "SELECT 1",
             &Args::Positional(&[]),
@@ -133,36 +131,31 @@ fn want_rows_false_executes_without_returning_rows() {
         .unwrap();
     assert!(result.rows.is_empty());
     assert_eq!(result.rows_read, 1);
-    assert!(!wrote);
+    assert!(!conn.take_wrote());
 }
 
 #[test]
-fn binds_named_arguments_with_any_prefix() {
+fn binds_bare_names_to_any_prefix_and_prefixed_names_exactly() {
     let fixture = fixture();
     let mut conn = open(&fixture);
-    let named = [
-        NamedArg {
-            name: "a".into(),
-            value: Value::Integer(1),
-        },
-        NamedArg {
-            name: "@b".into(),
-            value: Value::Integer(2),
-        },
-        NamedArg {
-            name: ":c".into(),
-            value: Value::Integer(3),
-        },
-    ];
-    let (result, _) = conn
-        .execute(
-            "SELECT :a + @b + $c",
-            &Args::Named(&named),
-            true,
-            &mut Budget::new(usize::MAX),
-        )
-        .unwrap();
+    let arg = |name: &str, value| NamedArg {
+        name: name.into(),
+        value: Value::Integer(value),
+    };
+    let mut execute = |sql: &str, named: &[NamedArg]| {
+        conn.execute(sql, &Args::Named(named), true, &mut Budget::new(usize::MAX))
+    };
+    let result = execute(
+        "SELECT :a + @b + $c",
+        &[arg("a", 1), arg("@b", 2), arg("$c", 3)],
+    )
+    .unwrap();
     assert_eq!(result.rows, vec![vec![Value::Integer(6)]]);
+    // `:x` and `$x` are different parameters.
+    let result = execute("SELECT :x * 10 + $x", &[arg(":x", 1), arg("$x", 2)]).unwrap();
+    assert_eq!(result.rows, vec![vec![Value::Integer(12)]]);
+    let error = execute("SELECT $c", &[arg(":c", 3)]).unwrap_err();
+    assert_eq!(error.code, "ARGS_INVALID");
 }
 
 #[test]
@@ -313,8 +306,8 @@ fn commit_counts_as_a_write() {
             true,
             &mut Budget::new(usize::MAX),
         )
-        .unwrap()
-        .1
+        .unwrap();
+        conn.take_wrote()
     };
     wrote(&mut conn, "CREATE TABLE t (x)");
     assert!(!wrote(&mut conn, "BEGIN"));
@@ -403,19 +396,46 @@ fn response_budget_stops_large_results() {
 fn sequence_runs_statements_and_stops_at_the_first_failure() {
     let fixture = fixture();
     let mut conn = open(&fixture);
-    assert!(
-        conn.sequence("CREATE TABLE t (x); INSERT INTO t VALUES (1); SELECT * FROM t;")
-            .unwrap()
-    );
+    conn.sequence("CREATE TABLE t (x); INSERT INTO t VALUES (1); SELECT * FROM t;")
+        .unwrap();
+    assert!(conn.take_wrote());
     let error = conn
         .sequence(
             "INSERT INTO t VALUES (2); INSERT INTO missing VALUES (3); INSERT INTO t VALUES (4)",
         )
         .unwrap_err();
     assert_eq!(error.code, "SQLITE_ERROR");
+    assert!(
+        conn.take_wrote(),
+        "the first insert wrote before the failure"
+    );
     let count = run(&mut conn, "SELECT count(*) FROM t").unwrap();
     assert_eq!(count.rows, vec![vec![Value::Integer(2)]]);
-    assert!(!conn.sequence("SELECT 1; SELECT 2").unwrap());
+    conn.take_wrote();
+    conn.sequence("SELECT 1; SELECT 2").unwrap();
+    assert!(!conn.take_wrote());
+}
+
+#[test]
+fn a_write_that_fails_afterwards_still_counts() {
+    let fixture = fixture();
+    let mut conn = open(&fixture);
+    run(&mut conn, "CREATE TABLE t (x)").unwrap();
+    conn.take_wrote();
+    // RETURNING applies every change before the first row; the budget then
+    // fails the statement, but the rows are committed.
+    let error = conn
+        .execute(
+            "INSERT INTO t SELECT value FROM json_each('[1,2,3,4]') RETURNING x",
+            &Args::Positional(&[]),
+            true,
+            &mut Budget::new(1),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "RESPONSE_TOO_LARGE");
+    assert!(conn.take_wrote());
+    let count = run(&mut conn, "SELECT count(*) FROM t").unwrap();
+    assert_eq!(count.rows, vec![vec![Value::Integer(4)]]);
 }
 
 #[test]
@@ -508,4 +528,20 @@ fn replacing_keeps_the_previous_file_and_drops_stale_sidecars() {
     assert_eq!(read(&fixture.path), "new");
     assert_eq!(read(&previous), "old");
     assert!(!replacement.exists());
+}
+
+#[test]
+fn response_budget_counts_text_as_json_encodes_it() {
+    for text in [
+        "plain",
+        "quote \" and backslash \\",
+        "new\nline\ttab\r",
+        "\u{0}\u{1}\u{1f}\u{7f}",
+        "ünïcödé ✓",
+    ] {
+        let encoded = serde_json::to_string(text).unwrap();
+        assert_eq!(super::escaped_len(text), encoded.len() - 2, "{text:?}");
+    }
+    let controls = vec![Value::Text("\u{1}".repeat(1000))];
+    assert!(super::encoded_size(&controls) >= 6000);
 }

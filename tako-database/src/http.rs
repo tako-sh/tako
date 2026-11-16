@@ -2,6 +2,7 @@
 
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -207,6 +208,7 @@ async fn pipeline(
     let limits = Limits {
         max_response_bytes: config.max_response_bytes,
         max_stored_sql: config.max_stored_sql_per_stream,
+        max_stored_sql_bytes: config.max_stored_sql_bytes_per_stream,
     };
     let task_host = host.clone();
     let task = tokio::task::spawn_blocking(move || {
@@ -289,35 +291,60 @@ async fn cursor(
     .expect("cursor response serializes");
 
     let (sender, receiver) = tokio::sync::mpsc::channel::<Bytes>(64);
+    // Set when the cursor stopped before its end; the body then fails rather
+    // than end as if complete.
+    let aborted = Arc::new(AtomicBool::new(false));
+    let task_aborted = aborted.clone();
     let task_host = host.clone();
+    let runtime = tokio::runtime::Handle::current();
+    let send_timeout = host.config().cursor_send_timeout;
     tokio::task::spawn_blocking(move || {
         let _active = active;
         let _permit = permit;
         let mut stream = stream;
+        // A client that stops reading must not hold the stream, its
+        // transaction, and a request slot indefinitely.
+        let send = |line: Bytes| -> bool {
+            match sender.try_send(line) {
+                Ok(()) => true,
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => false,
+                Err(tokio::sync::mpsc::error::TrySendError::Full(line)) => runtime
+                    .block_on(tokio::time::timeout(send_timeout, sender.send(line)))
+                    .is_ok_and(|sent| sent.is_ok()),
+            }
+        };
         let mut emit = |entry: crate::proto::CursorEntry| -> bool {
             let mut line = serde_json::to_vec(&entry).expect("cursor entry serializes");
             line.push(b'\n');
-            sender.blocking_send(Bytes::from(line)).is_ok()
+            send(Bytes::from(line))
         };
         let mut lead = first;
         lead.push(b'\n');
-        let connected = sender.blocking_send(Bytes::from(lead)).is_ok()
+        let connected = send(Bytes::from(lead))
             && exec::run_cursor(&mut stream, &database, &request.batch, &mut emit).is_ok();
         if connected {
             restore_entry(&task_host, key, stream);
         } else {
+            task_aborted.store(true, Ordering::Release);
             remove_entry(&task_host, key);
             drop(stream);
         }
     });
 
     let body = StreamBody::new(futures_util::stream::unfold(
-        receiver,
-        |mut receiver| async {
-            receiver
-                .recv()
-                .await
-                .map(|line| (Ok::<_, BoxError>(Frame::data(line)), receiver))
+        (receiver, aborted, false),
+        |(mut receiver, aborted, failed)| async move {
+            if failed {
+                return None;
+            }
+            match receiver.recv().await {
+                Some(line) => Some((Ok(Frame::data(line)), (receiver, aborted, false))),
+                None if aborted.load(Ordering::Acquire) => Some((
+                    Err::<Frame<Bytes>, BoxError>("the cursor was stopped before its end".into()),
+                    (receiver, aborted, true),
+                )),
+                None => None,
+            }
         },
     ));
     let mut response = Response::new(body.boxed());

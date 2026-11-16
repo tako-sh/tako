@@ -444,6 +444,44 @@ async fn new_streams_beyond_the_limit_are_refused() {
     pipeline(&h, Value::Null, vec![execute("SELECT 1")]).await;
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn cursors_whose_client_stops_reading_give_up_their_slot() {
+    let h = harness(HostConfig {
+        cursor_send_timeout: Duration::from_millis(500),
+        max_concurrent_per_database: 1,
+        ..HostConfig::default()
+    });
+    let request = Request::post("/v3/cursor")
+        .header("authorization", format!("Bearer {}", h.token))
+        .body(Full::new(Bytes::from(
+            json!({"baton": null, "batch": {"steps": [
+                {"stmt": {"sql": "BEGIN"}},
+                {"stmt": {"sql": "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n LIMIT 100000) SELECT i FROM n"}},
+            ]}})
+            .to_string(),
+        )))
+        .unwrap();
+    let response = handle(&h.host, &Access::Apps, PEER.parse().unwrap(), request).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    // The response is not read. While the cursor waits for its client, it
+    // holds the database's only request slot, which administrators share.
+    let waiting = tokio::time::timeout(
+        Duration::from_millis(100),
+        h.host.admin_query(&h.id, "SELECT 1".into(), 10),
+    )
+    .await;
+    assert!(waiting.is_err(), "the query waits for the cursor's slot");
+    let query = h
+        .host
+        .admin_query(&h.id, "SELECT 1".into(), 10)
+        .await
+        .unwrap();
+    assert_eq!(query.rows.len(), 1);
+    assert_eq!(h.host.open_streams(), 0, "the cursor's stream is closed");
+    // The client sees a failed response rather than a complete one.
+    assert!(response.into_body().collect().await.is_err());
+}
+
 #[tokio::test]
 async fn oversized_requests_are_refused() {
     let h = harness(HostConfig {

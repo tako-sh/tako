@@ -14,6 +14,8 @@ use crate::proto::{
 pub(crate) struct Limits {
     pub max_response_bytes: usize,
     pub max_stored_sql: usize,
+    /// Total length of the SQL texts a stream may store.
+    pub max_stored_sql_bytes: usize,
 }
 
 /// A failure of the whole HTTP request (spec section 5.3).
@@ -116,7 +118,7 @@ pub(crate) fn run_pipeline(
                     .map(|result| StreamResponse::Describe { result })
             }
             StreamRequest::StoreSql { sql_id, sql } => {
-                store_sql(&mut stream.stored_sql, sql_id, sql, limits.max_stored_sql)
+                store_sql(&mut stream.stored_sql, sql_id, sql, &limits)
                     .map(|()| StreamResponse::StoreSql)
             }
             StreamRequest::CloseSql { sql_id } => {
@@ -179,14 +181,19 @@ pub(crate) fn run_cursor(
                 })
             })
         };
+        // A statement can write before it fails or its client goes away.
+        if stream
+            .conn
+            .as_mut()
+            .is_some_and(engine::Connection::take_wrote)
+        {
+            database.mark_changed();
+        }
         if disconnected {
             return Err(Disconnected);
         }
         let delivered = match result {
-            Ok((affected_row_count, last_insert_rowid, wrote)) => {
-                if wrote {
-                    database.mark_changed();
-                }
+            Ok((affected_row_count, last_insert_rowid)) => {
                 outcomes.push(Some(true));
                 emit(CursorEntry::StepEnd {
                     affected_row_count,
@@ -254,11 +261,12 @@ fn run_batch(
 }
 
 /// `outcomes[n]` is `Some(true)` when step `n` succeeded, `Some(false)` when it
-/// failed, and `None` when it was skipped. Indices were validated earlier.
+/// failed, and `None` when it was skipped; a skipped step is neither `ok` nor
+/// `error`. Indices were validated earlier.
 fn evaluate(condition: &BatchCond, outcomes: &[Option<bool>], autocommit: bool) -> bool {
     match condition {
         BatchCond::Ok { step } => outcomes.get(*step as usize).copied().flatten() == Some(true),
-        BatchCond::Error { step } => outcomes.get(*step as usize).copied().flatten() != Some(true),
+        BatchCond::Error { step } => outcomes.get(*step as usize).copied().flatten() == Some(false),
         BatchCond::Not { cond } => !evaluate(cond, outcomes, autocommit),
         BatchCond::And { conds } => conds.iter().all(|c| evaluate(c, outcomes, autocommit)),
         BatchCond::Or { conds } => conds.iter().any(|c| evaluate(c, outcomes, autocommit)),
@@ -282,11 +290,13 @@ fn execute(
     let Stream { conn, stored_sql } = stream;
     let (sql, args) = resolve_statement(stored_sql, stmt)?;
     let conn = connection(conn, database)?;
-    let (result, wrote) = conn.execute(sql, &args, stmt.want_rows.unwrap_or(true), budget)?;
-    if wrote {
+    let result = conn.execute(sql, &args, stmt.want_rows.unwrap_or(true), budget);
+    // A statement can write before it fails, e.g. `INSERT ... RETURNING`
+    // whose rows exceed the response budget.
+    if conn.take_wrote() {
         database.mark_changed();
     }
-    Ok(result)
+    result
 }
 
 fn sequence(
@@ -300,10 +310,10 @@ fn sequence(
     let conn = connection(conn, database)?;
     let result = conn.sequence(sql);
     // A failing statement may follow ones that already wrote.
-    if !matches!(result, Ok(false)) {
+    if conn.take_wrote() {
         database.mark_changed();
     }
-    result.map(|_| ())
+    result
 }
 
 fn describe(
@@ -321,12 +331,29 @@ fn store_sql(
     stored: &mut HashMap<i32, String>,
     sql_id: i32,
     sql: String,
-    max: usize,
+    limits: &Limits,
 ) -> Result<(), Error> {
-    if !stored.contains_key(&sql_id) && stored.len() >= max {
+    if !stored.contains_key(&sql_id) && stored.len() >= limits.max_stored_sql {
         return Err(Error::new(
             "SQL_STORE_LIMIT",
-            format!("a stream can store at most {max} SQL texts"),
+            format!(
+                "a stream can store at most {} SQL texts",
+                limits.max_stored_sql
+            ),
+        ));
+    }
+    let kept: usize = stored
+        .iter()
+        .filter(|(id, _)| **id != sql_id)
+        .map(|(_, text)| text.len())
+        .sum();
+    if kept + sql.len() > limits.max_stored_sql_bytes {
+        return Err(Error::new(
+            "SQL_STORE_LIMIT",
+            format!(
+                "a stream can store at most {} bytes of SQL text",
+                limits.max_stored_sql_bytes
+            ),
         ));
     }
     stored.insert(sql_id, sql);
@@ -427,7 +454,7 @@ mod tests {
     }
 
     #[test]
-    fn error_condition_is_the_negation_of_ok() {
+    fn skipped_steps_are_neither_ok_nor_error() {
         let outcomes = [Some(true), Some(false), None];
         let ok = |step| BatchCond::Ok { step };
         let err = |step| BatchCond::Error { step };
@@ -436,7 +463,7 @@ mod tests {
         assert!(!evaluate(&ok(2), &outcomes, true));
         assert!(!evaluate(&err(0), &outcomes, true));
         assert!(evaluate(&err(1), &outcomes, true));
-        assert!(evaluate(&err(2), &outcomes, true));
+        assert!(!evaluate(&err(2), &outcomes, true));
         assert!(evaluate(&BatchCond::IsAutocommit, &outcomes, true));
         assert!(!evaluate(
             &BatchCond::And {
@@ -456,10 +483,34 @@ mod tests {
 
     #[test]
     fn stored_sql_is_bounded_but_replaceable() {
+        let limits = Limits {
+            max_response_bytes: usize::MAX,
+            max_stored_sql: 1,
+            max_stored_sql_bytes: usize::MAX,
+        };
         let mut stored = HashMap::new();
-        store_sql(&mut stored, 1, "SELECT 1".into(), 1).unwrap();
-        store_sql(&mut stored, 1, "SELECT 2".into(), 1).unwrap();
+        store_sql(&mut stored, 1, "SELECT 1".into(), &limits).unwrap();
+        store_sql(&mut stored, 1, "SELECT 2".into(), &limits).unwrap();
         assert_eq!(stored[&1], "SELECT 2");
-        assert!(store_sql(&mut stored, 2, "SELECT 3".into(), 1).is_err());
+        assert!(store_sql(&mut stored, 2, "SELECT 3".into(), &limits).is_err());
+    }
+
+    #[test]
+    fn stored_sql_is_bounded_by_total_length() {
+        let limits = Limits {
+            max_response_bytes: usize::MAX,
+            max_stored_sql: 16,
+            max_stored_sql_bytes: 16,
+        };
+        let mut stored = HashMap::new();
+        store_sql(&mut stored, 1, "SELECT 1".into(), &limits).unwrap();
+        store_sql(&mut stored, 2, "SELECT 2".into(), &limits).unwrap();
+        let error = store_sql(&mut stored, 3, "SELECT 3".into(), &limits).unwrap_err();
+        assert_eq!(error.code, "SQL_STORE_LIMIT");
+        // Replacing a text only counts its new length.
+        store_sql(&mut stored, 2, "SELECT 22".into(), &limits).unwrap_err();
+        store_sql(&mut stored, 2, "SELECT 9".into(), &limits).unwrap();
+        stored.remove(&2);
+        store_sql(&mut stored, 3, "SELECT 3".into(), &limits).unwrap();
     }
 }

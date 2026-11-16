@@ -131,7 +131,20 @@ pub(super) async fn export(
     if file.exists() {
         return Err(format!("{} already exists.", file.display()).into());
     }
-    let partial = file.with_extension("partial");
+    // A new, uniquely named file next to the destination, removed unless the
+    // export completes; nothing that already exists is touched.
+    let directory = match file.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    let file_name = file
+        .file_name()
+        .ok_or_else(|| format!("{} is not a file path.", file.display()))?;
+    let partial = tempfile::Builder::new()
+        .prefix(&format!(".{}.", file_name.to_string_lossy()))
+        .suffix(".partial")
+        .tempfile_in(directory)
+        .map_err(|e| format!("Create a file in {}: {e}", directory.display()))?;
     let mut client = ManagementClient::for_server(&home.entry).await?;
     let _t = output::timed(&format!("Export {name}"));
     let export: DatabaseExport = output::with_spinner_async(
@@ -145,7 +158,7 @@ pub(super) async fn export(
             .await
             .map_err(|e| e.to_string())?;
             let result = async {
-                let mut out = std::fs::File::create(&partial).map_err(|e| e.to_string())?;
+                let mut out = partial;
                 let mut hasher = Sha256::new();
                 let mut offset = 0u64;
                 while offset < export.size_bytes {
@@ -173,11 +186,18 @@ pub(super) async fn export(
                     out.write_all(&data).map_err(|e| e.to_string())?;
                     offset += data.len() as u64;
                 }
-                out.sync_all().map_err(|e| e.to_string())?;
+                out.as_file().sync_all().map_err(|e| e.to_string())?;
                 if hex::encode(hasher.finalize()) != export.sha256 {
                     return Err("the downloaded copy does not match its checksum".to_string());
                 }
-                std::fs::rename(&partial, file).map_err(|e| e.to_string())
+                out.persist_noclobber(file)
+                    .map(drop)
+                    .map_err(|e| match e.error.kind() {
+                        std::io::ErrorKind::AlreadyExists => {
+                            format!("{} already exists", file.display())
+                        }
+                        _ => e.error.to_string(),
+                    })
             }
             .await;
             let _: Result<serde_json::Value, _> = send(
@@ -188,9 +208,6 @@ pub(super) async fn export(
                 },
             )
             .await;
-            if result.is_err() {
-                let _ = std::fs::remove_file(&partial);
-            }
             result.map(|()| export)
         },
     )
