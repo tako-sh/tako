@@ -399,8 +399,10 @@ pub fn connect(value: Option<&str>, config_path: Option<&Path>) -> Result<()> {
         );
     }
     let profile = network::client::refresh(&alias)?;
-    // One network owns `.tako` names at a time, so connecting switches. Check
-    // the new network first so a rejected switch keeps the current connection.
+    // One network owns `.tako` names at a time, so connecting switches. Hold a
+    // machine-wide lock so concurrent connects cannot both find nothing to replace.
+    let _switch = switch_lock()?;
+    // Check the new network first so a rejected switch keeps the current connection.
     let others: Vec<_> = connected_networks()?
         .into_iter()
         .filter(|(other, _)| other.id != alias.id)
@@ -426,18 +428,23 @@ pub fn connect(value: Option<&str>, config_path: Option<&Path>) -> Result<()> {
     let (unreachable, check_error) = match unreachable {
         Ok(servers) => (servers, None),
         Err(error) => {
-            output::warning(&format!("Could not check server reachability: {error}"));
+            let message = format!("Could not check server reachability: {error}");
+            output::warning(&message);
+            tracing::warn!("{message}");
             (Vec::new(), Some(error.to_string()))
         }
     };
     for server in &unreachable {
         if let MemberKind::Server(info) = &server.kind {
-            output::warning(&format!(
+            // `warning` is pretty-only; tracing keeps it in --ci and --verbose transcripts.
+            let message = format!(
                 "No WireGuard handshake with {}. Check that UDP {} reaches {}.",
                 server.request.name,
                 info.wireguard_endpoint.port(),
                 info.wireguard_endpoint.ip()
-            ));
+            );
+            output::warning(&message);
+            tracing::warn!("{message}");
         }
     }
     if output::is_json() {
@@ -487,6 +494,7 @@ pub fn disconnect(value: Option<&str>, config_path: Option<&Path>) -> Result<()>
             serde_json::json!({"networks": names, "connected": false}),
         );
     }
+    let _switch = switch_lock()?;
     for (alias, profile) in &targets {
         teardown(alias, profile)?;
         output::success(&format!("Disconnected from {}", alias.name));
@@ -501,6 +509,15 @@ fn teardown(alias: &crate::config::LocalNetwork, profile: &Profile) -> Result<()
     let _lifecycle = network::wireguard::lifecycle_lock(alias)?;
     network::wireguard::disconnect(alias, profile)?;
     network::local_access::remove(alias)
+}
+
+/// Serializes network switches on this machine; one network owns `.tako`.
+fn switch_lock() -> Result<std::fs::File> {
+    let directory = crate::paths::tako_config_dir()?.join("networks");
+    network::private_directory(&directory)?;
+    let lock = network::private_file(&directory.join("connect.lock"), true)?;
+    lock.lock()?;
+    Ok(lock)
 }
 
 /// Networks with an owned local connection configuration.
