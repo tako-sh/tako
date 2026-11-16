@@ -15,6 +15,16 @@ const TAKO_BIN =
 const HELPERS = resolve(import.meta.dirname, "..", "helpers");
 const CLIENTS = join(HELPERS, "database-clients.ts");
 const HAS_GO = Bun.which("go") !== null;
+// The project stands in for HOME, so keep Go's caches (whose module files
+// are read-only) where they already are rather than under the project.
+const GO_CACHES: Record<string, string> = HAS_GO
+  ? Object.fromEntries(
+      ["GOMODCACHE", "GOCACHE", "GOPATH"].map((name) => [
+        name,
+        Bun.spawnSync(["go", "env", name]).stdout.toString().trim(),
+      ]),
+    )
+  : {};
 
 let project: string;
 
@@ -48,7 +58,13 @@ afterAll(async () => {
 async function runClients(command: string[] = ["bun", CLIENTS]): Promise<Record<string, unknown>> {
   const child = Bun.spawn([TAKO_BIN, "run", "--", ...command], {
     cwd: project,
-    env: { ...process.env, HOME: project, TAKO_HOME: join(project, ".tako-home"), NO_COLOR: "1" },
+    env: {
+      ...process.env,
+      ...GO_CACHES,
+      HOME: project,
+      TAKO_HOME: join(project, ".tako-home"),
+      NO_COLOR: "1",
+    },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -160,6 +176,8 @@ describe("tako run with a database binding", () => {
         duplicate: true,
         redacted: true,
       });
+      // Go's read-only module cache stays outside the removable project.
+      expect(existsSync(join(project, "go"))).toBe(false);
     },
     180_000,
   );
