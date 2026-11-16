@@ -133,7 +133,7 @@ Any number works as a prefix, up to 18 digits; files run in numeric order, so da
 Tako applies pending migrations:
 
 - on `tako deploy`, on the database's server, after the snapshot before the release command and before the release command and rollout. A failing migration stops the deploy before any new instance starts. The previous release keeps serving while migrations run, so keep them compatible with it (add a column before code depends on it; drop it in a later deploy).
-- in `tako dev` (before the app starts and on each reload) and `tako run`, on the local file.
+- in `tako dev` (before the app starts, on each reload, and whenever a file in `migrations/` is added or saved, without restarting the app) and `tako run`, on the local file.
 - on `tako sqlite migrations apply [<database>]`. `migrations list [<database>]` shows what is pending without applying it. Both act on every database the project binds by default; `--local` acts on the development files.
 
 Each file runs in one `BEGIN IMMEDIATE` transaction together with its record in the database's `_tako_migrations` table (`app`, `name`, `sha256`, `applied_at`), so a failing file leaves nothing behind and the files before it stay applied. A file that contains `BEGIN`, `COMMIT`, `END`, or `ROLLBACK` is refused before that statement runs, and nothing in it is committed; `SAVEPOINT` and `RELEASE` work inside the file's transaction. Foreign keys are not enforced while a file runs, so it can rebuild a table that others reference ([SQLite's 12 steps](https://sqlite.org/lang_altertable.html#otheralter)), but `PRAGMA foreign_key_check` must pass before it commits. Statements have the same 30-second limit and restrictions as app queries. When backups are configured and something is pending, the server snapshots the database first (reason `migration`).
@@ -246,7 +246,15 @@ tako sqlite restore main --latest --server edge-b
 tako deploy --env production
 ```
 
-With `--server`, Tako creates the database on `edge-b` from its snapshot and records `edge-b` as its server in the network; `tako.toml` does not change. It reads snapshots from the backup storage of an environment that binds the database. Deploy every app that binds it afterwards.
+With `--server`, Tako creates the database on `edge-b` from its snapshot and records `edge-b` as its server in the network; `tako.toml` does not change. It reads snapshots from the backup storage of an environment that binds the database. Deploy every app that binds it afterwards: until then, instances deployed earlier keep using the old copy, and a deploy gives new instances new tokens for `edge-b`.
+
+When the old server is still running, its copy stays, and Tako stops its snapshots so it cannot prune the new copy's. Once every app is deployed, remove it:
+
+```bash
+tako sqlite delete main --server edge-a
+```
+
+That deletes only the copy on `edge-a`; the database, its network record, and its snapshots stay. If the recovery itself fails, Tako removes the new copy on `edge-b` without touching the snapshots.
 
 ## Reset a database
 
@@ -273,7 +281,7 @@ Each remote query adds a private-network round trip, so place a database on the 
 
 ## Limits and security
 
-- Each binding has its own random token. A token works only on the server that issued it and only for the databases its app environment binds. Binding tokens stay stable across deploys while a binding names the same database.
+- Each binding has its own random token. A token works only on the server that issued it and only for the databases its app environment binds. Binding tokens stay stable across deploys while a binding names the same database on the same server.
 - During a rolling deploy, the old and new release's bindings are both active, so old instances keep working until they drain. A release command receives temporary bindings that are revoked when it finishes.
 - SQL cannot reach other files or load code: `ATTACH` (including `VACUUM INTO '<path>'` and attachments named at run time), `load_extension`, and `fts3_tokenizer` are refused. Plain `VACUUM` works.
 - Reading any `PRAGMA` is allowed. Connection settings such as `foreign_keys` and `defer_foreign_keys` can be changed, as can `user_version`, `application_id`, and `auto_vacuum`. Other writes, such as `journal_mode` or `synchronous`, are refused: Tako runs WAL with `synchronous = FULL`.

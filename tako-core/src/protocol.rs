@@ -237,8 +237,15 @@ pub enum Command {
         backup: Option<StorageBinding>,
     },
 
-    /// Delete a database hosted on this server. Refused while bound.
-    DeleteDatabase { name: String },
+    /// Delete a database hosted on this server. Refused while bound. Its
+    /// snapshots are deleted too, unless `keep_snapshots` is set: a copy
+    /// left behind by a move, or one whose recovery failed, shares them
+    /// with the database that lives on.
+    DeleteDatabase {
+        name: String,
+        #[serde(default)]
+        keep_snapshots: bool,
+    },
 
     /// Describe databases hosted on this server: one, or all when `None`.
     DatabaseStatus {

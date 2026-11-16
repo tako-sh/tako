@@ -216,9 +216,12 @@ impl Databases {
                     ));
                 }
             }
+            // A binding keeps its token only while it reaches the same copy:
+            // after a database moves to another server, old and new
+            // instances must route to their own homes during the rollout.
             let existing = previous
                 .get(&name)
-                .filter(|existing| existing.binding.name == binding.name);
+                .filter(|existing| existing.binding.same_target(&binding));
             let token = existing
                 .map(|existing| existing.token.clone())
                 .unwrap_or_else(tako_database::generate_token);
@@ -247,7 +250,7 @@ impl Databases {
                 && let Some(current) = config
                     .databases
                     .get(name)
-                    .filter(|current| current.binding.name == binding.name)
+                    .filter(|current| current.binding.same_target(binding))
             {
                 binding.peer_key = current.binding.peer_key.clone();
             }
@@ -492,7 +495,10 @@ impl ServerState {
                 self.create_database(name, generation, backup_key_base64, backup)
                     .await
             }
-            Command::DeleteDatabase { name } => self.delete_database(&name).await,
+            Command::DeleteDatabase {
+                name,
+                keep_snapshots,
+            } => self.delete_database(&name, keep_snapshots).await,
             Command::DatabaseStatus { name } => self.database_status(name.as_deref()),
             Command::ConfigureDatabaseBackup { name, backup } => {
                 self.configure_database_backup(&name, backup).await
@@ -613,7 +619,11 @@ impl ServerState {
         Ok(serde_json::to_value(self.database_info(&stored)).expect("info serializes"))
     }
 
-    async fn delete_database(&self, id: &str) -> Result<serde_json::Value, String> {
+    async fn delete_database(
+        &self,
+        id: &str,
+        keep_snapshots: bool,
+    ) -> Result<serde_json::Value, String> {
         let stored = self.hosted_database(id)?;
         let info = self.database_info(&stored);
         // Bindings of apps on this server are known to be current. Grants for
@@ -681,8 +691,11 @@ impl ServerState {
         self.databases.backups.lock().remove(id);
         tracing::info!(database = %stored.name, "Deleted database");
         // Without the database's records its snapshots cannot be decrypted;
-        // they go with it.
+        // they go with it, unless another copy lives on and shares them.
         let mut warnings = Vec::new();
+        if keep_snapshots {
+            return Ok(serde_json::json!({"deleted": id, "warnings": warnings}));
+        }
         match snapshots::delete_all(&stored).await {
             Ok(0) => {}
             Ok(count) => {

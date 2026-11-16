@@ -151,6 +151,10 @@ pub enum SqliteCommands {
     Delete {
         /// Database name
         name: String,
+        /// Delete only the copy left on this server after
+        /// `restore --server` moved the database elsewhere
+        #[arg(long)]
+        server: Option<String>,
         /// Skip confirmation prompt
         #[arg(short = 'y', long = "yes")]
         yes: bool,
@@ -522,9 +526,12 @@ async fn run_async(
             let ctx = Context::load(config_path, network).await?;
             reset(&ctx, &name, force, yes).await
         }
-        SqliteCommands::Delete { name, yes } => {
+        SqliteCommands::Delete { name, server, yes } => {
             let ctx = Context::load(config_path, network).await?;
-            delete(&ctx, &name, yes).await
+            match server {
+                Some(server) => delete_old_copy(&ctx, &name, &server, yes).await,
+                None => delete(&ctx, &name, yes).await,
+            }
         }
     }
 }
@@ -615,6 +622,7 @@ async fn create(
             &home,
             Command::DeleteDatabase {
                 name: name.to_owned(),
+                keep_snapshots: false,
             },
         )
         .await;
@@ -935,12 +943,14 @@ async fn restore(
     let value = match restored {
         Ok(value) => value,
         Err(error) => {
-            // Remove the empty copy, so the recovery can be retried.
+            // Remove the empty copy, so the recovery can be retried. Its
+            // snapshots are the database's, which it was restoring from.
             if moving
                 && let Err(cleanup) = send::<serde_json::Value>(
                     &target,
                     Command::DeleteDatabase {
                         name: name.to_owned(),
+                        keep_snapshots: true,
                     },
                 )
                 .await
@@ -959,6 +969,22 @@ async fn restore(
             ..record
         };
         ctx.publish(&moved, None)?;
+        // The old copy, when its server is still up, would keep taking
+        // snapshots into the same place and pruning the new copy's.
+        let stopped = send::<DatabaseInfo>(
+            &home,
+            Command::ConfigureDatabaseBackup {
+                name: name.to_owned(),
+                backup: None,
+            },
+        )
+        .await;
+        if stopped.is_ok() {
+            output::hint(&format!(
+                "The old copy of {name} stays on {} and no longer takes snapshots. Once every app that binds {name} is deployed, remove it with `tako sqlite delete {name} --server {}`.",
+                home.name, home.name
+            ));
+        }
     }
     for warning in value["warnings"].as_array().into_iter().flatten() {
         if let Some(warning) = warning.as_str() {
@@ -1029,6 +1055,7 @@ async fn delete(ctx: &Context, name: &str, yes: bool) -> Result<(), Box<dyn std:
                     &home,
                     Command::DeleteDatabase {
                         name: name.to_owned(),
+                        keep_snapshots: false,
                     },
                 )
                 .await
@@ -1044,6 +1071,54 @@ async fn delete(ctx: &Context, name: &str, yes: bool) -> Result<(), Box<dyn std:
     if output::is_json() {
         return output::json_success("sqlite");
     }
+    Ok(())
+}
+
+/// Deletes the copy of a database that `restore --server` left on its old
+/// server. The database, its network record, and its snapshots stay.
+async fn delete_old_copy(
+    ctx: &Context,
+    name: &str,
+    server: &str,
+    yes: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    ctx.require_admin()?;
+    let (_, home) = ctx.database(name)?;
+    let old = ctx.home(server)?;
+    if old.device_id == home.device_id {
+        return Err(format!(
+            "{name} lives on {}; `tako sqlite delete {name}` deletes it. `--server` only removes a copy left on another server.",
+            home.name
+        )
+        .into());
+    }
+    confirm(
+        &format!("Delete the old copy of {name} on {}?", old.name),
+        &format!(
+            "Writes made to it since {name} moved to {} are lost. The database and its snapshots stay.",
+            home.name
+        ),
+        yes,
+    )?;
+    if output::is_dry_run() {
+        return dry_run(
+            &format!("Delete the old copy of {name} on {}", old.name),
+            serde_json::json!({"database": name, "server": old.name}),
+        );
+    }
+    let deleted: serde_json::Value = send(
+        &old,
+        Command::DeleteDatabase {
+            name: name.to_owned(),
+            keep_snapshots: true,
+        },
+    )
+    .await?;
+    print_warnings(&deleted);
+    if output::is_json() {
+        return output::json_success("sqlite");
+    }
+    output::success(&format!("Deleted the old copy of {name} on {}", old.name));
     Ok(())
 }
 

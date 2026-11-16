@@ -16,6 +16,8 @@ pub enum WatchChange {
     Channels,
     Workflows,
     GeneratedDeclarations,
+    /// A SQL migration was added or changed; it is applied without a restart.
+    Migrations,
 }
 
 /// Handle that keeps the watcher alive
@@ -105,6 +107,11 @@ impl ConfigWatcher {
                 let _ = watch_path(&debouncer, parent, RecursiveMode::NonRecursive);
             }
         }
+        // Migrations may sit one folder deeper, in `migrations/<binding>/`.
+        let migrations_dir = self.project_dir.join("migrations");
+        if migrations_dir.is_dir() {
+            let _ = watch_path(&debouncer, &migrations_dir, RecursiveMode::Recursive);
+        }
         let watched_app_root = self.app_root.clone();
         let watched_runtime_dirs = [
             (watched_app_root.join("channels"), WatchChange::Channels),
@@ -153,6 +160,13 @@ impl ConfigWatcher {
                                         );
                                     }
                                 }
+                            }
+                            if event.path == migrations_dir && migrations_dir.is_dir() {
+                                let _ = watch_path(
+                                    &debouncer_for_thread,
+                                    &migrations_dir,
+                                    RecursiveMode::Recursive,
+                                );
                             }
                             if event.path == watched_app_root && watched_app_root.is_dir() {
                                 let _ = watch_path(
@@ -243,6 +257,12 @@ fn classify_path(
     }
     if path == crate::config::SecretsStore::default_path(project_dir) {
         return Some(WatchChange::Secrets);
+    }
+    let migrations = project_dir.join("migrations");
+    if path == migrations
+        || (path.starts_with(&migrations) && path.extension().is_some_and(|ext| ext == "sql"))
+    {
+        return Some(WatchChange::Migrations);
     }
     let declaration_dirs = crate::build::js::generated_declaration_parent_dirs(project_dir);
     if declaration_dirs
@@ -493,6 +513,40 @@ mod tests {
         std::fs::read_to_string(app_root.parent().unwrap().join("tako.toml")).unwrap();
         assert!(
             tokio::time::timeout(Duration::from_millis(400), rx.recv())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn migration_files_are_watched_including_binding_folders() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project_dir = temp.path().canonicalize().unwrap();
+        let config_path = project_dir.join("tako.toml");
+        std::fs::write(&config_path, "name = \"shop\"\n").unwrap();
+        let (tx, mut rx) = mpsc::channel(32);
+        let _watcher =
+            ConfigWatcher::new(project_dir.clone(), project_dir.clone(), config_path, tx)
+                .unwrap()
+                .start()
+                .unwrap();
+        // The folder appears after `tako dev` started.
+        let migrations = project_dir.join("migrations");
+        std::fs::create_dir(&migrations).unwrap();
+        expect_change(&mut rx, WatchChange::Migrations).await;
+        drain_changes(&mut rx).await;
+        std::fs::write(migrations.join("0001_initial.sql"), "CREATE TABLE a (x);").unwrap();
+        expect_change(&mut rx, WatchChange::Migrations).await;
+        drain_changes(&mut rx).await;
+        std::fs::create_dir(migrations.join("main")).unwrap();
+        drain_changes(&mut rx).await;
+        std::fs::write(migrations.join("main/0002_b.sql"), "CREATE TABLE b (x);").unwrap();
+        expect_change(&mut rx, WatchChange::Migrations).await;
+        drain_changes(&mut rx).await;
+        // Other files there are not migrations.
+        std::fs::write(migrations.join("README.md"), "notes").unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(600), rx.recv())
                 .await
                 .is_err()
         );

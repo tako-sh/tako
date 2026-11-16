@@ -511,7 +511,14 @@ async fn deleting_a_database_revokes_its_grants() {
     .await;
     // Grants can outlive the deployments that used them: deleting revokes
     // this database from them and keeps the environment's other grants.
-    ok(&state, Command::DeleteDatabase { name: ID.into() }).await;
+    ok(
+        &state,
+        Command::DeleteDatabase {
+            name: ID.into(),
+            keep_snapshots: false,
+        },
+    )
+    .await;
     let grants = state.state_store.all_database_grants().unwrap();
     let grant = &grants["web/production"];
     assert_eq!(
@@ -818,9 +825,47 @@ async fn deleting_a_database_deletes_its_snapshots() {
             .len()
     };
     assert_eq!(objects().await, 2, "a manifest and its data");
-    let deleted = ok(&state, Command::DeleteDatabase { name: ID.into() }).await;
+    let deleted = ok(
+        &state,
+        Command::DeleteDatabase {
+            name: ID.into(),
+            keep_snapshots: false,
+        },
+    )
+    .await;
     assert_eq!(deleted["warnings"], json!([]));
     assert_eq!(objects().await, 0);
+}
+
+#[tokio::test]
+async fn deleting_a_copy_can_keep_the_snapshots_it_shares() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, Some("keep-bucket")).await;
+    query(&state, ID, "CREATE TABLE items (name TEXT)").await;
+    ok(
+        &state,
+        Command::SnapshotDatabase {
+            name: ID.into(),
+            reason: SnapshotReason::Manual,
+            app: None,
+        },
+    )
+    .await;
+    // A copy left behind by a move shares its snapshots with the copy that
+    // replaced it, so deleting it must leave them.
+    ok(
+        &state,
+        Command::DeleteDatabase {
+            name: ID.into(),
+            keep_snapshots: true,
+        },
+    )
+    .await;
+    let store = crate::databases::snapshots::test_store("keep-bucket").unwrap();
+    use futures_util::TryStreamExt;
+    let objects: Vec<_> = store.list(None).try_collect().await.unwrap();
+    assert_eq!(objects.len(), 2, "the manifest and its data remain");
 }
 
 #[tokio::test]
@@ -834,4 +879,50 @@ async fn opening_databases_again_after_a_failure_retries() {
     std::fs::remove_file(&root).unwrap();
     state.open_databases(None).await.unwrap();
     assert!(root.is_dir(), "the second call opened the databases");
+}
+
+#[tokio::test]
+async fn bindings_keep_their_token_only_for_the_same_home() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, None).await;
+    let binding = |server: &str| tako_core::DatabaseBinding {
+        name: ID.into(),
+        server: server.into(),
+        peer_key: None,
+    };
+    let previous = HashMap::from([(
+        "main".to_owned(),
+        crate::state_store::AppDatabase {
+            binding: tako_core::DatabaseBinding {
+                peer_key: Some("old-key".into()),
+                ..binding("edge-a")
+            },
+            token: "old-token".into(),
+        },
+    )]);
+    let config = crate::instances::AppConfig::default();
+    let prepare = |server: &str| {
+        state
+            .databases
+            .prepare_bindings(
+                &previous,
+                HashMap::from([("main".to_owned(), binding(server))]),
+                &config,
+            )
+            .unwrap()
+            .remove("main")
+            .unwrap()
+    };
+    let same = prepare("edge-a");
+    assert_eq!(same.token, "old-token");
+    assert_eq!(same.binding.peer_key.as_deref(), Some("old-key"));
+    // After the database moved, old and new instances need different tokens
+    // so each reaches its own home during the rollout.
+    let moved = prepare("edge-b");
+    assert_ne!(moved.token, "old-token");
+    assert_eq!(
+        moved.binding.peer_key, None,
+        "the old home's key is not reused"
+    );
 }

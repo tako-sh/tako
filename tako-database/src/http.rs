@@ -260,10 +260,15 @@ async fn pipeline(
             stream,
             outcome.closed,
         );
-        (outcome.results, baton)
+        (outcome.results, outcome.too_large, baton)
     });
     match task.await {
-        Ok((results, Ok(baton))) => json(
+        // The stream was closed; its transaction rolled back.
+        Ok((_, true, _)) => error(
+            StatusCode::BAD_REQUEST,
+            "the pipeline's results exceed the response size limit; send fewer requests at a time",
+        ),
+        Ok((results, false, Ok(baton))) => json(
             StatusCode::OK,
             &PipelineResponse {
                 baton,
@@ -271,7 +276,7 @@ async fn pipeline(
                 results,
             },
         ),
-        Ok((_, Err(message))) => error(StatusCode::SERVICE_UNAVAILABLE, &message),
+        Ok((_, false, Err(message))) => error(StatusCode::SERVICE_UNAVAILABLE, &message),
         Err(join) => {
             tracing::error!(error = %join, "database pipeline panicked");
             if existing {

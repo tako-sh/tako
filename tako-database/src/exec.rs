@@ -87,6 +87,9 @@ fn validate_condition(
 pub(crate) struct PipelineOutcome {
     pub results: Vec<StreamResult>,
     pub closed: bool,
+    /// The results outgrew the response limit even as errors; the remaining
+    /// requests did not run and the stream is closed.
+    pub too_large: bool,
 }
 
 pub(crate) fn run_pipeline(
@@ -139,16 +142,30 @@ pub(crate) fn run_pipeline(
         let result = if budget.charge(metadata_size(&result)) {
             result
         } else {
-            StreamResult::Error {
+            let replacement = StreamResult::Error {
                 error: Error::new(
                     "RESPONSE_TOO_LARGE",
                     "the response exceeds its size limit; send fewer requests at a time",
                 ),
+            };
+            // The replacement is charged too, so a long run of small
+            // requests cannot keep adding uncharged errors.
+            if !budget.charge(metadata_size(&replacement)) {
+                return PipelineOutcome {
+                    results,
+                    closed: true,
+                    too_large: true,
+                };
             }
+            replacement
         };
         results.push(result);
     }
-    PipelineOutcome { results, closed }
+    PipelineOutcome {
+        results,
+        closed,
+        too_large: false,
+    }
 }
 
 /// The JSON size of a result apart from its rows: an upper bound for the

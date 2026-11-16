@@ -530,15 +530,16 @@ async fn repeated_results_count_their_columns_against_the_response_limit() {
         ..HostConfig::default()
     });
     // A stored statement with a 10 KiB column name, executed by id: each
-    // request is small, but each result repeats the name.
+    // request is small, but each result repeats the name. Results past the
+    // limit become small errors.
     let alias = "c".repeat(10 * 1024);
     let mut requests =
         vec![json!({"type": "store_sql", "sql_id": 1, "sql": format!("SELECT 1 AS \"{alias}\"")})];
-    requests.extend((0..20).map(|_| json!({"type": "execute", "stmt": {"sql_id": 1}})));
+    requests.extend((0..10).map(|_| json!({"type": "execute", "stmt": {"sql_id": 1}})));
     let body = pipeline(&h, Value::Null, requests).await;
     let results = body["results"].as_array().unwrap();
     assert_eq!(results[1]["type"], "ok", "the first results fit");
-    let last = &results[20];
+    let last = &results[10];
     assert_eq!(last["type"], "error", "{last}");
     assert_eq!(last["error"]["code"], "RESPONSE_TOO_LARGE");
     let size = serde_json::to_vec(&body).unwrap().len();
@@ -546,6 +547,27 @@ async fn repeated_results_count_their_columns_against_the_response_limit() {
         size < 2 * 64 * 1024,
         "the response stays near its limit: {size}"
     );
+}
+
+#[tokio::test]
+async fn pipelines_whose_errors_outgrow_the_response_limit_fail() {
+    let h = harness(HostConfig {
+        max_response_bytes: 4 * 1024,
+        ..HostConfig::default()
+    });
+    // Each result is small, but there are many: once even the errors that
+    // replace them no longer fit, the whole request fails.
+    let requests: Vec<Value> = (0..1000)
+        .map(|_| json!({"type": "get_autocommit"}))
+        .collect();
+    let (status, body) = post(
+        &h,
+        "/v3/pipeline",
+        json!({"baton": null, "requests": requests}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(h.host.open_streams(), 0);
 }
 
 #[tokio::test]
