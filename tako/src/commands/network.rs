@@ -440,7 +440,20 @@ pub fn connect(value: Option<&str>) -> Result<()> {
         teardown(other, other_profile)?;
         output::muted(&format!("Disconnected from {}", other.name));
     }
-    network::wireguard::connect(&alias, &profile)?;
+    if let Err(error) = network::wireguard::connect(&alias, &profile) {
+        // Interface and DNS setup can still fail after the preflight; bring back
+        // what the switch disconnected rather than leaving no network connected.
+        for (other, other_profile) in &others {
+            match restore(other, other_profile) {
+                Ok(()) => output::muted(&format!("Reconnected to {}", other.name)),
+                Err(restore_error) => output::warning(&format!(
+                    "Could not reconnect to {}: {restore_error}",
+                    other.name
+                )),
+            }
+        }
+        return Err(error);
+    }
     network::local_access::install(&alias, &profile).map_err(|error| {
         format!("The network is connected, but SSH aliases could not be installed: {error}")
     })?;
@@ -543,6 +556,12 @@ fn teardown(alias: &crate::config::LocalNetwork, profile: &Profile) -> Result<()
     let _lifecycle = network::wireguard::lifecycle_lock(alias)?;
     network::wireguard::disconnect(alias, profile)?;
     network::local_access::disconnect(alias)
+}
+
+fn restore(alias: &crate::config::LocalNetwork, profile: &Profile) -> Result<()> {
+    let _lifecycle = network::wireguard::lifecycle_lock(alias)?;
+    network::wireguard::connect(alias, profile)?;
+    network::local_access::install(alias, profile)
 }
 
 /// Serializes network switches on this machine; one network owns `.tako`.
