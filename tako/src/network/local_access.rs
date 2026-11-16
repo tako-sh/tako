@@ -57,6 +57,17 @@ pub(crate) fn install_proxy(
     profile: &Profile,
     write: bool,
 ) -> Result<Vec<String>> {
+    let own = profile
+        .request()
+        .device_id_for(&profile.snapshot().network.id)?;
+    if profile
+        .snapshot()
+        .permissions(&own, super::now()?)?
+        .ssh_user
+        .is_none()
+    {
+        return Err("This device has no SSH permission".into());
+    }
     let hosts = configure(alias, profile, Transport::Proxy, write)?;
     if write {
         super::write_bytes(&directory(alias)?.join(PROXY_MARKER), b"", true)?;
@@ -97,10 +108,9 @@ fn configure(
         .request()
         .device_id_for(&profile.snapshot().network.id)?;
     let permissions = profile.snapshot().permissions(&own, super::now()?)?;
+    // Without an SSH grant there are no aliases to write, in either mode.
+    // `connect` keeps working; `tako ssh config` reports the missing grant.
     let Some(ref user) = permissions.ssh_user else {
-        if transport == Transport::Proxy {
-            return Err("This device has no SSH permission".into());
-        }
         return if write { remove(alias) } else { Ok(()) }.map(|_| vec![]);
     };
     let directory = directory(alias)?;
@@ -559,6 +569,24 @@ mod tests {
         let mut expected = vec![fixture.server.to_string(), twin.to_string()];
         expected.sort();
         assert_eq!(patterns, expected);
+    }
+
+    #[test]
+    fn ssh_config_reports_a_missing_ssh_grant() {
+        // The fixture device has network membership but no SSH grant, so the
+        // explicit command fails before touching aliases or the key file.
+        let fixture = crate::network::tests::fixture();
+        let alias = LocalNetwork {
+            name: "test".into(),
+            id: fixture.profile.snapshot().network.id.to_string(),
+            device: "11".repeat(32),
+        };
+        assert!(
+            install_proxy(&alias, &fixture.profile, false)
+                .unwrap_err()
+                .to_string()
+                .contains("no SSH permission")
+        );
     }
 
     #[test]
