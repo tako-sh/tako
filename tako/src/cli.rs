@@ -416,7 +416,7 @@ pub(crate) fn supports_dry_run(path: &[&str]) -> bool {
                 "drain" | "resume" | "add" | "remove" | "list" | "uninstall"
             ]
             | ["network", "client", "add" | "remove" | "list"]
-            | ["secrets", "migrate" | "sync"]
+            | ["secrets", "migrate" | "sync" | "clear"]
             | ["backups", "now" | "download" | "restore"]
             | [
                 "sqlite",
@@ -483,7 +483,7 @@ impl Cli {
             Commands::Version => print_version(json),
             Commands::Status => {
                 let rt = tokio::runtime::Runtime::new()?;
-                rt.block_on(commands::status::run(json, self.config.as_deref()))
+                rt.block_on(commands::status::run(json))
             }
             Commands::Init => {
                 commands::init::run(self.config.as_deref())?;
@@ -538,25 +538,20 @@ impl Cli {
                 let rt = tokio::runtime::Runtime::new()?;
                 rt.block_on(commands::doctor::run())
             }
-            Commands::Network(cmd) => commands::network::run(cmd, self.config.as_deref()),
-            Commands::Connect { network } => {
-                commands::network::connect(network.as_deref(), self.config.as_deref())
-            }
-            Commands::Disconnect { network } => {
-                commands::network::disconnect(network.as_deref(), self.config.as_deref())
-            }
+            Commands::Network(cmd) => commands::network::run(cmd),
+            Commands::Connect { network } => commands::network::connect(network.as_deref()),
+            Commands::Disconnect { network } => commands::network::disconnect(network.as_deref()),
             Commands::Ssh {
                 server,
                 network,
                 command,
-            } => commands::network::ssh(
-                &server,
-                network.as_deref(),
-                self.config.as_deref(),
-                &command,
-            ),
+            } => commands::network::ssh(&server, network.as_deref(), &command),
             Commands::Secrets(cmd) => {
-                let emit_generic = json && !matches!(cmd, secret::SecretCommands::List);
+                let emit_generic = json
+                    && !matches!(
+                        cmd,
+                        secret::SecretCommands::List | secret::SecretCommands::Clear { .. }
+                    );
                 secret::run(cmd, self.config.as_deref())?;
                 if emit_generic {
                     json_success(true, "secrets")

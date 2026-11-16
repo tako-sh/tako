@@ -369,6 +369,17 @@ fn merge_remote(
     Ok(())
 }
 
+fn environment_target(config: &TakoToml, app: &str, env: &str) -> Result<(LocalNetwork, AppEnv)> {
+    let id = config
+        .envs
+        .get(env)
+        .and_then(|spec| spec.network.as_deref())
+        .ok_or("Set this environment's network ID in tako.toml before synchronizing secrets")?;
+    let alias = LocalNetworks::load()?.select(Some(id))?.clone();
+    let scope: AppEnv = format!("{app}/{env}").parse()?;
+    Ok((alias, scope))
+}
+
 pub(crate) fn sync_environment(
     project: &Path,
     config: &TakoToml,
@@ -377,13 +388,7 @@ pub(crate) fn sync_environment(
     publish: bool,
     retry_expired: bool,
 ) -> Result<SecretsStore> {
-    let id = config
-        .envs
-        .get(env)
-        .and_then(|spec| spec.network.as_deref())
-        .ok_or("Set this environment's network ID in tako.toml before synchronizing secrets")?;
-    let alias = LocalNetworks::load()?.select(Some(id))?.clone();
-    let scope: AppEnv = format!("{app}/{env}").parse()?;
+    let (alias, scope) = environment_target(config, app, env)?;
     let _lock = lock(project)?;
     let mut state = read_workspace(project)?;
     let (profile, cache) = pull(&alias, Some(scope.clone()))?;
@@ -397,7 +402,7 @@ pub(crate) fn sync_environment(
                 .retain(|pending| pending.mutation.expires_at > now);
             write_workspace(project, &state)?;
         }
-        publish_changes(project, &mut state, env, &scope, &alias, &profile)?;
+        publish_changes(project, &mut state, env, &scope, &alias, &profile, None)?;
         let (profile, cache) = pull(&alias, Some(scope.clone()))?;
         merge_remote(&mut state, env, &scope, &profile, &cache)?;
         write_workspace(project, &state)?;
@@ -408,6 +413,100 @@ pub(crate) fn sync_environment(
     Ok(values)
 }
 
+/// Names `clear_environment` would delete, from this worktree's drafts and the
+/// device's cached network state. Reads no network and writes nothing.
+pub(crate) fn preview_clear(
+    project: &Path,
+    config: &TakoToml,
+    app: &str,
+    env: &str,
+) -> Result<Vec<String>> {
+    let (alias, scope) = environment_target(config, app, env)?;
+    let network: NetworkId = alias.id.parse()?;
+    let mut state = read_workspace(project)?;
+    bind(&mut state, env, &scope, &network)?;
+    let mut names: BTreeSet<String> = state
+        .values
+        .environments
+        .get(env)
+        .map(|values| values.app.keys().cloned().collect())
+        .unwrap_or_default();
+    if let Some(cache) = read_cache(&alias)? {
+        names.extend(
+            cache
+                .latest()?
+                .into_values()
+                .filter(|record| {
+                    record.address.scope == scope
+                        && record.address.kind == RecordKind::App
+                        && !record.is_deletion()
+                })
+                .map(|record| record.address.name.clone()),
+        );
+    }
+    Ok(names.into_iter().collect())
+}
+
+/// Delete every app secret of one environment from its network and from this
+/// worktree's drafts, publishing the deletions immediately. Unpublished drafts
+/// of other kinds, such as provider credentials, stay local. Storage
+/// credentials and backup keys are never touched: retained backups need them.
+pub(crate) fn clear_environment(
+    project: &Path,
+    config: &TakoToml,
+    app: &str,
+    env: &str,
+) -> Result<Vec<String>> {
+    let (alias, scope) = environment_target(config, app, env)?;
+    let _lock = lock(project)?;
+    let mut state = read_workspace(project)?;
+    // Merge first so values published by other devices or worktrees are known
+    // and receive a deletion marker, not only this worktree's drafts.
+    let (profile, cache) = pull(&alias, Some(scope.clone()))?;
+    merge_remote(&mut state, env, &scope, &profile, &cache)?;
+    // Published values whose drafts were already removed are deleted as well.
+    let mut cleared: BTreeSet<String> = bind(&mut state, env, &scope, &cache.network)?
+        .base
+        .iter()
+        .filter(|row| row.key.kind == RecordKind::App)
+        .map(|row| row.key.name.clone())
+        .collect();
+    if let Some(values) = state.values.environments.get_mut(env) {
+        cleared.extend(std::mem::take(&mut values.app).into_keys());
+    }
+    // The deletions supersede expired app-secret commands. Values those
+    // commands may have published already are in the merged baseline above.
+    let now = super::now()?;
+    bind(&mut state, env, &scope, &cache.network)?
+        .pending
+        .retain(|pending| {
+            pending.mutation.address.kind != RecordKind::App || pending.mutation.expires_at > now
+        });
+    write_workspace(project, &state)?;
+    // From here the deletions are saved drafts: a later sync or deploy of this
+    // environment publishes them even if this command stops.
+    (|| -> Result<()> {
+        publish_changes(
+            project,
+            &mut state,
+            env,
+            &scope,
+            &alias,
+            &profile,
+            Some(RecordKind::App),
+        )?;
+        let (profile, cache) = pull(&alias, Some(scope.clone()))?;
+        merge_remote(&mut state, env, &scope, &profile, &cache)?;
+        write_workspace(project, &state)
+    })()
+    .map_err(|error| {
+        format!(
+            "Clearing {env} did not finish: {error}. The deletions are saved in this worktree; run `tako secrets clear --env {env}` again to finish. Syncing or deploying {env} also publishes them."
+        )
+    })?;
+    Ok(cleared.into_iter().collect())
+}
+
 fn publish_changes(
     project: &Path,
     state: &mut Workspace,
@@ -415,15 +514,23 @@ fn publish_changes(
     scope: &AppEnv,
     alias: &LocalNetwork,
     profile: &Profile,
+    // Publish only changes of this kind; other drafts stay local.
+    only: Option<RecordKind>,
 ) -> Result<()> {
     let network = &profile.snapshot().network.id;
     // Finish durable commands first, even when a subsequent edit superseded
     // their local values. They retain their original server-assigned revision.
+    // Commands of other kinds stay queued, in order, for the next full sync.
     loop {
-        let pending = bind(state, env, scope, network)?.pending.first().cloned();
-        let Some(pending) = pending else {
+        let entry = bind(state, env, scope, network)?;
+        let Some(index) = entry
+            .pending
+            .iter()
+            .position(|pending| only.is_none_or(|kind| pending.mutation.address.kind == kind))
+        else {
             break;
         };
+        let pending = entry.pending[index].clone();
         if pending.mutation.expires_at <= super::now()? {
             return Err("Secret publication retry expired. Local drafts are preserved. Run `tako secrets sync --retry-expired` to publish the current drafts as new changes".into());
         }
@@ -463,12 +570,15 @@ fn publish_changes(
         if let Some(row) = pending.local {
             entry.base.push(row);
         }
-        entry.pending.remove(0);
+        entry.pending.remove(index);
         write_workspace(project, state)?;
     }
-    // Every pending command has drained, so only edits remain unpublished.
+    // Every selected pending command has drained, so only edits remain unpublished.
     let current = local::rows(state.values.environments.get(env))?;
-    let dirty = unpublished(bind(state, env, scope, network)?, &current);
+    let dirty: BTreeSet<_> = unpublished(bind(state, env, scope, network)?, &current)
+        .into_iter()
+        .filter(|key| only.is_none_or(|kind| key.kind == kind))
+        .collect();
     if dirty.is_empty() {
         return Ok(());
     }
@@ -528,7 +638,7 @@ fn publish_changes(
     write_workspace(project, state)?;
     // The second pass only drains the just-persisted operations. No new dirty
     // records remain once their exact local values become the baseline.
-    publish_changes(project, state, env, scope, alias, profile)
+    publish_changes(project, state, env, scope, alias, profile, only)
 }
 
 #[cfg(test)]

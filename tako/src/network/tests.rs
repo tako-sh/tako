@@ -1,6 +1,7 @@
 use super::*;
 use tako_network::{
-    Approval, DeviceId, MemberKind, NetworkDescriptor, Permissions, ServerInfo, WgChallenge,
+    Approval, DeviceId, MemberKind, NetworkDescriptor, NetworkId, Permissions, ServerInfo,
+    WgChallenge,
 };
 
 pub(crate) struct Fixture {
