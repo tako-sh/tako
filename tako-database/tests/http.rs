@@ -1029,11 +1029,12 @@ async fn idle_connections_are_bounded_and_closed() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_client_that_stops_reading_releases_its_response() {
-    use tokio::io::AsyncWriteExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let stall = Duration::from_secs(3);
     let h = harness(HostConfig {
         max_buffered_bytes: 32 * 1024 * 1024,
         max_request_bytes: 4 * 1024,
-        write_stall_timeout: Duration::from_millis(300),
+        write_stall_timeout: stall,
         ..HostConfig::default()
     });
     let (address, server) = serve_apps(&h.host).await;
@@ -1044,20 +1045,29 @@ async fn a_client_that_stops_reading_releases_its_response() {
         .write_all(&raw_request(&h.token, &large))
         .await
         .unwrap();
-    // While its response waits to be read, another does not fit.
+    // Its response has started: it holds its bytes from here on. (A
+    // request racing it could otherwise take them first.)
+    let mut head = [0u8; 12];
+    tokio::time::timeout(Duration::from_secs(10), stalled.read_exact(&mut head))
+        .await
+        .expect("the response starts")
+        .unwrap();
+    assert_eq!(&head, b"HTTP/1.1 200");
+    // While the rest waits to be read, another does not fit.
+    let started = std::time::Instant::now();
     let mut busy = false;
-    for _ in 0..50 {
-        tokio::time::sleep(Duration::from_millis(20)).await;
+    while started.elapsed() < stall {
         let (status, _) = post(&h, "/v3/pipeline", large.clone()).await;
         if status == StatusCode::SERVICE_UNAVAILABLE {
             busy = true;
             break;
         }
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(busy, "the unread response holds the buffer");
     // Its connection is closed once writing stalls, and the bytes return.
     let mut served = false;
-    for _ in 0..50 {
+    for _ in 0..100 {
         tokio::time::sleep(Duration::from_millis(100)).await;
         let (status, _) = post(&h, "/v3/pipeline", large.clone()).await;
         if status == StatusCode::OK {

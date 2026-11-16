@@ -391,7 +391,7 @@ impl Context {
     fn snapshot_storage(
         &self,
         name: &str,
-        source: Option<(String, String)>,
+        source: Option<tako_core::BackupDestination>,
     ) -> Result<tako_core::StorageBinding, Box<dyn std::error::Error>> {
         Ok(choose_snapshot_storage(
             name,
@@ -402,20 +402,15 @@ impl Context {
 }
 
 /// The storage that holds a database's snapshots, among the backup storages
-/// of the environments that bind it: the one its server uses when that
-/// server answers (`source`, as bucket and endpoint), else the one they all
-/// agree on.
+/// of the environments that bind it: the one at the location its server
+/// uses when that server answers (`source`), else the one they all agree
+/// on. Locations compare every field that addresses the bucket.
 fn choose_snapshot_storage(
     name: &str,
     storages: Vec<(String, tako_core::StorageBinding)>,
-    source: Option<(String, String)>,
+    source: Option<tako_core::BackupDestination>,
 ) -> Result<tako_core::StorageBinding, String> {
-    let location = |storage: &tako_core::StorageBinding| {
-        (
-            storage.bucket.clone().unwrap_or_default(),
-            storage.endpoint.clone().unwrap_or_default(),
-        )
-    };
+    let location = tako_core::BackupDestination::of;
     if storages.is_empty() {
         return Err("Recovering onto another server needs a backup storage: set [envs.<env>].backup.storage or [databases.<name>].backup in tako.toml.".into());
     }
@@ -426,14 +421,21 @@ fn choose_snapshot_storage(
             .map(|(_, storage)| storage)
             .ok_or_else(|| {
                 format!(
-                    "The snapshots of {name} are in bucket {} at {}, which no environment that binds it uses as its backup storage.",
-                    source.0, source.1
+                    "The snapshots of {name} are in bucket {} at {} (region {}, {} addressing), which no environment that binds it uses as its backup storage.",
+                    source.bucket.as_deref().unwrap_or_default(),
+                    source.endpoint.as_deref().unwrap_or_default(),
+                    source.region.as_deref().unwrap_or("default"),
+                    if source.force_path_style { "path-style" } else { "virtual-hosted" },
                 )
             });
     }
-    let mut locations: Vec<_> = storages.iter().map(|(_, s)| location(s)).collect();
-    locations.sort();
-    locations.dedup();
+    let mut locations: Vec<tako_core::BackupDestination> = Vec::new();
+    for (_, storage) in &storages {
+        let here = location(storage);
+        if !locations.contains(&here) {
+            locations.push(here);
+        }
+    }
     if locations.len() > 1 {
         let envs: Vec<_> = storages.iter().map(|(env, _)| env.as_str()).collect();
         return Err(format!(
@@ -955,11 +957,10 @@ async fn restore(
         .await
         .ok()
         .and_then(|status| {
-            let backup = &status["databases"][0]["backup"];
-            Some((
-                backup["bucket"].as_str()?.to_owned(),
-                backup["endpoint"].as_str()?.to_owned(),
-            ))
+            serde_json::from_value::<tako_core::BackupDestination>(
+                status["databases"][0]["backup"]["destination"].clone(),
+            )
+            .ok()
         });
         let backup = ctx.snapshot_storage(name, source)?;
         send::<DatabaseInfo>(
@@ -1618,7 +1619,7 @@ mod tests {
                 ("staging".to_owned(), storage("staging-backups")),
             ]
         };
-        let source = |bucket: &str| Some((bucket.to_owned(), "https://s3.example.test".to_owned()));
+        let source = |bucket: &str| Some(tako_core::BackupDestination::of(&storage(bucket)));
         let chosen =
             choose_snapshot_storage("shop", storages(), source("staging-backups")).unwrap();
         assert_eq!(chosen.bucket.as_deref(), Some("staging-backups"));
@@ -1633,6 +1634,25 @@ mod tests {
         ];
         assert!(choose_snapshot_storage("shop", agreed, None).is_ok());
         assert!(choose_snapshot_storage("shop", Vec::new(), None).is_err());
+        // The same bucket and endpoint in another region, or addressed
+        // another way, is another location.
+        let mut regional = storage("shared");
+        regional.region = Some("eu-west-1".into());
+        let mut path_style = storage("shared");
+        path_style.force_path_style = true;
+        let differing = vec![
+            ("production".to_owned(), storage("shared")),
+            ("staging".to_owned(), regional.clone()),
+            ("preview".to_owned(), path_style),
+        ];
+        let chosen = choose_snapshot_storage(
+            "shop",
+            differing.clone(),
+            Some(tako_core::BackupDestination::of(&regional)),
+        )
+        .unwrap();
+        assert_eq!(chosen.region.as_deref(), Some("eu-west-1"));
+        assert!(choose_snapshot_storage("shop", differing, None).is_err());
     }
 
     #[test]

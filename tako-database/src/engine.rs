@@ -6,7 +6,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use fallible_iterator::FallibleIterator as _;
@@ -405,6 +405,19 @@ pub struct Connection {
     /// or not it succeeded. Cleared by `take_wrote`.
     wrote: bool,
     statement_timeout: Duration,
+    /// Whether a statement inserted a row with a given rowid; see
+    /// [`RowidWatch`].
+    rowids: Arc<RowidWatch>,
+}
+
+/// Watches inserts for one rowid. An insert whose rowid equals the previous
+/// `last_insert_rowid` leaves that value unchanged, and so does one into a
+/// `WITHOUT ROWID` table, which reports no rowid at all; SQLite's update
+/// hook runs only for the first, so it tells them apart.
+#[derive(Default)]
+struct RowidWatch {
+    rowid: AtomicI64,
+    inserted: AtomicBool,
 }
 
 impl Connection {
@@ -471,6 +484,19 @@ impl Connection {
         )
         .map_err(map_error)?;
 
+        let rowids = Arc::new(RowidWatch::default());
+        let hook_rowids = rowids.clone();
+        conn.update_hook(Some(
+            move |action: rusqlite::hooks::Action, _: &str, _: &str, rowid: i64| {
+                if action == rusqlite::hooks::Action::SQLITE_INSERT
+                    && rowid == hook_rowids.rowid.load(Ordering::Relaxed)
+                {
+                    hook_rowids.inserted.store(true, Ordering::Relaxed);
+                }
+            },
+        ))
+        .map_err(map_error)?;
+
         Ok(Self {
             conn,
             epoch,
@@ -479,6 +505,7 @@ impl Connection {
             transactions,
             wrote: false,
             statement_timeout: config.statement_timeout,
+            rowids,
         })
     }
 
@@ -641,6 +668,8 @@ impl Connection {
         check_not_empty(sql)?;
         let before_changes = self.conn.total_changes();
         let before_rowid = self.conn.last_insert_rowid();
+        self.rowids.rowid.store(before_rowid, Ordering::Relaxed);
+        self.rowids.inserted.store(false, Ordering::Relaxed);
         let in_transaction = !self.conn.is_autocommit();
         let (mut cached, mut fresh) = (None, None);
         let stmt = prepare(&self.conn, sql, &mut cached, &mut fresh)?;
@@ -712,8 +741,10 @@ impl Connection {
         let changed = self.conn.total_changes() > before_changes;
         let affected = if changed { self.conn.changes() } else { 0 };
         let after_rowid = self.conn.last_insert_rowid();
-        let last_insert_rowid =
-            (after_rowid != before_rowid || (inserts && changed)).then_some(after_rowid);
+        // An unchanged rowid counts only when this statement inserted a row
+        // with it, not when it inserted into a WITHOUT ROWID table.
+        let reinserted = inserts && changed && self.rowids.inserted.load(Ordering::Relaxed);
+        let last_insert_rowid = (after_rowid != before_rowid || reinserted).then_some(after_rowid);
         Ok(Outcome {
             rows: count,
             affected,

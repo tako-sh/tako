@@ -150,6 +150,10 @@ pub struct DatabaseSnapshot {
 pub struct DatabaseBackupStatus {
     pub bucket: String,
     pub endpoint: String,
+    /// The full location, which a move matches against the environments'
+    /// storages to read the database's snapshots.
+    #[serde(default)]
+    pub destination: Option<BackupDestination>,
     #[serde(default)]
     pub last_snapshot: Option<DatabaseSnapshot>,
     #[serde(default)]
@@ -190,14 +194,33 @@ pub struct DatabaseExport {
     pub sha256: String,
 }
 
-/// Whether two storage bindings name the same location. Credentials can
-/// rotate without changing the location.
+/// Where a storage binding's objects live: every field that addresses the
+/// bucket, without the credentials, which can rotate.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct BackupDestination {
+    pub provider: crate::storage::StorageProvider,
+    pub bucket: Option<String>,
+    pub endpoint: Option<String>,
+    pub region: Option<String>,
+    pub force_path_style: bool,
+}
+
+impl BackupDestination {
+    pub fn of(binding: &StorageBinding) -> Self {
+        Self {
+            provider: binding.provider,
+            bucket: binding.bucket.clone(),
+            endpoint: binding.endpoint.clone(),
+            region: binding.region.clone(),
+            force_path_style: binding.force_path_style,
+        }
+    }
+}
+
+/// Whether two storage bindings name the same location.
 pub fn same_backup_destination(a: &StorageBinding, b: &StorageBinding) -> bool {
-    a.provider == b.provider
-        && a.bucket == b.bucket
-        && a.endpoint == b.endpoint
-        && a.region == b.region
-        && a.force_path_style == b.force_path_style
+    BackupDestination::of(a) == BackupDestination::of(b)
 }
 
 #[cfg(test)]

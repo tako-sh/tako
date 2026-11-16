@@ -204,6 +204,7 @@ pub(crate) fn status(state: &ServerState, stored: &StoredDatabase) -> Option<Dat
     Some(DatabaseBackupStatus {
         bucket: backup.bucket.clone().unwrap_or_default(),
         endpoint: backup.endpoint.clone().unwrap_or_default(),
+        destination: Some(tako_core::BackupDestination::of(backup)),
         last_snapshot: current.last_snapshot,
         last_attempt_unix_secs: current.last_attempt_unix_secs,
         last_error: current.last_error,

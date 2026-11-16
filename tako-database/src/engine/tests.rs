@@ -679,6 +679,21 @@ fn with_updates_and_deletes_report_no_insert_rowid() {
     )
     .unwrap();
     assert_eq!(result.last_insert_rowid, Some(9));
+    // An insert into a WITHOUT ROWID table reports none, rather than the
+    // previous insert's.
+    run(
+        &mut conn,
+        "CREATE TABLE tags (name TEXT PRIMARY KEY) WITHOUT ROWID",
+    )
+    .unwrap();
+    for sql in [
+        "INSERT INTO tags VALUES ('a')",
+        "WITH c AS (SELECT 'b' AS name) INSERT INTO tags SELECT name FROM c",
+    ] {
+        let result = run(&mut conn, sql).unwrap();
+        assert_eq!(result.affected_row_count, 1, "{sql}");
+        assert_eq!(result.last_insert_rowid, None, "{sql}");
+    }
 }
 
 #[test]
