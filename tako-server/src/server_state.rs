@@ -97,6 +97,11 @@ impl ServerRuntimeConfig {
 }
 
 /// Server state shared across components
+/// Set when a reloaded successor process is ready and this one is about to
+/// shut down.
+pub(crate) static RELOAD_SUCCESSOR_READY: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 pub struct ServerState {
     pub(crate) app_manager: Arc<AppManager>,
     pub(crate) load_balancer: Arc<LoadBalancer>,
@@ -247,8 +252,18 @@ impl ServerState {
 
     pub(crate) async fn shutdown_runtime(&self, workflow_drain_timeout: Duration) {
         tracing::info!("Shutting down managed app runtime");
+        // With a reloaded successor serving, hand databases over first so new
+        // connections reach the process that knows every current token.
+        // Otherwise draining apps keep their databases until they stop.
+        let successor = RELOAD_SUCCESSOR_READY.load(std::sync::atomic::Ordering::Acquire);
+        if successor {
+            self.stop_databases().await;
+        }
         self.workflows.shutdown_all(workflow_drain_timeout).await;
         self.app_manager.shutdown_all().await;
+        if !successor {
+            self.stop_databases().await;
+        }
     }
 
     pub(crate) async fn reject_mutating_when_upgrading(&self, command: &str) -> Option<Response> {

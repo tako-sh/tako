@@ -103,14 +103,39 @@ impl Default for HostConfig {
 }
 
 /// Where a binding's database lives.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Home {
     /// On this server.
     Local,
-    /// On another server of the network, reached at `upstream`.
-    Remote { upstream: SocketAddr },
+    /// On another server of the network, reached at `upstream`. `key` is
+    /// the key that server issued with its grant to this app environment.
+    Remote { upstream: SocketAddr, key: String },
     /// On another server whose address is not known right now.
     Unavailable { reason: String },
+}
+
+impl std::fmt::Debug for Home {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Local => f.write_str("Local"),
+            Self::Remote { upstream, .. } => f
+                .debug_struct("Remote")
+                .field("upstream", upstream)
+                .field("key", &"[REDACTED]")
+                .finish(),
+            Self::Unavailable { reason } => f
+                .debug_struct("Unavailable")
+                .field("reason", reason)
+                .finish(),
+        }
+    }
+}
+
+/// What a server grants an app environment that runs on other servers.
+#[derive(Clone)]
+struct Grant {
+    databases: BTreeSet<DatabaseId>,
+    key_hash: TokenHash,
 }
 
 /// A binding of one app environment on this server.
@@ -250,8 +275,12 @@ pub(crate) struct HostInner {
     bindings: RwLock<HashMap<String, Vec<Binding>>>,
     by_token: RwLock<HashMap<TokenHash, ScopedBinding>>,
     /// Databases on this server that apps on other servers may use.
-    remote_grants: RwLock<HashMap<String, BTreeSet<DatabaseId>>>,
+    remote_grants: RwLock<HashMap<String, Grant>>,
     pub(crate) streams: Mutex<HashMap<[u8; 16], StreamEntry>>,
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 /// The app environment a binding scope belongs to. Temporary bindings, such
@@ -279,6 +308,7 @@ pub(crate) enum Resolved {
         database: DatabaseId,
         upstream: SocketAddr,
         scope: String,
+        key: String,
     },
     Unavailable(String),
 }
@@ -407,13 +437,19 @@ impl DatabaseHost {
     }
 
     /// Replaces which databases on this server an app environment running on
-    /// other servers may use.
-    pub fn set_remote_grants(&self, scope: &str, databases: BTreeSet<DatabaseId>) {
+    /// other servers may use. Their servers present `key` when forwarding.
+    pub fn set_remote_grants(&self, scope: &str, databases: BTreeSet<DatabaseId>, key: &str) {
         let mut grants = self.inner.remote_grants.write();
         if databases.is_empty() {
             grants.remove(scope);
         } else {
-            grants.insert(scope.to_owned(), databases);
+            grants.insert(
+                scope.to_owned(),
+                Grant {
+                    databases,
+                    key_hash: hash_token(key),
+                },
+            );
         }
     }
 
@@ -424,6 +460,14 @@ impl DatabaseHost {
             .read()
             .get(id)
             .is_some_and(|database| database.changed.load(Ordering::Relaxed))
+    }
+
+    /// Records that a database matches its last snapshot, as a new, empty
+    /// database does.
+    pub fn clear_changed(&self, id: &DatabaseId) {
+        if let Some(database) = self.inner.databases.read().get(id) {
+            database.changed.store(false, Ordering::Relaxed);
+        }
     }
 
     /// Records that a database differs from its last snapshot.
@@ -583,7 +627,9 @@ impl DatabaseHost {
                     }
                     engine::Event::Row(row) => {
                         if rows.len() >= max_rows {
+                            // One row past the limit shows there are more.
                             truncated = true;
+                            return Err(Error::new(engine::STOP, "row limit reached"));
                         } else {
                             size += row
                                 .iter()
@@ -606,6 +652,12 @@ impl DatabaseHost {
                 Ok(())
             });
             let result = match outcome {
+                // Each statement is its own transaction here: the connection
+                // is released (and rolled back) before the next one runs.
+                Ok(_) if !conn.is_autocommit() => Err(HostError::Engine(
+                    "Transactions cannot span statements here; each statement commits on its own."
+                        .into(),
+                )),
                 Ok((affected, _, wrote)) => {
                     if wrote {
                         database.mark_changed();
@@ -689,27 +741,35 @@ impl DatabaseHost {
                 database: self.database(&binding.database).ok()?,
                 principal: Principal::Local(hash),
             }),
-            Home::Remote { upstream } => Some(Resolved::Forward {
+            Home::Remote { upstream, key } => Some(Resolved::Forward {
                 database: binding.database,
                 upstream,
                 scope: environment_scope(&scope).to_owned(),
+                key,
             }),
             Home::Unavailable { reason } => Some(Resolved::Unavailable(reason)),
         }
     }
 
+    /// Resolves a request forwarded by another server. Both the source
+    /// address and the grant's key must match: any process on a server can
+    /// reach this port from its address, but only that server knows the key.
     pub(crate) fn resolve_remote(
         &self,
         server: IpAddr,
         scope: &str,
         database: &DatabaseId,
+        key: &str,
     ) -> Option<Resolved> {
+        let presented = hash_token(key);
         let allowed = self
             .inner
             .remote_grants
             .read()
             .get(scope)
-            .is_some_and(|grants| grants.contains(database));
+            .is_some_and(|grant| {
+                constant_time_eq(&grant.key_hash, &presented) && grant.databases.contains(database)
+            });
         if !allowed {
             return None;
         }

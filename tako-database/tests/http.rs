@@ -9,7 +9,7 @@ use bytes::Bytes;
 use http::{Request, StatusCode};
 use http_body_util::{BodyExt, Full};
 use serde_json::{Value, json};
-use tako_database::http::{Access, DATABASE_HEADER, SCOPE_HEADER, handle};
+use tako_database::http::{Access, DATABASE_HEADER, KEY_HEADER, SCOPE_HEADER, handle};
 use tako_database::{
     Binding, DatabaseHost, DatabaseId, Home, HostConfig, generate_token, hash_token,
 };
@@ -482,8 +482,9 @@ async fn snapshots_track_changes() {
 async fn forwards_requests_to_the_server_that_hosts_the_database() {
     // The home server hosts the database and grants it to shop/production.
     let home = harness(HostConfig::default());
+    let key = generate_token();
     home.host
-        .set_remote_grants("shop/production", BTreeSet::from([home.id.clone()]));
+        .set_remote_grants("shop/production", BTreeSet::from([home.id.clone()]), &key);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let upstream = listener.local_addr().unwrap();
     let allow: Arc<dyn Fn(std::net::IpAddr) -> bool + Send + Sync> =
@@ -502,7 +503,10 @@ async fn forwards_requests_to_the_server_that_hosts_the_database() {
         vec![Binding {
             token_hash: hash_token(&token),
             database: home.id.clone(),
-            home: Home::Remote { upstream },
+            home: Home::Remote {
+                upstream,
+                key: key.clone(),
+            },
         }],
     );
     let request = |body: Value| {
@@ -538,7 +542,10 @@ async fn forwards_requests_to_the_server_that_hosts_the_database() {
         vec![Binding {
             token_hash: hash_token(&release_token),
             database: home.id.clone(),
-            home: Home::Remote { upstream },
+            home: Home::Remote {
+                upstream,
+                key: key.clone(),
+            },
         }],
     );
     let (status, release) = send(
@@ -554,9 +561,31 @@ async fn forwards_requests_to_the_server_that_hosts_the_database() {
     .await;
     assert_eq!(status, StatusCode::OK, "{release}");
 
+    // A forwarded request with another key is refused, so a process on a
+    // granted server cannot act for the environment without its server.
+    let forged = Request::post("/v3/pipeline")
+        .header(SCOPE_HEADER, "shop/production")
+        .header(DATABASE_HEADER, home.id.as_str())
+        .header(KEY_HEADER, "not-the-key")
+        .body(Full::new(Bytes::from(
+            json!({"baton": null, "requests": [execute("SELECT 1")]}).to_string(),
+        )))
+        .unwrap();
+    let allow_loopback: Arc<dyn Fn(std::net::IpAddr) -> bool + Send + Sync> =
+        Arc::new(|ip| ip.is_loopback());
+    let (status, _) = send(
+        &home.host,
+        &Access::Peers {
+            allow: allow_loopback,
+        },
+        forged,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
     // Without a grant the home server refuses forwarded requests.
     home.host
-        .set_remote_grants("shop/production", BTreeSet::new());
+        .set_remote_grants("shop/production", BTreeSet::new(), &key);
     let (status, _) = send(
         &edge,
         &Access::Apps,
@@ -595,7 +624,10 @@ async fn unreachable_home_servers_return_bad_gateway() {
         vec![Binding {
             token_hash: hash_token(&token),
             database: DatabaseId::generate(),
-            home: Home::Remote { upstream },
+            home: Home::Remote {
+                upstream,
+                key: generate_token(),
+            },
         }],
     );
     let request = Request::post("/v3/pipeline")

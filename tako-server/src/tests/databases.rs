@@ -242,7 +242,7 @@ async fn release_snapshots_skip_unchanged_databases_and_foreign_apps() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp);
     create(&state, ID, Some("release-bucket")).await;
-    ok(
+    let granted = ok(
         &state,
         Command::GrantDatabases {
             app: "web/production".into(),
@@ -250,6 +250,20 @@ async fn release_snapshots_skip_unchanged_databases_and_foreign_apps() {
         },
     )
     .await;
+    assert!(granted["peer_key"].is_string(), "a grant issues a peer key");
+
+    // A new, empty database has nothing to snapshot yet.
+    let empty = ok(
+        &state,
+        Command::SnapshotDatabase {
+            id: ID.into(),
+            reason: SnapshotReason::Release,
+            app: None,
+        },
+    )
+    .await;
+    assert!(empty["skipped"].is_string());
+    query(&state, ID, "CREATE TABLE items (name TEXT)").await;
 
     let foreign = error(
         &state,
@@ -273,7 +287,7 @@ async fn release_snapshots_skip_unchanged_databases_and_foreign_apps() {
     .await;
     assert!(
         first["snapshot"].is_object(),
-        "a new database counts as changed"
+        "a changed database is snapshotted"
     );
     let second = ok(
         &state,
@@ -467,7 +481,7 @@ async fn import_and_export_round_trip_a_file() {
 }
 
 #[tokio::test]
-async fn databases_in_use_cannot_be_deleted() {
+async fn deleting_a_database_revokes_its_grants() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp);
     create(&state, ID, None).await;
@@ -483,26 +497,26 @@ async fn databases_in_use_cannot_be_deleted() {
     .await;
     assert!(duplicate.contains("already exists"));
 
-    ok(
+    const OTHER: &str = "fedcba9876543210fedcba9876543210";
+    create(&state, OTHER, None).await;
+    let granted = ok(
         &state,
         Command::GrantDatabases {
             app: "web/production".into(),
-            databases: vec![ID.into()],
+            databases: vec![ID.into(), OTHER.into()],
         },
     )
     .await;
-    let blocked = error(&state, Command::DeleteDatabase { id: ID.into() }).await;
-    assert!(blocked.contains("web/production"));
-
-    ok(
-        &state,
-        Command::GrantDatabases {
-            app: "web/production".into(),
-            databases: vec![],
-        },
-    )
-    .await;
+    // Grants can outlive the deployments that used them: deleting revokes
+    // this database from them and keeps the environment's other grants.
     ok(&state, Command::DeleteDatabase { id: ID.into() }).await;
+    let grants = state.state_store.all_database_grants().unwrap();
+    let grant = &grants["web/production"];
+    assert_eq!(
+        grant.databases,
+        std::collections::BTreeSet::from([OTHER.to_owned()])
+    );
+    assert_eq!(Some(grant.key.as_str()), granted["peer_key"].as_str());
     assert!(!state.databases.database_dir(ID).exists());
     error(
         &state,
@@ -511,6 +525,56 @@ async fn databases_in_use_cannot_be_deleted() {
         },
     )
     .await;
+}
+
+#[tokio::test]
+async fn latest_restores_skip_the_safety_copies_restores_take() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, Some("latest-bucket")).await;
+    query(&state, ID, "CREATE TABLE items (name TEXT)").await;
+    query(&state, ID, "INSERT INTO items VALUES ('good')").await;
+    ok(
+        &state,
+        Command::SnapshotDatabase {
+            id: ID.into(),
+            reason: SnapshotReason::Manual,
+            app: None,
+        },
+    )
+    .await;
+    query(&state, ID, "INSERT INTO items VALUES ('bad')").await;
+    let latest = || Command::RestoreDatabase {
+        id: ID.into(),
+        snapshot: None,
+        backup_key_base64: None,
+    };
+    ok(&state, latest()).await;
+    assert_eq!(count(&state, ID).await, 1);
+    // The first restore saved the bad contents; repeating it restores the
+    // good snapshot again, not that safety copy.
+    query(&state, ID, "INSERT INTO items VALUES ('later')").await;
+    ok(&state, latest()).await;
+    assert_eq!(count(&state, ID).await, 1);
+}
+
+#[tokio::test]
+async fn shell_statements_cannot_leave_a_transaction_open() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, None).await;
+    query(&state, ID, "CREATE TABLE items (name TEXT)").await;
+    let begin = error(
+        &state,
+        Command::QueryDatabase {
+            id: ID.into(),
+            sql: "BEGIN".into(),
+        },
+    )
+    .await;
+    assert!(begin.contains("own"));
+    query(&state, ID, "INSERT INTO items VALUES ('kept')").await;
+    assert_eq!(count(&state, ID).await, 1, "later statements commit");
 }
 
 #[tokio::test]

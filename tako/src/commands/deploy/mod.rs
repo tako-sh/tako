@@ -359,7 +359,7 @@ async fn run_async(
     config::refresh_native_build_targets(&mut servers, &server_names).await?;
     let server_targets = resolve_deploy_server_targets(&servers, &server_names)
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
-    let database_plan = crate::commands::sqlite::target::plan_bindings(
+    let mut database_plan = crate::commands::sqlite::target::plan_bindings(
         &tako_config,
         &servers,
         &env,
@@ -586,7 +586,7 @@ async fn run_async(
             .values()
             .any(|database| database.access == tako_core::DatabaseAccess::Network);
     if !database_plan.is_empty() || revokes_grants {
-        databases::prepare(databases::Preparation {
+        let peer_keys = databases::prepare(databases::Preparation {
             plan: &database_plan,
             config: &tako_config,
             servers: &servers,
@@ -599,6 +599,7 @@ async fn run_async(
             release: release_command.is_some(),
         })
         .await?;
+        databases::apply_peer_keys(&mut database_plan, &peer_keys);
     }
     let deploy_config = Arc::new(DeployConfig {
         app_name: deployment_app_name.clone(),

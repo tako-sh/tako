@@ -112,6 +112,8 @@ pub(crate) fn plan_bindings(
                     id: database.id.clone(),
                     server: home.device_id.clone(),
                     access: database.access,
+                    // Filled from the home server's grant during the deploy.
+                    peer_key: None,
                 },
                 home,
             },

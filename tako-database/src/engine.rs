@@ -365,14 +365,18 @@ impl Connection {
             let result = match next {
                 Ok(Some(mut stmt)) => {
                     wrote |= !stmt.readonly();
+                    let in_transaction = !self.conn.is_autocommit();
                     let mut rows = stmt.raw_query();
-                    loop {
+                    let result = loop {
                         match rows.next() {
                             Ok(Some(_)) => continue,
                             Ok(None) => break Ok(true),
                             Err(error) => break Err(error),
                         }
-                    }
+                    };
+                    drop(rows);
+                    wrote |= in_transaction && self.conn.is_autocommit();
+                    result
                 }
                 Ok(None) => Ok(false),
                 Err(error) => Err(error),
@@ -414,6 +418,7 @@ impl Connection {
         check_not_empty(sql)?;
         let before_changes = self.conn.total_changes();
         let before_rowid = self.conn.last_insert_rowid();
+        let in_transaction = !self.conn.is_autocommit();
         let mut stmt = self.conn.prepare_cached(sql).map_err(map_error)?;
         bind(&mut stmt, args)?;
         let readonly = stmt.readonly();
@@ -447,7 +452,9 @@ impl Connection {
                             break;
                         }
                         if let Err(error) = sink(Event::Row(values)) {
-                            failure = Some(error);
+                            if error.code != STOP {
+                                failure = Some(error);
+                            }
                             break;
                         }
                     }
@@ -470,11 +477,14 @@ impl Connection {
         let after_rowid = self.conn.last_insert_rowid();
         let last_insert_rowid =
             (after_rowid != before_rowid || (inserts && changed)).then_some(after_rowid);
+        // COMMIT is read-only to SQLite, yet it is what makes earlier writes
+        // durable; a snapshot taken mid-transaction must not lose them.
+        let committed = in_transaction && self.conn.is_autocommit();
         Ok(Outcome {
             rows: count,
             affected,
             last_insert_rowid,
-            wrote: !readonly,
+            wrote: !readonly || committed,
         })
     }
 
@@ -699,6 +709,9 @@ const SESSION_PRAGMAS: &[&str] = &[
     "secure_delete",
     "short_column_names",
 ];
+
+/// Error code a streaming sink returns to stop reading rows without failing.
+pub(crate) const STOP: &str = "TAKO_STOP";
 
 /// PRAGMAs that write a persistent database setting the app owns.
 const PERSISTENT_PRAGMAS: &[&str] = &["application_id", "auto_vacuum", "user_version"];

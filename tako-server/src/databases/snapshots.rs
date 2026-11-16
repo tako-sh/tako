@@ -128,7 +128,7 @@ pub(crate) fn status(state: &ServerState, stored: &StoredDatabase) -> Option<Dat
     })
 }
 
-pub(crate) fn spawn_scheduler(state: Arc<ServerState>) {
+pub(crate) fn spawn_scheduler(state: Arc<ServerState>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(SCHEDULER_TICK);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -158,7 +158,7 @@ pub(crate) fn spawn_scheduler(state: Arc<ServerState>) {
                 }
             }
         }
-    });
+    })
 }
 
 async fn due(state: &ServerState, stored: &StoredDatabase) -> bool {
@@ -500,10 +500,27 @@ pub(crate) async fn restore(
                     stored.name
                 )
             })?,
-        None => manifests
-            .into_iter()
-            .next()
-            .ok_or_else(|| format!("Database {} has no snapshots yet.", stored.name))?,
+        // The newest snapshot of the database's own history: the safety
+        // copies that restores and imports take of what they replace are
+        // left out, so repeating a restore does not undo it.
+        None => {
+            let fallback = manifests.first().map(|m| m.snapshot.id.clone());
+            let mut manifests = manifests.into_iter();
+            match manifests
+                .by_ref()
+                .find(|m| m.snapshot.reason != SnapshotReason::Restore)
+            {
+                Some(manifest) => manifest,
+                None => {
+                    let id = fallback
+                        .ok_or_else(|| format!("Database {} has no snapshots yet.", stored.name))?;
+                    return Err(format!(
+                        "Database {} has only snapshots taken before restores or imports; pass --snapshot {id} to restore one.",
+                        stored.name
+                    ));
+                }
+            }
+        }
     };
 
     // Fetch and verify the snapshot before anything changes.

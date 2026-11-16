@@ -303,6 +303,53 @@ fn allows_introspection_and_session_pragmas_but_not_server_settings() {
 }
 
 #[test]
+fn commit_counts_as_a_write() {
+    let fixture = fixture();
+    let mut conn = open(&fixture);
+    let wrote = |conn: &mut Connection, sql: &str| {
+        conn.execute(
+            sql,
+            &Args::Positional(&[]),
+            true,
+            &mut Budget::new(usize::MAX),
+        )
+        .unwrap()
+        .1
+    };
+    wrote(&mut conn, "CREATE TABLE t (x)");
+    assert!(!wrote(&mut conn, "BEGIN"));
+    assert!(wrote(&mut conn, "INSERT INTO t VALUES (1)"));
+    // A snapshot between the insert and the commit must not lose it.
+    assert!(
+        wrote(&mut conn, "COMMIT"),
+        "COMMIT makes the writes durable"
+    );
+    assert!(!wrote(&mut conn, "SELECT * FROM t"));
+}
+
+#[test]
+fn streaming_sinks_can_stop_early() {
+    let fixture = fixture();
+    let mut conn = open(&fixture);
+    let mut seen = 0;
+    let outcome = conn.execute_streaming(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n) SELECT i FROM n",
+        &Args::Positional(&[]),
+        |event| {
+            if let Event::Row(_) = event {
+                seen += 1;
+                if seen == 10 {
+                    return Err(Error::new(super::STOP, "enough"));
+                }
+            }
+            Ok(())
+        },
+    );
+    assert!(outcome.is_ok(), "stopping is not an error");
+    assert_eq!(seen, 10, "an endless query stops at the sink's request");
+}
+
+#[test]
 fn temporary_objects_and_attachments_mark_the_connection() {
     let fixture = fixture();
     for sql in [

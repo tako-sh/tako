@@ -26,16 +26,38 @@ pub(super) struct Preparation<'a> {
     pub release: bool,
 }
 
-pub(super) async fn prepare(prep: Preparation<'_>) -> Result<(), Box<dyn std::error::Error>> {
+/// Prepares the environment's databases and returns the peer keys their
+/// servers issued with grants, by server device ID.
+pub(super) async fn prepare(
+    prep: Preparation<'_>,
+) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
     let _t = output::timed("Prepare databases");
-    output::with_spinner_async("Preparing databases", "Prepared databases", async {
-        run(&prep).await.map_err(|error| error.to_string())
-    })
-    .await?;
-    Ok(())
+    let (keys, warnings) =
+        output::with_spinner_async("Preparing databases", "Prepared databases", async {
+            run(&prep).await.map_err(|error| error.to_string())
+        })
+        .await?;
+    for warning in warnings {
+        output::warning(&warning);
+    }
+    Ok(keys)
 }
 
-async fn run(prep: &Preparation<'_>) -> Result<(), Box<dyn std::error::Error>> {
+/// Sets each binding's peer key from the grant of its database's server.
+pub(super) fn apply_peer_keys(
+    plan: &mut HashMap<String, PlannedBinding>,
+    keys: &HashMap<String, String>,
+) {
+    for planned in plan.values_mut() {
+        if planned.database.access == tako_core::DatabaseAccess::Network {
+            planned.binding.peer_key = keys.get(&planned.home.device_id).cloned();
+        }
+    }
+}
+
+type Prepared = (HashMap<String, String>, Vec<String>);
+
+async fn run(prep: &Preparation<'_>) -> Result<Prepared, Box<dyn std::error::Error>> {
     // Distinct databases bound by this environment.
     let mut bound: BTreeMap<String, &PlannedBinding> = BTreeMap::new();
     for planned in prep.plan.values() {
@@ -62,9 +84,14 @@ async fn run(prep: &Preparation<'_>) -> Result<(), Box<dyn std::error::Error>> {
             .await
             .map_err(|e| format!("Configure backups of {}: {e}", planned.database_name))?;
         }
-        grant(prep, &bound).await?;
-        sync_records(prep, &bound).await?;
     }
+    let (keys, warnings) = if prep.administrator {
+        let granted = grant(prep, &bound).await?;
+        sync_records(prep, &bound).await?;
+        granted
+    } else {
+        (HashMap::new(), Vec::new())
+    };
 
     if prep.release {
         for planned in bound.values() {
@@ -73,7 +100,10 @@ async fn run(prep: &Preparation<'_>) -> Result<(), Box<dyn std::error::Error>> {
                 Command::SnapshotDatabase {
                     id: planned.database.id.clone(),
                     reason: SnapshotReason::Release,
-                    app: Some(prep.app.to_owned()),
+                    // Administrators may snapshot any database, including
+                    // one this deploy binds for the first time; deployers
+                    // without administration name their app.
+                    app: (!prep.administrator).then(|| prep.app.to_owned()),
                 },
             )
             .await
@@ -85,16 +115,18 @@ async fn run(prep: &Preparation<'_>) -> Result<(), Box<dyn std::error::Error>> {
             })?;
         }
     }
-    Ok(())
+    Ok((keys, warnings))
 }
 
 /// Grants the environment its network-access databases on their servers when
 /// it deploys elsewhere, and clears grants on servers of declared databases it
-/// no longer uses from elsewhere.
+/// no longer uses from elsewhere. Returns the peer keys of the grants, and
+/// warnings for servers that could not clear a grant this deploy does not
+/// depend on.
 async fn grant(
     prep: &Preparation<'_>,
     bound: &BTreeMap<String, &PlannedBinding>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<Prepared, Box<dyn std::error::Error>> {
     let network = crate::commands::sqlite::target::env_network(prep.config, prep.env)?;
     let mut homes: BTreeMap<String, (Home, BTreeSet<String>)> = BTreeMap::new();
     for database in prep.config.databases.values() {
@@ -120,18 +152,35 @@ async fn grant(
             ids.insert(planned.database.id.clone());
         }
     }
+    let mut keys = HashMap::new();
+    let mut warnings = Vec::new();
     for (home, ids) in homes.into_values() {
-        send(
+        let needed = !ids.is_empty();
+        let result: Result<serde_json::Value, _> = crate::commands::sqlite::send(
             &home,
             Command::GrantDatabases {
                 app: prep.app.to_owned(),
                 databases: ids.into_iter().collect(),
             },
         )
-        .await
-        .map_err(|e| format!("Grant databases on {}: {e}", home.name))?;
+        .await;
+        match result {
+            Ok(response) => {
+                if let Some(key) = response["peer_key"].as_str() {
+                    keys.insert(home.device_id.clone(), key.to_owned());
+                }
+            }
+            Err(error) if needed => {
+                return Err(format!("Grant databases on {}: {error}", home.name).into());
+            }
+            // Only a stale grant is left behind; this deploy does not use it.
+            Err(error) => warnings.push(format!(
+                "Could not clear {}'s database grant on {}: {error}",
+                prep.app, home.name
+            )),
+        }
     }
-    Ok(())
+    Ok((keys, warnings))
 }
 
 /// Mirrors each bound database's `access` from tako.toml into its network

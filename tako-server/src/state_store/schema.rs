@@ -217,7 +217,7 @@ fn ensure_schema_objects(conn: &rusqlite::Connection) -> Result<(), StateStoreEr
 
         CREATE TABLE IF NOT EXISTS database_grants (
             app TEXT NOT NULL PRIMARY KEY,
-            databases TEXT NOT NULL
+            encrypted_data BLOB NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS app_backups (

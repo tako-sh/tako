@@ -136,6 +136,10 @@ pub(super) fn spawn_standby_monitor(rt: &Runtime, config: StandbyPromotionConfig
                             }
                         }
 
+                        if let Err(error) = config.state.start_databases(None).await {
+                            tracing::error!(%error, "Failed to start hosted databases after promotion");
+                        }
+
                         promoted = true;
                         consecutive_failures = 0;
                         tracing::info!("Promotion complete — standby now running as full server");

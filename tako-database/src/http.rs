@@ -27,6 +27,8 @@ pub type Body = http_body_util::combinators::BoxBody<Bytes, BoxError>;
 pub const SCOPE_HEADER: &str = "x-tako-database-scope";
 /// Header naming the database a forwarding server addresses.
 pub const DATABASE_HEADER: &str = "x-tako-database-id";
+/// Header carrying the key the database's server issued with its grant.
+pub const KEY_HEADER: &str = "x-tako-database-key";
 
 /// Who a listener accepts.
 #[derive(Clone)]
@@ -111,13 +113,13 @@ where
                     "peer is not a server of this network",
                 );
             }
-            let Some((scope, database)) = forwarded(&request) else {
+            let Some((scope, database, key)) = forwarded(&request) else {
                 return error(
                     StatusCode::BAD_REQUEST,
                     "missing database forwarding headers",
                 );
             };
-            match host.resolve_remote(peer.ip(), &scope, &database) {
+            match host.resolve_remote(peer.ip(), &scope, &database, &key) {
                 Some(resolved) => resolved,
                 None => {
                     return error(
@@ -134,12 +136,16 @@ where
             database,
             upstream,
             scope,
+            key,
         } => {
             forward(
                 host,
-                upstream,
-                &scope,
-                &database,
+                Upstream {
+                    address: upstream,
+                    scope: &scope,
+                    database: &database,
+                    key: &key,
+                },
                 &path,
                 request.into_body(),
             )
@@ -476,15 +482,12 @@ fn bearer<B>(request: &Request<B>) -> Option<&str> {
         .filter(|token| !token.is_empty())
 }
 
-fn forwarded<B>(request: &Request<B>) -> Option<(String, DatabaseId)> {
-    let scope = request
-        .headers()
-        .get(SCOPE_HEADER)?
-        .to_str()
-        .ok()?
-        .to_owned();
-    let database = request.headers().get(DATABASE_HEADER)?.to_str().ok()?;
-    Some((scope, DatabaseId::parse(database).ok()?))
+fn forwarded<B>(request: &Request<B>) -> Option<(String, DatabaseId, String)> {
+    let header = |name: &str| request.headers().get(name)?.to_str().ok();
+    let scope = header(SCOPE_HEADER)?.to_owned();
+    let database = DatabaseId::parse(header(DATABASE_HEADER)?).ok()?;
+    let key = header(KEY_HEADER)?.to_owned();
+    Some((scope, database, key))
 }
 
 // The error is the finished response; it is returned once per request.
@@ -526,25 +529,28 @@ fn client() -> &'static Client<HttpConnector, Body> {
 
 /// Sends a request on to the server that hosts the database, streaming both
 /// bodies. The binding token never leaves this server.
-async fn forward<B>(
-    host: &DatabaseHost,
-    upstream: SocketAddr,
-    scope: &str,
-    database: &DatabaseId,
-    path: &str,
-    body: B,
-) -> Response<Body>
+/// Where and as whom a request is forwarded.
+struct Upstream<'a> {
+    address: SocketAddr,
+    scope: &'a str,
+    database: &'a DatabaseId,
+    key: &'a str,
+}
+
+async fn forward<B>(host: &DatabaseHost, to: Upstream<'_>, path: &str, body: B) -> Response<Body>
 where
     B: http_body::Body<Data = Bytes> + Send + Sync + 'static,
     B::Error: Into<BoxError>,
 {
+    let upstream = to.address;
     let body = Limited::new(body, host.config().max_request_bytes)
         .map_err(|e| -> BoxError { e })
         .boxed();
     let Ok(request) = Request::post(format!("http://{upstream}{path}"))
         .header(CONTENT_TYPE, "application/json")
-        .header(SCOPE_HEADER, scope)
-        .header(DATABASE_HEADER, database.as_str())
+        .header(SCOPE_HEADER, to.scope)
+        .header(DATABASE_HEADER, to.database.as_str())
+        .header(KEY_HEADER, to.key)
         .body(body)
     else {
         return error(

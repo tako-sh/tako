@@ -35,16 +35,20 @@ pub(crate) struct Databases {
     root: PathBuf,
     app_port: u16,
     peer_port: u16,
-    native: RwLock<Option<NativeContext>>,
+    /// This server's device ID on a native network.
+    server_id: RwLock<Option<String>>,
+    /// Resolves other servers' private addresses, once the network is up.
+    proxy: RwLock<Option<Arc<crate::native_proxy::NativeProxy>>>,
+    opened: std::sync::atomic::AtomicBool,
+    started: std::sync::atomic::AtomicBool,
+    /// Listener and scheduler tasks, stopped when this process hands over.
+    tasks: Mutex<Vec<tokio::task::AbortHandle>>,
     pub(crate) backups: Mutex<HashMap<String, snapshots::BackupState>>,
+    /// The binding sets last applied to each scope, so a periodic refresh
+    /// re-resolves homes without dropping a rollout's second set.
+    applied: Mutex<HashMap<String, Vec<HashMap<String, AppDatabase>>>>,
     transfers: Mutex<transfer::Transfers>,
     locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
-}
-
-#[derive(Clone)]
-struct NativeContext {
-    server_id: String,
-    proxy: Arc<crate::native_proxy::NativeProxy>,
 }
 
 impl Databases {
@@ -54,8 +58,13 @@ impl Databases {
             root: data_dir.join("databases"),
             app_port: app_port(),
             peer_port: env_port("TAKO_DATABASE_PEER_PORT", tako_core::DATABASE_PEER_PORT),
-            native: RwLock::new(None),
+            server_id: RwLock::new(None),
+            proxy: RwLock::new(None),
+            opened: std::sync::atomic::AtomicBool::new(false),
+            started: std::sync::atomic::AtomicBool::new(false),
+            tasks: Mutex::new(Vec::new()),
             backups: Mutex::new(HashMap::new()),
+            applied: Mutex::new(HashMap::new()),
             transfers: Mutex::new(transfer::Transfers::default()),
             locks: Mutex::new(HashMap::new()),
         }
@@ -84,7 +93,7 @@ impl Databases {
     }
 
     fn server_id(&self) -> Option<String> {
-        self.native.read().as_ref().map(|n| n.server_id.clone())
+        self.server_id.read().clone()
     }
 
     /// The connections app processes receive for their bindings.
@@ -96,14 +105,24 @@ impl Databases {
     }
 
     fn home(&self, binding: &DatabaseBinding) -> Home {
-        let native = self.native.read().clone();
-        match native {
-            Some(native) if native.server_id == binding.server => Home::Local,
-            Some(native) => match native.proxy.server_address(&binding.server) {
-                Some(address) => Home::Remote {
+        let server_id = self.server_id();
+        match server_id {
+            Some(own) if own == binding.server => Home::Local,
+            Some(_) => match (
+                self.proxy
+                    .read()
+                    .as_ref()
+                    .and_then(|proxy| proxy.server_address(&binding.server)),
+                &binding.peer_key,
+            ) {
+                (Some(address), Some(key)) => Home::Remote {
                     upstream: SocketAddr::new(address, self.peer_port),
+                    key: key.clone(),
                 },
-                None => Home::Unavailable {
+                (_, None) => Home::Unavailable {
+                    reason: "the database's server has not granted this app access; deploy it again as an administrator".into(),
+                },
+                (None, _) => Home::Unavailable {
                     reason: "the server hosting this database is not reachable right now".into(),
                 },
             },
@@ -115,6 +134,28 @@ impl Databases {
     /// Points the tokens of an app environment at their databases. Several
     /// binding sets can be active at once during a rolling update.
     pub(crate) fn apply_bindings(&self, scope: &str, sets: &[&HashMap<String, AppDatabase>]) {
+        let owned: Vec<HashMap<String, AppDatabase>> =
+            sets.iter().map(|set| (*set).clone()).collect();
+        // Held while resolving, so a concurrent refresh cannot restore
+        // older sets.
+        let mut applied = self.applied.lock();
+        self.resolve_bindings(scope, &owned);
+        if owned.iter().all(HashMap::is_empty) {
+            applied.remove(scope);
+        } else {
+            applied.insert(scope.to_owned(), owned);
+        }
+    }
+
+    /// Re-resolves where the databases of every applied binding live.
+    pub(crate) fn refresh_homes(&self) {
+        let applied = self.applied.lock();
+        for (scope, sets) in applied.iter() {
+            self.resolve_bindings(scope, sets);
+        }
+    }
+
+    fn resolve_bindings(&self, scope: &str, sets: &[HashMap<String, AppDatabase>]) {
         let mut seen = BTreeSet::new();
         let mut bindings = Vec::new();
         for set in sets {
@@ -135,6 +176,8 @@ impl Databases {
     }
 
     pub(crate) fn remove_bindings(&self, scope: &str) {
+        let mut applied = self.applied.lock();
+        applied.remove(scope);
         self.host.set_bindings(scope, Vec::new());
     }
 
@@ -177,11 +220,16 @@ impl Databases {
                     "Database binding `{name}` names a database on another server; set `access = \"network\"` on the database to allow that."
                 ));
             }
-            let token = previous
+            let existing = previous
                 .get(&name)
-                .filter(|existing| existing.binding.id == binding.id)
+                .filter(|existing| existing.binding.id == binding.id);
+            let token = existing
                 .map(|existing| existing.token.clone())
                 .unwrap_or_else(tako_database::generate_token);
+            let mut binding = binding;
+            if binding.peer_key.is_none() {
+                binding.peer_key = existing.and_then(|existing| existing.binding.peer_key.clone());
+            }
             prepared.insert(name, AppDatabase { binding, token });
         }
         Ok(prepared)
@@ -195,6 +243,19 @@ impl Databases {
         config: &AppConfig,
         requested: HashMap<String, DatabaseBinding>,
     ) -> Result<HashMap<String, DatabaseConnection>, String> {
+        // Release commands get their own tokens, and the environment's peer
+        // keys, which deployers without administration do not send.
+        let mut requested = requested;
+        for (name, binding) in &mut requested {
+            if binding.peer_key.is_none()
+                && let Some(current) = config
+                    .databases
+                    .get(name)
+                    .filter(|current| current.binding.id == binding.id)
+            {
+                binding.peer_key = current.binding.peer_key.clone();
+            }
+        }
         let bindings = self.prepare_bindings(&HashMap::new(), requested, config)?;
         self.apply_bindings(&format!("{app}{RELEASE_SCOPE_SUFFIX}"), &[&bindings]);
         Ok(self.connections(&bindings))
@@ -241,15 +302,21 @@ fn env_port(name: &str, default: u16) -> u16 {
 }
 
 impl ServerState {
-    /// Registers hosted databases and bindings and starts serving them. Only
-    /// the primary process runs this; a promoted standby runs it on promotion.
-    pub(crate) async fn start_databases(
+    /// Opens the hosted databases and serves them to this server's apps.
+    /// Runs before apps are restored, so they reach their databases at boot;
+    /// their bindings are applied as each app is restored. Only a primary
+    /// process opens databases: a standby would hold their file locks.
+    pub(crate) async fn open_databases(
         self: &Arc<Self>,
-        native: Option<(String, Arc<crate::native_proxy::NativeProxy>)>,
+        server_id: Option<String>,
     ) -> Result<(), String> {
+        use std::sync::atomic::Ordering;
         let databases = &self.databases;
-        if let Some((server_id, proxy)) = native {
-            *databases.native.write() = Some(NativeContext { server_id, proxy });
+        if databases.opened.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
+        if let Some(server_id) = server_id {
+            *databases.server_id.write() = Some(server_id);
         }
         create_private_dir(&databases.root)?;
         let stored = self
@@ -271,43 +338,73 @@ impl ServerState {
                 }
             }
         }
+        self.spawn_database_app_listener();
+        Ok(())
+    }
+
+    /// Starts what needs the network: other servers' addresses, grants for
+    /// apps on other servers, the peer listener, and snapshots. A promoted
+    /// standby runs this, with [`Self::open_databases`], on promotion.
+    pub(crate) async fn start_databases(
+        self: &Arc<Self>,
+        native: Option<(String, Arc<crate::native_proxy::NativeProxy>)>,
+    ) -> Result<(), String> {
+        use std::sync::atomic::Ordering;
+        let server_id = native.as_ref().map(|(id, _)| id.clone());
+        self.open_databases(server_id).await?;
+        let databases = &self.databases;
+        if databases.started.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
+        if let Some((_, proxy)) = native {
+            *databases.proxy.write() = Some(proxy);
+        }
         self.refresh_database_routes();
         match self.state_store.all_database_grants() {
             Ok(grants) => {
-                for (scope, ids) in grants {
+                for (scope, grant) in grants {
                     databases.host.set_remote_grants(
                         &scope,
-                        ids.iter()
+                        grant
+                            .databases
+                            .iter()
                             .filter_map(|id| DatabaseId::parse(id).ok())
                             .collect(),
+                        &grant.key,
                     );
                 }
             }
             Err(error) => tracing::error!(%error, "Failed to read database grants"),
         }
-        // Detached; the reaper stops once the host is dropped.
-        drop(databases.host.spawn_reaper());
-        self.spawn_database_app_listener();
+        let reaper = databases.host.spawn_reaper();
+        databases.tasks.lock().push(reaper.abort_handle());
         self.spawn_database_peer_listener();
-        snapshots::spawn_scheduler(self.clone());
+        let scheduler = snapshots::spawn_scheduler(self.clone());
+        databases.tasks.lock().push(scheduler.abort_handle());
         Ok(())
     }
 
-    /// Re-resolves where each binding's database lives. Runs at startup and
-    /// periodically, since other servers' addresses come from network state.
-    pub(crate) fn refresh_database_routes(&self) {
-        for app in self.app_manager.list_apps() {
-            if let Some(app) = self.app_manager.get_app(&app) {
-                let config = app.config.read().clone();
-                self.databases
-                    .apply_bindings(&config.deployment_id(), &[&config.databases]);
-            }
+    /// Stops serving databases before this process exits, for example when
+    /// a reloaded process has taken over: closes the listeners, so new
+    /// connections reach the successor (which knows every current token),
+    /// stops snapshots, and releases streams and file locks.
+    pub(crate) async fn stop_databases(&self) {
+        for task in self.databases.tasks.lock().drain(..) {
+            task.abort();
         }
+        self.databases.host.close_all().await;
+    }
+
+    /// Re-resolves where each applied binding's database lives, since other
+    /// servers' addresses come from network state. Keeps a rollout's old and
+    /// new binding sets.
+    pub(crate) fn refresh_database_routes(&self) {
+        self.databases.refresh_homes();
     }
 
     fn spawn_database_app_listener(self: &Arc<Self>) {
         let state = self.clone();
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let address =
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), state.databases.app_port);
             loop {
@@ -328,21 +425,22 @@ impl ServerState {
                 }
             }
         });
+        self.databases.tasks.lock().push(task.abort_handle());
     }
 
     fn spawn_database_peer_listener(self: &Arc<Self>) {
-        let Some(native) = self.databases.native.read().clone() else {
+        let Some(proxy) = self.databases.proxy.read().clone() else {
             return;
         };
         let port = self.databases.peer_port;
         let host = self.databases.host.clone();
-        tokio::spawn(async move {
-            let address = SocketAddr::new(IpAddr::V6(native.proxy.address), port);
+        let task = tokio::spawn(async move {
+            let address = SocketAddr::new(IpAddr::V6(proxy.address), port);
             loop {
                 match bind_reuseport(address) {
                     Ok(listener) => {
                         tracing::info!(%address, "Serving databases to network servers");
-                        let proxy = native.proxy.clone();
+                        let proxy = proxy.clone();
                         tako_database::http::serve(
                             host.clone(),
                             listener,
@@ -360,6 +458,7 @@ impl ServerState {
                 }
             }
         });
+        self.databases.tasks.lock().push(task.abort_handle());
     }
 
     pub(crate) async fn handle_database_command(&self, command: tako_core::Command) -> Response {
@@ -478,6 +577,8 @@ impl ServerState {
             .await
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())?;
+        // Nothing to snapshot until something is written.
+        self.databases.host.clear_changed(&DatabaseId::parse(&id)?);
         tracing::info!(database = %id, name = %stored.name, "Created database");
         Ok(serde_json::to_value(self.database_info(&stored)).expect("info serializes"))
     }
@@ -485,18 +586,43 @@ impl ServerState {
     async fn delete_database(&self, id: &str) -> Result<serde_json::Value, String> {
         let stored = self.hosted_database(id)?;
         let info = self.database_info(&stored);
-        if !info.bindings.is_empty() || !info.remote_grants.is_empty() {
-            let users: Vec<_> = info
-                .bindings
+        // Bindings of apps on this server are known to be current. Grants for
+        // other servers can outlive the deployments that used them (deleting
+        // an app does not reach this server), so they are revoked instead;
+        // the CLI names them before asking to delete.
+        if !info.bindings.is_empty() {
+            return Err(format!(
+                "Database {} is still bound by {} on this server. Remove the bindings and deploy those apps first.",
+                stored.name,
+                info.bindings.join(", ")
+            ));
+        }
+        for (scope, grant) in self
+            .state_store
+            .all_database_grants()
+            .map_err(|e| format!("read grants: {e}"))?
+        {
+            if !grant.databases.contains(id) {
+                continue;
+            }
+            let remaining: BTreeSet<String> = grant
+                .databases
                 .iter()
-                .chain(info.remote_grants.iter())
+                .filter(|other| other.as_str() != id)
                 .cloned()
                 .collect();
-            return Err(format!(
-                "Database {} is still used by {}. Remove its bindings and deploy those apps first.",
-                stored.name,
-                users.join(", ")
-            ));
+            let key = self
+                .state_store
+                .set_database_grants(&scope, &remaining)
+                .map_err(|e| format!("revoke grants: {e}"))?;
+            self.databases.host.set_remote_grants(
+                &scope,
+                remaining
+                    .iter()
+                    .filter_map(|other| DatabaseId::parse(other).ok())
+                    .collect(),
+                key.as_deref().unwrap_or_default(),
+            );
         }
         let lock = self.databases.lock(id);
         let _guard = lock.lock().await;
@@ -558,7 +684,7 @@ impl ServerState {
             .all_database_grants()
             .unwrap_or_default()
             .into_iter()
-            .filter(|(_, ids)| ids.contains(&stored.id))
+            .filter(|(_, grant)| grant.databases.contains(&stored.id))
             .map(|(scope, _)| scope)
             .collect();
         let size_bytes = DatabaseId::parse(&stored.id)
@@ -598,8 +724,14 @@ impl ServerState {
             .set_database_secrets(id, &secrets)
             .map_err(|e| format!("store backup configuration: {e}"))?;
         if moved {
-            // The cached status describes the previous destination.
+            // The cached status describes the previous destination, and the
+            // new one needs a snapshot even if the database is idle.
             self.databases.backups.lock().remove(id);
+            if secrets.backup.is_some()
+                && let Ok(database) = DatabaseId::parse(id)
+            {
+                self.databases.host.mark_changed(&database);
+            }
         }
         let updated = self.hosted_database(id)?;
         Ok(serde_json::to_value(self.database_info(&updated)).expect("info serializes"))
@@ -615,7 +747,8 @@ impl ServerState {
             self.hosted_database(&id)?;
             granted.insert(id);
         }
-        self.state_store
+        let key = self
+            .state_store
             .set_database_grants(app, &granted)
             .map_err(|e| format!("store grants: {e}"))?;
         self.databases.host.set_remote_grants(
@@ -624,8 +757,10 @@ impl ServerState {
                 .iter()
                 .filter_map(|id| DatabaseId::parse(id).ok())
                 .collect(),
+            key.as_deref().unwrap_or_default(),
         );
-        Ok(serde_json::json!({"app": app, "databases": granted}))
+        // The deploying administrator hands the key to the app's servers.
+        Ok(serde_json::json!({"app": app, "databases": granted, "peer_key": key}))
     }
 
     /// Whether an app environment uses a database hosted here, through a
@@ -644,7 +779,7 @@ impl ServerState {
                 .all_database_grants()
                 .unwrap_or_default()
                 .get(app)
-                .is_some_and(|ids| ids.contains(id))
+                .is_some_and(|grant| grant.databases.contains(id))
     }
 
     async fn snapshot_database_command(
@@ -654,17 +789,20 @@ impl ServerState {
         app: Option<&str>,
     ) -> Result<serde_json::Value, String> {
         let stored = self.hosted_database(id)?;
-        if let Some(app) = app {
-            if !self.app_uses_database(app, id) {
-                return Err(format!("{app} does not use database {}.", stored.name));
-            }
-            // Before a release, an unchanged database needs no new snapshot,
-            // and a database without backups is not an error.
-            if stored.secrets.backup.is_none() {
-                return Ok(serde_json::json!({"skipped": "backups are not configured"}));
-            }
+        // App deployers may snapshot only databases their app already uses;
+        // administrators send no app.
+        if let Some(app) = app
+            && !self.app_uses_database(app, id)
+        {
+            return Err(format!("{app} does not use database {}.", stored.name));
         }
-        let only_if_changed = app.is_some();
+        // Before a release, an unchanged database needs no new snapshot, and
+        // a database without backups is not an error.
+        let release = reason == tako_core::SnapshotReason::Release;
+        if release && stored.secrets.backup.is_none() {
+            return Ok(serde_json::json!({"skipped": "backups are not configured"}));
+        }
+        let only_if_changed = release;
         match snapshots::take(self, &stored, reason, only_if_changed).await? {
             Some(snapshot) => Ok(serde_json::json!({ "snapshot": snapshot })),
             None => Ok(serde_json::json!({"skipped": "no changes since the last snapshot"})),
@@ -765,4 +903,61 @@ pub(crate) fn now_unix_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn binding(server: &str, key: Option<&str>) -> DatabaseBinding {
+        DatabaseBinding {
+            id: "0123456789abcdef0123456789abcdef".into(),
+            server: server.into(),
+            access: DatabaseAccess::Network,
+            peer_key: key.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn remote_bindings_need_their_grant_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let databases = Databases::new(dir.path());
+        *databases.server_id.write() = Some("this".into());
+        assert_eq!(databases.home(&binding("this", None)), Home::Local);
+        let Home::Unavailable { reason } = databases.home(&binding("other", None)) else {
+            panic!("a remote binding without a key is unavailable");
+        };
+        assert!(reason.contains("administrator"));
+        // Without the network, other servers' addresses are unknown.
+        let Home::Unavailable { reason } = databases.home(&binding("other", Some("key"))) else {
+            panic!("an unknown address is unavailable");
+        };
+        assert!(reason.contains("not reachable"));
+    }
+
+    #[test]
+    fn release_bindings_take_the_environment_peer_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let databases = Databases::new(dir.path());
+        *databases.server_id.write() = Some("this".into());
+        let mut config = AppConfig::default();
+        config.databases.insert(
+            "main".into(),
+            AppDatabase {
+                binding: binding("other", Some("issued")),
+                token: "app-token".into(),
+            },
+        );
+        let requested = HashMap::from([("main".to_owned(), binding("other", None))]);
+        let connections = databases
+            .begin_release("demo/production", &config, requested)
+            .unwrap();
+        assert_ne!(
+            connections["main"].auth_token, "app-token",
+            "release commands get their own token"
+        );
+        let applied = databases.applied.lock();
+        let release = &applied["demo/production#release"][0]["main"];
+        assert_eq!(release.binding.peer_key.as_deref(), Some("issued"));
+    }
 }

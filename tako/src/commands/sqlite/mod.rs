@@ -908,7 +908,7 @@ async fn restore(
         .await?;
     }
     let _t = output::timed(&format!("Restore {name}"));
-    let value: serde_json::Value = output::with_spinner_async(
+    let restored: Result<serde_json::Value, String> = output::with_spinner_async(
         &format!("Restoring {name}"),
         &format!("Restored {name}"),
         async {
@@ -924,7 +924,28 @@ async fn restore(
             .map_err(|e| e.to_string())
         },
     )
-    .await?;
+    .await;
+    let value = match restored {
+        Ok(value) => value,
+        Err(error) => {
+            // Remove the empty copy, so the recovery can be retried.
+            if moving
+                && let Err(cleanup) = send::<serde_json::Value>(
+                    &target,
+                    Command::DeleteDatabase {
+                        id: database.id.clone(),
+                    },
+                )
+                .await
+            {
+                output::warning(&format!(
+                    "Could not remove the new copy of {name} on {}: {cleanup}",
+                    target.name
+                ));
+            }
+            return Err(error.into());
+        }
+    };
     if moving {
         let moved = DatabaseRecord {
             server: target.device_id.clone(),
@@ -957,6 +978,27 @@ async fn delete(ctx: &Context, name: &str, yes: bool) -> Result<(), Box<dyn std:
         "Deleting {name} removes its file from {}.",
         home.name
     ));
+    // Grants can outlive the deployments that used them, so the server
+    // revokes them; name them so nothing still in use is deleted unseen.
+    let status: serde_json::Value = send(
+        &home,
+        Command::DatabaseStatus {
+            id: Some(database.id.clone()),
+        },
+    )
+    .await?;
+    let granted: Vec<&str> = status["databases"][0]["remote_grants"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    if !granted.is_empty() {
+        output::warning(&format!(
+            "{} may still use {name} from other servers; their requests will fail.",
+            granted.join(", ")
+        ));
+    }
     confirm(
         &format!("Delete database {name}?"),
         "Its snapshots stay in backup storage. Apps must not bind it anymore.",

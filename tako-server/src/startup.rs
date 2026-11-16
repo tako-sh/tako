@@ -242,6 +242,15 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             runtime,
         )?
     });
+    // Apps restored below reach their databases as soon as they start.
+    if !standby {
+        let server_id = native_config
+            .as_ref()
+            .map(|config| config.server_id.to_string());
+        if let Err(error) = rt.block_on(state.open_databases(server_id)) {
+            tracing::error!(%error, "Failed to open hosted databases");
+        }
+    }
     if let Err(e) = rt.block_on(async {
         let _guard = state.management_lock.lock().await;
         crate::drain_observer::spawn(&rt, state.clone());

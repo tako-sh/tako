@@ -65,7 +65,7 @@ pub enum DatabaseAccess {
 }
 
 /// A database bound to an app environment, sent with `Command::Deploy`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct DatabaseBinding {
     pub id: String,
@@ -73,6 +73,29 @@ pub struct DatabaseBinding {
     pub server: String,
     #[serde(default)]
     pub access: DatabaseAccess,
+    /// Key the database's server issued with its grant to this app
+    /// environment. Other servers present it when they forward requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_key: Option<String>,
+}
+
+impl DatabaseBinding {
+    /// Whether two bindings name the same database the same way, ignoring
+    /// the peer key a server fills in.
+    pub fn same_target(&self, other: &Self) -> bool {
+        self.id == other.id && self.server == other.server && self.access == other.access
+    }
+}
+
+impl std::fmt::Debug for DatabaseBinding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DatabaseBinding")
+            .field("id", &self.id)
+            .field("server", &self.server)
+            .field("access", &self.access)
+            .field("peer_key", &self.peer_key.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
 }
 
 /// What an app process receives for each binding in its bootstrap envelope.

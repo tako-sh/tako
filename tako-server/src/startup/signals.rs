@@ -58,6 +58,8 @@ pub(super) fn spawn_reload_signal_handlers(rt: &Runtime, startup_exe: Option<Pat
             };
             sigusr1.recv().await;
             tracing::info!("SIGUSR1 received — new process ready, starting graceful drain");
+            crate::server_state::RELOAD_SUCCESSOR_READY
+                .store(true, std::sync::atomic::Ordering::Release);
             unsafe { libc::kill(libc::getpid(), libc::SIGTERM) };
         });
     }

@@ -128,6 +128,17 @@ impl fmt::Display for Denial {
 
 impl std::error::Error for Denial {}
 
+/// Whether two binding sets name the same databases the same way. Peer keys
+/// are issued by servers, so they are not compared.
+fn same_bindings(
+    a: &HashMap<String, DatabaseBinding>,
+    b: &HashMap<String, DatabaseBinding>,
+) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .all(|(name, binding)| b.get(name).is_some_and(|other| other.same_target(binding)))
+}
+
 const DATABASES_DENIED: Denial =
     Denial("Scoped deployment cannot change database bindings; an administrator must deploy them.");
 const SCOPE_REQUIRED: Denial = Denial("An explicit app/environment scope is required.");
@@ -275,7 +286,7 @@ pub(crate) fn authorize_command(
                 validate_local_storages(context.data_dir, scope, provisioned.storages)?;
                 if databases
                     .as_ref()
-                    .is_some_and(|value| value != provisioned.databases)
+                    .is_some_and(|value| !same_bindings(value, provisioned.databases))
                 {
                     return Err(DATABASES_DENIED);
                 }
@@ -294,10 +305,12 @@ pub(crate) fn authorize_command(
             validate_release_path(context.data_dir, scope, path)?;
             if !permissions.server_admin && !databases.is_empty() {
                 let provisioned = provisioned_app(context, scope)?;
-                if databases
-                    .iter()
-                    .any(|(name, binding)| provisioned.databases.get(name) != Some(binding))
-                {
+                if databases.iter().any(|(name, binding)| {
+                    !provisioned
+                        .databases
+                        .get(name)
+                        .is_some_and(|current| current.same_target(binding))
+                }) {
                     return Err(DATABASES_DENIED);
                 }
             }
@@ -697,6 +710,27 @@ mod tests {
         assert_eq!(f.authorize(&release), Err(DATABASES_DENIED));
         let unchanged = f.decode_command(json!({"command":"deploy","databases":null}));
         assert_eq!(f.authorize(&unchanged), Ok(()));
+    }
+
+    #[test]
+    fn scoped_release_commands_keep_provisioned_bindings_without_their_keys() {
+        let mut f = Fixture::new();
+        f.databases.insert(
+            "main".into(),
+            DatabaseBinding {
+                id: "0123456789abcdef0123456789abcdef".into(),
+                server: "edge".into(),
+                access: tako_core::DatabaseAccess::Network,
+                peer_key: Some("issued-by-edge".into()),
+            },
+        );
+        // Deployers without administration never see peer keys.
+        let same = json!({"main": {"id": "0123456789abcdef0123456789abcdef", "server": "edge", "access": "network"}});
+        let release = f.decode_command(json!({"command":"run_release","databases":same}));
+        assert_eq!(f.authorize(&release), Ok(()));
+        let moved = json!({"main": {"id": "0123456789abcdef0123456789abcdef", "server": "other", "access": "network"}});
+        let release = f.decode_command(json!({"command":"run_release","databases":moved}));
+        assert_eq!(f.authorize(&release), Err(DATABASES_DENIED));
     }
 
     #[test]

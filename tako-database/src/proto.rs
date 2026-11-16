@@ -255,6 +255,7 @@ pub enum CursorEntry {
     },
     StepEnd {
         affected_row_count: u64,
+        #[serde(serialize_with = "serialize_opt_i64_string")]
         last_insert_rowid: Option<i64>,
     },
     StepError {

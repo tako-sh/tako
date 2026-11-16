@@ -34,6 +34,14 @@ pub(crate) struct AppDatabase {
     pub token: String,
 }
 
+/// What this server grants an app environment that runs on other servers:
+/// its databases here, and the key those servers present when forwarding.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct DatabaseGrant {
+    pub databases: BTreeSet<String>,
+    pub key: String,
+}
+
 impl SqliteStateStore {
     pub(crate) fn create_database(&self, database: &StoredDatabase) -> Result<(), StateStoreError> {
         let encrypted = self.encrypt_json(&database.secrets)?;
@@ -138,43 +146,50 @@ impl SqliteStateStore {
         }
     }
 
+    /// Replaces an app environment's grant and returns its key, which stays
+    /// the same while the environment keeps a grant. An empty set revokes
+    /// the grant.
     pub(crate) fn set_database_grants(
         &self,
         app: &str,
         databases: &BTreeSet<String>,
-    ) -> Result<(), StateStoreError> {
-        let conn = self.lock_conn()?;
+    ) -> Result<Option<String>, StateStoreError> {
         if databases.is_empty() {
-            conn.execute("DELETE FROM database_grants WHERE app = ?1", [app])?;
-        } else {
-            let json = serde_json::to_string(databases)
-                .map_err(|e| StateStoreError::InvalidData(e.to_string()))?;
-            conn.execute(
-                "INSERT INTO database_grants (app, databases) VALUES (?1, ?2) ON CONFLICT(app) DO UPDATE SET databases = excluded.databases",
-                (app, json),
-            )?;
+            self.lock_conn()?
+                .execute("DELETE FROM database_grants WHERE app = ?1", [app])?;
+            return Ok(None);
         }
-        Ok(())
+        let key = match self.all_database_grants()?.remove(app) {
+            Some(existing) => existing.key,
+            None => tako_database::generate_token(),
+        };
+        let encrypted = self.encrypt_json(&DatabaseGrant {
+            databases: databases.clone(),
+            key: key.clone(),
+        })?;
+        self.lock_conn()?.execute(
+            "INSERT INTO database_grants (app, encrypted_data) VALUES (?1, ?2) ON CONFLICT(app) DO UPDATE SET encrypted_data = excluded.encrypted_data",
+            (app, encrypted),
+        )?;
+        Ok(Some(key))
     }
 
     /// Remote grants of every app environment.
     pub(crate) fn all_database_grants(
         &self,
-    ) -> Result<BTreeMap<String, BTreeSet<String>>, StateStoreError> {
-        let conn = self.lock_conn()?;
-        let mut statement =
-            conn.prepare("SELECT app, databases FROM database_grants ORDER BY app")?;
-        let rows = statement
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
+    ) -> Result<BTreeMap<String, DatabaseGrant>, StateStoreError> {
+        let rows = {
+            let conn = self.lock_conn()?;
+            let mut statement =
+                conn.prepare("SELECT app, encrypted_data FROM database_grants ORDER BY app")?;
+            statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+        };
         rows.into_iter()
-            .map(|(app, json)| {
-                let databases = serde_json::from_str(&json)
-                    .map_err(|e| StateStoreError::InvalidData(format!("database grants: {e}")))?;
-                Ok((app, databases))
-            })
+            .map(|(app, encrypted)| Ok((app, self.decrypt_json(&encrypted)?)))
             .collect()
     }
 
@@ -246,14 +261,32 @@ mod tests {
     }
 
     #[test]
-    fn grants_replace_and_clear() {
+    fn grants_replace_and_clear_and_keep_their_key() {
         let (_dir, store) = store();
         let ids = BTreeSet::from(["a".repeat(32)]);
-        store.set_database_grants("shop/production", &ids).unwrap();
-        assert_eq!(store.all_database_grants().unwrap()["shop/production"], ids);
-        store
-            .set_database_grants("shop/production", &BTreeSet::new())
+        let key = store
+            .set_database_grants("shop/production", &ids)
+            .unwrap()
             .unwrap();
+        let grants = store.all_database_grants().unwrap();
+        assert_eq!(grants["shop/production"].databases, ids);
+        assert_eq!(grants["shop/production"].key, key);
+
+        let more = BTreeSet::from(["a".repeat(32), "b".repeat(32)]);
+        let same = store.set_database_grants("shop/production", &more).unwrap();
+        assert_eq!(same.as_deref(), Some(key.as_str()), "the key is stable");
+
+        assert_eq!(
+            store
+                .set_database_grants("shop/production", &BTreeSet::new())
+                .unwrap(),
+            None
+        );
         assert!(store.all_database_grants().unwrap().is_empty());
+        let renewed = store
+            .set_database_grants("shop/production", &ids)
+            .unwrap()
+            .unwrap();
+        assert_ne!(renewed, key, "a revoked grant's key is not reused");
     }
 }
