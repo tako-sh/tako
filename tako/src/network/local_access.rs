@@ -33,7 +33,7 @@ fn configure(alias: &LocalNetwork, profile: &Profile, write: bool) -> Result<()>
     super::private_directory(&directory)?;
     let identity = directory.join("identity");
     let known_hosts = directory.join("known_hosts");
-    let (hosts, settings) = render(alias, profile, user.as_str(), &identity, &known_hosts)?;
+    let (hosts, settings) = render(profile, user.as_str(), &identity, &known_hosts)?;
     if write {
         super::write_bytes(&identity, keys.ssh_private_key()?.as_bytes(), true)?;
         super::write_bytes(&known_hosts, hosts.as_bytes(), true)?;
@@ -42,7 +42,6 @@ fn configure(alias: &LocalNetwork, profile: &Profile, write: bool) -> Result<()>
 }
 
 fn render(
-    alias: &LocalNetwork,
     profile: &Profile,
     user: &str,
     identity: &Path,
@@ -63,8 +62,11 @@ fn render(
         let host_alias = format!("tako-{id}");
         hosts.push_str(&format!("{host_alias} {}\n", info.ssh_host_key));
         settings.push_str(&format!(
-            "Host {name} {name}.{}.tako.internal\n  HostName {address}\n  User {user}\n  Port {}\n  IdentityFile {}\n  IdentitiesOnly yes\n  IdentityAgent none\n  HostKeyAlias {host_alias}\n  UserKnownHostsFile {}\n  GlobalKnownHostsFile /dev/null\n  StrictHostKeyChecking yes\n  UpdateHostKeys no\n  ProxyCommand none\n  ProxyJump none\n  ControlMaster no\n  ControlPath none\n  ForwardAgent no\n  ForwardX11 no\n",
-            alias.id, info.ssh_port, quote_path(identity)?, quote_path(known_hosts)?,
+            "Host {name} {name}.{}\n  HostName {address}\n  User {user}\n  Port {}\n  IdentityFile {}\n  IdentitiesOnly yes\n  IdentityAgent none\n  HostKeyAlias {host_alias}\n  UserKnownHostsFile {}\n  GlobalKnownHostsFile /dev/null\n  StrictHostKeyChecking yes\n  UpdateHostKeys no\n  ProxyCommand none\n  ProxyJump none\n  ControlMaster no\n  ControlPath none\n  ForwardAgent no\n  ForwardX11 no\n",
+            tako_network::services::PRIVATE_DOMAIN,
+            info.ssh_port,
+            quote_path(identity)?,
+            quote_path(known_hosts)?,
         ));
     }
     Ok((hosts, settings))
@@ -213,7 +215,7 @@ mod tests {
         let identity = directory.path().join("device key %h");
         let known_hosts = directory.path().join("known hosts");
         let (_, settings) =
-            render(&alias, &fixture.profile, "tako", &identity, &known_hosts).unwrap();
+            render(&fixture.profile, "tako", &identity, &known_hosts).unwrap();
         let original = "Host *\n  User personal\n  ProxyCommand unwanted-proxy\n";
         let installed = config_contents(original, &alias.id, Some(&settings)).unwrap();
         let config = directory.path().join("config");
@@ -247,7 +249,7 @@ mod tests {
     #[test]
     fn ssh_config_preserves_user_settings_and_other_networks() {
         let original = "Host personal\n  HostName example.com\nHost *\n  ServerAliveInterval 30\n";
-        let settings = "Host foobar foobar.a.tako.internal\n  HostName fd42::1\n";
+        let settings = "Host foobar foobar.tako\n  HostName fd42::1\n";
         let installed = config_contents(original, "a", Some(settings)).unwrap();
         assert!(installed.ends_with(original));
         assert_eq!(

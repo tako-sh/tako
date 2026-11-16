@@ -583,7 +583,7 @@ class Host:
             require(active == 'active', 'native service DNS requires active systemd-resolved')
             dev = interface(ident)
             installed = {'dns': [config['address'].split('/')[0]],
-                         'domain': ['~' + ident + '.tako.internal'], 'default-route': ['no']}
+                         'domain': ['~tako'], 'default-route': ['no']}
             current = {setting: self.dns_values(dev, setting) for setting in installed}
             previous = config.get('dns_settings')
             if previous:

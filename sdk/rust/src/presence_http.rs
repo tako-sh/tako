@@ -17,7 +17,7 @@ fn is_presence_request(request: &Request<Body>) -> bool {
             .headers()
             .get("host")
             .and_then(|host| host.to_str().ok())
-            .is_some_and(|host| crate::host_without_port(host).ends_with(".tako"))
+            .is_some_and(crate::is_internal_host)
 }
 
 pub(crate) async fn presence_middleware(

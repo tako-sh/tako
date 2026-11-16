@@ -149,28 +149,32 @@ Tako embeds BoringTun and a userspace TCP stack. `tako ssh` needs OpenSSH but no
 tako connect production
 ssh edge-a
 psql -h edge-a -p 5432 -U app app
-tako disconnect production
+curl http://shop.production.tako/
+tako disconnect
 ```
 
 `connect` runs the embedded BoringTun engine in a background Tako process and configures private routes, server names, and private service DNS. It supports macOS and Linux. Network setup requires administrator access; Tako explains the reason before asking for the local sudo password. Linux also needs `/dev/net/tun`, `iproute2`, and an active systemd-resolved resolver with `resolvectl`. macOS uses its native tunnel interface and scoped resolver files. Neither platform needs `wg-quick`, `wg`, or `wireguard-go` installed.
 
-While connected, ordinary applications can resolve server names such as `edge-a` and `edge-a.NETWORK_ID.tako.internal`. Tako adds managed entries to `/etc/hosts` and, for devices with SSH permission, a managed block in `~/.ssh/config` with the approved identity, username, and host-key pin. Conflicting existing aliases produce an error instead of being overwritten. A database must listen on its private address and allow the connection; network membership does not replace database authentication or expose a container-only port.
+While connected, ordinary applications can resolve server names such as `edge-a` and `edge-a.tako`. Tako adds managed entries to `/etc/hosts` and, for devices with SSH permission, a managed block in `~/.ssh/config` with the approved identity, username, and host-key pin. Conflicting existing aliases produce an error instead of being overwritten. A database must listen on its private address and allow the connection; network membership does not replace database authentication or expose a container-only port.
 
-`disconnect` removes Tako's routes, resolver settings, host entries, and SSH aliases while preserving unrelated settings. Server peers, names, and SSH settings are refreshed by each `connect`; rerun it after membership changes. Finish active `tako ssh` sessions before changing the system connection. If upgrading from the old external WireGuard implementation with a connection still active, disconnect it using the previous Tako version first.
+After connecting, Tako waits a few seconds for a WireGuard handshake with each server and names any server that did not answer, with the UDP endpoint to check. Management keeps working over HTTPS even when that UDP port is blocked.
+
+One network owns `.tako` names on a workstation at a time, so `connect` disconnects any other connected network first. `disconnect` removes Tako's routes, resolver settings, host entries, and SSH aliases while preserving unrelated settings. Without a network argument it disconnects whichever network is connected. Server peers, names, and SSH settings are refreshed by each `connect`; rerun it after membership changes. Finish active `tako ssh` sessions before changing the system connection. If upgrading from the old external WireGuard implementation with a connection still active, disconnect it using the previous Tako version first.
 
 ## Use private service addresses
 
-Private app hostnames have this form:
+Private names live under `.tako`:
 
 ```text
-shop.production.0123456789abcdef0123456789abcdef.tako.internal
+shop.production.tako    # app "shop", environment "production"
+edge-a.tako             # server "edge-a"
 ```
 
-The components are app name, environment, and stable network ID. Native service discovery uses current authenticated placement information. Missing, expired, revoked, or drained placements are unavailable; a private name must not fall through to a public wildcard route. Placements are short-lived and signed by the server that runs the app, so keep server clocks synchronized: peers accept a placement signed up to five seconds ahead of their own clock and ignore one further ahead until their clock catches up. Supported Compose services use Tako's private gateway and resolver for this traffic.
+App names have two labels: app and environment. Server names have one label, the lowercased server name. Active servers in a network must have unique names; enrollment rejects a duplicate. Names that are not a single DNS label, such as names containing dots, are not published. Native service discovery uses current authenticated placement information. Missing, expired, revoked, or drained placements are unavailable; a private name must not fall through to a public wildcard route. Placements are short-lived and signed by the server that runs the app, so keep server clocks synchronized: peers accept a placement signed up to five seconds ahead of their own clock and ignore one further ahead until their clock catches up. Supported Compose services use Tako's private gateway and resolver for this traffic.
 
 Automatic private DNS for native processes on the server requires an active systemd-resolved service. If it is absent, the WireGuard helper can still configure the link but reports `dns_supported = false` with a DNS error; do not treat link setup as successful DNS setup. Compose uses its managed gateway DNS independently of host systemd-resolved.
 
-While `tako connect` is active, the workstation sends queries for this network's private domain to its servers over WireGuard. Public DNS and the default route stay unchanged. Applications using their own DNS resolver instead of the operating system may need separate configuration. A scoped HTTPS deployment does not need a local connection. Ordinary HTTP clients still need a reachable URL. [Network primitive calls](/network-primitives/) use `app.primitive` addresses and resolve placement through Tako, without a user-configured base URL.
+While `tako connect` is active, the workstation sends `.tako` queries to the connected network's servers over WireGuard. A server that belongs to several networks routes `.tako` to each of them, so use distinct app and environment names across those networks. Browsers treat bare `.tako` names as searches; type `http://` or a trailing `/` the first time. Public DNS and the default route stay unchanged. Applications using their own DNS resolver instead of the operating system may need separate configuration. A scoped HTTPS deployment does not need a local connection. Ordinary HTTP clients still need a reachable URL. [Network primitive calls](/network-primitives/) use `app.primitive` addresses and resolve placement through Tako, without a user-configured base URL.
 
 Public application DNS, certificates, and ingress routes remain separate. A native network does not move your public hostname between servers or configure an external load balancer.
 

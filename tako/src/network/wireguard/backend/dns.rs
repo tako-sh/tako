@@ -9,6 +9,9 @@ use std::path::Path;
 
 use super::{Configuration, Result, ServerName, network};
 
+#[cfg(target_os = "macos")]
+const RESOLVER_HEADER: &str = "# Managed by Tako: ";
+
 pub(super) fn validate(
     network: &str,
     logical: &str,
@@ -68,7 +71,7 @@ pub(super) fn install(
 ) -> Result<()> {
     let state = super::runtime_directory()?.join(format!("{logical}.dns"));
     network::write_bytes(&state, network.as_bytes(), true)?;
-    let domain = format!("{network}.tako.internal");
+    let domain = tako_network::services::PRIVATE_DOMAIN;
     #[cfg(target_os = "linux")]
     {
         let addresses: Vec<_> = config
@@ -79,7 +82,9 @@ pub(super) fn install(
         let mut args = vec!["dns", actual];
         args.extend(addresses.iter().map(String::as_str));
         super::run_tool("resolvectl", &args)?;
-        super::run_tool("resolvectl", &["domain", actual, &domain])?;
+        // Route-only: bare server names come from the hosts block.
+        let route = format!("~{domain}");
+        super::run_tool("resolvectl", &["domain", actual, &route])?;
         super::run_tool("resolvectl", &["default-route", actual, "no"])?;
     }
     #[cfg(target_os = "macos")]
@@ -95,12 +100,13 @@ pub(super) fn install(
         if !metadata.is_dir() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
             return Err("The resolver directory is not owned exclusively by root".into());
         }
-        let path = directory.join(&domain);
-        let header = format!("# Managed by Tako: {network}\n");
-        if let Some(previous) = read_resolver(&path)? {
-            if !previous.starts_with(&header) {
-                return Err("The network resolver file is managed outside Tako".into());
-            }
+        let path = directory.join(domain);
+        let header = format!("{RESOLVER_HEADER}{network}\n");
+        // One network owns `.tako`; a stale file from another network is replaced.
+        if let Some(previous) = read_resolver(&path)?
+            && !previous.starts_with(RESOLVER_HEADER)
+        {
+            return Err("The .tako resolver file is managed outside Tako".into());
         }
         let mut contents = header;
         for peer in &config.peers {
@@ -138,14 +144,14 @@ pub(super) fn cleanup(logical: &str) -> Result<()> {
     {
         let path = fs::canonicalize("/etc")?
             .join("resolver")
-            .join(format!("{network}.tako.internal"));
+            .join(tako_network::services::PRIVATE_DOMAIN);
         match read_resolver(&path)? {
-            Some(contents) => {
-                if !contents.starts_with(&format!("# Managed by Tako: {network}\n")) {
-                    return Err("The network resolver was modified outside Tako".into());
-                }
+            Some(contents) if contents.starts_with(&format!("{RESOLVER_HEADER}{network}\n")) => {
                 fs::remove_file(path)?;
             }
+            // Another connected network now owns `.tako`; leave its file alone.
+            Some(contents) if contents.starts_with(RESOLVER_HEADER) => {}
+            Some(_) => return Err("The .tako resolver file was modified outside Tako".into()),
             None => {}
         }
     }
@@ -223,6 +229,10 @@ fn update_hosts(path: &Path, network: &str, names: &[ServerName]) -> Result<()> 
     Ok(())
 }
 
+fn qualified(name: &str) -> String {
+    format!("{name}.{}", tako_network::services::PRIVATE_DOMAIN)
+}
+
 fn hosts_contents(previous: &str, network: &str, names: &[ServerName]) -> Result<String> {
     let begin = format!("# BEGIN TAKO NETWORK {network}\n");
     let end = format!("# END TAKO NETWORK {network}\n");
@@ -239,10 +249,7 @@ fn hosts_contents(previous: &str, network: &str, names: &[ServerName]) -> Result
         return Err("Duplicate or incomplete Tako hosts block".into());
     }
     for record in names {
-        let aliases = [
-            record.name.clone(),
-            format!("{}.{network}.tako.internal", record.name),
-        ];
+        let aliases = [record.name.clone(), qualified(&record.name)];
         for line in contents.lines() {
             let words: Vec<_> = line
                 .split('#')
@@ -266,8 +273,10 @@ fn hosts_contents(previous: &str, network: &str, names: &[ServerName]) -> Result
         contents.push_str(&begin);
         for record in names {
             contents.push_str(&format!(
-                "{} {} {}.{network}.tako.internal\n",
-                record.address, record.name, record.name
+                "{} {} {}\n",
+                record.address,
+                record.name,
+                qualified(&record.name)
             ));
         }
         contents.push_str(&end);
@@ -294,7 +303,7 @@ mod tests {
             address: "fd42::1".parse().unwrap(),
         }];
         let installed = hosts_contents(original, "a", &records).unwrap();
-        assert!(installed.contains("fd42::1 foobar foobar.a.tako.internal"));
+        assert!(installed.contains("fd42::1 foobar foobar.tako\n"));
         assert_eq!(
             hosts_contents(&installed, "a", &records).unwrap(),
             installed

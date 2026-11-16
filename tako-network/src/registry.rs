@@ -467,6 +467,20 @@ impl RegistrySnapshot {
                 }
             }
         }
+        // Server names are private DNS names, so active servers must not share one.
+        if matches!(member.kind, MemberKind::Server(_))
+            && effective.values().any(|existing| {
+                existing.device_id != member.device_id
+                    && matches!(existing.kind, MemberKind::Server(_))
+                    && existing
+                        .request
+                        .name
+                        .as_str()
+                        .eq_ignore_ascii_case(member.request.name.as_str())
+            })
+        {
+            return Err(Error::Conflict("server name"));
+        }
         for existing in self.members.iter().filter(|member| member.wg_verified) {
             if existing.device_id == member.device_id {
                 return if existing == &member {

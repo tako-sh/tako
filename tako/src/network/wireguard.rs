@@ -142,6 +142,59 @@ fn disconnect_with(
     Ok(())
 }
 
+/// Whether this machine holds an owned connection configuration for the network.
+pub(crate) fn is_connected(alias: &LocalNetwork, profile: &Profile) -> Result<bool> {
+    Ok(saved_configuration(&configuration_path(alias, profile)?)?.is_some())
+}
+
+/// Servers whose WireGuard handshake has not completed within `wait`.
+/// Call only after `connect`, which has already authorized administrator access.
+pub(crate) fn unreachable_servers(
+    profile: &Profile,
+    wait: std::time::Duration,
+) -> Result<Vec<tako_network::Member>> {
+    unreachable_with(profile, wait, backend::invoke)
+}
+
+fn unreachable_with(
+    profile: &Profile,
+    wait: std::time::Duration,
+    mut execute: impl FnMut(Operation) -> Result<Option<String>>,
+) -> Result<Vec<tako_network::Member>> {
+    let network = &profile.snapshot().network.id;
+    let servers: Vec<_> = super::server_members(profile)?.into_values().collect();
+    // Any packet toward a peer starts a handshake. Every member may reach
+    // the server resolver port, so a TCP probe there is harmless.
+    for server in &servers {
+        let address = std::net::SocketAddr::new(network.address(&server.request.wg_public_key).into(), 53);
+        std::thread::spawn(move || {
+            let _ = std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_secs(2));
+        });
+    }
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        let report = execute(Operation::Handshakes {
+            interface: interface_name(network),
+        })?
+        .unwrap_or_default();
+        let completed: std::collections::BTreeSet<&str> = report
+            .lines()
+            .filter_map(|line| line.split_once(' '))
+            .filter(|(_, time)| *time != "0")
+            .map(|(key, _)| key)
+            .collect();
+        let missing: Vec<_> = servers
+            .iter()
+            .filter(|server| !completed.contains(server.request.wg_public_key.to_string().as_str()))
+            .cloned()
+            .collect();
+        if missing.is_empty() || std::time::Instant::now() >= deadline {
+            return Ok(missing);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+}
+
 fn saved_configuration(path: &Path) -> Result<Option<String>> {
     match super::private_file(path, false) {
         Ok(file) => {

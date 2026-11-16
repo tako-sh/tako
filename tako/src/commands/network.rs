@@ -399,21 +399,118 @@ pub fn connect(value: Option<&str>, config_path: Option<&Path>) -> Result<()> {
         );
     }
     let profile = network::client::refresh(&alias)?;
+    // One network owns `.tako` names at a time, so connecting switches.
+    for (other, other_profile) in connected_networks()? {
+        if other.id != alias.id {
+            teardown(&other, &other_profile)?;
+            output::muted(&format!("Disconnected from {}", other.name));
+        }
+    }
     let _lifecycle = network::wireguard::lifecycle_lock(&alias)?;
     network::local_access::preflight(&alias, &profile)?;
     network::wireguard::connect(&alias, &profile)?;
     network::local_access::install(&alias, &profile).map_err(|error| {
         format!("The network is connected, but SSH aliases could not be installed: {error}")
     })?;
-    finish(
-        &format!("Connected to {}", alias.name),
-        serde_json::json!({"network": alias.name, "connected": true}),
-    )
+    let unreachable = {
+        let _t = output::timed("Check WireGuard handshakes");
+        output::with_spinner_silent("Checking servers", || {
+            network::wireguard::unreachable_servers(&profile, HANDSHAKE_WAIT)
+        })
+    };
+    output::success(&format!("Connected to {}", alias.name));
+    let unreachable = match unreachable {
+        Ok(servers) => servers,
+        Err(error) => {
+            output::warning(&format!("Could not check server reachability: {error}"));
+            Vec::new()
+        }
+    };
+    for server in &unreachable {
+        if let MemberKind::Server(info) = &server.kind {
+            output::warning(&format!(
+                "No WireGuard handshake with {}. Check that UDP {} reaches {}.",
+                server.request.name,
+                info.wireguard_endpoint.port(),
+                info.wireguard_endpoint.ip()
+            ));
+        }
+    }
+    if output::is_json() {
+        let unreachable: Vec<_> = unreachable
+            .iter()
+            .map(|server| server.request.name.to_string())
+            .collect();
+        output::json_result(serde_json::json!({
+            "network": alias.name,
+            "connected": true,
+            "unreachable_servers": unreachable,
+        }))?;
+    }
+    Ok(())
 }
 
+/// Long enough for a first handshake across continents, short enough to wait on.
+const HANDSHAKE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub fn disconnect(value: Option<&str>, config_path: Option<&Path>) -> Result<()> {
-    let alias = network::resolve_network(value, config_path)?;
-    // Local teardown must remain possible after membership expires or is revoked.
+    let targets = match value {
+        Some(_) => {
+            let alias = network::resolve_network(value, config_path)?;
+            let profile = local_profile(&alias)?;
+            vec![(alias, profile)]
+        }
+        None => connected_networks()?,
+    };
+    let names: Vec<_> = targets.iter().map(|(alias, _)| alias.name.clone()).collect();
+    if output::is_dry_run() {
+        return finish(
+            "Would disconnect from the network",
+            serde_json::json!({"dry_run": true, "networks": names}),
+        );
+    }
+    if targets.is_empty() {
+        return finish(
+            "Not connected to a network",
+            serde_json::json!({"networks": names, "connected": false}),
+        );
+    }
+    for (alias, profile) in &targets {
+        teardown(alias, profile)?;
+        output::success(&format!("Disconnected from {}", alias.name));
+    }
+    if output::is_json() {
+        output::json_result(serde_json::json!({"networks": names, "connected": false}))?;
+    }
+    Ok(())
+}
+
+fn teardown(alias: &crate::config::LocalNetwork, profile: &Profile) -> Result<()> {
+    let _lifecycle = network::wireguard::lifecycle_lock(alias)?;
+    network::wireguard::disconnect(alias, profile)?;
+    network::local_access::remove(alias)
+}
+
+/// Networks with an owned local connection configuration.
+fn connected_networks() -> Result<Vec<(crate::config::LocalNetwork, Profile)>> {
+    let mut connected = Vec::new();
+    for alias in LocalNetworks::load()?.networks.into_values() {
+        let profile = match local_profile(&alias) {
+            Ok(profile) => profile,
+            Err(error) => {
+                output::warning(&format!("Skipped network {}: {error}", alias.name));
+                continue;
+            }
+        };
+        if network::wireguard::is_connected(&alias, &profile)? {
+            connected.push((alias, profile));
+        }
+    }
+    Ok(connected)
+}
+
+/// Local teardown must remain possible after membership expires or is revoked.
+fn local_profile(alias: &crate::config::LocalNetwork) -> Result<Profile> {
     let profile: Profile = network::read_json(&alias.profile_path()?)?;
     if profile.snapshot().network.id.to_string() != alias.id
         || profile
@@ -426,19 +523,7 @@ pub fn disconnect(value: Option<&str>, config_path: Option<&Path>) -> Result<()>
     }
     profile.snapshot().validate()?;
     profile.request().verify()?;
-    if output::is_dry_run() {
-        return finish(
-            "Would disconnect from the network",
-            serde_json::json!({"dry_run": true, "network": alias.name}),
-        );
-    }
-    let _lifecycle = network::wireguard::lifecycle_lock(&alias)?;
-    network::wireguard::disconnect(&alias, &profile)?;
-    network::local_access::remove(&alias)?;
-    finish(
-        &format!("Disconnected from {}", alias.name),
-        serde_json::json!({"network": alias.name, "connected": false}),
-    )
+    Ok(profile)
 }
 
 pub fn ssh(

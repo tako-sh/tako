@@ -160,8 +160,11 @@ WireGuard private traffic needs the advertised UDP endpoint; there is no hosted
 relay. `tako ssh` uses embedded WireGuard without sudo or system network changes.
 `connect` needs network privileges and enables private DNS, short server names,
 and approved SSH aliases for local applications; `disconnect` removes these
-managed settings. Neither mode needs an external WireGuard executable.
-Private app names are `{app}.{env}.{network-id}.tako.internal`. Public ingress
+managed settings. `connect` names servers without a WireGuard handshake (check
+their UDP endpoint) and switches away from any other connected network.
+Neither mode needs an external WireGuard executable.
+Private app names are `{app}.{env}.tako`; server names are `<server>.tako` and
+must be unique among a network's active servers. Public ingress
 and DNS remain separately provisioned. Native process DNS on a server requires
 active systemd-resolved; without it, WireGuard can work while the helper reports
 `dns_supported = false` and a DNS error. Compose gateway DNS is independent.

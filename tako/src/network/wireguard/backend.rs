@@ -53,6 +53,10 @@ pub(super) enum Operation {
         interface: String,
         public_key: String,
     },
+    /// Report each peer's last handshake. Never returns key material.
+    Handshakes {
+        interface: String,
+    },
 }
 
 impl Operation {
@@ -61,7 +65,8 @@ impl Operation {
             Self::Inspect { interface }
             | Self::Start { interface, .. }
             | Self::Sync { interface, .. }
-            | Self::Stop { interface, .. } => interface,
+            | Self::Stop { interface, .. }
+            | Self::Handshakes { interface } => interface,
         }
     }
 }
@@ -206,6 +211,11 @@ fn helper() -> Result<Option<String>> {
             }
             dns::install(network, interface, &actual, names, &config)?;
             Ok(None)
+        }
+        Operation::Handshakes { interface } => {
+            let actual = active_interface(&name_path, interface)?
+                .ok_or("The network interface is not active")?;
+            Ok(Some(handshakes(&uapi(&actual, "get=1\n\n")?)?))
         }
         Operation::Stop {
             interface,
@@ -475,6 +485,24 @@ fn public_key(actual: &str) -> Result<String> {
     Ok(STANDARD.encode(bytes))
 }
 
+/// `<base64 peer key> <unix seconds>` per peer; zero means no handshake yet.
+fn handshakes(response: &str) -> Result<String> {
+    let mut value = String::new();
+    let mut peer = None;
+    for line in response.lines() {
+        if let Some(key) = line.strip_prefix("public_key=") {
+            let bytes = hex::decode(key).map_err(|_| "Invalid WireGuard peer key")?;
+            peer = Some(STANDARD.encode(bytes));
+        } else if let (Some(time), Some(key)) =
+            (line.strip_prefix("last_handshake_time_sec="), &peer)
+        {
+            let time: u64 = time.parse().map_err(|_| "Invalid WireGuard handshake time")?;
+            value.push_str(&format!("{key} {time}\n"));
+        }
+    }
+    Ok(value)
+}
+
 fn require_owner(actual: &str, expected: &str) -> Result<()> {
     if public_key(actual)? != expected {
         return Err("Refusing to change a different WireGuard connection".into());
@@ -675,6 +703,27 @@ fn run_tool(program: &str, args: &[&str]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn handshake_report_contains_only_peer_keys_and_times() {
+        let response = format!(
+            "private_key={}\nown_public_key={}\npublic_key={}\nlast_handshake_time_sec=0\npublic_key={}\nendpoint=192.0.2.1:51820\nlast_handshake_time_sec=1700000000\nerrno=0\n",
+            "11".repeat(32),
+            "22".repeat(32),
+            "aa".repeat(32),
+            "bb".repeat(32)
+        );
+        let report = handshakes(&response).unwrap();
+        assert_eq!(
+            report,
+            format!(
+                "{} 0\n{} 1700000000\n",
+                STANDARD.encode([0xaa; 32]),
+                STANDARD.encode([0xbb; 32])
+            )
+        );
+        assert!(!report.contains(&STANDARD.encode([0x11; 32])));
+    }
 
     #[test]
     fn uapi_requires_explicit_success_and_complete_response() {
