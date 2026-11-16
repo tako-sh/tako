@@ -122,6 +122,7 @@ pub(super) fn install(
             .set_permissions(fs::Permissions::from_mode(0o644))?;
         temporary.as_file().sync_all()?;
         temporary.persist(path)?;
+        remove_legacy_resolver(network)?;
     }
     update_hosts(Path::new("/etc/hosts"), network, names)?;
     Ok(())
@@ -154,9 +155,27 @@ pub(super) fn cleanup(logical: &str) -> Result<()> {
             Some(_) => return Err("The .tako resolver file was modified outside Tako".into()),
             None => {}
         }
+        remove_legacy_resolver(network)?;
     }
     update_hosts(Path::new("/etc/hosts"), network, &[])?;
     super::remove_name(&state)
+}
+
+/// Earlier versions wrote `/etc/resolver/<network>.tako.internal`. Remove it
+/// when Tako still owns it so the old zone stops reaching former tunnel DNS.
+#[cfg(target_os = "macos")]
+fn remove_legacy_resolver(network: &str) -> Result<()> {
+    let path = fs::canonicalize("/etc")?
+        .join("resolver")
+        .join(format!("{network}.tako.internal"));
+    match read_resolver(&path)? {
+        Some(contents) if contents.starts_with(&format!("{RESOLVER_HEADER}{network}\n")) => {
+            fs::remove_file(path)?;
+            Ok(())
+        }
+        // Leave a file someone else wrote alone.
+        Some(_) | None => Ok(()),
+    }
 }
 
 #[cfg(any(target_os = "linux", test))]

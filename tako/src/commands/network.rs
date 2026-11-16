@@ -419,11 +419,11 @@ pub fn connect(value: Option<&str>, config_path: Option<&Path>) -> Result<()> {
         })
     };
     output::success(&format!("Connected to {}", alias.name));
-    let unreachable = match unreachable {
-        Ok(servers) => servers,
+    let (unreachable, check_error) = match unreachable {
+        Ok(servers) => (servers, None),
         Err(error) => {
             output::warning(&format!("Could not check server reachability: {error}"));
-            Vec::new()
+            (Vec::new(), Some(error.to_string()))
         }
     };
     for server in &unreachable {
@@ -441,10 +441,18 @@ pub fn connect(value: Option<&str>, config_path: Option<&Path>) -> Result<()> {
             .iter()
             .map(|server| server.request.name.to_string())
             .collect();
+        // Without a completed check, report reachability as unknown rather
+        // than an empty list that would read as "every server answered".
         output::json_result(serde_json::json!({
             "network": alias.name,
             "connected": true,
-            "unreachable_servers": unreachable,
+            "reachability_checked": check_error.is_none(),
+            "reachability_error": check_error,
+            "unreachable_servers": if check_error.is_none() {
+                serde_json::json!(unreachable)
+            } else {
+                serde_json::Value::Null
+            },
         }))?;
     }
     Ok(())
