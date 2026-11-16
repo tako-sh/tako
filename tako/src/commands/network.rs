@@ -399,15 +399,19 @@ pub fn connect(value: Option<&str>, config_path: Option<&Path>) -> Result<()> {
         );
     }
     let profile = network::client::refresh(&alias)?;
-    // One network owns `.tako` names at a time, so connecting switches.
-    for (other, other_profile) in connected_networks()? {
-        if other.id != alias.id {
-            teardown(&other, &other_profile)?;
-            output::muted(&format!("Disconnected from {}", other.name));
-        }
-    }
+    // One network owns `.tako` names at a time, so connecting switches. Check
+    // the new network first so a rejected switch keeps the current connection.
+    let others: Vec<_> = connected_networks()?
+        .into_iter()
+        .filter(|(other, _)| other.id != alias.id)
+        .collect();
+    let replacing: Vec<&str> = others.iter().map(|(other, _)| other.id.as_str()).collect();
     let _lifecycle = network::wireguard::lifecycle_lock(&alias)?;
-    network::local_access::preflight(&alias, &profile)?;
+    network::local_access::preflight(&alias, &profile, &replacing)?;
+    for (other, other_profile) in &others {
+        teardown(other, other_profile)?;
+        output::muted(&format!("Disconnected from {}", other.name));
+    }
     network::wireguard::connect(&alias, &profile)?;
     network::local_access::install(&alias, &profile).map_err(|error| {
         format!("The network is connected, but SSH aliases could not be installed: {error}")

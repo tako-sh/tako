@@ -13,14 +13,21 @@ fn directory(alias: &LocalNetwork) -> Result<PathBuf> {
 }
 
 pub(crate) fn install(alias: &LocalNetwork, profile: &Profile) -> Result<()> {
-    configure(alias, profile, true)
+    configure(alias, profile, true, &[])
 }
 
-pub(crate) fn preflight(alias: &LocalNetwork, profile: &Profile) -> Result<()> {
-    configure(alias, profile, false)
+/// Check for alias collisions without writing. `replacing` lists networks whose
+/// managed blocks will be removed first, so a switch is checked before it starts.
+pub(crate) fn preflight(alias: &LocalNetwork, profile: &Profile, replacing: &[&str]) -> Result<()> {
+    configure(alias, profile, false, replacing)
 }
 
-fn configure(alias: &LocalNetwork, profile: &Profile, write: bool) -> Result<()> {
+fn configure(
+    alias: &LocalNetwork,
+    profile: &Profile,
+    write: bool,
+    replacing: &[&str],
+) -> Result<()> {
     let keys = LocalDeviceKeys::load(&super::keys_path(&profile.request().request_id)?)?;
     let own = profile
         .request()
@@ -38,7 +45,7 @@ fn configure(alias: &LocalNetwork, profile: &Profile, write: bool) -> Result<()>
         super::write_bytes(&identity, keys.ssh_private_key()?.as_bytes(), true)?;
         super::write_bytes(&known_hosts, hosts.as_bytes(), true)?;
     }
-    edit_ssh_config(&alias.id, Some(&settings), write)
+    edit_ssh_config(&alias.id, Some(&settings), write, replacing)
 }
 
 fn render(
@@ -76,7 +83,7 @@ fn render(
 }
 
 pub(crate) fn remove(alias: &LocalNetwork) -> Result<()> {
-    edit_ssh_config(&alias.id, None, true)?;
+    edit_ssh_config(&alias.id, None, true, &[])?;
     let directory = directory(alias)?;
     for name in ["identity", "known_hosts"] {
         match fs::remove_file(directory.join(name)) {
@@ -102,7 +109,12 @@ pub(crate) fn quote_path(path: &Path) -> Result<String> {
     ))
 }
 
-fn edit_ssh_config(network: &str, settings: Option<&str>, write: bool) -> Result<()> {
+fn edit_ssh_config(
+    network: &str,
+    settings: Option<&str>,
+    write: bool,
+    replacing: &[&str],
+) -> Result<()> {
     let directory = dirs::home_dir()
         .ok_or("Cannot find the SSH configuration directory")?
         .join(".ssh");
@@ -141,8 +153,11 @@ fn edit_ssh_config(network: &str, settings: Option<&str>, write: bool) -> Result
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0o600,
         Err(error) => return Err(error.into()),
     };
+    if !write {
+        return check_switch(&previous, network, settings, replacing);
+    }
     let contents = config_contents(&previous, network, settings)?;
-    if !write || contents == previous {
+    if contents == previous {
         return Ok(());
     }
     let mut temporary = tempfile::NamedTempFile::new_in(&directory)?;
@@ -153,6 +168,20 @@ fn edit_ssh_config(network: &str, settings: Option<&str>, write: bool) -> Result
     temporary.as_file().sync_all()?;
     temporary.persist(path)?;
     Ok(())
+}
+
+/// Validate `network`'s block as if the `replacing` networks were already removed.
+fn check_switch(
+    previous: &str,
+    network: &str,
+    settings: Option<&str>,
+    replacing: &[&str],
+) -> Result<()> {
+    let mut remaining = previous.to_string();
+    for other in replacing {
+        remaining = config_contents(&remaining, other, None)?;
+    }
+    config_contents(&remaining, network, settings).map(drop)
 }
 
 fn config_contents(previous: &str, network: &str, settings: Option<&str>) -> Result<String> {
@@ -249,6 +278,16 @@ mod tests {
         );
         assert!(config_contents("Host=\"server\"\n", &alias.id, Some(&settings)).is_err());
     }
+    #[test]
+    fn switch_preflight_ignores_only_the_networks_being_replaced() {
+        let settings = "Host foobar foobar.tako\n  HostName fd42::1\n";
+        let connected = config_contents("", "a", Some(settings)).unwrap();
+        assert!(check_switch(&connected, "b", Some(settings), &[]).is_err());
+        check_switch(&connected, "b", Some(settings), &["a"]).unwrap();
+        let personal = format!("{connected}Host foobar\n  HostName example.com\n");
+        assert!(check_switch(&personal, "b", Some(settings), &["a"]).is_err());
+    }
+
     #[test]
     fn ssh_config_preserves_user_settings_and_other_networks() {
         let original = "Host personal\n  HostName example.com\nHost *\n  ServerAliveInterval 30\n";
