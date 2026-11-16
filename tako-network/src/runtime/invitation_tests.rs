@@ -196,7 +196,7 @@ fn host_recovery_survives_restart_and_lost_administrator_revocation() {
     let mutation = secret_mutation(
         &fixture,
         "shop/production",
-        crate::shared::SecretKind::App,
+        crate::shared::RecordKind::App,
         "TOKEN",
         Some("surviving-secret"),
     );
@@ -204,7 +204,7 @@ fn host_recovery_survives_restart_and_lost_administrator_revocation() {
         .call(
             &mut runtime,
             &fixture.admin,
-            RpcRequest::PublishSecret(Box::new(mutation)),
+            RpcRequest::PublishRecord(Box::new(mutation)),
             5,
         )
         .unwrap();
@@ -309,22 +309,22 @@ fn host_recovery_survives_restart_and_lost_administrator_revocation() {
     assert!(!members.contains_key(&lost));
     assert!(members[&id].independent_admin);
     assert!(members[&id].approved_by.is_none());
-    let RpcResponse::Secrets(shared) = fixture
+    let RpcResponse::Records(shared) = fixture
         .call(
             &mut runtime,
             &keys,
-            RpcRequest::PullSecrets { scope: None },
+            RpcRequest::PullRecords { scope: None },
             18,
         )
         .unwrap()
     else {
         panic!("expected secrets")
     };
-    let plaintext = shared.secrets[0]
-        .decrypt(&shared, &keys, &id)
+    let plaintext = shared.records[0]
+        .open(&shared, &keys, &id)
         .unwrap()
         .unwrap();
-    let content: crate::shared::SecretContent = serde_json::from_slice(&plaintext).unwrap();
+    let content: crate::shared::RecordContent = serde_json::from_slice(&plaintext).unwrap();
     assert_eq!(&*content.value, "surviving-secret");
     // Even host recovery respects the issuing server's own revocation.
     let revoke = snapshot

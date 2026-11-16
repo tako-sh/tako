@@ -1,4 +1,6 @@
-//! Shared ciphertext cache and an independent draft journal in each worktree.
+//! App environment secrets: an independent draft journal in each worktree,
+//! published to and merged from the network state.
+use super::state::{pull, read_cache};
 use super::{Profile, Result};
 use crate::config::{LocalNetwork, LocalNetworks, SecretsStore, TakoToml};
 use serde::{Deserialize, Serialize};
@@ -7,8 +9,8 @@ use std::path::Path;
 use tako_network::api::{RpcRequest, RpcResponse};
 use tako_network::sealed::SealedValue;
 use tako_network::shared::{
-    SECRET_RETRY_SECONDS, SecretAddress, SecretContent, SecretKind, SecretMutation, SecretReceipt,
-    SharedSnapshot,
+    PUBLICATION_RETRY_SECONDS, RecordAddress, RecordContent, RecordKind, RecordMutation,
+    RecordReceipt, SharedSnapshot,
 };
 use tako_network::{AppEnv, DeviceId, LocalDeviceKeys, NetworkId, RequestId};
 use zeroize::Zeroizing;
@@ -35,7 +37,7 @@ struct EnvironmentState {
 #[serde(deny_unknown_fields)]
 struct Pending {
     issuer: DeviceId,
-    mutation: SecretMutation,
+    mutation: RecordMutation,
     local: Option<Row>,
 }
 
@@ -174,55 +176,6 @@ pub(crate) fn save_local(project: &Path, values: &SecretsStore) -> Result<()> {
     write_workspace(project, &state)
 }
 
-fn cache_path(alias: &LocalNetwork) -> Result<std::path::PathBuf> {
-    Ok(alias.profile_path()?.with_file_name("secrets.json"))
-}
-fn read_cache(alias: &LocalNetwork) -> Result<Option<SharedSnapshot>> {
-    let path = cache_path(alias)?;
-    if !path.try_exists()? {
-        return Ok(None);
-    }
-    let stored: serde_json::Value = super::read_json(&path)?;
-    let cache = SharedSnapshot::from_persisted(&serde_json::to_vec(&stored)?)?;
-    if cache.network.to_string() != alias.id {
-        return Err("Secret cache belongs to another network".into());
-    }
-    cache.validate()?;
-    Ok(Some(cache))
-}
-fn cache_merge(
-    alias: &LocalNetwork,
-    incoming: &SharedSnapshot,
-    profile: &Profile,
-) -> Result<SharedSnapshot> {
-    let path = cache_path(alias)?;
-    let lock = super::private_file(&path.with_extension("lock"), true)?;
-    lock.lock()?;
-    let mut cache =
-        read_cache(alias)?.unwrap_or_else(|| SharedSnapshot::empty(incoming.network.clone()));
-    cache.merge(incoming)?;
-    let own = profile.request().device_id_for(&cache.network)?;
-    cache = cache.for_permissions(profile.snapshot().permissions(&own, super::now()?)?)?;
-    super::write_json(&path, &cache, true)?;
-    Ok(cache)
-}
-
-/// Pulling membership or shared values never publishes any worktree's drafts.
-pub(crate) fn pull(
-    alias: &LocalNetwork,
-    scope: Option<AppEnv>,
-) -> Result<(Profile, SharedSnapshot)> {
-    let profile = super::client::refresh(alias)?;
-    let server = super::client::available_server(&profile)?;
-    let RpcResponse::Secrets(incoming) =
-        super::client::call(&profile, &server, RpcRequest::PullSecrets { scope })?
-    else {
-        return Err("Unexpected shared secret response".into());
-    };
-    let cache = cache_merge(alias, &incoming, &profile)?;
-    Ok((profile, cache))
-}
-
 fn bind<'a>(
     state: &'a mut Workspace,
     env: &str,
@@ -299,10 +252,10 @@ fn merge_remote(
     };
     let mut remote = Rows::new();
     for record in records {
-        let Some(bytes) = record.decrypt(cache, &keys, &device)? else {
+        let Some(bytes) = record.open(cache, &keys, &device)? else {
             continue;
         };
-        let content: SecretContent = serde_json::from_slice(&bytes)?;
+        let content: RecordContent = serde_json::from_slice(&bytes)?;
         let key = RowKey {
             kind: record.address.kind,
             name: record.address.name.clone(),
@@ -388,17 +341,17 @@ fn publish_changes(
         }
         let observed = read_cache(alias)?.and_then(|cache| {
             cache
-                .secrets
+                .records
                 .into_iter()
                 .find(|record| record.id == pending.mutation.id)
         });
         let record = if let Some(record) = observed {
-            SecretReceipt::from(&record)
+            RecordReceipt::from(&record)
         } else {
-            let RpcResponse::SecretPublished(record) = super::client::call(
+            let RpcResponse::RecordPublished(record) = super::client::call(
                 profile,
                 &pending.issuer,
-                RpcRequest::PublishSecret(Box::new(pending.mutation.clone())),
+                RpcRequest::PublishRecord(Box::new(pending.mutation.clone())),
             )?
             else {
                 return Err("Unexpected secret publication response".into());
@@ -457,21 +410,21 @@ fn publish_changes(
     let observed_cache =
         read_cache(alias)?.unwrap_or_else(|| SharedSnapshot::empty(network.clone()));
     let observed = observed_cache.latest()?;
-    for row_key in dirty {
+    for row_key in local::publication_order(dirty, &current) {
         let id = RequestId::random()?;
-        let address = SecretAddress {
+        let address = RecordAddress {
             scope: scope.clone(),
             kind: row_key.kind,
             name: row_key.name.clone(),
         };
         let observed_revision = observed.get(&address).map_or(0, |record| record.revision);
-        let mut mutation = SecretMutation {
+        let mut mutation = RecordMutation {
             id,
             address,
             value: None,
             observed_revision,
             expires_at: super::now()?
-                .checked_add(SECRET_RETRY_SECONDS)
+                .checked_add(PUBLICATION_RETRY_SECONDS)
                 .ok_or("Secret retry deadline overflow")?,
         };
         mutation.value = current

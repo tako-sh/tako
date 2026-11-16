@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tako_network::api::{RpcResponse, RuntimeResult, SignedRequest};
 use tako_network::corrosion::RegistryStore;
 use tako_network::runtime::{RuntimeConfig, RuntimeLimits, ServerRuntime};
-use tako_network::shared::{SecretRecord, SharedSnapshot, SharedStore};
+use tako_network::shared::{SharedRecord, SharedSnapshot, SharedStore};
 use tako_network::*;
 
 #[derive(Clone)]
@@ -41,8 +41,8 @@ impl RegistryStore for Store {
     fn shared_snapshot(&mut self) -> RuntimeResult<SharedSnapshot> {
         Ok(self.0.lock().unwrap().1.clone())
     }
-    fn append_secret(&mut self, value: &SecretRecord) -> RuntimeResult<()> {
-        SharedStore::append_secret(&mut self.0.lock().unwrap().1, value)
+    fn append_record(&mut self, value: &SharedRecord) -> RuntimeResult<()> {
+        SharedStore::append_record(&mut self.0.lock().unwrap().1, value)
     }
 }
 fn now() -> u64 {
@@ -296,7 +296,7 @@ impl ApiServer {
                         let signed = SignedRequest::from_slice(&bytes).unwrap();
                         let path = signed.request.path();
                         let result = runtime.handle(signed, "POST", path, now());
-                        if matches!(&result, Ok(RpcResponse::SecretPublished(_)))
+                        if matches!(&result, Ok(RpcResponse::RecordPublished(_)))
                             && drop_publication.swap(false, Ordering::Relaxed)
                         {
                             continue;
@@ -608,7 +608,7 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
         &["credentials", "set", "postgres_url", "--env", "production"],
         Some("postgres://fixture:example@db.example.test/app"),
     );
-    assert!(server.store.0.lock().unwrap().1.secrets.is_empty());
+    assert!(server.store.0.lock().unwrap().1.records.is_empty());
     server.ok(
         &server.owner_home,
         &owner,
@@ -664,7 +664,7 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
         &["secrets", "sync", "--env", "production"],
         None,
     );
-    let before = server.store.0.lock().unwrap().1.secrets.len();
+    let before = server.store.0.lock().unwrap().1.records.len();
     server.drop_publication.store(true, Ordering::Relaxed);
     assert!(
         !server
@@ -685,7 +685,7 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
         None,
     );
     let state = server.store.0.lock().unwrap().1.clone();
-    assert_eq!(state.secrets.len(), before);
+    assert_eq!(state.records.len(), before);
     let latest = state.latest().unwrap();
     let alpha = latest
         .values()
@@ -735,7 +735,7 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
         .values()
         .find(|record| record.address.name == "GAMMA")
         .unwrap();
-    assert!(gamma.value.is_none());
+    assert!(gamma.is_deletion());
     assert_eq!(gamma.revision, 2);
     let untouched = server.project("new-worktree");
     server.ok(&client_home, &untouched, &["secrets", "list"], None);
@@ -746,8 +746,8 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
         None,
     );
     assert_eq!(
-        server.store.0.lock().unwrap().1.secrets.len(),
-        state.secrets.len()
+        server.store.0.lock().unwrap().1.records.len(),
+        state.records.len()
     );
     let scoped_invitation = server.ok(
         &server.owner_home,
@@ -796,9 +796,9 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
         serde_json::from_slice(&fs::read(device.path().join("secrets.json")).unwrap()).unwrap();
     assert!(
         cache
-            .secrets
+            .records
             .iter()
-            .all(|record| record.address.kind == tako_network::shared::SecretKind::App)
+            .all(|record| record.address.kind == tako_network::shared::RecordKind::App)
     );
     server.ok(
         &scoped_home,
@@ -812,7 +812,7 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
         &["secrets", "sync", "--env", "production"],
         None,
     );
-    let count = server.store.0.lock().unwrap().1.secrets.len();
+    let count = server.store.0.lock().unwrap().1.records.len();
     server.ok(
         &scoped_home,
         &scoped_project,
@@ -830,7 +830,7 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
             .status
             .success()
     );
-    assert_eq!(server.store.0.lock().unwrap().1.secrets.len(), count);
+    assert_eq!(server.store.0.lock().unwrap().1.records.len(), count);
     server.ok(
         &server.owner_home,
         &owner,
@@ -920,9 +920,9 @@ fn expired_publication_preserves_current_draft_and_requires_explicit_retry() {
             None,
         );
         let after = server.store.0.lock().unwrap().1.clone();
-        assert_eq!(after.secrets.len(), 1);
-        assert_eq!(after.secrets[0].revision, 2);
-        assert_ne!(after.secrets[0].id, before.secrets[0].id);
+        assert_eq!(after.records.len(), 1);
+        assert_eq!(after.records[0].revision, 2);
+        assert_ne!(after.records[0].id, before.records[0].id);
         let registry = server.store.0.lock().unwrap().0.clone();
         let admin = registry
             .members
@@ -936,11 +936,11 @@ fn expired_publication_preserves_current_draft_and_requires_explicit_retry() {
                 .join(format!("{}.json", admin.request.request_id)),
         )
         .unwrap();
-        let plaintext = after.secrets[0]
-            .decrypt(&after, &keys, &admin.device_id)
+        let plaintext = after.records[0]
+            .open(&after, &keys, &admin.device_id)
             .unwrap()
             .unwrap();
-        let content: tako_network::shared::SecretContent =
+        let content: tako_network::shared::RecordContent =
             serde_json::from_slice(&plaintext).unwrap();
         assert_eq!(&*content.value, "current-draft");
         let disk: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();

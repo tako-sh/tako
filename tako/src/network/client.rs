@@ -16,7 +16,7 @@ pub(crate) fn hostname(network: &tako_network::NetworkId, server: &DeviceId) -> 
     )
 }
 
-fn trusted_servers(profile: &Profile) -> Result<BTreeMap<DeviceId, ServerInfo>> {
+pub(crate) fn trusted_servers(profile: &Profile) -> Result<BTreeMap<DeviceId, ServerInfo>> {
     match profile {
         Profile::Created { .. } => {
             Err("Add the first server before using network management".into())

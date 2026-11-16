@@ -1,21 +1,22 @@
 use super::*;
+use crate::network::state::cache_merge;
 use crate::network::tests::{TestHome, fixture};
-use tako_network::shared::{SecretRecord, SharedStore};
+use tako_network::shared::{SharedRecord, SharedStore};
 
-fn published(profile: &Profile, name: &str, value: Option<&str>, revision: u64) -> SecretRecord {
-    let mutation = SecretMutation {
+fn published(profile: &Profile, name: &str, value: Option<&str>, revision: u64) -> SharedRecord {
+    let mutation = RecordMutation {
         observed_revision: 0,
         expires_at: 86400,
         id: RequestId::random().unwrap(),
-        address: SecretAddress {
+        address: RecordAddress {
             scope: "demo/production".parse().unwrap(),
-            kind: SecretKind::App,
+            kind: RecordKind::App,
             name: name.into(),
         },
         value: None,
     };
     let content = value.map(|value| {
-        serde_json::to_vec(&SecretContent {
+        serde_json::to_vec(&RecordContent {
             value: Zeroizing::new(value.into()),
             expires_on: None,
         })
@@ -25,7 +26,7 @@ fn published(profile: &Profile, name: &str, value: Option<&str>, revision: u64) 
         .request()
         .device_id_for(&profile.snapshot().network.id)
         .unwrap();
-    SecretRecord::encrypt(
+    SharedRecord::create(
         &mutation,
         content.as_deref(),
         revision,
@@ -135,7 +136,7 @@ fn selected_environment_cache_and_type_generation_leave_other_environments_untou
     for (fixture, local) in [(&healthy, &locals[0]), (&stale, &locals[1])] {
         let mut cache = SharedSnapshot::empty(fixture.profile.snapshot().network.id.clone());
         cache
-            .secrets
+            .records
             .push(published(&fixture.profile, "TOKEN", Some("published"), 1));
         cache_merge(local, &cache, &fixture.profile).unwrap();
     }
@@ -204,10 +205,10 @@ fn two_worktrees_share_published_values_but_keep_drafts_and_deletions_separate()
     let alias = super::super::save_profile(&fixture.profile).unwrap();
     let mut cache = SharedSnapshot::empty(fixture.profile.snapshot().network.id.clone());
     cache
-        .secrets
+        .records
         .push(published(&fixture.profile, "TOKEN", Some("published"), 1));
     cache
-        .secrets
+        .records
         .push(published(&fixture.profile, "DELETE_ME", Some("old"), 1));
     cache_merge(&alias, &cache, &fixture.profile).unwrap();
     let a = home.directory.path().join("checkout-a");
@@ -253,14 +254,14 @@ fn two_worktrees_share_published_values_but_keep_drafts_and_deletions_separate()
     let second = load_local(&b).unwrap();
     assert_eq!(decrypted(&second, "TOKEN"), "published");
     assert!(second.contains("production", "DELETE_ME"));
-    cache.secrets.push(published(
+    cache.records.push(published(
         &fixture.profile,
         "OTHER",
         Some("from-other-client"),
         2,
     ));
     cache
-        .append_secret(&published(&fixture.profile, "DELETE_ME", None, 2))
+        .append_record(&published(&fixture.profile, "DELETE_ME", None, 2))
         .unwrap();
     let mut state = read_workspace(&a).unwrap();
     merge_remote(
@@ -294,7 +295,7 @@ fn two_worktrees_share_published_values_but_keep_drafts_and_deletions_separate()
             .latest()
             .unwrap()
             .values()
-            .any(|record| record.address.name == "DELETE_ME" && record.value.is_none())
+            .any(|record| record.address.name == "DELETE_ME" && record.is_deletion())
     );
 }
 
@@ -471,7 +472,7 @@ fn backup_selection_and_storage_pairs_survive_record_ordering() {
     let rows = local::rows(Some(&values)).unwrap();
     assert_eq!(
         rows.values()
-            .filter(|row| row.key.kind == SecretKind::Storage)
+            .filter(|row| row.key.kind == RecordKind::Storage)
             .count(),
         1
     );
@@ -479,8 +480,43 @@ fn backup_selection_and_storage_pairs_survive_record_ordering() {
     assert_eq!(rebuilt, values);
     let mut partial = rows.clone();
     partial.remove(&RowKey {
-        kind: SecretKind::BackupKey,
+        kind: RecordKind::BackupKey,
         name: "backup-key-0000000000000000".into(),
     });
     assert!(local::environment(values.key_id, &partial).is_err());
+}
+
+#[test]
+fn backup_selection_publishes_after_new_keys_and_before_removed_keys() {
+    let key = |kind, name: &str| RowKey {
+        kind,
+        name: name.into(),
+    };
+    let row = |key: &RowKey| Row {
+        key: key.clone(),
+        value: "value".into(),
+        expires_on: None,
+    };
+    let added = key(RecordKind::BackupKey, "backup-key-bbbbbbbbbbbbbbbb");
+    let removed = key(RecordKind::BackupKey, "backup-key-aaaaaaaaaaaaaaaa");
+    let selection = key(RecordKind::BackupActive, "active");
+    let secret = key(RecordKind::App, "TOKEN");
+    let current: Rows = [&added, &selection, &secret]
+        .into_iter()
+        .map(|key| (key.clone(), row(key)))
+        .collect();
+    let dirty = [&removed, &selection, &added, &secret]
+        .into_iter()
+        .cloned()
+        .collect();
+    assert_eq!(
+        local::publication_order(dirty, &current),
+        [secret, added, selection.clone(), removed.clone()]
+    );
+    // Removing every key removes the selection first.
+    let dirty = [&removed, &selection].into_iter().cloned().collect();
+    assert_eq!(
+        local::publication_order(dirty, &Rows::new()),
+        [selection, removed]
+    );
 }

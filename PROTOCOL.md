@@ -5,9 +5,12 @@ This document records the small set of contracts shared by the CLI, server, and 
 The protocol version is `0`. Breaking changes are allowed until protocol v1. Change every producer and consumer in the same update. Do not add compatibility shims.
 
 Native enrollment and local device keys use version 2. Requests bind distinct SSH,
-WireGuard, and X25519 secret-encryption keys. Membership and encrypted per-key
+WireGuard, and X25519 secret-encryption keys. Membership and network state
 records replicate between servers through Corrosion; clients pull and publish
-through signed, pinned HTTPS. Invitations are single-use capabilities consumed by
+records through signed, pinned HTTPS. Secret records are sealed to each reader;
+records of kinds that are not secret, such as the active backup key ID, are
+plaintext. A server that cannot open a record yet returns it without the
+reader's key, and the client asks another server for it. Invitations are single-use capabilities consumed by
 their issuing server. Old native identities require fresh enrollment. Scoped
 deployments retain server-held backup keys when the request omits that binding;
 explicit changes still require server administration.

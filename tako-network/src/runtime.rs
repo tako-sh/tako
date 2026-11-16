@@ -427,11 +427,11 @@ impl<S: RegistryStore> ServerRuntime<S> {
             }
             RpcRequest::ClaimInvitation(claim) => self.claim_invitation(*claim, snapshot, now),
             RpcRequest::Snapshot => Ok(RpcResponse::Snapshot(snapshot)),
-            RpcRequest::PullSecrets { scope } => {
-                self.pull_secrets(&signed.signer, scope.as_ref(), &snapshot, now)
+            RpcRequest::PullRecords { scope } => {
+                self.pull_records(&signed.signer, scope.as_ref(), &snapshot, now)
             }
-            RpcRequest::PublishSecret(mutation) => {
-                self.publish_secret(*mutation, &signed.signer, &snapshot, now)
+            RpcRequest::PublishRecord(mutation) => {
+                self.publish_record(*mutation, &signed.signer, &snapshot, now)
             }
             RpcRequest::Approve(grant) => {
                 self.approve_pending(*grant, signed.signer, snapshot, now)
@@ -981,8 +981,8 @@ mod tests {
     struct MemoryState {
         snapshot: RegistrySnapshot,
         shared: crate::shared::SharedSnapshot,
-        fail_before_secret: bool,
-        fail_after_secret: bool,
+        fail_before_record: bool,
+        fail_after_record: bool,
         fail_before_member: bool,
         fail_after_member: bool,
         fail_ack: bool,
@@ -991,13 +991,13 @@ mod tests {
         fn shared_snapshot(&mut self) -> RuntimeResult<crate::shared::SharedSnapshot> {
             Ok(self.0.borrow().shared.clone())
         }
-        fn append_secret(&mut self, record: &crate::shared::SecretRecord) -> RuntimeResult<()> {
+        fn append_record(&mut self, record: &crate::shared::SharedRecord) -> RuntimeResult<()> {
             let mut state = self.0.borrow_mut();
-            if std::mem::take(&mut state.fail_before_secret) {
+            if std::mem::take(&mut state.fail_before_record) {
                 return Err(RuntimeError::Transport);
             }
-            crate::shared::SharedStore::append_secret(&mut state.shared, record)?;
-            if std::mem::take(&mut state.fail_after_secret) {
+            crate::shared::SharedStore::append_record(&mut state.shared, record)?;
+            if std::mem::take(&mut state.fail_after_record) {
                 return Err(RuntimeError::Transport);
             }
             Ok(())
@@ -1224,8 +1224,8 @@ mod tests {
                 dir,
                 store: MemoryStore(Rc::new(RefCell::new(MemoryState {
                     shared: crate::shared::SharedSnapshot::empty(snapshot.network.id.clone()),
-                    fail_before_secret: false,
-                    fail_after_secret: false,
+                    fail_before_record: false,
+                    fail_after_record: false,
                     snapshot,
                     fail_before_member: false,
                     fail_after_member: false,
