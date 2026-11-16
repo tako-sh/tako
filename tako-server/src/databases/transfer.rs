@@ -215,13 +215,11 @@ pub(crate) async fn begin_export(
         ));
     }
     let path = work.path.join("export.sqlite");
-    // A snapshot copy marks the database unchanged; restore that afterwards
-    // so the scheduler still uploads the changes.
-    let changed = state.databases.host.has_changes(&database);
+    // A snapshot copy marks the database unchanged, but an export is not a
+    // backup: mark it changed again so the scheduler still uploads it, even a
+    // write that lands while the copy is made.
     let snapshot = state.databases.host.snapshot(&database, &path).await;
-    if changed {
-        state.databases.host.mark_changed(&database);
-    }
+    state.databases.host.mark_changed(&database);
     snapshot.map_err(|e| format!("copy database: {e}"))?;
     let hash_path = path.clone();
     let (sha256, size) = tokio::task::spawn_blocking(move || sha256_file(&hash_path))

@@ -578,6 +578,11 @@ impl ServerState {
         if let Some(backup) = &backup {
             validate_backup_storage(backup)?;
         }
+        // Held until the database is recorded and registered, so a concurrent
+        // create of the same name waits and then finds it, rather than
+        // sharing (and on failure removing) its directory.
+        let lock = self.databases.lock(&id);
+        let _guard = lock.lock().await;
         if self
             .state_store
             .get_database(&id)
@@ -637,6 +642,18 @@ impl ServerState {
                 info.bindings.join(", ")
             ));
         }
+        let lock = self.databases.lock(id);
+        let _guard = lock.lock().await;
+        let database = DatabaseId::parse(id)?;
+        // Unregistering can time out on a request in flight; the database is
+        // then still hosted, so its grants stay until this succeeds.
+        if self.databases.host.is_registered(&database) {
+            self.databases
+                .host
+                .unregister(&database)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
         for (scope, grant) in self
             .state_store
             .all_database_grants()
@@ -663,16 +680,6 @@ impl ServerState {
                     .collect(),
                 key.as_deref().unwrap_or_default(),
             );
-        }
-        let lock = self.databases.lock(id);
-        let _guard = lock.lock().await;
-        let database = DatabaseId::parse(id)?;
-        if self.databases.host.is_registered(&database) {
-            self.databases
-                .host
-                .unregister(&database)
-                .await
-                .map_err(|e| e.to_string())?;
         }
         self.state_store
             .delete_database(id)
@@ -851,10 +858,17 @@ impl ServerState {
         let stored = self.hosted_database(id)?;
         // App deployers may snapshot only databases their app already uses;
         // administrators send no app.
-        if let Some(app) = app
-            && !self.app_uses_database(app, id)
-        {
-            return Err(format!("{app} does not use database {}.", stored.name));
+        if let Some(app) = app {
+            if !self.app_uses_database(app, id) {
+                return Err(format!("{app} does not use database {}.", stored.name));
+            }
+            // Deploys take only the release snapshot, which is skipped for an
+            // unchanged database; other snapshots need administration.
+            if reason != tako_core::SnapshotReason::Release {
+                return Err(
+                    "App deployers may take only the snapshot before a release command.".into(),
+                );
+            }
         }
         // Before a release, an unchanged database needs no new snapshot, and
         // a database without backups is not an error.

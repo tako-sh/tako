@@ -356,12 +356,13 @@ impl Context {
         !binding_envs(&self.config, name).is_empty()
     }
 
-    /// The backup storage of an environment that binds the database, which
-    /// is where its snapshots go on deploys.
-    fn backup_storage(
+    /// The backup storages of the environments that bind the database, by
+    /// environment. Deploys of each send snapshots to its storage.
+    fn backup_storages(
         &self,
         name: &str,
-    ) -> Result<Option<tako_core::StorageBinding>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<(String, tako_core::StorageBinding)>, Box<dyn std::error::Error>> {
+        let mut storages = Vec::new();
         for env in binding_envs(&self.config, name) {
             if crate::commands::storage::database_backup_setting(&self.config, env, name).is_none()
             {
@@ -372,16 +373,79 @@ impl Context {
                 config_path: self.config_path.clone(),
             }
             .load_secrets_for_environment(Some(env))?;
-            return crate::commands::storage::decrypt_database_backup_storage(
+            if let Some(storage) = crate::commands::storage::decrypt_database_backup_storage(
                 env,
                 &self.config,
                 name,
                 &secrets,
                 Some(&self.project_dir),
-            );
+            )? {
+                storages.push((env.to_owned(), storage));
+            }
         }
-        Ok(None)
+        Ok(storages)
     }
+
+    /// The storage that holds the database's snapshots; see
+    /// [`choose_snapshot_storage`].
+    fn snapshot_storage(
+        &self,
+        name: &str,
+        source: Option<(String, String)>,
+    ) -> Result<tako_core::StorageBinding, Box<dyn std::error::Error>> {
+        Ok(choose_snapshot_storage(
+            name,
+            self.backup_storages(name)?,
+            source,
+        )?)
+    }
+}
+
+/// The storage that holds a database's snapshots, among the backup storages
+/// of the environments that bind it: the one its server uses when that
+/// server answers (`source`, as bucket and endpoint), else the one they all
+/// agree on.
+fn choose_snapshot_storage(
+    name: &str,
+    storages: Vec<(String, tako_core::StorageBinding)>,
+    source: Option<(String, String)>,
+) -> Result<tako_core::StorageBinding, String> {
+    let location = |storage: &tako_core::StorageBinding| {
+        (
+            storage.bucket.clone().unwrap_or_default(),
+            storage.endpoint.clone().unwrap_or_default(),
+        )
+    };
+    if storages.is_empty() {
+        return Err("Recovering onto another server needs a backup storage: set [envs.<env>].backup.storage or [databases.<name>].backup in tako.toml.".into());
+    }
+    if let Some(source) = source {
+        return storages
+            .into_iter()
+            .find(|(_, storage)| location(storage) == source)
+            .map(|(_, storage)| storage)
+            .ok_or_else(|| {
+                format!(
+                    "The snapshots of {name} are in bucket {} at {}, which no environment that binds it uses as its backup storage.",
+                    source.0, source.1
+                )
+            });
+    }
+    let mut locations: Vec<_> = storages.iter().map(|(_, s)| location(s)).collect();
+    locations.sort();
+    locations.dedup();
+    if locations.len() > 1 {
+        let envs: Vec<_> = storages.iter().map(|(env, _)| env.as_str()).collect();
+        return Err(format!(
+            "The environments that bind {name} ({}) back it up to different storages, and its server does not answer to say which holds its snapshots. Set `backup = \"<storage>\"` in [databases.{name}] to the one that does.",
+            envs.join(", ")
+        ));
+    }
+    Ok(storages
+        .into_iter()
+        .next()
+        .map(|(_, s)| s)
+        .expect("checked non-empty"))
 }
 
 pub(crate) async fn send<T: DeserializeOwned>(
@@ -857,9 +921,23 @@ async fn restore(
     }
     let backup_key = ctx.backup_key(name)?;
     if moving {
-        let backup = ctx.backup_storage(name)?.ok_or(
-            "Recovering onto another server needs a backup storage: set [envs.<env>].backup.storage or [databases.<name>].backup in tako.toml.",
-        )?;
+        // Ask the current server where the snapshots are; it may be gone.
+        let source = send::<serde_json::Value>(
+            &home,
+            Command::DatabaseStatus {
+                name: Some(name.to_owned()),
+            },
+        )
+        .await
+        .ok()
+        .and_then(|status| {
+            let backup = &status["databases"][0]["backup"];
+            Some((
+                backup["bucket"].as_str()?.to_owned(),
+                backup["endpoint"].as_str()?.to_owned(),
+            ))
+        });
+        let backup = ctx.snapshot_storage(name, source)?;
         send::<DatabaseInfo>(
             &target,
             Command::CreateDatabase {
@@ -1465,6 +1543,46 @@ fn format_time(unix: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn storage(bucket: &str) -> tako_core::StorageBinding {
+        tako_core::StorageBinding {
+            provider: tako_core::StorageProvider::S3,
+            bucket: Some(bucket.into()),
+            endpoint: Some("https://s3.example.test".into()),
+            region: None,
+            access_key_id: None,
+            secret_access_key: None,
+            force_path_style: false,
+            public_base_url: None,
+            path: None,
+            signing_key: None,
+        }
+    }
+
+    #[test]
+    fn snapshots_are_read_from_the_storage_the_server_uses() {
+        let storages = || {
+            vec![
+                ("production".to_owned(), storage("prod-backups")),
+                ("staging".to_owned(), storage("staging-backups")),
+            ]
+        };
+        let source = |bucket: &str| Some((bucket.to_owned(), "https://s3.example.test".to_owned()));
+        let chosen =
+            choose_snapshot_storage("shop", storages(), source("staging-backups")).unwrap();
+        assert_eq!(chosen.bucket.as_deref(), Some("staging-backups"));
+        let error = choose_snapshot_storage("shop", storages(), source("elsewhere")).unwrap_err();
+        assert!(error.contains("no environment that binds it"), "{error}");
+        // Without the server, the environments must agree.
+        let error = choose_snapshot_storage("shop", storages(), None).unwrap_err();
+        assert!(error.contains("production, staging"), "{error}");
+        let agreed = vec![
+            ("production".to_owned(), storage("shared")),
+            ("staging".to_owned(), storage("shared")),
+        ];
+        assert!(choose_snapshot_storage("shop", agreed, None).is_ok());
+        assert!(choose_snapshot_storage("shop", Vec::new(), None).is_err());
+    }
 
     #[test]
     fn migration_names_become_slugs() {

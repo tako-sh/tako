@@ -121,11 +121,10 @@ pub(crate) fn run_pipeline(
                     .map(|result| StreamResponse::Describe { result })
             }
             StreamRequest::StoreSql { sql_id, sql } => {
-                store_sql(&mut stream.stored_sql, sql_id, sql, &limits)
-                    .map(|()| StreamResponse::StoreSql)
+                store_sql(stream, sql_id, sql, &limits).map(|()| StreamResponse::StoreSql)
             }
             StreamRequest::CloseSql { sql_id } => {
-                stream.stored_sql.remove(&sql_id);
+                stream.close_sql(sql_id);
                 Ok(StreamResponse::CloseSql)
             }
             StreamRequest::GetAutocommit => Ok(StreamResponse::GetAutocommit {
@@ -246,7 +245,9 @@ pub(crate) fn run_cursor(
         }
         let mut disconnected = false;
         let result = {
-            let Stream { conn, stored_sql } = &mut *stream;
+            let Stream {
+                conn, stored_sql, ..
+            } = &mut *stream;
             resolve_statement(stored_sql, &step.stmt).and_then(|(sql, args)| {
                 let conn = connection(conn, database)?;
                 conn.execute_streaming(sql, &args, |event| {
@@ -382,7 +383,9 @@ fn execute(
     stmt: &Stmt,
     budget: &mut Budget,
 ) -> Result<StmtResult, Error> {
-    let Stream { conn, stored_sql } = stream;
+    let Stream {
+        conn, stored_sql, ..
+    } = stream;
     let (sql, args) = resolve_statement(stored_sql, stmt)?;
     let conn = connection(conn, database)?;
     let result = conn.execute(sql, &args, stmt.want_rows.unwrap_or(true), budget);
@@ -400,7 +403,9 @@ fn sequence(
     sql: Option<&str>,
     sql_id: Option<i32>,
 ) -> Result<(), Error> {
-    let Stream { conn, stored_sql } = stream;
+    let Stream {
+        conn, stored_sql, ..
+    } = stream;
     let sql = resolve_sql(stored_sql, sql, sql_id)?;
     let conn = connection(conn, database)?;
     let result = conn.sequence(sql);
@@ -417,17 +422,15 @@ fn describe(
     sql: Option<&str>,
     sql_id: Option<i32>,
 ) -> Result<crate::proto::DescribeResult, Error> {
-    let Stream { conn, stored_sql } = stream;
+    let Stream {
+        conn, stored_sql, ..
+    } = stream;
     let sql = resolve_sql(stored_sql, sql, sql_id)?;
     connection(conn, database)?.describe(sql)
 }
 
-fn store_sql(
-    stored: &mut HashMap<i32, String>,
-    sql_id: i32,
-    sql: String,
-    limits: &Limits,
-) -> Result<(), Error> {
+fn store_sql(stream: &mut Stream, sql_id: i32, sql: String, limits: &Limits) -> Result<(), Error> {
+    let stored = &stream.stored_sql;
     if !stored.contains_key(&sql_id) && stored.len() >= limits.max_stored_sql {
         return Err(Error::new(
             "SQL_STORE_LIMIT",
@@ -451,7 +454,14 @@ fn store_sql(
             ),
         ));
     }
-    stored.insert(sql_id, sql);
+    // Retained streams together are bounded too, so many streams cannot
+    // each hold their own maximum.
+    if !stream.store_sql(sql_id, sql) {
+        return Err(Error::new(
+            "SQL_STORE_LIMIT",
+            "this server holds too much stored SQL; close stored statements or streams",
+        ));
+    }
     Ok(())
 }
 
@@ -507,6 +517,7 @@ fn connection<'a>(
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::Arc;
 
     fn requests(value: serde_json::Value) -> Vec<StreamRequest> {
         serde_json::from_value(value).unwrap()
@@ -576,6 +587,11 @@ mod tests {
         ));
     }
 
+    fn stream(limit: usize) -> (Arc<crate::host::StoredSqlBudget>, Stream) {
+        let budget = Arc::new(crate::host::StoredSqlBudget::new(limit));
+        (budget.clone(), Stream::new(budget))
+    }
+
     #[test]
     fn stored_sql_is_bounded_but_replaceable() {
         let limits = Limits {
@@ -583,11 +599,11 @@ mod tests {
             max_stored_sql: 1,
             max_stored_sql_bytes: usize::MAX,
         };
-        let mut stored = HashMap::new();
-        store_sql(&mut stored, 1, "SELECT 1".into(), &limits).unwrap();
-        store_sql(&mut stored, 1, "SELECT 2".into(), &limits).unwrap();
-        assert_eq!(stored[&1], "SELECT 2");
-        assert!(store_sql(&mut stored, 2, "SELECT 3".into(), &limits).is_err());
+        let (_, mut stream) = stream(usize::MAX);
+        store_sql(&mut stream, 1, "SELECT 1".into(), &limits).unwrap();
+        store_sql(&mut stream, 1, "SELECT 2".into(), &limits).unwrap();
+        assert_eq!(stream.stored_sql[&1], "SELECT 2");
+        assert!(store_sql(&mut stream, 2, "SELECT 3".into(), &limits).is_err());
     }
 
     #[test]
@@ -597,15 +613,38 @@ mod tests {
             max_stored_sql: 16,
             max_stored_sql_bytes: 16,
         };
-        let mut stored = HashMap::new();
-        store_sql(&mut stored, 1, "SELECT 1".into(), &limits).unwrap();
-        store_sql(&mut stored, 2, "SELECT 2".into(), &limits).unwrap();
-        let error = store_sql(&mut stored, 3, "SELECT 3".into(), &limits).unwrap_err();
+        let (_, mut stream) = stream(usize::MAX);
+        store_sql(&mut stream, 1, "SELECT 1".into(), &limits).unwrap();
+        store_sql(&mut stream, 2, "SELECT 2".into(), &limits).unwrap();
+        let error = store_sql(&mut stream, 3, "SELECT 3".into(), &limits).unwrap_err();
         assert_eq!(error.code, "SQL_STORE_LIMIT");
         // Replacing a text only counts its new length.
-        store_sql(&mut stored, 2, "SELECT 22".into(), &limits).unwrap_err();
-        store_sql(&mut stored, 2, "SELECT 9".into(), &limits).unwrap();
-        stored.remove(&2);
-        store_sql(&mut stored, 3, "SELECT 3".into(), &limits).unwrap();
+        store_sql(&mut stream, 2, "SELECT 22".into(), &limits).unwrap_err();
+        store_sql(&mut stream, 2, "SELECT 9".into(), &limits).unwrap();
+        stream.close_sql(2);
+        store_sql(&mut stream, 3, "SELECT 3".into(), &limits).unwrap();
+    }
+
+    #[test]
+    fn streams_share_the_hosts_stored_sql_budget() {
+        let limits = Limits {
+            max_response_bytes: usize::MAX,
+            max_stored_sql: 16,
+            max_stored_sql_bytes: 16,
+        };
+        let (budget, mut first) = stream(16);
+        let mut second = Stream::new(budget.clone());
+        store_sql(&mut first, 1, "SELECT 1".into(), &limits).unwrap();
+        store_sql(&mut second, 1, "SELECT 2".into(), &limits).unwrap();
+        // Each stream is under its own limit, but together they are full.
+        let error = store_sql(&mut second, 2, "SELECT 3".into(), &limits).unwrap_err();
+        assert_eq!(error.code, "SQL_STORE_LIMIT");
+        assert_eq!(budget.used(), 16);
+        // Shrinking a text and closing a stream give the bytes back.
+        store_sql(&mut first, 1, "S".into(), &limits).unwrap();
+        assert_eq!(budget.used(), 9);
+        drop(first);
+        assert_eq!(budget.used(), 8);
+        store_sql(&mut second, 2, "SELECT 3".into(), &limits).unwrap();
     }
 }

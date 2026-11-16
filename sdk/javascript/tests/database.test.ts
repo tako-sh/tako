@@ -40,6 +40,18 @@ describe("tako.databases", () => {
     expect(Reflect.ownKeys(databases)).toEqual(["main"]);
   });
 
+  test("lists bindings like a plain object, without their tokens", () => {
+    injectBootstrap({ token: "t", secrets: {}, databases: { main: MAIN } });
+    const databases = loadDatabases();
+    expect(Object.keys(databases)).toEqual(["main"]);
+    expect(Object.entries(databases).map(([name, db]) => [name, db.url])).toEqual([
+      ["main", MAIN.url],
+    ]);
+    expect(Object.keys({ ...databases })).toEqual(["main"]);
+    expect(JSON.stringify(databases)).not.toContain("tok-main");
+    expect(inspect(databases)).not.toContain("tok-main");
+  });
+
   test("rejects malformed bindings with the binding name", () => {
     const databases = createDatabaseBag(() => ({ main: { url: "http://x" } }));
     expect(() => databases["main"]).toThrow(/"main"/);

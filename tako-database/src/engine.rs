@@ -676,9 +676,9 @@ fn starts_with_insert(sql: &str) -> bool {
         .chars()
         .take_while(|c| c.is_ascii_alphabetic())
         .collect();
-    keyword.eq_ignore_ascii_case("insert")
-        || keyword.eq_ignore_ascii_case("replace")
-        || keyword.eq_ignore_ascii_case("with")
+    // A statement starting with WITH can be an insert, update, or delete;
+    // it reports a rowid only when the rowid changed.
+    keyword.eq_ignore_ascii_case("insert") || keyword.eq_ignore_ascii_case("replace")
 }
 
 /// `sql` after leading whitespace and comments.

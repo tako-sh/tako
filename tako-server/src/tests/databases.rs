@@ -304,6 +304,27 @@ async fn release_snapshots_skip_unchanged_databases_and_foreign_apps() {
         second["skipped"].is_string(),
         "an unchanged database is skipped"
     );
+    // Deployers take only the release snapshot, which skips an unchanged
+    // database; any other reason would let them add full snapshots.
+    for reason in [
+        SnapshotReason::Manual,
+        SnapshotReason::Migration,
+        SnapshotReason::Restore,
+    ] {
+        let refused = error(
+            &state,
+            Command::SnapshotDatabase {
+                name: ID.into(),
+                reason,
+                app: Some("web/production".into()),
+            },
+        )
+        .await;
+        assert!(
+            refused.contains("only the snapshot before a release"),
+            "{refused}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -375,8 +396,22 @@ async fn import_and_export_round_trip_a_file() {
     query(&state, ID, "CREATE TABLE items (name TEXT)").await;
     query(&state, ID, "INSERT INTO items VALUES ('before')").await;
 
-    // Export.
+    // Export. It copies the database like a snapshot does, but is not one, so
+    // the database stays due for its next scheduled snapshot.
+    let db_id = tako_database::DatabaseId::parse(ID).unwrap();
+    // Start from a database the scheduler considers backed up.
+    state
+        .databases
+        .host
+        .snapshot(&db_id, &temp.path().join("copy.sqlite"))
+        .await
+        .unwrap();
+    assert!(!state.databases.host.has_changes(&db_id));
     let export = ok(&state, Command::BeginDatabaseExport { name: ID.into() }).await;
+    assert!(
+        state.databases.host.has_changes(&db_id),
+        "a write during the export is not forgotten"
+    );
     let export_id = export["export_id"].as_str().unwrap().to_owned();
     let size = export["size_bytes"].as_u64().unwrap();
     let mut exported = Vec::new();

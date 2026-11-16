@@ -88,6 +88,9 @@ pub struct HostConfig {
     pub max_stored_sql_per_stream: usize,
     /// Total length of the SQL texts one stream may store.
     pub max_stored_sql_bytes_per_stream: usize,
+    /// Total length of the SQL texts every open stream on this host may
+    /// store together.
+    pub max_stored_sql_bytes: usize,
     pub max_condition_depth: usize,
     /// Idle connections kept per database for stateless requests.
     pub pool_size: usize,
@@ -110,6 +113,7 @@ impl Default for HostConfig {
             max_response_bytes: 64 * 1024 * 1024,
             max_stored_sql_per_stream: 256,
             max_stored_sql_bytes_per_stream: 1024 * 1024,
+            max_stored_sql_bytes: 64 * 1024 * 1024,
             max_condition_depth: 32,
             pool_size: 8,
             max_concurrent_per_database: 32,
@@ -251,17 +255,97 @@ impl Drop for ActiveGuard {
     }
 }
 
+/// Bytes of SQL text stored by every open stream of a host.
+pub(crate) struct StoredSqlBudget {
+    used: std::sync::atomic::AtomicUsize,
+    limit: usize,
+}
+
+impl StoredSqlBudget {
+    pub(crate) fn new(limit: usize) -> Self {
+        Self {
+            used: std::sync::atomic::AtomicUsize::new(0),
+            limit,
+        }
+    }
+
+    /// Reserves `bytes`, or returns false when they do not fit.
+    fn reserve(&self, bytes: usize) -> bool {
+        let mut used = self.used.load(Ordering::Acquire);
+        loop {
+            let Some(total) = used.checked_add(bytes).filter(|total| *total <= self.limit) else {
+                return false;
+            };
+            match self
+                .used
+                .compare_exchange_weak(used, total, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return true,
+                Err(current) => used = current,
+            }
+        }
+    }
+
+    fn release(&self, bytes: usize) {
+        let mut used = self.used.load(Ordering::Acquire);
+        loop {
+            match self.used.compare_exchange_weak(
+                used,
+                used.saturating_sub(bytes),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return,
+                Err(current) => used = current,
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn used(&self) -> usize {
+        self.used.load(Ordering::Acquire)
+    }
+}
+
 /// An open stream: one connection plus its stored SQL texts.
 pub(crate) struct Stream {
     pub(crate) conn: Option<engine::Connection>,
     pub(crate) stored_sql: HashMap<i32, String>,
+    /// Where the stored texts' bytes are counted; released on drop.
+    budget: Arc<StoredSqlBudget>,
 }
 
 impl Stream {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(budget: Arc<StoredSqlBudget>) -> Self {
         Self {
             conn: None,
             stored_sql: HashMap::new(),
+            budget,
+        }
+    }
+
+    fn stored_bytes(&self) -> usize {
+        self.stored_sql.values().map(String::len).sum()
+    }
+
+    /// Stores `sql` as `sql_id`, counting its bytes against the host's
+    /// budget. Returns false, storing nothing, when they do not fit.
+    pub(crate) fn store_sql(&mut self, sql_id: i32, sql: String) -> bool {
+        let previous = self.stored_sql.get(&sql_id).map_or(0, String::len);
+        if sql.len() > previous {
+            if !self.budget.reserve(sql.len() - previous) {
+                return false;
+            }
+        } else {
+            self.budget.release(previous - sql.len());
+        }
+        self.stored_sql.insert(sql_id, sql);
+        true
+    }
+
+    pub(crate) fn close_sql(&mut self, sql_id: i32) {
+        if let Some(sql) = self.stored_sql.remove(&sql_id) {
+            self.budget.release(sql.len());
         }
     }
 
@@ -272,6 +356,12 @@ impl Stream {
                 .conn
                 .as_ref()
                 .is_some_and(|conn| !conn.is_autocommit() || conn.is_dirty())
+    }
+}
+
+impl Drop for Stream {
+    fn drop(&mut self) {
+        self.budget.release(self.stored_bytes());
     }
 }
 
@@ -293,6 +383,7 @@ pub(crate) struct HostInner {
     /// Databases on this server that apps on other servers may use.
     remote_grants: RwLock<HashMap<String, Grant>>,
     pub(crate) streams: Mutex<HashMap<[u8; 16], StreamEntry>>,
+    pub(crate) stored_sql: Arc<StoredSqlBudget>,
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
@@ -345,6 +436,7 @@ pub enum HostError {
 
 impl DatabaseHost {
     pub fn new(config: HostConfig) -> Self {
+        let stored_sql = Arc::new(StoredSqlBudget::new(config.max_stored_sql_bytes));
         Self {
             inner: Arc::new(HostInner {
                 config,
@@ -353,6 +445,7 @@ impl DatabaseHost {
                 by_token: RwLock::new(HashMap::new()),
                 remote_grants: RwLock::new(HashMap::new()),
                 streams: Mutex::new(HashMap::new()),
+                stored_sql,
             }),
         }
     }
@@ -576,6 +669,27 @@ impl DatabaseHost {
             .drain()
             .map(|(_, db)| db)
             .collect();
+        // New requests no longer find these databases. Requests already
+        // running keep a connection to the file, so its lock is held until
+        // they finish: a successor that replaced the file meanwhile would
+        // lose their writes. A request still running after the pause timeout
+        // is left to fail.
+        let deadline = tokio::time::Instant::now() + self.inner.config.pause_timeout;
+        for database in &databases {
+            loop {
+                let idle = database.idle.notified();
+                if database.state.lock().active == 0 {
+                    break;
+                }
+                if tokio::time::timeout_at(deadline, idle).await.is_err() {
+                    tracing::warn!(
+                        database = %database.id,
+                        "closing a database with requests still running"
+                    );
+                    break;
+                }
+            }
+        }
         tokio::task::spawn_blocking(move || {
             drop(streams);
             for database in databases {

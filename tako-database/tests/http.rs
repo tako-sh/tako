@@ -606,6 +606,51 @@ async fn cursor_rows_larger_than_a_response_are_refused() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn closing_waits_for_requests_still_running() {
+    let h = harness(HostConfig::default());
+    // An admitted request whose body has not finished keeps the database
+    // active, as a slow statement would.
+    let (tx, rx) =
+        tokio::sync::mpsc::channel::<Result<http_body::Frame<Bytes>, std::convert::Infallible>>(1);
+    let body = tokio_stream_from(rx);
+    let request = Request::post("/v3/pipeline")
+        .header("authorization", format!("Bearer {}", h.token))
+        .body(http_body_util::StreamBody::new(body))
+        .unwrap();
+    let host = h.host.clone();
+    let running =
+        tokio::spawn(
+            async move { handle(&host, &Access::Apps, PEER.parse().unwrap(), request).await },
+        );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let closing = tokio::spawn({
+        let host = h.host.clone();
+        async move { host.close_all().await }
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !closing.is_finished(),
+        "closing waits for the running request"
+    );
+    let rest = json!({"baton": null, "requests": [execute("SELECT 1")]}).to_string();
+    tx.send(Ok(http_body::Frame::data(Bytes::from(rest))))
+        .await
+        .unwrap();
+    drop(tx);
+    running.await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), closing)
+        .await
+        .expect("closing finishes once the request does")
+        .unwrap();
+}
+
+fn tokio_stream_from<T: Send + 'static>(
+    mut rx: tokio::sync::mpsc::Receiver<T>,
+) -> impl futures_util::Stream<Item = T> + Send + Sync {
+    futures_util::stream::poll_fn(move |cx| rx.poll_recv(cx))
+}
+
 #[tokio::test]
 async fn oversized_requests_are_refused() {
     let h = harness(HostConfig {

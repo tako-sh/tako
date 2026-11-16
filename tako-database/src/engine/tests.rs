@@ -638,3 +638,30 @@ fn inserts_after_comments_report_their_rowid() {
     .unwrap();
     assert_eq!(result.last_insert_rowid, Some(5));
 }
+
+#[test]
+fn with_updates_and_deletes_report_no_insert_rowid() {
+    let fixture = fixture();
+    let mut conn = open(&fixture);
+    run(
+        &mut conn,
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)",
+    )
+    .unwrap();
+    run(&mut conn, "INSERT INTO t VALUES (7, 0)").unwrap();
+    for sql in [
+        "WITH c AS (SELECT 7 AS id) UPDATE t SET n = n + 1 WHERE id IN (SELECT id FROM c)",
+        "WITH c AS (SELECT 7 AS id) DELETE FROM t WHERE id IN (SELECT id FROM c)",
+    ] {
+        let result = run(&mut conn, sql).unwrap();
+        assert_eq!(result.affected_row_count, 1, "{sql}");
+        assert_eq!(result.last_insert_rowid, None, "{sql}");
+    }
+    // A WITH ... INSERT that moves the rowid still reports it.
+    let result = run(
+        &mut conn,
+        "WITH c AS (SELECT 9 AS id) INSERT INTO t SELECT id, 0 FROM c",
+    )
+    .unwrap();
+    assert_eq!(result.last_insert_rowid, Some(9));
+}

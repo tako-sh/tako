@@ -70,7 +70,9 @@ export function createDatabaseBag<T = Record<never, never>>(
     getOwnPropertyDescriptor(_target, prop: string | symbol) {
       if (typeof prop !== "string") return undefined;
       const database = lookup(prop);
-      return database ? { configurable: true, enumerable: false, value: database } : undefined;
+      // Enumerable, so Object.keys, entries, and spreading see the bindings;
+      // each connection redacts its token when logged or serialized.
+      return database ? { configurable: true, enumerable: true, value: database } : undefined;
     },
     has(_target, prop: string | symbol): boolean {
       return typeof prop === "string" && Object.prototype.hasOwnProperty.call(bindings(), prop);
