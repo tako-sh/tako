@@ -49,14 +49,15 @@ fn key() -> String {
 async fn ok(state: &ServerState, command: Command) -> Value {
     match state.handle_command(command).await {
         Response::Ok { data } => data,
-        other => panic!("expected ok: {other:?}"),
+        // Responses can carry secrets, so failures name the outcome only.
+        Response::Error { .. } => panic!("expected an ok response, got an error"),
     }
 }
 
 async fn error(state: &ServerState, command: Command) -> String {
     match state.handle_command(command).await {
         Response::Error { message, .. } => message,
-        other => panic!("expected an error: {other:?}"),
+        _ => panic!("expected an error response"),
     }
 }
 
@@ -144,8 +145,8 @@ async fn snapshots_restore_the_contents_they_captured() {
         .iter()
         .map(|snapshot| snapshot["reason"].as_str().unwrap().to_owned())
         .collect();
-    assert_eq!(reasons.len(), 2, "{listed}");
-    assert!(reasons.contains(&"restore".to_owned()), "{reasons:?}");
+    assert_eq!(reasons.len(), 2, "a manual and a pre-restore snapshot");
+    assert!(reasons.contains(&"restore".to_owned()));
     let pre_restore = listed["snapshots"]
         .as_array()
         .unwrap()
@@ -259,7 +260,7 @@ async fn release_snapshots_skip_unchanged_databases_and_foreign_apps() {
         },
     )
     .await;
-    assert!(foreign.contains("does not use"), "{foreign}");
+    assert!(foreign.contains("does not use"));
 
     let first = ok(
         &state,
@@ -283,7 +284,10 @@ async fn release_snapshots_skip_unchanged_databases_and_foreign_apps() {
         },
     )
     .await;
-    assert!(second["skipped"].is_string(), "{second}");
+    assert!(
+        second["skipped"].is_string(),
+        "an unchanged database is skipped"
+    );
 }
 
 #[tokio::test]
@@ -301,7 +305,7 @@ async fn a_failed_upload_keeps_the_database_due_for_a_snapshot() {
         },
     )
     .await;
-    assert!(failed.contains("unreachable"), "{failed}");
+    assert!(failed.contains("unreachable"));
     let id = tako_database::DatabaseId::parse(ID).unwrap();
     assert!(
         state.databases.host.has_changes(&id),
@@ -343,7 +347,7 @@ async fn moving_the_backup_destination_resets_snapshot_status() {
     assert_eq!(moved["backup"]["bucket"], "second-bucket");
     assert!(
         moved["backup"]["last_snapshot"].is_null(),
-        "the first bucket's snapshot is not in the second: {moved}"
+        "the first bucket's snapshot is not in the second"
     );
 }
 
@@ -477,7 +481,7 @@ async fn databases_in_use_cannot_be_deleted() {
         },
     )
     .await;
-    assert!(duplicate.contains("already exists"), "{duplicate}");
+    assert!(duplicate.contains("already exists"));
 
     ok(
         &state,
@@ -488,7 +492,7 @@ async fn databases_in_use_cannot_be_deleted() {
     )
     .await;
     let blocked = error(&state, Command::DeleteDatabase { id: ID.into() }).await;
-    assert!(blocked.contains("web/production"), "{blocked}");
+    assert!(blocked.contains("web/production"));
 
     ok(
         &state,
