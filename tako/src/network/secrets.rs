@@ -513,11 +513,17 @@ fn publish_changes(
     let network = &profile.snapshot().network.id;
     // Finish durable commands first, even when a subsequent edit superseded
     // their local values. They retain their original server-assigned revision.
+    // Commands of other kinds stay queued, in order, for the next full sync.
     loop {
-        let pending = bind(state, env, scope, network)?.pending.first().cloned();
-        let Some(pending) = pending else {
+        let entry = bind(state, env, scope, network)?;
+        let Some(index) = entry
+            .pending
+            .iter()
+            .position(|pending| only.is_none_or(|kind| pending.mutation.address.kind == kind))
+        else {
             break;
         };
+        let pending = entry.pending[index].clone();
         if pending.mutation.expires_at <= super::now()? {
             return Err("Secret publication retry expired. Local drafts are preserved. Run `tako secrets sync --retry-expired` to publish the current drafts as new changes".into());
         }
@@ -557,10 +563,10 @@ fn publish_changes(
         if let Some(row) = pending.local {
             entry.base.push(row);
         }
-        entry.pending.remove(0);
+        entry.pending.remove(index);
         write_workspace(project, state)?;
     }
-    // Every pending command has drained, so only edits remain unpublished.
+    // Every selected pending command has drained, so only edits remain unpublished.
     let current = local::rows(state.values.environments.get(env))?;
     let dirty: BTreeSet<_> = unpublished(bind(state, env, scope, network)?, &current)
         .into_iter()

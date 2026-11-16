@@ -1239,3 +1239,86 @@ fn clear_supersedes_expired_app_secret_commands() {
             .all(|record| record.address.name != "postgres_url")
     );
 }
+
+#[test]
+fn clear_leaves_other_pending_publications_queued() {
+    let server = ApiServer::new();
+    let project = server.project("clear-deferred");
+    server.ok(
+        &server.owner_home,
+        &project,
+        &["secrets", "set", "TOKEN", "--env", "production"],
+        Some("published"),
+    );
+    server.ok(
+        &server.owner_home,
+        &project,
+        &["secrets", "sync", "--env", "production"],
+        None,
+    );
+    // An interrupted sync leaves a credential publication pending, now expired.
+    server.ok(
+        &server.owner_home,
+        &project,
+        &["credentials", "set", "postgres_url", "--env", "production"],
+        Some("postgres://fixture:example@db.example.test/app"),
+    );
+    server.drop_publication.store(true, Ordering::Relaxed);
+    assert!(
+        !server
+            .run(
+                &server.owner_home,
+                &project,
+                &["secrets", "sync", "--env", "production"],
+                None,
+            )
+            .status
+            .success()
+    );
+    let path = project.join(".tako/secrets.local.json");
+    let mut local: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let pending = local["environments"]["production"]["pending"]
+        .as_array_mut()
+        .unwrap();
+    assert_eq!(pending.len(), 1);
+    pending[0]["mutation"]["expires_at"] = serde_json::json!(0);
+    fs::write(&path, serde_json::to_vec(&local).unwrap()).unwrap();
+    let before = server.store.0.lock().unwrap().1.clone();
+    let credential = before
+        .latest()
+        .unwrap()
+        .values()
+        .find(|record| record.address.name == "postgres_url")
+        .map(|record| record.id.clone());
+
+    let cleared = server.ok(
+        &server.owner_home,
+        &project,
+        &["secrets", "clear", "--env", "production", "--yes"],
+        None,
+    );
+    assert_eq!(cleared["cleared"], serde_json::json!(["TOKEN"]));
+    let after = server.store.0.lock().unwrap().1.clone();
+    let latest = after.latest().unwrap();
+    assert!(
+        latest
+            .values()
+            .find(|record| record.address.name == "TOKEN")
+            .unwrap()
+            .is_deletion()
+    );
+    // The credential command was neither retried nor dropped by the clear.
+    assert_eq!(
+        latest
+            .values()
+            .find(|record| record.address.name == "postgres_url")
+            .map(|record| record.id.clone()),
+        credential
+    );
+    let local: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let pending = local["environments"]["production"]["pending"]
+        .as_array()
+        .unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0]["mutation"]["address"]["name"], "postgres_url");
+}
