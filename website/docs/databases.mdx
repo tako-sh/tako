@@ -34,7 +34,7 @@ server = "edge-a"
 backup = "private_backups"
 ```
 
-`--server` can be omitted when the environment deploys to exactly one server. `--binding` chooses the app-facing name (it defaults to the database name). `--backup` names a private S3 storage resource for snapshots; see [Back up and restore](#back-up-and-restore). Deploy to start using the binding:
+`--server` can be omitted when the environment deploys to exactly one server. `--binding` chooses the app-facing name (it defaults to the database name). `--backup` names a private S3 storage resource for snapshots and defaults to the environment's `backup.storage`; without either, `create` warns that the database has no snapshots. See [Back up and restore](#back-up-and-restore). Deploy to start using the binding:
 
 ```bash
 tako deploy --env production
@@ -181,7 +181,7 @@ tako storages credentials private_backups --env production
 tako deploy --env production
 ```
 
-A deploy by an administrator sends the destination and credentials to the database's server. Without `backup`, Tako takes no snapshots and a lost server loses the database.
+A deploy by an administrator sends the destination and credentials to the database's server; removing `backup` and deploying stops snapshots, and moving it to another storage snapshots the database there on the next scheduler pass. Without `backup`, Tako takes no snapshots and a lost server loses the database.
 
 The server then takes snapshots:
 
