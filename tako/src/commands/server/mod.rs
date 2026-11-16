@@ -199,8 +199,11 @@ async fn uninstall_server_cmd(
         return Ok(());
     }
 
+    let networks = crate::config::LocalNetworks::load()?;
     let server_name = match name {
-        Some(n) => crate::commands::helpers::resolve_server_selector(&servers, n, network)?,
+        Some(n) => {
+            crate::commands::helpers::resolve_server_selector(&networks, &servers, n, network)?
+        }
         None => {
             if !output::is_interactive() {
                 return Err(
@@ -209,7 +212,7 @@ async fn uninstall_server_cmd(
                 );
             }
             let options: Vec<(String, String)> =
-                crate::commands::helpers::server_choices(&servers, network)?
+                crate::commands::helpers::server_choices(&networks, &servers, network)?
                     .into_iter()
                     .map(|n| (n.clone(), n))
                     .collect();

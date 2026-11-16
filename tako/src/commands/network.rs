@@ -118,7 +118,7 @@ pub fn run(command: NetworkCommands) -> Result<()> {
         NetworkCommands::Export { network, output } => export(network.as_deref(), &output),
         NetworkCommands::List => list(),
         NetworkCommands::Use { network } => {
-            let alias = LocalNetworks::load()?.use_network(&network)?;
+            let alias = LocalNetworks::use_network(&network)?;
             finish(
                 &format!("Using network {}", alias.name),
                 serde_json::to_value(&alias)?,

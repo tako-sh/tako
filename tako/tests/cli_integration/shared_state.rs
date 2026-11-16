@@ -1113,3 +1113,124 @@ fn clearing_requires_an_environment_bound_to_a_network() {
         stderr_str(&result)
     );
 }
+
+#[test]
+fn interrupted_clear_keeps_its_deletions_and_finishes_when_rerun() {
+    let server = ApiServer::new();
+    let project = server.project("clear-interrupted");
+    server.ok(
+        &server.owner_home,
+        &project,
+        &["secrets", "set", "TOKEN", "--env", "production"],
+        Some("published"),
+    );
+    server.ok(
+        &server.owner_home,
+        &project,
+        &["secrets", "sync", "--env", "production"],
+        None,
+    );
+    server.drop_publication.store(true, Ordering::Relaxed);
+    let failed = server.run(
+        &server.owner_home,
+        &project,
+        &["secrets", "clear", "--env", "production", "--yes"],
+        None,
+    );
+    assert!(!failed.status.success());
+    let message = format!("{}{}", stderr_str(&failed), stdout_str(&failed));
+    assert!(message.contains("did not finish"), "{message}");
+    assert!(
+        message.contains("tako secrets clear --env production"),
+        "{message}"
+    );
+    server.ok(
+        &server.owner_home,
+        &project,
+        &["secrets", "clear", "--env", "production", "--yes"],
+        None,
+    );
+    let state = server.store.0.lock().unwrap().1.clone();
+    let latest = state.latest().unwrap();
+    assert!(latest.values().all(|record| record.value.is_none()));
+    let local: serde_json::Value =
+        serde_json::from_slice(&fs::read(project.join(".tako/secrets.local.json")).unwrap())
+            .unwrap();
+    assert!(
+        local["environments"]["production"]["pending"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn clear_supersedes_expired_app_secret_commands() {
+    let server = ApiServer::new();
+    let project = server.project("clear-expired");
+    server.ok(
+        &server.owner_home,
+        &project,
+        &["secrets", "set", "TOKEN", "--env", "production"],
+        Some("published"),
+    );
+    server.ok(
+        &server.owner_home,
+        &project,
+        &["secrets", "sync", "--env", "production"],
+        None,
+    );
+    server.ok(
+        &server.owner_home,
+        &project,
+        &["secrets", "set", "TOKEN", "--env", "production"],
+        Some("uncertain"),
+    );
+    server.drop_publication.store(true, Ordering::Relaxed);
+    assert!(
+        !server
+            .run(
+                &server.owner_home,
+                &project,
+                &["secrets", "sync", "--env", "production"],
+                None,
+            )
+            .status
+            .success()
+    );
+    let path = project.join(".tako/secrets.local.json");
+    let mut local: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let pending = local["environments"]["production"]["pending"]
+        .as_array_mut()
+        .unwrap();
+    assert_eq!(pending.len(), 1);
+    pending[0]["mutation"]["expires_at"] = serde_json::json!(0);
+    fs::write(&path, serde_json::to_vec(&local).unwrap()).unwrap();
+    server.ok(
+        &server.owner_home,
+        &project,
+        &["credentials", "set", "postgres_url", "--env", "production"],
+        Some("postgres://fixture:example@db.example.test/app"),
+    );
+
+    let cleared = server.ok(
+        &server.owner_home,
+        &project,
+        &["secrets", "clear", "--env", "production", "--yes"],
+        None,
+    );
+    assert_eq!(cleared["cleared"], serde_json::json!(["TOKEN"]));
+    let state = server.store.0.lock().unwrap().1.clone();
+    let latest = state.latest().unwrap();
+    let token = latest
+        .values()
+        .find(|record| record.address.name == "TOKEN")
+        .unwrap();
+    assert!(token.value.is_none());
+    // The unrelated credential draft was not published along the way.
+    assert!(
+        latest
+            .values()
+            .all(|record| record.address.name != "postgres_url")
+    );
+}

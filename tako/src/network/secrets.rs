@@ -433,19 +433,36 @@ pub(crate) fn clear_environment(
     if let Some(values) = state.values.environments.get_mut(env) {
         cleared.extend(std::mem::take(&mut values.app).into_keys());
     }
+    // The deletions supersede expired app-secret commands. Values those
+    // commands may have published already are in the merged baseline above.
+    let now = super::now()?;
+    bind(&mut state, env, &scope, &cache.network)?
+        .pending
+        .retain(|pending| {
+            pending.mutation.address.kind != SecretKind::App || pending.mutation.expires_at > now
+        });
     write_workspace(project, &state)?;
-    publish_changes(
-        project,
-        &mut state,
-        env,
-        &scope,
-        &alias,
-        &profile,
-        Some(SecretKind::App),
-    )?;
-    let (profile, cache) = pull(&alias, Some(scope.clone()))?;
-    merge_remote(&mut state, env, &scope, &profile, &cache)?;
-    write_workspace(project, &state)?;
+    // From here the deletions are saved drafts: a later sync or deploy of this
+    // environment publishes them even if this command stops.
+    (|| -> Result<()> {
+        publish_changes(
+            project,
+            &mut state,
+            env,
+            &scope,
+            &alias,
+            &profile,
+            Some(SecretKind::App),
+        )?;
+        let (profile, cache) = pull(&alias, Some(scope.clone()))?;
+        merge_remote(&mut state, env, &scope, &profile, &cache)?;
+        write_workspace(project, &state)
+    })()
+    .map_err(|error| {
+        format!(
+            "Clearing {env} did not finish: {error}. The deletions are saved in this worktree; run `tako secrets clear --env {env}` again to finish. Syncing or deploying {env} also publishes them."
+        )
+    })?;
     Ok(cleared.into_iter().collect())
 }
 

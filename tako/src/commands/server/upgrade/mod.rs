@@ -208,12 +208,14 @@ pub(super) async fn upgrade_servers(
         return Ok(());
     }
 
+    let networks = crate::config::LocalNetworks::load()?;
     let names: Vec<String> = if let Some(name) = name {
         vec![crate::commands::helpers::resolve_server_selector(
-            &servers, name, network,
+            &networks, &servers, name, network,
         )?]
     } else {
-        let (local, names) = crate::commands::helpers::network_servers(&servers, network)?;
+        let (local, names) =
+            crate::commands::helpers::network_servers(&networks, &servers, network)?;
         if names.is_empty() {
             output::error(&format!("No servers in network {}.", local.name));
             return Ok(());

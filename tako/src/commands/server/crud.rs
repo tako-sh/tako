@@ -41,8 +41,10 @@ pub(super) async fn remove_server(
         return Ok(());
     }
 
+    let networks = crate::config::LocalNetworks::load()?;
     if let Some(name) = name {
-        let name = &crate::commands::helpers::resolve_server_selector(&servers, name, network)?;
+        let name =
+            &crate::commands::helpers::resolve_server_selector(&networks, &servers, name, network)?;
 
         if output::is_dry_run() {
             output::dry_run_skip(&format!("Remove server {}", output::strong(name)));
@@ -69,7 +71,7 @@ pub(super) async fn remove_server(
         );
     }
 
-    let choices = crate::commands::helpers::server_choices(&servers, network)?;
+    let choices = crate::commands::helpers::server_choices(&networks, &servers, network)?;
     let mut step = 0;
     let mut selected_name = String::new();
 
@@ -270,7 +272,9 @@ pub(super) async fn restart_server(
 
     let servers = crate::commands::helpers::load_management_servers(None, None).await?;
 
-    let name = &crate::commands::helpers::resolve_server_selector(&servers, name, network)?;
+    let networks = crate::config::LocalNetworks::load()?;
+    let name =
+        &crate::commands::helpers::resolve_server_selector(&networks, &servers, name, network)?;
     let server = servers
         .get(name)
         .ok_or_else(|| format!("Server '{}' not found.", name))?;
