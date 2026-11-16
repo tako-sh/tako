@@ -634,10 +634,10 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
     );
     let listed = server.ok(&client_home, &client, &["secrets", "list"], None);
     assert_eq!(listed["secrets"].as_array().unwrap().len(), 2);
-    for secret in listed["secrets"].as_array().unwrap() {
-        let change = &secret["last_changed"]["production"];
-        assert_eq!(change["published"], true, "{secret}");
-        assert_eq!(change["device"], "owner", "{secret}");
+    for entry in listed["secrets"].as_array().unwrap() {
+        let change = &entry["last_changed"]["production"];
+        assert_eq!(change["published"], true);
+        assert_eq!(change["device"], "owner");
     }
     let replay_home = server.directory.path().join("replay-home");
     assert!(
