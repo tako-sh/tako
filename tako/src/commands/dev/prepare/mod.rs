@@ -131,7 +131,7 @@ pub(super) async fn prepare(
     linux::explain_pending_sudo_setup()?;
 
     let local_ca = setup_local_ca().await?;
-    let tls_material_updated = ensure_dev_server_tls_material(&local_ca, &app_name)?;
+    let ca_changed = record_dev_ca_fingerprint(&local_ca)?;
     let short_domain_active = ensure_local_dns_resolver_configured(LOCAL_DNS_PORT)?;
 
     let domain = if short_domain_active {
@@ -186,9 +186,10 @@ pub(super) async fn prepare(
         .as_deref()
         .map(|ip| ip != daemon_dns_ip)
         .unwrap_or(false);
-    let restart_for_tls = tls_material_updated && existing_info.is_some();
+    let restart_for_ca = ca_changed && existing_info.is_some();
 
-    if restart_for_listen || restart_for_dns || restart_for_tls {
+    if restart_for_listen || restart_for_dns || restart_for_ca {
+        warn_restart_stops_apps(&config_key).await;
         crate::dev_server_client::stop_server().await?;
         wait_for_dev_server_stopped(&listen_addr).await;
     }
@@ -208,7 +209,7 @@ pub(super) async fn prepare(
     }
     inject_dev_allowed_hosts(&dev_hosts, &mut env);
     inject_dev_data_dir(&project_dir, &mut env).map_err(|e| e.to_string())?;
-    let secrets = inject_dev_secrets(&project_dir, &mut env).map_err(|e| e.to_string())?;
+    let secrets = inject_dev_secrets(&project_dir, &cfg, &mut env).map_err(|e| e.to_string())?;
 
     if runtime_adapter.preset_group() == PresetGroup::Js {
         crate::build::js::write_generated_files_with_schemas(
@@ -263,8 +264,14 @@ pub(super) async fn prepare(
         .await;
 
         if probe_result.is_err() {
-            probe_result =
-                repair_https_probe(&listen_addr, daemon_dns_ip, probe_host, loopback_ip).await;
+            probe_result = repair_https_probe(
+                &listen_addr,
+                daemon_dns_ip,
+                probe_host,
+                loopback_ip,
+                &config_key,
+            )
+            .await;
         }
 
         if let Err(ref loopback_error) = probe_result {
@@ -286,6 +293,7 @@ pub(super) async fn prepare(
         "127.0.0.1"
     };
     if final_dns_ip != daemon_dns_ip {
+        warn_restart_stops_apps(&config_key).await;
         crate::dev_server_client::stop_server().await?;
         for _ in 0..40 {
             if crate::dev_server_client::info().await.is_err() {
@@ -365,6 +373,41 @@ pub(super) async fn prepare(
     })))
 }
 
+/// The daemon keeps app commands and env in memory only, so a restart stops
+/// every other dev app until its project runs `tako dev` again.
+async fn warn_restart_stops_apps(config_key: &str) {
+    let Ok(apps) = crate::dev_server_client::list_registered_apps().await else {
+        return;
+    };
+    if let Some(message) = restart_stops_apps_message(&apps, config_key) {
+        crate::output::warning(&message);
+    }
+}
+
+pub(super) fn restart_stops_apps_message(
+    apps: &[crate::dev_server_client::RegisteredAppInfo],
+    config_key: &str,
+) -> Option<String> {
+    let names: Vec<&str> = apps
+        .iter()
+        .filter(|app| app.config_path != config_key && app.status != "stopped")
+        .map(|app| app.app_name.as_str())
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Restarting the dev server stops {}; run `tako dev` in {} to start {} again",
+        names.join(", "),
+        if names.len() == 1 {
+            "its project"
+        } else {
+            "their projects"
+        },
+        if names.len() == 1 { "it" } else { "them" },
+    ))
+}
+
 pub(super) async fn wait_for_dev_server_stopped(listen_addr: &str) {
     let socket_path = crate::paths::tako_data_dir()
         .ok()
@@ -406,6 +449,7 @@ async fn repair_https_probe(
     dns_ip: &str,
     probe_host: &str,
     loopback_ip: std::net::Ipv4Addr,
+    config_key: &str,
 ) -> Result<(), String> {
     // 1. Dev proxy
     #[cfg(target_os = "macos")]
@@ -419,6 +463,7 @@ async fn repair_https_probe(
     let _ = linux::ensure_installed();
 
     // 2. Dev server — restart to pick up any config/cert changes
+    warn_restart_stops_apps(config_key).await;
     let _ = crate::dev_server_client::stop_server().await;
     wait_for_dev_server_stopped(listen_addr).await;
     let _ = crate::dev_server_client::ensure_running(listen_addr, dns_ip).await;

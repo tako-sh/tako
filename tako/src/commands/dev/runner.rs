@@ -187,7 +187,7 @@ pub async fn run(
 
     let reg_hosts = hosts_state.lock().await.clone();
     let env_snapshot = env_state.lock().await.clone();
-    let storages = load_dev_storages(&project_dir).unwrap_or_else(|error| {
+    let storages = load_dev_storages(&project_dir, &cfg).unwrap_or_else(|error| {
         tracing::warn!("Failed to load development storages: {error}");
         std::collections::HashMap::new()
     });
@@ -398,14 +398,14 @@ pub async fn run(
 
 fn load_dev_storages(
     project_dir: &std::path::Path,
+    config: &crate::config::TakoToml,
 ) -> Result<std::collections::HashMap<String, tako_core::StorageBinding>, Box<dyn std::error::Error>>
 {
-    let config = crate::config::TakoToml::load_from_dir(project_dir)?;
     let secrets =
-        crate::config::SecretsStore::load_for_environment(project_dir, &config, "development")?;
+        crate::config::SecretsStore::load_for_environment(project_dir, config, "development")?;
     crate::commands::storage::decrypt_storage_bindings(
         "development",
-        &config,
+        config,
         &secrets,
         Some(project_dir),
     )

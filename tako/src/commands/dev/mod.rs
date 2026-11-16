@@ -39,11 +39,10 @@ use prepare::macos::{
     local_dns_resolver_contents, local_dns_sudo_action_line, parse_local_dns_resolver,
     sudo_setup_action_items,
 };
-use prepare::tls::ensure_dev_server_tls_material;
+use prepare::tls::record_dev_ca_fingerprint;
 #[cfg(test)]
 use prepare::tls::{
-    ca_fingerprint, ca_fingerprint_path_for_home, dev_server_tls_names_path_for_home,
-    dev_server_tls_paths_for_home, ensure_dev_server_tls_material_for_home,
+    ca_fingerprint, ca_fingerprint_path_for_home, record_dev_ca_fingerprint_for_home,
 };
 use project::{
     compute_dev_env, compute_dev_hosts, compute_display_routes, dev_startup_lines, dev_url,

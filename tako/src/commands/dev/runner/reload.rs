@@ -126,7 +126,7 @@ pub(super) fn spawn_config_reload_loop(
                 continue;
             }
 
-            let new_secrets = match inject_dev_secrets(&ctx.project_dir, &mut new_env)
+            let new_secrets = match inject_dev_secrets(&ctx.project_dir, &cfg, &mut new_env)
                 .map_err(|e| e.to_string())
             {
                 Ok(secrets) => secrets,
@@ -190,7 +190,8 @@ async fn register_updated_app(
     new_env: &HashMap<String, String>,
     new_secrets: &HashMap<String, String>,
 ) {
-    let storages = match super::load_dev_storages(&ctx.project_dir).map_err(|e| e.to_string()) {
+    let storages = match super::load_dev_storages(&ctx.project_dir, cfg).map_err(|e| e.to_string())
+    {
         Ok(storages) => storages,
         Err(msg) => {
             let _ = ctx
