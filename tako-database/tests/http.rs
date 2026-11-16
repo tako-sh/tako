@@ -652,6 +652,80 @@ fn tokio_stream_from<T: Send + 'static>(
 }
 
 #[tokio::test]
+async fn pipelines_of_too_many_items_are_refused_while_parsed() {
+    let h = harness(HostConfig::default());
+    let max = tako_database::proto::MAX_REQUEST_ITEMS;
+    let requests: Vec<Value> = (0..=max)
+        .map(|_| json!({"type": "get_autocommit"}))
+        .collect();
+    let (status, body) = post(
+        &h,
+        "/v3/pipeline",
+        json!({"baton": null, "requests": requests}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    // Batch steps count too, across the whole request.
+    let steps: Vec<Value> = (0..=max)
+        .map(|_| json!({"stmt": {"sql": "SELECT 1"}}))
+        .collect();
+    let (status, _) = post(
+        &h,
+        "/v3/pipeline",
+        json!({"baton": null, "requests": [{"type": "batch", "batch": {"steps": steps}}]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // At the limit, the request runs.
+    let requests: Vec<Value> = (0..max)
+        .map(|_| json!({"type": "get_autocommit"}))
+        .collect();
+    let (status, _) = post(
+        &h,
+        "/v3/pipeline",
+        json!({"baton": null, "requests": requests}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn requests_waiting_for_a_slot_give_up() {
+    use futures_util::StreamExt;
+    let h = harness(HostConfig {
+        max_concurrent_per_database: 1,
+        admission_timeout: Duration::from_millis(300),
+        request_body_timeout: Duration::from_secs(5),
+        pause_timeout: Duration::from_millis(500),
+        ..HostConfig::default()
+    });
+    // The only slot is held by a request whose body never finishes.
+    let chunk = http_body::Frame::data(Bytes::from_static(b"{"));
+    let stream =
+        futures_util::stream::once(async move { Ok::<_, std::convert::Infallible>(chunk) })
+            .chain(futures_util::stream::pending());
+    let request = Request::post("/v3/pipeline")
+        .header("authorization", format!("Bearer {}", h.token))
+        .body(http_body_util::StreamBody::new(stream))
+        .unwrap();
+    let host = h.host.clone();
+    let holder =
+        tokio::spawn(
+            async move { handle(&host, &Access::Apps, PEER.parse().unwrap(), request).await },
+        );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    // A second request waits for the slot, then gives up.
+    let (status, _) = post(
+        &h,
+        "/v3/pipeline",
+        json!({"baton": null, "requests": [execute("SELECT 1")]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    holder.abort();
+}
+
+#[tokio::test]
 async fn oversized_requests_are_refused() {
     let h = harness(HostConfig {
         max_request_bytes: 64,

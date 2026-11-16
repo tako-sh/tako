@@ -159,7 +159,7 @@ where
         } => {
             // The request counts against the database's concurrency limit
             // before its body is buffered.
-            let admitted = match admit(&database).await {
+            let admitted = match admit(&database, host.config().admission_timeout).await {
                 Ok(admitted) => admitted,
                 Err(response) => return response,
             };
@@ -204,16 +204,28 @@ struct Admitted {
     permit: tokio::sync::OwnedSemaphorePermit,
 }
 
+/// Waits, for at most `wait`, for one of the database's request slots, and
+/// then marks the request active. A request still waiting is not active, so
+/// it neither holds up a pause nor waits without a deadline.
 #[allow(clippy::result_large_err)]
-async fn admit(database: &Arc<Database>) -> Result<Admitted, Response<Body>> {
+async fn admit(database: &Arc<Database>, wait: Duration) -> Result<Admitted, Response<Body>> {
+    let permit = match tokio::time::timeout(wait, database.permits.clone().acquire_owned()).await {
+        Ok(Ok(permit)) => permit,
+        Ok(Err(_)) => {
+            return Err(error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "database is closing",
+            ));
+        }
+        Err(_) => {
+            return Err(error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the database is busy with other requests; retry",
+            ));
+        }
+    };
     let active = DatabaseHost::enter(database)
         .map_err(|unavailable| error(StatusCode::SERVICE_UNAVAILABLE, &unavailable.0))?;
-    let permit = database
-        .permits
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "database is closing"))?;
     Ok(Admitted { active, permit })
 }
 
@@ -226,7 +238,7 @@ async fn pipeline(
     admitted: Admitted,
 ) -> Response<Body> {
     let Admitted { active, permit } = admitted;
-    let request: PipelineRequest = match serde_json::from_slice(&body) {
+    let request: PipelineRequest = match crate::proto::parse_request(&body) {
         Ok(request) => request,
         Err(e) => return error(StatusCode::BAD_REQUEST, &format!("invalid pipeline: {e}")),
     };
@@ -295,7 +307,7 @@ async fn cursor(
     admitted: Admitted,
 ) -> Response<Body> {
     let Admitted { active, permit } = admitted;
-    let request: CursorRequest = match serde_json::from_slice(&body) {
+    let request: CursorRequest = match crate::proto::parse_request(&body) {
         Ok(request) => request,
         Err(e) => {
             return error(

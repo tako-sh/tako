@@ -998,3 +998,26 @@ async fn deploys_widen_grants_before_a_rollout_and_narrow_them_after() {
     );
     assert_eq!(widened["peer_key"], narrowed["peer_key"]);
 }
+
+#[tokio::test]
+async fn interrupted_work_directories_are_removed_once_stale() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, None).await;
+    let root = state.databases.work_dir(ID);
+    std::fs::create_dir_all(root.join("restore-left-behind")).unwrap();
+    std::fs::write(root.join("restore-left-behind/database.sqlite"), "partial").unwrap();
+    let now = std::time::SystemTime::now();
+    // A directory an operation may still be using stays.
+    assert_eq!(
+        crate::databases::snapshots::remove_stale_work_dirs(&root, now),
+        0
+    );
+    assert!(root.join("restore-left-behind").exists());
+    let tomorrow = now + std::time::Duration::from_secs(25 * 60 * 60);
+    assert_eq!(
+        crate::databases::snapshots::remove_stale_work_dirs(&root, tomorrow),
+        1
+    );
+    assert!(!root.join("restore-left-behind").exists());
+}

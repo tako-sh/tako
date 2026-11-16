@@ -37,6 +37,10 @@ const SNAPSHOT_INTERVAL_SECS: u64 = 60 * 60;
 /// How soon a failed snapshot is retried.
 const RETRY_INTERVAL_SECS: u64 = 5 * 60;
 const SCHEDULER_TICK: Duration = Duration::from_secs(60);
+/// A work directory this old belongs to an operation that a restart or crash
+/// interrupted: snapshots, restores, and exports finish well within it, and
+/// import and export sessions expire after an hour.
+const STALE_WORK_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 /// Free space kept on the data disk beyond a snapshot's working files.
 const DISK_RESERVE_BYTES: u64 = 256 * 1024 * 1024;
 const MANIFEST_FORMAT: u32 = 1;
@@ -153,6 +157,15 @@ pub(crate) fn spawn_scheduler(state: Arc<ServerState>) -> tokio::task::JoinHandl
                 }
             };
             for stored in databases {
+                let work = state.databases.work_dir(&stored.name);
+                let removed = tokio::task::spawn_blocking(move || {
+                    remove_stale_work_dirs(&work, std::time::SystemTime::now())
+                })
+                .await
+                .unwrap_or(0);
+                if removed > 0 {
+                    tracing::info!(database = %stored.name, removed, "Removed interrupted database work directories");
+                }
                 if stored.secrets.backup.is_none() {
                     continue;
                 }
@@ -700,6 +713,28 @@ pub(crate) async fn replace(
         }
     }
     Ok(warnings)
+}
+
+/// Removes the work directories under `root` last modified more than
+/// [`STALE_WORK_AGE`] before `now`, and returns how many it removed.
+pub(crate) fn remove_stale_work_dirs(root: &Path, now: std::time::SystemTime) -> usize {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let stale = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .is_ok_and(|modified| {
+                now.duration_since(modified)
+                    .is_ok_and(|age| age > STALE_WORK_AGE)
+            });
+        if stale && std::fs::remove_dir_all(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 /// A work directory removed when dropped.

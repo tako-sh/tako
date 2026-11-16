@@ -11,6 +11,64 @@ use serde::de::{self, Deserializer};
 use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
 
+/// The most requests and batch steps, together, one pipeline or cursor
+/// request may hold. Each costs far more memory parsed and answered than its
+/// few bytes of JSON, so a body of tiny items is refused while it is read.
+pub const MAX_REQUEST_ITEMS: usize = 65_536;
+
+std::thread_local! {
+    /// Items counted by the request being parsed on this thread, while
+    /// [`parse_request`] runs.
+    static ITEMS: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// Parses a pipeline or cursor request, counting its requests and batch
+/// steps against [`MAX_REQUEST_ITEMS`] as they are read.
+pub fn parse_request<T: serde::de::DeserializeOwned>(body: &[u8]) -> serde_json::Result<T> {
+    ITEMS.set(Some(0));
+    let parsed = serde_json::from_slice(body);
+    ITEMS.set(None);
+    parsed
+}
+
+/// Deserializes a list whose items count against the request's limit.
+fn counted<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    struct Counted<T>(std::marker::PhantomData<T>);
+    impl<'de, T: Deserialize<'de>> de::Visitor<'de> for Counted<T> {
+        type Value = Vec<T>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a list")
+        }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<T>, A::Error> {
+            let mut items = Vec::new();
+            while let Some(item) = seq.next_element()? {
+                let over = ITEMS.with(|count| match count.get() {
+                    Some(n) if n >= MAX_REQUEST_ITEMS => true,
+                    Some(n) => {
+                        count.set(Some(n + 1));
+                        false
+                    }
+                    None => false,
+                });
+                if over {
+                    return Err(de::Error::custom(format!(
+                        "a request may hold at most {MAX_REQUEST_ITEMS} requests and batch steps"
+                    )));
+                }
+                items.push(item);
+            }
+            Ok(items)
+        }
+    }
+    deserializer.deserialize_seq(Counted(std::marker::PhantomData))
+}
+
 /// Protocol version selected by the request path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Version {
@@ -23,6 +81,7 @@ pub enum Version {
 pub struct PipelineRequest {
     #[serde(default)]
     pub baton: Option<String>,
+    #[serde(deserialize_with = "counted")]
     pub requests: Vec<StreamRequest>,
 }
 
@@ -139,6 +198,7 @@ pub struct NamedArg {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Batch {
+    #[serde(deserialize_with = "counted")]
     pub steps: Vec<BatchStep>,
     /// See [`Stmt::replication_index`].
     #[serde(default)]
