@@ -354,7 +354,6 @@ Backup commands default to `production`, require project context, and target the
 
 ```bash
 tako sqlite create <name> [--server <server>]
-tako sqlite link <name> <env> [--binding <binding>]
 tako sqlite list
 tako sqlite ls
 tako sqlite status [<name>]
@@ -372,15 +371,15 @@ tako sqlite delete <name> [--server <server>] [-y|--yes]
 tako sqlite rm ...
 ```
 
-`tako db` is an alias for `tako sqlite`. A database belongs to the project's network, which the commands find from the environments in `tako.toml`; pass `--network <id>` when they use several. A database's name identifies it within the network; `create` refuses a name the network already has. `list`, `link`, and `migrations` need permission to deploy some app; the others require network and server administrator permission.
+`tako db` is an alias for `tako sqlite`. A database belongs to the project's network, which the commands find from the environments in `tako.toml`; pass `--network <id>` when they use several. A database's name identifies it within the network; `create` refuses a name the network already has. `list` and `migrations` need permission to deploy some app; the others require network and server administrator permission.
 
-`create` makes the database on `--server` (optional when the network has one server) and records it in the network. `link` binds a database of the network in an environment of this project by writing `databases = { <binding> = "<name>" }` under `[envs.<env>]`; `--binding` defaults to the name. Backups are configured by the deploys that bind a database; `link` warns when the environment has no backup storage. `list` reads the network's records; `status` asks each database's server for size, users, and backup state, for every database the project binds when no name is given.
+`create` makes the database on `--server` (optional when the network has one server) and records it in the network; bind it by adding `databases = { <binding> = "<name>" }` under `[envs.<env>]` in `tako.toml`. Backups are configured by the deploys that bind a database, from the environment's `backup.storage`. `list` reads the network's records; `status` asks each database's server for size, users, and backup state, for every database the project binds when no name is given.
 
 `migrations new` creates `migrations/[<binding>/]<YYYYMMDDHHMMSS>_<slug>.sql` from the current UTC time and the name, lowercased with other characters replaced by `_`; `--binding` is required when the project binds several names. `migrations list` reports the [migrations](/databases/#migrations) each bound database has yet to apply, and `migrations apply` applies them, as deploys do; both take an optional database name, and `--local` acts on the development files. `reset` empties a database after a safety snapshot and re-applies the project's migrations; it refuses a database the `production` environment binds without `--force`, and `--local` resets the development file.
 
 `shell` runs one statement when `<sql>` is given and otherwise reads statements from stdin, with `.tables`, `.schema [table]`, and `.quit` in an interactive terminal. Results stop at 1,000 rows. Each statement commits on its own, so `BEGIN` is rejected. `backup` takes a snapshot now; `backups` lists snapshots with their reason (`scheduled`, `manual`, `before release`, `before migrations`, `before restore`). `restore` replaces the database with a snapshot; `--latest` picks the newest one that is not a `before restore` safety copy. With `--server` it recovers the database onto another server, which becomes its server, and removes the new copy again if the restore fails (keeping the snapshots); the old copy, if its server is up, stops taking snapshots. `import` replaces the database with a local SQLite file; `export` writes a consistent copy and refuses to overwrite an existing file. `delete` removes the database file, its snapshots, its network records, and its `tako.toml` entries. It refuses while apps on the database's server bind it, and revokes grants to app environments on other servers after naming them in a warning. `delete --server <server>` removes only the copy `restore --server` left on an old server, keeping the database, its record, and its snapshots. `restore`, `import`, `reset`, and `delete` ask for confirmation; non-interactive runs need `--yes`.
 
-Global `--json` prints `{"ok":true,"command":"sqlite",...}`: `databases` for `list` and `status`, `snapshots` for `backups`, `migrations` for `migrations list` and `apply`, `path` for `migrations new`, and the created or linked `database` for `create` and `link`. `shell --json` prints one query result per statement. See [Databases](/databases/).
+Global `--json` prints `{"ok":true,"command":"sqlite",...}`: `databases` for `list` and `status`, `snapshots` for `backups`, `migrations` for `migrations list` and `apply`, `path` for `migrations new`, and the created `database` for `create`. `shell --json` prints one query result per statement. See [Databases](/databases/).
 
 ## Workflows
 

@@ -57,7 +57,7 @@ The destination must be private S3-compatible storage without `public_base_url`.
 
 Earlier versions listed SQLite files in `backup = { databases = [...], shared_databases = [...] }` and captured them continuously. Those fields are rejected now. Move each database to a hosted database:
 
-1. `tako sqlite create <name> --server <server>`, then `tako sqlite link <name> production`. Its snapshots go to the environment's `backup.storage`, or to `[databases.<name>].backup`.
+1. `tako sqlite create <name> --server <server>`, then bind it with `databases = { <binding> = "<name>" }` under `[envs.production]` in `tako.toml`. Its snapshots go to the environment's `backup.storage`, or to `[databases.<name>].backup`.
 2. During a write freeze, copy the existing file to your machine, checkpoint it (`PRAGMA wal_checkpoint(TRUNCATE)`), and run `tako sqlite import <name> <file>`.
 3. Change the app to use `tako.databases.<binding>` and deploy.
 

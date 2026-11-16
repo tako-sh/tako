@@ -45,17 +45,6 @@ pub enum SqliteCommands {
         server: Option<String>,
     },
 
-    /// Bind a database of the network in an environment of this project
-    Link {
-        /// Database name
-        name: String,
-        /// Environment to bind it in
-        env: String,
-        /// Binding name the app uses, as `tako.databases.<binding>` (defaults to the name)
-        #[arg(long)]
-        binding: Option<String>,
-    },
-
     /// List the network's databases
     #[command(visible_alias = "ls")]
     List,
@@ -430,10 +419,6 @@ async fn run_async(
             let ctx = Context::load(config_path, network).await?;
             create(&ctx, &name, server.as_deref()).await
         }
-        SqliteCommands::Link { name, env, binding } => {
-            let ctx = Context::load(config_path, network).await?;
-            link(&ctx, &name, &env, binding.as_deref())
-        }
         SqliteCommands::List => {
             let ctx = Context::load(config_path, network).await?;
             list(&ctx)
@@ -573,7 +558,7 @@ async fn create(
     // Names identify databases in the network.
     if ctx.records()?.iter().any(|record| record.name == name) {
         return Err(format!(
-            "The network already has a database named '{name}'. Use `tako sqlite link {name} <env>` to bind it in this project."
+            "The network already has a database named '{name}'. To use it, add `databases = {{ {name} = \"{name}\" }}` under [envs.<env>] in tako.toml."
         )
         .into());
     }
@@ -636,44 +621,8 @@ async fn create(
         }));
     }
     output::hint(&format!(
-        "Bind it in an environment with `tako sqlite link {name} <env>`, or add `databases = {{ {name} = \"{name}\" }}` under [envs.<env>] in tako.toml, then deploy."
+        "To use it, add `databases = {{ {name} = \"{name}\" }}` under [envs.<env>] in tako.toml (the key is the binding name the app reads as `tako.databases.<binding>`), then deploy."
     ));
-    Ok(())
-}
-
-fn link(
-    ctx: &Context,
-    name: &str,
-    env: &str,
-    binding: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let binding = binding.unwrap_or(name);
-    tako_core::validate_database_name(binding)?;
-    if !ctx.config.envs.contains_key(env) {
-        return Err(format!("Environment '{env}' is not declared in tako.toml.").into());
-    }
-    ctx.record(name)?;
-    if output::is_dry_run() {
-        return dry_run(
-            &format!("Bind database {name} in {env}"),
-            serde_json::json!({"database": name, "env": env, "binding": binding}),
-        );
-    }
-    TakoToml::upsert_database_in_file(&ctx.config_path, name, None, Some((env, binding)))?;
-    if output::is_json() {
-        return output::json_result(serde_json::json!({
-            "ok": true, "command": "sqlite",
-            "database": {"name": name, "binding": binding, "env": env},
-        }));
-    }
-    output::success(&format!(
-        "Linked {name} as tako.databases.{binding} in {env}"
-    ));
-    if crate::commands::storage::database_backup_setting(&ctx.config, env, name).is_none() {
-        output::warning(&format!(
-            "{env} has no backup storage, so {name} gets no snapshots from its deploys. Set [envs.{env}].backup.storage, or `backup = \"<storage>\"` in [databases.{name}], to a private S3 storage."
-        ));
-    }
     Ok(())
 }
 

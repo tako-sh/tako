@@ -22,19 +22,14 @@ A database belongs to the network, not to an environment. Its name identifies it
 tako sqlite create main --server edge-a
 ```
 
-`create` makes the database file on `edge-a` and records it in the network's encrypted shared state. `--server` can be omitted when the network has a single server. Bind the database in each environment that uses it, by name:
-
-```bash
-tako sqlite link main production
-tako deploy --env production
-```
-
-`link` writes the binding to `tako.toml`; `--binding` chooses the app-facing name, which defaults to the database name:
+`create` makes the database file on `edge-a` and records it in the network's shared state. `--server` can be omitted when the network has a single server. Bind the database in each environment that uses it, by name, in `tako.toml`; the key is the binding name the app reads, and the value is the database name:
 
 ```toml
 [envs.production]
 databases = { main = "main" }
 ```
+
+Then deploy with `tako deploy --env production`.
 
 `tako.toml` holds only bindings: where each database lives is in the network's records, so a deploy resolves each bound name there and fails when the network has no database with that name. `tako sqlite list --json` shows the network's databases, their servers, and whether this project binds them (`in_project`).
 
@@ -289,7 +284,7 @@ Each remote query adds a private-network round trip, so place a database on the 
 - Requests are limited to 32 MiB, and a request's body must arrive within 30 seconds (otherwise `408`); responses are limited to 64 MiB, counted as encoded JSON, including column names and error messages; a single string, blob, or row is limited to 64 MiB, also on the cursor endpoint. Use a cursor (`@tursodatabase/serverless` `iterate`) or pagination for larger results.
 - Database bindings are available to native releases. [Container and Compose releases](/docker/) cannot use them yet.
 - A scoped deploy client cannot change an environment's database bindings; an administrator must deploy the change.
-- Managing databases (`create`, `status`, `shell`, `backup`, `backups`, `restore`, `import`, `export`, `reset`, `delete`) requires network and server administrator permission. Every member that may deploy can read where databases live (`list`, `link`, and deploys) and apply their own app's migrations; snapshot keys are readable only by administrators.
+- Managing databases (`create`, `status`, `shell`, `backup`, `backups`, `restore`, `import`, `export`, `reset`, `delete`) requires network and server administrator permission. Every member that may deploy can read where databases live (`list` and deploys) and apply their own app's migrations; snapshot keys are readable only by administrators.
 - `create` refuses a name the network already has. Two administrators creating the same name at the same moment are not detected; the later record wins.
 
 ## Verify

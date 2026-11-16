@@ -210,7 +210,7 @@ backup = "private_backups"
 | -------- | --------------------------------------------------------------------------------------------------------------------------- |
 | `backup` | Private S3 storage resource that receives the database's encrypted snapshots, instead of the deploying environment's `backup.storage`. It must use provider `s3` and no `public_base_url`. Without either, the database has no snapshots; removing them and deploying stops them. |
 
-`id`, `server`, and `access` are rejected: run `tako sqlite list` to see where databases live; every database is usable from every server of its network. Binding and database names start with a lowercase letter and contain lowercase letters, digits, `-`, and `_`, at most 63 characters. `tako sqlite link` and `delete` edit bindings and these tables and preserve the rest of the file. SQL migrations live in `migrations/` (see [Migrations](/databases/#migrations)). Container and Compose releases cannot bind databases yet. See [Databases](/databases/).
+`id`, `server`, and `access` are rejected: run `tako sqlite list` to see where databases live; every database is usable from every server of its network. Binding and database names start with a lowercase letter and contain lowercase letters, digits, `-`, and `_`, at most 63 characters. Bindings are written by hand; `tako sqlite delete` removes a deleted database's bindings and table and preserves the rest of the file. SQL migrations live in `migrations/` (see [Migrations](/databases/#migrations)). Container and Compose releases cannot bind databases yet. See [Databases](/databases/).
 
 ## Backups
 

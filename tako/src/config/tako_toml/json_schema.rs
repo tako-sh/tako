@@ -192,7 +192,7 @@ pub(super) fn generate() -> Value {
         },
         "databases": {
             "type": "object",
-            "description": "Tako-hosted SQLite databases, bound to environments with `[envs.<env>].databases`. `tako sqlite create` and `tako sqlite link` write these entries.",
+            "description": "Per-database settings for Tako-hosted SQLite databases, which environments bind in `[envs.<env>].databases`. Create databases with `tako sqlite create`.",
             "propertyNames": { "pattern": "^[a-z][a-z0-9_-]{0,62}$" },
             "additionalProperties": database,
         },

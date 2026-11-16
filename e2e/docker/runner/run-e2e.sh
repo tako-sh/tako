@@ -622,11 +622,14 @@ create_fixture_database() {
   fi
   echo "Creating the messages database on $server_host"
   if ! HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" \
-    sqlite create messages --server "$server_host" >"$log" 2>&1 || \
-    ! HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" \
-    sqlite link messages production >>"$log" 2>&1; then
+    sqlite create messages --server "$server_host" >"$log" 2>&1; then
     cat "$log" >&2 || true
     exit 1
+  fi
+  # Bind it in production, as a user does in tako.toml.
+  if ! awk '/^\[/ { section = $0 } section == "[envs.production]" && /^databases = / { found = 1 } END { exit !found }' \
+    "$PROJECT_DIR/tako.toml"; then
+    sed -i '/^\[envs\.production\]$/a databases = { messages = "messages" }' "$PROJECT_DIR/tako.toml"
   fi
   # The network records where the database lives; tako.toml only binds it.
   if ! HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --json --config "$PROJECT_DIR/tako.toml" \
@@ -634,10 +637,6 @@ create_fixture_database() {
      ! jq -e '.databases | any(.name == "messages" and .in_project)' \
        "$list_json" >/dev/null; then
     cat "$log" "$list_json" >&2 || true
-    exit 1
-  fi
-  if grep -q '^\[databases\.messages\]' "$PROJECT_DIR/tako.toml"; then
-    echo "tako sqlite link wrote [databases.messages]" >&2
     exit 1
   fi
   DATABASE_SERVER=$server_host

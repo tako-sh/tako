@@ -88,8 +88,8 @@ pub struct TakoToml {
     #[serde(default)]
     pub storages: HashMap<String, StorageResourceConfig>,
 
-    /// [databases.*] sections - Tako-hosted SQLite databases this project
-    /// uses, written by `tako sqlite create` and `tako sqlite link`.
+    /// [databases.*] sections - per-database settings for the Tako-hosted
+    /// SQLite databases this project binds in `[envs.<env>].databases`.
     #[serde(default)]
     pub databases: HashMap<String, DatabaseResourceConfig>,
 

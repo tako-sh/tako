@@ -206,11 +206,15 @@ object URLs.
 
 ## Databases
 
-Tako-hosted SQLite databases are bound by name in `tako.toml` and reached over the libSQL HTTP protocol. Create one with the CLI (administrator permission), bind it to an environment, then use the binding with `@libsql/client` or `@tursodatabase/serverless`:
+Tako-hosted SQLite databases are bound by name in `tako.toml` and reached over the libSQL HTTP protocol. Create one with the CLI (administrator permission), bind it in `tako.toml`, then use the binding with `@libsql/client` or `@tursodatabase/serverless`:
 
 ```bash
 tako sqlite create main --server <server>
-tako sqlite link main production
+```
+
+```toml
+[envs.production]
+databases = { main = "main" } # binding = database name
 ```
 
 ```typescript
@@ -225,7 +229,7 @@ const { rows } = await db.execute({ sql: "SELECT * FROM users WHERE id = ?", arg
 await db.batch([{ sql: "INSERT INTO events (kind) VALUES (?)", args: ["signup"] }], "write");
 ```
 
-- `tako.databases.<binding>` is `undefined` when the environment does not bind that name. Bindings come from `[envs.<env>].databases = { <binding> = "<database>" }`, which `tako sqlite link` writes. A database's name identifies it in the network, which records its server; `tako sqlite list` shows them. Apps on every server of the network can bind it. Snapshots go to the environment's `backup.storage`.
+- `tako.databases.<binding>` is `undefined` when the environment does not bind that name. Bindings come from `[envs.<env>].databases = { <binding> = "<database>" }` in `tako.toml`. A database's name identifies it in the network, which records its server; `tako sqlite list` shows them. Apps on every server of the network can bind it. Snapshots go to the environment's `backup.storage`.
 - Logging or serializing a connection redacts `authToken`. Never return it to the browser; database access is server-only.
 - `tako dev` and `tako run` serve bindings from `.tako/data/databases/<database>.sqlite`, created on first use. `tako run --env <other>` gets no databases: hosted databases are reachable only from deployed apps.
 - Migrations: put numbered SQL files in `migrations/` (`migrations/<binding>/` when the project binds several names), such as `0001_initial.sql`; `tako sqlite migrations new <name>` creates one named by the UTC time. Tako applies pending ones on deploy (before the release command and rollout), in `tako dev`, and in `tako run`, each once in its own transaction. Never edit an applied file; add a new one. Keep them compatible with the running release. A tool's own migrator can instead run as the `release` command (it receives temporary bindings); workstation tools cannot connect to the server's loopback endpoint.
