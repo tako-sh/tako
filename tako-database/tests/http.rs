@@ -646,6 +646,69 @@ async fn closing_waits_for_requests_still_running() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn requests_waiting_for_a_slot_do_not_start_once_closing_begins() {
+    let h = harness(HostConfig {
+        max_concurrent_per_database: 1,
+        ..HostConfig::default()
+    });
+    // The first request takes the only slot and holds it.
+    let (tx, rx) =
+        tokio::sync::mpsc::channel::<Result<http_body::Frame<Bytes>, std::convert::Infallible>>(1);
+    let request = Request::post("/v3/pipeline")
+        .header("authorization", format!("Bearer {}", h.token))
+        .body(http_body_util::StreamBody::new(tokio_stream_from(rx)))
+        .unwrap();
+    let host = h.host.clone();
+    let running =
+        tokio::spawn(
+            async move { handle(&host, &Access::Apps, PEER.parse().unwrap(), request).await },
+        );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    // The second has found the database and waits for the slot.
+    let request = Request::post("/v3/pipeline")
+        .header("authorization", format!("Bearer {}", h.token))
+        .body(Full::new(Bytes::from(
+            json!({"baton": null, "requests": [execute("CREATE TABLE late (x)")]}).to_string(),
+        )))
+        .unwrap();
+    let host = h.host.clone();
+    let waiting =
+        tokio::spawn(
+            async move { handle(&host, &Access::Apps, PEER.parse().unwrap(), request).await },
+        );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let closing = tokio::spawn({
+        let host = h.host.clone();
+        async move { host.close_all().await }
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let rest = json!({"baton": null, "requests": [execute("SELECT 1")]}).to_string();
+    tx.send(Ok(http_body::Frame::data(Bytes::from(rest))))
+        .await
+        .unwrap();
+    drop(tx);
+    assert_eq!(running.await.unwrap().status(), StatusCode::OK);
+    let waiting = tokio::time::timeout(Duration::from_secs(5), waiting)
+        .await
+        .expect("the waiting request ends")
+        .unwrap();
+    assert_eq!(waiting.status(), StatusCode::SERVICE_UNAVAILABLE);
+    tokio::time::timeout(Duration::from_secs(5), closing)
+        .await
+        .expect("closing finishes")
+        .unwrap();
+    let connection = rusqlite::Connection::open(h._dir.path().join("db.sqlite")).unwrap();
+    let tables: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name = 'late'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(tables, 0, "the waiting request never ran");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_database_busy_past_the_timeout_keeps_its_lock_until_its_requests_end() {
     let h = harness(HostConfig {
         pause_timeout: Duration::from_millis(200),
@@ -784,6 +847,35 @@ async fn requests_waiting_for_a_slot_give_up() {
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     holder.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pipeline_responses_hold_the_hosts_buffer_budget_until_sent() {
+    let h = harness(HostConfig {
+        max_buffered_bytes: 1024 * 1024,
+        max_request_bytes: 4 * 1024,
+        admission_timeout: Duration::from_millis(300),
+        ..HostConfig::default()
+    });
+    // Each result is 600 KB: within the response limit, but two do not fit
+    // the host's budget at once.
+    let large = || json!({"baton": null, "requests": [execute("SELECT hex(zeroblob(300000))")]});
+    let request = Request::post("/v3/pipeline")
+        .header("authorization", format!("Bearer {}", h.token))
+        .body(Full::new(Bytes::from(large().to_string())))
+        .unwrap();
+    // A response its client has not read yet keeps its bytes reserved.
+    let unread = handle(&h.host, &Access::Apps, PEER.parse().unwrap(), request).await;
+    assert_eq!(unread.status(), StatusCode::OK);
+    let (status, _) = post(&h, "/v3/pipeline", large()).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    // Small results still fit.
+    pipeline(&h, Value::Null, vec![execute("SELECT 1")]).await;
+    // Once the response is sent, its bytes return.
+    let sent = unread.into_body().collect().await.unwrap().to_bytes();
+    assert!(sent.len() > 600_000);
+    let (status, _) = post(&h, "/v3/pipeline", large()).await;
+    assert_eq!(status, StatusCode::OK);
 }
 
 #[tokio::test(flavor = "multi_thread")]

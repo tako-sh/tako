@@ -42,6 +42,9 @@ const SCHEDULER_TICK: Duration = Duration::from_secs(60);
 /// import and export sessions expire after an hour.
 const STALE_WORK_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 /// Free space kept on the data disk beyond a snapshot's working files.
+/// How long a data object may go without a manifest before pruning deletes
+/// it. An upload still in progress has none yet.
+const ORPHAN_AGE_SECS: i64 = 24 * 60 * 60;
 const DISK_RESERVE_BYTES: u64 = 256 * 1024 * 1024;
 const MANIFEST_FORMAT: u32 = 1;
 
@@ -390,28 +393,45 @@ async fn upload_copy(
     Ok(snapshot)
 }
 
-async fn list_manifests(
+/// Every object under the database's snapshot prefix, with the time it was
+/// last written (Unix seconds).
+async fn list_objects(
     remote: &dyn ObjectStore,
     stored: &StoredDatabase,
-) -> Result<Vec<Manifest>, String> {
+) -> Result<Vec<(ObjectPath, i64)>, String> {
     let prefix = ObjectPath::parse(prefix(stored)).map_err(|e| e.to_string())?;
-    let keys: Vec<ObjectPath> = with_deadline(METADATA_TIMEOUT, async {
+    with_deadline(METADATA_TIMEOUT, async {
         remote
             .list(Some(&prefix))
-            .map_ok(|meta| meta.location)
+            .map_ok(|meta| (meta.location, meta.last_modified.timestamp()))
             .try_collect::<Vec<_>>()
             .await
             .map_err(|e| format!("list database snapshots: {e}"))
     })
-    .await?;
+    .await
+}
+
+async fn list_manifests(
+    remote: &dyn ObjectStore,
+    stored: &StoredDatabase,
+) -> Result<Vec<Manifest>, String> {
+    let objects = list_objects(remote, stored).await?;
+    read_manifests(remote, stored, &objects).await
+}
+
+async fn read_manifests(
+    remote: &dyn ObjectStore,
+    stored: &StoredDatabase,
+    objects: &[(ObjectPath, i64)],
+) -> Result<Vec<Manifest>, String> {
     let mut manifests = Vec::new();
-    for key in keys
-        .into_iter()
-        .filter(|key| key.as_ref().ends_with(".json"))
+    for (key, _) in objects
+        .iter()
+        .filter(|(key, _)| key.as_ref().ends_with(".json"))
     {
         let bytes = with_deadline(METADATA_TIMEOUT, async {
             remote
-                .get(&key)
+                .get(key)
                 .await
                 .map_err(|e| format!("read snapshot manifest: {e}"))?
                 .bytes()
@@ -493,20 +513,12 @@ pub(crate) async fn delete_all(stored: &StoredDatabase) -> Result<usize, String>
         return Ok(0);
     };
     let remote = store(backup)?;
-    let prefix = ObjectPath::parse(prefix(stored)).map_err(|e| e.to_string())?;
-    let keys: Vec<ObjectPath> = with_deadline(METADATA_TIMEOUT, async {
-        remote
-            .list(Some(&prefix))
-            .map_ok(|meta| meta.location)
-            .try_collect::<Vec<_>>()
-            .await
-            .map_err(|e| format!("list database snapshots: {e}"))
-    })
-    .await?;
-    // Manifests first, so a partial deletion lists no snapshot without data.
-    let (manifests, data): (Vec<_>, Vec<_>) = keys
+    let keys = list_objects(remote.as_ref(), stored)
+        .await?
         .into_iter()
-        .partition(|key| key.as_ref().ends_with(".json"));
+        .map(|(key, _)| key);
+    // Manifests first, so a partial deletion lists no snapshot without data.
+    let (manifests, data): (Vec<_>, Vec<_>) = keys.partition(|key| key.as_ref().ends_with(".json"));
     let mut deleted = 0;
     for key in manifests.into_iter().chain(data) {
         with_deadline(METADATA_TIMEOUT, async {
@@ -523,26 +535,58 @@ pub(crate) async fn delete_all(stored: &StoredDatabase) -> Result<usize, String>
 
 async fn prune(stored: &StoredDatabase, backup: &StorageBinding) -> Result<(), String> {
     let remote = store(backup)?;
-    let manifests = list_manifests(remote.as_ref(), stored).await?;
+    let objects = list_objects(remote.as_ref(), stored).await?;
+    let manifests = read_manifests(remote.as_ref(), stored, &objects).await?;
     let snapshots: Vec<_> = manifests.iter().map(|m| m.snapshot.clone()).collect();
     let keep = retained(&snapshots, now_unix_secs());
+    let delete = |path: ObjectPath| {
+        let remote = remote.clone();
+        async move {
+            with_deadline(METADATA_TIMEOUT, async {
+                match remote.delete(&path).await {
+                    Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
+                    Err(error) => Err(format!("delete {path}: {error}")),
+                }
+            })
+            .await
+        }
+    };
     for snapshot in snapshots.iter().filter(|s| !keep.contains(&s.id)) {
         // The manifest goes first, so a listed snapshot always has its data.
         for key in [
             manifest_key(stored, &snapshot.id),
             data_key(stored, &snapshot.id),
         ] {
-            let path = ObjectPath::parse(&key).map_err(|e| e.to_string())?;
-            with_deadline(METADATA_TIMEOUT, async {
-                match remote.delete(&path).await {
-                    Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
-                    Err(error) => Err(format!("delete {key}: {error}")),
-                }
-            })
-            .await?;
+            delete(ObjectPath::parse(&key).map_err(|e| e.to_string())?).await?;
         }
     }
+    let now = i64::try_from(now_unix_secs()).unwrap_or(i64::MAX);
+    for orphan in orphaned_data(&objects, now) {
+        tracing::info!(database = %stored.name, key = %orphan, "Deleting snapshot data without a manifest");
+        delete(orphan).await?;
+    }
     Ok(())
+}
+
+/// Data objects without a manifest, last written at least `ORPHAN_AGE_SECS`
+/// before `now`. An upload that stopped before publishing its manifest
+/// leaves one, as does pruning that deleted a manifest but not its data.
+/// Listing and restore never see them, so nothing else would delete them.
+fn orphaned_data(objects: &[(ObjectPath, i64)], now: i64) -> Vec<ObjectPath> {
+    let manifests: BTreeSet<&str> = objects
+        .iter()
+        .filter_map(|(key, _)| key.filename()?.strip_suffix(".json"))
+        .collect();
+    objects
+        .iter()
+        .filter(|(key, modified)| {
+            key.filename()
+                .and_then(|name| name.strip_suffix(".sqlite.zst.enc"))
+                .is_some_and(|id| !manifests.contains(id))
+                && now.saturating_sub(*modified) >= ORPHAN_AGE_SECS
+        })
+        .map(|(key, _)| key.clone())
+        .collect()
 }
 
 /// Replaces a database with a snapshot, taking a snapshot of the current
@@ -854,6 +898,30 @@ mod tests {
         let old = snapshot("old", 0);
         let keep = retained(std::slice::from_ref(&old), 365 * 86_400);
         assert_eq!(keep, BTreeSet::from(["old".to_string()]));
+    }
+
+    #[test]
+    fn data_without_a_manifest_is_deleted_once_old() {
+        let day = ORPHAN_AGE_SECS;
+        let now = 10 * day;
+        let key = |name: &str| ObjectPath::from(format!("_tako/databases/shop/g/snapshots/{name}"));
+        let objects = vec![
+            // A complete snapshot, however old.
+            (key("1-a.json"), 0),
+            (key("1-a.sqlite.zst.enc"), 0),
+            // Data whose manifest pruning deleted.
+            (key("2-b.sqlite.zst.enc"), now - 2 * day),
+            // An upload that may still be publishing its manifest.
+            (key("3-c.sqlite.zst.enc"), now - 60),
+            // A manifest alone is not data.
+            (key("4-d.json"), 0),
+            // Something else written under the prefix.
+            (key("notes.txt"), 0),
+        ];
+        assert_eq!(
+            orphaned_data(&objects, now),
+            vec![key("2-b.sqlite.zst.enc")]
+        );
     }
 
     #[test]

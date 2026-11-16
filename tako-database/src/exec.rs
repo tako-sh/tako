@@ -1,6 +1,7 @@
 //! Executes protocol requests on a stream. Runs on a blocking thread.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::engine::{self, Args, Budget};
 use crate::host::{Database, Stream};
@@ -87,9 +88,19 @@ fn validate_condition(
 pub(crate) struct PipelineOutcome {
     pub results: Vec<StreamResult>,
     pub closed: bool,
-    /// The results outgrew the response limit even as errors; the remaining
-    /// requests did not run and the stream is closed.
-    pub too_large: bool,
+    /// The pipeline stopped early, its remaining requests did not run, and
+    /// the stream is closed.
+    pub stopped: Option<Stopped>,
+    /// The host's buffer bytes held for the results, to be kept until the
+    /// response has been sent.
+    pub reservation: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+pub(crate) enum Stopped {
+    /// The results outgrew the response limit even as errors.
+    TooLarge,
+    /// The host had no buffer bytes left for the results.
+    HostBusy,
 }
 
 pub(crate) fn run_pipeline(
@@ -97,8 +108,11 @@ pub(crate) fn run_pipeline(
     database: &Database,
     requests: Vec<StreamRequest>,
     limits: Limits,
+    host_bytes: Arc<tokio::sync::Semaphore>,
 ) -> PipelineOutcome {
-    let mut budget = Budget::new(limits.max_response_bytes);
+    // Results count against the host's buffer budget as well as their own
+    // limit, so concurrent responses cannot together hold more.
+    let mut budget = Budget::shared(limits.max_response_bytes, host_bytes);
     let mut results = Vec::with_capacity(requests.len());
     let mut closed = false;
     for request in requests {
@@ -135,6 +149,14 @@ pub(crate) fn run_pipeline(
             Ok(response) => StreamResult::Ok { response },
             Err(error) => StreamResult::Error { error },
         };
+        if budget.host_exhausted() {
+            return PipelineOutcome {
+                results,
+                closed: true,
+                stopped: Some(Stopped::HostBusy),
+                reservation: None,
+            };
+        }
         // Rows are charged as they are read; everything else in a result
         // (columns, errors, framing) is charged here, so repeating a stored
         // statement cannot grow the response past its limit.
@@ -150,10 +172,16 @@ pub(crate) fn run_pipeline(
             // The replacement is charged too, so a long run of small
             // requests cannot keep adding uncharged errors.
             if !budget.charge(metadata_size(&replacement)) {
+                let stopped = if budget.host_exhausted() {
+                    Stopped::HostBusy
+                } else {
+                    Stopped::TooLarge
+                };
                 return PipelineOutcome {
                     results,
                     closed: true,
-                    too_large: true,
+                    stopped: Some(stopped),
+                    reservation: None,
                 };
             }
             replacement
@@ -163,7 +191,8 @@ pub(crate) fn run_pipeline(
     PipelineOutcome {
         results,
         closed,
-        too_large: false,
+        stopped: None,
+        reservation: budget.into_reservation(),
     }
 }
 

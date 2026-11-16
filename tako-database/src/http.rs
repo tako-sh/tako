@@ -301,13 +301,15 @@ async fn pipeline(
         max_stored_sql_bytes: config.max_stored_sql_bytes_per_stream,
     };
     let task_host = host.clone();
+    let host_bytes = host.inner.buffered.clone();
     let task = tokio::task::spawn_blocking(move || {
         let _active = active;
         let _permit = permit;
         // The parsed requests live as long as the body did.
         let _buffered = buffered;
         let mut stream = stream;
-        let outcome = exec::run_pipeline(&mut stream, &database, request.requests, limits);
+        let outcome =
+            exec::run_pipeline(&mut stream, &database, request.requests, limits, host_bytes);
         let baton = settle(
             &task_host,
             &database,
@@ -317,23 +319,43 @@ async fn pipeline(
             stream,
             outcome.closed,
         );
-        (outcome.results, outcome.too_large, baton)
+        (outcome, baton)
     });
     match task.await {
         // The stream was closed; its transaction rolled back.
-        Ok((_, true, _)) => error(
-            StatusCode::BAD_REQUEST,
-            "the pipeline's results exceed the response size limit; send fewer requests at a time",
-        ),
-        Ok((results, false, Ok(baton))) => json(
-            StatusCode::OK,
-            &PipelineResponse {
-                baton,
-                base_url: None,
-                results,
+        Ok((
+            exec::PipelineOutcome {
+                stopped: Some(stopped),
+                ..
             },
-        ),
-        Ok((_, false, Err(message))) => error(StatusCode::SERVICE_UNAVAILABLE, &message),
+            _,
+        )) => match stopped {
+            exec::Stopped::TooLarge => error(
+                StatusCode::BAD_REQUEST,
+                "the pipeline's results exceed the response size limit; send fewer requests at a time",
+            ),
+            exec::Stopped::HostBusy => error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the server is holding too many database responses; retry",
+            ),
+        },
+        Ok((outcome, Ok(baton))) => {
+            let mut response = json(
+                StatusCode::OK,
+                &PipelineResponse {
+                    baton,
+                    base_url: None,
+                    results: outcome.results,
+                },
+            );
+            // The host's bytes stay reserved until the body has been sent
+            // or the connection dropped it.
+            if let Some(reservation) = outcome.reservation {
+                response = response.map(|body| Holding::new(body, reservation).boxed());
+            }
+            response
+        }
+        Ok((_, Err(message))) => error(StatusCode::SERVICE_UNAVAILABLE, &message),
         Err(join) => {
             tracing::error!(error = %join, "database pipeline panicked");
             if existing {
@@ -763,6 +785,42 @@ fn text(status: StatusCode, message: &'static str) -> Response<Body> {
     let mut response = Response::new(full(message.as_bytes().to_vec()));
     *response.status_mut() = status;
     response
+}
+
+/// A body that keeps part of the host's buffer budget reserved for as long
+/// as it exists.
+struct Holding {
+    body: Body,
+    _reservation: tokio::sync::OwnedSemaphorePermit,
+}
+
+impl Holding {
+    fn new(body: Body, reservation: tokio::sync::OwnedSemaphorePermit) -> Self {
+        Self {
+            body,
+            _reservation: reservation,
+        }
+    }
+}
+
+impl http_body::Body for Holding {
+    type Data = Bytes;
+    type Error = BoxError;
+
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<Frame<Bytes>, BoxError>>> {
+        std::pin::Pin::new(&mut self.get_mut().body).poll_frame(cx)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.body.is_end_stream()
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.body.size_hint()
+    }
 }
 
 fn full(bytes: Vec<u8>) -> Body {

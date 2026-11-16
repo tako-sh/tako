@@ -81,9 +81,11 @@ pub struct HostConfig {
     pub max_streams_per_database: usize,
     pub max_streams: usize,
     pub max_request_bytes: usize,
-    /// Request bodies and cursor output this host buffers at once, across
-    /// every database. A request reserves its `Content-Length` (or
-    /// `max_request_bytes`) before its body is read.
+    /// Request bodies, pipeline results and cursor output this host buffers
+    /// at once, across every database. A request reserves its
+    /// `Content-Length` (or `max_request_bytes`) before its body is read; a
+    /// pipeline's results hold their bytes until the response has been sent,
+    /// and a pipeline that finds none left fails with `503`.
     pub max_buffered_bytes: usize,
     /// How long an admitted request may take to send its body before it
     /// gives up its request slot.
@@ -207,6 +209,8 @@ pub(crate) struct Database {
 
 struct DatabaseState {
     paused: Option<String>,
+    /// This process stopped serving the database; nothing enters again.
+    closed: bool,
     active: usize,
     streams: usize,
 }
@@ -237,6 +241,11 @@ impl Database {
 
     fn enter(self: &Arc<Self>) -> Result<ActiveGuard, Unavailable> {
         let mut state = self.state.lock();
+        if state.closed {
+            return Err(Unavailable(
+                "this server stopped serving the database".into(),
+            ));
+        }
         if let Some(reason) = &state.paused {
             return Err(Unavailable(reason.clone()));
         }
@@ -393,7 +402,7 @@ pub(crate) struct HostInner {
     remote_grants: RwLock<HashMap<String, Grant>>,
     pub(crate) streams: Mutex<HashMap<[u8; 16], StreamEntry>>,
     pub(crate) stored_sql: Arc<StoredSqlBudget>,
-    /// Bytes of request bodies and cursor output buffered; see
+    /// Bytes of request bodies, responses and cursor output buffered; see
     /// [`HostConfig::max_buffered_bytes`].
     pub(crate) buffered: Arc<Semaphore>,
 }
@@ -495,6 +504,7 @@ impl DatabaseHost {
                 pool_size: config.pool_size,
                 state: Mutex::new(DatabaseState {
                     paused: None,
+                    closed: false,
                     active: 0,
                     streams: 0,
                 }),
@@ -683,6 +693,12 @@ impl DatabaseHost {
             .drain()
             .map(|(_, db)| db)
             .collect();
+        // Requests that already looked a database up may still be waiting
+        // for a slot; once closed, none of them can start.
+        for database in &databases {
+            database.state.lock().closed = true;
+            database.permits.close();
+        }
         // New requests no longer find these databases. Requests already
         // running keep a connection to the file, so its lock is held until
         // they finish: a successor that replaced the file meanwhile would

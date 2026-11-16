@@ -63,24 +63,111 @@ pub enum Args<'a> {
     Named(&'a [NamedArg]),
 }
 
-/// Bounds the encoded size of one response.
+/// Bounds the encoded size of one response and, when the response shares a
+/// host's buffer budget, reserves its bytes there as they are charged.
 pub struct Budget {
     remaining: usize,
+    shared: Option<Shared>,
 }
+
+/// Bytes reserved from a host's buffer budget for one response.
+struct Shared {
+    semaphore: Arc<tokio::sync::Semaphore>,
+    held: Option<tokio::sync::OwnedSemaphorePermit>,
+    /// Reserved but not yet charged.
+    spare: usize,
+    exhausted: bool,
+}
+
+/// Bytes reserved from the host at a time, so small rows do not each take
+/// the semaphore.
+const SHARED_CHUNK: usize = 64 * 1024;
 
 impl Budget {
     pub fn new(limit: usize) -> Self {
-        Self { remaining: limit }
+        Self {
+            remaining: limit,
+            shared: None,
+        }
+    }
+
+    /// A budget whose charges also reserve bytes from `semaphore`, without
+    /// waiting: a charge fails when the host has no bytes left.
+    pub(crate) fn shared(limit: usize, semaphore: Arc<tokio::sync::Semaphore>) -> Self {
+        Self {
+            remaining: limit,
+            shared: Some(Shared {
+                semaphore,
+                held: None,
+                spare: 0,
+                exhausted: false,
+            }),
+        }
     }
 
     pub(crate) fn charge(&mut self, bytes: usize) -> bool {
-        match self.remaining.checked_sub(bytes) {
-            Some(remaining) => {
-                self.remaining = remaining;
-                true
-            }
-            None => false,
+        let Some(remaining) = self.remaining.checked_sub(bytes) else {
+            return false;
+        };
+        if let Some(shared) = &mut self.shared
+            && !shared.reserve(bytes)
+        {
+            return false;
         }
+        self.remaining = remaining;
+        true
+    }
+
+    /// A charge failed because the host had no bytes left, rather than
+    /// because this response reached its own limit.
+    pub(crate) fn host_exhausted(&self) -> bool {
+        self.shared.as_ref().is_some_and(|shared| shared.exhausted)
+    }
+
+    /// The bytes reserved from the host for what was charged. Holding the
+    /// permit keeps them reserved, until the response has been sent.
+    pub(crate) fn into_reservation(self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        let mut shared = self.shared?;
+        let mut held = shared.held.take()?;
+        // Return what was reserved ahead but never charged.
+        if shared.spare > 0 {
+            drop(held.split(shared.spare));
+        }
+        Some(held)
+    }
+}
+
+impl Shared {
+    fn reserve(&mut self, bytes: usize) -> bool {
+        if self.exhausted {
+            return false;
+        }
+        if let Some(spare) = self.spare.checked_sub(bytes) {
+            self.spare = spare;
+            return true;
+        }
+        let need = bytes - self.spare;
+        // Ask for a chunk, and settle for exactly what is needed.
+        let permit = [need.max(SHARED_CHUNK), need]
+            .into_iter()
+            .filter_map(|ask| u32::try_from(ask).ok().map(|n| (ask, n)))
+            .find_map(|(ask, n)| {
+                self.semaphore
+                    .clone()
+                    .try_acquire_many_owned(n)
+                    .ok()
+                    .map(|permit| (ask, permit))
+            });
+        let Some((ask, permit)) = permit else {
+            self.exhausted = true;
+            return false;
+        };
+        match &mut self.held {
+            Some(held) => held.merge(permit),
+            None => self.held = Some(permit),
+        }
+        self.spare = ask - need;
+        true
     }
 }
 

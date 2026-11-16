@@ -679,3 +679,26 @@ fn long_statements_run_without_the_statement_cache() {
     let described = conn.describe(&sql).unwrap();
     assert!(described.is_readonly);
 }
+
+#[test]
+fn shared_budgets_reserve_what_they_charge_from_the_host() {
+    let host = Arc::new(tokio::sync::Semaphore::new(100_000));
+    let mut budget = Budget::shared(usize::MAX, host.clone());
+    assert!(budget.charge(10));
+    assert!(budget.charge(70_000));
+    assert!(!budget.charge(40_000), "the host has no room left");
+    assert!(budget.host_exhausted());
+    // What was charged stays reserved; nothing more.
+    let reservation = budget.into_reservation().unwrap();
+    assert_eq!(reservation.num_permits(), 70_010);
+    assert_eq!(host.available_permits(), 100_000 - 70_010);
+    drop(reservation);
+    assert_eq!(host.available_permits(), 100_000);
+    // A response's own limit applies first, and is not the host's fault.
+    let mut budget = Budget::shared(100, host.clone());
+    assert!(!budget.charge(101));
+    assert!(!budget.host_exhausted());
+    assert!(budget.charge(100));
+    drop(budget);
+    assert_eq!(host.available_permits(), 100_000, "dropping releases");
+}
