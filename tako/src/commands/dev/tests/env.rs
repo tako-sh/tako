@@ -21,6 +21,20 @@ fn inject_dev_data_dir_creates_nested_app_and_tako_dirs() {
 }
 
 #[test]
+fn inject_dev_secrets_uses_selected_config_without_default_tako_toml() {
+    let temp = TempDir::new().unwrap();
+    // The secrets lock rejects symlinked ancestors such as macOS `/var`.
+    let project = temp.path().canonicalize().unwrap();
+    let cfg = TakoToml::parse("[vars]\nGREETING = \"hi\"\n").unwrap();
+    let mut env = std::collections::HashMap::new();
+
+    let secrets = inject_dev_secrets(&project, &cfg, &mut env).unwrap();
+
+    assert!(!project.join("tako.toml").exists());
+    assert!(secrets.is_empty());
+}
+
+#[test]
 fn compute_dev_env_ignores_configured_env_and_derives_development() {
     let cfg = TakoToml::parse(
         r#"

@@ -243,12 +243,14 @@ pub(super) fn inject_dev_data_dir(
     Ok(())
 }
 
+/// Uses the session's selected config rather than `<project>/tako.toml`, so
+/// `tako dev -c <file>` works for projects without a default config.
 pub(super) fn load_dev_secrets(
     project_dir: &Path,
+    config: &TakoToml,
 ) -> Result<std::collections::HashMap<String, String>, Box<dyn std::error::Error>> {
-    let config = crate::config::TakoToml::load_from_dir(project_dir)?;
     let secrets =
-        crate::config::SecretsStore::load_for_environment(project_dir, &config, "development")?;
+        crate::config::SecretsStore::load_for_environment(project_dir, config, "development")?;
 
     let encrypted = match secrets.get_env("development") {
         Some(map) if !map.is_empty() => map,
@@ -273,9 +275,10 @@ pub(super) fn load_dev_secrets(
 
 pub(super) fn inject_dev_secrets(
     project_dir: &Path,
+    config: &TakoToml,
     env: &mut std::collections::HashMap<String, String>,
 ) -> Result<std::collections::HashMap<String, String>, Box<dyn std::error::Error>> {
-    let secrets = load_dev_secrets(project_dir)?;
+    let secrets = load_dev_secrets(project_dir, config)?;
     env.extend(secrets.clone());
     Ok(secrets)
 }

@@ -201,3 +201,45 @@ fn unavailable_error_detection_matches_missing_or_stale_socket_errors() {
         "failed to parse response"
     ));
 }
+
+fn registered_app(
+    config_path: &str,
+    name: &str,
+    status: &str,
+) -> crate::dev_server_client::RegisteredAppInfo {
+    crate::dev_server_client::RegisteredAppInfo {
+        config_path: config_path.into(),
+        project_dir: "/projects".into(),
+        app_name: name.into(),
+        variant: None,
+        hosts: Vec::new(),
+        upstream_port: 0,
+        status: status.into(),
+        pid: None,
+        client_pid: None,
+        tunnel_url: None,
+        tunnel_expires_at: None,
+    }
+}
+
+#[test]
+fn restart_warning_names_other_live_apps() {
+    use super::prepare::restart_stops_apps_message;
+
+    let apps = vec![
+        registered_app("/a/tako.toml", "piko", "running"),
+        registered_app("/b/tako.toml", "docs", "idle"),
+        registered_app("/c/tako.toml", "old", "stopped"),
+        registered_app("/d/tako.compose.toml", "piko-group", "running"),
+    ];
+    assert_eq!(
+        restart_stops_apps_message(&apps, "/d/tako.compose.toml").as_deref(),
+        Some(
+            "Restarting the dev server stops piko, docs; run `tako dev` in their projects to start them again"
+        )
+    );
+    assert_eq!(
+        restart_stops_apps_message(&apps[2..], "/d/tako.compose.toml"),
+        None
+    );
+}
