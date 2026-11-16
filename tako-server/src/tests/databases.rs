@@ -320,9 +320,10 @@ async fn release_snapshots_skip_unchanged_databases_and_foreign_apps() {
             },
         )
         .await;
+        // Command responses are not printed: CodeQL treats them as secret-bearing (rust/cleartext-logging).
         assert!(
             refused.contains("only the snapshot before a release"),
-            "{refused}"
+            "a deployer's {reason:?} snapshot is refused"
         );
     }
 }
