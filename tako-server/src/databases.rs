@@ -585,6 +585,11 @@ impl ServerState {
         if let Some(backup) = &backup {
             validate_backup_storage(backup)?;
         }
+        let moved = match (&stored.secrets.backup, &backup) {
+            (Some(old), Some(new)) => !tako_core::same_backup_destination(old, new),
+            (None, None) => false,
+            _ => true,
+        };
         let secrets = DatabaseSecrets {
             backup_key_base64: stored.secrets.backup_key_base64.clone(),
             backup,
@@ -592,7 +597,8 @@ impl ServerState {
         self.state_store
             .set_database_secrets(id, &secrets)
             .map_err(|e| format!("store backup configuration: {e}"))?;
-        if secrets.backup.is_none() {
+        if moved {
+            // The cached status describes the previous destination.
             self.databases.backups.lock().remove(id);
         }
         let updated = self.hosted_database(id)?;
@@ -686,33 +692,6 @@ impl ServerState {
             truncated: result.truncated,
         })
         .expect("query result serializes"))
-    }
-
-    /// Replaces a database's file with a verified replacement, pausing apps'
-    /// requests to it for the swap.
-    pub(crate) async fn replace_database_file(
-        &self,
-        id: &str,
-        replacement: PathBuf,
-        reason: &str,
-    ) -> Result<(), String> {
-        let database = DatabaseId::parse(id)?;
-        let guard = self
-            .databases
-            .host
-            .pause(&database, reason)
-            .await
-            .map_err(|e| e.to_string())?;
-        let path = guard.path().to_path_buf();
-        let previous = self.databases.database_dir(id).join("previous.sqlite");
-        let result = tokio::task::spawn_blocking(move || {
-            tako_database::replace_database(&path, &replacement, &previous)
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-        guard.mark_changed();
-        drop(guard);
-        result
     }
 }
 

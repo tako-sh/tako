@@ -578,7 +578,14 @@ async fn run_async(
         .cloned()
         .ok_or("no servers selected for deploy")?;
     let release_command = resolve_release_command(&tako_config, &env);
-    if !database_plan.is_empty() {
+    // An administrator's deploy also revokes the grants of an environment
+    // that no longer binds the network databases it declares.
+    let revokes_grants = configure_bindings
+        && tako_config
+            .databases
+            .values()
+            .any(|database| database.access == tako_core::DatabaseAccess::Network);
+    if !database_plan.is_empty() || revokes_grants {
         databases::prepare(databases::Preparation {
             plan: &database_plan,
             config: &tako_config,

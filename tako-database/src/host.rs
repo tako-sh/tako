@@ -254,6 +254,15 @@ pub(crate) struct HostInner {
     pub(crate) streams: Mutex<HashMap<[u8; 16], StreamEntry>>,
 }
 
+/// The app environment a binding scope belongs to. Temporary bindings, such
+/// as a release command's, use `<app>/<env>#<purpose>`; grants on other
+/// servers are per environment.
+fn environment_scope(scope: &str) -> &str {
+    scope
+        .split_once('#')
+        .map_or(scope, |(environment, _)| environment)
+}
+
 /// The database host. Cheap to clone.
 #[derive(Clone)]
 pub struct DatabaseHost {
@@ -683,7 +692,7 @@ impl DatabaseHost {
             Home::Remote { upstream } => Some(Resolved::Forward {
                 database: binding.database,
                 upstream,
-                scope,
+                scope: environment_scope(&scope).to_owned(),
             }),
             Home::Unavailable { reason } => Some(Resolved::Unavailable(reason)),
         }

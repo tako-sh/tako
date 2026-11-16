@@ -44,21 +44,19 @@ async fn run(prep: &Preparation<'_>) -> Result<(), Box<dyn std::error::Error>> {
 
     if prep.administrator {
         for planned in bound.values() {
-            let Some(storage) = crate::commands::storage::decrypt_database_backup_storage(
+            // Without `backup` the server stops snapshotting the database.
+            let storage = crate::commands::storage::decrypt_database_backup_storage(
                 prep.env,
                 prep.config,
                 &planned.database_name,
                 prep.secrets,
                 Some(prep.project_dir),
-            )?
-            else {
-                continue;
-            };
+            )?;
             send(
                 &planned.home,
                 Command::ConfigureDatabaseBackup {
                     id: planned.database.id.clone(),
-                    backup: Some(storage),
+                    backup: storage,
                 },
             )
             .await

@@ -287,6 +287,67 @@ async fn release_snapshots_skip_unchanged_databases_and_foreign_apps() {
 }
 
 #[tokio::test]
+async fn a_failed_upload_keeps_the_database_due_for_a_snapshot() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, Some("unreachable")).await;
+    query(&state, ID, "CREATE TABLE items (name TEXT)").await;
+    let failed = error(
+        &state,
+        Command::SnapshotDatabase {
+            id: ID.into(),
+            reason: SnapshotReason::Manual,
+            app: None,
+        },
+    )
+    .await;
+    assert!(failed.contains("unreachable"), "{failed}");
+    let id = tako_database::DatabaseId::parse(ID).unwrap();
+    assert!(
+        state.databases.host.has_changes(&id),
+        "the scheduler retries the snapshot"
+    );
+}
+
+#[tokio::test]
+async fn moving_the_backup_destination_resets_snapshot_status() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, Some("first-bucket")).await;
+    ok(
+        &state,
+        Command::SnapshotDatabase {
+            id: ID.into(),
+            reason: SnapshotReason::Manual,
+            app: None,
+        },
+    )
+    .await;
+    let status = ok(
+        &state,
+        Command::DatabaseStatus {
+            id: Some(ID.into()),
+        },
+    )
+    .await;
+    assert!(status["databases"][0]["backup"]["last_snapshot"].is_object());
+
+    let moved = ok(
+        &state,
+        Command::ConfigureDatabaseBackup {
+            id: ID.into(),
+            backup: Some(backup("second-bucket")),
+        },
+    )
+    .await;
+    assert_eq!(moved["backup"]["bucket"], "second-bucket");
+    assert!(
+        moved["backup"]["last_snapshot"].is_null(),
+        "the first bucket's snapshot is not in the second: {moved}"
+    );
+}
+
+#[tokio::test]
 async fn import_and_export_round_trip_a_file() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp);

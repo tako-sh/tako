@@ -303,6 +303,21 @@ fn allows_introspection_and_session_pragmas_but_not_server_settings() {
 }
 
 #[test]
+fn temporary_objects_and_attachments_mark_the_connection() {
+    let fixture = fixture();
+    for sql in [
+        "CREATE TEMP TABLE scratch (x)",
+        "CREATE TEMP VIEW recent AS SELECT 1",
+        "ATTACH DATABASE '' AS extra",
+    ] {
+        let mut conn = open(&fixture);
+        assert!(!conn.is_dirty());
+        run(&mut conn, sql).unwrap();
+        assert!(conn.is_dirty(), "{sql} leaves state on the connection");
+    }
+}
+
+#[test]
 fn statements_stop_at_the_time_limit() {
     let fixture = fixture();
     let config = EngineConfig {

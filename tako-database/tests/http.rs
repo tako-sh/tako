@@ -531,6 +531,29 @@ async fn forwards_requests_to_the_server_that_hosts_the_database() {
         &json!([[{"type": "integer", "value": "1"}]])
     );
 
+    // A release command's temporary binding uses the environment's grant.
+    let release_token = generate_token();
+    edge.set_bindings(
+        "shop/production#release",
+        vec![Binding {
+            token_hash: hash_token(&release_token),
+            database: home.id.clone(),
+            home: Home::Remote { upstream },
+        }],
+    );
+    let (status, release) = send(
+        &edge,
+        &Access::Apps,
+        Request::post("/v3/pipeline")
+            .header("authorization", format!("Bearer {release_token}"))
+            .body(Full::new(Bytes::from(
+                json!({"baton": null, "requests": [execute("SELECT count(*) FROM t")]}).to_string(),
+            )))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{release}");
+
     // Without a grant the home server refuses forwarded requests.
     home.host
         .set_remote_grants("shop/production", BTreeSet::new());

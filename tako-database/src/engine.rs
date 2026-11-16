@@ -709,10 +709,20 @@ fn authorize(action: &AuthAction<'_>, dirty: &AtomicBool) -> Authorization {
         // attachment, including `VACUUM INTO '<path>'`, could reach server files.
         AuthAction::Attach { filename } => {
             if filename.is_empty() {
+                dirty.store(true, Ordering::Relaxed);
                 Authorization::Allow
             } else {
                 Authorization::Deny
             }
+        }
+        // Temporary objects live on the connection, so it must not be reused
+        // by another stream.
+        AuthAction::CreateTempIndex { .. }
+        | AuthAction::CreateTempTable { .. }
+        | AuthAction::CreateTempTrigger { .. }
+        | AuthAction::CreateTempView { .. } => {
+            dirty.store(true, Ordering::Relaxed);
+            Authorization::Allow
         }
         AuthAction::Function { function_name } => {
             if function_name.eq_ignore_ascii_case("load_extension")

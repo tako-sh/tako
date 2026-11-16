@@ -95,6 +95,9 @@ fn store(binding: &StorageBinding) -> Result<Arc<dyn ObjectStore>, String> {
 
 #[cfg(test)]
 pub(crate) fn test_store(bucket: &str) -> Result<Arc<dyn ObjectStore>, String> {
+    if bucket == "unreachable" {
+        return Err("backup storage is unreachable".into());
+    }
     static STORES: std::sync::OnceLock<
         parking_lot::Mutex<std::collections::HashMap<String, Arc<object_store::memory::InMemory>>>,
     > = std::sync::OnceLock::new();
@@ -227,7 +230,28 @@ pub(crate) async fn take(
         return Ok(None);
     }
     let started = now_unix_secs();
-    let result = upload_snapshot(state, stored, &backup, reason).await;
+    let result = match copy_database(state, stored).await {
+        Ok((work, copy)) => upload_copy(stored, &backup, &work, &copy, reason).await,
+        Err(error) => Err(error),
+    };
+    if result.is_err() {
+        // The copy cleared the changed flag; keep the scheduler retrying.
+        state.databases.host.mark_changed(&id);
+    }
+    record(state, stored, &backup, started, reason, result)
+        .await
+        .map(Some)
+}
+
+/// Records a snapshot attempt and prunes after a success.
+async fn record(
+    state: &ServerState,
+    stored: &StoredDatabase,
+    backup: &StorageBinding,
+    started: u64,
+    reason: SnapshotReason,
+    result: Result<DatabaseSnapshot, String>,
+) -> Result<DatabaseSnapshot, String> {
     {
         let mut backups = state.databases.backups.lock();
         let current = backups.entry(stored.id.clone()).or_default();
@@ -242,18 +266,18 @@ pub(crate) async fn take(
         }
     }
     let snapshot = result?;
-    if let Err(error) = prune(stored, &backup).await {
+    if let Err(error) = prune(stored, backup).await {
         tracing::warn!(database = %stored.id, %error, "Pruning database snapshots failed");
     }
-    Ok(Some(snapshot))
+    Ok(snapshot)
 }
 
-async fn upload_snapshot(
+/// Copies the database into a fresh work directory, after checking there is
+/// room for the copy and its compressed and encrypted forms.
+async fn copy_database(
     state: &ServerState,
     stored: &StoredDatabase,
-    backup: &StorageBinding,
-    reason: SnapshotReason,
-) -> Result<DatabaseSnapshot, String> {
+) -> Result<(WorkDir, PathBuf), String> {
     let id = DatabaseId::parse(&stored.id)?;
     let size = state.databases.host.size_bytes(&id).unwrap_or(0);
     let work = fresh_work_dir(state, &stored.id, "snapshot")?;
@@ -263,11 +287,6 @@ async fn upload_snapshot(
             "not enough free disk space for a snapshot ({available} bytes available)"
         ));
     }
-    let created = now_unix_secs();
-    let snapshot_id = format!(
-        "{created}-{}",
-        nanoid::nanoid!(8, &nanoid::alphabet::SAFE[..])
-    );
     let copy = work.path.join("snapshot.sqlite");
     state
         .databases
@@ -275,7 +294,23 @@ async fn upload_snapshot(
         .snapshot(&id, &copy)
         .await
         .map_err(|e| format!("copy database: {e}"))?;
+    Ok((work, copy))
+}
 
+/// Compresses, encrypts and uploads a copy, then its manifest.
+async fn upload_copy(
+    stored: &StoredDatabase,
+    backup: &StorageBinding,
+    work: &WorkDir,
+    copy: &Path,
+    reason: SnapshotReason,
+) -> Result<DatabaseSnapshot, String> {
+    let created = now_unix_secs();
+    let snapshot_id = format!(
+        "{created}-{}",
+        nanoid::nanoid!(8, &nanoid::alphabet::SAFE[..])
+    );
+    let copy = copy.to_path_buf();
     let key = key_binding(stored, None);
     let compressed = work.path.join("snapshot.sqlite.zst");
     let encrypted = work.path.join("snapshot.sqlite.zst.enc");
@@ -500,19 +535,7 @@ pub(crate) async fn restore(
         .map_err(|e| e.to_string())??;
     }
 
-    // Keep what is about to be replaced. A failure here does not block the
-    // restore: the current contents may be what is broken.
-    let mut warnings = Vec::new();
-    if let Err(error) = take(state, &stored, SnapshotReason::Restore, true).await {
-        warnings.push(format!(
-            "could not snapshot the current contents first: {error}"
-        ));
-    }
-    let lock = state.databases.lock(&stored.id);
-    let _guard = lock.lock().await;
-    state
-        .replace_database_file(&stored.id, restored, "database is being restored")
-        .await?;
+    let warnings = replace(state, &stored, restored, "database is being restored").await?;
     tracing::info!(database = %stored.id, snapshot = %manifest.snapshot.id, "Restored database");
     Ok(serde_json::json!({
         "database": stored.id,
@@ -520,6 +543,75 @@ pub(crate) async fn restore(
         "snapshot": manifest.snapshot,
         "warnings": warnings,
     }))
+}
+
+/// Replaces a database's file with a verified `replacement` while its
+/// requests are paused. When backups are configured and the database changed,
+/// the exact contents being replaced are copied during the pause and uploaded
+/// once requests resume. Returns warnings about that snapshot; the replaced
+/// file is also kept as `previous.sqlite`.
+pub(crate) async fn replace(
+    state: &ServerState,
+    stored: &StoredDatabase,
+    replacement: PathBuf,
+    pause_reason: &str,
+) -> Result<Vec<String>, String> {
+    let id = DatabaseId::parse(&stored.id)?;
+    let lock = state.databases.lock(&stored.id);
+    let _operation = lock.lock().await;
+    let guard = state
+        .databases
+        .host
+        .pause(&id, pause_reason)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut warnings = Vec::new();
+    let backup = stored.secrets.backup.clone();
+    let copy = match &backup {
+        Some(_) if state.databases.host.has_changes(&id) => {
+            match copy_database(state, stored).await {
+                Ok(copy) => Some(copy),
+                Err(error) => {
+                    warnings.push(format!("could not snapshot the replaced contents: {error}"));
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+    let path = guard.path().to_path_buf();
+    let previous = state
+        .databases
+        .database_dir(&stored.id)
+        .join("previous.sqlite");
+    let swapped = tokio::task::spawn_blocking(move || {
+        tako_database::replace_database(&path, &replacement, &previous)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    guard.mark_changed();
+    drop(guard);
+    swapped?;
+
+    if let (Some(backup), Some((work, copy))) = (backup, copy) {
+        let started = now_unix_secs();
+        let result = upload_copy(stored, &backup, &work, &copy, SnapshotReason::Restore).await;
+        if let Err(error) = record(
+            state,
+            stored,
+            &backup,
+            started,
+            SnapshotReason::Restore,
+            result,
+        )
+        .await
+        {
+            warnings.push(format!(
+                "could not upload a snapshot of the replaced contents (kept as previous.sqlite on the server): {error}"
+            ));
+        }
+    }
+    Ok(warnings)
 }
 
 /// A work directory removed when dropped.

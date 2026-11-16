@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use sha2::{Digest, Sha256};
-use tako_core::{DATABASE_TRANSFER_CHUNK_BYTES, DatabaseExport, SnapshotReason};
+use tako_core::{DATABASE_TRANSFER_CHUNK_BYTES, DatabaseExport};
 use tako_database::DatabaseId;
 
 use super::snapshots::{self, WorkDir, fresh_work_dir, sha256_file};
@@ -181,19 +181,13 @@ pub(crate) async fn finish_import(
         .map_err(|e| format!("The uploaded file is not a usable SQLite database: {e}"))?;
 
     let stored = state.hosted_database(id)?;
-    let mut warnings = Vec::new();
-    if stored.secrets.backup.is_some()
-        && let Err(error) = snapshots::take(state, &stored, SnapshotReason::Restore, true).await
-    {
-        warnings.push(format!(
-            "could not snapshot the current contents first: {error}"
-        ));
-    }
-    let lock = state.databases.lock(id);
-    let _guard = lock.lock().await;
-    state
-        .replace_database_file(id, path, "database is being replaced by an import")
-        .await?;
+    let warnings = snapshots::replace(
+        state,
+        &stored,
+        path,
+        "database is being replaced by an import",
+    )
+    .await?;
     drop(import.work);
     tracing::info!(database = %id, bytes = import.size, "Imported database");
     Ok(serde_json::json!({
