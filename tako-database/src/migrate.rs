@@ -231,17 +231,31 @@ pub(crate) fn run(
                 return Err(failure(&report, engine_error(error)));
             }
         }
-        if let Err(error) = conn.sequence(&migration.sql) {
-            conn.rollback();
-            return Err(failure(
-                &report,
-                format!(
-                    "Migration `{}` failed: {}",
-                    migration.name,
-                    engine_error(error)
-                ),
-            ));
+        match conn.sequence_in_transaction(&migration.sql) {
+            Ok(true) => {}
+            Ok(false) => {
+                conn.rollback();
+                return Err(failure(
+                    &report,
+                    format!(
+                        "Migration `{}` controls its own transaction. Remove BEGIN, COMMIT, END, and ROLLBACK from it: each migration already runs in one.",
+                        migration.name
+                    ),
+                ));
+            }
+            Err(error) => {
+                conn.rollback();
+                return Err(failure(
+                    &report,
+                    format!(
+                        "Migration `{}` failed: {}",
+                        migration.name,
+                        engine_error(error)
+                    ),
+                ));
+            }
         }
+        // A safety net: nothing else should end the transaction.
         if conn.is_autocommit() {
             return Err(failure(
                 &report,

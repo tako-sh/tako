@@ -976,21 +976,29 @@ async fn restore(
 async fn delete(ctx: &Context, name: &str, yes: bool) -> Result<(), Box<dyn std::error::Error>> {
     ctx.require_admin()?;
     let (_, home) = ctx.database(name)?;
-    output::warning(&format!(
-        "Deleting {name} removes its file from {}.",
-        home.name
-    ));
+    let status: serde_json::Value = send(&home, Command::DatabaseStatus { name: None }).await?;
+    // A delete whose network record could not be removed leaves the record
+    // behind; deleting again finishes it.
+    let hosted = status["databases"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|database| database["name"] == name);
+    match hosted {
+        Some(_) => output::warning(&format!(
+            "Deleting {name} removes its file from {}.",
+            home.name
+        )),
+        None => output::warning(&format!(
+            "{name} is no longer on {}; deleting removes what is left of it from the network.",
+            home.name
+        )),
+    }
     // Grants can outlive the deployments that used them, so the server
     // revokes them; name them so nothing still in use is deleted unseen.
-    let status: serde_json::Value = send(
-        &home,
-        Command::DatabaseStatus {
-            name: Some(name.to_owned()),
-        },
-    )
-    .await?;
-    let granted: Vec<&str> = status["databases"][0]["remote_grants"]
-        .as_array()
+    let granted: Vec<&str> = hosted
+        .map(|database| &database["remote_grants"])
+        .and_then(serde_json::Value::as_array)
         .into_iter()
         .flatten()
         .filter_map(serde_json::Value::as_str)
@@ -1012,22 +1020,24 @@ async fn delete(ctx: &Context, name: &str, yes: bool) -> Result<(), Box<dyn std:
             serde_json::json!({"database": name}),
         );
     }
-    let deleted: serde_json::Value = output::with_spinner_async(
-        &format!("Deleting {name}"),
-        &format!("Deleted {name}"),
-        async {
-            send::<serde_json::Value>(
-                &home,
-                Command::DeleteDatabase {
-                    name: name.to_owned(),
-                },
-            )
-            .await
-            .map_err(|e| e.to_string())
-        },
-    )
-    .await?;
-    print_warnings(&deleted);
+    if hosted.is_some() {
+        let deleted: serde_json::Value = output::with_spinner_async(
+            &format!("Deleting {name}"),
+            &format!("Deleted {name}"),
+            async {
+                send::<serde_json::Value>(
+                    &home,
+                    Command::DeleteDatabase {
+                        name: name.to_owned(),
+                    },
+                )
+                .await
+                .map_err(|e| e.to_string())
+            },
+        )
+        .await?;
+        print_warnings(&deleted);
+    }
     let alias = ctx.alias()?;
     tokio::task::block_in_place(|| crate::network::databases::remove(&alias, name))?;
     TakoToml::remove_database_from_file(&ctx.config_path, name)?;
@@ -1099,12 +1109,15 @@ async fn migrate(
             let env = binding_envs(&ctx.config, &database)[0];
             tako_core::deployment_app_id(&owner, env)
         });
-        for binding in bindings {
-            let migrations =
-                crate::database_migrations::load(&ctx.project_dir, &ctx.config, &binding)?;
-            if migrations.is_empty() {
-                continue;
-            }
+        let selected = crate::database_migrations::by_database(
+            &ctx.project_dir,
+            &ctx.config,
+            bindings
+                .iter()
+                .map(|binding| (binding.as_str(), database.as_str())),
+        )?;
+        for (_, selected) in selected {
+            let (binding, migrations) = (selected.binding, selected.migrations);
             let (_, home) = ctx.database(&database)?;
             let report =
                 apply_migrations(&home, &database, &owner, migrations, dry_run, app.clone())
@@ -1157,8 +1170,12 @@ fn migrate_local(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (project, config) = load_project(config_path)?;
     let dry_run = dry_run || output::is_dry_run();
-    let migrated =
-        crate::local_databases::development_migrations(&project.project_dir, &config, dry_run)?;
+    let migrated = crate::local_databases::development_migrations(
+        &project.project_dir,
+        &config,
+        dry_run,
+        None,
+    )?;
     for warning in &migrated.warnings {
         output::warning(warning);
     }
@@ -1306,7 +1323,13 @@ fn reset_local(
     if path.exists() {
         tako_database::reset_database_file(&path)?;
     }
-    let migrated = crate::local_databases::migrate_development(&project.project_dir, &config)?;
+    // Only this database: the others keep their state.
+    let migrated = crate::local_databases::development_migrations(
+        &project.project_dir,
+        &config,
+        false,
+        Some(name),
+    )?;
     for warning in &migrated.warnings {
         output::warning(warning);
     }
@@ -1378,11 +1401,13 @@ async fn reset(
     let bindings = project_bindings(&ctx.config)
         .remove(name)
         .unwrap_or_default();
-    for binding in bindings {
-        let migrations = crate::database_migrations::load(&ctx.project_dir, &ctx.config, &binding)?;
-        if migrations.is_empty() {
-            continue;
-        }
+    let selected = crate::database_migrations::by_database(
+        &ctx.project_dir,
+        &ctx.config,
+        bindings.iter().map(|binding| (binding.as_str(), name)),
+    )?;
+    for (_, selected) in selected {
+        let (binding, migrations) = (selected.binding, selected.migrations);
         let report = apply_migrations(&home, name, &owner, migrations, false, None)
             .await
             .map_err(|e| format!("{name} was reset, but its migrations failed: {e}"))?;

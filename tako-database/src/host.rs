@@ -81,6 +81,9 @@ pub struct HostConfig {
     pub max_streams_per_database: usize,
     pub max_streams: usize,
     pub max_request_bytes: usize,
+    /// How long an admitted request may take to send its body before it
+    /// gives up its request slot.
+    pub request_body_timeout: Duration,
     pub max_response_bytes: usize,
     pub max_stored_sql_per_stream: usize,
     /// Total length of the SQL texts one stream may store.
@@ -103,6 +106,7 @@ impl Default for HostConfig {
             max_streams_per_database: 128,
             max_streams: 4096,
             max_request_bytes: 32 * 1024 * 1024,
+            request_body_timeout: Duration::from_secs(30),
             max_response_bytes: 64 * 1024 * 1024,
             max_stored_sql_per_stream: 256,
             max_stored_sql_bytes_per_stream: 1024 * 1024,

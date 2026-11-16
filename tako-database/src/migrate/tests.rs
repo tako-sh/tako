@@ -193,16 +193,37 @@ fn apps_sharing_a_database_keep_separate_histories() {
 }
 
 #[test]
-fn migrations_may_not_end_their_transaction() {
+fn migrations_may_not_control_their_transaction() {
+    for sql in [
+        "CREATE TABLE a (x); COMMIT; CREATE TABLE b (x);",
+        "CREATE TABLE a (x); END;",
+        "CREATE TABLE a (x); ROLLBACK;",
+        "BEGIN; CREATE TABLE a (x);",
+    ] {
+        let (_dir, path) = database();
+        let error =
+            migrate_file(&path, "shop", &[migration("0001_tx.sql", sql)], false).unwrap_err();
+        assert!(
+            error.contains("controls its own transaction"),
+            "{sql}: {error}"
+        );
+        // Nothing before the refused statement was committed.
+        let tables = tables(&path);
+        assert!(!tables.contains(&"a".to_owned()), "{sql}: {tables:?}");
+    }
+    // Savepoints nest inside the migration's transaction.
     let (_dir, path) = database();
-    let error = migrate_file(
+    let report = migrate_file(
         &path,
         "shop",
-        &[migration("0001_commit.sql", "CREATE TABLE a (x); COMMIT;")],
+        &[migration(
+            "0001_savepoint.sql",
+            "SAVEPOINT s; CREATE TABLE a (x); RELEASE s;",
+        )],
         false,
     )
-    .unwrap_err();
-    assert!(error.contains("ended the transaction"), "{error}");
+    .unwrap();
+    assert_eq!(report.applied, ["0001_savepoint.sql"]);
 }
 
 #[test]

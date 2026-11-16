@@ -131,13 +131,17 @@ async fn run(prep: &Preparation<'_>) -> Result<Prepared, Box<dyn std::error::Err
     // Migrations run before the release command and the rollout, so new
     // instances start on the new schema; old ones keep serving meanwhile.
     let owner = prep.app.split('/').next().unwrap_or(prep.app);
-    let mut bindings: Vec<_> = prep.plan.iter().collect();
-    bindings.sort_by(|a, b| a.0.cmp(b.0));
-    for (binding, planned) in bindings {
-        let migrations = crate::database_migrations::load(prep.project_dir, prep.config, binding)?;
-        if migrations.is_empty() {
-            continue;
-        }
+    let selected = crate::database_migrations::by_database(
+        prep.project_dir,
+        prep.config,
+        prep.plan
+            .iter()
+            .map(|(binding, planned)| (binding.as_str(), planned.database_name.as_str())),
+    )?;
+    for (database, selected) in selected {
+        let (binding, migrations) = (&selected.binding, selected.migrations);
+        let planned = &prep.plan[binding];
+        debug_assert_eq!(planned.database_name, database);
         let report = crate::commands::sqlite::apply_migrations(
             &planned.home,
             &planned.database_name,

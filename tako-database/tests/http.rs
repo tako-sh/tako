@@ -493,6 +493,36 @@ async fn cursors_whose_client_stops_reading_give_up_their_slot() {
     assert!(response.into_body().collect().await.is_err());
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn requests_whose_body_stalls_give_up_their_slot() {
+    use futures_util::StreamExt;
+    let h = harness(HostConfig {
+        request_body_timeout: Duration::from_millis(300),
+        max_concurrent_per_database: 1,
+        ..HostConfig::default()
+    });
+    // The body starts but never finishes.
+    let chunk = http_body::Frame::data(Bytes::from_static(b"{\"baton\": null,"));
+    let stream =
+        futures_util::stream::once(async move { Ok::<_, std::convert::Infallible>(chunk) })
+            .chain(futures_util::stream::pending());
+    let request = Request::post("/v3/pipeline")
+        .header("authorization", format!("Bearer {}", h.token))
+        .body(http_body_util::StreamBody::new(stream))
+        .unwrap();
+    let stalled = handle(&h.host, &Access::Apps, PEER.parse().unwrap(), request);
+    let (stalled, query) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(stalled, async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            h.host.admin_query(&h.id, "SELECT 1".into(), 10).await
+        })
+    })
+    .await
+    .expect("the stalled request times out");
+    assert_eq!(stalled.status(), StatusCode::REQUEST_TIMEOUT);
+    assert_eq!(query.unwrap().rows.len(), 1, "the slot is released");
+}
+
 #[tokio::test]
 async fn oversized_requests_are_refused() {
     let h = harness(HostConfig {

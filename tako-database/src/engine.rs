@@ -290,6 +290,9 @@ pub struct Connection {
     deadline: Arc<AtomicU64>,
     /// Set when a statement changed session state that outlives a stream.
     dirty: Arc<AtomicBool>,
+    /// Whether statements may begin or end transactions; see
+    /// [`Connection::sequence_in_transaction`].
+    transactions: Arc<TransactionControl>,
     /// Set when a statement that may have changed the database ran, whether
     /// or not it succeeded. Cleared by `take_wrote`.
     wrote: bool,
@@ -330,8 +333,18 @@ impl Connection {
         .map_err(map_error)?;
 
         let dirty = Arc::new(AtomicBool::new(false));
+        let transactions = Arc::new(TransactionControl::default());
         let authorizer_dirty = dirty.clone();
+        let authorizer_transactions = transactions.clone();
         conn.authorizer(Some(move |ctx: AuthContext<'_>| {
+            if matches!(ctx.action, AuthAction::Transaction { .. })
+                && authorizer_transactions.forbidden.load(Ordering::Relaxed)
+            {
+                authorizer_transactions
+                    .refused
+                    .store(true, Ordering::Relaxed);
+                return Authorization::Deny;
+            }
             authorize(&ctx.action, &authorizer_dirty)
         }))
         .map_err(map_error)?;
@@ -353,6 +366,7 @@ impl Connection {
             epoch,
             deadline,
             dirty,
+            transactions,
             wrote: false,
             statement_timeout: config.statement_timeout,
         })
@@ -430,6 +444,23 @@ impl Connection {
     ) -> Result<(u64, Option<i64>), Error> {
         let outcome = self.run(sql, args, true, sink)?;
         Ok((outcome.affected, outcome.last_insert_rowid))
+    }
+
+    /// Runs [`Connection::sequence`] inside the caller's open transaction,
+    /// refusing `BEGIN`, `COMMIT`, `END`, and `ROLLBACK` when they are
+    /// prepared, before they can end it. Returns `Ok(false)` when a statement
+    /// was refused; the statements before it ran and remain uncommitted.
+    pub(crate) fn sequence_in_transaction(&mut self, sql: &str) -> Result<bool, Error> {
+        self.transactions.forbidden.store(true, Ordering::Relaxed);
+        self.transactions.refused.store(false, Ordering::Relaxed);
+        let result = self.sequence(sql);
+        self.transactions.forbidden.store(false, Ordering::Relaxed);
+        let refused = self.transactions.refused.swap(false, Ordering::Relaxed);
+        match result {
+            Err(_) if refused => Ok(false),
+            Err(error) => Err(error),
+            Ok(()) => Ok(true),
+        }
     }
 
     /// Executes semicolon-separated statements, discarding rows, and stops at
@@ -833,6 +864,14 @@ const SESSION_PRAGMAS: &[&str] = &[
     "secure_delete",
     "short_column_names",
 ];
+
+/// Whether the authorizer refuses transaction statements, and whether it
+/// refused one.
+#[derive(Default)]
+struct TransactionControl {
+    forbidden: AtomicBool,
+    refused: AtomicBool,
+}
 
 /// Error code a streaming sink returns to stop reading rows without failing.
 pub(crate) const STOP: &str = "TAKO_STOP";

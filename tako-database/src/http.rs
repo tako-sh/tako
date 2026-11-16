@@ -163,9 +163,24 @@ where
                 Ok(admitted) => admitted,
                 Err(response) => return response,
             };
-            let body = match read_body(request.into_body(), host.config().max_request_bytes).await {
-                Ok(body) => body,
-                Err(response) => return response,
+            // A client that stalls while sending its body must not hold
+            // the slot it was admitted to.
+            let config = host.config();
+            let body = match tokio::time::timeout(
+                config.request_body_timeout,
+                read_body(request.into_body(), config.max_request_bytes),
+            )
+            .await
+            {
+                Ok(Ok(body)) => body,
+                Ok(Err(response)) => return response,
+                Err(_) => {
+                    drop(admitted);
+                    return error(
+                        StatusCode::REQUEST_TIMEOUT,
+                        "the request body did not arrive in time",
+                    );
+                }
             };
             match endpoint {
                 Endpoint::Pipeline(version) => {
