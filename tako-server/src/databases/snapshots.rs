@@ -8,7 +8,7 @@
 //! demand. Retention keeps every snapshot of the last 24 hours and the newest
 //! of each of the last 7 days and 4 weeks.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -37,14 +37,17 @@ const SNAPSHOT_INTERVAL_SECS: u64 = 60 * 60;
 /// How soon a failed snapshot is retried.
 const RETRY_INTERVAL_SECS: u64 = 5 * 60;
 const SCHEDULER_TICK: Duration = Duration::from_secs(60);
+/// How many databases the scheduler snapshots at once, so a database whose
+/// storage is slow delays only its own snapshot.
+const SCHEDULER_CONCURRENCY: usize = 4;
 /// A work directory this old belongs to an operation that a restart or crash
 /// interrupted: snapshots, restores, and exports finish well within it, and
 /// import and export sessions expire after an hour.
 const STALE_WORK_AGE: Duration = Duration::from_secs(24 * 60 * 60);
-/// Free space kept on the data disk beyond a snapshot's working files.
 /// How long a data object may go without a manifest before pruning deletes
 /// it. An upload still in progress has none yet.
 const ORPHAN_AGE_SECS: i64 = 24 * 60 * 60;
+/// Free space kept on the data disk beyond snapshots' working files.
 const DISK_RESERVE_BYTES: u64 = 256 * 1024 * 1024;
 const MANIFEST_FORMAT: u32 = 1;
 
@@ -199,6 +202,8 @@ fn store(binding: &StorageBinding) -> Result<Arc<dyn ObjectStore>, String> {
     test_store(binding.bucket.as_deref().unwrap_or_default())
 }
 
+/// The bucket `unreachable` fails at once; writes to `stalled` never finish,
+/// like storage that accepts connections but stops answering.
 #[cfg(test)]
 pub(crate) fn test_store(bucket: &str) -> Result<Arc<dyn ObjectStore>, String> {
     if bucket == "unreachable" {
@@ -213,7 +218,82 @@ pub(crate) fn test_store(bucket: &str) -> Result<Arc<dyn ObjectStore>, String> {
         .entry(bucket.to_owned())
         .or_insert_with(|| Arc::new(object_store::memory::InMemory::new()))
         .clone();
+    if bucket == "stalled" {
+        return Ok(Arc::new(StalledStore(store)));
+    }
     Ok(store)
+}
+
+/// Serves reads from the store it wraps; writes wait forever.
+#[cfg(test)]
+#[derive(Debug)]
+struct StalledStore(Arc<object_store::memory::InMemory>);
+
+#[cfg(test)]
+impl std::fmt::Display for StalledStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("StalledStore")
+    }
+}
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl ObjectStore for StalledStore {
+    async fn put_opts(
+        &self,
+        _location: &ObjectPath,
+        _payload: object_store::PutPayload,
+        _opts: object_store::PutOptions,
+    ) -> object_store::Result<object_store::PutResult> {
+        std::future::pending().await
+    }
+
+    async fn put_multipart_opts(
+        &self,
+        _location: &ObjectPath,
+        _opts: object_store::PutMultipartOptions,
+    ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
+        std::future::pending().await
+    }
+
+    async fn get_opts(
+        &self,
+        location: &ObjectPath,
+        options: object_store::GetOptions,
+    ) -> object_store::Result<object_store::GetResult> {
+        self.0.get_opts(location, options).await
+    }
+
+    fn delete_stream(
+        &self,
+        locations: futures_util::stream::BoxStream<'static, object_store::Result<ObjectPath>>,
+    ) -> futures_util::stream::BoxStream<'static, object_store::Result<ObjectPath>> {
+        self.0.delete_stream(locations)
+    }
+
+    fn list(
+        &self,
+        prefix: Option<&ObjectPath>,
+    ) -> futures_util::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
+    {
+        self.0.list(prefix)
+    }
+
+    async fn list_with_delimiter(
+        &self,
+        prefix: Option<&ObjectPath>,
+    ) -> object_store::Result<object_store::ListResult> {
+        self.0.list_with_delimiter(prefix).await
+    }
+
+    async fn copy_opts(
+        &self,
+        _from: &ObjectPath,
+        _to: &ObjectPath,
+        _options: object_store::CopyOptions,
+    ) -> object_store::Result<()> {
+        std::future::pending().await
+    }
 }
 
 pub(crate) fn status(state: &ServerState, stored: &StoredDatabase) -> Option<DatabaseBackupStatus> {
@@ -239,46 +319,132 @@ pub(crate) fn spawn_scheduler(state: Arc<ServerState>) -> tokio::task::JoinHandl
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(SCHEDULER_TICK);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // Owned by this task, so stopping the scheduler stops its snapshots.
+        let mut jobs = SnapshotJobs::new(SCHEDULER_CONCURRENCY);
         loop {
             interval.tick().await;
-            if state.is_draining() {
-                continue;
-            }
-            state.refresh_database_routes();
-            super::transfer::expire(&state);
-            let databases = match state.state_store.list_databases() {
-                Ok(databases) => databases,
-                Err(error) => {
-                    tracing::warn!(%error, "Snapshot scheduler could not read databases");
-                    continue;
-                }
-            };
-            for stored in databases {
-                // A database whose registration failed at startup (or later)
-                // is retried, so a transient error does not keep it
-                // unavailable until the next restart.
-                state.retry_database_registration(&stored.name).await;
-                let work = state.databases.work_dir(&stored.name);
-                let removed = tokio::task::spawn_blocking(move || {
-                    remove_stale_work_dirs(&work, std::time::SystemTime::now())
-                })
-                .await
-                .unwrap_or(0);
-                if removed > 0 {
-                    tracing::info!(database = %stored.name, removed, "Removed interrupted database work directories");
-                }
-                if stored.secrets.backup.is_none() {
-                    continue;
-                }
-                if !due(&state, &stored).await {
-                    continue;
-                }
-                if let Err(error) = take(&state, &stored, SnapshotReason::Scheduled, true).await {
-                    tracing::warn!(database = %stored.name, %error, "Scheduled database snapshot failed");
-                }
-            }
+            schedule(&state, &mut jobs).await;
         }
     })
+}
+
+/// One scheduler tick: housekeeping for every database, then a snapshot job
+/// for each changed database with backups. Returns without waiting for the
+/// snapshots.
+pub(crate) async fn schedule(state: &Arc<ServerState>, jobs: &mut SnapshotJobs) {
+    jobs.reap();
+    if state.is_draining() {
+        return;
+    }
+    state.refresh_database_routes();
+    super::transfer::expire(state);
+    let databases = match state.state_store.list_databases() {
+        Ok(databases) => databases,
+        Err(error) => {
+            tracing::warn!(%error, "Snapshot scheduler could not read databases");
+            return;
+        }
+    };
+    for stored in databases {
+        // A database whose registration failed at startup (or later)
+        // is retried, so a transient error does not keep it
+        // unavailable until the next restart.
+        state.retry_database_registration(&stored.name).await;
+        let work = state.databases.work_dir(&stored.name);
+        let removed = tokio::task::spawn_blocking(move || {
+            remove_stale_work_dirs(&work, std::time::SystemTime::now())
+        })
+        .await
+        .unwrap_or(0);
+        if removed > 0 {
+            tracing::info!(database = %stored.name, removed, "Removed interrupted database work directories");
+        }
+        let changed = DatabaseId::parse(&stored.name)
+            .is_ok_and(|id| state.databases.host.has_changes(&id));
+        if stored.secrets.backup.is_some() && changed {
+            jobs.start(state, stored.name);
+        }
+    }
+}
+
+/// The scheduler's snapshots in progress. Each database's snapshot runs as
+/// its own task, at most `limit` at once; dropping this aborts them.
+pub(crate) struct SnapshotJobs {
+    tasks: tokio::task::JoinSet<()>,
+    permits: Arc<tokio::sync::Semaphore>,
+    /// Databases with a job waiting or running, so a slow one is not queued
+    /// again on every tick.
+    pending: Arc<parking_lot::Mutex<HashSet<String>>>,
+}
+
+impl SnapshotJobs {
+    pub(crate) fn new(limit: usize) -> Self {
+        Self {
+            tasks: tokio::task::JoinSet::new(),
+            permits: Arc::new(tokio::sync::Semaphore::new(limit)),
+            pending: Default::default(),
+        }
+    }
+
+    pub(crate) fn is_pending(&self, name: &str) -> bool {
+        self.pending.lock().contains(name)
+    }
+
+    /// Queues a snapshot of `name` if it is due once a slot is free, unless
+    /// one is already waiting or running.
+    fn start(&mut self, state: &Arc<ServerState>, name: String) {
+        if !self.pending.lock().insert(name.clone()) {
+            return;
+        }
+        let pending = Pending {
+            set: self.pending.clone(),
+            name,
+        };
+        let permits = self.permits.clone();
+        let state = state.clone();
+        self.tasks.spawn(async move {
+            let Ok(_permit) = permits.acquire_owned().await else {
+                return;
+            };
+            if state.is_draining() {
+                return;
+            }
+            // Read again: the database may have been deleted, or its backups
+            // changed, while this job waited for a slot.
+            let Ok(stored) = state.hosted_database(&pending.name) else {
+                return;
+            };
+            if stored.secrets.backup.is_none() || !due(&state, &stored).await {
+                return;
+            }
+            if let Err(error) = take(&state, &stored, SnapshotReason::Scheduled, true).await {
+                tracing::warn!(database = %stored.name, %error, "Scheduled database snapshot failed");
+            }
+        });
+    }
+
+    /// Collects finished jobs.
+    fn reap(&mut self) {
+        while let Some(finished) = self.tasks.try_join_next() {
+            if let Err(error) = finished
+                && error.is_panic()
+            {
+                tracing::error!(%error, "Scheduled database snapshot panicked");
+            }
+        }
+    }
+}
+
+/// Marks a database's job as pending until the job ends, however it ends.
+struct Pending {
+    set: Arc<parking_lot::Mutex<HashSet<String>>>,
+    name: String,
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        self.set.lock().remove(&self.name);
+    }
 }
 
 async fn due(state: &ServerState, stored: &StoredDatabase) -> bool {
@@ -356,9 +522,7 @@ pub(crate) async fn take(
     let result = match store(&backup) {
         Ok(remote) => match check_holder(remote.as_ref(), stored, own.as_deref()).await {
             Ok(()) => match copy_database(state, stored).await {
-                Ok((work, copy)) => {
-                    upload_copy(stored, &backup, &work, &copy, reason, own.as_deref()).await
-                }
+                Ok(copy) => upload_copy(stored, &backup, &copy, reason, own.as_deref()).await,
                 Err(error) => Err(error),
             },
             Err(error) => Err(error),
@@ -403,29 +567,92 @@ async fn record(
     Ok(snapshot)
 }
 
-/// Copies the database into a fresh work directory, after checking there is
-/// room for the copy and its compressed and encrypted forms.
-async fn copy_database(
-    state: &ServerState,
-    stored: &StoredDatabase,
-) -> Result<(WorkDir, PathBuf), String> {
+/// Disk space held for the snapshot copies on disk. Copies of several
+/// databases can exist at once (the scheduler's, and manual, release, and
+/// restore snapshots), so each one checks the free space against what the
+/// others still hold.
+#[derive(Default)]
+pub(crate) struct SnapshotSpace {
+    reserved: Arc<parking_lot::Mutex<u64>>,
+}
+
+impl SnapshotSpace {
+    /// Holds `needed` bytes until the returned reservation drops, if
+    /// `available` covers them, the other reservations, and the disk reserve.
+    /// Another copy's reservation counts in full even after it has written
+    /// part of its files, so this errs toward refusing.
+    fn reserve(&self, needed: u64, available: u64) -> Result<SpaceReservation, String> {
+        let mut reserved = self.reserved.lock();
+        let required = reserved
+            .saturating_add(needed)
+            .saturating_add(DISK_RESERVE_BYTES);
+        if available < required {
+            return Err(if *reserved == 0 {
+                format!("not enough free disk space for a snapshot ({available} bytes available)")
+            } else {
+                format!(
+                    "not enough free disk space for a snapshot ({available} bytes available, {} bytes held for other snapshots in progress)",
+                    *reserved
+                )
+            });
+        }
+        *reserved = reserved.saturating_add(needed);
+        Ok(SpaceReservation {
+            reserved: self.reserved.clone(),
+            bytes: needed,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reserved_bytes(&self) -> u64 {
+        *self.reserved.lock()
+    }
+}
+
+struct SpaceReservation {
+    reserved: Arc<parking_lot::Mutex<u64>>,
+    bytes: u64,
+}
+
+impl Drop for SpaceReservation {
+    fn drop(&mut self) {
+        let mut reserved = self.reserved.lock();
+        *reserved = reserved.saturating_sub(self.bytes);
+    }
+}
+
+/// A copy of a database in its own work directory.
+struct SnapshotCopy {
+    work: WorkDir,
+    path: PathBuf,
+    /// Space for the copy and its compressed and encrypted forms. Declared
+    /// after `work`, so it is released once the directory is removed.
+    _space: SpaceReservation,
+}
+
+/// Copies the database into a fresh work directory, after reserving room for
+/// the copy and its compressed and encrypted forms.
+async fn copy_database(state: &ServerState, stored: &StoredDatabase) -> Result<SnapshotCopy, String> {
     let id = DatabaseId::parse(&stored.name)?;
     let size = state.databases.host.size_bytes(&id).unwrap_or(0);
     let work = fresh_work_dir(state, &stored.name, "snapshot")?;
     let available = crate::operations::available_bytes(&work.path)?;
-    if available < size.saturating_mul(3).saturating_add(DISK_RESERVE_BYTES) {
-        return Err(format!(
-            "not enough free disk space for a snapshot ({available} bytes available)"
-        ));
-    }
-    let copy = work.path.join("snapshot.sqlite");
+    let space = state
+        .databases
+        .snapshot_space
+        .reserve(size.saturating_mul(3), available)?;
+    let path = work.path.join("snapshot.sqlite");
     state
         .databases
         .host
-        .snapshot(&id, &copy)
+        .snapshot(&id, &path)
         .await
         .map_err(|e| format!("copy database: {e}"))?;
-    Ok((work, copy))
+    Ok(SnapshotCopy {
+        work,
+        path,
+        _space: space,
+    })
 }
 
 /// Compresses, encrypts and uploads a copy, then its manifest. With `own`,
@@ -433,8 +660,7 @@ async fn copy_database(
 async fn upload_copy(
     stored: &StoredDatabase,
     backup: &StorageBinding,
-    work: &WorkDir,
-    copy: &Path,
+    copy: &SnapshotCopy,
     reason: SnapshotReason,
     own: Option<&str>,
 ) -> Result<DatabaseSnapshot, String> {
@@ -448,10 +674,10 @@ async fn upload_copy(
         "{millis:013}-{}",
         nanoid::nanoid!(8, &nanoid::alphabet::SAFE[..])
     );
-    let copy = copy.to_path_buf();
     let key = key_binding(stored, None);
-    let compressed = work.path.join("snapshot.sqlite.zst");
-    let encrypted = work.path.join("snapshot.sqlite.zst.enc");
+    let compressed = copy.work.path.join("snapshot.sqlite.zst");
+    let encrypted = copy.work.path.join("snapshot.sqlite.zst.enc");
+    let copy = copy.path.clone();
     let (sha256, database_bytes, encryption) = {
         let (copy, compressed, encrypted) = (copy.clone(), compressed.clone(), encrypted.clone());
         tokio::task::spawn_blocking(move || -> Result<_, String> {
@@ -931,13 +1157,12 @@ pub(crate) async fn replace(
     drop(guard);
     swapped?;
 
-    if let (Some(backup), Some((work, copy))) = (backup, copy) {
+    if let (Some(backup), Some(copy)) = (backup, copy) {
         let started = now_unix_secs();
         // Not fenced: copies of replaced contents are left out of latest
         // restores, and a move's new copy uploads one before it claims the
         // database.
-        let result =
-            upload_copy(stored, &backup, &work, &copy, SnapshotReason::Restore, None).await;
+        let result = upload_copy(stored, &backup, &copy, SnapshotReason::Restore, None).await;
         if let Err(error) = record(
             state,
             stored,
@@ -1128,6 +1353,28 @@ mod tests {
         assert_eq!(
             orphaned_data(&objects, now),
             vec![key("2-b.sqlite.zst.enc")]
+        );
+    }
+
+    #[test]
+    fn snapshot_space_counts_the_copies_in_progress() {
+        let space = SnapshotSpace::default();
+        let available = DISK_RESERVE_BYTES + 100;
+        let first = space.reserve(60, available).unwrap();
+        let refused = space.reserve(60, available).err().unwrap();
+        assert!(
+            refused.contains("60 bytes held for other snapshots in progress"),
+            "{refused}"
+        );
+        let second = space.reserve(40, available).unwrap();
+        assert_eq!(space.reserved_bytes(), 100);
+        drop(first);
+        drop(second);
+        assert_eq!(space.reserved_bytes(), 0);
+        assert!(space.reserve(100, available).is_ok());
+        assert_eq!(
+            space.reserve(101, available).err().unwrap(),
+            format!("not enough free disk space for a snapshot ({available} bytes available)")
         );
     }
 

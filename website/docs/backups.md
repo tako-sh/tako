@@ -163,7 +163,7 @@ A fresh deploy creates no full-directory backup.
 
 Manual archives require temporary space for the snapshot, compressed archive, and encrypted archive, plus a disk reserve. They are not a transactionally consistent snapshot across multiple databases or arbitrary files being modified concurrently. Coordinate app writes when that consistency is required. Application processes outside Tako's supervision must stop before a restore.
 
-Database snapshots need free space for about three copies of the database plus 256 MiB on the server's data disk. A snapshot that fails is retried after five minutes and reported by `tako sqlite status`.
+Database snapshots need free space for about three copies of the database plus 256 MiB on the server's data disk, counting the space other snapshots in progress on that server still hold. The server takes scheduled snapshots of up to four databases at once, so one whose storage is slow does not hold up the others. A snapshot that fails is retried after five minutes and reported by `tako sqlite status`.
 
 ## Verify recovery
 

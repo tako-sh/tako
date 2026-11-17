@@ -44,6 +44,8 @@ pub(crate) struct Databases {
     /// Listener and scheduler tasks, stopped when this process hands over.
     tasks: Mutex<Vec<tokio::task::AbortHandle>>,
     pub(crate) backups: Mutex<HashMap<String, snapshots::BackupState>>,
+    /// Disk space held for snapshot copies in progress.
+    pub(crate) snapshot_space: snapshots::SnapshotSpace,
     /// The binding sets last applied to each scope, so a periodic refresh
     /// re-resolves homes without dropping a rollout's second set.
     applied: Mutex<HashMap<String, Vec<HashMap<String, AppDatabase>>>>,
@@ -111,6 +113,7 @@ impl Databases {
             started: std::sync::atomic::AtomicBool::new(false),
             tasks: Mutex::new(Vec::new()),
             backups: Mutex::new(HashMap::new()),
+            snapshot_space: snapshots::SnapshotSpace::default(),
             applied: Mutex::new(HashMap::new()),
             transfers: Mutex::new(transfer::Transfers::default()),
             locks: Mutex::new(HashMap::new()),

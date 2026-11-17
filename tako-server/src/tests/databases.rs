@@ -398,6 +398,84 @@ async fn a_failed_upload_keeps_the_database_due_for_a_snapshot() {
 }
 
 #[tokio::test]
+async fn a_stalled_upload_does_not_delay_other_scheduled_snapshots() {
+    use crate::databases::snapshots::{SnapshotJobs, schedule};
+    const STALLED: &str = "archive";
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    // Listed first, so a scheduler snapshotting one database at a time would
+    // wait on its upload before reaching the other.
+    create(&state, STALLED, Some("stalled")).await;
+    create(&state, ID, Some("scheduled-bucket")).await;
+    for id in [STALLED, ID] {
+        query(&state, id, "CREATE TABLE items (name TEXT)").await;
+    }
+    let snapshot_of = |id: &str| {
+        state
+            .databases
+            .backups
+            .lock()
+            .get(id)
+            .and_then(|backup| backup.last_snapshot.clone())
+    };
+    let mut jobs = SnapshotJobs::new(4);
+    tokio::time::timeout(Duration::from_secs(10), schedule(&state, &mut jobs))
+        .await
+        .expect("a scheduler tick does not wait for uploads");
+    let first = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Some(snapshot) = snapshot_of(ID) {
+                return snapshot;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the healthy database is snapshotted while the other upload stalls");
+    assert_eq!(first.reason, SnapshotReason::Scheduled);
+    assert!(jobs.is_pending(STALLED), "the stalled upload is in progress");
+    assert!(snapshot_of(STALLED).is_none());
+    assert!(
+        state.databases.snapshot_space.reserved_bytes() > 0,
+        "the stalled copy keeps its disk space reserved"
+    );
+
+    // An hour later the upload still stalls, and the healthy database's next
+    // snapshot is not held up behind it.
+    query(&state, ID, "INSERT INTO items VALUES ('a')").await;
+    if let Some(snapshot) = state
+        .databases
+        .backups
+        .lock()
+        .get_mut(ID)
+        .and_then(|backup| backup.last_snapshot.as_mut())
+    {
+        snapshot.created_at_unix_secs -= 60 * 60;
+    }
+    tokio::time::timeout(Duration::from_secs(10), schedule(&state, &mut jobs))
+        .await
+        .expect("a scheduler tick does not wait for uploads");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while snapshot_of(ID).is_none_or(|snapshot| snapshot.id == first.id) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the healthy database keeps its hourly snapshots");
+    assert!(jobs.is_pending(STALLED));
+
+    // Stopping the scheduler abandons the stalled upload and its copy.
+    drop(jobs);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while state.databases.snapshot_space.reserved_bytes() > 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the stalled copy's disk space is released");
+}
+
+#[tokio::test]
 async fn moving_the_backup_destination_resets_snapshot_status() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp);
