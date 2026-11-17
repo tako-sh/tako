@@ -315,8 +315,17 @@ pub enum Command {
     },
 
     /// Replace a database with an empty one, after a snapshot of its
-    /// contents when backups are configured.
-    ResetDatabase { name: String },
+    /// contents when backups are configured. `migrations` (of `owner`) are
+    /// applied to the empty database before it replaces the old one, so
+    /// apps never see it without its schema, and a failing migration
+    /// leaves the old one in place.
+    ResetDatabase {
+        name: String,
+        #[serde(default)]
+        owner: Option<String>,
+        #[serde(default)]
+        migrations: Vec<DatabaseMigration>,
+    },
 
     /// Start replacing a database with an uploaded SQLite file.
     BeginDatabaseImport {

@@ -656,7 +656,11 @@ impl ServerState {
                 self.migrate_database(&name, owner, migrations, dry_run, app.as_deref())
                     .await
             }
-            Command::ResetDatabase { name } => self.reset_database(&name).await,
+            Command::ResetDatabase {
+                name,
+                owner,
+                migrations,
+            } => self.reset_database(&name, owner, migrations).await,
             Command::BeginDatabaseImport {
                 name,
                 size_bytes,
@@ -1104,19 +1108,54 @@ impl ServerState {
         Ok(serde_json::to_value(report(applied)).expect("report serializes"))
     }
 
-    async fn reset_database(&self, id: &str) -> Result<serde_json::Value, String> {
+    async fn reset_database(
+        &self,
+        id: &str,
+        owner: Option<String>,
+        migrations: Vec<tako_core::DatabaseMigration>,
+    ) -> Result<serde_json::Value, String> {
         let stored = self.hosted_database(id)?;
+        if !migrations.is_empty() && owner.as_deref().is_none_or(str::is_empty) {
+            return Err("A reset with migrations must name the app they belong to.".into());
+        }
         let work = snapshots::fresh_work_dir(self, id, "reset")?;
         let empty = work.path.join("empty.sqlite");
         let create = empty.clone();
-        tokio::task::spawn_blocking(move || DatabaseHost::create_file(&create))
-            .await
-            .map_err(|e| e.to_string())?
-            .map_err(|e| format!("create an empty database: {e}"))?;
-        let warnings = snapshots::replace(self, &stored, empty, "database is being reset").await?;
+        let migrations: Vec<tako_database::Migration> = migrations
+            .into_iter()
+            .map(|m| tako_database::Migration {
+                name: m.name,
+                sql: m.sql,
+            })
+            .collect();
+        // The schema goes into the new file before it replaces the old one.
+        let name = id.to_owned();
+        let report = tokio::task::spawn_blocking(move || {
+            DatabaseHost::create_file(&create)
+                .map_err(|e| format!("create an empty database: {e}"))?;
+            match owner {
+                Some(owner) if !migrations.is_empty() => {
+                    tako_database::migrate::migrate_file(&create, &owner, &migrations, false)
+                        .map(Some)
+                        .map_err(|e| format!("The migrations failed; {name} was not reset: {e}"))
+                }
+                _ => Ok(None),
+            }
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let mut warnings =
+            snapshots::replace(self, &stored, empty, "database is being reset").await?;
         drop(work);
-        tracing::info!(database = %id, "Reset database");
-        Ok(serde_json::json!({"database": id, "warnings": warnings}))
+        let applied = match report {
+            Some(report) => {
+                warnings.extend(report.warnings);
+                report.applied
+            }
+            None => Vec::new(),
+        };
+        tracing::info!(database = %id, ?applied, "Reset database");
+        Ok(serde_json::json!({"database": id, "warnings": warnings, "applied": applied}))
     }
 
     async fn query_database(&self, id: &str, sql: String) -> Result<serde_json::Value, String> {

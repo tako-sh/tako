@@ -806,7 +806,15 @@ async fn reset_empties_a_database_after_a_safety_copy() {
     create(&state, ID, Some("reset-bucket")).await;
     query(&state, ID, "CREATE TABLE items (name TEXT)").await;
     query(&state, ID, "INSERT INTO items VALUES ('gone')").await;
-    ok(&state, Command::ResetDatabase { name: ID.into() }).await;
+    ok(
+        &state,
+        Command::ResetDatabase {
+            name: ID.into(),
+            owner: None,
+            migrations: Vec::new(),
+        },
+    )
+    .await;
     let missing = error(
         &state,
         Command::QueryDatabase {
@@ -836,6 +844,47 @@ async fn reset_empties_a_database_after_a_safety_copy() {
     )
     .await;
     assert_eq!(count(&state, ID).await, 1);
+}
+
+#[tokio::test]
+async fn resets_apply_migrations_before_the_new_file_is_served() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, None).await;
+    query(&state, ID, "CREATE TABLE items (name TEXT)").await;
+    query(&state, ID, "INSERT INTO items VALUES ('old')").await;
+    let migration = |name: &str, sql: &str| tako_core::DatabaseMigration {
+        name: name.into(),
+        sql: sql.into(),
+    };
+    // A failing migration leaves the database as it was.
+    let failed = error(
+        &state,
+        Command::ResetDatabase {
+            name: ID.into(),
+            owner: Some("shop".into()),
+            migrations: vec![migration("0001_bad.sql", "CREATE TABLE")],
+        },
+    )
+    .await;
+    assert!(failed.contains("was not reset"), "{failed}");
+    assert_eq!(count(&state, ID).await, 1);
+    // Otherwise the database is replaced with one that already has its
+    // schema.
+    let reset = ok(
+        &state,
+        Command::ResetDatabase {
+            name: ID.into(),
+            owner: Some("shop".into()),
+            migrations: vec![migration(
+                "0001_items.sql",
+                "CREATE TABLE items (name TEXT);",
+            )],
+        },
+    )
+    .await;
+    assert_eq!(reset["applied"], json!(["0001_items.sql"]));
+    assert_eq!(count(&state, ID).await, 0);
 }
 
 #[tokio::test]

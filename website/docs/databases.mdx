@@ -258,7 +258,7 @@ tako sqlite reset main
 tako sqlite reset main --local
 ```
 
-`reset` replaces the database with an empty one, then applies the project's migrations to it. On a server it pauses requests like a restore and, when backups are configured, first uploads a snapshot of the contents it replaces (reason `restore`), so `tako sqlite restore main --snapshot <id>` undoes it. It asks for confirmation (`--yes` skips it) and refuses a database the `production` environment binds unless `--force` is passed. With `--local` it empties the development file, which `tako dev` may keep serving, and applies the development migrations.
+`reset` replaces the database with an empty one that already has the project's migrations applied: they run on the new file before it replaces the old one, so apps never see the database without its schema, and a failing migration leaves it unchanged. On a server it pauses requests like a restore and, when backups are configured, first uploads a snapshot of the contents it replaces (reason `restore`), so `tako sqlite restore main --snapshot <id>` undoes it. It asks for confirmation (`--yes` skips it) and refuses a database the `production` environment binds unless `--force` is passed. With `--local` it empties the development file, which `tako dev` may keep serving, and applies the development migrations.
 
 ## Delete a database
 

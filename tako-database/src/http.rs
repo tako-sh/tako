@@ -22,7 +22,49 @@ use crate::host::{Database, DatabaseHost, DatabaseId, Principal, Resolved, Strea
 use crate::proto::{CursorRequest, CursorResponse, PipelineRequest, PipelineResponse, Version};
 
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
-pub type Body = http_body_util::combinators::BoxBody<Bytes, BoxError>;
+pub type Body = http_body_util::combinators::BoxBody<Chunk, BoxError>;
+
+/// Response data. A chunk can keep part of the host's buffer budget
+/// reserved: the connection drops it only once it has written it, so the
+/// reservation lasts until the bytes have left this process.
+pub struct Chunk {
+    bytes: Bytes,
+    _held: Option<Arc<dyn std::any::Any + Send + Sync>>,
+}
+
+impl Chunk {
+    fn held(bytes: Bytes, held: Arc<dyn std::any::Any + Send + Sync>) -> Self {
+        Self {
+            bytes,
+            _held: Some(held),
+        }
+    }
+}
+
+impl From<Bytes> for Chunk {
+    fn from(bytes: Bytes) -> Self {
+        Self { bytes, _held: None }
+    }
+}
+
+impl bytes::Buf for Chunk {
+    fn remaining(&self) -> usize {
+        self.bytes.remaining()
+    }
+
+    fn chunk(&self) -> &[u8] {
+        self.bytes.chunk()
+    }
+
+    fn advance(&mut self, count: usize) {
+        self.bytes.advance(count);
+    }
+
+    // Without a copy: the default would copy into a new buffer.
+    fn copy_to_bytes(&mut self, len: usize) -> Bytes {
+        self.bytes.copy_to_bytes(len)
+    }
+}
 
 /// Header naming the app environment a forwarding server acts for.
 pub const SCOPE_HEADER: &str = "x-tako-database-scope";
@@ -457,10 +499,10 @@ async fn pipeline(
                     results: outcome.results,
                 },
             );
-            // The host's bytes stay reserved until the last of the body has
-            // been taken for sending, or the connection dropped it.
+            // The host's bytes stay reserved until the connection has
+            // written the last of the body, or dropped it.
             if let Some(reservation) = outcome.reservation {
-                response = response.map(|body| Holding::new(body, reservation).boxed());
+                response = response.map(|body| Holding::new(body, Arc::new(reservation)).boxed());
             }
             response
         }
@@ -631,12 +673,17 @@ async fn cursor(
                 return None;
             }
             match receiver.recv().await {
-                // The line leaves the queue's byte budget as it is handed on.
-                Some((line, _permit, _host_permit)) => {
-                    Some((Ok(Frame::data(line)), (receiver, aborted, false)))
-                }
+                // The line keeps its share of the queue's and the host's
+                // budgets until the connection has written it.
+                Some((line, permit, host_permit)) => Some((
+                    Ok(Frame::data(Chunk::held(
+                        line,
+                        Arc::new((permit, host_permit)),
+                    ))),
+                    (receiver, aborted, false),
+                )),
                 None if aborted.load(Ordering::Acquire) => Some((
-                    Err::<Frame<Bytes>, BoxError>("the cursor was stopped before its end".into()),
+                    Err::<Frame<Chunk>, BoxError>("the cursor was stopped before its end".into()),
                     (receiver, aborted, true),
                 )),
                 None => None,
@@ -872,6 +919,7 @@ where
     let upstream = to.address;
     let body = Limited::new(body, host.config().max_request_bytes)
         .map_err(|e| -> BoxError { e })
+        .map_frame(|frame| frame.map_data(Chunk::from))
         .boxed();
     let Ok(request) = Request::post(format!("http://{upstream}{path}"))
         .header(CONTENT_TYPE, "application/json")
@@ -886,7 +934,11 @@ where
         );
     };
     match client().request(request).await {
-        Ok(response) => response.map(|body| body.map_err(|e| -> BoxError { Box::new(e) }).boxed()),
+        Ok(response) => response.map(|body| {
+            body.map_err(|e| -> BoxError { Box::new(e) })
+                .map_frame(|frame| frame.map_data(Chunk::from))
+                .boxed()
+        }),
         Err(e) => {
             tracing::warn!(%upstream, error = %e, "database forwarding failed");
             error(
@@ -921,46 +973,48 @@ fn text(status: StatusCode, message: &'static str) -> Response<Body> {
     response
 }
 
-/// A body that keeps part of the host's buffer budget reserved for as long
-/// as it exists. It hands its data over in chunks, so the connection only
-/// takes the next one once it has written most of the last, and the body
-/// lives until its final chunk has been taken.
+/// A body whose chunks keep part of the host's buffer budget reserved: the
+/// reservation ends when the connection has written the last of them. It
+/// hands its data over in pieces, so the connection takes the next only
+/// once it has written most of the last.
 struct Holding {
     body: Body,
     pending: Bytes,
-    _reservation: tokio::sync::OwnedSemaphorePermit,
+    held: Arc<dyn std::any::Any + Send + Sync>,
 }
 
 const HOLDING_CHUNK: usize = 64 * 1024;
 
 impl Holding {
-    fn new(body: Body, reservation: tokio::sync::OwnedSemaphorePermit) -> Self {
+    fn new(body: Body, held: Arc<dyn std::any::Any + Send + Sync>) -> Self {
         Self {
             body,
             pending: Bytes::new(),
-            _reservation: reservation,
+            held,
         }
     }
 }
 
 impl http_body::Body for Holding {
-    type Data = Bytes;
+    type Data = Chunk;
     type Error = BoxError;
 
     fn poll_frame(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Result<Frame<Bytes>, BoxError>>> {
+    ) -> std::task::Poll<Option<Result<Frame<Chunk>, BoxError>>> {
+        use bytes::Buf;
         use std::task::Poll;
         let this = self.get_mut();
         loop {
             if !this.pending.is_empty() {
                 let take = this.pending.len().min(HOLDING_CHUNK);
-                return Poll::Ready(Some(Ok(Frame::data(this.pending.split_to(take)))));
+                let piece = this.pending.split_to(take);
+                return Poll::Ready(Some(Ok(Frame::data(Chunk::held(piece, this.held.clone())))));
             }
             match std::pin::Pin::new(&mut this.body).poll_frame(cx) {
                 Poll::Ready(Some(Ok(frame))) => match frame.into_data() {
-                    Ok(data) => this.pending = data,
+                    Ok(mut data) => this.pending = data.copy_to_bytes(data.remaining()),
                     Err(frame) => return Poll::Ready(Some(Ok(frame))),
                 },
                 other => return other,
@@ -985,7 +1039,7 @@ impl http_body::Body for Holding {
 }
 
 fn full(bytes: Vec<u8>) -> Body {
-    Full::new(Bytes::from(bytes))
+    Full::new(Chunk::from(Bytes::from(bytes)))
         .map_err(|never| -> BoxError { match never {} })
         .boxed()
 }

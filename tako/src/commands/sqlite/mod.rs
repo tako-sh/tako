@@ -1394,7 +1394,8 @@ fn new_migration(
             None => root.clone(),
         },
     };
-    let file = dir.join(format!("{}_{slug}.sql", utc_timestamp()?));
+    let number = unused_migration_number(&dir, utc_timestamp()?.parse()?);
+    let file = dir.join(format!("{number}_{slug}.sql"));
     if file.exists() {
         return Err(format!("{} already exists.", file.display()).into());
     }
@@ -1438,6 +1439,24 @@ fn migration_slug(name: &str) -> Option<String> {
 }
 
 /// The current UTC time as `YYYYMMDDHHMMSS`, which orders migrations.
+/// `wanted`, or the next number after it that no migration in `dir` uses:
+/// two migrations created in the same second must not share a number.
+fn unused_migration_number(dir: &Path, wanted: u64) -> u64 {
+    let used: std::collections::BTreeSet<u64> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            tako_database::migrate::migration_number(&entry.file_name().to_string_lossy())
+        })
+        .collect();
+    let mut number = wanted;
+    while used.contains(&number) {
+        number += 1;
+    }
+    number
+}
+
 fn utc_timestamp() -> Result<String, Box<dyn std::error::Error>> {
     let now = time::OffsetDateTime::now_utc();
     Ok(format!(
@@ -1533,25 +1552,9 @@ async fn reset(
             serde_json::json!({"database": name}),
         );
     }
-    let reset: serde_json::Value = output::with_spinner_async(
-        &format!("Resetting {name}"),
-        &format!("Reset {name}"),
-        async {
-            send::<serde_json::Value>(
-                &home,
-                Command::ResetDatabase {
-                    name: name.to_owned(),
-                },
-            )
-            .await
-            .map_err(|e| e.to_string())
-        },
-    )
-    .await?;
-    print_warnings(&reset);
-    // Bring the schema back for the project's bindings to it.
+    // The project's migrations for this database are applied to the empty
+    // one before it replaces the current contents.
     let owner = migration_owner(ctx)?;
-    let mut applied = Vec::new();
     let bindings = project_bindings(&ctx.config)
         .remove(name)
         .unwrap_or_default();
@@ -1560,16 +1563,35 @@ async fn reset(
         &ctx.config,
         bindings.iter().map(|binding| (binding.as_str(), name)),
     )?;
-    for (_, selected) in selected {
-        let (binding, migrations) = (selected.binding, selected.migrations);
-        let report = apply_migrations(&home, name, &owner, migrations, false, None)
+    let migrations = selected
+        .into_iter()
+        .next()
+        .map(|(_, selected)| selected.migrations)
+        .unwrap_or_default();
+    let reset: serde_json::Value = output::with_spinner_async(
+        &format!("Resetting {name}"),
+        &format!("Reset {name}"),
+        async {
+            send::<serde_json::Value>(
+                &home,
+                Command::ResetDatabase {
+                    name: name.to_owned(),
+                    owner: Some(owner),
+                    migrations: crate::database_migrations::to_wire(migrations),
+                },
+            )
             .await
-            .map_err(|e| format!("{name} was reset, but its migrations failed: {e}"))?;
-        for warning in &report.warnings {
-            output::warning(&format!("{binding}: {warning}"));
-        }
-        applied.extend(report.applied);
-    }
+            .map_err(|e| e.to_string())
+        },
+    )
+    .await?;
+    print_warnings(&reset);
+    let applied: Vec<String> = reset["applied"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|name| name.as_str().map(str::to_owned))
+        .collect();
     if output::is_json() {
         return output::json_result(serde_json::json!({
             "ok": true, "command": "sqlite", "reset": name, "applied": applied,
@@ -1653,6 +1675,25 @@ mod tests {
         .unwrap();
         assert_eq!(chosen.region.as_deref(), Some("eu-west-1"));
         assert!(choose_snapshot_storage("shop", differing, None).is_err());
+    }
+
+    #[test]
+    fn migrations_created_in_the_same_second_get_distinct_numbers() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            unused_migration_number(dir.path(), 20261117000000),
+            20261117000000
+        );
+        std::fs::write(dir.path().join("20261117000000_users.sql"), "").unwrap();
+        std::fs::write(dir.path().join("20261117000001_items.sql"), "").unwrap();
+        assert_eq!(
+            unused_migration_number(dir.path(), 20261117000000),
+            20261117000002
+        );
+        assert_eq!(
+            unused_migration_number(dir.path(), 20261117000005),
+            20261117000005
+        );
     }
 
     #[test]

@@ -713,43 +713,11 @@ pub(crate) async fn restore(
         ));
     };
     let remote = store(&backup)?;
-    let manifests = list_manifests(remote.as_ref(), &stored).await?;
-    let manifest = match snapshot {
-        Some(wanted) => manifests
-            .into_iter()
-            .find(|m| m.snapshot.id == wanted)
-            .ok_or_else(|| {
-                format!(
-                    "Snapshot {wanted} of database {} was not found.",
-                    stored.name
-                )
-            })?,
-        // The newest snapshot of the database's own history: the safety
-        // copies that restores and imports take of what they replace are
-        // left out, so repeating a restore does not undo it.
-        None => {
-            let fallback = manifests.first().map(|m| m.snapshot.id.clone());
-            let mut manifests = manifests.into_iter();
-            match manifests
-                .by_ref()
-                .find(|m| m.snapshot.reason != SnapshotReason::Restore)
-            {
-                Some(manifest) => manifest,
-                None => {
-                    let id = fallback
-                        .ok_or_else(|| format!("Database {} has no snapshots yet.", stored.name))?;
-                    return Err(format!(
-                        "Database {} has only snapshots taken before restores or imports; pass --snapshot {id} to restore one.",
-                        stored.name
-                    ));
-                }
-            }
-        }
-    };
-
     // This server holds the database from now on, so a copy that a move
     // leaves behind stops publishing snapshots, also one in flight, which
-    // checks again before its manifest. A failed restore gives it back.
+    // checks again before and after its manifest. Claiming before listing
+    // means any snapshot that copy still publishes is listed here. A failed
+    // restore gives the claim back.
     let own = state.databases.server_id();
     let previous = match &own {
         Some(own) => {
@@ -765,7 +733,44 @@ pub(crate) async fn restore(
         }
         None => None,
     };
-    let restored = restore_from(state, &stored, remote.as_ref(), manifest, key_override).await;
+    let restored = async {
+        let manifests = list_manifests(remote.as_ref(), &stored).await?;
+        let manifest = match snapshot {
+            Some(wanted) => manifests
+                .into_iter()
+                .find(|m| m.snapshot.id == wanted)
+                .ok_or_else(|| {
+                    format!(
+                        "Snapshot {wanted} of database {} was not found.",
+                        stored.name
+                    )
+                })?,
+            // The newest snapshot of the database's own history: the safety
+            // copies that restores and imports take of what they replace are
+            // left out, so repeating a restore does not undo it.
+            None => {
+                let fallback = manifests.first().map(|m| m.snapshot.id.clone());
+                let mut manifests = manifests.into_iter();
+                match manifests
+                    .by_ref()
+                    .find(|m| m.snapshot.reason != SnapshotReason::Restore)
+                {
+                    Some(manifest) => manifest,
+                    None => {
+                        let id = fallback
+                            .ok_or_else(|| format!("Database {} has no snapshots yet.", stored.name))?;
+                        return Err(format!(
+                            "Database {} has only snapshots taken before restores or imports; pass --snapshot {id} to restore one.",
+                            stored.name
+                        ));
+                    }
+                }
+            }
+        };
+
+        restore_from(state, &stored, remote.as_ref(), manifest, key_override).await
+    }
+    .await;
     if let (Err(error), Some(previous)) = (&restored, previous)
         && previous != own
     {

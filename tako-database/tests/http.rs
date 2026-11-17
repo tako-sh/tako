@@ -966,9 +966,13 @@ async fn snapshots_track_changes() {
 }
 
 fn raw_request(token: &str, body: &Value) -> Vec<u8> {
+    raw_request_to("/v3/pipeline", token, body)
+}
+
+fn raw_request_to(path: &str, token: &str, body: &Value) -> Vec<u8> {
     let body = body.to_string();
     format!(
-        "POST /v3/pipeline HTTP/1.1\r\nhost: db\r\nauthorization: Bearer {token}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+        "POST {path} HTTP/1.1\r\nhost: db\r\nauthorization: Bearer {token}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
         body.len()
     )
     .into_bytes()
@@ -1076,6 +1080,67 @@ async fn a_client_that_stops_reading_releases_its_response() {
         }
     }
     assert!(served, "the stalled response is dropped");
+    drop(stalled);
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cursor_rows_stay_reserved_until_they_are_written() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let stall = Duration::from_secs(3);
+    let h = harness(HostConfig {
+        max_buffered_bytes: 32 * 1024 * 1024,
+        max_request_bytes: 4 * 1024,
+        write_stall_timeout: stall,
+        ..HostConfig::default()
+    });
+    let (address, server) = serve_apps(&h.host).await;
+    // A cursor whose one row is 20 MB, more than the sockets hold.
+    let cursor = json!({"baton": null, "batch": {"steps": [
+        {"stmt": {"sql": "SELECT hex(zeroblob(10000000))"}},
+    ]}});
+    let mut stalled = tokio::net::TcpStream::connect(address).await.unwrap();
+    stalled
+        .write_all(&raw_request_to("/v3/cursor", &h.token, &cursor))
+        .await
+        .unwrap();
+    let mut head = [0u8; 12];
+    tokio::time::timeout(Duration::from_secs(10), stalled.read_exact(&mut head))
+        .await
+        .expect("the cursor starts")
+        .unwrap();
+    assert_eq!(&head, b"HTTP/1.1 200");
+    // Reading part of the row shows it has left the cursor's queue for the
+    // connection, which has not written the rest.
+    let mut part = vec![0u8; 256 * 1024];
+    tokio::time::timeout(Duration::from_secs(20), stalled.read_exact(&mut part))
+        .await
+        .expect("the row starts")
+        .unwrap();
+    // It still counts, so a large pipeline result does not fit.
+    let large = json!({"baton": null, "requests": [execute("SELECT hex(zeroblob(10000000))")]});
+    let started = std::time::Instant::now();
+    let mut busy = false;
+    while started.elapsed() < stall {
+        let (status, _) = post(&h, "/v3/pipeline", large.clone()).await;
+        if status == StatusCode::SERVICE_UNAVAILABLE {
+            busy = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(busy, "the unwritten row holds the buffer");
+    // Once writing stalls long enough, the connection and its row go.
+    let mut served = false;
+    for _ in 0..100 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let (status, _) = post(&h, "/v3/pipeline", large.clone()).await;
+        if status == StatusCode::OK {
+            served = true;
+            break;
+        }
+    }
+    assert!(served, "the stalled cursor's row is released");
     drop(stalled);
     server.abort();
 }
