@@ -280,7 +280,11 @@ impl crate::ServerState {
                 })
                 .await
             }
-            Command::BackupNow { app, mut backup } => {
+            Command::BackupNow {
+                app,
+                mut backup,
+                secrets_digest,
+            } => {
                 if let Err(msg) = validate_app_name(&app) {
                     return Response::error(msg);
                 }
@@ -291,10 +295,11 @@ impl crate::ServerState {
                     binding.storage.access_key_id = None;
                     binding.storage.secret_access_key = None;
                     binding.backup_keys.clear();
+                    // Every server backs up with the snapshot the client pinned.
                     let resolved = match crate::secret_snapshot::resolve(
                         &self.runtime.data_dir,
                         &app,
-                        None,
+                        secrets_digest.as_deref(),
                         &[],
                     )
                     .await

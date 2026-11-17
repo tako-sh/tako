@@ -129,6 +129,21 @@ fn invited_by<'a>(rows: &[ClientRow<'a>], device: &tako_network::DeviceId) -> Ve
         .collect()
 }
 
+/// The keys client `name` still holds: its active key and any admitted
+/// concurrently that are in conflict with it. Once the active key is revoked one
+/// of the conflicting keys would take its place, so a replacement revokes all.
+fn held_keys<'r, 'a>(rows: &'r [ClientRow<'a>], name: &str) -> Vec<&'r ClientRow<'a>> {
+    rows.iter()
+        .filter(|row| {
+            row.name.eq_ignore_ascii_case(name)
+                && matches!(
+                    row.status,
+                    tako_network::MemberStatus::Active | tako_network::MemberStatus::Conflict
+                )
+        })
+        .collect()
+}
+
 fn own_device(profile: &Profile) -> Result<tako_network::DeviceId> {
     Ok(profile
         .request()
@@ -262,26 +277,41 @@ fn add(
     let active = rows
         .iter()
         .find(|row| same_name(row) && row.status == tako_network::MemberStatus::Active);
+    let replacing = held_keys(&rows, name.as_str());
     let known = rows.iter().any(|row| same_name(&row));
     let mut invited = Vec::new();
-    if let Some(active) = active {
-        if active.member.device_id == own {
+    if !replacing.is_empty() {
+        if replacing.iter().any(|row| row.member.device_id == own) {
             return Err(format!(
                 "This device is client {name}. Replace its key from another full client."
             )
             .into());
         }
-        invited = invited_by(&rows, &active.member.device_id);
+        for row in &replacing {
+            for child in invited_by(&rows, &row.member.device_id) {
+                if !invited.contains(&child) {
+                    invited.push(child);
+                }
+            }
+        }
         if !yes {
             if !output::is_interactive() {
                 return Err(
                     format!("Client {name} is active. Pass --yes to replace its key.").into(),
                 );
             }
-            let prompt = format!(
-                "{} is active. Replace its key? The current key stops working.",
-                output::strong(name.as_str())
-            );
+            let prompt = if replacing.len() == 1 {
+                format!(
+                    "{} is active. Replace its key? The current key stops working.",
+                    output::strong(name.as_str())
+                )
+            } else {
+                format!(
+                    "{} holds {} keys. Replace them? They all stop working.",
+                    output::strong(name.as_str()),
+                    replacing.len()
+                )
+            };
             if !output::confirm(&prompt, false)? {
                 output::operation_cancelled();
                 return Ok(());
@@ -289,6 +319,11 @@ fn add(
         }
     }
     let replaced = active.map(|row| row.member.device_id.clone());
+    let conflicting: Vec<tako_network::DeviceId> = replacing
+        .iter()
+        .map(|row| row.member.device_id.clone())
+        .filter(|id| Some(id) != replaced.as_ref())
+        .collect();
     let server = network::client::available_server(&profile)?;
     let info = network::server_members(&profile)?
         .get(&server)
@@ -316,9 +351,9 @@ fn add(
         RpcResponse::InvitationCreated { id: returned } if returned == id => (),
         _ => return Err("Unexpected invitation response".into()),
     }
-    // The old key stops working before anyone sees the new invitation.
-    if let Some(replaced) = &replaced {
-        network::revocation::run(&alias, &replaced.to_string())?;
+    // The old keys stop working before anyone sees the new invitation.
+    for device in replaced.iter().chain(&conflicting) {
+        network::revocation::run(&alias, &device.to_string())?;
     }
     let invitation = Invitation {
         version: tako_network::invitation::INVITATION_VERSION,
@@ -331,7 +366,16 @@ fn add(
         client: name.clone(),
     };
     if identity {
-        return print_identity(&alias, name, &invitation, full, replaced, invited, known);
+        return print_identity(
+            &alias,
+            name,
+            &invitation,
+            full,
+            replaced,
+            &conflicting,
+            invited,
+            known,
+        );
     }
     let invitation = invitation.encode()?;
     if output::is_json() {
@@ -341,12 +385,13 @@ fn add(
             "invitation": invitation.as_str(),
             "expires_at": expires_at,
             "replaced": replaced,
+            "also_revoked": conflicting,
             "invited": invited,
         }))?;
     } else {
         // Deliberate credential output; never put it in tracing or progress logs.
         println!("{}", invitation.as_str());
-        let message = if replaced.is_some() {
+        let message = if replaced.is_some() || !conflicting.is_empty() {
             format!("Revoked {name}'s key and created an invitation for a new one")
         } else if known {
             format!("Created an invitation to bring back {name}")
@@ -370,6 +415,7 @@ fn print_identity(
     invitation: &Invitation,
     full: bool,
     replaced: Option<tako_network::DeviceId>,
+    conflicting: &[tako_network::DeviceId],
     invited: Vec<String>,
     known: bool,
 ) -> Result<()> {
@@ -393,13 +439,14 @@ fn print_identity(
             "client": name,
             "identity": identity.as_str(),
             "replaced": replaced,
+            "also_revoked": conflicting,
             "invited": invited,
         }))?;
     } else {
         // Deliberate credential output on stdout, so it can be piped into a
         // secret store; never put it in tracing or progress logs.
         println!("{}", identity.as_str());
-        let message = if replaced.is_some() {
+        let message = if replaced.is_some() || !conflicting.is_empty() {
             format!("Revoked {name}'s key and created an identity with a new one")
         } else if known {
             format!("Created an identity to bring back {name}")
@@ -580,4 +627,36 @@ fn redeem(invitation: &Invitation) -> Result<crate::config::LocalNetwork> {
             network::save_profile(&Profile::Pending { profile: pending })?
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replacing_a_client_takes_every_key_its_name_still_holds() {
+        let fixture = crate::network::tests::fixture();
+        let member = &fixture.profile.snapshot().members[0];
+        let row = |name: &str, status| ClientRow {
+            name: name.into(),
+            member,
+            status,
+            invited_by: "-".into(),
+        };
+        use tako_network::MemberStatus::*;
+        let rows = vec![
+            row("ci", Active),
+            row("CI", Conflict),
+            row("ci", Revoked),
+            row("ci", Replaced),
+            row("ci", Expired),
+            row("other", Active),
+        ];
+        let held: Vec<_> = held_keys(&rows, "ci")
+            .into_iter()
+            .map(|row| (row.name.as_str(), row.status))
+            .collect();
+        assert_eq!(held, [("ci", Active), ("CI", Conflict)]);
+        assert!(held_keys(&rows, "nobody").is_empty());
+    }
 }

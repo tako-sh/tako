@@ -83,11 +83,16 @@ impl ProjectResources {
     /// project that bind each one.
     pub(crate) fn databases_on(&self, server_id: &str) -> Vec<(String, Vec<String>)> {
         let mut homed = Vec::new();
-        for records in self.databases.values().flatten() {
+        for (network_id, records) in &self.databases {
+            let Ok(records) = records else {
+                continue;
+            };
             for record in records.iter().filter(|record| record.server == server_id) {
+                // Database names are unique within a network, not across them.
                 let bound_by = self
                     .envs
                     .iter()
+                    .filter(|env| env.network_id.as_deref() == Some(network_id.as_str()))
                     .filter(|env| env.databases.iter().any(|db| db.database == record.name))
                     .map(|env| format!("{}/{}", self.app, env.name))
                     .collect();

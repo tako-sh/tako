@@ -43,6 +43,8 @@ impl std::fmt::Debug for Resolved {
 #[derive(Deserialize)]
 struct StoredCredential {
     value: String,
+    #[serde(default)]
+    expires_on: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -91,6 +93,18 @@ impl Resolved {
                         serde_json::from_str(&text).map_err(|_| {
                             format!("Storage credentials for '{}' are malformed.", value.name)
                         })?;
+                    // Each key of the pair carries its own expiry.
+                    if let Some(expires_on) = [&stored.access_key_id, &stored.secret_access_key]
+                        .into_iter()
+                        .filter_map(|credential| credential.expires_on.as_deref())
+                        .filter(|expires_on| *expires_on <= today.as_str())
+                        .min()
+                    {
+                        return Err(format!(
+                            "Storage credentials for '{}' in environment '{env}' expired on {expires_on}. Run `tako storages credentials {} --env {env}` to update them.",
+                            value.name, value.name
+                        ));
+                    }
                     storages.insert(
                         value.name,
                         (stored.access_key_id.value, stored.secret_access_key.value),
@@ -497,6 +511,34 @@ mod tests {
                 && error.contains("tako secrets set OLD_KEY --env production"),
             "{error}"
         );
+
+        // Storage credentials keep their expiry on each key of the pair.
+        let storage = |secret_expires_on: Option<&str>| ScopeSecrets {
+            digest: "d".into(),
+            caught_up: true,
+            missing_keys: Vec::new(),
+            values: vec![tako_network::shared::ScopeValue {
+                kind: RecordKind::Storage,
+                name: "r2".into(),
+                content: tako_network::shared::RecordContent {
+                    value: serde_json::json!({
+                        "access_key_id": {"value": "access", "expires_on": "2999-01-01"},
+                        "secret_access_key": {"value": "secret", "expires_on": secret_expires_on},
+                    })
+                    .to_string()
+                    .into(),
+                    expires_on: None,
+                },
+            }],
+        };
+        let error = Resolved::from_scope(APP, storage(Some("2000-01-01"))).unwrap_err();
+        assert!(
+            error.contains("Storage credentials for 'r2'")
+                && error.contains("expired on 2000-01-01")
+                && error.contains("tako storages credentials r2 --env production"),
+            "{error}"
+        );
+        assert!(Resolved::from_scope(APP, storage(None)).is_ok());
     }
 
     #[test]

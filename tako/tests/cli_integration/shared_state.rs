@@ -276,7 +276,7 @@ impl ApiServer {
                     let (status, body) = if headers.starts_with("POST /v1/management/rpc ") {
                         let command: tako_core::Command = serde_json::from_slice(&bytes).unwrap();
                         assert!(
-                            matches!(command, tako_core::Command::BackupNow {ref app, backup: None}
+                            matches!(command, tako_core::Command::BackupNow {ref app, backup: None, secrets_digest: None}
                             if app == &tako_core::deployment_app_id("demo", "production"))
                         );
                         let backup = serde_json::json!({

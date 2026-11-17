@@ -220,6 +220,11 @@ pub enum Command {
         app: String,
         #[serde(default)]
         backup: Option<Box<BackupBinding>>,
+        /// The app environment's secret snapshot to take the backup keys and
+        /// storage credentials from, from [`Command::SecretsDigest`]. Every
+        /// target server applies the same snapshot.
+        #[serde(default)]
+        secrets_digest: Option<String>,
     },
 
     /// List backups recorded in the app's remote backup index.

@@ -215,20 +215,12 @@ async fn backup_now(
         output::dry_run_skip("Create backup");
         return Ok(());
     }
-    // Wait until each server holds the backup key this command published.
-    if !published.is_empty() {
-        send_typed_to_servers::<serde_json::Value>(
-            &target.server_names,
-            servers,
-            Command::SecretsDigest {
-                app: target.remote_app_name.clone(),
-                published,
-            },
-            "secrets_digest",
-            "Waiting for the new backup key",
-        )
-        .await?;
-    }
+    // Every server backs up with one snapshot: the first server pins it once it
+    // holds what this command published, and the others wait for that one.
+    let secrets_digest = match &backup {
+        Some(_) => Some(pin_backup_snapshot(target, servers, published).await?),
+        None => None,
+    };
 
     let results = send_typed_to_servers::<BackupInfo>(
         &target.server_names,
@@ -236,6 +228,7 @@ async fn backup_now(
         Command::BackupNow {
             app: target.remote_app_name.clone(),
             backup: backup.map(Box::new),
+            secrets_digest,
         },
         "backup_now",
         &format!(
@@ -267,6 +260,43 @@ async fn backup_now(
     } else {
         Err(format!("Failed to back up {} server(s)", failures.len()).into())
     }
+}
+
+/// Pin the app environment's secret snapshot on the first target server, once
+/// it holds the versions this command published. Every target backs up with it.
+async fn pin_backup_snapshot(
+    target: &target::BackupTarget,
+    servers: &ServerInventory,
+    published: Vec<tako_core::PublishedSecret>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let leader = target
+        .server_names
+        .first()
+        .ok_or("No servers selected for the backup")?;
+    let pinned = send_typed_to_servers::<serde_json::Value>(
+        std::slice::from_ref(leader),
+        servers,
+        Command::SecretsDigest {
+            app: target.remote_app_name.clone(),
+            published,
+        },
+        "secrets_digest",
+        "Pinning the environment's secrets",
+    )
+    .await?;
+    let (server, result) = pinned
+        .into_iter()
+        .next()
+        .ok_or("No servers selected for the backup")?;
+    let data = result.map_err(|error| format!("{server}: {error}"))?;
+    Ok(snapshot_digest(&data)?)
+}
+
+fn snapshot_digest(data: &serde_json::Value) -> Result<String, String> {
+    data.get("digest")
+        .and_then(|digest| digest.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| "The server did not return a secret snapshot".to_string())
 }
 
 async fn list_backups(

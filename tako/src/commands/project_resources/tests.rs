@@ -143,14 +143,21 @@ fn databases_on_a_server_name_the_environments_that_bind_them() {
         config: config(),
         secrets: secrets(),
         envs: vec![env],
-        databases: BTreeMap::from([(
-            NETWORK.to_string(),
-            Ok(vec![
-                record("orders", "dev-a"),
-                record("audit", "dev-a"),
-                record("other", "dev-b"),
-            ]),
-        )]),
+        databases: BTreeMap::from([
+            (
+                NETWORK.to_string(),
+                Ok(vec![
+                    record("orders", "dev-a"),
+                    record("audit", "dev-a"),
+                    record("other", "dev-b"),
+                ]),
+            ),
+            // Another network's database of the same name isn't this one.
+            (
+                "other-network".to_string(),
+                Ok(vec![record("orders", "dev-x")]),
+            ),
+        ]),
     };
     assert_eq!(
         project.databases_on("dev-a"),
@@ -158,6 +165,10 @@ fn databases_on_a_server_name_the_environments_that_bind_them() {
             ("audit".to_string(), vec![]),
             ("orders".to_string(), vec!["shop/production".to_string()]),
         ]
+    );
+    assert_eq!(
+        project.databases_on("dev-x"),
+        vec![("orders".to_string(), vec![])]
     );
     assert!(project.databases_on("dev-c").is_empty());
 }
