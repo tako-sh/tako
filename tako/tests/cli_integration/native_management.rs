@@ -375,7 +375,7 @@ fn selected_environment_ignores_another_environments_inactive_secret_cache() {
         &healthy.tako_home,
     );
     assert!(edit.status.success(), "{}", stderr_str(&edit));
-    let path = healthy.directory.path().join(".tako/secrets.local.json");
+    let path = healthy.directory.path().join(".tako/state.local.json");
     let before = fs::read(&path).unwrap();
     let state: serde_json::Value = serde_json::from_slice(&before).unwrap();
     assert!(state["environments"].get("production").is_some());
@@ -501,7 +501,7 @@ fn secret_sync_dry_run_preserves_drafts_with_retry_expired() {
         &fixture.tako_home,
     );
     assert!(set.status.success(), "{}", stderr_str(&set));
-    let draft = project.join(".tako/secrets.local.json");
+    let draft = project.join(".tako/state.local.json");
     let before = fs::read(&draft).unwrap();
     let preview = run_tako_with_env(
         &[

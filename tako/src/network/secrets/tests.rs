@@ -587,3 +587,27 @@ fn last_changes_name_the_publishing_device_and_mark_unpublished_drafts() {
             .is_empty()
     );
 }
+
+#[test]
+fn local_state_moves_once_from_its_earlier_name() {
+    let project = tempfile::TempDir::new().unwrap();
+    let directory = project.path().join(".tako");
+    std::fs::create_dir_all(&directory).unwrap();
+    let legacy = SecretsStore::legacy_path(project.path());
+    let current = SecretsStore::default_path(project.path());
+    std::fs::write(&legacy, br#"{"values":{}}"#).unwrap();
+
+    // Only the earlier file: it moves, keeping its content.
+    assert_eq!(local_state_path(project.path()).unwrap(), current);
+    assert!(!legacy.exists());
+    assert_eq!(std::fs::read(&current).unwrap(), br#"{"values":{}}"#);
+
+    // Only the current file: it is used as is.
+    assert_eq!(local_state_path(project.path()).unwrap(), current);
+
+    // Both: stop rather than pick one, naming both files.
+    std::fs::write(&legacy, br#"{"values":{}}"#).unwrap();
+    let error = local_state_path(project.path()).unwrap_err().to_string();
+    assert!(error.contains("state.local.json") && error.contains("secrets.local.json"));
+    assert!(legacy.exists() && current.exists());
+}

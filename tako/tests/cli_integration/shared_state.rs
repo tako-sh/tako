@@ -460,7 +460,7 @@ fn cached_network_secrets_do_not_block_legacy_key_recovery() {
             &["secrets", "set", "LEGACY", "--env", "production"],
             Some("recovered-local"),
         );
-        let local = project.join(".tako/secrets.local.json");
+        let local = project.join(".tako/state.local.json");
         let state: serde_json::Value = serde_json::from_slice(&fs::read(&local).unwrap()).unwrap();
         let values = &state["values"];
         let key_id = values["production"]["key_id"].as_str().unwrap();
@@ -508,7 +508,7 @@ fn cached_network_secrets_do_not_block_legacy_key_recovery() {
             None,
         );
         let migrated: serde_json::Value =
-            serde_json::from_slice(&fs::read(project.join(".tako/secrets.local.json")).unwrap())
+            serde_json::from_slice(&fs::read(project.join(".tako/state.local.json")).unwrap())
                 .unwrap();
         let env = &migrated["values"]["production"];
         let local_key = fs::read_to_string(
@@ -579,7 +579,7 @@ fn deploy_and_secret_commands_materialize_the_selected_config() {
             assert!(result.status.success(), "{}", stderr_str(&result));
         }
         let state: serde_json::Value =
-            serde_json::from_slice(&fs::read(project.join(".tako/secrets.local.json")).unwrap())
+            serde_json::from_slice(&fs::read(project.join(".tako/state.local.json")).unwrap())
                 .unwrap();
         let secrets = &state["values"]["production"]["app"];
         assert!(secrets.get("ALTERNATE_ONLY").is_some());
@@ -919,7 +919,7 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
     );
     fs::write(config, contents).unwrap();
     server.ok(&scoped_home, &scoped_project, &["backups", "now"], None);
-    assert!(!scoped_project.join(".tako/secrets.local.json").exists());
+    assert!(!scoped_project.join(".tako/state.local.json").exists());
     let devices = fs::read_dir(
         scoped_home
             .join("networks")
@@ -1099,7 +1099,7 @@ fn expired_publication_preserves_current_draft_and_requires_explicit_retry() {
         // Simulate returning after the durable request's fixed retry window.
         // The draft is edited since that failed attempt; only its current value
         // should be published when the user explicitly retries.
-        let path = project.join(".tako/secrets.local.json");
+        let path = project.join(".tako/state.local.json");
         let mut state: serde_json::Value =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         let pending = state["environments"]["production"]["pending"]
@@ -1286,7 +1286,7 @@ fn clearing_an_environment_publishes_deletions_and_leaves_other_drafts_local() {
                 && record.address.name != "postgres_url")
     );
     let local: serde_json::Value =
-        serde_json::from_slice(&fs::read(owner.join(".tako/secrets.local.json")).unwrap()).unwrap();
+        serde_json::from_slice(&fs::read(owner.join(".tako/state.local.json")).unwrap()).unwrap();
     let values = &local["values"]["production"];
     assert!(values["app"].as_object().is_none_or(|app| app.is_empty()));
     assert!(values["credentials"].get("postgres_url").is_some());
@@ -1375,8 +1375,7 @@ fn interrupted_clear_keeps_its_deletions_and_finishes_when_rerun() {
     let latest = state.latest().unwrap();
     assert!(latest.values().all(|record| record.is_deletion()));
     let local: serde_json::Value =
-        serde_json::from_slice(&fs::read(project.join(".tako/secrets.local.json")).unwrap())
-            .unwrap();
+        serde_json::from_slice(&fs::read(project.join(".tako/state.local.json")).unwrap()).unwrap();
     assert!(
         local["environments"]["production"]["pending"]
             .as_array()
@@ -1419,7 +1418,7 @@ fn clear_supersedes_expired_app_secret_commands() {
             .status
             .success()
     );
-    let path = project.join(".tako/secrets.local.json");
+    let path = project.join(".tako/state.local.json");
     let mut local: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     let pending = local["environments"]["production"]["pending"]
         .as_array_mut()
@@ -1491,7 +1490,7 @@ fn clear_leaves_other_pending_publications_queued() {
             .status
             .success()
     );
-    let path = project.join(".tako/secrets.local.json");
+    let path = project.join(".tako/state.local.json");
     let mut local: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     let pending = local["environments"]["production"]["pending"]
         .as_array_mut()

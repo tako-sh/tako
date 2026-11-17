@@ -102,7 +102,7 @@ From the app directory, set a value using the masked prompt:
 tako secrets set DATABASE_URL --env production
 ```
 
-This writes encrypted, ignored `.tako/secrets.local.json` state in the current worktree. It makes no network request. Removing a secret is local too. For automation, pass values on stdin; avoid putting them into shell arguments or history.
+This writes encrypted, ignored `.tako/state.local.json` state in the current worktree. It makes no network request. Removing a secret is local too. For automation, pass values on stdin; avoid putting them into shell arguments or history.
 
 Publication happens when you choose it:
 

@@ -48,12 +48,42 @@ fn lock(project: &Path) -> Result<std::fs::File> {
     if !ignore.try_exists()? {
         super::write_bytes(&ignore, b"*\n", false)?;
     }
-    let lock = super::private_file(&directory.join("secrets.lock"), true)?;
+    let lock = super::private_file(&directory.join("state.lock"), true)?;
     lock.lock()?;
     Ok(lock)
 }
-fn read_workspace(project: &Path) -> Result<Workspace> {
+
+/// The local state's file, moving it once from its earlier name so unpublished
+/// drafts survive. A dry run reads the earlier file in place.
+fn local_state_path(project: &Path) -> Result<std::path::PathBuf> {
     let path = SecretsStore::default_path(project);
+    let legacy = SecretsStore::legacy_path(project);
+    if !legacy.try_exists()? {
+        return Ok(path);
+    }
+    if path.try_exists()? {
+        return Err(format!(
+            "Found both {} and {}. Keep the one holding your current drafts, move the other out of .tako/, then run the command again.",
+            path.display(),
+            legacy.display()
+        )
+        .into());
+    }
+    if crate::output::is_dry_run() {
+        return Ok(legacy);
+    }
+    match std::fs::rename(&legacy, &path) {
+        Ok(()) => Ok(path),
+        // Another command moved it first.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && path.try_exists()? => {
+            Ok(path)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn read_workspace(project: &Path) -> Result<Workspace> {
+    let path = local_state_path(project)?;
     if path.try_exists()? {
         // Persisted commands from the previous protocol have no retry deadline.
         // Preserve their drafts, but require an explicit retry after upgrade.

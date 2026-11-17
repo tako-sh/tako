@@ -325,12 +325,12 @@ post_route_json() {
 
 fixture_has_secrets_for_env() {
   local env_name=$1
-  [[ -f "$PROJECT_DIR/.tako/secrets.local.json" ]] && \
+  [[ -f "$PROJECT_DIR/.tako/state.local.json" ]] && \
     jq -e --arg env_name "$env_name" '
       ((.values[$env_name].app // {}) | length > 0) or
       ((.values[$env_name].storages // {}) | length > 0)
     ' \
-      "$PROJECT_DIR/.tako/secrets.local.json" >/dev/null 2>&1
+      "$PROJECT_DIR/.tako/state.local.json" >/dev/null 2>&1
 }
 
 seed_fixture_secrets() {
