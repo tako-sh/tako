@@ -243,6 +243,10 @@ pub enum Command {
     /// with the database that lives on.
     DeleteDatabase {
         name: String,
+        /// The generation the caller means. When set, a database of that
+        /// name created again meanwhile is not deleted.
+        #[serde(default)]
+        generation: Option<String>,
         #[serde(default)]
         keep_snapshots: bool,
     },

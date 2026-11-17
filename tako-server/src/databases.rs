@@ -647,8 +647,12 @@ impl ServerState {
             }
             Command::DeleteDatabase {
                 name,
+                generation,
                 keep_snapshots,
-            } => self.delete_database(&name, keep_snapshots).await,
+            } => {
+                self.delete_database(&name, generation.as_deref(), keep_snapshots)
+                    .await
+            }
             Command::DatabaseStatus { name } => self.database_status(name.as_deref()),
             Command::ConfigureDatabaseBackup { name, backup } => {
                 self.configure_database_backup(&name, backup).await
@@ -802,17 +806,19 @@ impl ServerState {
     async fn delete_database(
         &self,
         id: &str,
+        generation: Option<&str>,
         keep_snapshots: bool,
     ) -> Result<serde_json::Value, String> {
         let requested = self.hosted_database(id)?;
         let lock = self.databases.lock(id);
         let _guard = lock.lock().await;
         // Another delete and create of the same name may have run while this
-        // waited for the lock: act only on the database that was asked for.
+        // waited for the lock, or before the caller sent it: act only on the
+        // database that was asked for.
         let stored = self.hosted_database(id)?;
-        if stored.generation != requested.generation {
+        if stored.generation != generation.unwrap_or(&requested.generation) {
             return Err(format!(
-                "Database {id} was replaced by a new database of the same name while this delete waited; nothing was deleted."
+                "Database {id} on this server is not the one asked for: a database of the same name was created again meanwhile. Nothing was deleted."
             ));
         }
         // From here, deploys cannot start binding the database; one already
@@ -959,6 +965,17 @@ impl ServerState {
                 {
                     bindings.insert(config.deployment_id());
                 }
+            }
+        }
+        // The binding sets in use, also the previous one a rollout keeps
+        // until old instances drain, and a release command's.
+        for (scope, sets) in self.databases.applied.lock().iter() {
+            if sets
+                .iter()
+                .flat_map(HashMap::values)
+                .any(|binding| self.databases.binds_here(&binding.binding, &stored.name))
+            {
+                bindings.insert(scope.clone());
             }
         }
         let remote_grants = self

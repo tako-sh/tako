@@ -701,6 +701,7 @@ async fn deleting_a_database_revokes_its_grants() {
     ok(
         &state,
         Command::DeleteDatabase {
+            generation: None,
             name: ID.into(),
             keep_snapshots: false,
         },
@@ -1065,6 +1066,7 @@ async fn deleting_a_database_deletes_its_snapshots() {
     let deleted = ok(
         &state,
         Command::DeleteDatabase {
+            generation: None,
             name: ID.into(),
             keep_snapshots: false,
         },
@@ -1095,6 +1097,7 @@ async fn deleting_a_copy_can_keep_the_snapshots_it_shares() {
     ok(
         &state,
         Command::DeleteDatabase {
+            generation: None,
             name: ID.into(),
             keep_snapshots: true,
         },
@@ -1239,6 +1242,7 @@ async fn deleting_a_copy_left_behind_keeps_the_snapshots_the_moved_copy_holds() 
     let deleted = ok(
         &old,
         Command::DeleteDatabase {
+            generation: None,
             name: ID.into(),
             keep_snapshots: false,
         },
@@ -1279,6 +1283,7 @@ async fn a_copy_the_delete_could_not_reach_publishes_nothing_afterwards() {
     ok(
         &home,
         Command::DeleteDatabase {
+            generation: None,
             name: ID.into(),
             keep_snapshots: false,
         },
@@ -1338,6 +1343,7 @@ async fn moves_resume_and_abandoned_moves_give_the_snapshots_back() {
     ok(
         &new,
         Command::DeleteDatabase {
+            generation: None,
             name: ID.into(),
             keep_snapshots: true,
         },
@@ -1615,6 +1621,7 @@ async fn a_database_a_deploy_is_binding_cannot_be_deleted() {
     let state = state(&temp);
     create(&state, ID, None).await;
     let delete = || Command::DeleteDatabase {
+        generation: None,
         name: ID.into(),
         keep_snapshots: false,
     };
@@ -1668,6 +1675,7 @@ async fn deleting_a_database_ends_its_transfers() {
     ok(
         &state,
         Command::DeleteDatabase {
+            generation: None,
             name: ID.into(),
             keep_snapshots: false,
         },
@@ -1724,6 +1732,79 @@ async fn a_database_being_deleted_cannot_be_granted() {
     );
     drop(deleting);
     ok(&state, grant()).await;
+}
+
+#[tokio::test]
+async fn a_delete_acts_only_on_the_generation_it_names() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, None).await;
+    // The caller resolved an earlier database of this name.
+    let refused = error(
+        &state,
+        Command::DeleteDatabase {
+            generation: Some("an-earlier-generation".into()),
+            name: ID.into(),
+            keep_snapshots: false,
+        },
+    )
+    .await;
+    assert!(refused.contains("not the one asked for"), "{refused}");
+    query(&state, ID, "SELECT 1").await;
+    ok(
+        &state,
+        Command::DeleteDatabase {
+            generation: Some(GENERATION.into()),
+            name: ID.into(),
+            keep_snapshots: false,
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_database_a_draining_release_still_binds_cannot_be_deleted() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, None).await;
+    // A rollout from this database to another keeps the old set active
+    // until old instances drain; the app's stored config has the new one.
+    let old = std::collections::HashMap::from([(
+        "main".to_owned(),
+        crate::state_store::AppDatabase {
+            binding: tako_core::DatabaseBinding {
+                name: ID.into(),
+                server: String::new(),
+                peer_key: None,
+            },
+            token: "old-instances".into(),
+        },
+    )]);
+    let new = std::collections::HashMap::new();
+    state
+        .databases
+        .apply_bindings("web/production", &[&old, &new]);
+    let refused = error(
+        &state,
+        Command::DeleteDatabase {
+            generation: None,
+            name: ID.into(),
+            keep_snapshots: false,
+        },
+    )
+    .await;
+    assert!(refused.contains("web/production"), "{refused}");
+    // Once the rollout commits, only the new set stays.
+    state.databases.apply_bindings("web/production", &[&new]);
+    ok(
+        &state,
+        Command::DeleteDatabase {
+            generation: None,
+            name: ID.into(),
+            keep_snapshots: false,
+        },
+    )
+    .await;
 }
 
 #[tokio::test]

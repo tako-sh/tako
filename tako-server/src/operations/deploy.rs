@@ -193,11 +193,17 @@ impl crate::ServerState {
                 .collect()
         });
         // Held until this deploy ends, so a database it binds cannot be
-        // deleted between being checked here and the release using it.
+        // deleted between being checked here and the release using it, nor
+        // one the previous release binds while its instances drain.
         let _database_pins = match self.databases.pin(
             requested_databases
                 .values()
-                .map(|binding| binding.name.as_str()),
+                .map(|binding| binding.name.as_str())
+                .chain(
+                    previous_databases
+                        .values()
+                        .map(|binding| binding.binding.name.as_str()),
+                ),
         ) {
             Ok(pins) => pins,
             Err(error) => return Response::error(error),

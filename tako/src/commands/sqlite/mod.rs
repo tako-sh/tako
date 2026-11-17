@@ -713,6 +713,7 @@ async fn create(
         let _ = send::<serde_json::Value>(
             &home,
             Command::DeleteDatabase {
+                generation: Some(record.generation.clone()),
                 name: name.to_owned(),
                 keep_snapshots: false,
             },
@@ -734,6 +735,7 @@ async fn create(
         let _ = send::<serde_json::Value>(
             &home,
             Command::DeleteDatabase {
+                generation: Some(record.generation.clone()),
                 name: name.to_owned(),
                 keep_snapshots: false,
             },
@@ -1081,6 +1083,7 @@ async fn restore(
                 && let Err(cleanup) = send::<serde_json::Value>(
                     &target,
                     Command::DeleteDatabase {
+                        generation: Some(record.generation.clone()),
                         name: name.to_owned(),
                         keep_snapshots: true,
                     },
@@ -1206,6 +1209,7 @@ async fn delete(ctx: &Context, name: &str, yes: bool) -> Result<(), Box<dyn std:
                 send::<serde_json::Value>(
                     &home,
                     Command::DeleteDatabase {
+                        generation: Some(record.generation.clone()),
                         name: name.to_owned(),
                         keep_snapshots: false,
                     },
@@ -1264,6 +1268,7 @@ async fn remove_leftover_copies(
         match send::<serde_json::Value>(
             &other,
             Command::DeleteDatabase {
+                generation: Some(generation.to_owned()),
                 name: name.to_owned(),
                 keep_snapshots: true,
             },
@@ -1318,6 +1323,7 @@ async fn delete_old_copy(
     let deleted: serde_json::Value = send(
         &old,
         Command::DeleteDatabase {
+            generation: None,
             name: name.to_owned(),
             keep_snapshots: true,
         },
