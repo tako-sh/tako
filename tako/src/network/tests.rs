@@ -134,6 +134,7 @@ pub(crate) fn add_member(
                 permissions: Permissions::Full,
                 created_at: now,
                 expires_at: None,
+                client: None,
             },
         )
         .unwrap();

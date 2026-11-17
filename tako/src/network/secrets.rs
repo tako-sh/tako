@@ -255,11 +255,19 @@ pub(crate) fn last_changes(
     };
     if let Some(cache) = read_cache(alias)? {
         let profile = super::load_profile(alias)?;
+        // Clients keep one name across their keys, so history reads the same
+        // after a key is replaced or a client comes back.
+        let clients = profile.snapshot().client_names();
         let names: BTreeMap<_, _> = profile
             .snapshot()
             .members
             .iter()
-            .map(|member| (&member.device_id, member.request.name.as_str()))
+            .map(|member| {
+                let name = clients
+                    .get(&member.device_id)
+                    .map_or(member.request.name.as_str(), String::as_str);
+                (&member.device_id, name)
+            })
             .collect();
         for record in &cache.records {
             if record.address.scope == scope

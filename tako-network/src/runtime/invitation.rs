@@ -36,6 +36,15 @@ impl<S: RegistryStore> ServerRuntime<S> {
         if !grant.permissions.is_full() || grant.member_expires_at.is_some() {
             return Err(RuntimeError::Denied);
         }
+        // Recovery adds a client; replacing an active one goes through a full client.
+        let names = snapshot.client_names();
+        if snapshot.effective_members(now)?.keys().any(|id| {
+            names
+                .get(id)
+                .is_some_and(|name| name.eq_ignore_ascii_case(grant.client.as_str()))
+        }) {
+            return Err(RuntimeError::Conflict("client name"));
+        }
         self.store_invitation(grant, self.config.server_id.clone(), true, snapshot, now)
     }
 
@@ -172,6 +181,7 @@ impl<S: RegistryStore> ServerRuntime<S> {
             permissions: invitation.grant.permissions.clone(),
             expires_at: invitation.grant.expires_at,
             member_expires_at: invitation.grant.member_expires_at,
+            client: Some(invitation.grant.client.clone()),
         };
         self.check_grant(
             &Entitlement {

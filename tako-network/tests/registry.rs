@@ -815,6 +815,64 @@ fn recorded_four_field_permissions_read_as_access_levels() {
 }
 
 #[test]
+fn recorded_server_rows_read_as_full_whatever_their_bits() {
+    let (mut snapshot, _, root) = bootstrap();
+    let server = add_named_server(&mut snapshot, &root, "edge-a", 2).unwrap();
+    let server = snapshot
+        .members
+        .iter()
+        .find(|member| member.device_id == server)
+        .unwrap()
+        .clone();
+    let laptop = snapshot.members[0].clone();
+    for bits in [
+        serde_json::json!({"network_admin": false, "server_admin": true, "ssh_user": null, "deployments": []}),
+        serde_json::json!({"network_admin": true, "server_admin": false, "ssh_user": null, "deployments": ["app/prod"]}),
+        serde_json::json!({"network_admin": false, "server_admin": false, "ssh_user": null, "deployments": []}),
+    ] {
+        // A server row keeps serving after the upgrade.
+        let mut recorded = serde_json::to_value(&server).unwrap();
+        recorded["permissions"] = bits.clone();
+        let read = serde_json::from_value::<Member>(recorded).unwrap();
+        assert_eq!(read.permissions, Permissions::Full, "{bits}");
+        let mut grant = serde_json::to_value(approval(
+            server.kind.clone(),
+            Permissions::Full,
+            Some(root.clone()),
+            2,
+        ))
+        .unwrap();
+        grant["permissions"] = bits.clone();
+        assert_eq!(
+            serde_json::from_value::<Approval>(grant)
+                .unwrap()
+                .permissions,
+            Permissions::Full,
+            "{bits}"
+        );
+        // A laptop row keeps only the access its bits granted.
+        let mut recorded = serde_json::to_value(&laptop).unwrap();
+        recorded["permissions"] = bits.clone();
+        assert!(
+            !serde_json::from_value::<Member>(recorded)
+                .unwrap()
+                .permissions
+                .is_full(),
+            "{bits}"
+        );
+    }
+    // Current rows are read as written.
+    let mut current = serde_json::to_value(&laptop).unwrap();
+    current["permissions"] = serde_json::json!({"deploy": ["app/prod"]});
+    assert_eq!(
+        serde_json::from_value::<Member>(current)
+            .unwrap()
+            .permissions,
+        Permissions::Deploy(scopes(&["app/prod"]))
+    );
+}
+
+#[test]
 fn active_servers_cannot_share_a_name_but_retired_names_can_be_reused() {
     let (mut snapshot, _, root) = bootstrap();
     let first = add_named_server(&mut snapshot, &root, "edge-a", 2).unwrap();
@@ -837,4 +895,118 @@ fn active_servers_cannot_share_a_name_but_retired_names_can_be_reused() {
         .unwrap();
     revoke(&mut snapshot, &root, &first, 4);
     add_named_server(&mut snapshot, &root, "edge-a", 5).unwrap();
+}
+
+fn add_client(
+    snapshot: &mut RegistrySnapshot,
+    by: &DeviceId,
+    name: &str,
+    now: u64,
+) -> std::result::Result<DeviceId, Error> {
+    let keys = LocalDeviceKeys::generate().unwrap();
+    let mut command = approval(MemberKind::Laptop, admin(), Some(by.clone()), now);
+    command.client = Some(name.parse().unwrap());
+    let member = snapshot.approve(
+        verified_named(&keys, &snapshot.network.id, DeviceKind::Laptop, name, now),
+        command,
+    )?;
+    let id = member.device_id.clone();
+    snapshot.members.push(member);
+    Ok(id)
+}
+
+#[test]
+fn unnamed_clients_get_stable_unique_names_in_admission_order() {
+    let (mut snapshot, _, root) = bootstrap();
+    // The root and the next two laptops all enrolled as "test-device".
+    let (_, second) = add_laptop(&mut snapshot, &root, admin(), false, 2);
+    let (_, third) = add_laptop(&mut snapshot, &root, admin(), false, 3);
+    let names = snapshot.client_names();
+    assert_eq!(names[&root], "test-device");
+    let second_id = second.to_string();
+    assert_eq!(names[&second], format!("test-device-{}", &second_id[..6]));
+    assert_ne!(names[&third], names[&second]);
+    // An earlier laptop already holding the suffixed name forces a longer one.
+    let (mut snapshot, _, root) = bootstrap();
+    let keys = LocalDeviceKeys::generate().unwrap();
+    let id = keys
+        .device_id(&snapshot.network.id, DeviceKind::Laptop)
+        .unwrap();
+    let squatter = format!("test-device-{}", &id.to_string()[..6]);
+    let member = snapshot
+        .approve(
+            verified_named(
+                &LocalDeviceKeys::generate().unwrap(),
+                &snapshot.network.id,
+                DeviceKind::Laptop,
+                &squatter,
+                2,
+            ),
+            approval(MemberKind::Laptop, admin(), Some(root.clone()), 2),
+        )
+        .unwrap();
+    snapshot.members.push(member);
+    let member = snapshot
+        .approve(
+            verified(&keys, &snapshot.network.id, DeviceKind::Laptop, 3),
+            approval(MemberKind::Laptop, admin(), Some(root.clone()), 3),
+        )
+        .unwrap();
+    snapshot.members.push(member);
+    let names = snapshot.client_names();
+    assert_eq!(names[&id], format!("test-device-{}", &id.to_string()[..7]));
+    let unique: std::collections::BTreeSet<_> = names.values().collect();
+    assert_eq!(unique.len(), names.len());
+}
+
+#[test]
+fn a_client_name_holds_one_active_key_and_replacing_it_keeps_the_name() {
+    let (mut snapshot, _, root) = bootstrap();
+    let first = add_client(&mut snapshot, &root, "github-ci", 2).unwrap();
+    assert!(matches!(
+        add_client(&mut snapshot, &root, "GitHub-CI", 3),
+        Err(Error::Conflict("client name"))
+    ));
+    revoke(&mut snapshot, &root, &first, 4);
+    let second = add_client(&mut snapshot, &root, "github-ci", 5).unwrap();
+    let statuses = snapshot.member_statuses(5).unwrap();
+    assert_eq!(statuses[&first].1, MemberStatus::Replaced);
+    assert_eq!(statuses[&second].1, MemberStatus::Active);
+    let names = snapshot.client_names();
+    assert_eq!(names[&first], names[&second]);
+}
+
+#[test]
+fn concurrent_admissions_of_one_name_converge_on_the_earliest() {
+    let (mut snapshot, _, root) = bootstrap();
+    let mut other = snapshot.clone();
+    let late = add_client(&mut snapshot, &root, "alice", 3).unwrap();
+    let early = add_client(&mut other, &root, "alice", 2).unwrap();
+    let member = other.members.iter().find(|m| m.device_id == early).unwrap();
+    snapshot.members.push(member.clone());
+    let statuses = snapshot.member_statuses(4).unwrap();
+    assert_eq!(statuses[&early].1, MemberStatus::Active);
+    assert_eq!(statuses[&late].1, MemberStatus::Conflict);
+    assert!(!snapshot.effective_members(4).unwrap().contains_key(&late));
+}
+
+#[test]
+fn servers_cannot_carry_a_client_name() {
+    let (snapshot, _, root) = bootstrap();
+    let keys = LocalDeviceKeys::generate().unwrap();
+    let mut command = approval(
+        MemberKind::Server(server_info(&keys)),
+        admin(),
+        Some(root),
+        2,
+    );
+    command.client = Some("edge".parse().unwrap());
+    assert!(
+        snapshot
+            .approve(
+                verified(&keys, &snapshot.network.id, DeviceKind::Server, 2),
+                command
+            )
+            .is_err()
+    );
 }

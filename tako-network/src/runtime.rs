@@ -650,6 +650,11 @@ impl<S: RegistryStore> ServerRuntime<S> {
         if let MemberKind::Server(info) = &grant.kind {
             info.validate()?;
         }
+        if matches!(grant.kind, MemberKind::Laptop) != grant.client.is_some() {
+            return Err(RuntimeError::Invalid(
+                "clients need a name; servers have none",
+            ));
+        }
         if entitlement.independent_root {
             // This bit only comes from a durable invitation minted by the
             // authenticated local host operator, never from a public request.
@@ -796,6 +801,7 @@ impl<S: RegistryStore> ServerRuntime<S> {
                 .as_ref()
                 .map_or(now, |candidate| candidate.created_at),
             expires_at: entitlement.grant.member_expires_at,
+            client: entitlement.grant.client.clone(),
         };
         let candidate = if entitlement.independent_root {
             snapshot.approve_independent_root(verified, approval)?
@@ -1159,6 +1165,7 @@ mod tests {
                         independent_root: false,
                         created_at: 1,
                         expires_at: None,
+                        client: None,
                     },
                 )
                 .unwrap();
@@ -1184,6 +1191,7 @@ mod tests {
                         independent_root: true,
                         created_at: 1,
                         expires_at: None,
+                        client: None,
                     },
                 )
                 .unwrap();
@@ -1276,6 +1284,7 @@ mod tests {
                         independent_root: false,
                         created_at: 2,
                         expires_at: None,
+                        client: None,
                     },
                 )
                 .unwrap();
@@ -1292,6 +1301,7 @@ mod tests {
                 permissions: Permissions::Deploy(Default::default()),
                 expires_at: 1000,
                 member_expires_at: None,
+                client: Some("test-laptop".parse().unwrap()),
             }
         }
         fn approve(&self, runtime: &mut ServerRuntime<MemoryStore>, grant: &ApproveRequest) {

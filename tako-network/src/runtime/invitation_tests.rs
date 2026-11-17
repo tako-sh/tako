@@ -12,6 +12,7 @@ fn invitation_grant(
             permissions: admin(),
             expires_at: 200,
             member_expires_at: None,
+            client: "test-client".parse().unwrap(),
         },
         token,
     )
@@ -91,6 +92,7 @@ fn invitation_claim_is_single_use_and_restart_retry_keeps_original_identity() {
         permissions: grant.permissions,
         expires_at: grant.expires_at,
         member_expires_at: None,
+        client: Some("test-laptop".parse().unwrap()),
     };
     let complete = fixture.challenge(&mut runtime, &keys, &approval, 14);
     assert!(matches!(
@@ -260,6 +262,7 @@ fn host_recovery_survives_restart_and_lost_administrator_revocation() {
         permissions: grant.permissions,
         expires_at: grant.expires_at,
         member_expires_at: None,
+        client: Some("test-laptop".parse().unwrap()),
     };
     assert!(
         fixture

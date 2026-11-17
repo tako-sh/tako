@@ -59,8 +59,8 @@ pub enum ServerCommands {
         https_port: Option<u16>,
     },
 
-    /// Remove a server
-    #[command(visible_aliases = ["rm", "delete"])]
+    /// Revoke a server's network membership. It keeps running until uninstalled
+    #[command(name = "revoke", visible_aliases = ["rm", "remove", "delete"])]
     Remove {
         /// Server name or network/server selector (omit to choose interactively)
         name: Option<String>,

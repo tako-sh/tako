@@ -78,6 +78,7 @@ impl Fixture {
                     independent_root: true,
                     created_at: 2,
                     expires_at: None,
+                    client: None,
                 },
             )
             .unwrap();
@@ -536,6 +537,7 @@ fn candidate_capacity_rejection_does_not_latch_the_runtime() {
             permissions: Permissions::Deploy(Default::default()),
             expires_at: 1000,
             member_expires_at: None,
+            client: Some("test-laptop".parse().unwrap()),
         };
         fixture
             .call(

@@ -90,6 +90,7 @@ fn byte_admission_limit_preserves_reads_and_denials_after_convergence() {
                 permissions: member.permissions.clone(),
                 expires_at: 1000,
                 member_expires_at: None,
+                client: None,
             })),
         )
         .unwrap();
@@ -538,6 +539,7 @@ fn nested_member_publication_capacity_stays_latched_after_rollback() {
                     independent_root: true,
                     created_at: 3,
                     expires_at: None,
+                    client: None,
                 },
             )
             .unwrap();
@@ -589,6 +591,7 @@ fn nested_member_publication_capacity_stays_latched_after_rollback() {
             permissions: Permissions::Deploy(Default::default()),
             expires_at: 1000,
             member_expires_at: None,
+            client: Some("test-laptop".parse().unwrap()),
         };
         call(
             &mut runtime,

@@ -458,6 +458,7 @@ mod tests {
             expires_at: 3600,
             member_expires_at: None,
             permissions: tako_network::Permissions::Full,
+            client: "test-client".parse().unwrap(),
         };
         let request = AgentCommand::Recovery(RecoveryRequest {
             recover_client: grant,

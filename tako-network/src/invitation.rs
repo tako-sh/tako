@@ -1,10 +1,14 @@
 //! Single-use enrollment capability. It is never a device's private key.
 use crate::api::{RuntimeError, RuntimeResult};
-use crate::{DeviceId, EnrollmentRequest, NetworkDescriptor, Permissions, RequestId, ServerInfo};
+use crate::{
+    DeviceId, DeviceName, EnrollmentRequest, NetworkDescriptor, Permissions, RequestId, ServerInfo,
+};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
+
+pub const INVITATION_VERSION: u8 = 2;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -43,6 +47,8 @@ pub struct CreateInvitation {
     pub permissions: Permissions,
     pub expires_at: u64,
     pub member_expires_at: Option<u64>,
+    /// The client the claiming device becomes a key of.
+    pub client: DeviceName,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,10 +69,12 @@ pub struct Invitation {
     pub id: RequestId,
     pub token: InvitationToken,
     pub expires_at: u64,
+    /// The client name the joining device is admitted under.
+    pub client: DeviceName,
 }
 impl Invitation {
     pub fn validate(&self) -> RuntimeResult<()> {
-        if self.version != 1 || self.server.https_certificate_pem.is_none() {
+        if self.version != INVITATION_VERSION || self.server.https_certificate_pem.is_none() {
             return Err(RuntimeError::Invalid("invitation version or server pin"));
         }
         self.server.validate()?;

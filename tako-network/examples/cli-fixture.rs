@@ -34,6 +34,7 @@ fn admit(
                 independent_root: false,
                 created_at: now,
                 expires_at: None,
+                client: None,
             },
         )
         .unwrap();

@@ -39,6 +39,7 @@ impl Fixture {
             wg_verified: true,
             created_at: 1,
             expires_at: None,
+            client: None,
         };
         let server = Member {
             network_id: network_id.clone(),
@@ -65,6 +66,7 @@ impl Fixture {
             wg_verified: true,
             created_at: 1,
             expires_at: None,
+            client: None,
         };
         let network = NetworkDescriptor {
             name: "test".parse().unwrap(),
@@ -214,6 +216,7 @@ fn deploy_clients_are_neither_peers_nor_shell_users() {
         wg_verified: true,
         created_at: 1,
         expires_at: None,
+        client: None,
     });
     let bytes = projection::desired(&fixture.config, &fixture.keys, &snapshot, 2, false).unwrap();
     let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();

@@ -25,8 +25,6 @@ pub enum NetworkCommands {
     Client(client::ClientCommands),
     /// Join a network using a single-use invitation
     Join {
-        #[arg(long)]
-        name: Option<String>,
         /// Read the invitation from standard input instead of the protected prompt
         #[arg(long)]
         invitation_stdin: bool,
@@ -56,12 +54,6 @@ pub enum NetworkCommands {
         /// Expire this device's membership after this many seconds.
         #[arg(long, value_name = "SECONDS", value_parser = clap::value_parser!(u64).range(1..=31_536_000))]
         expires_in: Option<u64>,
-    },
-    /// Revoke a device
-    Revoke {
-        device: String,
-        #[arg(long)]
-        network: Option<String>,
     },
     /// Refresh and inspect network membership
     Status { network: Option<String> },
@@ -97,10 +89,7 @@ pub fn run(command: NetworkCommands) -> Result<()> {
         }
         NetworkCommands::Server(command) => super::server::run(command),
         NetworkCommands::Client(command) => client::run(command),
-        NetworkCommands::Join {
-            name,
-            invitation_stdin,
-        } => client::join(name.as_deref(), invitation_stdin),
+        NetworkCommands::Join { invitation_stdin } => client::join(invitation_stdin),
         NetworkCommands::Create { name } => create(&name),
         NetworkCommands::Request {
             name,
@@ -130,7 +119,6 @@ pub fn run(command: NetworkCommands) -> Result<()> {
             access(deploy),
             expires_in,
         ),
-        NetworkCommands::Revoke { device, network } => revoke(&device, network.as_deref()),
         NetworkCommands::Status { network } => status(network.as_deref()),
     }
 }
@@ -239,8 +227,8 @@ fn create(name: &str) -> Result<()> {
     }
     let id = NetworkId::random()?;
     let keys = LocalDeviceKeys::generate()?;
-    let request =
-        keys.enrollment_request(Some(id.clone()), DeviceKind::Laptop, device_name(None)?)?;
+    let client = device_name(None)?;
+    let request = keys.enrollment_request(Some(id.clone()), DeviceKind::Laptop, client.clone())?;
     let now = network::now()?;
     let (challenge, pending) = WgChallenge::begin(&request, id.clone(), now, now + 60)?;
     let verified = pending.verify(&keys.answer_challenge(&challenge, &request, now)?, now)?;
@@ -263,6 +251,7 @@ fn create(name: &str) -> Result<()> {
             independent_root: false,
             created_at: now,
             expires_at: None,
+            client: Some(client),
         },
     )?);
     network::store_keys(&request.request_id, &keys)?;
@@ -754,6 +743,7 @@ fn approve(
     if expires_at <= now {
         return Err("Enrollment request has expired".into());
     }
+    let client = request.name.clone();
     let grant = ApproveRequest {
         pending_id: tako_network::RequestId::random()?,
         request,
@@ -761,6 +751,7 @@ fn approve(
         permissions,
         expires_at,
         member_expires_at: expires_in.map(|seconds| now + seconds),
+        client: Some(client),
     };
     let issuer = network::client::available_server(&profile)?;
     let response = network::client::call(
@@ -780,33 +771,6 @@ fn approve(
     )?;
     output::hint(
         "Transfer the profile through a trusted channel. On the new machine, run `tako network import <file>`, then use `tako ssh <server>` for private SSH access.",
-    );
-    Ok(())
-}
-
-fn revoke(device: &str, value: Option<&str>) -> Result<()> {
-    let alias = network::resolve_network(value)?;
-    if output::is_dry_run() {
-        let revocation = network::revocation::project(&alias, device)?;
-        return finish(
-            "Would revoke the device",
-            serde_json::json!({"dry_run": true, "network": alias.name, "device": revocation.target}),
-        );
-    }
-    let revocation = network::revocation::run(&alias, device)?;
-    if alias.device != revocation.target.to_string() {
-        if let Err(error) = network::state::pull(&alias, None) {
-            output::hint(&format!(
-                "Membership changed; refresh network state later with `tako network sync`: {error}"
-            ));
-        }
-    }
-    finish(
-        "Recorded device revocation",
-        serde_json::json!({"network": alias.name, "revocation": revocation, "enforcement": "pending"}),
-    )?;
-    output::hint(
-        "Servers enforce the revocation as it reaches them. Unreachable servers remain pending.",
     );
     Ok(())
 }

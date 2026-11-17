@@ -15,6 +15,8 @@ pub enum ServerCommand {
 pub enum ClientCommand {
     /// Create a single-use invitation for an independent full client (requires root)
     Invite {
+        /// Name of the new client. It must not belong to an active client
+        name: tako_network::DeviceName,
         /// Invitation validity in seconds
         #[arg(long, default_value_t = 3600, value_parser = clap::value_parser!(u64).range(60..=86400))]
         expires_in: u64,
@@ -30,7 +32,12 @@ pub fn run(command: &ServerCommand, data_dir: &Path) -> Result<(), Box<dyn std::
     use tako_network::invitation::{CreateInvitation, Invitation, InvitationToken};
     use tako_network::{MemberKind, Permissions, RequestId};
     let ServerCommand::Client {
-        command: ClientCommand::Invite { expires_in, json },
+        command:
+            ClientCommand::Invite {
+                name,
+                expires_in,
+                json,
+            },
     } = command;
     let config = crate::native_agent::recovery_config(data_dir)?;
     let server = config
@@ -57,6 +64,7 @@ pub fn run(command: &ServerCommand, data_dir: &Path) -> Result<(), Box<dyn std::
         expires_at,
         member_expires_at: None,
         permissions: Permissions::Full,
+        client: name.clone(),
     };
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -67,13 +75,14 @@ pub fn run(command: &ServerCommand, data_dir: &Path) -> Result<(), Box<dyn std::
         _ => return Err("Recovery invitation was not acknowledged. Check that the native network agent is running and this server is an active network member".into()),
     }
     let invitation = Invitation {
-        version: 1,
+        version: tako_network::invitation::INVITATION_VERSION,
         network: config.network.clone(),
         issuer: config.server_id,
         server,
         id,
         token,
         expires_at,
+        client: name.clone(),
     }
     .encode()?;
     // Deliberate credential output, before the normal server logger starts.
@@ -81,12 +90,12 @@ pub fn run(command: &ServerCommand, data_dir: &Path) -> Result<(), Box<dyn std::
     if *json {
         println!(
             "{}",
-            serde_json::json!({"network": config.network.name, "invitation": invitation.as_str(), "expires_at": expires_at})
+            serde_json::json!({"network": config.network.name, "client": name, "invitation": invitation.as_str(), "expires_at": expires_at})
         );
     } else {
         println!("{}", invitation.as_str());
         eprintln!(
-            "Created an invitation for a full client of {}. Run `tako network join` on the new machine and paste it. The invitation expires in {expires_in} seconds.",
+            "Created an invitation for full client {name} of {}. Run `tako network join` on the new machine and paste it. The invitation expires in {expires_in} seconds.",
             config.network.name
         );
     }
@@ -109,6 +118,7 @@ mod tests {
             "tako-server",
             "client",
             "invite",
+            "laptop-b",
             "--json",
             "--expires-in",
             "60",
@@ -120,10 +130,11 @@ mod tests {
             parsed.command,
             Some(ServerCommand::Client {
                 command: ClientCommand::Invite {
+                    ref name,
                     expires_in: 60,
                     json: true
                 }
-            })
+            }) if name.as_str() == "laptop-b"
         ));
         for expiry in ["0", "59", "86401"] {
             assert!(
@@ -131,6 +142,7 @@ mod tests {
                     "tako-server",
                     "client",
                     "invite",
+                    "laptop-b",
                     "--expires-in",
                     expiry
                 ])
@@ -141,6 +153,7 @@ mod tests {
         if unsafe { libc::geteuid() } != 0 {
             let command = ServerCommand::Client {
                 command: ClientCommand::Invite {
+                    name: "laptop-b".parse().unwrap(),
                     expires_in: 60,
                     json: false,
                 },

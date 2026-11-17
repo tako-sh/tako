@@ -43,6 +43,7 @@ pub fn approval(
         independent_root: false,
         created_at: now,
         expires_at: None,
+        client: None,
     }
 }
 

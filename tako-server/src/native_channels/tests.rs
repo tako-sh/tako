@@ -59,6 +59,7 @@ fn member(network: &NetworkId, keys: &LocalDeviceKeys) -> Member {
         wg_verified: true,
         created_at: 1,
         expires_at: None,
+        client: None,
     }
 }
 fn identities() -> (NetworkId, LocalDeviceKeys, LocalDeviceKeys, Member, Member) {

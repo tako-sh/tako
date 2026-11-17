@@ -181,7 +181,7 @@ fn servers_remove_without_name_parses_for_selector() {
 }
 
 #[test]
-fn servers_help_shows_remove_as_primary_command() {
+fn servers_help_shows_revoke_as_primary_command() {
     let mut cmd = Cli::command();
     let servers = cmd
         .find_subcommand_mut("network")
@@ -193,16 +193,18 @@ fn servers_help_shows_remove_as_primary_command() {
     let help = String::from_utf8(help).unwrap();
     let remove_line = help
         .lines()
-        .find(|line| line.contains("Remove a server"))
-        .expect("expected remove command in help");
+        .find(|line| line.contains("Revoke a server"))
+        .expect("expected revoke command in help");
 
     assert!(
-        remove_line.trim_start().starts_with("remove "),
-        "expected remove to be primary command: {remove_line}"
+        remove_line.trim_start().starts_with("revoke "),
+        "expected revoke to be primary command: {remove_line}"
     );
     assert!(
-        remove_line.contains("rm") && remove_line.contains("delete"),
-        "expected rm and delete aliases: {remove_line}"
+        remove_line.contains("rm")
+            && remove_line.contains("remove")
+            && remove_line.contains("delete"),
+        "expected rm, remove and delete aliases: {remove_line}"
     );
 }
 

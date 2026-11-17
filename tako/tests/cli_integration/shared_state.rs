@@ -76,6 +76,7 @@ fn admit(
                 independent_root: false,
                 created_at: now(),
                 expires_at: None,
+                client: None,
             },
         )
         .unwrap();
@@ -614,7 +615,7 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
     let invitation = server.ok(
         &server.owner_home,
         &owner,
-        &["network", "client", "add", "--network", "fleet"],
+        &["network", "client", "add", "second", "--network", "fleet"],
         None,
     )["invitation"]
         .as_str()
@@ -625,7 +626,7 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
     server.ok(
         &client_home,
         &client,
-        &["network", "join", "--name", "second", "--invitation-stdin"],
+        &["network", "join", "--invitation-stdin"],
         Some(&invitation),
     );
     let listed = server.ok(&client_home, &client, &["secrets", "list"], None);
@@ -757,6 +758,7 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
             "network",
             "client",
             "add",
+            "scoped",
             "--network",
             "fleet",
             "--deploy",
@@ -772,7 +774,7 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
     server.ok(
         &scoped_home,
         &scoped_project,
-        &["network", "join", "--name", "scoped", "--invitation-stdin"],
+        &["network", "join", "--invitation-stdin"],
         Some(&scoped_invitation),
     );
     let config = scoped_project.join("tako.toml");
@@ -838,7 +840,7 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
         &[
             "network",
             "client",
-            "remove",
+            "revoke",
             "second",
             "--network",
             "fleet",
@@ -851,6 +853,94 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
             .status
             .success()
     );
+    let clients = |all: bool| {
+        let mut args = vec!["network", "client", "list", "--network", "fleet"];
+        if all {
+            args.push("--all");
+        }
+        server.ok(&server.owner_home, &owner, &args, None)["clients"]
+            .as_array()
+            .unwrap()
+            .clone()
+    };
+    let named = |rows: &[serde_json::Value], status: &str| {
+        rows.iter()
+            .filter(|row| row["name"] == "second" && row["status"] == status)
+            .count()
+    };
+    assert_eq!(named(&clients(false), "active"), 0);
+    assert_eq!(named(&clients(true), "revoked"), 1);
+
+    // Adding a revoked client's name brings the same client back with a new key.
+    let returned = server.ok(
+        &server.owner_home,
+        &owner,
+        &["network", "client", "add", "second", "--network", "fleet"],
+        None,
+    );
+    assert_eq!(returned["replaced"], serde_json::Value::Null);
+    let back_home = server.directory.path().join("back-home");
+    let back = server.project("back-checkout");
+    server.ok(
+        &back_home,
+        &back,
+        &["network", "join", "--invitation-stdin"],
+        Some(returned["invitation"].as_str().unwrap()),
+    );
+    server.ok(&back_home, &back, &["network", "sync", "fleet"], None);
+    // The revoked key now shows as replaced by the new one.
+    let rows = clients(true);
+    assert_eq!(named(&rows, "active"), 1);
+    assert_eq!(named(&rows, "replaced"), 1);
+
+    // An active name needs --yes outside a terminal, and replacing it revokes
+    // the current key before the new invitation is shown.
+    let refused = server.run(
+        &server.owner_home,
+        &owner,
+        &["network", "client", "add", "second", "--network", "fleet"],
+        None,
+    );
+    assert!(!refused.status.success());
+    assert!(
+        stderr_str(&refused).contains("--yes"),
+        "{}",
+        stderr_str(&refused)
+    );
+    let replaced = server.ok(
+        &server.owner_home,
+        &owner,
+        &[
+            "network",
+            "client",
+            "add",
+            "second",
+            "--network",
+            "fleet",
+            "--yes",
+        ],
+        None,
+    );
+    assert!(replaced["replaced"].is_string());
+    assert!(
+        !server
+            .run(&back_home, &back, &["network", "sync", "fleet"], None)
+            .status
+            .success()
+    );
+    // The new key has not joined yet, so the last key shows as revoked.
+    let rows = clients(true);
+    assert_eq!(named(&rows, "active"), 0);
+    assert_eq!(named(&rows, "replaced"), 1);
+    assert_eq!(named(&rows, "revoked"), 1);
+    // The owner cannot revoke or replace the client it runs as.
+    let own = server.run(
+        &server.owner_home,
+        &owner,
+        &["network", "client", "revoke", "owner", "--network", "fleet"],
+        None,
+    );
+    assert!(!own.status.success());
 }
 
 #[test]

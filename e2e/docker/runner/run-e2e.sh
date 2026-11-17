@@ -1031,25 +1031,25 @@ run_admin_recovery_checks() {
     "$TAKO_BIN" --ci --config "$source/tako.toml" secrets set RECOVERY_TOKEN --env production
   HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$source/tako.toml" secrets sync --env production
   for host in server-ubuntu server-alma; do
-    if ssh_exec "$host" /usr/local/bin/tako-server client invite >/dev/null 2>&1; then
+    if ssh_exec "$host" /usr/local/bin/tako-server client invite "recovered-$host" >/dev/null 2>&1; then
       echo "Service account issued a recovery invitation" >&2
       return 1
     fi
     # Capture the token without logging it, as on a provider's root console.
     invitation=$(HOME="$HOME_DIR" ssh "${SSH_OPTS[@]}" "e2e-admin@$host" \
-      sudo -n /usr/local/bin/tako-server client invite --json | jq -er '.invitation')
+      sudo -n /usr/local/bin/tako-server client invite "recovered-$host" --json | jq -er '.invitation')
     client_home="$TMP_ROOT/recovered-$host"
     project="$TMP_ROOT/recovered-project-$host"
     mkdir -p "$client_home" "$project"
     chmod 0700 "$client_home"
     cp "$source/tako.toml" "$project/tako.toml"
     printf '%s' "$invitation" | HOME="$client_home" TAKO_HOME="$client_home/tako" \
-      "$TAKO_BIN" --ci network join --name "recovered-$host" --invitation-stdin
+      "$TAKO_BIN" --ci network join --invitation-stdin
     unset invitation
     HOME="$client_home" TAKO_HOME="$client_home/tako" "$TAKO_BIN" --ci --json \
       network client list --network e2e > "$client_home/clients.json"
     jq -e --arg name "recovered-$host" \
-      'any(.clients[]; .request.name == $name and .independent_admin == true and .approved_by == null)' \
+      'any(.clients[]; .name == $name and .invited_by == "host recovery" and .access == "full")' \
       "$client_home/clients.json" >/dev/null
     # Materializing a fresh worktree exercises decryption with the new device's
     # wrapped key, without importing the original laptop's environment key.
@@ -1060,13 +1060,13 @@ run_admin_recovery_checks() {
     jq -e 'any(.secrets[]; .name == "RECOVERY_TOKEN")' "$client_home/secrets.json" >/dev/null
   done
   HOME="$client_home" TAKO_HOME="$client_home/tako" "$TAKO_BIN" --ci \
-    network client remove recovered-server-ubuntu --network e2e
+    network client revoke recovered-server-ubuntu --network e2e
   HOME="$client_home" TAKO_HOME="$client_home/tako" "$TAKO_BIN" --ci network sync e2e
   HOME="$client_home" TAKO_HOME="$client_home/tako" "$TAKO_BIN" --ci --json \
     network client list --network e2e > "$client_home/clients.json"
-  jq -e 'any(.clients[]; .request.name == "recovered-server-alma") and
-    (all(.clients[]; .request.name != "recovered-server-ubuntu"))' "$client_home/clients.json" >/dev/null
-  echo "Independent administrator recovery passed on Ubuntu and AlmaLinux"
+  jq -e 'any(.clients[]; .name == "recovered-server-alma") and
+    (all(.clients[]; .name != "recovered-server-ubuntu"))' "$client_home/clients.json" >/dev/null
+  echo "Host recovery passed on Ubuntu and AlmaLinux"
 }
 
 # Wait for SSH on all servers

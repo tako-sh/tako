@@ -1,6 +1,6 @@
 use crate::{
-    AppEnv, BootId, DeviceId, DeviceKind, EnrollmentRequest, Error, KeyFingerprint, NetworkId,
-    Result, RevocationId, SshPublicKey, SshUser, VerifiedEnrollment, error::invalid,
+    AppEnv, BootId, DeviceId, DeviceKind, DeviceName, EnrollmentRequest, Error, KeyFingerprint,
+    NetworkId, Result, RevocationId, SshPublicKey, SshUser, VerifiedEnrollment, error::invalid,
 };
 use openssl::x509::X509;
 use serde::{Deserialize, Serialize};
@@ -87,44 +87,59 @@ impl Permissions {
     }
 }
 
-/// Registry rows written before access levels existed stored four fields.
-/// Read them as the access they granted: both administration bits mean full
-/// access, anything else keeps only its deployment scopes. New rows are always
-/// written in the current form.
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum CurrentPermissions {
+    Full,
+    Deploy(BTreeSet<AppEnv>),
+}
+
+/// The four fields registry rows stored before access levels existed.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecordedPermissions {
+    network_admin: bool,
+    server_admin: bool,
+    #[allow(dead_code)]
+    ssh_user: Option<SshUser>,
+    #[serde(default)]
+    deployments: BTreeSet<AppEnv>,
+}
+
+/// A permissions field as it was written: in the current form, or as a row
+/// from before access levels existed. New rows are always written in the
+/// current form.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum PermissionsWire {
+    Current(CurrentPermissions),
+    Recorded(RecordedPermissions),
+}
+
+impl PermissionsWire {
+    /// Read a recorded row as the access it granted: both administration bits
+    /// mean full access, anything else keeps only its deployment scopes. A
+    /// server was admitted to serve the network, and only full members serve,
+    /// so a recorded server row is full whatever its bits said.
+    fn resolve(self, server: bool) -> Permissions {
+        match self {
+            Self::Current(CurrentPermissions::Full) => Permissions::Full,
+            Self::Current(CurrentPermissions::Deploy(scopes)) => Permissions::Deploy(scopes),
+            Self::Recorded(recorded)
+                if server || (recorded.network_admin && recorded.server_admin) =>
+            {
+                Permissions::Full
+            }
+            Self::Recorded(recorded) => Permissions::Deploy(recorded.deployments),
+        }
+    }
+}
+
 impl<'de> Deserialize<'de> for Permissions {
     fn deserialize<D: serde::Deserializer<'de>>(
         deserializer: D,
     ) -> std::result::Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(rename_all = "snake_case")]
-        enum Current {
-            Full,
-            Deploy(BTreeSet<AppEnv>),
-        }
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Recorded {
-            network_admin: bool,
-            server_admin: bool,
-            #[allow(dead_code)]
-            ssh_user: Option<SshUser>,
-            #[serde(default)]
-            deployments: BTreeSet<AppEnv>,
-        }
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Wire {
-            Current(Current),
-            Recorded(Recorded),
-        }
-        Ok(match Wire::deserialize(deserializer)? {
-            Wire::Current(Current::Full) => Self::Full,
-            Wire::Current(Current::Deploy(scopes)) => Self::Deploy(scopes),
-            Wire::Recorded(recorded) if recorded.network_admin && recorded.server_admin => {
-                Self::Full
-            }
-            Wire::Recorded(recorded) => Self::Deploy(recorded.deployments),
-        })
+        Ok(PermissionsWire::deserialize(deserializer)?.resolve(false))
     }
 }
 
@@ -221,7 +236,7 @@ impl MemberKind {
 
 /// An immutable admission asserted by a trusted server agent, not client input.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, from = "MemberRecord")]
 pub struct Member {
     pub network_id: NetworkId,
     pub device_id: DeviceId,
@@ -235,6 +250,51 @@ pub struct Member {
     pub wg_verified: bool,
     pub created_at: u64,
     pub expires_at: Option<u64>,
+    /// The client this laptop is a key of, asserted by the admitting server.
+    /// Each `client add` admits a new member under the same name. Laptops
+    /// admitted before client names existed have none and are named by
+    /// [`RegistrySnapshot::client_names`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<DeviceName>,
+}
+
+/// A stored [`Member`]. Its permissions are read with its kind, so a server
+/// recorded before access levels existed stays a full member.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MemberRecord {
+    network_id: NetworkId,
+    device_id: DeviceId,
+    request: EnrollmentRequest,
+    kind: MemberKind,
+    permissions: PermissionsWire,
+    approved_by: Option<DeviceId>,
+    #[serde(alias = "independent_admin")]
+    independent_root: bool,
+    wg_verified: bool,
+    created_at: u64,
+    expires_at: Option<u64>,
+    #[serde(default)]
+    client: Option<DeviceName>,
+}
+
+impl From<MemberRecord> for Member {
+    fn from(record: MemberRecord) -> Self {
+        let server = matches!(record.kind, MemberKind::Server(_));
+        Self {
+            network_id: record.network_id,
+            device_id: record.device_id,
+            request: record.request,
+            kind: record.kind,
+            permissions: record.permissions.resolve(server),
+            approved_by: record.approved_by,
+            independent_root: record.independent_root,
+            wg_verified: record.wg_verified,
+            created_at: record.created_at,
+            expires_at: record.expires_at,
+            client: record.client,
+        }
+    }
 }
 
 impl Member {
@@ -272,6 +332,9 @@ impl Member {
         if self.independent_root && !self.permissions.is_full() {
             return Err(invalid("independent root", "requires full access"));
         }
+        if self.client.is_some() && !matches!(self.kind, MemberKind::Laptop) {
+            return Err(invalid("client name", "only clients have one"));
+        }
         if self.approved_by.as_ref() == Some(&self.device_id)
             || (self.independent_root && self.approved_by.is_some())
         {
@@ -301,8 +364,23 @@ impl Member {
     }
 }
 
+/// Where a member stands in a local view of the registry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemberStatus {
+    Active,
+    /// Revoked, and a later key of the same client exists.
+    Replaced,
+    Revoked,
+    Expired,
+    /// Approved by a device that was not valid at the time.
+    Invalid,
+    /// Admitted concurrently with an earlier key of the same client name.
+    Conflict,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, from = "ApprovalRecord")]
 pub struct Approval {
     pub kind: MemberKind,
     pub permissions: Permissions,
@@ -312,6 +390,38 @@ pub struct Approval {
     pub independent_root: bool,
     pub created_at: u64,
     pub expires_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<DeviceName>,
+}
+
+/// A stored [`Approval`], read like [`MemberRecord`].
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApprovalRecord {
+    kind: MemberKind,
+    permissions: PermissionsWire,
+    approved_by: Option<DeviceId>,
+    #[serde(alias = "independent_admin")]
+    independent_root: bool,
+    created_at: u64,
+    expires_at: Option<u64>,
+    #[serde(default)]
+    client: Option<DeviceName>,
+}
+
+impl From<ApprovalRecord> for Approval {
+    fn from(record: ApprovalRecord) -> Self {
+        let server = matches!(record.kind, MemberKind::Server(_));
+        Self {
+            kind: record.kind,
+            permissions: record.permissions.resolve(server),
+            approved_by: record.approved_by,
+            independent_root: record.independent_root,
+            created_at: record.created_at,
+            expires_at: record.expires_at,
+            client: record.client,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -476,6 +586,16 @@ impl RegistrySnapshot {
 
     /// Evaluate a local view. This is not a global-freshness or enforcement guarantee.
     pub fn effective_members(&self, now: u64) -> Result<BTreeMap<DeviceId, &Member>> {
+        Ok(self
+            .member_statuses(now)?
+            .into_iter()
+            .filter(|(_, (_, status))| *status == MemberStatus::Active)
+            .map(|(id, (member, _))| (id, member))
+            .collect())
+    }
+
+    /// Every admitted member's status in this local view.
+    pub fn member_statuses(&self, now: u64) -> Result<BTreeMap<DeviceId, (&Member, MemberStatus)>> {
         self.validate()?;
         let verified: BTreeMap<&DeviceId, &Member> = self
             .members
@@ -483,17 +603,98 @@ impl RegistrySnapshot {
             .filter(|member| member.wg_verified)
             .map(|member| (&member.device_id, member))
             .collect();
+        let names = self.client_names();
         let mut memo = BTreeMap::new();
-        let mut effective = BTreeMap::new();
+        let mut statuses = BTreeMap::new();
         for member in verified.values().copied() {
-            if member.live(now)
-                && !self.denied(member)?
-                && self.approval_valid(member, &verified, &mut memo)?
+            let status = if self.denied(member)? {
+                let replaced = matches!(member.kind, MemberKind::Laptop)
+                    && verified.values().any(|other| {
+                        other.device_id != member.device_id
+                            && other.created_at >= member.created_at
+                            && names.get(&other.device_id) == names.get(&member.device_id)
+                    });
+                if replaced {
+                    MemberStatus::Replaced
+                } else {
+                    MemberStatus::Revoked
+                }
+            } else if !member.live(now) {
+                MemberStatus::Expired
+            } else if !self.approval_valid(member, &verified, &mut memo)? {
+                MemberStatus::Invalid
+            } else {
+                MemberStatus::Active
+            };
+            statuses.insert(member.device_id.clone(), (member, status));
+        }
+        // Two servers can each admit a key for one name before they replicate.
+        // Every node keeps the earliest admission and sets the others aside.
+        let mut holders: BTreeMap<String, (u64, DeviceId)> = BTreeMap::new();
+        for (id, (member, status)) in &statuses {
+            if *status != MemberStatus::Active || !matches!(member.kind, MemberKind::Laptop) {
+                continue;
+            }
+            let Some(name) = names.get(id) else { continue };
+            let key = (member.created_at, id.clone());
+            holders
+                .entry(name.to_ascii_lowercase())
+                .and_modify(|holder| {
+                    if key < *holder {
+                        *holder = key.clone();
+                    }
+                })
+                .or_insert(key);
+        }
+        for (id, (member, status)) in statuses.iter_mut() {
+            if *status == MemberStatus::Active
+                && matches!(member.kind, MemberKind::Laptop)
+                && names.get(id).is_some_and(|name| {
+                    holders
+                        .get(&name.to_ascii_lowercase())
+                        .is_some_and(|(_, holder)| holder != id)
+                })
             {
-                effective.insert(member.device_id.clone(), member);
+                *status = MemberStatus::Conflict;
             }
         }
-        Ok(effective)
+        Ok(statuses)
+    }
+
+    /// The client name of every admitted laptop. Laptops admitted with a name
+    /// keep it. Older laptops are named after their device, in admission order;
+    /// a name already taken gets `-` and the start of the device ID, lengthened
+    /// until unique, so every node derives the same names.
+    pub fn client_names(&self) -> BTreeMap<DeviceId, String> {
+        let mut laptops: Vec<&Member> = self
+            .members
+            .iter()
+            .filter(|member| member.wg_verified && matches!(member.kind, MemberKind::Laptop))
+            .collect();
+        laptops.sort_by(|a, b| (a.created_at, &a.device_id).cmp(&(b.created_at, &b.device_id)));
+        laptops.dedup_by(|a, b| a.device_id == b.device_id);
+        let mut taken: BTreeSet<String> = BTreeSet::new();
+        let mut names = BTreeMap::new();
+        for member in laptops {
+            let name = match &member.client {
+                Some(client) => client.to_string(),
+                None => {
+                    let base = member.request.name.as_str();
+                    let id = member.device_id.to_string();
+                    std::iter::once(base.to_owned())
+                        .chain((6..=id.len()).map(|len| {
+                            let suffix = format!("-{}", &id[..len]);
+                            let keep = base.len().min(63usize.saturating_sub(suffix.len()));
+                            format!("{}{suffix}", &base[..keep])
+                        }))
+                        .find(|name| !taken.contains(&name.to_ascii_lowercase()))
+                        .unwrap_or(id)
+                }
+            };
+            taken.insert(name.to_ascii_lowercase());
+            names.insert(member.device_id.clone(), name);
+        }
+        names
     }
 
     pub fn permissions(&self, device: &DeviceId, now: u64) -> Result<&Permissions> {
@@ -548,6 +749,7 @@ impl RegistrySnapshot {
             wg_verified: true,
             created_at: approval.created_at,
             expires_at: approval.expires_at,
+            client: approval.client,
         };
         member.validate()?;
         if member.network_id != self.network.id {
@@ -582,6 +784,19 @@ impl RegistrySnapshot {
                         "approval exceeds delegated authority or expiry",
                     ));
                 }
+            }
+        }
+        // A client name holds one active key. Replacing a key revokes the old one
+        // before the new one is admitted.
+        if let Some(client) = &member.client {
+            let names = self.client_names();
+            if effective.values().any(|existing| {
+                existing.device_id != member.device_id
+                    && names
+                        .get(&existing.device_id)
+                        .is_some_and(|name| name.eq_ignore_ascii_case(client.as_str()))
+            }) {
+                return Err(Error::Conflict("client name"));
             }
         }
         // Server names are private DNS names, so active servers must not share one.

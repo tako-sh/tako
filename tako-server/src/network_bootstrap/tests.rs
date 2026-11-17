@@ -98,6 +98,7 @@ impl Fixture {
                 wg_verified: true,
                 created_at: now() - 1,
                 expires_at: None,
+                client: None,
             }],
             revocations: vec![],
             acks: vec![],
@@ -345,6 +346,7 @@ fn installation_retry_accepts_new_members_without_replacing_bootstrap() {
         wg_verified: true,
         created_at: now(),
         expires_at: None,
+        client: None,
     });
     f.call(BootstrapRequest::Install { snapshot }).unwrap();
     assert_eq!(fs::read(f.data.join(NODE_CONFIG_FILE)).unwrap(), previous);

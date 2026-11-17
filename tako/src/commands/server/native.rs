@@ -164,6 +164,7 @@ pub(super) async fn add(
                     independent_root: true,
                     created_at: now,
                     expires_at: None,
+                    client: None,
                 },
             )?;
             snapshot.members.push(member);
@@ -180,6 +181,7 @@ pub(super) async fn add(
                     permissions: server_permissions(),
                     expires_at: now + 86400,
                     member_expires_at: None,
+                    client: None,
                 }),
             }
         };

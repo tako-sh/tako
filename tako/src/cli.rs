@@ -404,7 +404,6 @@ pub(crate) fn supports_dry_run(path: &[&str]) -> bool {
                     | "create"
                     | "request"
                     | "approve"
-                    | "revoke"
                     | "status"
                     | "import"
                     | "export"
@@ -413,9 +412,9 @@ pub(crate) fn supports_dry_run(path: &[&str]) -> bool {
             | [
                 "network",
                 "server",
-                "drain" | "resume" | "add" | "remove" | "list" | "uninstall"
+                "drain" | "resume" | "add" | "revoke" | "list" | "uninstall"
             ]
-            | ["network", "client", "add" | "remove" | "list"]
+            | ["network", "client", "add" | "revoke" | "list"]
             | ["secrets", "migrate" | "sync" | "clear"]
             | ["backups", "now" | "download" | "restore"]
             | [
