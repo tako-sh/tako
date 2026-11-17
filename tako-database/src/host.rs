@@ -422,6 +422,10 @@ pub(crate) struct HostInner {
     /// Bytes of request bodies, responses and cursor output buffered; see
     /// [`HostConfig::max_buffered_bytes`].
     pub(crate) buffered: Arc<Semaphore>,
+    /// Counts `close_all` calls. Connections opened before one are closed
+    /// after their current request, so clients reconnect to whichever
+    /// process serves the databases now.
+    pub(crate) closings: tokio::sync::watch::Sender<u64>,
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
@@ -487,6 +491,7 @@ impl DatabaseHost {
                 streams: Mutex::new(HashMap::new()),
                 stored_sql,
                 buffered,
+                closings: tokio::sync::watch::Sender::new(0),
             }),
         }
     }
@@ -703,6 +708,7 @@ impl DatabaseHost {
     /// Rolls back every stream and closes every connection, releasing file
     /// locks. Used when this process stops serving (drain or reload).
     pub async fn close_all(&self) {
+        self.inner.closings.send_modify(|count| *count += 1);
         let streams = self.take_streams(|_| true);
         let databases: Vec<_> = self
             .inner
@@ -803,14 +809,8 @@ impl DatabaseHost {
         max_rows: usize,
     ) -> Result<AdminQuery, HostError> {
         let database = self.database(id)?;
-        let active = DatabaseHost::enter(&database).map_err(|e| HostError::Engine(e.0))?;
         // Counts against the database's concurrency limit, like app requests.
-        let permit = database
-            .permits
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| HostError::Engine("database is closing".into()))?;
+        let (active, permit) = self.admit(&database).await?;
         // Results go back through the management relay, which carries at
         // most 16 MiB; leave room for its envelope.
         let budget = self
@@ -894,13 +894,7 @@ impl DatabaseHost {
         dry_run: bool,
     ) -> Result<crate::MigrationReport, HostError> {
         let database = self.database(id)?;
-        let active = DatabaseHost::enter(&database).map_err(|e| HostError::Engine(e.0))?;
-        let permit = database
-            .permits
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| HostError::Engine("database is closing".into()))?;
+        let (active, permit) = self.admit(&database).await?;
         tokio::task::spawn_blocking(move || {
             let _active = active;
             let _permit = permit;
@@ -975,9 +969,16 @@ impl DatabaseHost {
         let hash = hash_token(token);
         let ScopedBinding { scope, binding } = self.inner.by_token.read().get(&hash).cloned()?;
         match binding.home {
-            Home::Local => Some(Resolved::Serve {
-                database: self.database(&binding.database).ok()?,
-                principal: Principal::Local(hash),
+            Home::Local => Some(match self.database(&binding.database) {
+                Ok(database) => Resolved::Serve {
+                    database,
+                    principal: Principal::Local(hash),
+                },
+                // The token is valid; this process just no longer serves the
+                // database (it handed it over, or is reopening it).
+                Err(_) => Resolved::Unavailable(
+                    "this server is not serving the database right now; retry".into(),
+                ),
             }),
             Home::Remote { upstream, key } => Some(Resolved::Forward {
                 database: binding.database,
@@ -1011,17 +1012,45 @@ impl DatabaseHost {
         if !allowed {
             return None;
         }
-        Some(Resolved::Serve {
-            database: self.database(database).ok()?,
-            principal: Principal::Remote {
-                server,
-                scope: scope.to_owned(),
+        Some(match self.database(database) {
+            Ok(database) => Resolved::Serve {
+                database,
+                principal: Principal::Remote {
+                    server,
+                    scope: scope.to_owned(),
+                },
             },
+            Err(_) => Resolved::Unavailable(
+                "this server is not serving the database right now; retry".into(),
+            ),
         })
     }
 
     pub(crate) fn enter(database: &Arc<Database>) -> Result<ActiveGuard, Unavailable> {
         database.enter()
+    }
+
+    /// Waits, for at most the admission timeout, for one of the database's
+    /// request slots, and only then counts as active, as app requests do: a
+    /// command still waiting neither holds up a pause nor waits forever.
+    async fn admit(
+        &self,
+        database: &Arc<Database>,
+    ) -> Result<(ActiveGuard, tokio::sync::OwnedSemaphorePermit), HostError> {
+        let timeout = self.inner.config.admission_timeout;
+        let permit =
+            match tokio::time::timeout(timeout, database.permits.clone().acquire_owned()).await {
+                Ok(Ok(permit)) => permit,
+                Ok(Err(_)) => return Err(HostError::Engine("database is closing".into())),
+                Err(_) => {
+                    return Err(HostError::Busy {
+                        database: database.id.clone(),
+                        seconds: timeout.as_secs(),
+                    });
+                }
+            };
+        let active = database.enter().map_err(|e| HostError::Engine(e.0))?;
+        Ok((active, permit))
     }
 
     /// Retains a new stream, counting it against the server's and the

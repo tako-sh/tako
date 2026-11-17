@@ -106,6 +106,7 @@ pub async fn serve(host: DatabaseHost, listener: TcpListener, access: Access) {
             }
         };
         let _ = socket.set_nodelay(true);
+        let host_closings = host.inner.closings.clone();
         let host = host.clone();
         let access = access.clone();
         tokio::spawn(async move {
@@ -115,16 +116,31 @@ pub async fn serve(host: DatabaseHost, listener: TcpListener, access: Access) {
                 let access = access.clone();
                 async move { Ok::<_, Infallible>(handle(&host, &access, peer, request).await) }
             });
-            if let Err(error) = hyper::server::conn::http1::Builder::new()
+            // When this host stops serving its databases (a reload hands
+            // them over), the connection closes after its current request,
+            // so the client reconnects to the process that serves them now.
+            let mut closings = host_closings.subscribe();
+            let opened = *closings.borrow_and_update();
+            let mut builder = hyper::server::conn::http1::Builder::new();
+            builder
                 .keep_alive(true)
                 .timer(TokioTimer::new())
-                .header_read_timeout(idle_timeout)
-                .serve_connection(
-                    TokioIo::new(WriteStall::new(socket, stall_timeout)),
-                    service,
-                )
-                .await
-            {
+                .header_read_timeout(idle_timeout);
+            let connection = builder.serve_connection(
+                TokioIo::new(WriteStall::new(socket, stall_timeout)),
+                service,
+            );
+            tokio::pin!(connection);
+            let result = tokio::select! {
+                result = connection.as_mut() => result,
+                closed = async { closings.wait_for(|count| *count != opened).await.is_ok() } => {
+                    if closed {
+                        connection.as_mut().graceful_shutdown();
+                    }
+                    connection.await
+                }
+            };
+            if let Err(error) = result {
                 tracing::debug!(%error, "database connection ended");
             }
         });
@@ -765,8 +781,15 @@ fn settle(
                 entry.stream = Some(stream);
                 Some(baton(key, entry.sequence))
             }
-            // The stream was closed while it ran (pause or shutdown).
-            None => None,
+            // The stream was closed while it ran (pause or shutdown), which
+            // rolled back its transaction: report that rather than results
+            // the client would take as kept.
+            None => {
+                return Err(
+                    "the stream was closed while the request ran (the database was paused or handed over); its transaction was rolled back"
+                        .into(),
+                );
+            }
         });
     }
     // On failure the stream is dropped, which rolls back its transaction.

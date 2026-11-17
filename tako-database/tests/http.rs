@@ -1145,6 +1145,106 @@ async fn cursor_rows_stay_reserved_until_they_are_written() {
     server.abort();
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn closing_ends_open_connections_and_refuses_with_a_retryable_status() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let h = harness(HostConfig::default());
+    let (address, server) = serve_apps(&h.host).await;
+    let mut connection = tokio::net::TcpStream::connect(address).await.unwrap();
+    connection
+        .write_all(&raw_request(
+            &h.token,
+            &json!({"baton": null, "requests": [execute("SELECT 1")]}),
+        ))
+        .await
+        .unwrap();
+    let mut head = [0u8; 12];
+    connection.read_exact(&mut head).await.unwrap();
+    assert_eq!(&head, b"HTTP/1.1 200");
+    // The kept-alive connection is closed once the host stops serving, so
+    // its client reconnects to whichever process serves the databases now.
+    h.host.close_all().await;
+    let mut rest = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), connection.read_to_end(&mut rest))
+        .await
+        .expect("the connection is closed")
+        .unwrap();
+    // A request that still reaches this host is told to retry, not that its
+    // token is invalid.
+    let (status, _) = post(
+        &h,
+        "/v3/pipeline",
+        json!({"baton": null, "requests": [execute("SELECT 1")]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stream_closed_while_its_request_runs_reports_the_rollback() {
+    let h = harness(HostConfig {
+        pause_timeout: Duration::from_millis(100),
+        ..HostConfig::default()
+    });
+    let begin = pipeline(
+        &h,
+        Value::Null,
+        vec![
+            execute("CREATE TABLE t (x)"),
+            execute("BEGIN"),
+            execute("INSERT INTO t VALUES (1)"),
+        ],
+    )
+    .await;
+    let baton = begin["baton"].clone();
+    // A slow statement in the open transaction; the host closes meanwhile.
+    let slow = "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n LIMIT 5000000) SELECT count(*) FROM n";
+    let request = post(
+        &h,
+        "/v3/pipeline",
+        json!({"baton": baton, "requests": [execute(slow)]}),
+    );
+    let (result, ()) = tokio::join!(request, async {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        h.host.close_all().await;
+    });
+    let (status, body) = result;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert!(body.to_string().contains("rolled back"), "{body}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn administrator_queries_wait_for_a_slot_only_as_long_as_apps_do() {
+    let h = harness(HostConfig {
+        max_concurrent_per_database: 1,
+        admission_timeout: Duration::from_millis(300),
+        ..HostConfig::default()
+    });
+    // A request whose body never finishes holds the only slot.
+    let (tx, rx) =
+        tokio::sync::mpsc::channel::<Result<http_body::Frame<Bytes>, std::convert::Infallible>>(1);
+    let request = Request::post("/v3/pipeline")
+        .header("authorization", format!("Bearer {}", h.token))
+        .body(http_body_util::StreamBody::new(tokio_stream_from(rx)))
+        .unwrap();
+    let host = h.host.clone();
+    let holder =
+        tokio::spawn(
+            async move { handle(&host, &Access::Apps, PEER.parse().unwrap(), request).await },
+        );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let waited = tokio::time::timeout(
+        Duration::from_secs(5),
+        h.host.admin_query(&h.id, "SELECT 1".into(), 10),
+    )
+    .await
+    .expect("the query gives up");
+    assert!(waited.is_err(), "no slot became free");
+    drop(tx);
+    holder.abort();
+}
+
 #[tokio::test]
 async fn forwards_requests_to_the_server_that_hosts_the_database() {
     // The home server hosts the database and grants it to shop/production.
