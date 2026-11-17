@@ -150,16 +150,15 @@ If the server never answers the WireGuard handshake, `tako ssh` stops after 10 s
 ### Use scp, rsync, and editors
 
 ```bash
-tako ssh config --network production
+tako connect production
 scp backup.tar edge-a:
 rsync -a ./data/ edge-a:data/
 ssh -L 5432:localhost:5432 edge-a
-tako ssh config --network production --remove
 ```
 
-`ssh config` adds a managed block to `~/.ssh/config` with an alias for each server: `edge-a` and `edge-a.tako`. Each alias uses the same approved identity, username, host-key pin, and rootless tunnel as `tako ssh`, so any OpenSSH-based tool works without `tako connect`, sudo, or public port 22. That includes scp, rsync, sftp, local port forwarding, and VS Code Remote-SSH. Aliases share one SSH connection per server with `tako ssh`. Rerun the command after membership or approval changes. The aliases call the Tako executable by its path, so rerun it after moving Tako. The aliases stay through `tako connect` and `disconnect`, but changing the connection closes open alias sessions; reconnect afterwards.
+While [connected](#connect-local-applications), the SSH aliases `edge-a` and `edge-a.tako` work with any OpenSSH-based tool, including scp, rsync, sftp, local port forwarding, and VS Code Remote-SSH, without public port 22. Without a connection, use `tako ssh` for a shell or a single command.
 
-Network SSH keys allow local forwarding (`ssh -L`, `ssh -D`) only to the server's own loopback addresses, such as a database bound to `127.0.0.1`. That is no more than the granted shell can already reach. Remote forwarding (`-R`), agent forwarding, and X11 stay disabled. Servers on earlier releases refuse all forwarding until upgraded. Servers running OpenSSH older than 7.8, and servers whose sshd sets `AllowTcpForwarding no`, keep refusing it. `--remove` deletes them; while connected, the direct aliases from `connect` take their place. A server literally named `config` is still reachable with `tako ssh <device-id>`.
+Network SSH keys allow local forwarding (`ssh -L`, `ssh -D`) only to the server's own loopback addresses, such as a database bound to `127.0.0.1`. That is no more than the granted shell can already reach. Remote forwarding (`-R`), agent forwarding, and X11 stay disabled. Servers on earlier releases refuse all forwarding until upgraded. Servers running OpenSSH older than 7.8, and servers whose sshd sets `AllowTcpForwarding no`, keep refusing it.
 
 ## Connect local applications
 
@@ -177,7 +176,7 @@ While connected, ordinary applications can resolve server names such as `edge-a`
 
 After connecting, Tako waits a few seconds for a WireGuard handshake with each server and names any server that did not answer, with the UDP endpoint to check. Management keeps working over HTTPS even when that UDP port is blocked.
 
-One network owns `.tako` names on a workstation at a time, so `connect` disconnects any other connected network first. `disconnect` removes Tako's routes, resolver settings, host entries, and SSH aliases while preserving unrelated settings. Aliases from `tako ssh config` stay. Without a network argument it disconnects whichever network is connected. Server peers, names, and SSH settings are refreshed by each `connect`; rerun it after membership changes. Finish active `tako ssh` sessions before changing the system connection. If upgrading from the old external WireGuard implementation with a connection still active, disconnect it using the previous Tako version first.
+One network owns `.tako` names on a workstation at a time, so `connect` disconnects any other connected network first. `disconnect` removes Tako's routes, resolver settings, host entries, and SSH aliases while preserving unrelated settings. Without a network argument it disconnects whichever network is connected. Server peers, names, and SSH settings are refreshed by each `connect`; rerun it after membership changes. Finish active `tako ssh` sessions before changing the system connection. If upgrading from the old external WireGuard implementation with a connection still active, disconnect it using the previous Tako version first.
 
 ## Use private service addresses
 

@@ -244,7 +244,6 @@ tako network server resume <server> [--network <id-or-name>]
 tako connect [network]
 tako disconnect [network]
 tako ssh <server> [--network <id-or-name>] [-- <command>...]
-tako ssh config [--network <id-or-name>] [--remove]
 ```
 
 Commands that act on one network take it from an explicit `--network` or positional network argument first, then from the network chosen with `tako network use`, then from the only configured network. With several networks and no choice, name the network in the command. The project's `tako.toml` does not select a network for these commands; deploy, secrets, and other app commands use the network of the selected environment. `network use` accepts a name or stable ID and stores the choice on this machine; `network list --json` marks the network those commands use with `"default": true`.
@@ -255,7 +254,7 @@ Each device generates and retains its own keys. Repeat `--deploy` for exact app/
 
 `drain` and `resume` require server administration and a unique member name or device ID. Drain defaults to 120 seconds and accepts `0..3600`; zero requests immediate force. Inspect the structured completion report, not only the drained intent. See [Native server maintenance](/operations/#native-server-maintenance).
 
-`ssh` uses embedded WireGuard and userspace TCP without sudo or system network changes; OpenSSH is required. When the WireGuard handshake gets no reply, it fails after 10 seconds and names the UDP port and host. `ssh config` adds `~/.ssh/config` aliases that use the same rootless transport, so scp, rsync, loopback port forwarding, and VS Code Remote-SSH work without `connect`; `--remove` deletes them. `connect` enables local applications, private DNS, short server names, and approved SSH aliases such as `ssh edge-a`. It explains the required administrator access before prompting. `connect` also reports servers without a WireGuard handshake and disconnects any other connected network. `disconnect` removes those managed settings; without a network it disconnects whichever is connected. No external WireGuard executable is required. Normal native management uses pinned HTTPS without a tunnel or SSH agent. See [Native networks](/networks/) for platform requirements, enrollment, endpoints, and private service names.
+`ssh` uses embedded WireGuard and userspace TCP without sudo or system network changes; OpenSSH is required. When the WireGuard handshake gets no reply, it fails after 10 seconds and names the UDP port and host. `connect` enables local applications, private DNS, short server names, and approved SSH aliases such as `ssh edge-a` for scp, rsync, loopback port forwarding, and VS Code Remote-SSH. It explains the required administrator access before prompting. `connect` also reports servers without a WireGuard handshake and disconnects any other connected network. `disconnect` removes those managed settings; without a network it disconnects whichever is connected. No external WireGuard executable is required. Normal native management uses pinned HTTPS without a tunnel or SSH agent. See [Native networks](/networks/) for platform requirements, enrollment, endpoints, and private service names.
 
 ## Server administrator recovery
 

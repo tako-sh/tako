@@ -427,13 +427,7 @@ pub fn connect(value: Option<&str>) -> Result<()> {
         .into_iter()
         .filter(|(other, _)| other.id != alias.id)
         .collect();
-    // Aliases from `tako ssh config` survive disconnect, so they still count.
-    let mut replacing = Vec::new();
-    for (other, _) in &others {
-        if !network::local_access::is_proxied(other)? {
-            replacing.push(other.id.as_str());
-        }
-    }
+    let replacing: Vec<&str> = others.iter().map(|(other, _)| other.id.as_str()).collect();
     let _lifecycle = network::wireguard::lifecycle_lock(&alias)?;
     network::local_access::preflight(&alias, &profile, &replacing)?;
     for (other, other_profile) in &others {
@@ -555,7 +549,7 @@ pub fn disconnect(value: Option<&str>) -> Result<()> {
 fn teardown(alias: &crate::config::LocalNetwork, profile: &Profile) -> Result<()> {
     let _lifecycle = network::wireguard::lifecycle_lock(alias)?;
     network::wireguard::disconnect(alias, profile)?;
-    network::local_access::disconnect(alias)
+    network::local_access::remove(alias)
 }
 
 fn restore(alias: &crate::config::LocalNetwork, profile: &Profile) -> Result<()> {
@@ -713,72 +707,6 @@ pub fn ssh(server: &str, value: Option<&str>, remote_command: &[String]) -> Resu
     )?;
     if !status.success() {
         return Err(format!("SSH exited with {status}").into());
-    }
-    Ok(())
-}
-
-/// Installs or removes `~/.ssh/config` aliases that reach servers over the
-/// rootless tunnel, for OpenSSH-based tools such as scp, rsync, and editors.
-pub fn ssh_config(value: Option<&str>, remove: bool) -> Result<()> {
-    let alias = network::resolve_network(value)?;
-    if remove {
-        // Local cleanup must work while servers are unreachable or after the
-        // device's membership expired or was revoked.
-        let profile: Profile = network::read_json(&alias.profile_path()?)?;
-        if output::is_dry_run() {
-            return finish(
-                "Would remove SSH aliases",
-                serde_json::json!({"dry_run": true, "network": alias.name}),
-            );
-        }
-        let _lifecycle = network::wireguard::lifecycle_lock(&alias)?;
-        let keys = LocalDeviceKeys::load(&network::keys_path(&profile.request().request_id)?)?;
-        let own = profile
-            .snapshot()
-            .network
-            .id
-            .address(&keys.wg_public_key()?);
-        let connected = network::ssh_tunnel::local_address_assigned(own)?;
-        network::local_access::remove_proxy(&alias, &profile, connected)?;
-        return finish(
-            &format!("Removed SSH aliases for {}", alias.name),
-            serde_json::json!({"network": alias.name, "installed": false}),
-        );
-    }
-    let profile = if output::is_dry_run() {
-        network::load_profile(&alias)?
-    } else {
-        network::client::refresh(&alias)?
-    };
-    let _lifecycle = (!output::is_dry_run())
-        .then(|| network::wireguard::lifecycle_lock(&alias))
-        .transpose()?;
-    let hosts = network::local_access::install_proxy(&alias, &profile, !output::is_dry_run())?;
-    if output::is_dry_run() {
-        return finish(
-            "Would add SSH aliases to ~/.ssh/config",
-            serde_json::json!({"dry_run": true, "network": alias.name, "hosts": hosts}),
-        );
-    }
-    finish(
-        &format!(
-            "Added SSH aliases for {} {} to ~/.ssh/config",
-            hosts.len(),
-            if hosts.len() == 1 {
-                "server"
-            } else {
-                "servers"
-            }
-        ),
-        serde_json::json!({"network": alias.name, "installed": true, "hosts": hosts}),
-    )?;
-    for host in &hosts {
-        output::bullet(host);
-    }
-    if let Some(host) = hosts.first() {
-        output::hint(&format!(
-            "Use them with any OpenSSH tool: `ssh {host}`, `scp file {host}:`, `rsync -a dir/ {host}:dir/`, `ssh -L 5432:localhost:5432 {host}` (server loopback only), or VS Code Remote-SSH. Rerun after server membership changes."
-        ));
     }
     Ok(())
 }
