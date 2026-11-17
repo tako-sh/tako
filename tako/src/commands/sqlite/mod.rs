@@ -1320,7 +1320,7 @@ async fn delete_old_copy(
     yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     ctx.require_admin()?;
-    let (_, home) = ctx.database(name)?;
+    let (record, home) = ctx.database(name)?;
     let old = ctx.home(server)?;
     if old.device_id == home.device_id {
         return Err(format!(
@@ -1329,26 +1329,51 @@ async fn delete_old_copy(
         )
         .into());
     }
-    confirm(
-        &format!("Delete the old copy of {name} on {}?", old.name),
-        &format!(
-            "Writes made to it since {name} moved to {} are lost. The database and its snapshots stay.",
-            home.name
-        ),
-        yes,
-    )?;
+    // What that server holds under the name: the database's old copy, or an
+    // earlier database of the same name. The delete names it, so a copy
+    // replaced meanwhile is not deleted unseen.
+    let hosted: serde_json::Value = send(&old, Command::DatabaseStatus { name: None }).await?;
+    let generation = hosted["databases"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|database| database["name"] == name)
+        .and_then(|database| database["generation"].as_str().map(str::to_owned))
+        .ok_or_else(|| format!("{} holds no database named {name}.", old.name))?;
+    let same = generation == record.generation;
+    if same {
+        confirm(
+            &format!("Delete the old copy of {name} on {}?", old.name),
+            &format!(
+                "Writes made to it since {name} moved to {} are lost. The database and its snapshots stay.",
+                home.name
+            ),
+            yes,
+        )?;
+    } else {
+        confirm(
+            &format!("Delete the database named {name} on {}?", old.name),
+            &format!(
+                "It is not the network's {name} (on {}) but an earlier database of the same name; it and its snapshots are deleted.",
+                home.name
+            ),
+            yes,
+        )?;
+    }
     if output::is_dry_run() {
         return dry_run(
-            &format!("Delete the old copy of {name} on {}", old.name),
-            serde_json::json!({"database": name, "server": old.name}),
+            &format!("Delete the copy of {name} on {}", old.name),
+            serde_json::json!({"database": name, "server": old.name, "generation": generation}),
         );
     }
     let deleted: serde_json::Value = send(
         &old,
         Command::DeleteDatabase {
-            generation: None,
+            generation: Some(generation),
             name: name.to_owned(),
-            keep_snapshots: true,
+            // The network's database shares the old copy's snapshots; an
+            // earlier database's are its own.
+            keep_snapshots: same,
         },
     )
     .await?;
@@ -1356,7 +1381,7 @@ async fn delete_old_copy(
     if output::is_json() {
         return output::json_success("sqlite");
     }
-    output::success(&format!("Deleted the old copy of {name} on {}", old.name));
+    output::success(&format!("Deleted the copy of {name} on {}", old.name));
     Ok(())
 }
 

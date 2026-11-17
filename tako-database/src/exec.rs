@@ -122,6 +122,25 @@ pub(crate) fn run_pipeline(
     let mut committed = false;
     stream.wrote = false;
     for (index, request) in requests.into_iter().enumerate() {
+        // A result's framing is charged before its request runs, so a result
+        // always has room for it once the request has run; one that finds
+        // no room does not run.
+        if !budget.charge(FRAMING) {
+            if committed {
+                return unbuffered(results, None, total - index, closed, budget);
+            }
+            let stopped = if budget.host_exhausted() {
+                Stopped::HostBusy
+            } else {
+                Stopped::TooLarge
+            };
+            return PipelineOutcome {
+                results,
+                closed: true,
+                stopped: Some(stopped),
+                reservation: None,
+            };
+        }
         let result = match request {
             StreamRequest::Close => {
                 closed = true;
@@ -137,7 +156,7 @@ pub(crate) fn run_pipeline(
                     .map(|()| StreamResponse::Sequence)
             }
             StreamRequest::Describe { sql, sql_id } => {
-                describe(stream, database, sql.as_deref(), sql_id)
+                describe(stream, database, sql.as_deref(), sql_id, &mut budget)
                     .map(|result| StreamResponse::Describe { result })
             }
             StreamRequest::StoreSql { sql_id, sql } => {
@@ -158,7 +177,7 @@ pub(crate) fn run_pipeline(
         committed |= std::mem::take(&mut stream.wrote) && is_autocommit(stream);
         if budget.host_exhausted() {
             if committed {
-                return unbuffered(results, result, total - index - 1, closed, budget);
+                return unbuffered(results, Some(result), total - index - 1, closed, budget);
             }
             return PipelineOutcome {
                 results,
@@ -173,7 +192,7 @@ pub(crate) fn run_pipeline(
         let result = if budget.charge(metadata_size(&result)) {
             result
         } else if committed {
-            return unbuffered(results, result, total - index - 1, closed, budget);
+            return unbuffered(results, Some(result), total - index - 1, closed, budget);
         } else {
             let replacement = StreamResult::Error {
                 error: Error::new(
@@ -211,29 +230,32 @@ pub(crate) fn run_pipeline(
 /// Ends a pipeline whose committed changes must be reported, once its
 /// results find no more room, in the host's buffer or the response's own
 /// limit: discarding them would invite a retry that applies the changes
-/// twice. `current` ran and is kept when it fits the response's limit, or
-/// reported as run without its result; the `remaining` requests are answered
-/// with short errors without running. These count against neither budget:
-/// there are at most as many as the request had items, each of a fixed size.
+/// twice. `current`, the request that ran last, is kept when it fits the
+/// response's limit, or reported as run without its result; the `remaining`
+/// requests are answered with short errors without running. These count
+/// against neither budget: there are at most as many as the request had
+/// items, each of a fixed size.
 fn unbuffered(
     mut results: Vec<StreamResult>,
-    current: StreamResult,
+    current: Option<StreamResult>,
     remaining: usize,
     closed: bool,
     mut budget: Budget,
 ) -> PipelineOutcome {
     let host_busy = budget.host_exhausted();
-    let current = if budget.charge_unshared(metadata_size(&current)) {
-        current
-    } else {
-        StreamResult::Error {
-            error: Error::new(
-                "RESPONSE_TOO_LARGE",
-                "this request ran, but its result does not fit in the response",
-            ),
-        }
-    };
-    results.push(current);
+    if let Some(current) = current {
+        let current = if budget.charge_unshared(metadata_size(&current)) {
+            current
+        } else {
+            StreamResult::Error {
+                error: Error::new(
+                    "RESPONSE_TOO_LARGE",
+                    "this request ran, but its result does not fit in the response",
+                ),
+            }
+        };
+        results.push(current);
+    }
     let (code, message) = if host_busy {
         (
             "HOST_BUSY",
@@ -261,16 +283,6 @@ fn unbuffered(
 
 const FRAMING: usize = 64;
 
-fn text_size(text: &Option<String>) -> usize {
-    text.as_deref().map_or(4, engine::escaped_len) + 2
-}
-
-fn cols_size(cols: &[crate::proto::Col]) -> usize {
-    cols.iter()
-        .map(|col| 32 + text_size(&col.name) + text_size(&col.decltype))
-        .sum()
-}
-
 fn error_size(error: &Error) -> usize {
     FRAMING
         + engine::escaped_len(&error.message)
@@ -278,33 +290,28 @@ fn error_size(error: &Error) -> usize {
         + error.extended_code.as_deref().map_or(0, str::len)
 }
 
-fn stmt_size(result: &StmtResult) -> usize {
-    // affected_row_count, last_insert_rowid, rows_read, rows_written,
-    // query_duration_ms, and the keys around the rows.
-    192 + cols_size(&result.cols)
+/// A statement result's fixed fields: affected_row_count,
+/// last_insert_rowid, rows_read, rows_written, query_duration_ms, and the
+/// keys around the rows. Its columns were charged when they were read.
+fn stmt_size(_result: &StmtResult) -> usize {
+    192
 }
 
 /// The JSON size of a result apart from its rows: an upper bound for the
 /// fixed fields and framing, and the exact length of names and messages.
+/// Its framing was charged before the request ran.
 fn metadata_size(result: &StreamResult) -> usize {
-    FRAMING
-        + match result {
-            StreamResult::Error { error } => error_size(error),
-            StreamResult::Ok { response } => match response {
-                StreamResponse::Execute { result } => stmt_size(result),
-                // Each step is charged as the batch runs.
-                StreamResponse::Batch { .. } => 0,
-                StreamResponse::Describe { result } => {
-                    64 + cols_size(&result.cols)
-                        + result
-                            .params
-                            .iter()
-                            .map(|param| 16 + text_size(&param.name))
-                            .sum::<usize>()
-                }
-                _ => 32,
-            },
-        }
+    match result {
+        StreamResult::Error { error } => error_size(error),
+        StreamResult::Ok { response } => match response {
+            StreamResponse::Execute { result } => stmt_size(result),
+            // Each step is charged as the batch runs.
+            StreamResponse::Batch { .. } => 0,
+            // Its columns and parameters were charged as it was made.
+            StreamResponse::Describe { .. } => 64,
+            _ => 32,
+        },
+    }
 }
 
 /// The cursor client went away; the stream must be closed.
@@ -345,8 +352,8 @@ pub(crate) fn run_cursor(
                         // Column names can be long too: their share of the
                         // host's budget is reserved before they are copied
                         // into the line.
-                        engine::Event::Begin(cols) => {
-                            let size = FRAMING + cols_size(&cols);
+                        engine::Event::Begin(columns) => {
+                            let size = FRAMING + columns.encoded_size();
                             if size > max_row_bytes {
                                 return Err(Error::new(
                                     "RESPONSE_TOO_LARGE",
@@ -363,7 +370,7 @@ pub(crate) fn run_cursor(
                             (
                                 CursorEntry::StepBegin {
                                     step: step_index,
-                                    cols,
+                                    cols: columns.to_cols(),
                                 },
                                 Some(reserved),
                             )
@@ -584,12 +591,13 @@ fn describe(
     database: &Database,
     sql: Option<&str>,
     sql_id: Option<i32>,
+    budget: &mut Budget,
 ) -> Result<crate::proto::DescribeResult, Error> {
     let Stream {
         conn, stored_sql, ..
     } = stream;
     let sql = resolve_sql(stored_sql, sql, sql_id)?;
-    connection(conn, database)?.describe(sql)
+    connection(conn, database)?.describe(sql, budget)
 }
 
 fn store_sql(stream: &mut Stream, sql_id: i32, sql: String, limits: &Limits) -> Result<(), Error> {

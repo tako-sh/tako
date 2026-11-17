@@ -838,6 +838,7 @@ impl DatabaseHost {
                 match event {
                     engine::Event::Begin(cols) => {
                         columns = cols
+                            .to_cols()
                             .into_iter()
                             .map(|c| c.name.unwrap_or_default())
                             .collect();

@@ -941,26 +941,23 @@ async fn a_full_response_still_reports_changes_a_pipeline_committed() {
         .position(|result| result["type"] == "error")
         .expect("the response reached its limit");
     assert!(first_error > 0, "{body}");
+    // The request that reached the limit either did not run, or ran and says
+    // its result did not fit; every later one did not run.
+    let message = |index: usize| results[index]["error"]["message"].as_str().unwrap_or("");
+    let last_ran = message(first_error).contains("ran, but");
     assert!(
-        results[first_error]["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("ran"),
+        last_ran || message(first_error).starts_with("not run"),
         "{body}"
     );
     assert!(
-        results[first_error + 1..]
-            .iter()
-            .all(|result| result["error"]["message"]
-                .as_str()
-                .is_some_and(|message| message.starts_with("not run"))),
+        (first_error + 1..results.len()).all(|index| message(index).starts_with("not run")),
         "{body}"
     );
     // Exactly the requests reported as run were applied.
     let rows = pipeline(&h, Value::Null, vec![execute("SELECT count(*) FROM t")]).await;
     assert_eq!(
         rows["results"][0]["response"]["result"]["rows"][0][0]["value"],
-        (first_error + 1).to_string()
+        (first_error + usize::from(last_ran)).to_string()
     );
 }
 

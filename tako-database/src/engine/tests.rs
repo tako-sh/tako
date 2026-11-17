@@ -406,7 +406,12 @@ fn preparing_a_statement_counts_toward_the_time_limit() {
             .join(", ")
     );
     // Describing only prepares; it is stopped all the same.
-    assert_eq!(conn.describe(&sql).unwrap_err().code, "SQLITE_INTERRUPT");
+    assert_eq!(
+        conn.describe(&sql, &mut Budget::new(usize::MAX))
+            .unwrap_err()
+            .code,
+        "SQLITE_INTERRUPT"
+    );
     assert_eq!(run(&mut conn, &sql).unwrap_err().code, "SQLITE_INTERRUPT");
     // A statement that prepares and runs quickly still succeeds.
     assert_eq!(run(&mut conn, "SELECT 1").unwrap().rows.len(), 1);
@@ -452,19 +457,46 @@ fn sequence_runs_statements_and_stops_at_the_first_failure() {
 }
 
 #[test]
+fn columns_are_charged_before_they_are_copied() {
+    let fixture = fixture();
+    let mut conn = open(&fixture);
+    let alias = "c".repeat(10_000);
+    let sql = format!("SELECT 1 AS \"{alias}\"");
+    // The column name alone exceeds the budget: nothing runs or is copied.
+    let error = conn
+        .execute(&sql, &Args::Positional(&[]), true, &mut Budget::new(1_000))
+        .unwrap_err();
+    assert_eq!(error.code, "RESPONSE_TOO_LARGE");
+    let error = conn.describe(&sql, &mut Budget::new(1_000)).unwrap_err();
+    assert_eq!(error.code, "RESPONSE_TOO_LARGE");
+    // With room for it, both succeed.
+    let result = conn
+        .execute(
+            &sql,
+            &Args::Positional(&[]),
+            true,
+            &mut Budget::new(100_000),
+        )
+        .unwrap();
+    assert_eq!(result.cols[0].name.as_deref(), Some(alias.as_str()));
+    assert!(conn.describe(&sql, &mut Budget::new(100_000)).is_ok());
+}
+
+#[test]
 fn a_write_that_fails_afterwards_still_counts() {
     let fixture = fixture();
     let mut conn = open(&fixture);
     run(&mut conn, "CREATE TABLE t (x)").unwrap();
     conn.take_wrote();
-    // RETURNING applies every change before the first row; the budget then
-    // fails the statement, but the rows are committed.
+    // RETURNING applies every change before the first row; the budget,
+    // room for the columns but not a row, then fails the statement, but the
+    // rows are committed.
     let error = conn
         .execute(
             "INSERT INTO t SELECT value FROM json_each('[1,2,3,4]') RETURNING x",
             &Args::Positional(&[]),
             true,
-            &mut Budget::new(1),
+            &mut Budget::new(100),
         )
         .unwrap_err();
     assert_eq!(error.code, "RESPONSE_TOO_LARGE");
@@ -479,7 +511,10 @@ fn describe_reports_parameters_and_columns() {
     let mut conn = open(&fixture);
     run(&mut conn, "CREATE TABLE users (id INTEGER, name TEXT)").unwrap();
     let described = conn
-        .describe("SELECT id, name FROM users WHERE id = :id AND name = ?")
+        .describe(
+            "SELECT id, name FROM users WHERE id = :id AND name = ?",
+            &mut Budget::new(usize::MAX),
+        )
         .unwrap();
     assert_eq!(described.params.len(), 2);
     assert_eq!(described.params[0].name.as_deref(), Some(":id"));
@@ -487,8 +522,17 @@ fn describe_reports_parameters_and_columns() {
     assert_eq!(described.cols.len(), 2);
     assert!(described.is_readonly);
     assert!(!described.is_explain);
-    assert!(conn.describe("EXPLAIN SELECT 1").unwrap().is_explain);
-    assert!(!conn.describe("DELETE FROM users").unwrap().is_readonly);
+    assert!(
+        conn.describe("EXPLAIN SELECT 1", &mut Budget::new(usize::MAX))
+            .unwrap()
+            .is_explain
+    );
+    assert!(
+        !conn
+            .describe("DELETE FROM users", &mut Budget::new(usize::MAX))
+            .unwrap()
+            .is_readonly
+    );
 }
 
 #[test]
@@ -800,7 +844,7 @@ fn long_statements_run_without_the_statement_cache() {
         let result = run(&mut conn, &sql).unwrap();
         assert_eq!(result.rows, vec![vec![Value::Integer(42)]]);
     }
-    let described = conn.describe(&sql).unwrap();
+    let described = conn.describe(&sql, &mut Budget::new(usize::MAX)).unwrap();
     assert!(described.is_readonly);
 }
 

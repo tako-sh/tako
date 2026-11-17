@@ -563,8 +563,15 @@ impl Connection {
         let mut rows = Vec::new();
         let mut cols = Vec::new();
         let outcome = self.run(sql, args, want_rows, |event| match event {
+            // Charged before the names are copied, as rows are.
             Event::Begin(columns) => {
-                cols = columns;
+                if !budget.charge(columns.encoded_size()) {
+                    return Err(Error::new(
+                        "RESPONSE_TOO_LARGE",
+                        "the statement's columns exceed the response size limit",
+                    ));
+                }
+                cols = columns.to_cols();
                 Ok(())
             }
             Event::Row(row) => {
@@ -664,7 +671,9 @@ impl Connection {
         }
     }
 
-    pub fn describe(&mut self, sql: &str) -> Result<DescribeResult, Error> {
+    /// Describes a statement, charging its columns and parameters to
+    /// `budget` before they are copied.
+    pub fn describe(&mut self, sql: &str, budget: &mut Budget) -> Result<DescribeResult, Error> {
         check_not_empty(sql)?;
         let (mut cached, mut fresh) = (None, None);
         // Preparing a large statement can take long too.
@@ -672,6 +681,16 @@ impl Connection {
         let prepared = prepare(&self.conn, sql, &mut cached, &mut fresh);
         self.disarm_deadline();
         let stmt = prepared.map_err(|error| self.map_timeout(error))?;
+        let size = columns_size(stmt)
+            + (1..=stmt.parameter_count())
+                .map(|index| 16 + stmt.parameter_name(index).map_or(4, escaped_len) + 2)
+                .sum::<usize>();
+        if !budget.charge(size) {
+            return Err(Error::new(
+                "RESPONSE_TOO_LARGE",
+                "the statement's description exceeds the response size limit",
+            ));
+        }
         let params = (1..=stmt.parameter_count())
             .map(|index| DescribeParam {
                 name: stmt
@@ -724,7 +743,7 @@ impl Connection {
         let inserts = !readonly && starts_with_insert(sql);
         // Before stepping: the statement may write and then fail.
         self.wrote |= !readonly;
-        if let Err(error) = sink(Event::Begin(columns(stmt))) {
+        if let Err(error) = sink(Event::Begin(PendingColumns(stmt))) {
             self.disarm_deadline();
             return Err(error);
         }
@@ -832,8 +851,36 @@ impl Connection {
 
 /// What a running statement produces: its columns first, then each row.
 pub enum Event<'a> {
-    Begin(Vec<Col>),
+    Begin(PendingColumns<'a>),
     Row(PendingRow<'a>),
+}
+
+/// A statement's columns as SQLite holds them. Like a row's, their size is
+/// known before their names are copied.
+pub struct PendingColumns<'a>(&'a rusqlite::Statement<'a>);
+
+impl PendingColumns<'_> {
+    /// The columns' JSON size, used for the response budget.
+    pub fn encoded_size(&self) -> usize {
+        columns_size(self.0)
+    }
+
+    pub fn to_cols(&self) -> Vec<Col> {
+        columns(self.0)
+    }
+}
+
+/// The JSON size of one column: an upper bound for its fixed fields, and the
+/// exact length of its name and declared type.
+pub(crate) fn col_size(name: Option<&str>, decltype: Option<&str>) -> usize {
+    let text = |text: Option<&str>| text.map_or(4, escaped_len) + 2;
+    32 + text(name) + text(decltype)
+}
+
+fn columns_size(stmt: &rusqlite::Statement<'_>) -> usize {
+    stmt.columns()
+        .map(|column| col_size(Some(column.name()), column.decl_type()))
+        .sum()
 }
 
 /// A row as SQLite holds it. Its size is known before its values are
