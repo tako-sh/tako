@@ -148,6 +148,8 @@ mod tests {
                 "uploader".parse().unwrap(),
             )
             .unwrap();
+        // A client of its own: a copied name would clash with the approver's.
+        member.client = Some("uploader".parse().unwrap());
         member.permissions = Permissions::Deploy(["api/prod".parse().unwrap()].into());
         member.approved_by = Some(signed.signer.clone());
         member.independent_root = false;
