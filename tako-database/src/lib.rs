@@ -18,7 +18,7 @@ pub use engine::{
 };
 pub use host::{
     AdminQuery, Binding, DatabaseHost, DatabaseId, Home, HostConfig, HostError, PauseGuard,
-    TokenHash, generate_token, hash_token,
+    TokenHash, generate_token, hash_token, lock_unused, remove_database_files,
 };
 pub use migrate::{Migration, MigrationReport};
 pub use proto::Value;

@@ -1182,6 +1182,47 @@ impl Drop for PauseGuard {
     }
 }
 
+/// Takes the exclusive lock of a database file for a caller about to remove
+/// or replace it outside a host. `None` when a process serving the file
+/// holds its lock. Dropping the returned file releases it.
+pub fn lock_unused(path: &Path) -> std::io::Result<Option<File>> {
+    let file = open_lock(path)?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(error)) => Err(error),
+    }
+}
+
+/// Removes a database file with its write-ahead log, shared-memory file,
+/// and lock file. The caller holds the lock from [`lock_unused`]; missing
+/// files are not an error.
+pub fn remove_database_files(path: &Path, lock: File) -> std::io::Result<()> {
+    let sidecar = |suffix: &str| {
+        let mut name = path.as_os_str().to_owned();
+        name.push(suffix);
+        PathBuf::from(name)
+    };
+    for file in [
+        path.to_path_buf(),
+        sidecar("-wal"),
+        sidecar("-shm"),
+        sidecar("-journal"),
+    ] {
+        match std::fs::remove_file(&file) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    drop(lock);
+    match std::fs::remove_file(lock_path(path)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 fn lock_path(path: &Path) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(".lock");

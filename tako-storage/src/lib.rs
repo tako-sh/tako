@@ -10,6 +10,8 @@ use object_store::{
 };
 use tako_core::{StorageBinding, StorageProvider};
 
+pub mod database_snapshots;
+pub mod encryption;
 #[cfg(feature = "http")]
 pub mod local_http;
 #[cfg(feature = "http")]

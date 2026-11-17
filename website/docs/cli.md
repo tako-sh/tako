@@ -361,7 +361,7 @@ Backup commands default to `production`, require project context, and target the
 
 ```bash
 tako sqlite create <name> [--server <server>]
-tako sqlite list
+tako sqlite list [--local]
 tako sqlite ls
 tako sqlite status [<name>]
 tako sqlite shell <name> [<sql>]
@@ -370,11 +370,12 @@ tako sqlite migrations list [<database>] [--local]
 tako sqlite migrations apply [<database>] [--local]
 tako sqlite backup <name>
 tako sqlite backups <name>
-tako sqlite restore <name> (--latest|--snapshot <snapshot-id>) [--server <server>] [-y|--yes]
+tako sqlite restore <name> (--latest|--snapshot <snapshot-id>) [--server <server>|--local|--out <file>] [-y|--yes]
+tako sqlite pull <name> [-y|--yes]
 tako sqlite import <name> <file> [-y|--yes]
 tako sqlite export <name> <file>
 tako sqlite reset <name> [--local] [--force] [-y|--yes]
-tako sqlite delete <name> [--server <server>] [-y|--yes]
+tako sqlite delete <name> [--server <server>|--local] [-y|--yes]
 tako sqlite rm ...
 ```
 
@@ -385,6 +386,8 @@ tako sqlite rm ...
 `migrations new` creates `migrations/[<binding>/]<YYYYMMDDHHMMSS>_<slug>.sql` from the current UTC time (or the next number no migration in the folder uses) and the name, lowercased with other characters replaced by `_`; `--binding` is required when the project binds several names. `migrations list` reports the [migrations](/databases/#migrations) each bound database has yet to apply, and `migrations apply` applies them, as deploys do; both take an optional database name, and `--local` acts on the development files. `reset` empties a database after a safety snapshot and re-applies the project's migrations; it refuses a database the `production` environment binds without `--force`, and `--local` resets the development file.
 
 `shell` runs one statement when `<sql>` is given and otherwise reads statements from stdin, with `.tables`, `.schema [table]`, and `.quit` in an interactive terminal. Results stop at 1,000 rows and 8 MiB. Each statement commits on its own, so `BEGIN` is rejected. `backup` takes a snapshot now; `backups` lists snapshots with their reason (`scheduled`, `manual`, `before release`, `before migrations`, `before restore`). `restore` replaces the database with a snapshot; `--latest` picks the newest one that is not a `before restore` safety copy. With `--server` it recovers the database onto another server, which becomes its server, and removes the new copy again if the restore fails (keeping the snapshots); a move that stopped after its restore is finished by running the same command again; the old copy stops taking snapshots: at once if its server is up, otherwise once that server is back and sees the move. `import` replaces the database with a local SQLite file; `export` writes a consistent copy and refuses to overwrite an existing file. `delete` removes the database file, its snapshots, its network records, its `tako.toml` entries, and copies an unfinished move left on other servers of the network. It refuses while apps on the database's server bind it, and revokes grants to app environments on other servers after naming them in a warning. `delete --server <server>` removes only the copy `restore --server` left on an old server, keeping the database, its record, and its snapshots. `restore`, `import`, `reset`, and `delete` ask for confirmation; non-interactive runs need `--yes`.
+
+`--local` acts on the local copies that `tako dev` and `tako run` serve, which live in Tako's data directory under the project's network (`databases/<network-id>/<name>.sqlite`, or `databases/local/` without a network) and are shared by the network's projects: `list --local` lists them, `delete --local` removes one (refused while `tako dev` or `tako run` serves it), and `reset --local` empties one. `restore --local` puts a snapshot into the local copy, reading it from backup storage on this machine, and `pull` puts the database's current contents there, downloaded from its server; both verify the copy and apply the project's migrations to it. `restore --out <file>` writes a verified snapshot to a new file instead, also from backup storage on this machine, and replaces nothing; `export` does the same with the current contents.
 
 Global `--json` prints `{"ok":true,"command":"sqlite",...}`: `databases` for `list` and `status`, `snapshots` for `backups`, `migrations` for `migrations list` and `apply`, `path` for `migrations new`, and the created `database` for `create`. `shell --json` prints one query result per statement. See [Databases](/databases/).
 

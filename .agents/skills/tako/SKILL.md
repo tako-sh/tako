@@ -208,6 +208,9 @@ validation.
   removes the database with its snapshots, so confirm the database and the
   environments that bind it first, and take `tako sqlite backup` before risky
   changes. Schema changes go in `migrations/` SQL files, applied on deploy.
+  Local copies for `tako dev` are shared by the network's projects; `--local`
+  (`list`, `reset`, `delete`, `restore`) and `tako sqlite pull` act on them,
+  never on the hosted database.
 
 ## Channels, presence, stores, and workflows
 

@@ -126,6 +126,33 @@ pub(super) async fn export(
     name: &str,
     file: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let _t = output::timed(&format!("Export {name}"));
+    let export = download(
+        home,
+        name,
+        file,
+        &format!("Exporting {name}"),
+        &format!("Exported {name} to {}", file.display()),
+    )
+    .await?;
+    if output::is_json() {
+        return output::json_result(serde_json::json!({
+            "ok": true, "command": "sqlite",
+            "exported": {"database": name, "path": file, "size_bytes": export.size_bytes, "sha256": export.sha256},
+        }));
+    }
+    Ok(())
+}
+
+/// Downloads a consistent copy of a database to `file`, which must not
+/// exist, and checks it against its checksum.
+pub(super) async fn download(
+    home: &Home,
+    name: &str,
+    file: &Path,
+    progress: &str,
+    done: &str,
+) -> Result<DatabaseExport, Box<dyn std::error::Error>> {
     if file.exists() {
         return Err(format!("{} already exists.", file.display()).into());
     }
@@ -144,79 +171,68 @@ pub(super) async fn export(
         .tempfile_in(directory)
         .map_err(|e| format!("Create a file in {}: {e}", directory.display()))?;
     let mut client = ManagementClient::for_server(&home.entry).await?;
-    let _t = output::timed(&format!("Export {name}"));
-    let export: DatabaseExport = output::with_spinner_async(
-        &format!("Exporting {name}"),
-        &format!("Exported {name} to {}", file.display()),
-        async {
-            let export: DatabaseExport = send(
-                &mut client,
-                Command::BeginDatabaseExport {
-                    name: name.to_owned(),
-                },
-            )
-            .await
-            .map_err(|e| e.to_string())?;
-            let result = async {
-                let mut out = partial;
-                let mut hasher = Sha256::new();
-                let mut offset = 0u64;
-                while offset < export.size_bytes {
-                    let chunk: serde_json::Value = send(
-                        &mut client,
-                        Command::DatabaseExportChunk {
-                            name: name.to_owned(),
-                            export_id: export.export_id.clone(),
-                            offset,
-                        },
+    let export: DatabaseExport = output::with_spinner_async(progress, done, async {
+        let export: DatabaseExport = send(
+            &mut client,
+            Command::BeginDatabaseExport {
+                name: name.to_owned(),
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        let result = async {
+            let mut out = partial;
+            let mut hasher = Sha256::new();
+            let mut offset = 0u64;
+            while offset < export.size_bytes {
+                let chunk: serde_json::Value = send(
+                    &mut client,
+                    Command::DatabaseExportChunk {
+                        name: name.to_owned(),
+                        export_id: export.export_id.clone(),
+                        offset,
+                    },
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+                let data = BASE64
+                    .decode(
+                        chunk["data_base64"]
+                            .as_str()
+                            .ok_or("invalid export chunk")?,
                     )
-                    .await
                     .map_err(|e| e.to_string())?;
-                    let data = BASE64
-                        .decode(
-                            chunk["data_base64"]
-                                .as_str()
-                                .ok_or("invalid export chunk")?,
-                        )
-                        .map_err(|e| e.to_string())?;
-                    if data.is_empty() {
-                        return Err("the export ended early".to_string());
-                    }
-                    hasher.update(&data);
-                    out.write_all(&data).map_err(|e| e.to_string())?;
-                    offset += data.len() as u64;
+                if data.is_empty() {
+                    return Err("the export ended early".to_string());
                 }
-                out.as_file().sync_all().map_err(|e| e.to_string())?;
-                if hex::encode(hasher.finalize()) != export.sha256 {
-                    return Err("the downloaded copy does not match its checksum".to_string());
-                }
-                out.persist_noclobber(file)
-                    .map(drop)
-                    .map_err(|e| match e.error.kind() {
-                        std::io::ErrorKind::AlreadyExists => {
-                            format!("{} already exists", file.display())
-                        }
-                        _ => e.error.to_string(),
-                    })
+                hasher.update(&data);
+                out.write_all(&data).map_err(|e| e.to_string())?;
+                offset += data.len() as u64;
             }
-            .await;
-            let _: Result<serde_json::Value, _> = send(
-                &mut client,
-                Command::FinishDatabaseExport {
-                    name: name.to_owned(),
-                    export_id: export.export_id.clone(),
-                },
-            )
-            .await;
-            result.map(|()| export)
-        },
-    )
+            out.as_file().sync_all().map_err(|e| e.to_string())?;
+            if hex::encode(hasher.finalize()) != export.sha256 {
+                return Err("the downloaded copy does not match its checksum".to_string());
+            }
+            out.persist_noclobber(file)
+                .map(drop)
+                .map_err(|e| match e.error.kind() {
+                    std::io::ErrorKind::AlreadyExists => {
+                        format!("{} already exists", file.display())
+                    }
+                    _ => e.error.to_string(),
+                })
+        }
+        .await;
+        let _: Result<serde_json::Value, _> = send(
+            &mut client,
+            Command::FinishDatabaseExport {
+                name: name.to_owned(),
+                export_id: export.export_id.clone(),
+            },
+        )
+        .await;
+        result.map(|()| export)
+    })
     .await?;
-    if output::is_json() {
-        return output::json_result(serde_json::json!({
-            "ok": true, "command": "sqlite",
-            "exported": {"database": name, "path": file, "size_bytes": export.size_bytes, "sha256": export.sha256},
-        }));
-    }
-    Ok(())
+    Ok(export)
 }

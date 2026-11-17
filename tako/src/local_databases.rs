@@ -1,8 +1,11 @@
 //! Local databases for `tako dev` and `tako run`.
 //!
-//! Each database a project binds gets a SQLite file under
-//! `.tako/data/databases/<name>.sqlite`, served over the same protocol as on
-//! servers, so app code is identical in development and production.
+//! A database belongs to a network, not to a project, so its local copy does
+//! too: each lives in Tako's data directory as
+//! `databases/<network>/<name>.sqlite`, shared by every project of the
+//! network that binds the name. A project whose environments name no network
+//! uses the `local` namespace. The files are served over the same protocol
+//! as on servers, so app code is identical in development and production.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -13,17 +16,63 @@ use tako_database::{Binding, DatabaseHost, DatabaseId, Home, HostConfig};
 
 use crate::config::TakoToml;
 
-/// Binding name → database name for `tako dev` and `tako run`. Uses
+/// The namespace of local databases that have no network.
+pub(crate) const LOCAL_NAMESPACE: &str = "local";
+
+/// A local database: its name and the namespace (network) it belongs to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LocalDatabase {
+    pub name: String,
+    pub namespace: String,
+}
+
+/// The namespace of a project's local databases: the network `requested`,
+/// or else the development environment's, or else the one network the
+/// project's other environments use, or `local`.
+pub(crate) fn namespace(config: &TakoToml, requested: Option<&str>) -> String {
+    if let Some(requested) = requested {
+        return requested.to_owned();
+    }
+    if let Some(network) = config
+        .envs
+        .get("development")
+        .and_then(|env| env.network.as_deref())
+    {
+        return network.to_owned();
+    }
+    let networks: std::collections::BTreeSet<&str> = config
+        .envs
+        .iter()
+        .filter(|(name, _)| name.as_str() != "development")
+        .filter_map(|(_, env)| env.network.as_deref())
+        .collect();
+    match networks.len() {
+        1 => networks.into_iter().next().expect("one network").to_owned(),
+        _ => LOCAL_NAMESPACE.to_owned(),
+    }
+}
+
+/// Binding name → local database for `tako dev` and `tako run`. Uses
 /// `[envs.development].databases` when set, and otherwise every binding of
-/// every environment, so a project works locally without extra config.
-pub(crate) fn development_bindings(config: &TakoToml) -> BTreeMap<String, String> {
+/// every environment, so a project works locally without extra config; a
+/// binding taken from an environment belongs to that environment's network.
+pub(crate) fn development_bindings(config: &TakoToml) -> BTreeMap<String, LocalDatabase> {
+    let project = namespace(config, None);
     if let Some(env_config) = config.envs.get("development")
         && !env_config.databases.is_empty()
     {
         return env_config
             .databases
             .iter()
-            .map(|(binding, database)| (binding.clone(), database.clone()))
+            .map(|(binding, database)| {
+                (
+                    binding.clone(),
+                    LocalDatabase {
+                        name: database.clone(),
+                        namespace: project.clone(),
+                    },
+                )
+            })
             .collect();
     }
     let mut envs: Vec<_> = config.envs.iter().collect();
@@ -33,7 +82,13 @@ pub(crate) fn development_bindings(config: &TakoToml) -> BTreeMap<String, String
         for (binding, database) in &env_config.databases {
             bindings
                 .entry(binding.clone())
-                .or_insert_with(|| database.clone());
+                .or_insert_with(|| LocalDatabase {
+                    name: database.clone(),
+                    namespace: env_config
+                        .network
+                        .clone()
+                        .unwrap_or_else(|| project.clone()),
+                });
         }
     }
     bindings
@@ -41,15 +96,12 @@ pub(crate) fn development_bindings(config: &TakoToml) -> BTreeMap<String, String
 
 /// Binding name → absolute path of its local file, for the dev daemon.
 pub(crate) fn dev_files(project_dir: &Path, config: &TakoToml) -> BTreeMap<String, String> {
-    let project_dir = project_dir
-        .canonicalize()
-        .unwrap_or_else(|_| project_dir.to_path_buf());
     development_bindings(config)
         .into_iter()
         .map(|(binding, database)| {
             (
                 binding,
-                database_path(&project_dir, &database).display().to_string(),
+                database_path(project_dir, &database).display().to_string(),
             )
         })
         .collect()
@@ -92,12 +144,19 @@ pub(crate) fn development_migrations(
         config,
         bindings
             .iter()
-            .filter(|(_, name)| database.is_none_or(|only| only == name.as_str()))
-            .map(|(binding, name)| (binding.as_str(), name.as_str())),
+            .filter(|(_, local)| database.is_none_or(|only| only == local.name.as_str()))
+            .map(|(binding, local)| (binding.as_str(), local.name.as_str())),
     )?;
     for (database, selected) in selected {
         let (binding, migrations) = (selected.binding, selected.migrations);
-        let path = database_path(&project_dir, &database);
+        let local = bindings
+            .get(&binding)
+            .cloned()
+            .unwrap_or_else(|| LocalDatabase {
+                name: database.clone(),
+                namespace: namespace(config, None),
+            });
+        let path = database_path(&project_dir, &local);
         let report = tako_database::migrate::migrate_file(&path, owner, &migrations, dry_run)
             .map_err(|error| format!("Database `{binding}`: {error}"))?;
         result.warnings.extend(
@@ -123,12 +182,23 @@ pub(crate) fn development_migrations(
     Ok(result)
 }
 
-pub(crate) fn database_path(project_dir: &Path, database: &str) -> PathBuf {
-    project_dir
-        .join(".tako")
-        .join("data")
-        .join("databases")
-        .join(format!("{database}.sqlite"))
+/// Where local databases live: `<Tako data directory>/databases`.
+pub(crate) fn root() -> std::io::Result<PathBuf> {
+    Ok(crate::paths::tako_data_dir()?.join("databases"))
+}
+
+/// The file of a local database. Without a Tako data directory (no home
+/// directory), it stays in the project.
+pub(crate) fn database_path(project_dir: &Path, database: &LocalDatabase) -> PathBuf {
+    let file = format!("{}.sqlite", database.name);
+    match root() {
+        Ok(root) => root.join(&database.namespace).join(file),
+        Err(_) => project_dir
+            .join(".tako")
+            .join("data")
+            .join("databases")
+            .join(file),
+    }
 }
 
 /// A stable local ID for a database file.
@@ -150,11 +220,11 @@ impl LocalDatabases {
         &self.connections
     }
 
-    /// Starts serving `bindings` (binding → database name) on a loopback
+    /// Starts serving `bindings` (binding → local database) on a loopback
     /// port in a background runtime. Returns an empty set without bindings.
     pub(crate) fn start(
         project_dir: &Path,
-        bindings: &BTreeMap<String, String>,
+        bindings: &BTreeMap<String, LocalDatabase>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         if bindings.is_empty() {
             return Ok(Self {
@@ -258,30 +328,99 @@ route = "staging.shop.example.com"
 databases = { main = "shop-staging", events = "events" }
 "#;
 
+    /// Points Tako's data directory at a temporary one for a test.
+    struct TestHome {
+        directory: tempfile::TempDir,
+        previous: Option<std::ffi::OsString>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl TestHome {
+        fn new() -> Self {
+            let lock = crate::paths::test_tako_home_env_lock();
+            let directory = tempfile::tempdir().unwrap();
+            let previous = std::env::var_os("TAKO_HOME");
+            unsafe { std::env::set_var("TAKO_HOME", directory.path()) };
+            Self {
+                directory,
+                previous,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for TestHome {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(previous) => unsafe { std::env::set_var("TAKO_HOME", previous) },
+                None => unsafe { std::env::remove_var("TAKO_HOME") },
+            }
+        }
+    }
+
+    const NETWORK: &str = "0123456789abcdef0123456789abcdef";
+
     #[test]
     fn development_uses_every_binding_when_it_declares_none() {
         let bindings = development_bindings(&config(PROJECT));
         assert_eq!(
-            bindings["main"], "shop-db",
+            bindings["main"].name, "shop-db",
             "the first environment by name wins"
         );
-        assert_eq!(bindings["events"], "events");
+        assert_eq!(bindings["events"].name, "events");
         let explicit =
             format!("{PROJECT}\n[envs.development]\ndatabases = {{ main = \"local\" }}\n");
+        let bindings = development_bindings(&config(&explicit));
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings["main"].name, "local");
+    }
+
+    #[test]
+    fn local_databases_belong_to_the_projects_network() {
+        // Without a network, the `local` namespace.
+        assert_eq!(namespace(&config(PROJECT), None), LOCAL_NAMESPACE);
         assert_eq!(
-            development_bindings(&config(&explicit)),
-            BTreeMap::from([("main".to_string(), "local".to_string())])
+            development_bindings(&config(PROJECT))["main"].namespace,
+            LOCAL_NAMESPACE
+        );
+        // With one, its databases' local copies are the network's.
+        let networked = PROJECT.replace(
+            "[envs.production]\n",
+            &format!("[envs.production]\nnetwork = \"{NETWORK}\"\n"),
+        );
+        let config = config(&networked);
+        assert_eq!(namespace(&config, None), NETWORK);
+        assert_eq!(development_bindings(&config)["events"].namespace, NETWORK);
+        // So two projects of the network share one file per database name.
+        let home = TestHome::new();
+        let local = &development_bindings(&config)["main"];
+        assert_eq!(
+            database_path(Path::new("/elsewhere"), local),
+            home.directory
+                .path()
+                .join("databases")
+                .join(NETWORK)
+                .join("shop-db.sqlite")
         );
     }
 
     #[test]
     fn local_databases_serve_their_files() {
+        let home = TestHome::new();
         let dir = tempfile::tempdir().unwrap();
-        let bindings = BTreeMap::from([("main".to_string(), "shop".to_string())]);
-        let local = LocalDatabases::start(dir.path(), &bindings).unwrap();
-        let connection = &local.connections()["main"];
+        let local = LocalDatabase {
+            name: "shop".into(),
+            namespace: LOCAL_NAMESPACE.into(),
+        };
+        let bindings = BTreeMap::from([("main".to_string(), local.clone())]);
+        let served = LocalDatabases::start(dir.path(), &bindings).unwrap();
+        let connection = &served.connections()["main"];
         assert!(connection.url.starts_with("http://127.0.0.1:"));
-        assert!(database_path(dir.path(), "shop").exists());
+        let path = database_path(dir.path(), &local);
+        assert!(path.starts_with(home.directory.path()));
+        assert!(path.exists());
+        // While it is served, it cannot be deleted.
+        assert!(tako_database::lock_unused(&path).unwrap().is_none());
         let body = serde_json::json!({"baton": null, "requests": [
             {"type": "execute", "stmt": {"sql": "SELECT 41 + 1"}}
         ]});
@@ -304,5 +443,20 @@ databases = { main = "shop-staging", events = "events" }
             value["results"][0]["response"]["result"]["rows"][0][0]["value"],
             "42"
         );
+        // The runtime stops in the background, and the file with it.
+        drop(served);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let lock = loop {
+            if let Some(lock) = tako_database::lock_unused(&path).unwrap() {
+                break lock;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the file stays in use"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        tako_database::remove_database_files(&path, lock).unwrap();
+        assert!(!path.exists());
     }
 }

@@ -9,28 +9,26 @@
 //! of each of the last 7 days and 4 weeks.
 
 use std::collections::{BTreeSet, HashSet};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures_util::TryStreamExt;
 use object_store::{ObjectStore, ObjectStoreExt, path::Path as ObjectPath};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use tako_core::{
-    BackupEncryptionInfo, BackupKeyBinding, DatabaseBackupStatus, DatabaseSnapshot, SnapshotReason,
-    StorageBinding,
+    BackupKeyBinding, DatabaseBackupStatus, DatabaseSnapshot, SnapshotReason, StorageBinding,
 };
 use tako_database::DatabaseId;
 
 use super::now_unix_secs;
 use crate::ServerState;
 use crate::operations::{
-    METADATA_TIMEOUT, backup_store, decrypt_backup_file, download_object, encrypt_backup_file,
-    put_json_object, upload_file, with_deadline,
+    METADATA_TIMEOUT, backup_store, download_object, encrypt_backup_file, put_json_object,
+    upload_file, with_deadline,
 };
 use crate::state_store::StoredDatabase;
+use tako_storage::database_snapshots::{self as layout, MANIFEST_FORMAT, Manifest};
 
 /// How often a changing database is snapshotted.
 const SNAPSHOT_INTERVAL_SECS: u64 = 60 * 60;
@@ -49,7 +47,6 @@ const STALE_WORK_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 const ORPHAN_AGE_SECS: i64 = 24 * 60 * 60;
 /// Free space kept on the data disk beyond snapshots' working files.
 const DISK_RESERVE_BYTES: u64 = 256 * 1024 * 1024;
-const MANIFEST_FORMAT: u32 = 1;
 
 /// In-memory backup state of one database. The object store is the record;
 /// this only avoids listing it on every scheduler tick.
@@ -62,37 +59,20 @@ pub(crate) struct BackupState {
     pub loaded: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct Manifest {
-    format: u32,
-    database: String,
-    generation: String,
-    snapshot: DatabaseSnapshot,
-    encryption: BackupEncryptionInfo,
-}
-
-/// Snapshots live under the database's name and generation, so a database
-/// created again under an earlier one's name never sees its snapshots.
-fn prefix(stored: &StoredDatabase) -> String {
-    format!(
-        "_tako/databases/{}/{}/snapshots",
-        stored.name, stored.generation
-    )
-}
-
+// The layout is shared with the CLI, which restores snapshots locally.
 fn manifest_key(stored: &StoredDatabase, snapshot: &str) -> String {
-    format!("{}/{snapshot}.json", prefix(stored))
+    layout::manifest_key(&stored.name, &stored.generation, snapshot)
 }
 
 fn data_key(stored: &StoredDatabase, snapshot: &str) -> String {
-    format!("{}/{snapshot}.sqlite.zst.enc", prefix(stored))
+    layout::data_key(&stored.name, &stored.generation, snapshot)
 }
 
 /// Names the server that last restored the database. A copy a move left
 /// behind sees another server there and stops publishing snapshots, even
 /// when it was unreachable during the move.
 fn holder_key(stored: &StoredDatabase) -> String {
-    format!("{}/holder", prefix(stored))
+    layout::holder_key(&stored.name, &stored.generation)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -191,12 +171,10 @@ async fn claim_holder(
 }
 
 fn key_binding(stored: &StoredDatabase, override_key: Option<&str>) -> BackupKeyBinding {
-    BackupKeyBinding {
-        id: format!("database-{}", stored.generation),
-        key_base64: override_key
-            .unwrap_or(&stored.secrets.backup_key_base64)
-            .to_owned(),
-    }
+    layout::key_binding(
+        &stored.generation,
+        override_key.unwrap_or(&stored.secrets.backup_key_base64),
+    )
 }
 
 #[cfg(not(test))]
@@ -882,24 +860,14 @@ async fn list_objects(
     remote: &dyn ObjectStore,
     stored: &StoredDatabase,
 ) -> Result<Vec<(ObjectPath, i64)>, String> {
-    let prefix = ObjectPath::parse(prefix(stored)).map_err(|e| e.to_string())?;
-    with_deadline(METADATA_TIMEOUT, async {
-        remote
-            .list(Some(&prefix))
-            .map_ok(|meta| (meta.location, meta.last_modified.timestamp()))
-            .try_collect::<Vec<_>>()
-            .await
-            .map_err(|e| format!("list database snapshots: {e}"))
-    })
-    .await
+    layout::list_objects(remote, &stored.name, &stored.generation, METADATA_TIMEOUT).await
 }
 
 async fn list_manifests(
     remote: &dyn ObjectStore,
     stored: &StoredDatabase,
 ) -> Result<Vec<Manifest>, String> {
-    let objects = list_objects(remote, stored).await?;
-    read_manifests(remote, stored, &objects).await
+    layout::list_manifests(remote, &stored.name, &stored.generation, METADATA_TIMEOUT).await
 }
 
 async fn read_manifests(
@@ -907,37 +875,14 @@ async fn read_manifests(
     stored: &StoredDatabase,
     objects: &[(ObjectPath, i64)],
 ) -> Result<Vec<Manifest>, String> {
-    let mut manifests = Vec::new();
-    for (key, _) in objects
-        .iter()
-        .filter(|(key, _)| key.as_ref().ends_with(".json"))
-    {
-        let bytes = with_deadline(METADATA_TIMEOUT, async {
-            remote
-                .get(key)
-                .await
-                .map_err(|e| format!("read snapshot manifest: {e}"))?
-                .bytes()
-                .await
-                .map_err(|e| format!("read snapshot manifest: {e}"))
-        })
-        .await?;
-        match serde_json::from_slice::<Manifest>(&bytes) {
-            Ok(manifest)
-                if manifest.database == stored.name && manifest.generation == stored.generation =>
-            {
-                manifests.push(manifest)
-            }
-            Ok(_) => tracing::warn!(%key, "Ignoring a snapshot manifest of another database"),
-            Err(error) => tracing::warn!(%key, %error, "Ignoring an unreadable snapshot manifest"),
-        }
-    }
-    // Newest first; within a second, by the millisecond-ordered ID.
-    manifests.sort_by(|a, b| {
-        (b.snapshot.created_at_unix_secs, &b.snapshot.id)
-            .cmp(&(a.snapshot.created_at_unix_secs, &a.snapshot.id))
-    });
-    Ok(manifests)
+    layout::read_manifests(
+        remote,
+        &stored.name,
+        &stored.generation,
+        objects,
+        METADATA_TIMEOUT,
+    )
+    .await
 }
 
 async fn list(stored: &StoredDatabase) -> Result<Vec<DatabaseSnapshot>, String> {
@@ -1140,38 +1085,7 @@ pub(crate) async fn restore(
     };
     let restored = async {
         let manifests = list_manifests(remote.as_ref(), &stored).await?;
-        let manifest = match snapshot {
-            Some(wanted) => manifests
-                .into_iter()
-                .find(|m| m.snapshot.id == wanted)
-                .ok_or_else(|| {
-                    format!(
-                        "Snapshot {wanted} of database {} was not found.",
-                        stored.name
-                    )
-                })?,
-            // The newest snapshot of the database's own history: the safety
-            // copies that restores and imports take of what they replace are
-            // left out, so repeating a restore does not undo it.
-            None => {
-                let fallback = manifests.first().map(|m| m.snapshot.id.clone());
-                let mut manifests = manifests.into_iter();
-                match manifests
-                    .by_ref()
-                    .find(|m| m.snapshot.reason != SnapshotReason::Restore)
-                {
-                    Some(manifest) => manifest,
-                    None => {
-                        let id = fallback
-                            .ok_or_else(|| format!("Database {} has no snapshots yet.", stored.name))?;
-                        return Err(format!(
-                            "Database {} has only snapshots taken before restores or imports; pass --snapshot {id} to restore one.",
-                            stored.name
-                        ));
-                    }
-                }
-            }
-        };
+        let manifest = layout::choose(manifests, &stored.name, snapshot)?;
 
         restore_from(state, &stored, remote.as_ref(), manifest, key_override).await
     }
@@ -1237,24 +1151,16 @@ async fn restore_from(
     let encrypted = work.path.join("snapshot.sqlite.zst.enc");
     download_object(remote, &data_key(stored, &manifest.snapshot.id), &encrypted).await?;
     let key = key_binding(stored, key_override.as_deref());
-    let restored = work.path.join("restored.sqlite");
-    {
-        let (encrypted, restored) = (encrypted.clone(), restored.clone());
-        let compressed = work.path.join("snapshot.sqlite.zst");
-        let encryption = manifest.encryption.clone();
-        let expected = manifest.snapshot.sha256.clone();
-        tokio::task::spawn_blocking(move || -> Result<(), String> {
-            decrypt_backup_file(&encrypted, &compressed, &key, &encryption)?;
-            decompress(&compressed, &restored)?;
-            let (sha256, _) = sha256_file(&restored)?;
-            if sha256 != expected {
-                return Err("the downloaded snapshot does not match its checksum".into());
-            }
-            tako_database::verify_database(&restored)
+    let restored = {
+        let (encrypted, dir, opened) = (encrypted.clone(), work.path.clone(), manifest.clone());
+        tokio::task::spawn_blocking(move || -> Result<PathBuf, String> {
+            let restored = layout::open(&encrypted, &dir, &opened, &key)?;
+            tako_database::verify_database(&restored)?;
+            Ok(restored)
         })
         .await
-        .map_err(|e| e.to_string())??;
-    }
+        .map_err(|e| e.to_string())??
+    };
 
     let warnings = replace_locked(state, stored, restored, "database is being restored").await?;
     tracing::info!(database = %stored.name, snapshot = %manifest.snapshot.id, "Restored database");
@@ -1419,24 +1325,7 @@ pub(crate) fn fresh_work_dir(
     Ok(WorkDir { path })
 }
 
-pub(crate) fn sha256_file(path: &Path) -> Result<(String, u64), String> {
-    let mut file =
-        std::fs::File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
-    let mut hasher = Sha256::new();
-    let mut buffer = vec![0u8; 256 * 1024];
-    let mut total = 0u64;
-    loop {
-        let read = file
-            .read(&mut buffer)
-            .map_err(|e| format!("read {}: {e}", path.display()))?;
-        if read == 0 {
-            break;
-        }
-        total += read as u64;
-        hasher.update(&buffer[..read]);
-    }
-    Ok((hex::encode(hasher.finalize()), total))
-}
+pub(crate) use layout::sha256_file;
 
 fn compress(input: &Path, output: &Path) -> Result<(), String> {
     let mut reader = std::fs::File::open(input).map_err(|e| e.to_string())?;
@@ -1448,17 +1337,10 @@ fn compress(input: &Path, output: &Path) -> Result<(), String> {
     file.sync_all().map_err(|e| e.to_string())
 }
 
-fn decompress(input: &Path, output: &Path) -> Result<(), String> {
-    let reader = std::fs::File::open(input).map_err(|e| e.to_string())?;
-    let mut decoder = zstd::stream::Decoder::new(reader).map_err(|e| e.to_string())?;
-    let mut writer = std::fs::File::create(output).map_err(|e| e.to_string())?;
-    std::io::copy(&mut decoder, &mut writer).map_err(|e| format!("decompress snapshot: {e}"))?;
-    writer.sync_all().map_err(|e| e.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use layout::decompress;
 
     fn snapshot(id: &str, created: u64) -> DatabaseSnapshot {
         DatabaseSnapshot {

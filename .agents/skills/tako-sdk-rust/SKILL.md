@@ -63,8 +63,10 @@ let main = tako::database("main").expect("a database bound as main");
 ```
 
 Tako tests the JavaScript drivers; use a Rust client that speaks Hrana over
-HTTP with JSON. `tako dev` and `tako run` serve bindings from
-`.tako/data/databases/<database>.sqlite`. Put SQL migrations in `migrations/`
+HTTP with JSON. `tako dev` and `tako run` serve bindings from local copies in
+Tako's data directory (`databases/<network-id>/<database>.sqlite`), shared by
+the network's projects; `tako sqlite pull <name>` brings production data into
+them. Put SQL migrations in `migrations/`
 (`migrations/<binding>/` for several bindings); Tako applies pending ones on
 deploy, in `tako dev`, and in `tako run`. A migration tool of your own runs as
 the release command; the endpoint is loopback-only on the server. Container

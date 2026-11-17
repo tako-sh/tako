@@ -6,23 +6,27 @@ publish = false
 
 [features]
 default = ["http"]
-http = ["dep:futures-util", "dep:hmac", "dep:hex", "dep:http", "dep:serde_json", "dep:percent-encoding", "dep:pingora-core", "dep:pingora-proxy", "dep:pingora-http", "dep:tracing", "dep:cap-std", "dep:tempfile", "dep:libc"]
+http = ["dep:hmac", "dep:http", "dep:percent-encoding", "dep:pingora-core", "dep:pingora-proxy", "dep:pingora-http", "dep:cap-std", "dep:tempfile", "dep:libc"]
 
 [dependencies]
 tako-core = { path = "../tako-core" }
 object_store = { version = "=0.14.2", default-features = false, features = ["fs", "aws"] }
-futures-util = { version = "0.3", optional = true }
+futures-util = "0.3"
 tokio.workspace = true
 hmac = { version = "0.13", features = ["zeroize"], optional = true }
-hex = { version = "0.4", optional = true }
+hex = "0.4"
 http = { version = "1", optional = true }
-serde_json = { workspace = true, optional = true }
+serde_json.workspace = true
+serde.workspace = true
+openssl.workspace = true
+base64 = "0.23"
+zstd = "0.14"
 url = "2"
 percent-encoding = { version = "2", optional = true }
 pingora-core = { version = "0.9", default-features = false, features = ["openssl"], optional = true }
 pingora-proxy = { version = "0.9", default-features = false, features = ["openssl"], optional = true }
 pingora-http = { version = "0.9", optional = true }
-tracing = { version = "0.1", optional = true }
+tracing = "0.1"
 cap-std = { version = "4.0.3", optional = true }
 libc = { version = "0.2", optional = true }
 sha2 = { version = "0.11", features = ["zeroize"] }

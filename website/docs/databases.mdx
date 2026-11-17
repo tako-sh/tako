@@ -139,13 +139,13 @@ History is kept per app: apps that share a database each track their own migrati
 
 ## Develop locally
 
-`tako dev` and `tako run` serve bound databases from local files with the same protocol and SDK surface, so code does not change between development and production:
+`tako dev` and `tako run` serve bound databases from local copies with the same protocol and SDK surface, so code does not change between development and production. A database belongs to a network, so its local copy does too: it lives in Tako's data directory, shared by every project of the network that binds the name:
 
 ```text
-.tako/data/databases/<database-name>.sqlite
+<Tako data directory>/databases/<network-id>/<database-name>.sqlite
 ```
 
-Files are created on first use, and migrations are applied to them. Development uses `[envs.development].databases` when it is set. Otherwise it binds every name used by any environment, taking the database from the first environment in name order, so most projects need no development bindings. To choose them yourself:
+Tako's data directory is `~/.local/share/tako` on Linux and `~/Library/Application Support/tako` on macOS (`$TAKO_HOME` when set). A project whose environments name no network yet uses `databases/local/`. Copies are created on first use, and migrations are applied to them. Development uses `[envs.development].databases` when it is set. Otherwise it binds every name used by any environment, taking the database from the first environment in name order, so most projects need no development bindings. To choose them yourself:
 
 ```toml
 [envs.development]
@@ -158,7 +158,29 @@ Run one-off scripts with the app's bindings:
 tako run bun scripts/seed.ts
 ```
 
-`tako run` always runs locally and serves only development bindings. With `--env production` (or any other environment) the script gets no databases and Tako prints a warning: hosted databases are reachable only from deployed apps. Use `tako sqlite shell`, `tako sqlite export`, or a release command for production data.
+`tako run` always runs locally and serves only development bindings. With `--env production` (or any other environment) the script gets no databases and Tako prints a warning: hosted databases are reachable only from deployed apps. Use `tako sqlite shell`, `tako sqlite export`, or a release command for production data, or bring it into the local copy:
+
+```bash
+tako sqlite pull main                     # the database as it is now, from its server
+tako sqlite restore main --local --latest # a snapshot, read from backup storage on this machine
+```
+
+Both replace the local copy, verify it, and apply the project's migrations to it. To keep a copy in a file of your choosing instead, without touching the local copy:
+
+```bash
+tako sqlite export main ./dumps/main.sqlite                  # the database as it is now
+tako sqlite restore main --latest --out ./dumps/main.sqlite  # a snapshot, from backup storage
+``` `restore --local` needs no reachable server, only the backup storage of an environment that binds the database; `pull` needs no backups. Both require network and server administrator permission. While `tako dev` or `tako run` serves the copy, the new contents are written into it in place, so the app sees them without a restart.
+
+Manage the local copies with:
+
+```bash
+tako sqlite list --local          # the network's local copies, with their size
+tako sqlite reset main --local    # drop every table, then apply migrations again
+tako sqlite delete main --local   # remove the file; `tako dev` creates an empty one on next use
+```
+
+`delete --local` refuses a copy that `tako dev` or `tako run` is serving; stop them first.
 
 The development endpoint listens on a random loopback port for the lifetime of the dev daemon or `tako run`. Its URL and token change between sessions; read them from the binding rather than copying them.
 

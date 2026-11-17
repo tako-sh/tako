@@ -1,6 +1,6 @@
 /**
- * Hosted databases through `tako run`: the CLI serves `.tako/data/databases/`
- * files over the same protocol as tako-server, and both supported JS drivers
+ * Hosted databases through `tako run`: the CLI serves the local copies in
+ * Tako's data directory over the same protocol as tako-server, and both supported JS drivers
  * work against it.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
@@ -78,7 +78,7 @@ describe("tako run with a database binding", () => {
     const report = await runClients();
 
     expect(report["url"]).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
-    expect(existsSync(join(project, ".tako", "data", "databases", "app-db.sqlite"))).toBe(true);
+    expect(existsSync(join(project, ".tako-home", "databases", "local", "app-db.sqlite"))).toBe(true);
     expect(report["previousRows"]).toBe(0);
 
     expect(report["insert"]).toEqual({ rowsAffected: 1, hasRowid: true });
@@ -116,6 +116,43 @@ describe("tako run with a database binding", () => {
     expect(report["previousRows"]).toBe(2);
   });
 
+  test("lists and deletes the local copy", async () => {
+    const sqlite = async (args: string[]) => {
+      const child = Bun.spawn([TAKO_BIN, "sqlite", ...args, "--json"], {
+        cwd: project,
+        env: {
+          ...process.env,
+          HOME: project,
+          TAKO_HOME: join(project, ".tako-home"),
+          NO_COLOR: "1",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [code, out, err] = await Promise.all([
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]);
+      if (code !== 0) throw new Error(`tako sqlite exited ${code}\n${out}\n${err}`);
+      return JSON.parse(out.trim().split("\n").at(-1)!) as Record<string, unknown>;
+    };
+    const listed = await sqlite(["list", "--local"]);
+    expect(listed["namespace"]).toBe("local");
+    // Every local copy of the namespace, also ones other projects created.
+    const databases = listed["databases"] as { name: string; bindings: string[] }[];
+    const appDb = databases.find((database) => database.name === "app-db");
+    expect(appDb?.bindings).toEqual(["main"]);
+
+    await sqlite(["delete", "app-db", "--local", "--yes"]);
+    expect(existsSync(join(project, ".tako-home", "databases", "local", "app-db.sqlite"))).toBe(
+      false,
+    );
+    // The next run starts from an empty copy.
+    const report = await runClients();
+    expect(report["previousRows"]).toBe(0);
+  });
+
   test("other environments get no databases", async () => {
     const child = Bun.spawn(
       [
@@ -148,7 +185,7 @@ describe("tako run with a database binding", () => {
     expect(code).toBe(0);
     expect(JSON.parse(out.trim())).toEqual({});
     expect(err).toContain("reachable only from deployed apps");
-    expect(existsSync(join(project, ".tako", "data", "databases", "prod-db.sqlite"))).toBe(false);
+    expect(existsSync(join(project, ".tako-home", "databases", "local", "prod-db.sqlite"))).toBe(false);
   });
 
   test("Drizzle migrations and queries run over @libsql/client", async () => {
@@ -203,7 +240,7 @@ describe("migrations", () => {
   };
   const rows = () => {
     const { Database } = require("bun:sqlite");
-    const db = new Database(join(dir, ".tako", "data", "databases", "app-db.sqlite"));
+    const db = new Database(join(dir, ".tako-home", "databases", "local", "app-db.sqlite"));
     try {
       return db
         .query("SELECT name FROM items ORDER BY name")
@@ -258,7 +295,7 @@ describe("migrations", () => {
 
   test("reset empties the local database and migrates it again", async () => {
     const { Database } = require("bun:sqlite");
-    const db = new Database(join(dir, ".tako", "data", "databases", "app-db.sqlite"));
+    const db = new Database(join(dir, ".tako-home", "databases", "local", "app-db.sqlite"));
     db.run("INSERT INTO items VALUES ('scratch')");
     db.close();
     const reset = await tako("sqlite", "reset", "app-db", "--local", "--yes");

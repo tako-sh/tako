@@ -19,6 +19,7 @@ use crate::management_http::ManagementClient;
 use crate::network::databases::DatabaseRecord;
 use crate::output;
 
+mod local;
 mod shell;
 pub(crate) mod target;
 mod transfer;
@@ -47,7 +48,11 @@ pub enum SqliteCommands {
 
     /// List the network's databases
     #[command(visible_alias = "ls")]
-    List,
+    List {
+        /// List the local copies `tako dev` and `tako run` serve instead
+        #[arg(long)]
+        local: bool,
+    },
 
     /// Show a database's size, users, and backups
     Status {
@@ -94,8 +99,26 @@ pub enum SqliteCommands {
         #[arg(long)]
         snapshot: Option<String>,
         /// Recover onto another server, which becomes the database's server
-        #[arg(long)]
+        #[arg(long, conflicts_with = "local")]
         server: Option<String>,
+        /// Restore the snapshot into the local copy `tako dev` and `tako run`
+        /// serve, reading it from backup storage on this machine
+        #[arg(long, conflicts_with = "out")]
+        local: bool,
+        /// Write the snapshot to this file instead, reading it from backup
+        /// storage on this machine; nothing is replaced
+        #[arg(long, value_name = "FILE", conflicts_with = "server")]
+        out: Option<PathBuf>,
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
+    },
+
+    /// Replace the local copy `tako dev` and `tako run` serve with the
+    /// database's current contents
+    Pull {
+        /// Database name
+        name: String,
         /// Skip confirmation prompt
         #[arg(short = 'y', long = "yes")]
         yes: bool,
@@ -142,8 +165,11 @@ pub enum SqliteCommands {
         name: String,
         /// Delete only the copy left on this server after
         /// `restore --server` moved the database elsewhere
-        #[arg(long)]
+        #[arg(long, conflicts_with = "local")]
         server: Option<String>,
+        /// Delete the local copy `tako dev` and `tako run` serve instead
+        #[arg(long)]
+        local: bool,
         /// Skip confirmation prompt
         #[arg(short = 'y', long = "yes")]
         yes: bool,
@@ -526,7 +552,10 @@ async fn run_async(
             let ctx = Context::load(config_path, network).await?;
             create(&ctx, &name, server.as_deref()).await
         }
-        SqliteCommands::List => {
+        SqliteCommands::List { local } => {
+            if local {
+                return local::list(config_path, network);
+            }
             let ctx = Context::load(config_path, network).await?;
             list(&ctx)
         }
@@ -572,10 +601,22 @@ async fn run_async(
             latest: _,
             snapshot,
             server,
+            local,
+            out,
             yes,
         } => {
             let ctx = Context::load(config_path, network).await?;
+            if let Some(out) = out {
+                return local::download_snapshot(&ctx, &name, snapshot, &out).await;
+            }
+            if local {
+                return local::restore(&ctx, &name, snapshot, yes).await;
+            }
             restore(&ctx, &name, snapshot, server.as_deref(), yes).await
+        }
+        SqliteCommands::Pull { name, yes } => {
+            let ctx = Context::load(config_path, network).await?;
+            local::pull(&ctx, &name, yes).await
         }
         SqliteCommands::Import { name, file, yes } => {
             let ctx = Context::load(config_path, network).await?;
@@ -613,12 +654,20 @@ async fn run_async(
             yes,
         } => {
             if local {
-                return reset_local(config_path, &name, yes);
+                return local::reset(config_path, network, &name, yes);
             }
             let ctx = Context::load(config_path, network).await?;
             reset(&ctx, &name, force, yes).await
         }
-        SqliteCommands::Delete { name, server, yes } => {
+        SqliteCommands::Delete {
+            name,
+            server,
+            local,
+            yes,
+        } => {
+            if local {
+                return local::delete(config_path, network, &name, yes);
+            }
             let ctx = Context::load(config_path, network).await?;
             match server {
                 Some(server) => delete_old_copy(&ctx, &name, &server, yes).await,
@@ -1525,7 +1574,7 @@ fn migrate_local(
     if let Some(database) = database
         && !crate::local_databases::development_bindings(&config)
             .values()
-            .any(|name| name == database)
+            .any(|local| local.name == database)
     {
         return Err(format!("This project binds no local database named '{database}'.").into());
     }
@@ -1674,54 +1723,6 @@ fn utc_timestamp() -> Result<String, Box<dyn std::error::Error>> {
         now.minute(),
         now.second()
     ))
-}
-
-fn reset_local(
-    config_path: Option<&Path>,
-    name: &str,
-    yes: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    tako_core::validate_database_name(name)?;
-    let (project, config) = load_project(config_path)?;
-    let project_dir = project
-        .project_dir
-        .canonicalize()
-        .unwrap_or_else(|_| project.project_dir.clone());
-    let path = crate::local_databases::database_path(&project_dir, name);
-    confirm(
-        &format!("Reset the local database {name}?"),
-        "Every table in it is dropped; then the development migrations run again.",
-        yes,
-    )?;
-    if output::is_dry_run() {
-        return dry_run(
-            &format!("Reset the local database {name}"),
-            serde_json::json!({"database": name}),
-        );
-    }
-    if path.exists() {
-        tako_database::reset_database_file(&path)?;
-    }
-    // Only this database: the others keep their state.
-    let migrated = crate::local_databases::development_migrations(
-        &project.project_dir,
-        &config,
-        false,
-        Some(name),
-    )?;
-    for warning in &migrated.warnings {
-        output::warning(warning);
-    }
-    if output::is_json() {
-        return output::json_result(serde_json::json!({
-            "ok": true, "command": "sqlite", "reset": name, "applied": migrated.applied,
-        }));
-    }
-    output::success(&format!("Reset the local database {name}"));
-    for line in &migrated.applied {
-        output::info(line);
-    }
-    Ok(())
 }
 
 async fn reset(

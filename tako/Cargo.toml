@@ -108,7 +108,7 @@ zeroize = "1"
 
 # SQLite state store for dev-server
 tako-sqlite = { path = "../tako-sqlite" }
-rusqlite.workspace = true
+rusqlite = { workspace = true, features = ["backup"] }
 # Hosts local databases for `tako dev` and `tako run`
 tako-database = { path = "../tako-database" }
 
