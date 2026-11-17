@@ -902,6 +902,9 @@ run_compose_lifecycle_checks() {
   sed -i 's#127.0.0.1:3000/missing#127.0.0.1:3000/health#' "$PROJECT_DIR/compose.yaml"
   sed -i 's/Updated Bun release!/Hello from Bun!/' "$PROJECT_DIR/server.ts"
   sed -i '/ROTATION_TOKEN:/d' "$PROJECT_DIR/compose.yaml"
+  # Drop the rotation secret too, so later runs of this fixture don't treat it
+  # as an app with injected secrets. The next deploy publishes the removal.
+  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" secrets rm ROTATION_TOKEN --env production --yes
 
   desired_web=2
   compose_probe_start
