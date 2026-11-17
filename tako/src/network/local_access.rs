@@ -561,44 +561,8 @@ mod tests {
 
     fn colliding_aliases(twin_name: impl Fn(&str) -> String) -> (String, String, Vec<String>) {
         let mut fixture = crate::network::tests::fixture();
-        let Profile::Active { profile } = &mut fixture.profile else {
-            panic!()
-        };
-        let keys = tako_network::LocalDeviceKeys::generate().unwrap();
-        let request = keys
-            .enrollment_request(
-                Some(profile.snapshot.network.id.clone()),
-                tako_network::DeviceKind::Server,
-                twin_name(&profile.snapshot.network.id.to_string())
-                    .parse()
-                    .unwrap(),
-            )
-            .unwrap();
-        let twin = request.device_id_for(&profile.snapshot.network.id).unwrap();
-        let existing = crate::network::server_members(&fixture.profile).unwrap();
-        let MemberKind::Server(info) = &existing[&fixture.server].kind else {
-            unreachable!()
-        };
-        let mut info = info.clone();
-        info.ssh_host_key = keys.ssh_public_key().unwrap();
-        let Profile::Active { profile } = &mut fixture.profile else {
-            panic!()
-        };
-        let admin = profile.snapshot.network.initial_admin.clone();
-        // Approval now rejects duplicate names, so model a legacy network by
-        // approving the twin without the existing server in view.
-        let mut legacy = profile.snapshot.clone();
-        legacy
-            .members
-            .retain(|member| !matches!(member.kind, MemberKind::Server(_)));
-        crate::network::tests::add_member(
-            &mut legacy,
-            &keys,
-            request,
-            MemberKind::Server(info),
-            Some(admin),
-        );
-        profile.snapshot.members.push(legacy.members.pop().unwrap());
+        let network = fixture.profile.snapshot().network.id.to_string();
+        let twin = crate::network::tests::add_legacy_server(&mut fixture, &twin_name(&network));
         let alias = LocalNetwork {
             name: "test".into(),
             id: fixture.profile.snapshot().network.id.to_string(),

@@ -579,10 +579,16 @@ fn connected_networks() -> Result<Vec<(crate::config::LocalNetwork, Profile)>> {
     for alias in LocalNetworks::load()?.networks.into_values() {
         let profile = match local_profile(&alias) {
             Ok(profile) => profile,
-            Err(error) => {
-                output::warning(&format!("Skipped network {}: {error}", alias.name));
-                continue;
+            // A live connection must not be mistaken for none: switching would
+            // leave two networks claiming `.tako`.
+            Err(error) if network::wireguard::has_saved_connection(&alias)? => {
+                return Err(format!(
+                    "Network {} is connected, but its profile cannot be verified: {error}",
+                    alias.name
+                )
+                .into());
             }
+            Err(_) => continue,
         };
         if network::wireguard::is_connected(&alias, &profile)? {
             connected.push((alias, profile));

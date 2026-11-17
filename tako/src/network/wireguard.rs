@@ -51,21 +51,7 @@ fn connect_with(
     let interface = interface_name(&profile.snapshot().network.id);
     let public_key = keys.wg_public_key()?.to_string();
     let network = profile.snapshot().network.id.to_string();
-    // Only single-label names become `<name>.tako`; a dotted server name such
-    // as `api.prod` would otherwise shadow the private name of an app.
-    let names = super::server_members(profile)?
-        .values()
-        .filter_map(|member| {
-            Some(backend::ServerName {
-                name: tako_network::services::server_label(member.request.name.as_str())?,
-                address: profile
-                    .snapshot()
-                    .network
-                    .id
-                    .address(&member.request.wg_public_key),
-            })
-        })
-        .collect::<Vec<_>>();
+    let names = server_names(profile)?;
     authorize()?;
     if let Some(active_key) = execute(Operation::Inspect {
         interface: interface.clone(),
@@ -149,6 +135,47 @@ fn disconnect_with(
 /// Whether this machine holds an owned connection configuration for the network.
 pub(crate) fn is_connected(alias: &LocalNetwork, profile: &Profile) -> Result<bool> {
     Ok(saved_configuration(&configuration_path(alias, profile)?)?.is_some())
+}
+
+/// Whether `alias` has a saved connection, without verifying its profile.
+pub(crate) fn has_saved_connection(alias: &LocalNetwork) -> Result<bool> {
+    let id: NetworkId = alias.id.parse()?;
+    let path = alias
+        .profile_path()?
+        .parent()
+        .unwrap()
+        .join("wireguard")
+        .join(format!("{}.conf", interface_name(&id)));
+    Ok(path.try_exists()?)
+}
+
+/// Short `.tako` names for the hosts file. Only single-label names qualify; a
+/// dotted server name such as `api.prod` would otherwise shadow an app's
+/// private name. Names that servers share, which registries from before
+/// unique names may still hold, are left out; those servers remain peers.
+fn server_names(profile: &Profile) -> Result<Vec<backend::ServerName>> {
+    let labeled: Vec<_> = super::server_members(profile)?
+        .into_values()
+        .filter_map(|member| {
+            let name = tako_network::services::server_label(member.request.name.as_str())?;
+            Some(backend::ServerName {
+                name,
+                address: profile
+                    .snapshot()
+                    .network
+                    .id
+                    .address(&member.request.wg_public_key),
+            })
+        })
+        .collect();
+    let mut uses = std::collections::BTreeMap::<String, usize>::new();
+    for record in &labeled {
+        *uses.entry(record.name.clone()).or_default() += 1;
+    }
+    Ok(labeled
+        .into_iter()
+        .filter(|record| uses[&record.name] == 1)
+        .collect())
 }
 
 /// Servers whose WireGuard handshake has not completed within `wait`.
@@ -389,6 +416,20 @@ mod tests {
         tests::{TestHome, fixture},
     };
     use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[test]
+    fn shared_and_dotted_server_names_are_left_out_of_the_hosts_file() {
+        let mut fixture = fixture();
+        network::tests::add_legacy_server(&mut fixture, "Server");
+        network::tests::add_legacy_server(&mut fixture, "api.prod");
+        network::tests::add_legacy_server(&mut fixture, "edge");
+        let names: Vec<_> = server_names(&fixture.profile)
+            .unwrap()
+            .into_iter()
+            .map(|record| record.name)
+            .collect();
+        assert_eq!(names, ["edge"]);
+    }
 
     #[test]
     fn reachability_needs_a_new_handshake_or_new_traffic_from_this_attempt() {
