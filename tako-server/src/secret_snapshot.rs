@@ -259,14 +259,14 @@ pub(crate) async fn resolve(
         }
         if Instant::now() >= deadline {
             return Err(if !snapshot.caught_up {
-                "This server has not received the secrets this deploy published yet. Run the deploy again in a moment.".to_string()
+                "This server has not received the latest published secrets yet. Run the command again in a moment.".to_string()
             } else if !snapshot.missing_keys.is_empty() {
                 format!(
-                    "This server has not received the keys for {} yet. Run the deploy again in a moment.",
+                    "This server has not received the keys for {} yet. Run the command again in a moment.",
                     snapshot.missing_keys.join(", ")
                 )
             } else {
-                "This app environment's secrets changed during the deploy, or have not reached this server yet. Run the deploy again.".to_string()
+                "This app environment's secrets changed while the command ran, or have not reached this server yet. Run the command again.".to_string()
             });
         }
         tokio::time::sleep(POLL).await;
@@ -490,7 +490,7 @@ mod tests {
         let error = resolve(dir.path(), APP, Some("another-digest"), &[])
             .await
             .unwrap_err();
-        assert!(error.contains("Run the deploy again"), "{error}");
+        assert!(error.contains("Run the command again"), "{error}");
 
         let scope = ScopeSecrets {
             digest: "d".into(),
