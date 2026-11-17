@@ -176,6 +176,10 @@ pub struct DatabaseBackupStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DatabaseInfo {
     pub name: String,
+    /// The random ID chosen when the database was created; copies of one
+    /// database on different servers share it.
+    #[serde(default)]
+    pub generation: String,
     pub created_at_unix_secs: u64,
     pub size_bytes: u64,
     /// App environments on this server bound to the database.

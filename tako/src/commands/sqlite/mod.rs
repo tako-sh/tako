@@ -297,6 +297,21 @@ impl Context {
         }
     }
 
+    /// Every trusted server of the project's network.
+    fn network_homes(&self) -> Result<Vec<Home>, Box<dyn std::error::Error>> {
+        let keys = crate::commands::helpers::resolve_network_servers(
+            &self.servers,
+            &self.network,
+            &[],
+            "this project",
+        )?;
+        Ok(keys
+            .iter()
+            .filter_map(|key| self.servers.get(key)?.native.as_ref())
+            .filter_map(|native| self.home(native.server_name.as_str()).ok())
+            .collect())
+    }
+
     fn home(&self, selector: &str) -> Result<Home, Box<dyn std::error::Error>> {
         Ok(resolve_home(
             &self.servers,
@@ -398,6 +413,32 @@ impl Context {
             self.backup_storages(name)?,
             source,
         )?)
+    }
+}
+
+/// How a move to another server begins.
+#[derive(Debug, PartialEq, Eq)]
+enum MoveStart {
+    /// The target does not host the database yet.
+    Create,
+    /// An earlier move left this database's copy on the target.
+    Resume,
+}
+
+/// Decides how a move begins from what the target hosts under the name:
+/// the same database (same generation) is resumed; another is refused.
+fn move_start(
+    name: &str,
+    target: &str,
+    existing_generation: Option<&str>,
+    generation: &str,
+) -> Result<MoveStart, String> {
+    match existing_generation {
+        None => Ok(MoveStart::Create),
+        Some(existing) if existing == generation => Ok(MoveStart::Resume),
+        Some(_) => Err(format!(
+            "{target} already hosts a different database named {name}. Remove it with `tako sqlite delete {name} --server {target}` before moving {name} there."
+        )),
     }
 }
 
@@ -963,16 +1004,49 @@ async fn restore(
             .ok()
         });
         let backup = ctx.snapshot_storage(name, source)?;
-        send::<DatabaseInfo>(
-            &target,
-            Command::CreateDatabase {
-                name: name.to_owned(),
-                generation: record.generation.clone(),
-                backup_key_base64: backup_key.clone(),
-                backup: Some(backup),
-            },
-        )
-        .await?;
+        // A move that stopped part way left its copy on the target; it is
+        // finished rather than started again.
+        let hosted: serde_json::Value =
+            send(&target, Command::DatabaseStatus { name: None }).await?;
+        let existing = hosted["databases"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|database| database["name"] == name)
+            .map(|database| {
+                database["generation"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned()
+            });
+        match move_start(name, &target.name, existing.as_deref(), &record.generation)? {
+            MoveStart::Create => {
+                send::<DatabaseInfo>(
+                    &target,
+                    Command::CreateDatabase {
+                        name: name.to_owned(),
+                        generation: record.generation.clone(),
+                        backup_key_base64: backup_key.clone(),
+                        backup: Some(backup),
+                    },
+                )
+                .await?;
+            }
+            MoveStart::Resume => {
+                output::info(&format!(
+                    "Resuming the move of {name} to {}: restoring its copy there again.",
+                    target.name
+                ));
+                send::<DatabaseInfo>(
+                    &target,
+                    Command::ConfigureDatabaseBackup {
+                        name: name.to_owned(),
+                        backup: Some(backup),
+                    },
+                )
+                .await?;
+            }
+        }
     }
     let _t = output::timed(&format!("Restore {name}"));
     let restored: Result<serde_json::Value, String> = output::with_spinner_async(
@@ -1020,7 +1094,15 @@ async fn restore(
             server: target.device_id.clone(),
             ..record
         };
-        ctx.publish(&moved, None)?;
+        // The target now holds the snapshots, so the old copy takes none;
+        // running the command again finishes the move.
+        if let Err(error) = ctx.publish(&moved, None) {
+            return Err(format!(
+                "{name} was restored on {}, but the network still names {} as its server: {error}. Run the same command again to finish the move, or remove the new copy with `tako sqlite delete {name} --server {}` to abandon it; until then the copy on {} takes no snapshots.",
+                target.name, home.name, target.name, home.name
+            )
+            .into());
+        }
         // The old copy, when its server is still up, would keep taking
         // snapshots into the same place and pruning the new copy's.
         let stopped = send::<DatabaseInfo>(
@@ -1122,11 +1204,68 @@ async fn delete(ctx: &Context, name: &str, yes: bool) -> Result<(), Box<dyn std:
         .await?;
         print_warnings(&deleted);
     }
+    // Copies that an unfinished move left on other servers go too.
+    remove_leftover_copies(ctx, name, &record.generation, &home).await?;
     let alias = ctx.alias()?;
     tokio::task::block_in_place(|| crate::network::databases::remove(&alias, &record))?;
     TakoToml::remove_database_from_file(&ctx.config_path, name)?;
     if output::is_json() {
         return output::json_success("sqlite");
+    }
+    Ok(())
+}
+
+/// Removes copies of the database (same generation) from the network's
+/// servers other than `home`, such as one an unfinished move left behind.
+/// Their snapshots are the database's, so they are kept here; a server that
+/// cannot be reached is named in a warning.
+async fn remove_leftover_copies(
+    ctx: &Context,
+    name: &str,
+    generation: &str,
+    home: &Home,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for other in ctx.network_homes()? {
+        if other.device_id == home.device_id {
+            continue;
+        }
+        let hosted =
+            match send::<serde_json::Value>(&other, Command::DatabaseStatus { name: None }).await {
+                Ok(hosted) => hosted,
+                Err(error) => {
+                    output::warning(&format!(
+                        "Could not check {} for a leftover copy of {name}: {error}",
+                        other.name
+                    ));
+                    continue;
+                }
+            };
+        let leftover = hosted["databases"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|database| database["name"] == name && database["generation"] == generation);
+        if !leftover {
+            continue;
+        }
+        match send::<serde_json::Value>(
+            &other,
+            Command::DeleteDatabase {
+                name: name.to_owned(),
+                keep_snapshots: true,
+            },
+        )
+        .await
+        {
+            Ok(deleted) => {
+                print_warnings(&deleted);
+                output::info(&format!("Removed the copy of {name} on {}", other.name));
+            }
+            Err(error) => output::warning(&format!(
+                "Could not remove the copy of {name} on {}: {error}",
+                other.name
+            )),
+        }
     }
     Ok(())
 }
@@ -1675,6 +1814,20 @@ mod tests {
         .unwrap();
         assert_eq!(chosen.region.as_deref(), Some("eu-west-1"));
         assert!(choose_snapshot_storage("shop", differing, None).is_err());
+    }
+
+    #[test]
+    fn moves_resume_a_copy_of_the_same_database_only() {
+        assert_eq!(
+            move_start("shop", "edge-b", None, "g1"),
+            Ok(MoveStart::Create)
+        );
+        assert_eq!(
+            move_start("shop", "edge-b", Some("g1"), "g1"),
+            Ok(MoveStart::Resume)
+        );
+        let error = move_start("shop", "edge-b", Some("g0"), "g1").unwrap_err();
+        assert!(error.contains("different database"), "{error}");
     }
 
     #[test]

@@ -1101,6 +1101,52 @@ async fn a_failed_move_leaves_the_old_copy_snapshotting() {
 }
 
 #[tokio::test]
+async fn moves_resume_and_abandoned_moves_give_the_snapshots_back() {
+    let (old_dir, new_dir) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+    let old = state(&old_dir);
+    old.open_databases(Some("server-a".into())).await.unwrap();
+    create(&old, ID, Some("abandon-bucket")).await;
+    query(&old, ID, "CREATE TABLE items (name TEXT)").await;
+    let snapshot = || Command::SnapshotDatabase {
+        name: ID.into(),
+        reason: SnapshotReason::Manual,
+        app: None,
+    };
+    ok(&old, snapshot()).await;
+    let new = state(&new_dir);
+    new.open_databases(Some("server-b".into())).await.unwrap();
+    create(&new, ID, Some("abandon-bucket")).await;
+    let restore = || Command::RestoreDatabase {
+        name: ID.into(),
+        snapshot: None,
+        backup_key_base64: Some(key()),
+    };
+    ok(&new, restore()).await;
+    // The status names the generation, so a retried move finds this copy
+    // and restores it again instead of creating it.
+    let status = ok(&new, Command::DatabaseStatus { name: None }).await;
+    assert_eq!(status["databases"][0]["generation"], GENERATION);
+    ok(&new, restore()).await;
+    // The move is abandoned: removing the new copy gives the snapshots back,
+    // so the copy the network still names takes them again.
+    assert!(
+        error(&old, snapshot())
+            .await
+            .contains("was moved to another server")
+    );
+    ok(
+        &new,
+        Command::DeleteDatabase {
+            name: ID.into(),
+            keep_snapshots: true,
+        },
+    )
+    .await;
+    query(&old, ID, "INSERT INTO items VALUES ('kept')").await;
+    ok(&old, snapshot()).await;
+}
+
+#[tokio::test]
 async fn a_create_that_fails_to_open_leaves_nothing_behind() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp);

@@ -138,6 +138,30 @@ async fn check_holder(
     }
 }
 
+/// Gives up this server's claim on the database's snapshots, when it holds
+/// it: removing a copy that an unfinished move left here lets the copy the
+/// network names take snapshots again.
+pub(crate) async fn release_holder(
+    state: &ServerState,
+    stored: &StoredDatabase,
+) -> Result<(), String> {
+    let (Some(backup), Some(own)) = (&stored.secrets.backup, state.databases.server_id()) else {
+        return Ok(());
+    };
+    let remote = store(backup)?;
+    if read_holder(remote.as_ref(), stored).await?.as_deref() != Some(own.as_str()) {
+        return Ok(());
+    }
+    let key = ObjectPath::parse(holder_key(stored)).map_err(|e| e.to_string())?;
+    with_deadline(METADATA_TIMEOUT, async {
+        match remote.delete(&key).await {
+            Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
+            Err(error) => Err(format!("release the snapshots of {}: {error}", stored.name)),
+        }
+    })
+    .await
+}
+
 async fn claim_holder(
     remote: &dyn ObjectStore,
     stored: &StoredDatabase,

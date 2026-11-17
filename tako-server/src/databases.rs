@@ -864,6 +864,12 @@ impl ServerState {
         // they go with it, unless another copy lives on and shares them.
         let mut warnings = Vec::new();
         if keep_snapshots {
+            // A copy left by an unfinished move may still hold the
+            // snapshots, which would keep the database's own copy from
+            // taking any.
+            if let Err(error) = snapshots::release_holder(self, &stored).await {
+                warnings.push(error);
+            }
             return Ok(serde_json::json!({"deleted": id, "warnings": warnings}));
         }
         match snapshots::delete_all(&stored).await {
@@ -919,6 +925,7 @@ impl ServerState {
             .unwrap_or(0);
         DatabaseInfo {
             name: stored.name.clone(),
+            generation: stored.generation.clone(),
             created_at_unix_secs: stored.created_at_unix_secs,
             size_bytes,
             bindings: bindings.into_iter().collect(),
