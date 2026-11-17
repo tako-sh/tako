@@ -1541,6 +1541,84 @@ async fn a_database_a_deploy_is_binding_cannot_be_deleted() {
 }
 
 #[tokio::test]
+async fn deleting_a_database_ends_its_transfers() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, None).await;
+    let bytes = b"0123456789".repeat(10);
+    let upload = ok(
+        &state,
+        Command::BeginDatabaseImport {
+            name: ID.into(),
+            size_bytes: bytes.len() as u64,
+            sha256: hex::encode(Sha256::digest(&bytes)),
+        },
+    )
+    .await;
+    let upload_id = upload["upload_id"].as_str().unwrap().to_owned();
+    let export = ok(&state, Command::BeginDatabaseExport { name: ID.into() }).await;
+    let export_id = export["export_id"].as_str().unwrap().to_owned();
+    ok(
+        &state,
+        Command::DeleteDatabase {
+            name: ID.into(),
+            keep_snapshots: false,
+        },
+    )
+    .await;
+    // A database of the same name created afterwards receives none of the
+    // old transfers' chunks.
+    create(&state, ID, None).await;
+    let refused = error(
+        &state,
+        Command::DatabaseImportChunk {
+            name: ID.into(),
+            upload_id,
+            offset: 0,
+            data_base64: BASE64.encode(&bytes),
+        },
+    )
+    .await;
+    assert!(refused.contains("not found"), "{refused}");
+    let refused = error(
+        &state,
+        Command::DatabaseExportChunk {
+            name: ID.into(),
+            export_id,
+            offset: 0,
+        },
+    )
+    .await;
+    assert!(refused.contains("not found"), "{refused}");
+}
+
+#[tokio::test]
+async fn a_database_being_deleted_cannot_be_granted() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, None).await;
+    let grant = || Command::GrantDatabases {
+        app: "web/production".into(),
+        databases: vec![ID.into()],
+        keep_existing: false,
+    };
+    // A delete has checked the database and is revoking its grants.
+    let deleting = state.databases.start_deleting(ID).unwrap();
+    let refused = error(&state, grant()).await;
+    assert!(refused.contains("being deleted"), "{refused}");
+    assert!(
+        state
+            .state_store
+            .all_database_grants()
+            .unwrap()
+            .get("web/production")
+            .is_none_or(|grant| grant.databases.is_empty())
+    );
+    drop(deleting);
+    ok(&state, grant()).await;
+}
+
+#[tokio::test]
 async fn databases_that_failed_to_open_are_retried() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp);

@@ -643,7 +643,11 @@ impl Connection {
     pub fn describe(&mut self, sql: &str) -> Result<DescribeResult, Error> {
         check_not_empty(sql)?;
         let (mut cached, mut fresh) = (None, None);
-        let stmt = prepare(&self.conn, sql, &mut cached, &mut fresh)?;
+        // Preparing a large statement can take long too.
+        self.arm_deadline();
+        let prepared = prepare(&self.conn, sql, &mut cached, &mut fresh);
+        self.disarm_deadline();
+        let stmt = prepared.map_err(|error| self.map_timeout(error))?;
         let params = (1..=stmt.parameter_count())
             .map(|index| DescribeParam {
                 name: stmt
@@ -674,19 +678,30 @@ impl Connection {
         self.rowids.tables.lock().clear();
         let in_transaction = !self.conn.is_autocommit();
         let (mut cached, mut fresh) = (None, None);
-        let stmt = prepare(&self.conn, sql, &mut cached, &mut fresh)?;
-        bind(stmt, args)?;
+        // The time limit covers preparing the statement, which can take long
+        // for a large one, as well as running it.
+        self.arm_deadline();
+        let stmt = match prepare(&self.conn, sql, &mut cached, &mut fresh) {
+            Ok(stmt) => stmt,
+            Err(error) => {
+                self.disarm_deadline();
+                return Err(self.map_timeout(error));
+            }
+        };
+        if let Err(error) = bind(stmt, args) {
+            self.disarm_deadline();
+            return Err(error);
+        }
         let readonly = stmt.readonly();
         let inserts = !readonly && starts_with_insert(sql);
         // Before stepping: the statement may write and then fail.
         self.wrote |= !readonly;
-        sink(Event::Begin(columns(stmt)))?;
+        if let Err(error) = sink(Event::Begin(columns(stmt))) {
+            self.disarm_deadline();
+            return Err(error);
+        }
         let width = stmt.column_count();
 
-        self.deadline.store(
-            (self.epoch.elapsed() + self.statement_timeout).as_nanos() as u64,
-            Ordering::Relaxed,
-        );
         let mut count = 0u64;
         let mut failure = None;
         {
@@ -729,7 +744,7 @@ impl Connection {
                 }
             }
         }
-        self.deadline.store(0, Ordering::Relaxed);
+        self.disarm_deadline();
         // Reset the statement (returning a cached one to the cache) before
         // reading the transaction state.
         drop((cached, fresh));
@@ -1049,12 +1064,12 @@ fn prepare<'c, 's>(
     sql: &str,
     cached: &'s mut Option<rusqlite::CachedStatement<'c>>,
     fresh: &'s mut Option<rusqlite::Statement<'c>>,
-) -> Result<&'s mut rusqlite::Statement<'c>, Error> {
+) -> Result<&'s mut rusqlite::Statement<'c>, rusqlite::Error> {
     if sql.len() <= MAX_CACHED_SQL_BYTES {
-        let stmt = cached.insert(conn.prepare_cached(sql).map_err(map_error)?);
+        let stmt = cached.insert(conn.prepare_cached(sql)?);
         Ok(&mut **stmt)
     } else {
-        Ok(fresh.insert(conn.prepare(sql).map_err(map_error)?))
+        Ok(fresh.insert(conn.prepare(sql)?))
     }
 }
 

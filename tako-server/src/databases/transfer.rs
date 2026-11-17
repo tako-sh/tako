@@ -29,6 +29,9 @@ pub(crate) struct Transfers {
 
 struct Import {
     database: String,
+    /// The generation the import was started for; a database deleted and
+    /// created again under the same name does not receive it.
+    generation: String,
     work: WorkDir,
     file: std::fs::File,
     size: u64,
@@ -56,6 +59,41 @@ pub(crate) fn expire(state: &ServerState) {
         .retain(|_, export| export.touched.elapsed() < TRANSFER_IDLE);
 }
 
+/// Ends a database's imports and exports, removing their files, for a caller
+/// that holds the database's lock and is about to delete it. A chunk that
+/// arrives afterwards finds no transfer.
+pub(crate) fn cancel(state: &ServerState, id: &str) {
+    let (imports, exports) = {
+        let mut transfers = state.databases.transfers();
+        let imports: Vec<String> = transfers
+            .imports
+            .iter()
+            .filter(|(_, import)| import.database == id)
+            .map(|(key, _)| key.clone())
+            .collect();
+        let exports: Vec<String> = transfers
+            .exports
+            .iter()
+            .filter(|(_, export)| export.database == id)
+            .map(|(key, _)| key.clone())
+            .collect();
+        (
+            imports
+                .iter()
+                .filter_map(|key| transfers.imports.remove(key))
+                .collect::<Vec<_>>(),
+            exports
+                .iter()
+                .filter_map(|key| transfers.exports.remove(key))
+                .collect::<Vec<_>>(),
+        )
+    };
+    // Closing the files and removing their directories happens outside the
+    // transfer table's lock.
+    drop(imports);
+    drop(exports);
+}
+
 fn transfer_id() -> String {
     nanoid::nanoid!(24, &nanoid::alphabet::SAFE[..])
 }
@@ -66,7 +104,6 @@ pub(crate) async fn begin_import(
     size: u64,
     sha256: &str,
 ) -> Result<serde_json::Value, String> {
-    state.hosted_database(id)?;
     if size == 0 || size > MAX_IMPORT_BYTES {
         return Err(format!(
             "An import must be between 1 byte and {MAX_IMPORT_BYTES} bytes."
@@ -75,6 +112,11 @@ pub(crate) async fn begin_import(
     if sha256.len() != 64 || !sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("Import checksum must be a SHA-256 hex digest.".into());
     }
+    // Held until the import is registered, so a delete either cancels it or
+    // has already removed the database.
+    let lock = state.databases.lock(id);
+    let _guard = lock.lock().await;
+    let stored = state.hosted_database(id)?;
     let work = fresh_work_dir(state, id, "import")?;
     let available = crate::operations::available_bytes(&work.path)?;
     if available < size.saturating_mul(2).saturating_add(DISK_RESERVE_BYTES) {
@@ -93,6 +135,7 @@ pub(crate) async fn begin_import(
         upload_id.clone(),
         Import {
             database: id.to_owned(),
+            generation: stored.generation,
             work,
             file,
             size,
@@ -191,8 +234,15 @@ pub(crate) async fn finish_import(
         .map_err(|e| e.to_string())?
         .map_err(|e| format!("The uploaded file is not a usable SQLite database: {e}"))?;
 
+    let lock = state.databases.lock(id);
+    let _guard = lock.lock().await;
     let stored = state.hosted_database(id)?;
-    let warnings = snapshots::replace(
+    if stored.generation != import.generation {
+        return Err(format!(
+            "Database {id} was replaced by a new database of the same name during the import; nothing was imported."
+        ));
+    }
+    let warnings = snapshots::replace_locked(
         state,
         &stored,
         path,
@@ -213,10 +263,12 @@ pub(crate) async fn begin_export(
     state: &ServerState,
     id: &str,
 ) -> Result<serde_json::Value, String> {
-    state.hosted_database(id)?;
     let database = DatabaseId::parse(id)?;
+    // Held until the export is registered, so a delete either cancels it or
+    // has already removed the database.
     let lock = state.databases.lock(id);
     let _guard = lock.lock().await;
+    state.hosted_database(id)?;
     let work = fresh_work_dir(state, id, "export")?;
     let size = state.databases.host.size_bytes(&database).unwrap_or(0);
     let available = crate::operations::available_bytes(&work.path)?;

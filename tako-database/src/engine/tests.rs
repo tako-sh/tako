@@ -389,6 +389,30 @@ fn statements_stop_at_the_time_limit() {
 }
 
 #[test]
+fn preparing_a_statement_counts_toward_the_time_limit() {
+    let fixture = fixture();
+    let config = EngineConfig {
+        statement_timeout: Duration::ZERO,
+        ..EngineConfig::default()
+    };
+    let mut conn = Connection::open(&fixture.path, &config).unwrap();
+    // A subquery with two thousand columns of the same name: SQLite renames
+    // each one while it prepares the statement, checking the time limit
+    // as it goes.
+    let sql = format!(
+        "SELECT * FROM (SELECT {})",
+        std::iter::repeat_n("1 AS a", 2000)
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    // Describing only prepares; it is stopped all the same.
+    assert_eq!(conn.describe(&sql).unwrap_err().code, "SQLITE_INTERRUPT");
+    assert_eq!(run(&mut conn, &sql).unwrap_err().code, "SQLITE_INTERRUPT");
+    // A statement that prepares and runs quickly still succeeds.
+    assert_eq!(run(&mut conn, "SELECT 1").unwrap().rows.len(), 1);
+}
+
+#[test]
 fn response_budget_stops_large_results() {
     let fixture = fixture();
     let mut conn = open(&fixture);

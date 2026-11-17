@@ -987,6 +987,10 @@ async fn restore(
         );
     }
     let backup_key = ctx.backup_key(&record)?;
+    // Whether this run created the target's copy, which it then removes if
+    // the restore fails. A resumed move's copy may already hold the only
+    // restored data, so it stays.
+    let mut created = false;
     if moving {
         // Ask the current server where the snapshots are; it may be gone.
         let source = send::<serde_json::Value>(
@@ -1031,6 +1035,7 @@ async fn restore(
                     },
                 )
                 .await?;
+                created = true;
             }
             MoveStart::Resume => {
                 output::info(&format!(
@@ -1071,7 +1076,7 @@ async fn restore(
         Err(error) => {
             // Remove the empty copy, so the recovery can be retried. Its
             // snapshots are the database's, which it was restoring from.
-            if moving
+            if created
                 && let Err(cleanup) = send::<serde_json::Value>(
                     &target,
                     Command::DeleteDatabase {
@@ -1085,6 +1090,13 @@ async fn restore(
                     "Could not remove the new copy of {name} on {}: {cleanup}",
                     target.name
                 ));
+            }
+            if moving && !created {
+                return Err(format!(
+                    "{error}\nThe copy of {name} on {} is kept. Run the same command again to finish the move, or remove the copy with `tako sqlite delete {name} --server {}` to abandon it.",
+                    target.name, target.name
+                )
+                .into());
             }
             return Err(error.into());
         }

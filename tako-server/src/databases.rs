@@ -54,6 +54,9 @@ pub(crate) struct Databases {
     /// Databases deploys are binding, and databases being deleted, so one
     /// cannot delete a database another is about to bind.
     pins: Arc<Mutex<HashMap<String, Pin>>>,
+    /// Held while grants are read and rewritten, so a grant and a delete's
+    /// revocation do not overwrite each other's changes.
+    grants: Mutex<()>,
 }
 
 #[derive(Default)]
@@ -83,7 +86,7 @@ impl Drop for DatabasePins {
 }
 
 /// Marks a database as being deleted until dropped.
-struct Deleting {
+pub(crate) struct Deleting {
     pins: Arc<Mutex<HashMap<String, Pin>>>,
     name: String,
 }
@@ -118,6 +121,7 @@ impl Databases {
             transfers: Mutex::new(transfer::Transfers::default()),
             locks: Mutex::new(HashMap::new()),
             pins: Arc::new(Mutex::new(HashMap::new())),
+            grants: Mutex::new(()),
         }
     }
 
@@ -147,7 +151,7 @@ impl Databases {
     }
 
     /// Marks a database as being deleted, unless a deploy is binding it.
-    fn start_deleting(&self, name: &str) -> Result<Deleting, String> {
+    pub(crate) fn start_deleting(&self, name: &str) -> Result<Deleting, String> {
         let mut pins = self.pins.lock();
         let pin = pins.entry(name.to_owned()).or_default();
         if pin.deploys > 0 {
@@ -827,6 +831,7 @@ impl ServerState {
                 .await
                 .map_err(|e| e.to_string())?;
         }
+        let grants = self.databases.grants.lock();
         for (scope, grant) in self
             .state_store
             .all_database_grants()
@@ -854,9 +859,13 @@ impl ServerState {
                 key.as_deref().unwrap_or_default(),
             );
         }
+        drop(grants);
         self.state_store
             .delete_database(id)
             .map_err(|e| format!("forget database: {e}"))?;
+        // An open import file would otherwise keep its disk space, and take
+        // more chunks, after its directory is removed.
+        transfer::cancel(self, id);
         let dir = self.databases.database_dir(id);
         tokio::task::spawn_blocking(move || std::fs::remove_dir_all(dir))
             .await
@@ -994,6 +1003,12 @@ impl ServerState {
         if !app.contains('/') {
             return Err("Grants name an app environment as `<app>/<env>`.".into());
         }
+        // Pinned while the grant is stored, so a delete cannot pass its
+        // revocation in between: one already under way makes this fail, and
+        // one that starts meanwhile is refused. Grants kept from before are
+        // covered by the grants lock, which a delete's revocation takes.
+        let _pins = self.databases.pin(ids.iter().map(String::as_str))?;
+        let _grants = self.databases.grants.lock();
         let mut granted = BTreeSet::new();
         for id in ids {
             self.hosted_database(&id)?;

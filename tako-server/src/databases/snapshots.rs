@@ -661,21 +661,28 @@ pub(crate) struct SnapshotSpace {
 }
 
 impl SnapshotSpace {
-    /// Holds `needed` bytes until the returned reservation drops, if
-    /// `available` covers them, the other reservations, and the disk reserve.
-    /// Another copy's reservation counts in full even after it has written
-    /// part of its files, so this errs toward refusing.
-    fn reserve(&self, needed: u64, available: u64) -> Result<SpaceReservation, String> {
+    /// Holds `needed` bytes for `purpose` until the returned reservation
+    /// drops, if `available` covers them, the other reservations, and the
+    /// disk reserve. Another reservation counts in full even after its files
+    /// are partly written, so this errs toward refusing.
+    fn reserve(
+        &self,
+        needed: u64,
+        available: u64,
+        purpose: &str,
+    ) -> Result<SpaceReservation, String> {
         let mut reserved = self.reserved.lock();
         let required = reserved
             .saturating_add(needed)
             .saturating_add(DISK_RESERVE_BYTES);
         if available < required {
             return Err(if *reserved == 0 {
-                format!("not enough free disk space for a snapshot ({available} bytes available)")
+                format!(
+                    "not enough free disk space for {purpose}: {required} bytes needed, {available} available"
+                )
             } else {
                 format!(
-                    "not enough free disk space for a snapshot ({available} bytes available, {} bytes held for other snapshots in progress)",
+                    "not enough free disk space for {purpose}: {required} bytes needed, including {} held for other snapshots and restores in progress; {available} available",
                     *reserved
                 )
             });
@@ -705,6 +712,13 @@ impl Drop for SpaceReservation {
     }
 }
 
+/// A work directory with the disk space reserved for its files. The space is
+/// released once the directory is removed.
+struct ReservedWork {
+    work: WorkDir,
+    _space: SpaceReservation,
+}
+
 /// A copy of a database in its own work directory.
 struct SnapshotCopy {
     work: WorkDir,
@@ -724,10 +738,11 @@ async fn copy_database(
     let size = state.databases.host.size_bytes(&id).unwrap_or(0);
     let work = fresh_work_dir(state, &stored.name, "snapshot")?;
     let available = crate::operations::available_bytes(&work.path)?;
-    let space = state
-        .databases
-        .snapshot_space
-        .reserve(size.saturating_mul(3), available)?;
+    let space =
+        state
+            .databases
+            .snapshot_space
+            .reserve(size.saturating_mul(3), available, "a snapshot")?;
     let path = work.path.join("snapshot.sqlite");
     state
         .databases
@@ -1162,19 +1177,24 @@ async fn restore_from(
 ) -> Result<serde_json::Value, String> {
     // Fetch and verify the snapshot before anything changes.
     let work = fresh_work_dir(state, &stored.name, "restore")?;
-    // The download, the restored file, and a copy of what it replaces.
+    // The download, its decrypted form, and the restored file, held in the
+    // ledger snapshots share; the copy of what it replaces reserves its own.
     let needed = manifest
         .snapshot
         .stored_bytes
-        .saturating_add(manifest.snapshot.database_bytes.saturating_mul(2))
-        .saturating_add(DISK_RESERVE_BYTES);
+        .saturating_mul(2)
+        .saturating_add(manifest.snapshot.database_bytes);
     let available = crate::operations::available_bytes(&work.path)?;
-    if available < needed {
-        return Err(format!(
-            "Not enough free disk space to restore {}: {needed} bytes needed, {available} available.",
-            stored.name
-        ));
-    }
+    let space = state
+        .databases
+        .snapshot_space
+        .reserve(needed, available, "the restore")
+        .map_err(|error| format!("Cannot restore {}: {error}.", stored.name))?;
+    let reserved = ReservedWork {
+        work,
+        _space: space,
+    };
+    let work = &reserved.work;
     let encrypted = work.path.join("snapshot.sqlite.zst.enc");
     download_object(remote, &data_key(stored, &manifest.snapshot.id), &encrypted).await?;
     let key = key_binding(stored, key_override.as_deref());
@@ -1224,7 +1244,7 @@ pub(crate) async fn replace(
 }
 
 /// [`replace`], for a caller that already holds the database's lock.
-async fn replace_locked(
+pub(crate) async fn replace_locked(
     state: &ServerState,
     stored: &StoredDatabase,
     replacement: PathBuf,
@@ -1468,21 +1488,24 @@ mod tests {
     fn snapshot_space_counts_the_copies_in_progress() {
         let space = SnapshotSpace::default();
         let available = DISK_RESERVE_BYTES + 100;
-        let first = space.reserve(60, available).unwrap();
-        let refused = space.reserve(60, available).err().unwrap();
+        let first = space.reserve(60, available, "a snapshot").unwrap();
+        let refused = space.reserve(60, available, "a snapshot").err().unwrap();
         assert!(
-            refused.contains("60 bytes held for other snapshots in progress"),
+            refused.contains("including 60 held for other snapshots and restores in progress"),
             "{refused}"
         );
-        let second = space.reserve(40, available).unwrap();
+        let second = space.reserve(40, available, "a snapshot").unwrap();
         assert_eq!(space.reserved_bytes(), 100);
         drop(first);
         drop(second);
         assert_eq!(space.reserved_bytes(), 0);
-        assert!(space.reserve(100, available).is_ok());
+        assert!(space.reserve(100, available, "a snapshot").is_ok());
         assert_eq!(
-            space.reserve(101, available).err().unwrap(),
-            format!("not enough free disk space for a snapshot ({available} bytes available)")
+            space.reserve(101, available, "a snapshot").err().unwrap(),
+            format!(
+                "not enough free disk space for a snapshot: {} bytes needed, {available} available",
+                DISK_RESERVE_BYTES + 101
+            )
         );
     }
 
