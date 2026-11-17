@@ -1246,6 +1246,20 @@ async fn administrator_queries_wait_for_a_slot_only_as_long_as_apps_do() {
 }
 
 #[tokio::test]
+async fn statement_arguments_count_toward_the_request_item_limit() {
+    let h = harness(HostConfig::default());
+    // Small values, but more of them than a request may hold.
+    let args: Vec<Value> = (0..70_000).map(|_| json!({"type": "null"})).collect();
+    let (status, body) = post(
+        &h,
+        "/v3/pipeline",
+        json!({"baton": null, "requests": [{"type": "execute", "stmt": {"sql": "SELECT 1", "args": args}}]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+#[tokio::test]
 async fn forwards_requests_to_the_server_that_hosts_the_database() {
     // The home server hosts the database and grants it to shop/production.
     let home = harness(HostConfig::default());

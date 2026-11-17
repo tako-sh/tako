@@ -176,9 +176,11 @@ pub struct Stmt {
     pub sql: Option<String>,
     #[serde(default)]
     pub sql_id: Option<i32>,
-    #[serde(default)]
+    // Arguments count toward the request's item limit like requests and
+    // steps, so a request cannot parse into millions of values.
+    #[serde(default, deserialize_with = "counted")]
     pub args: Vec<Value>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "counted")]
     pub named_args: Vec<NamedArg>,
     #[serde(default)]
     pub want_rows: Option<bool>,

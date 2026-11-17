@@ -89,11 +89,21 @@ impl std::fmt::Debug for DatabaseBinding {
 /// What an app process receives for each binding in its bootstrap envelope.
 /// The field names match libSQL client configuration, so the object can be
 /// passed to `createClient()` directly.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DatabaseConnection {
     pub url: String,
     #[serde(rename = "authToken")]
     pub auth_token: String,
+}
+
+/// The token authorizes SQL as the app, so it is never printed.
+impl std::fmt::Debug for DatabaseConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DatabaseConnection")
+            .field("url", &self.url)
+            .field("auth_token", &"[REDACTED]")
+            .finish()
+    }
 }
 
 /// Why a snapshot was taken.
@@ -237,6 +247,17 @@ mod tests {
         assert!(validate_database_name("Main").is_err());
         assert!(validate_database_name("2main").is_err());
         assert!(validate_database_name("").is_err());
+    }
+
+    #[test]
+    fn connections_never_print_their_token() {
+        let connection = DatabaseConnection {
+            url: "http://127.0.0.1:9845".into(),
+            auth_token: "secret-token".into(),
+        };
+        let printed = format!("{connection:?}");
+        assert!(!printed.contains("secret-token"), "{printed}");
+        assert!(printed.contains("127.0.0.1:9845"));
     }
 
     #[test]

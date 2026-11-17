@@ -30,10 +30,20 @@ pub(crate) struct StoredDatabase {
 /// processes present. The token stays the same across deploys while the
 /// binding names the same database, so instances of the previous release keep
 /// working during a rolling update.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct AppDatabase {
     pub binding: tako_core::DatabaseBinding,
     pub token: String,
+}
+
+/// The token authorizes SQL as the app, so it is never printed.
+impl std::fmt::Debug for AppDatabase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppDatabase")
+            .field("binding", &self.binding)
+            .field("token", &"[REDACTED]")
+            .finish()
+    }
 }
 
 /// What this server grants an app environment that runs on other servers:

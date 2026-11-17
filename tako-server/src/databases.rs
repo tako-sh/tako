@@ -781,9 +781,17 @@ impl ServerState {
         id: &str,
         keep_snapshots: bool,
     ) -> Result<serde_json::Value, String> {
-        let stored = self.hosted_database(id)?;
+        let requested = self.hosted_database(id)?;
         let lock = self.databases.lock(id);
         let _guard = lock.lock().await;
+        // Another delete and create of the same name may have run while this
+        // waited for the lock: act only on the database that was asked for.
+        let stored = self.hosted_database(id)?;
+        if stored.generation != requested.generation {
+            return Err(format!(
+                "Database {id} was replaced by a new database of the same name while this delete waited; nothing was deleted."
+            ));
+        }
         // From here, deploys cannot start binding the database; one already
         // binding it makes the delete wait for it to finish.
         let _deleting = self.databases.start_deleting(id)?;
