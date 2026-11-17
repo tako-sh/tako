@@ -243,8 +243,6 @@ impl ServerState {
             channel_registry,
             deploy_locks: AsyncRwLock::new(HashMap::new()),
             backup_locks: SyncRwLock::new(HashMap::new()),
-            database_replica_status: SyncRwLock::new(Default::default()),
-            database_replicas: tokio::sync::Mutex::new(Default::default()),
             manual_backup_states: SyncRwLock::new(HashMap::new()),
             prepared_deploy_ssl: AsyncRwLock::new(HashMap::new()),
             cold_start,
@@ -255,6 +253,7 @@ impl ServerState {
             drain_observer_started: AtomicBool::new(false),
             proxy_requests,
             server_mode: AsyncRwLock::new(server_mode),
+            databases: Arc::new(crate::databases::Databases::new(&runtime.data_dir)),
             runtime,
             workflows,
         })

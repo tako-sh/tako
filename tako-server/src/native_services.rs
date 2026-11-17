@@ -337,6 +337,21 @@ impl ServiceDirectory {
         Some(key.clone())
     }
 
+    /// The private address of an effective server of the network, by device ID.
+    pub(crate) fn server_address_by_id(&self, server: &str, now: u64) -> Option<IpAddr> {
+        let view = self.current(now)?;
+        view.servers
+            .iter()
+            .find(|(id, _)| id.to_string() == server)
+            .map(|(_, (address, _))| *address)
+    }
+
+    /// Whether `peer` is the private address of an effective server.
+    pub(crate) fn is_server_address(&self, peer: IpAddr, now: u64) -> bool {
+        self.current(now)
+            .is_some_and(|view| view.servers.values().any(|(address, _)| *address == peer))
+    }
+
     /// Current WireGuard address of the uniquely named server.
     pub fn server_address(&self, label: &str, now: u64) -> Option<Ipv6Addr> {
         self.current(now)?.server_names.get(label).copied()

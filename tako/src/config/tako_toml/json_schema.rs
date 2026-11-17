@@ -35,6 +35,7 @@ pub(super) fn generate() -> Value {
     let images = reference::<tako_images::ImagesConfig>(&mut generator);
     let env = reference::<EnvConfig>(&mut generator);
     let storage = reference::<StorageResourceConfig>(&mut generator);
+    let database = reference::<DatabaseResourceConfig>(&mut generator);
     let worker = reference::<WorkflowWorkerConfig>(&mut generator);
     let mut definitions = generator.take_definitions(true);
 
@@ -188,6 +189,12 @@ pub(super) fn generate() -> Value {
             "description": "S3-compatible storage resources, bound to environments with `[envs.<env>].storages`. `local` is built in and cannot be declared.",
             "propertyNames": { "pattern": "^[a-z0-9_-]+$", "not": { "const": "local" } },
             "additionalProperties": storage,
+        },
+        "databases": {
+            "type": "object",
+            "description": "Per-database settings for Tako-hosted SQLite databases, which environments bind in `[envs.<env>].databases`. Create databases with `tako sqlite create`.",
+            "propertyNames": { "pattern": "^[a-z][a-z0-9_-]{0,62}$" },
+            "additionalProperties": database,
         },
         "servers": {
             "type": "object",

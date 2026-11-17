@@ -15,13 +15,27 @@ pub(crate) fn command_is_read_only(command: &Command) -> bool {
             | Command::ListReleases { .. }
             | Command::Routes
             | Command::GetSecretsHash { .. }
-            | Command::ListDatabaseBackups { .. }
             | Command::ListBackups { .. }
             | Command::BackupStatus { .. }
             | Command::BackupDownloadUrl { .. }
             | Command::CheckDeploySpace { .. }
             | Command::ListWorkflowRuns { .. }
             | Command::GetWorkflowRun { .. }
+            // Database operations serialize per database and can run for
+            // minutes (snapshots, transfers); they must not hold up deploys.
+            | Command::DatabaseStatus { .. }
+            | Command::ListDatabaseSnapshots { .. }
+            | Command::SnapshotDatabase { .. }
+            | Command::RestoreDatabase { .. }
+            | Command::QueryDatabase { .. }
+            | Command::MigrateDatabase { .. }
+            | Command::ResetDatabase { .. }
+            | Command::BeginDatabaseImport { .. }
+            | Command::DatabaseImportChunk { .. }
+            | Command::FinishDatabaseImport { .. }
+            | Command::BeginDatabaseExport { .. }
+            | Command::DatabaseExportChunk { .. }
+            | Command::FinishDatabaseExport { .. }
     )
 }
 
@@ -143,6 +157,7 @@ impl crate::ServerState {
                 command_line,
                 vars,
                 secrets,
+                databases,
                 force,
             } => {
                 if let Err(msg) = validate_app_name(&app) {
@@ -151,8 +166,17 @@ impl crate::ServerState {
                 if let Err(msg) = validate_release_version(&version) {
                     return Response::error(msg);
                 }
-                self.run_release(&app, &version, &path, &command_line, vars, secrets, force)
-                    .await
+                self.run_release(super::releases::ReleaseRun {
+                    app_name: &app,
+                    version: &version,
+                    path: &path,
+                    command_line: &command_line,
+                    vars,
+                    secrets,
+                    databases,
+                    force,
+                })
+                .await
             }
             Command::Deploy {
                 app,
@@ -163,6 +187,7 @@ impl crate::ServerState {
                 secrets,
                 runtime_credentials,
                 storages,
+                databases,
                 ssl,
                 backup,
                 force,
@@ -185,6 +210,7 @@ impl crate::ServerState {
                     secrets,
                     runtime_credentials,
                     storages,
+                    databases,
                     ssl,
                     backup: super::deploy::BackupUpdate::Replace(backup),
                     force,
@@ -198,24 +224,12 @@ impl crate::ServerState {
                 if let Some(resp) = self.reject_mutating_when_upgrading("backup-now").await {
                     return resp;
                 }
-                if let Some(backup) = backup.as_deref() {
-                    if let Err(error) = self.validate_database_registration(&app, Some(backup)) { return Response::error(error); }
-                }
                 if let Some(backup) = backup.as_deref()
                     && let Err(error) = self.state_store.set_backup(&app, Some(backup))
                 {
                     return Response::error(format!("Failed to store backup config: {error}"));
                 }
                 self.backup_now(&app).await
-            }
-            Command::ListDatabaseBackups { app, database, shared } => {
-                if let Err(msg) = validate_app_name(&app) { return Response::error(msg); }
-                self.list_database_backups(&app, &database, shared).await
-            }
-            Command::RestoreDatabaseBackup { app, database, shared, txid } => {
-                if let Err(msg) = validate_app_name(&app) { return Response::error(msg); }
-                if let Some(resp) = self.reject_mutating_when_upgrading("restore-database").await { return resp; }
-                self.restore_database_backup(&app, &database, shared, txid).await
             }
             Command::ListBackups { app } => {
                 if let Err(msg) = validate_app_name(&app) {
@@ -270,6 +284,38 @@ impl crate::ServerState {
                     return resp;
                 }
                 self.stop_app(&app, service.as_deref()).await
+            }
+            command @ (Command::CreateDatabase { .. }
+            | Command::DeleteDatabase { .. }
+            | Command::DatabaseStatus { .. }
+            | Command::ConfigureDatabaseBackup { .. }
+            | Command::GrantDatabases { .. }
+            | Command::SnapshotDatabase { .. }
+            | Command::ListDatabaseSnapshots { .. }
+            | Command::RestoreDatabase { .. }
+            | Command::QueryDatabase { .. }
+            | Command::MigrateDatabase { .. }
+            | Command::ResetDatabase { .. }
+            | Command::BeginDatabaseImport { .. }
+            | Command::DatabaseImportChunk { .. }
+            | Command::FinishDatabaseImport { .. }
+            | Command::BeginDatabaseExport { .. }
+            | Command::DatabaseExportChunk { .. }
+            | Command::FinishDatabaseExport { .. }) => {
+                let mutating = !matches!(
+                    command,
+                    Command::DatabaseStatus { .. }
+                        | Command::ListDatabaseSnapshots { .. }
+                        | Command::BeginDatabaseExport { .. }
+                        | Command::DatabaseExportChunk { .. }
+                        | Command::FinishDatabaseExport { .. }
+                );
+                if mutating
+                    && let Some(resp) = self.reject_mutating_when_upgrading("database").await
+                {
+                    return resp;
+                }
+                self.handle_database_command(command).await
             }
             Command::Delete { app } => {
                 if let Some(message) = self.compose_child_delete_error(&app) {

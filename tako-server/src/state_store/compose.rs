@@ -75,6 +75,10 @@ impl SqliteStateStore {
                 Some(encode(serde_json::json!(config.storages))?),
             ),
             (
+                "app_databases",
+                Some(encode(serde_json::json!(config.databases))?),
+            ),
+            (
                 "app_runtime_credentials",
                 Some(encode(serde_json::json!(runtime_credentials))?),
             ),
@@ -93,7 +97,6 @@ impl SqliteStateStore {
         let app = config.deployment_id();
         let mut conn = self.lock_conn()?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        self.register_database_destinations_on(&tx, &app, backup)?;
         upsert_app_on(&tx, config, routes)?;
         tx.execute("DELETE FROM app_schedule_revisions WHERE app = ?1", [&app])?;
         if let Some(revision) = schedule_revision {

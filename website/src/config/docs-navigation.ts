@@ -27,6 +27,7 @@ export const docsNavigation = [
     title: "Primitives",
     pages: [
       "secrets",
+      "databases",
       "storage",
       "images",
       "cache",

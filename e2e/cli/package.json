@@ -3,9 +3,12 @@
   "private": true,
   "type": "module",
   "devDependencies": {
+    "@libsql/client": "^0.18.0",
     "@tsconfig/strictest": "catalog:dev",
+    "@tursodatabase/serverless": "^1.4.1",
     "@types/bun": "catalog:dev",
     "@xterm/headless": "^6.0.0",
+    "drizzle-orm": "^0.45.0",
     "typescript": "catalog:dev"
   }
 }

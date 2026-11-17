@@ -384,6 +384,7 @@ fn default_ssl_is_allowed_only_after_provisioning_and_a_successful_state_read() 
         source_ip: Default::default(),
         runtime_credentials: None,
         storages: None,
+        databases: None,
         backup: None,
         secrets: None,
         force: false,
@@ -739,6 +740,7 @@ fn scoped_deploy_preserves_backup_without_disclosing_keys_to_client() {
         source_ip: Default::default(),
         runtime_credentials: None,
         storages: None,
+        databases: None,
         backup: None,
         secrets: None,
         force: false,
@@ -795,6 +797,7 @@ fn scoped_compose_deploy_and_rollback_cannot_claim_routes_or_change_source_ip_tr
         secrets: None,
         runtime_credentials: None,
         storages: None,
+        databases: None,
         backup: None,
         force: false,
     };

@@ -411,6 +411,8 @@ async fn send_deploy_command(
             secrets: deploy_secrets,
             runtime_credentials: server_admin.then(|| config.runtime_credentials.clone()),
             storages: server_admin.then(|| config.storages.clone()),
+            // Scoped deployers keep the bindings an administrator deployed.
+            databases: server_admin.then(|| config.databases.clone()),
             ssl: ssl_binding_for_start_command(&config.ssl),
             backup: config.backup.clone().map(Box::new),
             force: config.force,

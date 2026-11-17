@@ -49,6 +49,27 @@ when a framework owns its server loop. These helpers report readiness but do not
 Secrets are available through `tako::secret("NAME")` or
 `tako::bootstrap()?.secret("NAME")`.
 
+## Databases
+
+Tako-hosted SQLite databases are created with `tako sqlite create <name>`
+(administrator permission), bound in `[envs.<env>].databases`, and served over
+the libSQL HTTP protocol next to the app. `tako::database("main")` returns
+`Option<tako::Database>` with `url()` and `auth_token()`; `Debug` redacts the
+token. `tako::bootstrap()?.databases()` lists every binding.
+
+```rust
+let main = tako::database("main").expect("a database bound as main");
+// Pass main.url() and main.auth_token() to a libSQL HTTP client.
+```
+
+Tako tests the JavaScript drivers; use a Rust client that speaks Hrana over
+HTTP with JSON. `tako dev` and `tako run` serve bindings from
+`.tako/data/databases/<database>.sqlite`. Put SQL migrations in `migrations/`
+(`migrations/<binding>/` for several bindings); Tako applies pending ones on
+deploy, in `tako dev`, and in `tako run`. A migration tool of your own runs as
+the release command; the endpoint is loopback-only on the server. Container
+releases cannot bind databases yet.
+
 ## Presence
 
 Use `PresenceRegistry` and `PresenceDefinition` for a Rust backend consumed by

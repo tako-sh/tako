@@ -1,6 +1,7 @@
 mod artifacts;
 mod cache;
 mod config;
+mod databases;
 mod format;
 mod manifest;
 mod preflight;
@@ -62,6 +63,8 @@ struct DeployConfig {
     storages: HashMap<String, tako_core::StorageBinding>,
     ssl: tako_core::SslBinding,
     backup: Option<tako_core::BackupBinding>,
+    /// Database bindings, sent with the release command and the deploy.
+    databases: HashMap<String, tako_core::DatabaseBinding>,
     force: bool,
     /// SHA-256 hash of the decrypted secrets for this deploy.
     secrets_hash: String,
@@ -145,6 +148,7 @@ impl DeployConfig {
             command_line: command_line.clone(),
             vars: HashMap::new(),
             secrets: self.secrets.clone(),
+            databases: self.databases.clone(),
             force: self.force,
         })
     }
@@ -355,6 +359,28 @@ async fn run_async(
     config::refresh_native_build_targets(&mut servers, &server_names).await?;
     let server_targets = resolve_deploy_server_targets(&servers, &server_names)
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    // Administrators also need the records to revoke stale grants.
+    let binds_databases = tako_config
+        .envs
+        .get(&env)
+        .is_some_and(|env| !env.databases.is_empty());
+    let database_records = if binds_databases || configure_bindings {
+        crate::commands::sqlite::target::env_records(&tako_config, &env)?
+    } else {
+        Vec::new()
+    };
+    let mut database_plan = crate::commands::sqlite::target::plan_bindings(
+        &tako_config,
+        &servers,
+        &env,
+        &database_records,
+    )?;
+    if !database_plan.is_empty() && is_container_release {
+        return Err(
+            "Database bindings are available to native releases only; container and Compose releases cannot use them yet."
+                .into(),
+        );
+    }
     tracing::debug!("{}", format_servers_summary(&server_names));
 
     if configure_bindings {
@@ -562,6 +588,28 @@ async fn run_async(
         .cloned()
         .ok_or("no servers selected for deploy")?;
     let release_command = resolve_release_command(&tako_config, &env);
+    // An administrator's deploy also revokes the grants of an environment
+    // that no longer binds the network's databases.
+    let revokes_grants = configure_bindings && !database_records.is_empty();
+    let mut granted = None;
+    if !database_plan.is_empty() || revokes_grants {
+        let prepared = databases::prepare(databases::Preparation {
+            plan: &database_plan,
+            records: &database_records,
+            config: &tako_config,
+            servers: &servers,
+            secrets: &secrets,
+            project_dir: &project_dir,
+            env: &env,
+            app: &deployment_app_name,
+            targets: &server_names,
+            administrator: configure_bindings,
+            release: release_command.is_some(),
+        })
+        .await?;
+        databases::apply_peer_keys(&mut database_plan, &prepared.peer_keys);
+        granted = Some(prepared);
+    }
     let deploy_config = Arc::new(DeployConfig {
         app_name: deployment_app_name.clone(),
         version: version.clone(),
@@ -572,6 +620,7 @@ async fn run_async(
         storages: deploy_storages,
         ssl: deploy_ssl,
         backup: deploy_backup,
+        databases: crate::commands::sqlite::target::wire_bindings(&database_plan),
         force,
         secrets_hash,
         main: manifest_main,
@@ -717,6 +766,11 @@ async fn run_async(
 
     // ===== Summary =====
     if errors.is_empty() {
+        // Every server runs the new release; grants only the old one used
+        // can go.
+        if let Some(granted) = granted {
+            databases::narrow_grants(&deployment_app_name, granted).await;
+        }
         if let Some(task_tree) = &deploy_task_tree {
             let https_port = common_https_port_for_servers(&server_names, &servers);
             task_tree.set_success_summary(&version, &routes, https_port);

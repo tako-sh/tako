@@ -954,7 +954,7 @@ install_native_network() {
     cp "$native_source" "$tmp_extract/native-helper.py"
     native_source="$tmp_extract/native-helper.py"
   else
-    native_expected="4dc3ec73dd591effcd8ce61bfb3410d9638abbfb6d4edc100c8be1b4bf801182"
+    native_expected="c620a23b4665b1f0c5cc844d6ea91ec738fb94cecb3ea5b62f07587ce6408ddf"
     native_source="$tmp_extract/scripts/tako-network-helper.py"
     if [ ! -f "$native_source" ] || [ -L "$native_source" ]; then
       native_source="$tmp_extract/native-helper.py"

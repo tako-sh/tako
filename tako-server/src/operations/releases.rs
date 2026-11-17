@@ -134,18 +134,18 @@ impl crate::ServerState {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn run_release(
-        &self,
-        app_name: &str,
-        version: &str,
-        path: &str,
-        command_line: &str,
-        vars: HashMap<String, String>,
-        secrets: HashMap<String, String>,
-        force: bool,
-    ) -> Response {
+    pub(crate) async fn run_release(&self, run: ReleaseRun<'_>) -> Response {
         use crate::release_command;
+        let ReleaseRun {
+            app_name,
+            version,
+            path,
+            command_line,
+            vars,
+            secrets,
+            databases,
+            force,
+        } = run;
 
         if command_line.trim().is_empty() {
             return Response::error("Release command is empty".to_string());
@@ -197,7 +197,47 @@ impl crate::ServerState {
         env.extend(vars);
         inject_app_data_dir_env(&mut env, &data_paths);
         env.insert("TAKO_BUILD".to_string(), version.to_string());
+        // Migrations need the release's databases before the release is
+        // live, so the command gets temporary bindings in an envelope.
+        let release_databases = ReleaseDatabases {
+            state: self,
+            app: app_name,
+        };
+        let mut bootstrap = None;
+        if !databases.is_empty() {
+            // The provisioned bindings supply peer keys that deployers
+            // without administration do not send.
+            let mut release_config = crate::instances::AppConfig::default();
+            if let Some(app) = self.app_manager.get_app(app_name) {
+                release_config.databases = app.config.read().databases.clone();
+            }
+            let connections =
+                match self
+                    .databases
+                    .begin_release(app_name, &release_config, databases)
+                {
+                    Ok(connections) => connections,
+                    Err(error) => {
+                        return Response::error(format!("Release command failed: {error}"));
+                    }
+                };
+            bootstrap = Some(tako_core::bootstrap::envelope_string(
+                "",
+                tako_core::bootstrap::Bindings {
+                    secrets: &secrets,
+                    storages: &HashMap::new(),
+                    databases: &connections,
+                },
+            ));
+        }
         env.extend(secrets);
+        // After the secrets, so a secret of the same name cannot replace it.
+        if let Some(bootstrap) = bootstrap {
+            env.insert(
+                tako_core::bootstrap::TAKO_BOOTSTRAP_DATA_ENV.to_string(),
+                bootstrap,
+            );
+        }
         if let Ok(path) = std::env::var("PATH") {
             env.entry("PATH".to_string()).or_insert(path);
         }
@@ -208,7 +248,7 @@ impl crate::ServerState {
                 Err(error) => return Response::error(format!("Release command failed: {error}")),
             };
 
-        match crate::process_output::during_preparation(
+        let outcome = crate::process_output::during_preparation(
             self.drain_flag(),
             release_command::run(
                 command_line,
@@ -218,8 +258,9 @@ impl crate::ServerState {
                 Some(isolation),
             ),
         )
-        .await
-        {
+        .await;
+        drop(release_databases);
+        match outcome {
             Err(spawn_err) => Response::error(format!("Release command failed: {spawn_err}")),
             Ok(outcome) if outcome.succeeded() => Response::ok(serde_json::json!({
                 "status": "released",
@@ -373,6 +414,7 @@ impl crate::ServerState {
                 secrets: None,
                 runtime_credentials: None,
                 storages: None,
+                databases: None,
                 ssl,
                 backup: super::deploy::BackupUpdate::Preserve,
                 force: false,
@@ -414,5 +456,29 @@ mod tests {
 
         assert!(tail.starts_with('…'));
         assert!(tail.len() <= 4_000 + "…".len());
+    }
+}
+
+/// A release command to run once before a deploy's rollout.
+pub(crate) struct ReleaseRun<'a> {
+    pub(crate) app_name: &'a str,
+    pub(crate) version: &'a str,
+    pub(crate) path: &'a str,
+    pub(crate) command_line: &'a str,
+    pub(crate) vars: HashMap<String, String>,
+    pub(crate) secrets: HashMap<String, String>,
+    pub(crate) databases: HashMap<String, tako_core::DatabaseBinding>,
+    pub(crate) force: bool,
+}
+
+/// Removes a release command's temporary database bindings.
+struct ReleaseDatabases<'a> {
+    state: &'a crate::ServerState,
+    app: &'a str,
+}
+
+impl Drop for ReleaseDatabases<'_> {
+    fn drop(&mut self) {
+        self.state.databases.end_release(self.app);
     }
 }

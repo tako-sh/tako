@@ -31,7 +31,7 @@ export default async function fetch(request: Request): Promise<Response> {
     if (typeof chatId !== "string" || typeof message !== "string") {
       return new Response("Invalid input", { status: 400 });
     }
-    appendMessage(chatId, message);
+    await appendMessage(chatId, message);
     await messages.invalidate({ chat: { id: chatId } });
     return Response.json({ ok: true });
   }

@@ -13,6 +13,7 @@ use crate::output;
 
 pub(crate) mod client;
 mod display;
+pub(crate) use display::format_backup_time;
 mod download;
 pub(crate) mod target;
 
@@ -45,12 +46,6 @@ pub enum BackupCommands {
         /// Specific server to query
         #[arg(long)]
         server: Option<String>,
-        /// List SQLite capture points instead of manual directory archives
-        #[arg(long)]
-        database: Option<String>,
-        /// Database is relative to TAKO_SHARED_DATA_DIR
-        #[arg(long, requires = "database")]
-        shared: bool,
     },
 
     /// Show backup status
@@ -75,11 +70,10 @@ pub enum BackupCommands {
         output: Option<PathBuf>,
     },
 
-    /// Restore app data, or only SQLite databases, from a backup
+    /// Restore app data from a backup archive
     Restore {
         /// Backup id from `tako backups list`
-        #[arg(required_unless_present = "database", conflicts_with = "database")]
-        backup_id: Option<String>,
+        backup_id: String,
         /// Environment to restore (defaults to production)
         #[arg(long)]
         env: Option<String>,
@@ -89,18 +83,6 @@ pub enum BackupCommands {
         /// Skip confirmation prompt
         #[arg(short = 'y', long = "yes")]
         yes: bool,
-        /// Database path relative to TAKO_DATA_DIR
-        #[arg(long, requires = "recovery_point")]
-        database: Option<String>,
-        /// Restore a shared database, pausing all apps on the selected server
-        #[arg(long, requires = "database")]
-        shared: bool,
-        /// Restore the newest uploaded SQLite capture
-        #[arg(long, requires = "database", group = "recovery_point")]
-        latest: bool,
-        /// Restore an uploaded capture TXID from backups list --database
-        #[arg(long, requires = "database", group = "recovery_point")]
-        txid: Option<u64>,
     },
 }
 
@@ -159,12 +141,7 @@ async fn run_async(
             };
             backup_now(&target, &servers, backup).await
         }
-        BackupCommands::List {
-            env,
-            server,
-            database,
-            shared,
-        } => {
+        BackupCommands::List { env, server } => {
             let target = resolve_backup_target(
                 &app_name,
                 env.as_deref(),
@@ -172,11 +149,7 @@ async fn run_async(
                 &tako_config,
                 &servers,
             )?;
-            if let Some(database) = database {
-                database_operation(&target, &servers, &database, shared, None, false).await
-            } else {
-                list_backups(&target, &servers).await
-            }
+            list_backups(&target, &servers).await
         }
         BackupCommands::Status { env } => {
             let target =
@@ -199,10 +172,6 @@ async fn run_async(
             download_backup(&target, &servers, &backup_id, output).await
         }
         BackupCommands::Restore {
-            database,
-            shared,
-            latest: _,
-            txid,
             backup_id,
             env,
             server,
@@ -215,101 +184,9 @@ async fn run_async(
                 &tako_config,
                 &servers,
             )?;
-            if let Some(database) = database {
-                database_operation(&target, &servers, &database, shared, Some(txid), yes).await
-            } else {
-                restore_backup(
-                    &target,
-                    &servers,
-                    backup_id.as_deref().ok_or("Backup id is required")?,
-                    yes,
-                )
-                .await
-            }
+            restore_backup(&target, &servers, &backup_id, yes).await
         }
     }
-}
-
-async fn database_operation(
-    target: &target::BackupTarget,
-    servers: &ServerInventory,
-    database: &str,
-    shared: bool,
-    restore: Option<Option<u64>>,
-    assume_yes: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    tako_core::validate_database_paths(&[database.to_owned()])?;
-    let name = resolve_single_server(
-        &target.server_names,
-        "Pass --server to choose the database's server.",
-    )?;
-    let server = servers
-        .get(&name)
-        .ok_or("Server is not enrolled in this network")?;
-    if restore.is_some() && output::is_interactive() && !assume_yes {
-        let description = if shared {
-            "Tako pauses ALL apps on this server, replaces the database, and restarts the apps. Shared data is local to this server."
-        } else {
-            "Tako stops this app and its workers, replaces the database, then restarts the app."
-        };
-        if !output::confirm_with_description(
-            &format!("Restore {database} on {name}?"),
-            Some(description),
-            false,
-        )? {
-            return Err(output::operation_cancelled_error().into());
-        }
-    }
-    if output::is_dry_run() {
-        output::dry_run_skip(if restore.is_some() {
-            "Restore SQLite database"
-        } else {
-            "List SQLite recovery points"
-        });
-        return Ok(());
-    }
-    let command = match restore {
-        Some(txid) => Command::RestoreDatabaseBackup {
-            app: target.remote_app_name.clone(),
-            database: database.into(),
-            shared,
-            txid,
-        },
-        None => Command::ListDatabaseBackups {
-            app: target.remote_app_name.clone(),
-            database: database.into(),
-            shared,
-        },
-    };
-    let result = send_typed_to_server::<serde_json::Value>(server, command, "database_backup")
-        .await
-        .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
-    if output::is_json() {
-        return output::json_result(
-            serde_json::json!({"ok": true, "command": "backups", "server": name, "database": result}),
-        );
-    }
-    if restore.is_some() {
-        let result: tako_core::DatabaseRestoreResponse = serde_json::from_value(result)?;
-        output::success(&format!(
-            "Restored {database} to capture {} on {name}",
-            result.txid
-        ));
-    } else {
-        let result: tako_core::DatabaseBackupsResponse = serde_json::from_value(result)?;
-        if result.points.is_empty() {
-            output::info("No uploaded SQLite recovery points yet");
-        }
-        for point in result.points {
-            output::info(&format!(
-                "TXID {} · uploaded {} · {}",
-                point.txid,
-                display::format_backup_time(point.uploaded_at_unix_secs),
-                output::format_size(point.size_bytes)
-            ));
-        }
-    }
-    Ok(())
 }
 
 async fn backup_now(

@@ -30,7 +30,7 @@ const getPageData = createServerFn().handler(async (): Promise<PageData> => {
       bases,
       rootHost: parsedHost.rootHost,
       rootOrigin: parsedHost.rootOrigin,
-      snapshot: getBaseSnapshot(parsedHost.baseSlug),
+      snapshot: await getBaseSnapshot(parsedHost.baseSlug),
     };
   }
 

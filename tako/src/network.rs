@@ -13,6 +13,7 @@ use tako_network::{
 use crate::config::{LocalNetwork, LocalNetworks};
 
 pub(crate) mod client;
+pub(crate) mod databases;
 pub(crate) mod diagnose;
 pub(crate) mod local_access;
 pub(crate) mod revocation;

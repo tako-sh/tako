@@ -196,7 +196,7 @@ Development processes receive:
 
 User variables come from `[vars]` plus `[vars.development]`.
 
-The fd-3 bootstrap envelope is present even with no secrets or storages. It carries the internal auth token, `secrets`, and `storages`.
+The fd-3 bootstrap envelope is present even with no secrets or storages. It carries the internal auth token, `secrets`, `storages`, and `databases`.
 
 ## One-Off Local Commands
 
@@ -210,9 +210,13 @@ tako run -- cargo run --bin migrate
 
 `--env` defaults to `development`. Script files use the selected runtime's local rule, such as Bun/Node for JS/TS and `go run` for `.go` files. `--eval` runs inline source when the runtime supports it; JS runtimes support inline TypeScript. Use `-- {command...}` for exact commands.
 
-The command runs from the app directory, sets `ENV`, `TAKO_BUILD=local`, `TAKO_DATA_DIR`, `TAKO_SHARED_DATA_DIR`, runtime defaults, and JS `TAKO_APP_ROOT`, then passes app secrets and storage bindings through `TAKO_BOOTSTRAP_DATA`. SDK-aware scripts use the same app SDK surfaces; JS/TS scripts can import `tako` and read `tako.secrets`.
+The command runs from the app directory, sets `ENV`, `TAKO_BUILD=local`, `TAKO_DATA_DIR`, `TAKO_SHARED_DATA_DIR`, runtime defaults, and JS `TAKO_APP_ROOT`, then passes app secrets, storage bindings, and database bindings through `TAKO_BOOTSTRAP_DATA`. SDK-aware scripts use the same app SDK surfaces; JS/TS scripts can import `tako` and read `tako.secrets` and `tako.databases`.
 
 Secrets are not raw process env vars.
+
+## Databases In Dev
+
+`tako dev` serves each development database binding from `.tako/data/databases/<database-name>.sqlite` over the same protocol as production, on a loopback port of the dev daemon. Bind names in `[envs.development].databases`, or let development use every name the other environments bind. The file is created on first use, and the project's [migrations](/databases/#migrations) are applied before the app starts and on each reload. `tako run` serves the same files, after applying migrations, for one-off scripts. See [Databases](/databases/#develop-locally).
 
 ## Secrets And Storage In Dev
 

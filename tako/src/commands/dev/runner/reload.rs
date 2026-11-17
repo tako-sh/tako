@@ -62,6 +62,12 @@ pub(super) fn spawn_config_reload_loop(
                 .map(str::trim)
                 .and_then(crate::build::BuildAdapter::from_id)
                 .unwrap_or_else(|| crate::build::detect_build_adapter(&ctx.project_dir));
+            // The daemon keeps serving the same file; the app sees the new
+            // schema without a restart.
+            if change == watcher::WatchChange::Migrations {
+                apply_dev_migrations(&ctx, &cfg).await;
+                continue;
+            }
             if change == watcher::WatchChange::GeneratedDeclarations {
                 if cfg.compose.is_none()
                     && adapter.preset_group() == crate::build::PresetGroup::Js
@@ -204,6 +210,8 @@ async fn register_updated_app(
             HashMap::new()
         }
     };
+    let databases = crate::local_databases::dev_files(&ctx.project_dir, cfg);
+    apply_dev_migrations(ctx, cfg).await;
     let project_dir_display = ctx.project_dir.to_string_lossy();
     let reg_result =
         crate::dev_server_client::register_app(crate::dev_server_client::RegisterAppRequest {
@@ -220,6 +228,7 @@ async fn register_updated_app(
             secrets: new_secrets,
             images: &cfg.images,
             storages: &storages,
+            databases: &databases,
             readiness_failure_hint: ctx.readiness_failure_hint.as_deref(),
             worker_command: ctx.worker_command.as_deref(),
             workflow_retention_ms: cfg.workflows.retention_ms,
@@ -237,6 +246,29 @@ async fn register_updated_app(
     }
 }
 
+/// Applies pending development migrations and logs what happened.
+async fn apply_dev_migrations(ctx: &ConfigReloadLoop, cfg: &crate::config::TakoToml) {
+    match crate::local_databases::migrate_development(&ctx.project_dir, cfg) {
+        Ok(migrated) => {
+            for warning in migrated.warnings {
+                let _ = ctx.log_tx.send(ScopedLog::warn("tako", warning)).await;
+            }
+            for line in migrated.applied {
+                let _ = ctx.log_tx.send(ScopedLog::info("tako", line)).await;
+            }
+        }
+        Err(error) => {
+            let _ = ctx
+                .log_tx
+                .send(ScopedLog::error(
+                    "tako",
+                    format!("Migrations failed: {error}"),
+                ))
+                .await;
+        }
+    }
+}
+
 async fn restart_app_for_change(ctx: &ConfigReloadLoop, change: watcher::WatchChange) {
     log_restart_reason(ctx, change).await;
     let _ = crate::dev_server_client::restart_app(&ctx.config_key).await;
@@ -248,7 +280,9 @@ async fn log_restart_reason(ctx: &ConfigReloadLoop, change: watcher::WatchChange
         watcher::WatchChange::Secrets => "Secrets changed, restarting…",
         watcher::WatchChange::Channels => "Channels, presence, or stores changed, restarting…",
         watcher::WatchChange::Workflows => "workflows/ changed, restarting…",
-        watcher::WatchChange::GeneratedDeclarations => unreachable!(),
+        watcher::WatchChange::GeneratedDeclarations | watcher::WatchChange::Migrations => {
+            unreachable!()
+        }
     };
     let _ = ctx
         .log_tx

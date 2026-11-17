@@ -16,6 +16,7 @@
  */
 
 import { createLogger } from "./logger";
+import { loadDatabases } from "./database";
 import { loadStorages } from "./storage";
 import { loadSecrets } from "./tako/secrets";
 import { cache } from "./cache";
@@ -58,6 +59,11 @@ export type { Jsonify, StoreJsonValue } from "./stores/json";
  * Project-specific storage bindings. Augmented by the generated `tako.d.ts` file.
  */
 export interface TakoStorages {}
+
+/**
+ * Project-specific database bindings. Augmented by the generated `tako.d.ts` file.
+ */
+export interface TakoDatabases {}
 
 /** Environments declared in `tako.toml`, plus `development` and `production`. */
 export type Env = TakoTypeRegistry extends { Env: infer T extends string }
@@ -109,6 +115,13 @@ export const secrets = loadSecrets<TakoSecretBag>();
 /** Tako-managed object storages, typed by project-specific `tako.d.ts` declarations. */
 export const storages = loadStorages<TakoStorages>();
 
+/**
+ * Tako-hosted databases, typed by project-specific `tako.d.ts` declarations.
+ * Each is `{ url, authToken }` for `createClient` from `@libsql/client` or
+ * `connect` from `@tursodatabase/serverless`.
+ */
+export const databases = loadDatabases<TakoDatabases>();
+
 /** Primary app runtime surface. */
 export const tako = Object.freeze({
   env,
@@ -123,6 +136,7 @@ export const tako = Object.freeze({
   logger,
   secrets,
   storages,
+  databases,
   cache,
 } as const);
 
@@ -165,6 +179,7 @@ export type {
   TakoStorageBag,
   TakoStorageBinding,
 } from "./storage";
+export type { TakoDatabase, TakoDatabaseBag } from "./database";
 
 /**
  * Extract the payload type from a workflow definition.

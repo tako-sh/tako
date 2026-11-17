@@ -41,6 +41,7 @@ fn idle_wake_app(directory: &std::path::Path) -> (Arc<Mutex<State>>, String) {
                 bootstrap_token: "dev-token".to_string(),
                 secrets: std::collections::HashMap::new(),
                 storages: std::collections::HashMap::new(),
+                databases: Default::default(),
             },
         );
         s.routes.set_routes(
@@ -296,6 +297,7 @@ async fn readiness_keeps_waiting_when_route_becomes_active_without_fd4_signal() 
                 bootstrap_token: "dev-token".to_string(),
                 secrets: std::collections::HashMap::new(),
                 storages: std::collections::HashMap::new(),
+                databases: Default::default(),
             },
         );
         s.routes.set_routes(
@@ -699,6 +701,7 @@ async fn spawn_app_exposes_bootstrap_envelope_on_fd3() {
         bootstrap_token: "dev-token".to_string(),
         secrets: secrets.clone(),
         storages: std::collections::HashMap::new(),
+        databases: Default::default(),
     };
 
     let (mut child, readiness_fd) = spawn_app(&app.project_dir, &app, None).await.unwrap();
@@ -739,6 +742,7 @@ fn readiness_failure_message_uses_client_hint() {
         bootstrap_token: "dev-token".to_string(),
         secrets: std::collections::HashMap::new(),
         storages: std::collections::HashMap::new(),
+        databases: Default::default(),
     };
 
     assert_eq!(readiness_failure_message(&app), "custom readiness hint");

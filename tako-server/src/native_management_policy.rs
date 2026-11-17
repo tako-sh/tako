@@ -8,7 +8,10 @@
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::path::{Component, Path};
-use tako_core::{BackupBinding, Command, SslBinding, SslProvider, StorageBinding, StorageProvider};
+use tako_core::{
+    BackupBinding, Command, DatabaseBinding, SslBinding, SslProvider, StorageBinding,
+    StorageProvider,
+};
 use tako_network::{AppEnv, Permissions};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,7 +26,6 @@ pub(crate) enum CommandClass<'a> {
 /// Classification alone grants nothing. New protocol variants must be reviewed.
 pub(crate) fn classify(command: &Command) -> CommandClass<'_> {
     match command {
-        Command::RestoreDatabaseBackup { shared: true, .. } => CommandClass::ServerAdmin,
         Command::Hello { .. } | Command::ServerInfo => CommandClass::AuthenticatedProbe,
         Command::CheckDeploySpace { .. } => CommandClass::DeploymentPreflight,
         Command::List
@@ -32,7 +34,28 @@ pub(crate) fn classify(command: &Command) -> CommandClass<'_> {
         | Command::ResumeServer
         | Command::EnterUpgrading { .. }
         | Command::ExitUpgrading { .. }
-        | Command::InjectChallengeToken { .. } => CommandClass::ServerAdmin,
+        | Command::InjectChallengeToken { .. }
+        | Command::CreateDatabase { .. }
+        | Command::DeleteDatabase { .. }
+        | Command::DatabaseStatus { .. }
+        | Command::ConfigureDatabaseBackup { .. }
+        | Command::GrantDatabases { .. }
+        | Command::SnapshotDatabase { app: None, .. }
+        | Command::ListDatabaseSnapshots { .. }
+        | Command::RestoreDatabase { .. }
+        | Command::QueryDatabase { .. }
+        | Command::MigrateDatabase { app: None, .. }
+        | Command::ResetDatabase { .. }
+        | Command::BeginDatabaseImport { .. }
+        | Command::DatabaseImportChunk { .. }
+        | Command::FinishDatabaseImport { .. }
+        | Command::BeginDatabaseExport { .. }
+        | Command::DatabaseExportChunk { .. }
+        | Command::FinishDatabaseExport { .. } => CommandClass::ServerAdmin,
+        // Before its release command, a deployer may snapshot a database its
+        // app environment uses; the handler checks that relationship.
+        Command::SnapshotDatabase { app: Some(app), .. }
+        | Command::MigrateDatabase { app: Some(app), .. } => CommandClass::Application { app },
         Command::RegisterSchedules { .. }
         | Command::ClaimRun { .. }
         | Command::HeartbeatRun { .. }
@@ -55,11 +78,9 @@ pub(crate) fn classify(command: &Command) -> CommandClass<'_> {
         | Command::RunRelease { app, .. }
         | Command::Deploy { app, .. }
         | Command::BackupNow { app, .. }
-        | Command::ListDatabaseBackups { app, .. }
         | Command::ListBackups { app }
         | Command::BackupStatus { app }
         | Command::BackupDownloadUrl { app, .. }
-        | Command::RestoreDatabaseBackup { app, .. }
         | Command::RestoreBackup { app, .. }
         | Command::Scale { app, .. }
         | Command::Start { app, .. }
@@ -89,6 +110,7 @@ pub(crate) struct ProvisionedApp<'a> {
     pub ssl: &'a SslBinding,
     pub runtime_credentials: &'a HashMap<String, String>,
     pub storages: &'a HashMap<String, StorageBinding>,
+    pub databases: &'a HashMap<String, DatabaseBinding>,
     pub backup: Option<&'a BackupBinding>,
 }
 
@@ -109,6 +131,32 @@ impl fmt::Display for Denial {
 
 impl std::error::Error for Denial {}
 
+/// Whether a requested binding names the database a provisioned one does.
+/// Peer keys are issued by servers to administrators: one left out keeps the
+/// provisioned key, and one sent must be that key.
+fn keeps_binding(requested: &DatabaseBinding, provisioned: &DatabaseBinding) -> bool {
+    provisioned.same_target(requested)
+        && requested
+            .peer_key
+            .as_ref()
+            .is_none_or(|key| provisioned.peer_key.as_ref() == Some(key))
+}
+
+/// Whether a requested binding set keeps the provisioned one.
+fn same_bindings(
+    requested: &HashMap<String, DatabaseBinding>,
+    provisioned: &HashMap<String, DatabaseBinding>,
+) -> bool {
+    requested.len() == provisioned.len()
+        && requested.iter().all(|(name, binding)| {
+            provisioned
+                .get(name)
+                .is_some_and(|current| keeps_binding(binding, current))
+        })
+}
+
+const DATABASES_DENIED: Denial =
+    Denial("Scoped deployment cannot change database bindings; an administrator must deploy them.");
 const SCOPE_REQUIRED: Denial = Denial("An explicit app/environment scope is required.");
 const SCOPE_MISMATCH: Denial = Denial("Command app must exactly match the app/environment scope.");
 const SCOPE_DENIED: Denial = Denial("Deployment permission is required for this app/environment.");
@@ -225,6 +273,7 @@ pub(crate) fn authorize_command(
             ssl,
             runtime_credentials,
             storages,
+            databases,
             backup,
             ..
         } => {
@@ -251,15 +300,38 @@ pub(crate) fn authorize_command(
                     ));
                 }
                 validate_local_storages(context.data_dir, scope, provisioned.storages)?;
+                if databases
+                    .as_ref()
+                    .is_some_and(|value| !same_bindings(value, provisioned.databases))
+                {
+                    return Err(DATABASES_DENIED);
+                }
                 if backup.as_deref() != provisioned.backup {
                     return Err(BACKUP_DENIED);
                 }
             }
         }
-        Command::RunRelease { version, path, .. } => {
+        Command::RunRelease {
+            version,
+            path,
+            databases,
+            ..
+        } => {
             validate_version_path(context.data_dir, &releases, version)?;
             validate_release_path(context.data_dir, scope, path)?;
+            if !permissions.server_admin && !databases.is_empty() {
+                let provisioned = provisioned_app(context, scope)?;
+                if databases.iter().any(|(name, binding)| {
+                    !provisioned
+                        .databases
+                        .get(name)
+                        .is_some_and(|current| keeps_binding(binding, current))
+                }) {
+                    return Err(DATABASES_DENIED);
+                }
+            }
         }
+        Command::SnapshotDatabase { .. } | Command::MigrateDatabase { .. } => {}
         Command::PrepareReleaseUpload { version, .. }
         | Command::CleanupPreparedDeploy { version, .. }
         | Command::CleanupRelease { version, .. }
@@ -285,11 +357,9 @@ pub(crate) fn authorize_command(
                 return Err(BACKUP_DENIED);
             }
         }
-        Command::ListDatabaseBackups { .. }
-        | Command::ListBackups { .. }
+        Command::ListBackups { .. }
         | Command::BackupStatus { .. }
         | Command::BackupDownloadUrl { .. }
-        | Command::RestoreDatabaseBackup { .. }
         | Command::RestoreBackup { .. }
         | Command::Scale { .. }
         | Command::Start { .. }
@@ -327,7 +397,22 @@ pub(crate) fn authorize_command(
         | Command::WaitForEvent { .. }
         | Command::NetworkCall { .. }
         | Command::ChannelPublish { .. }
-        | Command::ChannelClose { .. } => {
+        | Command::ChannelClose { .. }
+        | Command::CreateDatabase { .. }
+        | Command::DeleteDatabase { .. }
+        | Command::DatabaseStatus { .. }
+        | Command::ConfigureDatabaseBackup { .. }
+        | Command::GrantDatabases { .. }
+        | Command::ListDatabaseSnapshots { .. }
+        | Command::RestoreDatabase { .. }
+        | Command::QueryDatabase { .. }
+        | Command::ResetDatabase { .. }
+        | Command::BeginDatabaseImport { .. }
+        | Command::DatabaseImportChunk { .. }
+        | Command::FinishDatabaseImport { .. }
+        | Command::BeginDatabaseExport { .. }
+        | Command::DatabaseExportChunk { .. }
+        | Command::FinishDatabaseExport { .. } => {
             return Err(Denial(
                 "Command is not an application management operation.",
             ));
@@ -475,6 +560,7 @@ mod tests {
         ssl: SslBinding,
         runtime_credentials: HashMap<String, String>,
         storages: HashMap<String, StorageBinding>,
+        databases: HashMap<String, DatabaseBinding>,
         backup: Option<BackupBinding>,
     }
 
@@ -503,6 +589,7 @@ mod tests {
                 ssl: SslBinding::default(),
                 runtime_credentials: HashMap::new(),
                 storages: HashMap::new(),
+                databases: HashMap::new(),
                 backup: None,
             }
         }
@@ -516,6 +603,7 @@ mod tests {
                     ssl: &self.ssl,
                     runtime_credentials: &self.runtime_credentials,
                     storages: &self.storages,
+                    databases: &self.databases,
                     backup: self.backup.as_ref(),
                 }),
             }
@@ -547,8 +635,7 @@ mod tests {
             object.entry("ssl").or_insert(json!(self.ssl));
             object.entry("secrets").or_insert(json!({}));
             object.entry("backup_id").or_insert(json!("backup-1"));
-            object.entry("database").or_insert(json!("app.sqlite"));
-            object.entry("shared").or_insert(json!(false));
+            object.entry("reason").or_insert(json!("release"));
             object.entry("command_line").or_insert(json!("true"));
             object.entry("payload").or_insert(json!({}));
             object.entry("name").or_insert(json!("job"));
@@ -577,8 +664,7 @@ mod tests {
         "run_release",
         "deploy",
         "backup_now",
-        "list_database_backups",
-        "restore_database_backup",
+        "snapshot_database",
         "list_backups",
         "backup_status",
         "backup_download_url",
@@ -600,13 +686,93 @@ mod tests {
     ];
 
     #[test]
-    fn restoring_shared_data_requires_server_administrator_permission() {
+    fn database_administration_requires_server_administrator_permission() {
+        let id = "shop";
+        for command in [
+            json!({"command":"create_database","name":id,"generation":"0123456789abcdef0123456789abcdef","backup_key_base64":"a2V5"}),
+            json!({"command":"delete_database","name":id}),
+            json!({"command":"database_status"}),
+            json!({"command":"configure_database_backup","name":id,"backup":null}),
+            json!({"command":"grant_databases","app":"demo/staging","databases":[id]}),
+            json!({"command":"snapshot_database","name":id,"reason":"manual","app":null}),
+            json!({"command":"list_database_snapshots","name":id}),
+            json!({"command":"restore_database","name":id}),
+            json!({"command":"query_database","name":id,"sql":"SELECT 1"}),
+            json!({"command":"migrate_database","name":id,"owner":"demo","migrations":[]}),
+            json!({"command":"reset_database","name":id}),
+            json!({"command":"begin_database_import","name":id,"size_bytes":1,"sha256":"00"}),
+            json!({"command":"begin_database_export","name":id}),
+        ] {
+            let command: Command = serde_json::from_value(command).unwrap();
+            assert_eq!(classify(&command), CommandClass::ServerAdmin, "{command:?}");
+        }
+        // The pre-release snapshot is the app deployer's; the server checks the
+        // app uses the database.
+        let release: Command = serde_json::from_value(json!({
+            "command": "snapshot_database", "name": id, "reason": "release", "app": "demo/staging"
+        }))
+        .unwrap();
+        assert!(
+            matches!(classify(&release), CommandClass::Application { .. }),
+            "{:?}",
+            classify(&release)
+        );
+        // So are its own app's migrations, on a database its app uses.
+        let migrations: Command = serde_json::from_value(json!({
+            "command": "migrate_database", "name": id, "owner": "demo",
+            "migrations": [{"name": "0001_initial.sql", "sql": "SELECT 1"}],
+            "app": "demo/staging"
+        }))
+        .unwrap();
+        assert_eq!(
+            classify(&migrations),
+            CommandClass::Application {
+                app: "demo/staging"
+            }
+        );
+    }
+
+    #[test]
+    fn scoped_deploys_cannot_change_database_bindings() {
+        let f = Fixture::new();
+        let binding = json!({"main": {"name": "shop", "server": "edge"}});
+        let deploy = f.decode_command(json!({"command":"deploy","databases":binding}));
+        assert_eq!(f.authorize(&deploy), Err(DATABASES_DENIED));
+        let release = f.decode_command(json!({"command":"run_release","databases":binding}));
+        assert_eq!(f.authorize(&release), Err(DATABASES_DENIED));
+        let unchanged = f.decode_command(json!({"command":"deploy","databases":null}));
+        assert_eq!(f.authorize(&unchanged), Ok(()));
+    }
+
+    #[test]
+    fn scoped_release_commands_keep_provisioned_bindings_without_their_keys() {
         let mut f = Fixture::new();
-        let command = f.decode_command(json!({"command":"restore_database_backup", "shared":true}));
-        assert_eq!(classify(&command), CommandClass::ServerAdmin);
-        assert!(f.authorize(&command).is_err());
-        f.permissions.server_admin = true;
-        assert!(f.authorize(&command).is_ok());
+        f.databases.insert(
+            "main".into(),
+            DatabaseBinding {
+                name: "shop".into(),
+                server: "edge".into(),
+                peer_key: Some("issued-by-edge".into()),
+            },
+        );
+        // Deployers without administration never see peer keys.
+        let same = json!({"main": {"name": "shop", "server": "edge"}});
+        let release = f.decode_command(json!({"command":"run_release","databases":same}));
+        assert_eq!(f.authorize(&release), Ok(()));
+        let moved = json!({"main": {"name": "shop", "server": "other"}});
+        let release = f.decode_command(json!({"command":"run_release","databases":moved}));
+        assert_eq!(f.authorize(&release), Err(DATABASES_DENIED));
+        // Nor can they replace the issued key, on a release or a deploy.
+        let rekeyed = json!({"main": {"name": "shop", "server": "edge", "peer_key": "guessed"}});
+        let release = f.decode_command(json!({"command":"run_release","databases":rekeyed}));
+        assert_eq!(f.authorize(&release), Err(DATABASES_DENIED));
+        let deploy = f.decode_command(json!({"command":"deploy","databases":rekeyed}));
+        assert_eq!(f.authorize(&deploy), Err(DATABASES_DENIED));
+        // The issued key itself is accepted.
+        let issued =
+            json!({"main": {"name": "shop", "server": "edge", "peer_key": "issued-by-edge"}});
+        let deploy = f.decode_command(json!({"command":"deploy","databases":issued}));
+        assert_eq!(f.authorize(&deploy), Ok(()));
     }
 
     #[test]

@@ -104,6 +104,7 @@ impl TakoToml {
         let workflows = parse_workflows_config(&raw, "workflows", true)?.unwrap_or_default();
         let images = parse_images_config(&raw)?;
         let storages = parse_storage_resources(&raw)?;
+        let databases = parse_database_resources(&raw)?;
         let mut config = TakoToml {
             name,
             schemas,
@@ -126,6 +127,7 @@ impl TakoToml {
             workflows,
             images,
             storages,
+            databases,
             ..TakoToml::default()
         };
 
@@ -155,6 +157,14 @@ impl TakoToml {
         // Parse [envs.*] sections
         if let Some(table) = parse_optional_table(&raw, "envs")? {
             for (env_name, env_value) in table {
+                if let Some(backup) = env_value.get("backup")
+                    && (backup.get("databases").is_some()
+                        || backup.get("shared_databases").is_some())
+                {
+                    return Err(ConfigError::Validation(format!(
+                        "[envs.{env_name}].backup no longer lists SQLite files. Create a hosted database with `tako sqlite create`, load the file with `tako sqlite import`, and bind it in [envs.{env_name}].databases. Hosted databases are snapshotted to the storage set in [databases.<name>].backup."
+                    )));
+                }
                 let env_config: EnvConfig = toml::from_str(&toml::to_string(env_value)?)?;
                 if env_config.network.is_some()
                     && env_value.get("servers").is_some()
@@ -223,6 +233,30 @@ fn parse_storage_resources(raw: &toml::Value) -> Result<HashMap<String, StorageR
         resources.insert(name.clone(), resource);
     }
 
+    Ok(resources)
+}
+
+fn parse_database_resources(raw: &toml::Value) -> Result<HashMap<String, DatabaseResourceConfig>> {
+    let mut resources = HashMap::new();
+    let Some(databases) = raw.get("databases") else {
+        return Ok(resources);
+    };
+    let table = databases
+        .as_table()
+        .ok_or_else(|| ConfigError::Validation("'databases' must be a table".to_string()))?;
+    for (name, value) in table {
+        if let Some(key) = ["id", "server", "access"]
+            .into_iter()
+            .find(|key| value.get(key).is_some())
+        {
+            return Err(ConfigError::Validation(format!(
+                "[databases.{name}].{key} is no longer set in tako.toml: the network records where each database lives. Remove it; `tako sqlite list` shows the network's databases."
+            )));
+        }
+        let resource: DatabaseResourceConfig = toml::from_str(&toml::to_string(value)?)
+            .map_err(|e| ConfigError::Validation(format!("[databases.{name}]: {e}")))?;
+        resources.insert(name.clone(), resource);
+    }
     Ok(resources)
 }
 

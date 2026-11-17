@@ -188,6 +188,12 @@ tako backups now --env production
 
 Backup storage must not use `public_base_url`, and `local` cannot be used as a backup target.
 
+For a hosted database, check `backup.last_error` and `backup.last_snapshot` in `tako sqlite status <name> --json`. A database snapshot uses the storage named in `[databases.<name>].backup`, or else the environment's `backup.storage`; deploy as an administrator after changing it or its credentials so the database's server receives them. Then take one with `tako sqlite backup <name>`. A snapshot also needs free space for about three copies of the database on the server, beyond what other snapshots in progress there hold.
+
+## Database Requests Fail
+
+`tako.databases.<binding>` is `undefined` (or `GetDatabase` reports false) when the environment does not bind that name: check `[envs.<env>].databases` and deploy. A `401` means the token is not valid on this server, usually from a connection copied from another environment or session. A `503` means the database is being restored, imported, or removed; retry. For a database on another server, a `503` saying the database's server has not granted this app access means the binding has no grant key yet: deploy the environment as an administrator. A `403` from the database's server means it holds no grant for the environment, for example after the database was deleted and recreated: deploy as an administrator again. A `502` means this server could not reach the database's server over the private network: check `tako network status --json`. A deploy that fails migrating a database names the migration and SQLite's error; fix it in a new migration file (or restore the edited file, when it says an applied migration changed) and deploy again. A deploy that says the network has no database with a bound name needs `tako sqlite create <name>`, or a binding to one of the names `tako sqlite list` shows. See [Databases](/databases/#limits-and-security).
+
 ## Secret Or Credential Key Problems
 
 For shared network values, check `tako network status --json`, device permissions, and `tako network sync` first. A newly enrolled administrator can decrypt published values; a scoped client can decrypt app secrets only for its granted app/environments. Unpublished drafts remain on the original worktree.

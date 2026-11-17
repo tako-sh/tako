@@ -128,6 +128,17 @@ impl ServerState {
                     errors.push(format!("{app_name}: {e}"));
                     HashMap::new()
                 });
+            config.databases = self
+                .state_store
+                .get_app_databases(&app_name)
+                .unwrap_or_else(|e| {
+                    tracing::warn!(app = %app_name, "Failed to read database bindings: {}", e);
+                    errors.push(format!("{app_name}: {e}"));
+                    HashMap::new()
+                });
+            // Before the app's processes start, so they can reach them.
+            self.databases
+                .apply_bindings(&config.deployment_id(), &[&config.databases]);
 
             let app = self.app_manager.register_app(config.clone());
             self.load_balancer.register_app(app.clone());

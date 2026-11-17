@@ -98,6 +98,11 @@ fn migrate_schema_on(
         )?;
     }
 
+    if from_version < 15 {
+        // Continuous WAL capture was replaced by hosted database snapshots.
+        tx.execute_batch("DROP TABLE IF EXISTS database_replicas;")?;
+    }
+
     ensure_schema_objects(tx)?;
     let has_deadline: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM pragma_table_info('server_drain') WHERE name = 'deadline_unix_ms')",
@@ -198,7 +203,19 @@ fn ensure_schema_objects(conn: &rusqlite::Connection) -> Result<(), StateStoreEr
             project TEXT NOT NULL
         );
 
-        CREATE TABLE IF NOT EXISTS database_replicas (
+        CREATE TABLE IF NOT EXISTS databases (
+            name TEXT NOT NULL PRIMARY KEY,
+            generation TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            encrypted_data BLOB NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS app_databases (
+            app TEXT NOT NULL PRIMARY KEY,
+            encrypted_data BLOB NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS database_grants (
             app TEXT NOT NULL PRIMARY KEY,
             encrypted_data BLOB NOT NULL
         );

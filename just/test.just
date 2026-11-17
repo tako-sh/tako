@@ -21,9 +21,9 @@ unit-go:
 workspace:
     cargo test --workspace
 
-# Embedded SQLite capture, upload, retention, and recovery tests.
-terse:
-    cargo test --locked -p tako-backup
+# Hosted database engine, protocol, and HTTP tests.
+database:
+    cargo test --locked -p tako-database
 
 # Reproduce a storage history workload; omit the seed to run the built-in corpus.
 histories seed="":

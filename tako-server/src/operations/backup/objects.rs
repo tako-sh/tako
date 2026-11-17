@@ -11,9 +11,9 @@ use super::{index::BackupIndex, now_unix_secs};
 
 pub(super) const DOWNLOAD_URL_EXPIRES_SECONDS: u32 = 15 * 60;
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(30 * 60);
-pub(super) const METADATA_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const METADATA_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub(super) fn backup_store(
+pub(crate) fn backup_store(
     binding: &tako_core::StorageBinding,
 ) -> Result<object_store::aws::AmazonS3, String> {
     let options = object_store::ClientOptions::new()
@@ -39,7 +39,7 @@ pub(super) fn backup_http_client(timeout: Duration) -> Result<reqwest::Client, S
         .map_err(|e| e.to_string())
 }
 
-pub(super) async fn with_deadline<T>(
+pub(crate) async fn with_deadline<T>(
     timeout: Duration,
     operation: impl Future<Output = Result<T, String>>,
 ) -> Result<T, String> {
@@ -48,7 +48,7 @@ pub(super) async fn with_deadline<T>(
         .map_err(|_| "backup object request timed out".to_string())?
 }
 
-pub(super) async fn upload_file(
+pub(crate) async fn upload_file(
     store: Arc<dyn ObjectStore>,
     key: &str,
     path: &Path,
@@ -113,7 +113,7 @@ pub(super) async fn upload_file(
     result
 }
 
-pub(super) async fn put_json_object<T: serde::Serialize>(
+pub(crate) async fn put_json_object<T: serde::Serialize>(
     store: &dyn ObjectStore,
     key: &str,
     value: &T,
@@ -137,7 +137,7 @@ pub(super) async fn put_json_object<T: serde::Serialize>(
     .await
 }
 
-pub(super) async fn download_object(
+pub(crate) async fn download_object(
     store: &dyn ObjectStore,
     key: &str,
     path: &Path,

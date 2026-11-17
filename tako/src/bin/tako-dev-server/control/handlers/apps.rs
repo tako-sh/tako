@@ -32,10 +32,18 @@ pub(super) struct RegisterAppArgs {
     pub(super) secrets: HashMap<String, String>,
     pub(super) images: Box<tako_images::ImagesConfig>,
     pub(super) storages: HashMap<String, tako_core::StorageBinding>,
+    pub(super) databases: HashMap<String, String>,
     pub(super) client_pid: Option<u32>,
     pub(super) readiness_failure_hint: Option<String>,
     pub(super) worker_command: Option<Vec<String>>,
     pub(super) workflow_retention_ms: Option<i64>,
+}
+
+/// What workflow workers of a dev app receive in their bootstrap envelope.
+struct WorkerBindings {
+    storages: HashMap<String, tako_core::StorageBinding>,
+    secrets: HashMap<String, String>,
+    databases: HashMap<String, tako_core::DatabaseConnection>,
 }
 
 pub(super) async fn register_app(
@@ -56,6 +64,7 @@ pub(super) async fn register_app(
         secrets,
         images,
         storages,
+        databases,
         client_pid,
         readiness_failure_hint,
         worker_command,
@@ -110,8 +119,12 @@ pub(super) async fn register_app(
             .map_err(|e| format!("failed to generate dev bootstrap token: {e}"))?,
     };
 
+    let databases = crate::databases::connect(&config_path, &databases)
+        .await
+        .map_err(|e| format!("failed to serve local databases: {e}"))?;
     let app_storages = storages.clone();
     let app_secrets = secrets.clone();
+    let app_databases = databases.clone();
 
     {
         let s = state.lock().unwrap();
@@ -184,6 +197,7 @@ pub(super) async fn register_app(
                 bootstrap_token: bootstrap_token.clone(),
                 secrets,
                 storages,
+                databases,
             },
         );
 
@@ -257,8 +271,11 @@ pub(super) async fn register_app(
         worker_command.as_deref(),
         workflow_retention_ms,
         worker_app_root.as_deref(),
-        app_storages,
-        app_secrets,
+        WorkerBindings {
+            storages: app_storages,
+            secrets: app_secrets,
+            databases: app_databases,
+        },
         worker_log_buffer,
     )
     .await;
@@ -287,10 +304,14 @@ async fn ensure_workflow_runtime(
     worker_command: Option<&[String]>,
     workflow_retention_ms: Option<i64>,
     worker_app_root: Option<&str>,
-    storages: HashMap<String, tako_core::StorageBinding>,
-    secrets: HashMap<String, String>,
+    bindings: WorkerBindings,
     log_buffer: Option<state::LogBuffer>,
 ) {
+    let WorkerBindings {
+        storages,
+        secrets,
+        databases,
+    } = bindings;
     let Some(workflows) = workflows else {
         return;
     };
@@ -331,6 +352,7 @@ async fn ensure_workflow_runtime(
         cwd,
         secrets,
         storages,
+        databases,
         log_sink,
         isolation: None,
     };
@@ -414,6 +436,7 @@ pub(super) async fn unregister_app(state: &Arc<Mutex<State>>, config_path: Strin
     {
         workflows.stop(&app_name, Duration::from_secs(1)).await;
     }
+    crate::databases::release(&config_path).await;
 
     Response::AppUnregistered { config_path }
 }
@@ -455,8 +478,11 @@ pub(super) async fn restart_app(state: &Arc<Mutex<State>>, config_path: String) 
                 app.worker_command.clone(),
                 app.workflow_retention_ms,
                 app.env.get("TAKO_APP_ROOT").cloned(),
-                app.storages.clone(),
-                app.secrets.clone(),
+                WorkerBindings {
+                    storages: app.storages.clone(),
+                    secrets: app.secrets.clone(),
+                    databases: app.databases.clone(),
+                },
                 app.log_buffer.clone(),
             )
         })
@@ -484,8 +510,7 @@ pub(super) async fn restart_app(state: &Arc<Mutex<State>>, config_path: String) 
         worker_command,
         workflow_retention_ms,
         app_root,
-        storages,
-        secrets,
+        bindings,
         log_buffer,
     )) = restart
     {
@@ -497,8 +522,7 @@ pub(super) async fn restart_app(state: &Arc<Mutex<State>>, config_path: String) 
             worker_command.as_deref(),
             workflow_retention_ms,
             app_root.as_deref(),
-            storages,
-            secrets,
+            bindings,
             Some(log_buffer),
         )
         .await;

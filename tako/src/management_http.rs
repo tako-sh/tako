@@ -394,11 +394,27 @@ fn management_rpc_timeout_for_command(command: &Command) -> Duration {
         | Command::Scale { .. }
         | Command::Start { .. }
         | Command::BackupNow { .. }
-        | Command::RestoreDatabaseBackup { .. }
         | Command::RestoreBackup { .. }
         | Command::Stop { .. }
         | Command::Delete { .. }
-        | Command::Rollback { .. } => MANAGEMENT_DEPLOY_RPC_TIMEOUT,
+        | Command::Rollback { .. }
+        // Snapshots, restores, transfers, and queries can outlast a probe.
+        | Command::CreateDatabase { .. }
+        | Command::DeleteDatabase { .. }
+        | Command::ConfigureDatabaseBackup { .. }
+        | Command::GrantDatabases { .. }
+        | Command::SnapshotDatabase { .. }
+        | Command::ListDatabaseSnapshots { .. }
+        | Command::RestoreDatabase { .. }
+        | Command::QueryDatabase { .. }
+        | Command::MigrateDatabase { .. }
+        | Command::ResetDatabase { .. }
+        | Command::BeginDatabaseImport { .. }
+        | Command::DatabaseImportChunk { .. }
+        | Command::FinishDatabaseImport { .. }
+        | Command::BeginDatabaseExport { .. }
+        | Command::DatabaseExportChunk { .. }
+        | Command::FinishDatabaseExport { .. } => MANAGEMENT_DEPLOY_RPC_TIMEOUT,
         Command::Hello { .. }
         | Command::ServerInfo
         | Command::List
@@ -408,7 +424,7 @@ fn management_rpc_timeout_for_command(command: &Command) -> Duration {
         | Command::InjectChallengeToken { .. }
         | Command::PrepareReleaseUpload { .. }
         | Command::CheckDeploySpace { .. }
-        | Command::ListDatabaseBackups { .. }
+        | Command::DatabaseStatus { .. }
         | Command::ListBackups { .. }
         | Command::BackupStatus { .. }
         | Command::BackupDownloadUrl { .. }
@@ -645,6 +661,7 @@ mod tests {
                 secrets: None,
                 runtime_credentials: None,
                 storages: None,
+                databases: None,
                 ssl: tako_core::SslBinding::default(),
                 backup: None,
                 force: false,

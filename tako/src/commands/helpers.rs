@@ -8,7 +8,19 @@ pub(super) fn can_configure_bindings(
     let Some(id) = config.envs.get(env).and_then(|env| env.network.as_deref()) else {
         return Ok(true);
     };
-    let alias = crate::network::resolve_network(Some(id))?;
+    is_network_server_admin(id)
+}
+
+/// Whether this device is a network and server administrator of `network`.
+pub(super) fn is_network_server_admin(network: &str) -> Result<bool, Box<dyn std::error::Error>> {
+    Ok(network_permissions(network)?.server_admin)
+}
+
+/// This device's permissions in `network`.
+pub(super) fn network_permissions(
+    network: &str,
+) -> Result<tako_network::Permissions, Box<dyn std::error::Error>> {
+    let alias = crate::network::resolve_network(Some(network))?;
     let profile = crate::network::load_profile(&alias)?;
     let device = profile
         .request()
@@ -20,7 +32,7 @@ pub(super) fn can_configure_bindings(
         .get(&device)
         .ok_or("This device is not an active network member")?
         .permissions
-        .server_admin)
+        .clone())
 }
 
 /// Resolve which servers to target for a given environment.
@@ -60,7 +72,7 @@ pub fn resolve_servers_for_env(
     ))
 }
 
-fn resolve_network_servers(
+pub(crate) fn resolve_network_servers(
     servers: &ServerInventory,
     network: &str,
     selectors: &[String],

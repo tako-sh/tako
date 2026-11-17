@@ -482,13 +482,14 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(self.ssh, '')
         self.assertNotIn('tcp dport 22 accept', self.runner.policy)
         self.assertNotIn('udp dport 8787 accept', self.runner.policy)
-        self.assertNotIn('tcp dport 9850 accept', self.runner.policy)
+        self.assertNotIn('tcp dport { 9847, 9850 } accept', self.runner.policy)
         data['peers'][0]['kind'] = 'server'
         self.apply(data)
         self.assertIn('udp dport 8787 accept', self.runner.policy)
-        self.assertIn('tcp dport 9850 accept', self.runner.policy)
+        # Channel peers (9850) and forwarded database requests (9847).
+        self.assertIn('tcp dport { 9847, 9850 } accept', self.runner.policy)
         self.assertIn('udp dport 8787 drop', self.runner.policy)
-        self.assertIn('tcp dport 9850 drop', self.runner.policy)
+        self.assertIn('tcp dport { 9847, 9850 } drop', self.runner.policy)
         self.assertIn(f'iifname "{DEV}" drop', self.runner.policy)
         with patch.object(helper, 'forwarding_options', return_value=helper.LOOPBACK_FORWARDING):
             self.apply()

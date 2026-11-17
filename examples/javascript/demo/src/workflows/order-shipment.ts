@@ -58,7 +58,7 @@ export default defineWorkflow<OrderShipmentPayload>("order-shipment", {
         timestamp: Date.now(),
         ...event,
       };
-      const request = applyMissionEventToRequest(full);
+      const request = await applyMissionEventToRequest(full);
       if (!request) return;
       try {
         const update: MissionChannelUpdate = { request, event: full };

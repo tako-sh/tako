@@ -901,6 +901,7 @@ pub(super) fn tunnel_state_with_app(
             bootstrap_token: "token".to_string(),
             secrets: Default::default(),
             storages: Default::default(),
+            databases: Default::default(),
         },
     );
     state

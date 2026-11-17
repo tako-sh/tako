@@ -319,8 +319,6 @@ fn set_and_get_backup_round_trip() {
     store.init().unwrap();
 
     let backup = tako_core::BackupBinding {
-        databases: Vec::new(),
-        shared_databases: Vec::new(),
         storage: tako_core::StorageBinding {
             provider: tako_core::StorageProvider::S3,
             bucket: Some("demo-backups".to_string()),
@@ -352,8 +350,6 @@ fn set_backup_none_clears_existing_backup() {
     store.init().unwrap();
 
     let backup = tako_core::BackupBinding {
-        databases: Vec::new(),
-        shared_databases: Vec::new(),
         storage: tako_core::StorageBinding {
             provider: tako_core::StorageProvider::S3,
             bucket: Some("demo-backups".to_string()),

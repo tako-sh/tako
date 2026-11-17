@@ -1,15 +1,43 @@
 ---
 title: "Backups"
-description: "Continuously back up selected SQLite databases, share data between apps on a server, and create or restore encrypted manual app-directory archives."
+description: "Back up Tako-hosted databases with encrypted snapshots, and create or restore encrypted manual archives of an app's data directory."
 ---
 
-Tako automatically backs up the SQLite databases you explicitly select in `tako.toml`. Full app-directory archives are manual: deploys and timers no longer create them. Use [release rollback](/operations/#logs-and-releases) to recover code and a backup to recover data.
+Tako protects two kinds of data separately:
 
-## Configure a destination
+| Data | Protection | Configure |
+| --- | --- | --- |
+| [Hosted databases](/databases/) | Encrypted snapshots: hourly while changing, before release commands, migrations, and restores, and on demand | `[envs.<env>].backup.storage` or `[databases.<name>].backup` |
+| Files under the app's `data/app/` and `data/tako/`, including workflow state | Manual encrypted full-directory archives | `[envs.<env>].backup` |
+| Files in the shared data directory | Not backed up; copy them separately during coordinated downtime | — |
+| Compose named volumes, external databases, S3 contents | Protect separately | — |
+| Network membership, shared secrets, device keys | Protect separately | — |
+
+Use [release rollback](/operations/#logs-and-releases) to recover code and a backup to recover data. Deploys and timers do not create app-directory archives.
+
+## Back up hosted databases
+
+Set the environment's `backup.storage` (or `[databases.<name>].backup` for one database) to a private S3-compatible storage resource and deploy. The database's server then snapshots it every hour while it changes, before a deploy's release command, and before a restore or import:
 
 ```toml
 [envs.production]
-backup = { storage = "private_backups", databases = ["app.sqlite"], shared_databases = ["accounts.sqlite"] }
+databases = { main = "main" }
+backup = { storage = "private_backups" }
+```
+
+```bash
+tako sqlite backup main
+tako sqlite backups main --json
+tako sqlite restore main --latest
+```
+
+Snapshots are consistent, integrity-checked copies, compressed with zstd and encrypted with the database's own key, which the network stores for administrators. Retention keeps every snapshot of the last 24 hours, then one per day for 7 days and one per week for 4 weeks. See [Databases](/databases/#back-up-and-restore) for the full behavior, import and export, and recovery onto another server.
+
+## Configure an app data destination
+
+```toml
+[envs.production]
+backup = { storage = "private_backups" }
 
 [storages.private_backups]
 provider = "s3"
@@ -23,84 +51,49 @@ tako storages credentials private_backups --env production
 tako deploy --env production
 ```
 
-`databases` contains normalized paths relative to `TAKO_DATA_DIR`. `shared_databases` contains paths relative to `TAKO_SHARED_DATA_DIR`. Use database filenames, not `-wal`, `-shm`, or `-journal` files. Absolute paths, traversal, symlinks, hard links, and duplicate paths are refused. Each list supports up to 64 databases. An empty list selects none; Tako does not discover databases automatically.
+The destination must be private S3-compatible storage without `public_base_url`. A backup-only storage resource is not exposed through `tako.storages` unless separately bound to the app. Keep the environment-managed backup keys and storage credentials: the server cannot recover encrypted archives without them. One storage resource can receive both app archives and database snapshots.
 
-When upgrading from scheduled backups, add these lists to keep SQLite backups automatic. An existing `backup = { storage = "private_backups" }` configuration now enables manual app-directory archives only. Scheduled and post-deploy archives stop; their existing history remains downloadable and restorable.
+### Upgrade from SQLite file capture
 
-The destination must be private S3-compatible storage without `public_base_url`. A backup-only storage resource is not exposed through `tako.storages` unless separately bound to the app. Keep the environment-managed backup keys and storage credentials: the server cannot recover encrypted backups without them.
+Earlier versions listed SQLite files in `backup = { databases = [...], shared_databases = [...] }` and captured them continuously. Those fields are rejected now. Move each database to a hosted database:
 
-## Know the backup boundary
+1. `tako sqlite create <name> --server <server>`, then bind it with `databases = { <binding> = "<name>" }` under `[envs.production]` in `tako.toml`. Its snapshots go to the environment's `backup.storage`, or to `[databases.<name>].backup`.
+2. During a write freeze, copy the existing file to your machine, checkpoint it (`PRAGMA wal_checkpoint(TRUNCATE)`), and run `tako sqlite import <name> <file>`.
+3. Change the app to use `tako.databases.<binding>` and deploy.
 
-`TAKO_DATA_DIR` remains private to an app/environment. `TAKO_SHARED_DATA_DIR` is shared by apps on one server, including different environments on that server. Each server belongs to one network. This directory is local disk, not a network filesystem or a way to share SQLite across servers. Use subdirectories to distinguish unrelated datasets.
+Capture history uploaded by earlier versions stays in its bucket, but this version cannot restore it. A SQLite file left in the data directory is still included in manual archives.
 
-Apps retain separate Unix users. Tako grants shared-directory access through their common group and pre-creates configured database files with group-write permissions. For other shared files, apps must create files and directories writable by that group. Never put app-private secrets in the shared directory.
+## Know the archive boundary
 
-SQLite supports multiple local processes. Use WAL mode, short write transactions, and a busy timeout; SQLite still permits only one writer at a time. Coordinate schema migrations between the apps.
+`TAKO_DATA_DIR` is private to an app/environment. `TAKO_SHARED_DATA_DIR` is shared by apps on one server, including different environments on that server. Both are local disk, not network filesystems, and Tako does not discover or capture databases in them.
 
-| Data | Protection |
-| --- | --- |
-| Selected app SQLite databases | Automatic encrypted WAL capture and upload |
-| Selected shared SQLite databases | One automatic backup stream per database on the server |
-| Other files under app `data/app/` and `data/tako/` | Manual full-directory archive |
-| Tako workflow state | Included in manual full-directory archives |
-| Arbitrary files in the shared directory | Not included in an app's full-directory archive; copy them separately during coordinated downtime |
-| Compose named volumes, external databases, S3 contents | Protect separately |
-| Network membership, shared secrets, device keys | Protect separately |
+Apps retain separate Unix users. Tako grants shared-directory access through their common group; apps must create shared files and directories writable by that group. Never put app-private secrets in the shared directory.
 
-Manual archives exclude transient channel/cache databases and retain symlinks as symlinks. They do not follow a symlink to include shared data.
-
-## Know what is captured when
-
-Tako captures and uploads committed SQLite changes about once per minute. Idle databases generate no new upload traffic. Failed uploads back off from one minute to at most fifteen minutes while local capture continues. Check status for errors and the last uploaded TXID: local capture alone does not protect against losing the server.
-
-A database has one capture worker, local spool, encrypted remote history, and retention policy. Two apps selecting the same shared path reuse that stream. They must specify the same destination; conflicting buckets, endpoints, regions, or addressing modes are rejected before deploy. Removing one declaration leaves capture running for the remaining apps. Removing the last declaration stops capture and preserves the existing history. Once registration completes successfully, each declaring app's backup key can recover the shared database's encryption key. Check `backups status` for registration errors before relying on a newly added key.
-
-Remote SQLite history is scoped to the network and exact server name. Servers with the same name in different networks can use the same bucket without sharing a replica.
-
-Recovery points are capture TXIDs, not SQL transaction IDs or arbitrary timestamps. Tako retains seven days of capture points and a base sufficient to restore them. Cleanup runs daily, so retained history can approach eight days. Upload times are publication times, not precise database transaction times. Retention runs only while the database remains configured.
-
-The spool is private server data outside app directories. A filesystem lease prevents a reload or another server process on the same data directory from starting a second backup stream. Capture runs in a separate confined process so ordinary backup readers cannot release its SQLite locks.
+Manual archives include every file under the app's `data/app/` and `data/tako/`, including Tako workflow state. SQLite files are copied through a consistent SQLite snapshot. Archives exclude transient channel and cache databases and retain symlinks as symlinks; they do not follow a symlink to include shared data.
 
 ## Create and inspect
 
 ```bash
-# Manual full app-directory archive
 tako backups now --env production --server la
-# Manual archives, including database snapshots created by older servers
 tako backups list --env production --server la --json
-# Continuous capture/upload status
 tako backups status --env production --json
-# Recovery points for one selected database
-tako backups list --database app.sqlite --env production --server la
-tako backups list --database accounts.sqlite --shared --env production --server la
 ```
 
-SQLite status includes `database`, `shared`, `replica_id`, `consumers`, `active`, `captured_txid`, `uploaded_txid`, `uploaded_at_unix_secs`, and `error`. Archive status reports the last manual full archive and its retention. Full archives retain 30 days by default; their cleanup runs when an archive is created, not on a timer.
+Archive status reports the last manual full archive, the last failed attempt, retention, and unfinished restores. Full archives retain 30 days by default; their cleanup runs when an archive is created, not on a timer. `backups list` also shows `databases` archives created by older servers.
 
-A deployment grant can operate the app's already-provisioned private backups. Shared database restores require a server administrator because they interrupt every app on the server.
+A deployment grant can operate the app's already-provisioned private backups.
 
-Download a manual archive with `tako backups download <backup-id> --env production --server la`. The result is an encrypted zstd-compressed tar archive. Continuous SQLite history is restored through the database commands below, rather than downloaded as a tar archive.
+Download a manual archive with `tako backups download <backup-id> --env production --server la`. The result is an encrypted zstd-compressed tar archive.
 
-## Restore data
+## Restore app data
 
 ```bash
-# Restore the newest uploaded capture
-tako backups restore --database app.sqlite --latest --env production --server la
-# Restore an explicitly selected capture
-tako backups restore --database app.sqlite --txid 42 --env production --server la
-# Restore a shared database (pauses all apps on this server)
-tako backups restore --database accounts.sqlite --shared --latest --env production --server la
-# Restore a manual full-directory archive
 tako backups restore <backup-id> --env production --server la
 ```
 
-Choose the server explicitly when the environment has multiple servers. Restore downloads and verifies the selected history before replacing live data. A private database restore stops the owning app and all its workflow workers, removes stale SQLite sidecars, swaps the database, and restarts the app. Other files remain unchanged. If restart fails, Tako attempts to stop the failed runtime and put the original files back.
+Choose the server explicitly when the environment has multiple servers. A restore downloads and verifies the archive, stops the app and its workflow workers, replaces `data/app/` and `data/tako/` together, and restarts the app. This can rewind workflow state. If restart fails, Tako attempts to stop the failed runtime and put the original files back. Archives of type `databases` from older Tako versions remain restorable.
 
-A shared database restore pauses **all apps on that server**. Backup declarations are not an access-control list: an undeclared app may open the shared file later, so an open-file scan cannot establish a safe list of consumers. Tako persists the server drain intent, stops consumers, closes capture, holds the database's exclusive lease, swaps the database, and resumes the server. A crash or incomplete cleanup leaves the server drained rather than allowing writes into a partial restore. The original files are retained until restart succeeds.
-
-A standby process using the same data directory must be stopped before restoring. Tako refuses the restore while it holds the standby lease. Restore also excludes uploads and retention for the selected database. After restoring an older point, capture starts a new snapshot above the previous highest TXID, preserving later history rather than overwriting it.
-
-Manual full-directory restores replace the app's `data/app/` and `data/tako/` together. This can rewind workflow state. They pause that app's SQLite capture while files are replaced. Existing `databases` archives from older Tako versions remain restorable; new scheduled database archives are no longer produced.
+A standby process using the same data directory must be stopped before restoring. Tako refuses the restore while it holds the standby lease.
 
 ## Resolve an unfinished restore
 
@@ -118,21 +111,21 @@ and a record, `restore.json`, whose `state` says what the live data is:
   stopped: server starts do not start it or its workflows, a running standby
   stops it within seconds, requests do not cold start it, `tako status` shows the
   reason as its error, and deploys, release commands, `tako scale`, secret
-  updates, and `tako backups now` are refused with the same message. Continuous SQLite capture pauses while the app is blocked. A manual backup is refused.
+  updates, and `tako backups now` are refused with the same message. A manual backup is refused.
 
 A directory without `restore.json` means the live data is whole, either the
 original or the restored data; remove it.
 
-Shared database restores leave these directories below `shared/`, beside
-`shared/data/`. The same states and database recovery steps apply, with every app
-kept stopped while repairing shared data. Once the files and restore record are
-resolved, use `tako network server resume <server>` to clear the persisted drain
-and restart the apps.
+Shared database restores from earlier Tako versions left these directories below
+`shared/`, beside `shared/data/`. The same states and database recovery steps
+apply, with every app kept stopped while repairing shared data. Once the files
+and restore record are resolved, use `tako network server resume <server>` to
+clear the persisted drain and restart the apps.
 
 To go back to the original data after a partial restore, with the app stopped,
 work as the user that owns the app data:
 
-1. For a **database snapshot** restore, the directory holds each original database
+1. For a restore of an older **database snapshot** archive, the directory holds each original database
    at its path below `data/` (for example `app/data.sqlite`), together with the
    `-wal`, `-shm`, and `-journal` files it had. Put back every database it holds:
    first remove the live `-wal`, `-shm`, and `-journal` files beside the live
@@ -158,23 +151,24 @@ directory. Either way, then remove the leftover directory and start the app with
 
 ## Recover on a fresh server
 
-1. Enroll the replacement server in the same network with the lost server's name. Restore access to the app's backup configuration, backup keys, and storage credentials, then deploy it.
-2. List available SQLite points with `tako backups list --database <path> --server <name>`. Add `--shared` for a shared database.
-3. Restore the selected point using `--latest` or `--txid`. If uploads or workflow state also need recovery, restore the relevant manual directory archive first, then restore the SQLite point.
-4. Verify known records and app behavior before sending traffic to the replacement.
+1. Enroll the replacement server in the network. Restore access to the app's backup configuration, backup keys, and storage credentials.
+2. Recover each hosted database with `tako sqlite restore <name> --latest --server <new-server>`. It keeps the database's name and points its network record at the new server.
+3. Deploy the app to the replacement server.
+4. If uploads or workflow state also need recovery, restore the relevant manual archive with `tako backups restore <backup-id> --server <new-server>`.
+5. Verify known records and app behavior before sending traffic to the replacement.
 
-If remote history exists but the local spool is missing, Tako pauses capture until an explicit restore. It does not make a new empty database the latest recovery point. A fresh deploy creates no full-directory backup.
+A fresh deploy creates no full-directory backup.
 
 ## Know the limits
 
-Capture requires WAL-capable local SQLite and, on Linux, Landlock ABI 3. Do not replace or truncate a database file while capture is running. Application processes outside Tako's supervision must also stop before restore. The server reserves 512 MiB of free disk for capture; insufficient space pauses capture and appears in status. Remote retention does not bound a local spool during a prolonged upload outage.
+Manual archives require temporary space for the snapshot, compressed archive, and encrypted archive, plus a disk reserve. They are not a transactionally consistent snapshot across multiple databases or arbitrary files being modified concurrently. Coordinate app writes when that consistency is required. Application processes outside Tako's supervision must stop before a restore.
 
-Manual archives require temporary space for the snapshot, compressed archive, and encrypted archive, plus the disk reserve. They are not a transactionally consistent snapshot across multiple databases or arbitrary files being modified concurrently. Coordinate app writes when that consistency is required.
+Database snapshots need free space for about three copies of the database plus 256 MiB on the server's data disk, counting the space other snapshots in progress on that server still hold. The server takes scheduled snapshots of up to four databases at once, so one whose storage is slow does not hold up the others. A snapshot that fails is retried after five minutes and reported by `tako sqlite status`.
 
 ## Verify recovery
 
-Inspect backup status and app logs, request the app, and check known records and files. Test recovery before depending on it. See [backup troubleshooting](/troubleshooting/#backups-fail) for setup and credential failures.
+Inspect `tako sqlite status --json`, `tako backups status --json`, and app logs, request the app, and check known records and files. Test recovery before depending on it. See [backup troubleshooting](/troubleshooting/#backups-fail) for setup and credential failures.
 
 ## Container data
 
-Standalone container releases mount private app data at `/tako/data` by default and shared data at `/tako/shared-data`. Compose services receive the managed shared mount and `TAKO_SHARED_DATA_DIR`; named volumes remain outside Tako's backups. Select SQLite files under the shared mount with `shared_databases`. A Compose restore stops the affected stack, and a shared restore stops all stacks and native apps on that server.
+Standalone container releases mount private app data at `/tako/data` by default and shared data at `/tako/shared-data`. Compose services receive the managed shared mount and `TAKO_SHARED_DATA_DIR`; named volumes remain outside Tako's backups. Container and Compose releases cannot bind hosted databases yet. A Compose restore stops the affected stack.

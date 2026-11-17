@@ -88,6 +88,11 @@ pub struct TakoToml {
     #[serde(default)]
     pub storages: HashMap<String, StorageResourceConfig>,
 
+    /// [databases.*] sections - per-database settings for the Tako-hosted
+    /// SQLite databases this project binds in `[envs.<env>].databases`.
+    #[serde(default)]
+    pub databases: HashMap<String, DatabaseResourceConfig>,
+
     /// Release command run once on the deploy leader server during the "Preparing"
     /// phase, before any rolling update starts (e.g. `"bun run db:migrate"`).
     /// Can be overridden per environment via `[envs.<name>].release`.
@@ -186,7 +191,14 @@ pub struct EnvConfig {
     #[serde(default)]
     pub storages: HashMap<String, String>,
 
-    /// Autopilot backup target for this environment.
+    /// Database bindings assigned to this environment.
+    ///
+    /// Key = app binding name exposed as `tako.databases.<key>`.
+    /// Value = database name from `[databases.<value>]`.
+    #[serde(default)]
+    pub databases: HashMap<String, String>,
+
+    /// Private storage for manual app-directory archives (`tako backups now`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backup: Option<BackupConfig>,
 
@@ -214,12 +226,19 @@ pub struct EnvConfig {
 pub struct BackupConfig {
     /// Private S3-compatible storage resource used for app data backups.
     pub storage: String,
-    /// SQLite paths relative to TAKO_DATA_DIR, captured continuously.
-    #[serde(default)]
-    pub databases: Vec<String>,
-    /// SQLite paths relative to the server's TAKO_SHARED_DATA_DIR.
-    #[serde(default)]
-    pub shared_databases: Vec<String>,
+}
+
+/// Settings for a Tako-hosted database, from `[databases.<name>]`. The
+/// database itself, its server and access, live in the network's records;
+/// this table is needed only to override the environment's backup storage.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct DatabaseResourceConfig {
+    /// Private S3-compatible storage resource that receives snapshots.
+    /// Defaults to the deploying environment's `backup.storage`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup: Option<String>,
 }
 
 /// S3-compatible storage resource from [storages.*]. Credentials are stored

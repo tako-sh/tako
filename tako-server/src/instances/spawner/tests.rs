@@ -104,6 +104,60 @@ async fn bootstrap_backpressure_respects_startup_timeout() {
     assert!(!instance.is_alive().await);
 }
 
+#[tokio::test]
+async fn apps_that_read_their_bootstrap_after_becoming_ready_start() {
+    let dir = crate::isolation::fixture::TestDataDir::new().unwrap();
+    let received = dir.path().join("received");
+    let (tx, _rx) = mpsc::channel(4);
+    let app = App::new(
+        AppConfig {
+            name: "lazy-bootstrap".into(),
+            path: dir.path().into(),
+            // Ready first, then read the bootstrap only after the startup
+            // deadline, as an app reading it on its first request would.
+            command: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                format!(
+                    "echo 8080 >&4; sleep 1; wc -c <&3 > {}; exec sleep 5",
+                    received.display()
+                ),
+            ],
+            secrets: HashMap::from([("LARGE".into(), "x".repeat(1024 * 1024))]),
+            startup_timeout: Duration::from_millis(500),
+            ..Default::default()
+        },
+        tx,
+        noop_log_handle(),
+    );
+    let instance = app.allocate_instance();
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        Spawner::new()
+            .with_data_dir(dir.path().to_path_buf())
+            .spawn(&app, instance.clone()),
+    )
+    .await
+    .expect("spawn returns")
+    .expect("the instance becomes ready before it reads its bootstrap");
+    // The rest of the bootstrap still arrives.
+    let mut bytes = 0u64;
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if let Ok(text) = std::fs::read_to_string(&received)
+            && let Ok(count) = text.trim().parse::<u64>()
+        {
+            bytes = count;
+            break;
+        }
+    }
+    assert!(
+        bytes > 1024 * 1024,
+        "the whole bootstrap was delivered: {bytes}"
+    );
+    let _ = instance.kill().await;
+}
+
 #[test]
 fn test_spawner_creation() {
     let _spawner = Spawner::new();
@@ -321,8 +375,15 @@ async fn bootstrap_pipe_envelope_has_token_and_secrets() {
     let token = "test-token-abc";
 
     let storages = HashMap::new();
-    let (read_end, writer) =
-        create_bootstrap_pipe(token, &secrets, &storages).expect("create pipe");
+    let (read_end, writer) = create_bootstrap_pipe(
+        token,
+        tako_core::bootstrap::Bindings {
+            secrets: &secrets,
+            storages: &storages,
+            databases: &HashMap::new(),
+        },
+    )
+    .expect("create pipe");
 
     let reader = tokio::task::spawn_blocking(move || {
         let mut buf = String::new();
@@ -353,8 +414,15 @@ async fn bootstrap_pipe_is_created_even_with_empty_secrets() {
     let token = "still-has-a-token";
 
     let storages = HashMap::new();
-    let (read_end, writer) =
-        create_bootstrap_pipe(token, &secrets, &storages).expect("create pipe");
+    let (read_end, writer) = create_bootstrap_pipe(
+        token,
+        tako_core::bootstrap::Bindings {
+            secrets: &secrets,
+            storages: &storages,
+            databases: &HashMap::new(),
+        },
+    )
+    .expect("create pipe");
 
     let reader = tokio::task::spawn_blocking(move || {
         let mut buf = String::new();

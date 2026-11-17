@@ -136,6 +136,7 @@ async fn scrape_exports_claims_without_database_io_and_removes_stopped_apps() {
                 env: Default::default(),
                 secrets: Default::default(),
                 storages: Default::default(),
+                databases: Default::default(),
                 log_sink: None,
                 isolation: None,
                 lanes: Vec::new(),

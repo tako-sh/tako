@@ -40,3 +40,26 @@ absolute throughput do not establish a code regression.
 The earlier controlled buffer-lifetime validation remains separate evidence for
 keeping the merged memory fix. Local unaccepted allocator/TLS/body prototypes
 are not used in this full-suite dataset.
+
+## Hosted database protocol
+
+A local spot check from the hosted database work, not part of the suite above:
+a release build of the database host on one machine, loopback HTTP, a
+1,000-row table, 2,000 measured requests after 200 warm-up requests, each
+timed from the client. In process is `bun:sqlite` on a WAL file with
+`synchronous = FULL`, the host's setting.
+
+| Operation | `@libsql/client` p50 / p99 | `@tursodatabase/serverless` p50 / p99 | In process p50 |
+| --- | ---: | ---: | ---: |
+| Point select by primary key | 112 µs / 282 µs | 119 µs / 1,016 µs | 1 µs |
+| Select 100 rows | 246 µs (p50) | — | 11 µs |
+| Insert one row | 352 µs (p50) | — | 132 µs |
+
+The protocol adds roughly 100–250 µs per request on loopback. Apps that issue
+many small queries per request should batch them (`batch`, transactions)
+rather than expect in-process latency. Reproduce with:
+
+```bash
+cargo build --release -p tako-database --example serve
+bun e2e/cli/helpers/database-bench.ts target/release/examples/serve
+```

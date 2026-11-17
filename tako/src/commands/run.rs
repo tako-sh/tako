@@ -31,9 +31,40 @@ pub fn run(
     let runtime = resolve_run_build_adapter(&config, &context.project_dir);
     let mut child_env = build_command_env(&config, env, runtime);
     inject_run_data_dir(&context.project_dir, &mut child_env)?;
+    // Served for as long as the command runs. Only development has local
+    // databases; hosted ones are reachable only from deployed apps.
+    let bindings = crate::local_databases::development_bindings(&config);
+    let databases = if env == DEFAULT_RUN_ENV {
+        let migrated = crate::local_databases::migrate_development(&context.project_dir, &config)?;
+        for warning in &migrated.warnings {
+            crate::output::warning(warning);
+        }
+        for line in &migrated.applied {
+            crate::output::muted(line);
+        }
+        crate::local_databases::LocalDatabases::start(&context.project_dir, &bindings)?
+    } else {
+        if config
+            .envs
+            .get(env)
+            .is_some_and(|env_config| !env_config.databases.is_empty())
+        {
+            crate::output::warning(&format!(
+                "{env}'s databases are not available to `tako run`; they are reachable only from deployed apps. Use `tako sqlite shell <name>` or `tako sqlite export <name> <file>`."
+            ));
+        }
+        crate::local_databases::LocalDatabases::start(&context.project_dir, &Default::default())?
+    };
     child_env.insert(
         tako_core::bootstrap::TAKO_BOOTSTRAP_DATA_ENV.to_string(),
-        tako_core::bootstrap::envelope_string("", &secrets, &storages),
+        tako_core::bootstrap::envelope_string(
+            "",
+            tako_core::bootstrap::Bindings {
+                secrets: &secrets,
+                storages: &storages,
+                databases: databases.connections(),
+            },
+        ),
     );
 
     let plugin_context = tako_runtime::PluginContext {
@@ -59,6 +90,7 @@ pub fn run(
         .envs(child_env)
         .status()?;
 
+    drop(databases);
     if status.success() {
         return Ok(());
     }

@@ -218,6 +218,7 @@ fn test_deploy_command_serialization_includes_scaling() {
         )])),
         runtime_credentials: None,
         storages: None,
+        databases: None,
         ssl: SslBinding::default(),
         backup: None,
         force: false,
@@ -238,6 +239,7 @@ fn test_deploy_command_serialization_includes_ssl_binding() {
         secrets: None,
         runtime_credentials: None,
         storages: None,
+        databases: None,
         ssl: SslBinding {
             provider: SslProvider::Cloudflare,
             cloudflare_api_token: Some("token".to_string()),
@@ -255,8 +257,6 @@ fn test_deploy_command_serialization_includes_ssl_binding() {
 #[test]
 fn backup_binding_serializes_backup_keys() {
     let binding = BackupBinding {
-        databases: Vec::new(),
-        shared_databases: Vec::new(),
         storage: StorageBinding {
             provider: crate::StorageProvider::S3,
             bucket: Some("bucket".to_string()),
@@ -427,10 +427,10 @@ fn backup_restore_response_reports_database_changes_only_for_snapshots() {
 }
 
 #[test]
-fn backup_status_defaults_to_no_registered_databases() {
+fn backup_status_omits_absent_schedule() {
     let status: BackupStatusResponse =
         serde_json::from_str(r#"{"app":"demo/production","enabled":true}"#).unwrap();
-    assert!(status.databases.is_empty());
+    assert!(status.last_backup.is_none());
     let json = serde_json::to_value(status).unwrap();
     assert!(json.get("next_backup_at_unix_secs").is_none());
 }
@@ -446,6 +446,7 @@ fn test_deploy_command_serialization_includes_source_ip_mode() {
         secrets: None,
         runtime_credentials: None,
         storages: None,
+        databases: None,
         ssl: SslBinding::default(),
         backup: None,
         force: false,
@@ -887,6 +888,7 @@ fn test_deploy_with_none_secrets_keeps_existing() {
         secrets: None,
         runtime_credentials: None,
         storages: None,
+        databases: None,
         ssl: SslBinding::default(),
         backup: None,
         force: false,
@@ -932,8 +934,10 @@ fn parses_run_release_command() {
             command_line,
             vars,
             secrets,
+            databases,
             force,
         } => {
+            assert!(databases.is_empty());
             assert_eq!(app, "my-app");
             assert_eq!(version, "abc1234");
             assert!(path.contains("releases"));

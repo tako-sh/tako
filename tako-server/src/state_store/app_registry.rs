@@ -49,6 +49,7 @@ impl SqliteStateStore {
             "app_runtime_credentials",
             "app_schedule_revisions",
             "app_storages",
+            "app_databases",
             "app_ssl",
             "app_backups",
             "app_compose_pending",

@@ -4,22 +4,6 @@
     "BackupConfig": {
       "additionalProperties": false,
       "properties": {
-        "databases": {
-          "default": [],
-          "description": "SQLite paths relative to TAKO_DATA_DIR, captured continuously.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "shared_databases": {
-          "default": [],
-          "description": "SQLite paths relative to the server's TAKO_SHARED_DATA_DIR.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
         "storage": {
           "description": "Private S3-compatible storage resource used for app data backups.",
           "type": "string"
@@ -181,6 +165,17 @@
       "required": ["uid", "gid"],
       "type": "object"
     },
+    "DatabaseResourceConfig": {
+      "additionalProperties": false,
+      "description": "Settings for a Tako-hosted database, from `[databases.<name>]`. The\ndatabase itself, its server and access, live in the network's records;\nthis table is needed only to override the environment's backup storage.",
+      "properties": {
+        "backup": {
+          "description": "Private S3-compatible storage resource that receives snapshots.\nDefaults to the deploying environment's `backup.storage`.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "EnvConfig": {
       "additionalProperties": false,
       "description": "Deploy environment from `[envs.<name>]`. Use either `route` or `routes`, not both. Put environment variables in `[vars.<name>]`.",
@@ -190,7 +185,15 @@
       "properties": {
         "backup": {
           "$ref": "#/$defs/BackupConfig",
-          "description": "Autopilot backup target for this environment."
+          "description": "Private storage for manual app-directory archives (`tako backups now`)."
+        },
+        "databases": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Database bindings assigned to this environment.\n\nKey = app binding name exposed as `tako.databases.<key>`.\nValue = database name from `[databases.<value>]`.",
+          "type": "object"
         },
         "idle_timeout": {
           "default": 300,
@@ -494,6 +497,16 @@
     "container_options": {
       "$ref": "#/$defs/ContainerOptions",
       "description": "Container release options. Require `container` or `image`."
+    },
+    "databases": {
+      "additionalProperties": {
+        "$ref": "#/$defs/DatabaseResourceConfig"
+      },
+      "description": "Per-database settings for Tako-hosted SQLite databases, which environments bind in `[envs.<env>].databases`. Create databases with `tako sqlite create`.",
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]{0,62}$"
+      },
+      "type": "object"
     },
     "dev": {
       "description": "Custom `tako dev` command, such as `[\"vite\", \"dev\"]`. Overrides preset and runtime defaults unless a CLI command is passed.",

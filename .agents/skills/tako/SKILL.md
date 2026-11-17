@@ -25,8 +25,8 @@ checks exercise the same configuration the application deploys with.
    command arguments. Tools use the installed CLI's credentials and permissions.
 3. Read bundled docs through `tako_docs` (list topics with no arguments, then pass
    a topic), or MCP resources at `tako://docs/<topic>`. Start with `index` for
-   task routing, then read the relevant topic. Use `secrets`, `storage`, `images`,
-   or `cache` for those primitives; `networks`, `servers`, `deployment`, `routing`,
+   task routing, then read the relevant topic. Use `secrets`, `databases`, `storage`,
+   `images`, or `cache` for those primitives; `networks`, `servers`, `deployment`, `routing`,
    `operations`, and `backups` cover deployed apps. Search with `tako_search_docs`.
 4. Use the matching `tako-sdk-js`, `tako-sdk-go`, or `tako-sdk-rust` skill when
    writing SDK code. Read `framework-guides` and its matching framework topic
@@ -45,7 +45,7 @@ checks exercise the same configuration the application deploys with.
   route for browser checks. Raw framework ports bypass Tako's routing and TLS.
 - Verify the behavior the user changed: exercise the browser or HTTP request,
   follow it through the API and data, and check logs or responses.
-- After changing secrets, storages, service/channel/presence/store definitions, or workflow definitions,
+- After changing secrets, storages, database bindings, service/channel/presence/store definitions, or workflow definitions,
   regenerate types with `tako_generate` / `tako generate`. Dev and deploy also
   refresh generated files. Fix source configuration instead of hand-editing
   generated declarations.
@@ -201,6 +201,13 @@ validation.
 - Storage bindings describe providers; credentials remain encrypted. Backups and
   restores target a specific app, environment, and server. Verify the target
   and authorization before deleting data or restoring an archive.
+- Application SQLite belongs in a hosted database (`tako sqlite create`, read as
+  `tako.databases.<binding>`), not in the data directory, which is plain files
+  and not captured. Database commands need administrator permission;
+  `tako sqlite restore`, `import`, and `reset` replace data, and `delete`
+  removes the database with its snapshots, so confirm the database and the
+  environments that bind it first, and take `tako sqlite backup` before risky
+  changes. Schema changes go in `migrations/` SQL files, applied on deploy.
 
 ## Channels, presence, stores, and workflows
 

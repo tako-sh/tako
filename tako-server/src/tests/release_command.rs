@@ -59,6 +59,7 @@ async fn run_release_executes_command_in_release_dir() {
             command_line: "printf %s \"$NODE_ENV-$DATABASE_URL\" > out.txt".to_string(),
             vars: HashMap::new(),
             secrets: HashMap::from([("DATABASE_URL".to_string(), "postgres://new".to_string())]),
+            databases: HashMap::new(),
             force: false,
         })
         .await;
@@ -118,6 +119,7 @@ async fn run_release_returns_error_on_nonzero_exit() {
             command_line: "echo boom 1>&2; exit 3".to_string(),
             vars: HashMap::new(),
             secrets: HashMap::new(),
+            databases: HashMap::new(),
             force: false,
         })
         .await;
@@ -161,6 +163,7 @@ async fn run_release_rejects_path_outside_release_root() {
             command_line: "true".to_string(),
             vars: HashMap::new(),
             secrets: HashMap::new(),
+            databases: HashMap::new(),
             force: false,
         })
         .await;
@@ -211,6 +214,7 @@ async fn run_release_rejects_protocol_mismatch_before_executing_command() {
             command_line: "touch should-not-exist".to_string(),
             vars: HashMap::new(),
             secrets: HashMap::new(),
+            databases: HashMap::new(),
             force: false,
         })
         .await;
@@ -270,6 +274,7 @@ async fn run_release_force_attempts_protocol_mismatch() {
             command_line: "touch forced".to_string(),
             vars: HashMap::new(),
             secrets: HashMap::new(),
+            databases: HashMap::new(),
             force: true,
         })
         .await;

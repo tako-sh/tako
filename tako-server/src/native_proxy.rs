@@ -208,6 +208,16 @@ impl NativeProxy {
             && self.invocations.lock().accept(call)
     }
 
+    /// The private address of another server, for database forwarding.
+    pub(crate) fn server_address(&self, server: &str) -> Option<IpAddr> {
+        self.directory.read().server_address_by_id(server, now())
+    }
+
+    /// Whether a peer address belongs to an effective server.
+    pub(crate) fn is_server_address(&self, peer: IpAddr) -> bool {
+        self.directory.read().is_server_address(peer, now())
+    }
+
     pub(crate) fn route(
         &self,
         host: &str,

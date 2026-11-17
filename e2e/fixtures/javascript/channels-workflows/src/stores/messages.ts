@@ -1,24 +1,32 @@
-import { Database } from "bun:sqlite";
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { createClient, type Client } from "@libsql/client";
 import { defineStore, tako } from "tako.sh";
 
-let database: Database | undefined;
+let database: Promise<Client> | undefined;
 
-function db(): Database {
-  if (!database) {
-    mkdirSync(tako.dataDir, { recursive: true });
-    database = new Database(join(tako.dataDir, "store-messages.sqlite"), { create: true });
-    database.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");
-    database.exec(
+/** The `messages` database binding, created on first use. */
+function db(): Promise<Client> {
+  database ??= (async () => {
+    const binding = tako.databases.messages;
+    if (!binding) throw new Error("No database is bound as `messages`");
+    const client = createClient(binding);
+    await client.execute(
       "CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY, chat_id TEXT NOT NULL, message TEXT NOT NULL)",
     );
-  }
+    return client;
+  })().catch((error: unknown) => {
+    database = undefined;
+    throw error;
+  });
   return database;
 }
 
-export function appendMessage(chatId: string, message: string): void {
-  db().query("INSERT INTO messages (chat_id, message) VALUES (?, ?)").run(chatId, message);
+export async function appendMessage(chatId: string, message: string): Promise<void> {
+  await (
+    await db()
+  ).execute({
+    sql: "INSERT INTO messages (chat_id, message) VALUES (?, ?)",
+    args: [chatId, message],
+  });
 }
 
 export default defineStore("messages", {
@@ -27,13 +35,20 @@ export default defineStore("messages", {
     verify: ({ header }) => (header?.value === "e2e" ? { subject: "e2e-user" } : false),
   },
   offline: { maxAgeMs: 60_000 },
-  load: ({ params, subject }) => ({
-    chatId: params.chat.id,
-    subject,
-    messages: db()
-      .query<{ id: number; message: string }, [string]>(
-        "SELECT id, message FROM messages WHERE chat_id = ? ORDER BY id",
-      )
-      .all(params.chat.id),
-  }),
+  load: async ({ params, subject }) => {
+    const result = await (
+      await db()
+    ).execute({
+      sql: "SELECT id, message FROM messages WHERE chat_id = ? ORDER BY id",
+      args: [params.chat.id],
+    });
+    return {
+      chatId: params.chat.id,
+      subject,
+      messages: result.rows.map((row) => ({
+        id: Number(row["id"]),
+        message: String(row["message"]),
+      })),
+    };
+  },
 });

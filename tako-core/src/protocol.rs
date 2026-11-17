@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 
+use crate::database::{DatabaseBinding, DatabaseMigration, SnapshotReason};
 use crate::storage::StorageBinding;
 
 pub const PROTOCOL_VERSION: u32 = 0;
@@ -153,6 +154,10 @@ pub enum Command {
         /// instead.
         #[serde(default)]
         secrets: HashMap<String, String>,
+        /// Databases of the release. The command receives a bootstrap
+        /// envelope (`TAKO_BOOTSTRAP_DATA`) with a connection for each.
+        #[serde(default)]
+        databases: HashMap<String, DatabaseBinding>,
         #[serde(default)]
         force: bool,
     },
@@ -183,6 +188,11 @@ pub enum Command {
         /// When `None`, the server keeps existing storage bindings for this app.
         #[serde(default)]
         storages: Option<HashMap<String, StorageBinding>>,
+        /// Database bindings, by binding name. Each bound process receives a
+        /// connection for each binding. When `None`, the server keeps the
+        /// existing database bindings for this app.
+        #[serde(default)]
+        databases: Option<HashMap<String, DatabaseBinding>>,
         /// SSL certificate provider and optional provider credentials.
         /// Defaults to Let's Encrypt when omitted.
         #[serde(default)]
@@ -215,20 +225,142 @@ pub enum Command {
     /// Restore a full backup, or the SQLite databases of a database snapshot, on this server.
     RestoreBackup { app: String, backup_id: String },
 
-    /// List uploaded recovery points for one explicitly configured SQLite database.
-    ListDatabaseBackups {
-        app: String,
-        database: String,
-        shared: bool,
+    /// Create a database hosted on this server.
+    CreateDatabase {
+        name: String,
+        /// Tells this database apart from earlier ones with the same name.
+        generation: String,
+        /// 32-byte key, base64, that encrypts the database's snapshots.
+        backup_key_base64: String,
+        /// Private S3 storage that receives snapshots.
+        #[serde(default)]
+        backup: Option<StorageBinding>,
     },
 
-    /// Restore a SQLite database from an uploaded capture; None selects latest.
-    RestoreDatabaseBackup {
-        app: String,
-        database: String,
-        shared: bool,
-        txid: Option<u64>,
+    /// Delete a database hosted on this server. Refused while bound. Its
+    /// snapshots are deleted too, unless `keep_snapshots` is set: a copy
+    /// left behind by a move, or one whose recovery failed, shares them
+    /// with the database that lives on.
+    DeleteDatabase {
+        name: String,
+        /// The generation the caller means. When set, a database of that
+        /// name created again meanwhile is not deleted.
+        #[serde(default)]
+        generation: Option<String>,
+        #[serde(default)]
+        keep_snapshots: bool,
     },
+
+    /// Describe databases hosted on this server: one, or all when `None`.
+    DatabaseStatus {
+        #[serde(default)]
+        name: Option<String>,
+    },
+
+    /// Set or clear where a database's snapshots are uploaded.
+    ConfigureDatabaseBackup {
+        name: String,
+        backup: Option<StorageBinding>,
+    },
+
+    /// Let an app environment running on other servers use databases hosted
+    /// on this server. Replaces the environment's previous grants.
+    /// With `keep_existing`, the databases already granted stay granted: a
+    /// deploy widens grants before its rollout, while the previous release
+    /// still runs, and narrows them once the rollout succeeds.
+    GrantDatabases {
+        app: String,
+        databases: Vec<String>,
+        #[serde(default)]
+        keep_existing: bool,
+    },
+
+    /// Take and upload a snapshot now. `app` names the app environment that
+    /// asks (before its release command), which must use the database.
+    SnapshotDatabase {
+        name: String,
+        reason: SnapshotReason,
+        #[serde(default)]
+        app: Option<String>,
+    },
+
+    /// List uploaded snapshots of a database.
+    ListDatabaseSnapshots { name: String },
+
+    /// Replace a database with a snapshot; `None` selects the newest. The key
+    /// is needed when this server no longer has it (a replacement server).
+    RestoreDatabase {
+        name: String,
+        #[serde(default)]
+        snapshot: Option<String>,
+        #[serde(default)]
+        backup_key_base64: Option<String>,
+    },
+
+    /// Run one SQL statement as an administrator, for `tako sqlite shell`.
+    QueryDatabase { name: String, sql: String },
+
+    /// Apply an app's SQL migrations: each pending file in order, once,
+    /// after a snapshot when any are pending. Replies with a
+    /// `DatabaseMigrationReport`. `app` names the app environment that asks
+    /// (a deployer), which must use the database and own the migrations;
+    /// administrators send none.
+    MigrateDatabase {
+        name: String,
+        /// The app the migrations belong to. Apps that share a database
+        /// keep separate histories.
+        owner: String,
+        migrations: Vec<DatabaseMigration>,
+        /// Report the pending migrations without applying them.
+        #[serde(default)]
+        dry_run: bool,
+        #[serde(default)]
+        app: Option<String>,
+    },
+
+    /// Replace a database with an empty one, after a snapshot of its
+    /// contents when backups are configured. `migrations` (of `owner`) are
+    /// applied to the empty database before it replaces the old one, so
+    /// apps never see it without its schema, and a failing migration
+    /// leaves the old one in place.
+    ResetDatabase {
+        name: String,
+        #[serde(default)]
+        owner: Option<String>,
+        #[serde(default)]
+        migrations: Vec<DatabaseMigration>,
+    },
+
+    /// Start replacing a database with an uploaded SQLite file.
+    BeginDatabaseImport {
+        name: String,
+        size_bytes: u64,
+        sha256: String,
+    },
+
+    /// Append one chunk of an import at `offset`.
+    DatabaseImportChunk {
+        name: String,
+        upload_id: String,
+        offset: u64,
+        data_base64: String,
+    },
+
+    /// Verify a completed upload and replace the database with it.
+    FinishDatabaseImport { name: String, upload_id: String },
+
+    /// Write a consistent copy of a database for download.
+    BeginDatabaseExport { name: String },
+
+    /// Read one chunk of an export.
+    DatabaseExportChunk {
+        name: String,
+        export_id: String,
+        offset: u64,
+    },
+
+    /// Remove an export's copy.
+    FinishDatabaseExport { name: String, export_id: String },
 
     /// Update the desired minimum number of instances for an app.
     Scale {
@@ -803,10 +935,6 @@ impl Default for SslBinding {
 pub struct BackupBinding {
     pub storage: StorageBinding,
     #[serde(default)]
-    pub databases: Vec<String>,
-    #[serde(default)]
-    pub shared_databases: Vec<String>,
-    #[serde(default)]
     pub backup_keys: Vec<BackupKeyBinding>,
     #[serde(default = "default_backup_retention_days")]
     pub retention_days: u16,
@@ -919,8 +1047,6 @@ pub struct BackupListResponse {
 pub struct BackupStatusResponse {
     pub app: String,
     pub enabled: bool,
-    #[serde(default)]
-    pub databases: Vec<crate::DatabaseBackupStatus>,
     #[serde(default)]
     pub retention_days: Option<u16>,
     /// The latest full archive.

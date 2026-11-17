@@ -79,6 +79,9 @@ pub struct RegisterAppRequest {
     pub images: Box<tako_images::ImagesConfig>,
     #[serde(default)]
     pub storages: std::collections::HashMap<String, tako_core::StorageBinding>,
+    /// Database bindings: binding name → local SQLite file the daemon serves.
+    #[serde(default)]
+    pub databases: std::collections::HashMap<String, String>,
     #[serde(default)]
     pub client_pid: Option<u32>,
     #[serde(default)]
@@ -417,6 +420,7 @@ mod tests {
                 "node_modules/tako.sh/dist/entrypoints/bun-worker.mjs".to_string(),
             ]),
             workflow_retention_ms: None,
+            databases: Default::default(),
         }));
         let json = serde_json::to_string(&req).unwrap();
         assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), req);

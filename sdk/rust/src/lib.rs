@@ -43,6 +43,46 @@ pub struct Bootstrap {
     secrets: HashMap<String, String>,
     #[serde(default)]
     storages: HashMap<String, serde_json::Value>,
+    #[serde(default)]
+    databases: HashMap<String, Database>,
+}
+
+/// A connection to a Tako-hosted database bound to the app in `tako.toml`
+/// (`[envs.<env>].databases`). Tako serves it over the libSQL HTTP protocol
+/// next to the app, so libSQL clients connect with [`Database::url`] and
+/// [`Database::auth_token`]:
+///
+/// ```no_run
+/// let main = tako::database("main").expect("a database bound as main");
+/// // libsql::Builder::new_remote(main.url().into(), main.auth_token().into())
+/// # let _ = main;
+/// ```
+#[derive(Clone, PartialEq, Eq, Deserialize)]
+pub struct Database {
+    url: String,
+    #[serde(rename = "authToken")]
+    auth_token: String,
+}
+
+impl Database {
+    /// The database endpoint.
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    /// The token that authorizes this app's binding. Treat it as a secret.
+    pub fn auth_token(&self) -> &str {
+        &self.auth_token
+    }
+}
+
+impl fmt::Debug for Database {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Database")
+            .field("url", &self.url)
+            .field("auth_token", &"[REDACTED]")
+            .finish()
+    }
 }
 
 impl Bootstrap {
@@ -61,6 +101,16 @@ impl Bootstrap {
     pub fn storages(&self) -> &HashMap<String, serde_json::Value> {
         &self.storages
     }
+
+    /// The database bound as `name`.
+    pub fn database(&self, name: &str) -> Option<&Database> {
+        self.databases.get(name)
+    }
+
+    /// Every database binding, by name.
+    pub fn databases(&self) -> &HashMap<String, Database> {
+        &self.databases
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,7 +126,7 @@ impl fmt::Display for BootstrapError {
             Self::InvalidJson(err) => write!(f, "invalid Tako bootstrap JSON: {err}"),
             Self::InvalidEnvelope => write!(
                 f,
-                "Tako bootstrap must be {{token: string, secrets: object, storages?: object}}",
+                "Tako bootstrap must be {{token: string, secrets: object, storages?: object, databases?: object}}",
             ),
             Self::ReadFd(err) => write!(f, "failed to read Tako bootstrap fd: {err}"),
         }
@@ -96,6 +146,13 @@ pub fn secret(name: &str) -> Option<String> {
     bootstrap()
         .ok()
         .and_then(|bootstrap| bootstrap.secret(name).map(str::to_string))
+}
+
+/// The database bound to this app as `name`.
+pub fn database(name: &str) -> Option<Database> {
+    bootstrap()
+        .ok()
+        .and_then(|bootstrap| bootstrap.database(name).cloned())
 }
 
 pub fn internal_token() -> Option<&'static str> {
@@ -156,9 +213,9 @@ fn parse_bootstrap_data(data: &str) -> Result<Bootstrap, BootstrapError> {
         || !value
             .get("secrets")
             .is_some_and(serde_json::Value::is_object)
-        || value
-            .get("storages")
-            .is_some_and(|storages| !storages.is_object())
+        || ["storages", "databases"]
+            .iter()
+            .any(|key| value.get(key).is_some_and(|field| !field.is_object()))
     {
         return Err(BootstrapError::InvalidEnvelope);
     }
@@ -177,6 +234,28 @@ fn read_bootstrap_env() -> Option<String> {
 fn clear_bootstrap_env() {
     unsafe {
         std::env::remove_var(BOOTSTRAP_DATA_ENV);
+    }
+}
+
+/// Marks the bootstrap pipe close-on-exec as the program loads, before
+/// `main`: the SDK reads it only on first use, and a subprocess started
+/// before then must not inherit it and read the app's secrets and database
+/// tokens. The process itself can still read it.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[used]
+#[cfg_attr(target_os = "linux", unsafe(link_section = ".init_array"))]
+#[cfg_attr(target_os = "macos", unsafe(link_section = "__DATA,__mod_init_func"))]
+static CLOSE_BOOTSTRAP_ON_EXEC: extern "C" fn() = close_bootstrap_on_exec;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+extern "C" fn close_bootstrap_on_exec() {
+    if fd_is_fifo(3) {
+        unsafe {
+            let flags = libc::fcntl(3, libc::F_GETFD);
+            if flags >= 0 {
+                libc::fcntl(3, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+            }
+        }
     }
 }
 
@@ -434,6 +513,23 @@ mod tests {
 
         assert_eq!(bootstrap.token(), Some("tok"));
         assert_eq!(bootstrap.secret("DATABASE_URL"), Some("postgres://db"));
+    }
+
+    #[test]
+    fn parses_database_bindings() {
+        let bootstrap = parse_bootstrap_data(
+            r#"{"token":"tok","secrets":{},"databases":{"main":{"url":"http://127.0.0.1:9845","authToken":"secret"}}}"#,
+        )
+        .unwrap();
+        let main = bootstrap.database("main").unwrap();
+        assert_eq!(main.url(), "http://127.0.0.1:9845");
+        assert_eq!(main.auth_token(), "secret");
+        assert!(!format!("{main:?}").contains("secret"));
+        assert!(bootstrap.database("other").is_none());
+
+        let err =
+            parse_bootstrap_data(r#"{"token":"tok","secrets":{},"databases":[]}"#).unwrap_err();
+        assert_eq!(err, BootstrapError::InvalidEnvelope);
     }
 
     #[test]

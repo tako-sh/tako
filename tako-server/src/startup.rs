@@ -242,6 +242,15 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             runtime,
         )?
     });
+    // Apps restored below reach their databases as soon as they start.
+    if !standby {
+        let server_id = native_config
+            .as_ref()
+            .map(|config| config.server_id.to_string());
+        if let Err(error) = rt.block_on(state.open_databases(server_id)) {
+            tracing::error!(%error, "Failed to open hosted databases");
+        }
+    }
     if let Err(e) = rt.block_on(async {
         let _guard = state.management_lock.lock().await;
         crate::drain_observer::spawn(&rt, state.clone());
@@ -296,7 +305,13 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     spawn_certificate_renewals(&rt, state.clone(), args.renewal_interval_hours);
     spawn_management_socket(&rt, state.clone(), socket_listener);
     if !standby {
-        state.clone().start_database_backups(rt.handle());
+        let database_network = native_config
+            .as_ref()
+            .zip(native_services.as_ref())
+            .map(|(config, proxy)| (config.server_id.to_string(), proxy.clone()));
+        if let Err(error) = rt.block_on(state.start_databases(database_network)) {
+            tracing::error!(%error, "Failed to start hosted databases");
+        }
         spawn_management_http(&rt, state.clone(), args.management_host.clone());
         #[cfg(target_os = "linux")]
         if let Some(handoff) = native_handoff {

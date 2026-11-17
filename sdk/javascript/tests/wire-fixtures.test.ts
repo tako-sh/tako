@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { setChannelSocketCloser, setChannelSocketPublisher } from "../src/channels";
 import { defineChannel } from "../src/channels/define";
+import { loadDatabases } from "../src/database";
 import { call, channel, setNetworkCaller, workflow } from "../src/network";
 import { defineStore } from "../src/stores/define";
 import { initBootstrapFromFd } from "../src/tako/secrets-fd";
@@ -347,14 +348,20 @@ describe("bootstrap fixture", () => {
     injectBootstrap({ token: null, secrets: {} });
   });
 
-  test("populates the token, secrets, and storage bindings", () => {
+  test("populates the token, secrets, storage, and database bindings", () => {
     const text = readFileSync(join(WIRE_DIR, "bootstrap.json"), "utf8");
     initBootstrapFromFd(() => text);
-    const envelope = fixture("bootstrap.json") as { storages: Record<string, unknown> };
+    const envelope = fixture("bootstrap.json") as {
+      storages: Record<string, unknown>;
+      databases: Record<string, { url: string; authToken: string }>;
+    };
     expect(getInternalToken()).toBe("tok-abc");
     const secrets = loadSecrets<Record<string, string>>();
     expect(secrets["DATABASE_URL"]).toBe("postgres://db/app");
     expect(secrets["API_KEY"]).toBe("key-123");
     expect({ ...getStorageBindings() }).toEqual(envelope.storages);
+    const main = loadDatabases()["main"];
+    expect(main?.url).toBe(envelope.databases["main"]!.url);
+    expect(main?.authToken).toBe(envelope.databases["main"]!.authToken);
   });
 });

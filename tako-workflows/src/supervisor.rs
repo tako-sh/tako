@@ -67,6 +67,9 @@ pub struct WorkerSpec {
     /// Storage bindings to hand the worker via fd 3.
     #[cfg_attr(not(unix), allow(dead_code))]
     pub storages: HashMap<String, tako_core::StorageBinding>,
+    /// Database connections to hand the worker via fd 3.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    pub databases: HashMap<String, tako_core::DatabaseConnection>,
     /// Optional per-line log sink. When `Some`, the supervisor pipes
     /// stdout/stderr and forwards each line. When `None`, inherits the
     /// parent's stdio (production default — lets journald/systemd capture
@@ -488,9 +491,15 @@ impl WorkerSupervisor {
         #[cfg(unix)]
         let bootstrap_token = nanoid::nanoid!(32);
         #[cfg(unix)]
-        let (bootstrap_read_end, bootstrap_writer) =
-            create_bootstrap_pipe(&bootstrap_token, &self.spec.secrets, &self.spec.storages)
-                .map_err(SupervisorError::Spawn)?;
+        let (bootstrap_read_end, bootstrap_writer) = create_bootstrap_pipe(
+            &bootstrap_token,
+            tako_core::bootstrap::Bindings {
+                secrets: &self.spec.secrets,
+                storages: &self.spec.storages,
+                databases: &self.spec.databases,
+            },
+        )
+        .map_err(SupervisorError::Spawn)?;
         #[cfg(unix)]
         let bootstrap_fd: RawFd = bootstrap_read_end.as_raw_fd();
         #[cfg(unix)]
@@ -602,13 +611,12 @@ fn join_secrets_writer_after_spawn(
 #[cfg(unix)]
 fn create_bootstrap_pipe(
     token: &str,
-    secrets: &HashMap<String, String>,
-    storages: &HashMap<String, tako_core::StorageBinding>,
+    bindings: tako_core::bootstrap::Bindings<'_>,
 ) -> std::io::Result<(
     std::os::fd::OwnedFd,
     std::thread::JoinHandle<std::io::Result<()>>,
 )> {
-    let bytes = tako_core::bootstrap::envelope_bytes(token, secrets, storages);
+    let bytes = tako_core::bootstrap::envelope_bytes(token, bindings);
     tako_spawn::create_payload_pipe(bytes)
 }
 

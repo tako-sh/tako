@@ -97,6 +97,11 @@ impl ServerRuntimeConfig {
 }
 
 /// Server state shared across components
+/// Set when a reloaded successor process is ready and this one is about to
+/// shut down.
+pub(crate) static RELOAD_SUCCESSOR_READY: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 pub struct ServerState {
     pub(crate) app_manager: Arc<AppManager>,
     pub(crate) load_balancer: Arc<LoadBalancer>,
@@ -118,11 +123,6 @@ pub struct ServerState {
     pub(crate) channel_registry: Arc<crate::channels::registry::ChannelRegistry>,
     pub(crate) deploy_locks: AsyncRwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     pub(crate) backup_locks: SyncRwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
-    /// Latest hourly database snapshot attempt per app. Not persisted: the
-    /// remote index keeps the cadence across restarts.
-    pub(crate) database_replica_status:
-        SyncRwLock<std::collections::BTreeMap<String, tako_core::DatabaseBackupStatus>>,
-    pub(crate) database_replicas: tokio::sync::Mutex<crate::operations::DatabaseReplicas>,
     pub(crate) manual_backup_states:
         SyncRwLock<HashMap<String, crate::operations::ManualBackupState>>,
     prepared_deploy_ssl: AsyncRwLock<HashMap<PreparedDeployKey, PreparedDeploySsl>>,
@@ -139,6 +139,8 @@ pub struct ServerState {
     pub(crate) proxy_requests: Arc<crate::request_drain::RequestDrain>,
     pub(crate) runtime: ServerRuntimeConfig,
     pub(crate) workflows: Arc<crate::workflows::WorkflowManager>,
+    /// Hosted databases and the database bindings of apps on this server.
+    pub(crate) databases: Arc<crate::databases::Databases>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -250,8 +252,18 @@ impl ServerState {
 
     pub(crate) async fn shutdown_runtime(&self, workflow_drain_timeout: Duration) {
         tracing::info!("Shutting down managed app runtime");
+        // With a reloaded successor serving, hand databases over first so new
+        // connections reach the process that knows every current token.
+        // Otherwise draining apps keep their databases until they stop.
+        let successor = RELOAD_SUCCESSOR_READY.load(std::sync::atomic::Ordering::Acquire);
+        if successor {
+            self.stop_databases().await;
+        }
         self.workflows.shutdown_all(workflow_drain_timeout).await;
         self.app_manager.shutdown_all().await;
+        if !successor {
+            self.stop_databases().await;
+        }
     }
 
     pub(crate) async fn reject_mutating_when_upgrading(&self, command: &str) -> Option<Response> {

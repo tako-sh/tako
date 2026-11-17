@@ -96,9 +96,19 @@ Each deployed app has durable data under the server data directory:
 
 `TAKO_SHARED_DATA_DIR` exposes `/opt/tako/shared/data/app` to apps on this server. Per-app users retain private directories and use a common group for shared files. Local development shares a directory under the same `TAKO_HOME`. Standalone containers and Compose services receive `/tako/shared-data` as a managed mount.
 
-Backups are opt-in with `[envs.<env>].backup`. Explicit `databases` paths select app SQLite files; `shared_databases` selects shared files. Tako captures and uploads changes about once per minute to private S3-compatible storage, encrypted with a stable database key recoverable through each declaring app's backup keys. Matching shared declarations use one capture/upload pipeline; conflicting destinations are rejected. Seven days of capture points are retained. A shared database restore drains every app on the server; a private restore stops only its owner.
+These directories hold plain files. Tako does not discover or capture databases in them.
 
-Full app-directory archives are manual (`tako backups now`), including local workflow state. Deploys and timers no longer create full archives or hourly SQLite archives. Channel replay and SDK cache are excluded because they are transient. Shared non-SQLite files, Compose named volumes, external databases, and S3 contents need separate protection. See [Backups](/backups/) for recovery and boundaries.
+### Hosted databases
+
+A [hosted database](/databases/) is a SQLite file under `databases/<name>/` in the server data directory of one server, owned by `tako-server` rather than by an app user. The server serves it to apps on `127.0.0.1:9845` over the libSQL HTTP protocol. Each app binding gets its own token in the SDK bootstrap envelope; a token resolves to one database for one app environment. Connections enable foreign keys, run in WAL mode with `synchronous = FULL`, and refuse `ATTACH`, `VACUUM INTO`, extension loading, and persistent `PRAGMA` writes other than `user_version`, `application_id`, and `auto_vacuum`.
+
+A database's name identifies it within the network. Its records live in the network's encrypted shared state: one with its server, readable by every member that may deploy, so deploys resolve bindings by name, and one with its snapshot encryption key, readable by administrators. Apps on any server of the network can bind it: on other servers than the database's, their own server forwards requests over the private WireGuard network to the database's server on port 9847, identifying the app environment rather than sending its token. An administrator's deploy grants the environment the database on its server, which issues a key for that grant; the deploy hands the key to the app's servers. The database's server accepts a forwarded request only from another network server carrying that key, and the network firewall opens port 9847 to servers only.
+
+With a backup storage (`[envs.<env>].backup.storage` or `[databases.<name>].backup`), the server snapshots a changed database hourly, before release commands, and before restores or imports: a `VACUUM INTO` copy, integrity-checked, zstd-compressed, and AES-256-GCM encrypted. Replacing a database (restore or import) pauses its requests with `503` responses for the swap.
+
+### App data archives
+
+Full app-directory archives are manual (`tako backups now`) and opt-in with `[envs.<env>].backup`. They include local workflow state; channel replay and SDK cache are excluded because they are transient. Shared-directory files, Compose named volumes, external databases, and S3 contents need separate protection. See [Backups](/backups/) for recovery and boundaries.
 
 ## Remote Management
 

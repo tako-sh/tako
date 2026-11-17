@@ -53,16 +53,3 @@ Pingora version provides equivalent lifetime behavior, supports a pure Rust
 compression backend and passes Tako's memory and performance checks. Do not
 update the copied crate independently of its provenance, fixtures, focused tests
 and locked dependency graph.
-
-# SQLite capture dependency
-
-`terse-litestream/` copies the Rust sources, tests, scripts, README, LICENSE and
-NOTICE from `TerseAI/terse-litestream` revision
-`3a78cd6c8d70f1b607dbc10c4368b25eb6122731` (0.2.0, Apache-2.0).
-The only upstream change is its Cargo dependency from rusqlite `0.40.2` to
-`0.41`, matching Tako. It is used by the `tako-backup` workspace crate and embedded by `tako-server`. The separate terse-ltx dependency remains pinned upstream.
-
-Run `cargo test --locked --manifest-path vendor/terse-litestream/Cargo.toml`
-and `just test terse` after changing this patch. Keep vendor sources out of
-workspace-wide formatting. Remove the local copy when a pinned upstream revision
-supports Tako's rusqlite version and passes the same recovery tests.

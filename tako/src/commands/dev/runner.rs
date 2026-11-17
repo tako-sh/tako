@@ -191,6 +191,16 @@ pub async fn run(
         tracing::warn!("Failed to load development storages: {error}");
         std::collections::HashMap::new()
     });
+    let databases = crate::local_databases::dev_files(&project_dir, &cfg);
+    // Migrations run before the app starts, so it sees the current schema.
+    let migrated = crate::local_databases::migrate_development(&project_dir, &cfg)
+        .map_err(|error| format!("Migrations failed: {error}"))?;
+    for warning in migrated.warnings {
+        let _ = log_tx.send(ScopedLog::warn("tako", warning)).await;
+    }
+    for line in migrated.applied {
+        let _ = log_tx.send(ScopedLog::info("tako", line)).await;
+    }
     let project_dir_display = project_dir.to_string_lossy();
     let reg_url =
         crate::dev_server_client::register_app(crate::dev_server_client::RegisterAppRequest {
@@ -207,6 +217,7 @@ pub async fn run(
             secrets: &secrets,
             images: &cfg.images,
             storages: &storages,
+            databases: &databases,
             readiness_failure_hint: readiness_failure_hint.as_deref(),
             worker_command: worker_command.as_deref(),
             workflow_retention_ms: cfg.workflows.retention_ms,

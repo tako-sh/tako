@@ -266,6 +266,11 @@ impl TakoToml {
                     )));
                 }
             }
+            for (binding_name, database_name) in &env_config.databases {
+                tako_core::validate_database_name(binding_name).map_err(ConfigError::Validation)?;
+                tako_core::validate_database_name(database_name)
+                    .map_err(ConfigError::Validation)?;
+            }
             if let Some(backup) = &env_config.backup {
                 validate_backup_config(self, env_name, backup)?;
             }
@@ -276,14 +281,41 @@ impl TakoToml {
             validate_storage_resource(resource_name, resource)?;
         }
 
+        for (name, database) in &self.databases {
+            validate_database_resource(self, name, database)?;
+        }
+
         Ok(())
     }
 }
 
+fn validate_database_resource(
+    config: &TakoToml,
+    name: &str,
+    database: &DatabaseResourceConfig,
+) -> Result<()> {
+    tako_core::validate_database_name(name).map_err(ConfigError::Validation)?;
+    if let Some(storage) = &database.backup {
+        let Some(resource) = config.storages.get(storage) else {
+            return Err(ConfigError::Validation(format!(
+                "[databases.{name}].backup references missing storage resource '{storage}'"
+            )));
+        };
+        if resource.provider != tako_core::StorageProvider::S3 {
+            return Err(ConfigError::Validation(format!(
+                "[databases.{name}].backup storage '{storage}' must use provider 's3'"
+            )));
+        }
+        if resource.public_base_url.is_some() {
+            return Err(ConfigError::Validation(format!(
+                "[databases.{name}].backup storage '{storage}' must be private; remove public_base_url or use a separate private storage resource"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn validate_backup_config(config: &TakoToml, env_name: &str, backup: &BackupConfig) -> Result<()> {
-    tako_core::validate_database_paths(&backup.databases).map_err(ConfigError::Validation)?;
-    tako_core::validate_database_paths(&backup.shared_databases)
-        .map_err(ConfigError::Validation)?;
     let resource_name = backup.storage.as_str();
     if resource_name.is_empty() {
         return Err(ConfigError::Validation(format!(
@@ -392,6 +424,7 @@ pub(super) const TOP_LEVEL_KEYS: &[&str] = &[
     "vars",
     "envs",
     "storages",
+    "databases",
     "servers",
 ];
 

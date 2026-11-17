@@ -122,28 +122,7 @@ pub(super) fn format_status_line(server_name: &str, status: &BackupStatusRespons
         .retention_days
         .map(|days| format!("{days}d archive retention"))
         .unwrap_or_default();
-    let databases = status
-        .databases
-        .iter()
-        .map(|database| {
-            let scope = if database.shared { "shared/" } else { "" };
-            let progress = match &database.error {
-                Some(error) => format!("error: {error}"),
-                None => database
-                    .uploaded_txid
-                    .map(|txid| format!("uploaded TXID {txid}"))
-                    .unwrap_or_else(|| "waiting for first upload".into()),
-            };
-            format!("{scope}{}: {progress}", database.database)
-        })
-        .collect::<Vec<_>>()
-        .join("; ");
-    let databases = if databases.is_empty() {
-        "no SQLite databases selected"
-    } else {
-        &databases
-    };
-    format!("{server_name}: enabled, manual archives, {last}, {retention}; SQLite: {databases}")
+    format!("{server_name}: enabled, manual archives, {last}, {retention}")
 }
 
 pub(super) fn format_status_restores(
@@ -190,7 +169,7 @@ fn local_offset() -> UtcOffset {
     *LOCAL_OFFSET.get_or_init(|| UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC))
 }
 
-pub(super) fn format_backup_time(unix_secs: i64) -> String {
+pub(crate) fn format_backup_time(unix_secs: i64) -> String {
     OffsetDateTime::from_unix_timestamp(unix_secs)
         .map(|dt| {
             let dt = dt.to_offset(local_offset());
@@ -214,7 +193,6 @@ mod tests {
     #[test]
     fn status_line_marks_disabled_backup() {
         let status = BackupStatusResponse {
-            databases: Vec::new(),
             app: "demo/production".to_string(),
             enabled: false,
             retention_days: None,
@@ -227,9 +205,8 @@ mod tests {
     }
 
     #[test]
-    fn status_line_reports_continuous_replication_and_manual_archive_failures() {
+    fn status_line_reports_manual_archive_failures() {
         let mut status = BackupStatusResponse {
-            databases: Vec::new(),
             app: "demo/production".to_string(),
             enabled: true,
             retention_days: Some(30),
@@ -239,25 +216,8 @@ mod tests {
             unfinished_restores: Vec::new(),
         };
         let line = format_status_line("prod", &status);
-        assert!(line.contains("no SQLite databases selected"), "{line}");
-
-        status.databases.push(tako_core::DatabaseBackupStatus {
-            database: "orders.sqlite".into(),
-            shared: true,
-            replica_id: "replica".into(),
-            consumers: vec!["demo/production".into()],
-            active: true,
-            captured_txid: Some(42),
-            uploaded_txid: Some(41),
-            uploaded_at_unix_secs: Some(0),
-            error: None,
-        });
-        let line = format_status_line("prod", &status);
         let time = format_backup_time(0);
-        assert!(line.contains("manual archives"));
-        assert!(line.contains("shared/orders.sqlite: uploaded TXID 41"));
-        status.databases[0].error = Some("bucket unavailable".into());
-        assert!(format_status_line("prod", &status).contains("bucket unavailable"));
+        assert!(line.contains("manual archives"), "{line}");
         assert_eq!(format_status_failure("prod", &status), None);
 
         status.last_backup_failure = Some(tako_core::BackupFailure {

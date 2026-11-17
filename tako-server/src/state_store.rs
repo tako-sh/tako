@@ -3,6 +3,8 @@ use std::path::PathBuf;
 mod app_registry;
 mod bindings;
 mod compose;
+mod databases;
+pub(crate) use databases::{AppDatabase, DatabaseSecrets, StoredDatabase};
 mod credentials;
 mod device_key;
 mod drain;
@@ -16,7 +18,7 @@ mod upgrade;
 pub(crate) use app_registry::load_persisted_releases_read_only;
 pub use device_key::load_or_create_device_key;
 
-pub const STATE_SCHEMA_VERSION: i32 = 14;
+pub const STATE_SCHEMA_VERSION: i32 = 15;
 
 #[derive(Debug, Clone)]
 pub struct PersistedApp {

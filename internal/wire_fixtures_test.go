@@ -19,6 +19,9 @@ func TestBootstrapFixtureParses(t *testing.T) {
 	want := &Bootstrap{
 		Token:   "tok-abc",
 		Secrets: map[string]string{"DATABASE_URL": "postgres://db/app", "API_KEY": "key-123"},
+		Databases: map[string]DatabaseConnection{
+			"main": {URL: "http://127.0.0.1:9845", AuthToken: "token-example"},
+		},
 	}
 	if !reflect.DeepEqual(bootstrap, want) {
 		t.Fatalf("bootstrap parsed as %#v", bootstrap)

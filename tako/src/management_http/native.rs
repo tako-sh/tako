@@ -153,11 +153,11 @@ pub(super) fn rpc_action(
         | Command::RunRelease { app, .. }
         | Command::Deploy { app, .. }
         | Command::BackupNow { app, .. }
-        | Command::ListDatabaseBackups { app, .. }
+        | Command::SnapshotDatabase { app: Some(app), .. }
+        | Command::MigrateDatabase { app: Some(app), .. }
         | Command::ListBackups { app }
         | Command::BackupStatus { app }
         | Command::BackupDownloadUrl { app, .. }
-        | Command::RestoreDatabaseBackup { app, .. }
         | Command::RestoreBackup { app, .. }
         | Command::Scale { app, .. }
         | Command::Stop { app, .. }
@@ -188,7 +188,24 @@ pub(super) fn rpc_action(
         | Command::ResumeServer
         | Command::EnterUpgrading { .. }
         | Command::ExitUpgrading { .. }
-        | Command::InjectChallengeToken { .. } => None,
+        | Command::InjectChallengeToken { .. }
+        | Command::CreateDatabase { .. }
+        | Command::DeleteDatabase { .. }
+        | Command::DatabaseStatus { .. }
+        | Command::ConfigureDatabaseBackup { .. }
+        | Command::GrantDatabases { .. }
+        | Command::SnapshotDatabase { app: None, .. }
+        | Command::ListDatabaseSnapshots { .. }
+        | Command::RestoreDatabase { .. }
+        | Command::QueryDatabase { .. }
+        | Command::MigrateDatabase { app: None, .. }
+        | Command::ResetDatabase { .. }
+        | Command::BeginDatabaseImport { .. }
+        | Command::DatabaseImportChunk { .. }
+        | Command::FinishDatabaseImport { .. }
+        | Command::BeginDatabaseExport { .. }
+        | Command::DatabaseExportChunk { .. }
+        | Command::FinishDatabaseExport { .. } => None,
         Command::RegisterSchedules { .. }
         | Command::ClaimRun { .. }
         | Command::HeartbeatRun { .. }

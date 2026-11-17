@@ -165,6 +165,7 @@ async fn deploy_rejects_persisted_instances_above_app_limit() {
             secrets: Some(HashMap::new()),
             runtime_credentials: None,
             storages: Some(HashMap::new()),
+            databases: None,
             ssl: tako_core::SslBinding::default(),
             backup: None,
             force: false,

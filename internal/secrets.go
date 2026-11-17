@@ -20,8 +20,16 @@ const BootstrapDataEnv = "TAKO_BOOTSTRAP_DATA"
 // same envelope through TAKO_BOOTSTRAP_DATA because fd 3 does not
 // cross the container boundary in v0.
 type Bootstrap struct {
-	Token   string            `json:"token"`
-	Secrets map[string]string `json:"secrets"`
+	Token     string                        `json:"token"`
+	Secrets   map[string]string             `json:"secrets"`
+	Databases map[string]DatabaseConnection `json:"databases,omitempty"`
+}
+
+// DatabaseConnection is one database binding: where the app reaches the
+// Tako-hosted database and the token that authorizes the binding.
+type DatabaseConnection struct {
+	URL       string `json:"url"`
+	AuthToken string `json:"authToken"`
 }
 
 // BootstrapFromRuntime reads the bootstrap envelope from the current process.
