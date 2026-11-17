@@ -1,4 +1,4 @@
-//! Database records in the network's shared state.
+//! Database records in the network state.
 //!
 //! A database's name identifies it within the network. Each database has two
 //! records under its name: a directory record with its home server, which

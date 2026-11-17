@@ -341,7 +341,7 @@
     },
     "StorageResourceConfig": {
       "additionalProperties": false,
-      "description": "S3-compatible storage resource from [storages.*]. Credentials are stored\nencrypted in ignored local state and shared network records, not here.",
+      "description": "S3-compatible storage resource from [storages.*]. Credentials are stored\nencrypted in the ignored local state and the network state, not here.",
       "properties": {
         "bucket": {
           "description": "Bucket name. Required for `s3`.",

@@ -196,7 +196,7 @@ For a hosted database, check `backup.last_error` and `backup.last_snapshot` in `
 
 ## Secret Or Credential Key Problems
 
-For shared network values, check `tako network status --json`, device permissions, and `tako network sync` first. A newly enrolled full client can decrypt published values; a deploy client cannot decrypt any. Unpublished drafts remain on the original worktree.
+For values in the network state, check `tako network status --json`, device permissions, and `tako network sync` first. A newly enrolled full client can decrypt the network state; a deploy client cannot decrypt any of it. Unpublished drafts remain on the original worktree.
 
 For a legacy tracked secret file or local encrypted draft with a missing environment key, recover the original key:
 

@@ -6,7 +6,7 @@
       "type": "framework",
       "description": "Build, run, deploy, and debug Tako applications. Use for projects with tako.toml, tako.sh imports, the Tako Go or Rust SDK, or tasks involving Tako local HTTPS, deployments, logs, routing, typed HTTP contracts, secrets, storage, channels, presence, stores, and workflows.",
       "url": "https://tako.sh/.well-known/agent-skills/tako/SKILL.md",
-      "sha256": "feaa9877e9959794962c445b460dd09b913a601d7348330bcbdc03ec19ccb463"
+      "sha256": "64f657764de81996081fbc8b83e5c10b377d43b288fe915d4f37d1cc022d7aee"
     },
     {
       "name": "tako-sdk-go",

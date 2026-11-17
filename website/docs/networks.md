@@ -83,7 +83,7 @@ tako deploy --env production --ci
 
 A client has one of two access levels. A **full** client, the default, can do everything in the network: decrypt shared app secrets, provider credentials, storage credentials, and backup keys, deploy any app, invite and revoke clients, add servers, open the `tako` shell, and join the private network with `tako connect`. A **deploy** client, created with one or more `--deploy app/env` scopes, can only release code to those environments: deploy, run the release command, roll back, and read status and releases. It cannot read or change secrets or credentials, read logs, scale, stop, delete, or manage backups and workflows. It manages over pinned HTTPS and never becomes a WireGuard peer, so `tako connect` and `tako ssh` refuse it. Treat a network as the trust boundary: put people or environments you do not fully trust on a separate network. Network access does not replace application authentication.
 
-Clients contact servers only. Servers replicate membership and encrypted values with Corrosion; clients do not run Corrosion or connect to each other. A join and membership changes refresh the local cache. `network sync` pulls published values without publishing worktree drafts. `deploy` and `secrets sync` also publish that worktree's changes for the selected environment. No background client connection is required.
+Clients contact servers only. Servers replicate membership and encrypted values with Corrosion; clients do not run Corrosion or connect to each other. A join and membership changes refresh the local cache. `network sync` pulls the network state without publishing worktree drafts. `deploy` and `secrets sync` also publish that worktree's changes for the selected environment. No background client connection is required.
 
 For a machine that keeps no state between runs, such as a CI runner, create a client identity instead of an invitation:
 
@@ -105,7 +105,7 @@ tako network export production --output production.public.json
 
 Network export contains public membership and server trust information. It contains neither private device keys nor app secrets, and it cannot enroll a different device by itself. Use an invitation to enroll a new device.
 
-Network membership grants access according to the device's access level; published secrets are encrypted to authorized device keys. Keep `tako.toml` in Git, including app configuration and network IDs. Keep `.tako/` local and ignored. An invitation restores access to published values, but cannot recover another machine's unpublished drafts. Back up server state and the keys of at least one full client.
+Network membership grants access according to the device's access level; published secrets are encrypted to authorized device keys. Keep `tako.toml` in Git, including app configuration and network IDs. Keep `.tako/` local and ignored. An invitation restores access to the network state, but cannot recover another machine's unpublished drafts. Back up server state and the keys of at least one full client.
 
 See [Secrets](/secrets/) for worktree isolation, publication, and migration from a tracked secret file. Legacy environment-key import/export remains available for migration and explicit recovery; it is no longer the normal new-device workflow.
 

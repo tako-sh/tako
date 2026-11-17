@@ -1,5 +1,5 @@
-//! Versioned shared records: sealed values for secrets and plaintext for
-//! non-secret kinds. Membership remains in its own immutable registry.
+//! The network state: versioned records, sealed values for secrets and
+//! plaintext for non-secret kinds. Membership remains in its own immutable registry.
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 

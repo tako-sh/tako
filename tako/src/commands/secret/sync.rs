@@ -214,7 +214,7 @@ pub(super) async fn sync_secrets(
         })?;
         output::success(&format!("Published secret drafts for {env}"));
     }
-    output::hint("Published values are applied to applications on their next deployment.");
+    output::hint("Values in the network state apply to apps on their next deployment.");
     Ok(())
 }
 

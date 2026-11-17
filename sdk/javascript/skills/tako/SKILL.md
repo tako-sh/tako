@@ -155,7 +155,7 @@ network membership, shared secret records, or device keys; protect those separat
 
 Native management uses signed pinned HTTPS without workstation WireGuard, TUN,
 or an SSH agent. Deploy clients (`--deploy app/env`) only release code: they read
-no secrets or logs, and servers apply the environment's published values at deploy.
+no secrets or logs, and servers apply the environment's values from the network state at deploy.
 Full clients can decrypt app secrets, provider/storage credentials and backup keys. `network export` is public configuration, not secret-key export or
 a way to enroll another device. Revoking a client affects only that client, not
 the clients it invited. Inspect pending enforcement rather than assuming offline

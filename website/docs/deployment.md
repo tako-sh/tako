@@ -23,7 +23,7 @@ network = "0123456789abcdef0123456789abcdef"
 route = "app.example.com"
 ```
 
-The CLI resolves current trusted server members and uses per-device signed HTTPS. No local WireGuard interface or SSH agent is needed. A deploy client sends no secrets and needs no local keys; servers apply the environment's published values. A route already claimed by another app or environment is rejected. See [sandbox enrollment](/networks/#enroll-another-laptop-or-sandbox).
+The CLI resolves current trusted server members and uses per-device signed HTTPS. No local WireGuard interface or SSH agent is needed. A deploy client sends no secrets and needs no local keys; servers apply the environment's values from the network state. A route already claimed by another app or environment is rejected. See [sandbox enrollment](/networks/#enroll-another-laptop-or-sandbox).
 
 Set `servers = ["edge-a", "edge-b"]` alongside `network` to deploy this app to those two members. Omit `servers` to deploy to the entire network. Other applications can choose other members and communicate over the same private network. See [re-enrollment](/servers/#choose-the-vpn-provider) when replacing an external VPN installation.
 
