@@ -297,6 +297,13 @@ fn allows_introspection_and_session_pragmas_but_not_server_settings() {
     }
     run(&mut conn, "PRAGMA foreign_keys = OFF").unwrap();
     assert!(conn.is_dirty(), "session pragmas mark the connection");
+    // analysis_limit outlives the statement too: later ANALYZE runs on the
+    // same connection read it.
+    let mut fresh = open(&fixture);
+    run(&mut fresh, "PRAGMA analysis_limit").unwrap();
+    assert!(!fresh.is_dirty(), "reading it changes nothing");
+    run(&mut fresh, "PRAGMA analysis_limit = 100").unwrap();
+    assert!(fresh.is_dirty());
 }
 
 #[test]

@@ -1191,7 +1191,6 @@ pub(crate) fn escaped_len(text: &str) -> usize {
 
 /// PRAGMAs that only read schema or run checks, with or without an argument.
 const INTROSPECTION_PRAGMAS: &[&str] = &[
-    "analysis_limit",
     "collation_list",
     "compile_options",
     "database_list",
@@ -1217,6 +1216,8 @@ const INTROSPECTION_PRAGMAS: &[&str] = &[
 /// PRAGMAs that change state of the current connection only. Setting one marks
 /// the connection so it is not reused by another stream.
 const SESSION_PRAGMAS: &[&str] = &[
+    // Read by later ANALYZE runs on the same connection.
+    "analysis_limit",
     "automatic_index",
     "case_sensitive_like",
     "cell_size_check",

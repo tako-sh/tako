@@ -183,6 +183,51 @@ async fn snapshots_restore_the_contents_they_captured() {
 }
 
 #[tokio::test]
+async fn latest_restores_pick_the_newer_of_two_snapshots_in_one_second() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, Some("same-second-bucket")).await;
+    query(&state, ID, "CREATE TABLE items (name TEXT)").await;
+    let snapshot = || Command::SnapshotDatabase {
+        name: ID.into(),
+        reason: SnapshotReason::Manual,
+        app: None,
+    };
+    // Several pairs, each most likely within one second of each other.
+    for round in 0..5 {
+        query(
+            &state,
+            ID,
+            &format!("INSERT INTO items VALUES ('first {round}')"),
+        )
+        .await;
+        ok(&state, snapshot()).await;
+        query(
+            &state,
+            ID,
+            &format!("INSERT INTO items VALUES ('second {round}')"),
+        )
+        .await;
+        let newest = ok(&state, snapshot()).await;
+        let listed = ok(&state, Command::ListDatabaseSnapshots { name: ID.into() }).await;
+        assert_eq!(
+            listed["snapshots"][0]["id"], newest["snapshot"]["id"],
+            "the newest snapshot is listed first"
+        );
+    }
+    ok(
+        &state,
+        Command::RestoreDatabase {
+            name: ID.into(),
+            snapshot: None,
+            backup_key_base64: None,
+        },
+    )
+    .await;
+    assert_eq!(count(&state, ID).await, 10);
+}
+
+#[tokio::test]
 async fn snapshots_are_encrypted_with_the_database_key() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp);

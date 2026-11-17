@@ -415,8 +415,13 @@ async fn upload_copy(
     own: Option<&str>,
 ) -> Result<DatabaseSnapshot, String> {
     let created = now_unix_secs();
+    // Milliseconds lead the ID, so IDs order snapshots taken in the same
+    // second (snapshots of a database are taken one at a time).
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis());
     let snapshot_id = format!(
-        "{created}-{}",
+        "{millis:013}-{}",
         nanoid::nanoid!(8, &nanoid::alphabet::SAFE[..])
     );
     let copy = copy.to_path_buf();
@@ -554,7 +559,11 @@ async fn read_manifests(
             Err(error) => tracing::warn!(%key, %error, "Ignoring an unreadable snapshot manifest"),
         }
     }
-    manifests.sort_by_key(|m| std::cmp::Reverse(m.snapshot.created_at_unix_secs));
+    // Newest first; within a second, by the millisecond-ordered ID.
+    manifests.sort_by(|a, b| {
+        (b.snapshot.created_at_unix_secs, &b.snapshot.id)
+            .cmp(&(a.snapshot.created_at_unix_secs, &a.snapshot.id))
+    });
     Ok(manifests)
 }
 
