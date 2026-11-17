@@ -433,7 +433,10 @@ async fn a_stalled_upload_does_not_delay_other_scheduled_snapshots() {
     .await
     .expect("the healthy database is snapshotted while the other upload stalls");
     assert_eq!(first.reason, SnapshotReason::Scheduled);
-    assert!(jobs.is_pending(STALLED), "the stalled upload is in progress");
+    assert!(
+        jobs.is_pending(STALLED),
+        "the stalled upload is in progress"
+    );
     assert!(snapshot_of(STALLED).is_none());
     assert!(
         state.databases.snapshot_space.reserved_bytes() > 0,

@@ -359,8 +359,8 @@ pub(crate) async fn schedule(state: &Arc<ServerState>, jobs: &mut SnapshotJobs) 
         if removed > 0 {
             tracing::info!(database = %stored.name, removed, "Removed interrupted database work directories");
         }
-        let changed = DatabaseId::parse(&stored.name)
-            .is_ok_and(|id| state.databases.host.has_changes(&id));
+        let changed =
+            DatabaseId::parse(&stored.name).is_ok_and(|id| state.databases.host.has_changes(&id));
         if stored.secrets.backup.is_some() && changed {
             jobs.start(state, stored.name);
         }
@@ -386,6 +386,7 @@ impl SnapshotJobs {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn is_pending(&self, name: &str) -> bool {
         self.pending.lock().contains(name)
     }
@@ -632,7 +633,10 @@ struct SnapshotCopy {
 
 /// Copies the database into a fresh work directory, after reserving room for
 /// the copy and its compressed and encrypted forms.
-async fn copy_database(state: &ServerState, stored: &StoredDatabase) -> Result<SnapshotCopy, String> {
+async fn copy_database(
+    state: &ServerState,
+    stored: &StoredDatabase,
+) -> Result<SnapshotCopy, String> {
     let id = DatabaseId::parse(&stored.name)?;
     let size = state.databases.host.size_bytes(&id).unwrap_or(0);
     let work = fresh_work_dir(state, &stored.name, "snapshot")?;
