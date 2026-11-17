@@ -226,19 +226,16 @@ Lists release/build history or rolls an environment back to a previous release. 
 
 ```bash
 tako network create <name>
-tako network client add [--network <id-or-name>] [--deploy <app/env>]... [--expires-in <seconds>]
-tako network client list [--network <id-or-name>]
-tako network client remove <device> [--network <id-or-name>]
-tako network join [--name <device>] [--invitation-stdin]
+tako network client add <name> [--network <id-or-name>] [--deploy <app/env>]... [--expires-in <seconds>] [--identity] [--yes]
+tako network client list [--network <id-or-name>] [--all]
+tako network client revoke <name> [--network <id-or-name>]
+tako network join [--invitation-stdin]
 tako network sync [network]
-tako network request [--name <device>] [--network <id-or-name>] --output <file>
-tako network approve <request-file> [--network <id-or-name>] --output <file> [--deploy <app/env>]... [--expires-in <seconds>]
-tako network import <profile-file>
 tako network export [network] --output <file>
 tako network list --json
 tako network use <network>
 tako network status [network] --json
-tako network revoke <device> [--network <id-or-name>]
+tako network server revoke <server> [--network <id-or-name>]
 tako network server drain <server> [--network <id-or-name>] [--timeout <seconds>]
 tako network server resume <server> [--network <id-or-name>]
 tako connect [network]
@@ -248,9 +245,9 @@ tako ssh <server> [--network <id-or-name>] [-- <command>...]
 
 Commands that act on one network take it from an explicit `--network` or positional network argument first, then from the network chosen with `tako network use`, then from the only configured network. With several networks and no choice, name the network in the command. The project's `tako.toml` does not select a network for these commands; deploy, secrets, and other app commands use the network of the selected environment. `network use` accepts a name or stable ID and stores the choice on this machine; `network list --json` marks the network those commands use with `"default": true`.
 
-Invitations are single-use, expire after 3600 seconds by default (`client add --expires-in` accepts 60–86400), and are redeemed through their issuing server. `join` prompts for the invitation or reads stdin. `network sync` pulls published ciphertext without publishing worktree drafts. Network names are shared and currently immutable.
+Invitations are single-use, expire after 3600 seconds by default (`client add --expires-in` accepts 60–86400), and are redeemed through their issuing server. `join` prompts for the invitation or a client identity, or reads either from stdin. `network sync` pulls published ciphertext without publishing worktree drafts. Network names are shared and currently immutable.
 
-Each device generates and retains its own keys. Without `--deploy`, a client gets full access, including the `tako` SSH shell and `connect`; repeat `--deploy` to restrict it to deploying exact app/environment scopes. Deploy clients cannot `connect` or `ssh`. `network approve --expires-in` accepts `1..31536000` seconds and limits membership lifetime, separately from the request's activation window. Import requires the original requesting device's keys. Export contains public network configuration, not private keys or app secrets.
+Each device generates and retains its own keys. Without `--deploy`, a client gets full access, including the `tako` SSH shell and `connect`; repeat `--deploy` to restrict it to deploying exact app/environment scopes. Deploy clients cannot `connect` or `ssh`. `client add --identity` prints a client identity instead of an invitation: the new client's keys and network profile in one string, on stdout, for machines that keep no state, such as CI. Set it as `TAKO_CLIENT_IDENTITY` and every command acts as that client, keeping its keys in a private temporary directory rather than the Tako home; `join` with an identity stores it like a joined device. Anyone holding an identity is that client until `client revoke`, so prefer `--deploy` for identities; a full-access identity prints a warning. Export contains public network configuration, not private keys or app secrets.
 
 `drain` and `resume` require full access and a unique member name or device ID. Drain defaults to 120 seconds and accepts `0..3600`; zero requests immediate force. Inspect the structured completion report, not only the drained intent. See [Native server maintenance](/operations/#native-server-maintenance).
 

@@ -399,15 +399,7 @@ pub(crate) fn supports_dry_run(path: &[&str]) -> bool {
             | "ssh"]
             | [
                 "network",
-                "sync"
-                    | "join"
-                    | "create"
-                    | "request"
-                    | "approve"
-                    | "status"
-                    | "import"
-                    | "export"
-                    | "list"
+                "sync" | "join" | "create" | "status" | "export" | "list"
             ]
             | [
                 "network",
@@ -477,6 +469,9 @@ impl Cli {
             }
         }
         crate::telemetry::maybe_send(telemetry_command(&command), self.ci, &display_version());
+        // With TAKO_CLIENT_IDENTITY, network commands act as that client for
+        // this process only; its keys stay in a private temporary directory.
+        let _identity = crate::network::identity::activate_from_env()?;
 
         match command {
             Commands::Version => print_version(json),

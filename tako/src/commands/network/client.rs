@@ -24,6 +24,10 @@ pub enum ClientCommands {
         /// Replace an active client's key without asking
         #[arg(long, short = 'y')]
         yes: bool,
+        /// Print a client identity for TAKO_CLIENT_IDENTITY instead of an
+        /// invitation, for machines that keep no state, such as CI
+        #[arg(long)]
+        identity: bool,
     },
     /// Refresh and list clients in the network
     #[command(visible_alias = "ls")]
@@ -148,7 +152,8 @@ pub(super) fn run(command: ClientCommands) -> Result<()> {
             deploy,
             expires_in,
             yes,
-        } => add(&name, network.as_deref(), deploy, expires_in, yes),
+            identity,
+        } => add(&name, network.as_deref(), deploy, expires_in, yes, identity),
         ClientCommands::List {
             network: value,
             all,
@@ -239,6 +244,7 @@ fn add(
     deploy: Vec<tako_network::AppEnv>,
     expires_in: u64,
     yes: bool,
+    identity: bool,
 ) -> Result<()> {
     let alias = network::resolve_network(network)?;
     if output::is_dry_run() {
@@ -247,6 +253,7 @@ fn add(
             serde_json::json!({"dry_run":true,"network":alias.name,"client":name}),
         );
     }
+    let full = deploy.is_empty();
     let profile = network::state::pull(&alias, None)?.0;
     let now = network::now()?;
     let own = own_device(&profile)?;
@@ -322,8 +329,11 @@ fn add(
         token,
         expires_at,
         client: name.clone(),
+    };
+    if identity {
+        return print_identity(&alias, name, &invitation, full, replaced, invited, known);
     }
-    .encode()?;
+    let invitation = invitation.encode()?;
     if output::is_json() {
         output::json_result(serde_json::json!({
             "network": alias.name,
@@ -349,6 +359,60 @@ fn add(
     output::hint(
         "On the new machine, run `tako network join` and paste the invitation. It can enroll one client.",
     );
+    Ok(())
+}
+
+/// Redeem `invitation` as a new device in a private temporary directory and
+/// print that device as a client identity. Its keys never reach the Tako home.
+fn print_identity(
+    alias: &crate::config::LocalNetwork,
+    name: &tako_network::DeviceName,
+    invitation: &Invitation,
+    full: bool,
+    replaced: Option<tako_network::DeviceId>,
+    invited: Vec<String>,
+    known: bool,
+) -> Result<()> {
+    let identity = {
+        let _temporary = network::identity::TemporaryState::new()?;
+        let joined = redeem(invitation)?;
+        // Admission answers the server's key check with the new device's keys.
+        network::client::refresh(&joined)?;
+        network::identity::encode(&joined)?
+    };
+    if full {
+        let warning = format!(
+            "{name} has full access. Anyone holding this identity can read every secret and manage the network; use --deploy app/env for CI."
+        );
+        output::warning(&warning);
+        tracing::warn!("{warning}");
+    }
+    if output::is_json() {
+        output::json_result(serde_json::json!({
+            "network": alias.name,
+            "client": name,
+            "identity": identity.as_str(),
+            "replaced": replaced,
+            "invited": invited,
+        }))?;
+    } else {
+        // Deliberate credential output on stdout, so it can be piped into a
+        // secret store; never put it in tracing or progress logs.
+        println!("{}", identity.as_str());
+        let message = if replaced.is_some() {
+            format!("Revoked {name}'s key and created an identity with a new one")
+        } else if known {
+            format!("Created an identity to bring back {name}")
+        } else {
+            format!("Created an identity for {name}")
+        };
+        output::success(&message);
+    }
+    invited_hint(name.as_str(), &invited);
+    output::hint(&format!(
+        "Store it as a secret named {} where the client runs. `tako network client revoke {name}` stops it.",
+        network::identity::ENV
+    ));
     Ok(())
 }
 
@@ -411,7 +475,7 @@ pub(super) fn join(from_stdin: bool) -> Result<()> {
     }
     let encoded = if from_stdin {
         if std::io::stdin().is_terminal() {
-            return Err("Pipe the invitation to --invitation-stdin, or use the protected prompt without this flag".into());
+            return Err("Pipe the invitation or identity to --invitation-stdin, or use the protected prompt without this flag".into());
         }
         let mut value = Zeroizing::new(String::new());
         std::io::stdin()
@@ -419,10 +483,23 @@ pub(super) fn join(from_stdin: bool) -> Result<()> {
             .read_to_string(&mut value)?;
         value
     } else {
-        Zeroizing::new(output::password_field("Invitation")?)
+        Zeroizing::new(output::password_field("Invitation or identity")?)
     };
-    let invitation = Invitation::decode(&encoded)?;
-    let directory = crate::paths::tako_config_dir()?
+    let alias = if network::identity::is_identity(&encoded) {
+        network::identity::store(&encoded)?
+    } else {
+        redeem(&Invitation::decode(&encoded)?)?
+    };
+    network::state::pull(&alias, None)?;
+    finish(
+        &format!("Joined network {}", alias.name),
+        serde_json::to_value(&alias)?,
+    )
+}
+
+/// Enroll this device with an invitation and save its pending profile.
+fn redeem(invitation: &Invitation) -> Result<crate::config::LocalNetwork> {
+    let directory = crate::paths::network_state_dir()?
         .join("network-joins")
         .join(invitation.network.id.to_string());
     network::private_directory(&directory)?;
@@ -463,47 +540,44 @@ pub(super) fn join(from_stdin: bool) -> Result<()> {
             );
         }
     }
-    let alias = if let Some(existing) = local.networks.values().find(|n| {
-        n.id == invitation.network.id.to_string()
-            && n.device
-                == request
-                    .device_id_for(&invitation.network.id)
-                    .map(|id| id.to_string())
-                    .unwrap_or_default()
-    }) {
-        existing.clone()
-    } else {
-        let signed = SignedRequest::sign(
-            &keys,
-            invitation.network.id.clone(),
-            invitation.issuer.clone(),
-            DeviceKind::Laptop,
-            network::now()?,
-            RpcRequest::ClaimInvitation(Box::new(ClaimInvitation {
-                id: invitation.id,
-                token: invitation.token,
-                request: request.clone(),
-            })),
-        )?;
-        let RpcResponse::Pending(pending) = network::client::send(&invitation.server, &signed)?
-        else {
-            return Err("Unexpected invitation claim response".into());
-        };
-        if pending.snapshot.network != invitation.network
-            || pending.issuer != invitation.issuer
-            || pending.request != request
-            || pending.trusted_servers.get(&invitation.issuer) != Some(&invitation.server)
-        {
-            return Err(
-                "Invitation response does not match the pinned network and enrollment".into(),
-            );
-        }
-        pending.validate_for(&keys, network::now()?)?;
-        network::save_profile(&Profile::Pending { profile: pending })?
-    };
-    network::state::pull(&alias, None)?;
-    finish(
-        &format!("Joined network {}", alias.name),
-        serde_json::to_value(&alias)?,
+    Ok(
+        if let Some(existing) = local.networks.values().find(|n| {
+            n.id == invitation.network.id.to_string()
+                && n.device
+                    == request
+                        .device_id_for(&invitation.network.id)
+                        .map(|id| id.to_string())
+                        .unwrap_or_default()
+        }) {
+            existing.clone()
+        } else {
+            let signed = SignedRequest::sign(
+                &keys,
+                invitation.network.id.clone(),
+                invitation.issuer.clone(),
+                DeviceKind::Laptop,
+                network::now()?,
+                RpcRequest::ClaimInvitation(Box::new(ClaimInvitation {
+                    id: invitation.id.clone(),
+                    token: invitation.token.clone(),
+                    request: request.clone(),
+                })),
+            )?;
+            let RpcResponse::Pending(pending) = network::client::send(&invitation.server, &signed)?
+            else {
+                return Err("Unexpected invitation claim response".into());
+            };
+            if pending.snapshot.network != invitation.network
+                || pending.issuer != invitation.issuer
+                || pending.request != request
+                || pending.trusted_servers.get(&invitation.issuer) != Some(&invitation.server)
+            {
+                return Err(
+                    "Invitation response does not match the pinned network and enrollment".into(),
+                );
+            }
+            pending.validate_for(&keys, network::now()?)?;
+            network::save_profile(&Profile::Pending { profile: pending })?
+        },
     )
 }

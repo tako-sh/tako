@@ -66,15 +66,15 @@ Deploy resolves membership and cached secret values for the selected environment
 Create a short-lived, single-use invitation on an authorized machine:
 
 ```bash
-tako network client add --network production
+tako network client add laptop-b --network production
 # Or restrict a client to deploying a specific app/environment:
-tako network client add --network production --deploy shop/production
+tako network client add shop-ci --network production --deploy shop/production
 ```
 
 Transfer the invitation privately. On the new machine, clone the app repository and run:
 
 ```bash
-tako network join --name laptop-b
+tako network join
 tako network sync production
 tako deploy --env production --ci
 ```
@@ -85,11 +85,17 @@ A client has one of two access levels. A **full** client, the default, can do ev
 
 Clients contact servers only. Servers replicate membership and encrypted values with Corrosion; clients do not run Corrosion or connect to each other. A join and membership changes refresh the local cache. `network sync` pulls published values without publishing worktree drafts. `deploy` and `secrets sync` also publish that worktree's changes for the selected environment. No background client connection is required.
 
-The lower-level `network request`, `approve`, and `import` commands remain available for explicit request/profile exchange. Import requires the private keys that created the request.
+For a machine that keeps no state between runs, such as a CI runner, create a client identity instead of an invitation:
+
+```bash
+tako network client add shop-ci --network production --deploy shop/production --identity
+```
+
+The identity is the new client's keys and network profile in one string, printed on stdout so it can go straight into a secret store. Set it as `TAKO_CLIENT_IDENTITY` and `tako deploy` acts as that client; the keys stay in a private temporary directory for the command and never reach the Tako home. `tako network join` also accepts an identity and stores it like a joined device. Anyone holding the identity is that client until you run `tako network client revoke shop-ci`, so keep it in a protected secret and give it `--deploy` scopes. Without `--deploy`, the identity has full access and `client add` warns about it.
 
 A deploy client needs no local secrets or keys. It sends no secret values: servers apply the environment's values that full clients published. It can make the first deploy of its app/environment and change its routes, SSL provider, and storage and backup settings in `tako.toml`; the servers fill in credentials and keys. Database bindings need a full client, which grants database access. Every server rejects a route that another app or environment already claims, for every client, so a staging deploy client cannot take over production's domain. The sandbox needs outbound access to the servers' HTTPS endpoints and its usual build dependencies, but no local VPN setup.
 
-If an import loses its successful response, retry the import or connection. After the approval expires, Tako can recover membership that the server already admitted. The device must still have valid membership. Expired approvals cannot enroll new devices.
+If a join loses its successful response, run the join again on the same machine. After the invitation expires, Tako can recover membership that the server already admitted. The device must still have valid membership. Expired approvals cannot enroll new devices.
 
 ## Keep network identity and app secrets separate
 
@@ -115,18 +121,18 @@ On the replacement machine, run `tako network join` and paste the invitation at 
 
 The invitation creates a full client. It defaults to one hour; `--expires-in` accepts 60–86400 seconds, and `--json` prints structured output. The token is sensitive: give it only to the intended person. Only root on the server can issue recovery invitations; this command is unavailable through the public management API or the unprivileged `tako` account.
 
-Verify access with `tako network sync NETWORK_NAME`, list the clients, then revoke the lost device with `tako network client remove DEVICE --network NETWORK_NAME`. The recovered client has no inviter, so nothing about the lost device affects it.
+Verify access with `tako network sync NETWORK_NAME`, list the clients, then revoke the lost device's client with `tako network client revoke CLIENT --network NETWORK_NAME`. The recovered client has no inviter, so nothing about the lost device affects it.
 
 Recovery requires an active server with its network state, private keys, and network agent intact. A server whose membership is revoked cannot issue recovery invitations. This restores access to surviving published state; it cannot reconstruct unpublished laptop drafts or a network whose every copy and key has been lost. App-data backups do not include the network registry or device keys.
 
 ## Revoke a device
 
-Inspect device IDs before revoking:
+Inspect clients before revoking:
 
 ```bash
 tako network status production --json
 tako network client list --network production
-tako network client remove DEVICE_ID --network production
+tako network client revoke CLIENT --network production
 tako network status production --json
 ```
 

@@ -39,7 +39,7 @@ fn invalid(error: impl std::fmt::Display) -> ConfigError {
     ConfigError::Validation(error.to_string())
 }
 fn index_path() -> Result<PathBuf> {
-    Ok(crate::paths::tako_config_dir()
+    Ok(crate::paths::network_state_dir()
         .map_err(invalid)?
         .join("networks")
         .join("identities.json"))
@@ -58,7 +58,7 @@ impl LocalNetwork {
     }
     pub fn profile_path(&self) -> Result<PathBuf> {
         self.validate()?;
-        Ok(crate::paths::tako_config_dir()
+        Ok(crate::paths::network_state_dir()
             .map_err(invalid)?
             .join("networks")
             .join(&self.id)

@@ -368,6 +368,27 @@ impl ApiServer {
         }
         child.wait_with_output().unwrap()
     }
+    /// Run with `TAKO_CLIENT_IDENTITY` set.
+    pub(super) fn run_as(
+        &self,
+        identity: &str,
+        home: &Path,
+        project: &Path,
+        args: &[&str],
+    ) -> std::process::Output {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_tako"));
+        command
+            .env("TAKO_HOME", home)
+            .env("TAKO_TELEMETRY", "0")
+            .env("TAKO_CLIENT_IDENTITY", identity)
+            .env_remove("RUST_LOG")
+            .current_dir(project)
+            .args(["--ci", "--json"])
+            .args(args)
+            .stdin(Stdio::null());
+        apply_coverage_env(&mut command);
+        command.output().unwrap()
+    }
     pub(super) fn ok(
         &self,
         home: &Path,
@@ -581,6 +602,120 @@ fn deploy_and_secret_commands_materialize_the_selected_config() {
             None,
         );
     }
+}
+
+#[test]
+fn client_identities_work_from_the_environment_or_join_without_touching_the_home() {
+    let server = ApiServer::new();
+    let owner = server.project("owner-checkout");
+    let add = |name: &str, extra: &[&str]| -> serde_json::Value {
+        let mut args = vec![
+            "network",
+            "client",
+            "add",
+            name,
+            "--network",
+            "fleet",
+            "--identity",
+        ];
+        args.extend_from_slice(extra);
+        server.ok(&server.owner_home, &owner, &args, None)
+    };
+    let created = add("github-ci", &["--deploy", "demo/production"]);
+    let identity = created["identity"].as_str().unwrap().to_owned();
+    assert!(identity.starts_with("tako-identity-v1-"));
+    assert!(created.get("invitation").is_none());
+
+    // From the environment: the client acts with no state in its home.
+    let ci_home = server.directory.path().join("ci-home");
+    let ci_project = server.project("ci-checkout");
+    let result = server.run_as(
+        &identity,
+        &ci_home,
+        &ci_project,
+        &["network", "status", "fleet"],
+    );
+    assert!(result.status.success(), "{}", stderr_str(&result));
+    assert!(!ci_home.join("network-keys").exists());
+    assert!(!ci_home.join("networks").exists());
+
+    // The owner sees one admitted deploy client under that name.
+    let rows = server.ok(
+        &server.owner_home,
+        &owner,
+        &["network", "client", "list", "--network", "fleet"],
+        None,
+    );
+    let row = rows["clients"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "github-ci")
+        .unwrap()
+        .clone();
+    assert_eq!(row["access"], "deploy");
+    assert_eq!(row["status"], "active");
+
+    // `join` stores an identity like a joined device.
+    let laptop_home = server.directory.path().join("laptop-home");
+    let laptop_project = server.project("laptop-checkout");
+    server.ok(
+        &laptop_home,
+        &laptop_project,
+        &["network", "join", "--invitation-stdin"],
+        Some(&identity),
+    );
+    server.ok(
+        &laptop_home,
+        &laptop_project,
+        &["network", "status", "fleet"],
+        None,
+    );
+    assert!(laptop_home.join("network-keys").exists());
+
+    // Revoking the client stops the identity.
+    server.ok(
+        &server.owner_home,
+        &owner,
+        &[
+            "network",
+            "client",
+            "revoke",
+            "github-ci",
+            "--network",
+            "fleet",
+        ],
+        None,
+    );
+    let result = server.run_as(
+        &identity,
+        &ci_home,
+        &ci_project,
+        &["network", "status", "fleet"],
+    );
+    assert!(!result.status.success());
+
+    // A full-access identity comes with a warning.
+    let result = server.run(
+        &server.owner_home,
+        &owner,
+        &[
+            "network",
+            "client",
+            "add",
+            "ops",
+            "--network",
+            "fleet",
+            "--identity",
+        ],
+        None,
+    );
+    assert!(result.status.success(), "{}", stderr_str(&result));
+    assert!(
+        stderr_str(&result).contains("full access"),
+        "{}",
+        stderr_str(&result)
+    );
 }
 
 #[test]

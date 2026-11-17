@@ -15,6 +15,7 @@ use crate::config::{LocalNetwork, LocalNetworks};
 pub(crate) mod client;
 pub(crate) mod databases;
 pub(crate) mod diagnose;
+pub(crate) mod identity;
 pub(crate) mod local_access;
 pub(crate) mod revocation;
 pub(crate) mod secrets;
@@ -134,7 +135,7 @@ pub(crate) fn now() -> Result<u64> {
 }
 
 pub(crate) fn keys_path(request: &RequestId) -> Result<PathBuf> {
-    Ok(crate::paths::tako_config_dir()?
+    Ok(crate::paths::network_state_dir()?
         .join("network-keys")
         .join(format!("{request}.json")))
 }

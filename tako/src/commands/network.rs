@@ -23,42 +23,17 @@ pub enum NetworkCommands {
     /// Invite, inspect, and revoke clients
     #[command(subcommand)]
     Client(client::ClientCommands),
-    /// Join a network using a single-use invitation
+    /// Join a network with a single-use invitation or a client identity
     Join {
-        /// Read the invitation from standard input instead of the protected prompt
+        /// Read the invitation or identity from standard input instead of the
+        /// protected prompt
         #[arg(long)]
         invitation_stdin: bool,
     },
     /// Create a private network with this machine as its first full client
     Create { name: String },
-    /// Generate this machine's keys and write a public enrollment request
-    Request {
-        #[arg(long)]
-        name: Option<String>,
-        /// Optional network ID or shared name
-        #[arg(long)]
-        network: Option<String>,
-        #[arg(long, value_name = "FILE")]
-        output: PathBuf,
-    },
-    /// Approve a machine's request. Without --deploy the machine gets full access
-    Approve {
-        file: PathBuf,
-        #[arg(long)]
-        network: Option<String>,
-        #[arg(long, value_name = "FILE")]
-        output: PathBuf,
-        /// Restrict the machine to deploying this app/environment; repeat for more
-        #[arg(long, value_name = "APP/ENV")]
-        deploy: Vec<tako_network::AppEnv>,
-        /// Expire this device's membership after this many seconds.
-        #[arg(long, value_name = "SECONDS", value_parser = clap::value_parser!(u64).range(1..=31_536_000))]
-        expires_in: Option<u64>,
-    },
     /// Refresh and inspect network membership
     Status { network: Option<String> },
-    /// Import an approved profile for keys generated on this machine
-    Import { file: PathBuf },
     /// Export public network configuration without private keys or app secrets
     Export {
         network: Option<String>,
@@ -91,12 +66,6 @@ pub fn run(command: NetworkCommands) -> Result<()> {
         NetworkCommands::Client(command) => client::run(command),
         NetworkCommands::Join { invitation_stdin } => client::join(invitation_stdin),
         NetworkCommands::Create { name } => create(&name),
-        NetworkCommands::Request {
-            name,
-            network,
-            output,
-        } => request(name.as_deref(), network.as_deref(), &output),
-        NetworkCommands::Import { file } => import(&file),
         NetworkCommands::Export { network, output } => export(network.as_deref(), &output),
         NetworkCommands::List => list(),
         NetworkCommands::Use { network } => {
@@ -106,19 +75,6 @@ pub fn run(command: NetworkCommands) -> Result<()> {
                 serde_json::to_value(&alias)?,
             )
         }
-        NetworkCommands::Approve {
-            file,
-            network,
-            output,
-            deploy,
-            expires_in,
-        } => approve(
-            &file,
-            network.as_deref(),
-            &output,
-            access(deploy),
-            expires_in,
-        ),
         NetworkCommands::Status { network } => status(network.as_deref()),
     }
 }
@@ -262,66 +218,6 @@ fn create(name: &str) -> Result<()> {
     )?;
     output::hint(&format!(
         "Add a server with `tako network server add <admin@host> --network {name}`."
-    ));
-    Ok(())
-}
-
-fn request(name: Option<&str>, network: Option<&str>, destination: &Path) -> Result<()> {
-    let name = device_name(name)?;
-    let network = network
-        .map(|value| -> Result<NetworkId> {
-            if let Ok(id) = value.parse::<NetworkId>() {
-                return Ok(id);
-            }
-            Ok(LocalNetworks::load()?.select(Some(value))?.id.parse()?)
-        })
-        .transpose()?;
-    if output::is_dry_run() {
-        return finish(
-            "Would generate local device keys and an enrollment request",
-            serde_json::json!({"dry_run": true, "output": destination}),
-        );
-    }
-    let keys = LocalDeviceKeys::generate()?;
-    let request = keys.enrollment_request_expiring(
-        network,
-        DeviceKind::Laptop,
-        name,
-        Some(network::now()? + 24 * 60 * 60),
-    )?;
-    network::store_keys(&request.request_id, &keys)?;
-    if let Err(error) = network::write_json(destination, &request, false) {
-        let _ = std::fs::remove_file(network::keys_path(&request.request_id)?);
-        return Err(error);
-    }
-    finish(
-        "Wrote enrollment request",
-        serde_json::json!({"output": destination, "request_id": request.request_id, "name": request.name}),
-    )?;
-    output::hint("Transfer this request to a full client. Private keys remain on this machine.");
-    Ok(())
-}
-
-fn import(path: &Path) -> Result<()> {
-    let profile: Profile = network::read_json(path)?;
-    let id = profile.snapshot().network.id.to_string();
-    let name = profile.snapshot().network.name.as_str();
-    let keys = LocalDeviceKeys::load(&network::keys_path(&profile.request().request_id)?)
-        .map_err(|_| "This profile needs the keys from its enrollment request. Run `tako network request` on this machine and have a full client approve it.")?;
-    profile.validate(&keys)?;
-    if output::is_dry_run() {
-        return finish(
-            "Would import the network profile",
-            serde_json::json!({"dry_run": true, "name": name, "id": id}),
-        );
-    }
-    let alias = network::save_profile(&profile)?;
-    finish(
-        &format!("Imported network {name}"),
-        serde_json::to_value(alias)?,
-    )?;
-    output::hint(&format!(
-        "Use `tako ssh <server> --network {name}` for private SSH access."
     ));
     Ok(())
 }
@@ -562,7 +458,7 @@ fn restore(alias: &crate::config::LocalNetwork, profile: &Profile) -> Result<()>
 
 /// Serializes network switches on this machine; one network owns `.tako`.
 fn switch_lock() -> Result<std::fs::File> {
-    let directory = crate::paths::tako_config_dir()?.join("networks");
+    let directory = crate::paths::network_state_dir()?.join("networks");
     network::private_directory(&directory)?;
     let lock = network::private_file(&directory.join("connect.lock"), true)?;
     lock.lock()?;
@@ -709,69 +605,6 @@ pub fn ssh(server: &str, value: Option<&str>, remote_command: &[String]) -> Resu
     if !status.success() {
         return Err(format!("SSH exited with {status}").into());
     }
-    Ok(())
-}
-
-fn approve(
-    file: &Path,
-    value: Option<&str>,
-    destination: &Path,
-    permissions: Permissions,
-    expires_in: Option<u64>,
-) -> Result<()> {
-    use tako_network::api::{ApproveRequest, RpcRequest, RpcResponse};
-    let request: tako_network::EnrollmentRequest = network::read_json(file)?;
-    request.verify()?;
-    permissions.validate()?;
-    if request.kind != DeviceKind::Laptop {
-        return Err("Use `tako network server add --network` to enroll a server".into());
-    }
-    let alias = network::resolve_network(value)?;
-    request.device_id_for(&alias.id.parse()?)?;
-    if output::is_dry_run() {
-        return finish(
-            "Would approve the enrollment request",
-            serde_json::json!({"dry_run": true, "network": alias.name, "device": request.name, "permissions": permissions, "expires_in": expires_in}),
-        );
-    }
-    if destination.try_exists()? {
-        return Err("Approval output already exists; choose a new file".into());
-    }
-    let profile = network::client::refresh(&alias)?;
-    let now = network::now()?;
-    let expires_at = request.expires_at.unwrap_or(now + 86400).min(now + 86400);
-    if expires_at <= now {
-        return Err("Enrollment request has expired".into());
-    }
-    let client = request.name.clone();
-    let grant = ApproveRequest {
-        pending_id: tako_network::RequestId::random()?,
-        request,
-        kind: MemberKind::Laptop,
-        permissions,
-        expires_at,
-        member_expires_at: expires_in.map(|seconds| now + seconds),
-        client: Some(client),
-    };
-    let issuer = network::client::available_server(&profile)?;
-    let response = network::client::call(
-        &profile,
-        &issuer,
-        RpcRequest::Approve(Box::new(grant.clone())),
-    )?;
-    let RpcResponse::Pending(approved) = response else {
-        return Err("Unexpected approval response".into());
-    };
-    validate_pending_approval(&profile, &issuer, &grant, &approved)?;
-    let device = approved.request.name.to_string();
-    network::write_json(destination, &Profile::Pending { profile: approved }, false)?;
-    finish(
-        "Wrote approved network profile",
-        serde_json::json!({"network": alias.name, "device": device, "output": destination}),
-    )?;
-    output::hint(
-        "Transfer the profile through a trusted channel. On the new machine, run `tako network import <file>`, then use `tako ssh <server>` for private SSH access.",
-    );
     Ok(())
 }
 

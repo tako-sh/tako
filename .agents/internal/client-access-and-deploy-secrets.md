@@ -220,13 +220,18 @@ check.
   claims it as the new device and answers the WireGuard possession challenge
   (`tako-network/src/challenge.rs:35`) in-process, since it holds every key.
   The approver is the issuing device, which `client list` shows.
-- Contents: a versioned prefix and base64url JSON with the network ID and name,
-  client name, device ID, the three private keys (SSH signing, WireGuard,
-  encryption) and up to three servers with HTTPS endpoint and certificate pin.
+- Contents (as built): the prefix `tako-identity-v1-` and base64url JSON with the
+  joined device's active profile and its key file. The profile includes the
+  membership snapshot and the server pins, so using an identity needs no network
+  call before the first command; commands refresh membership from the servers as
+  usual. Creating one fails above 48 KiB, the size of a GitHub secret.
   Keep all three keys even for deploy clients: the device ID derives from the SSH
   and WireGuard public keys (`tako-network/src/enrollment.rs:67`), and deploy
-  clients get neither peers nor wraps, so the extra keys grant nothing. Do not
-  embed the membership snapshot; refresh it from the listed servers on use.
+  clients get neither peers nor wraps, so the extra keys grant nothing.
+- `client add --identity` redeems its own invitation in a private temporary state
+  directory (`crate::paths::set_network_state_dir`), completes admission with
+  `network::client::refresh`, and packages the result. `TAKO_CLIENT_IDENTITY`
+  uses the same override for the whole command (`tako/src/network/identity.rs`).
 - `TAKO_CLIENT_IDENTITY` is read when set. The CLI keeps the identity in memory,
   writes no keys under the Tako home, and skips the keychain (the existing
   `TAKO_IDENTITY_DISABLE_KEYCHAIN` behavior). `tako network join` accepts either an

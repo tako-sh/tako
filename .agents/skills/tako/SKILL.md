@@ -104,12 +104,15 @@ External VPN integrations are removed. Re-enroll older servers in a Tako network
 set the network ID and desired servers for each environment, and remove old global
 inventory entries. Legacy inventory files are ignored; only enrolled membership grants access.
 
-Enroll each new laptop or sandbox with `network client add` and `network join`.
-A full client creates a single-use invitation. Without flags the new client gets
-full access, including the `tako` SSH shell and `connect`; exact `--deploy app/env`
-scopes restrict it to deploying those environments over HTTPS. Joining generates
-fresh device keys and pulls published state through servers. Never copy an
-existing device's private keys. Clients never connect to other clients and do not
+Enroll each new laptop or sandbox with `network client add <name>` and
+`network join`. A full client creates a single-use invitation. Without flags the
+new client gets full access, including the `tako` SSH shell and `connect`; exact
+`--deploy app/env` scopes restrict it to deploying those environments over HTTPS.
+Joining generates fresh device keys and pulls published state through servers.
+For CI, `client add <name> --deploy app/env --identity` prints a client identity
+instead; store it as the `TAKO_CLIENT_IDENTITY` secret and `tako deploy` acts as
+that client without writing keys to the Tako home. Never copy a joined device's
+private keys; create an identity or a new invitation instead. Clients never connect to other clients and do not
 run Corrosion. Servers replicate network state.
 
 Keep `tako.toml` in Git; keep `.tako/` ignored. Each worktree has separate secret
