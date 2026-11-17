@@ -1,6 +1,7 @@
 use super::*;
 use crate::native_services::tests::{fixture, lease};
 use hickory_proto::op::Query;
+use tako_network::MemberKind;
 
 fn query(host: &str, kind: RecordType) -> Message {
     let mut query = Message::query();
@@ -13,7 +14,7 @@ fn native_dns_only_answers_current_private_placements() {
     let (registry, keys, mut directory) = fixture();
     let lease = lease(&registry, &keys, &["api/prod"], 10);
     directory.replace(&registry, &[lease], 10).unwrap();
-    let host = format!("api.prod.{}.tako.internal", registry.network.id);
+    let host = "api.prod.tako".to_string();
     let packet = query(&host, RecordType::AAAA).to_vec().unwrap();
     let request = Message::from_vec(&packet).unwrap();
     let reply = authoritative(&request, &directory, &DnsView::Native, 10).unwrap();
@@ -49,14 +50,62 @@ fn native_dns_only_answers_current_private_placements() {
         )
         .is_none()
     );
-    let other = authoritative(
-        &query("api.prod.other.tako.internal", RecordType::A),
+    let identity = authoritative(
+        &query("node-abc.other.tako.internal", RecordType::A),
         &directory,
         &DnsView::Native,
         10,
     )
     .unwrap();
-    assert_eq!(other.metadata.response_code, ResponseCode::Refused);
+    assert_eq!(identity.metadata.response_code, ResponseCode::Refused);
+}
+
+#[test]
+fn native_dns_answers_uniquely_named_servers_only() {
+    let (registry, keys, mut directory) = fixture();
+    directory.replace(&registry, &[], 10).unwrap();
+    let local = registry
+        .members
+        .iter()
+        .find(|m| matches!(m.kind, MemberKind::Server(_)))
+        .unwrap();
+    let host = format!("{}.tako", local.request.name.as_str().to_ascii_lowercase());
+    let reply = authoritative(
+        &query(&host, RecordType::AAAA),
+        &directory,
+        &DnsView::Native,
+        10,
+    )
+    .unwrap();
+    assert_eq!(
+        reply.answers[0].data,
+        RData::AAAA(AAAA(
+            registry.network.id.address(&keys.wg_public_key().unwrap())
+        ))
+    );
+    let compose = DnsView::Compose {
+        gateway: "10.70.80.1".parse().unwrap(),
+        upstreams: vec![],
+    };
+    assert_eq!(
+        authoritative(&query(&host, RecordType::AAAA), &directory, &compose, 10)
+            .unwrap()
+            .metadata
+            .response_code,
+        ResponseCode::NXDomain
+    );
+    assert_eq!(
+        authoritative(
+            &query("missing-server.tako", RecordType::AAAA),
+            &directory,
+            &DnsView::Native,
+            10
+        )
+        .unwrap()
+        .metadata
+        .response_code,
+        ResponseCode::NXDomain
+    );
 }
 
 #[test]
@@ -69,7 +118,7 @@ fn compose_dns_returns_only_gateway_a_and_never_external_fallback_for_private_na
         gateway: "10.70.80.1".parse().unwrap(),
         upstreams: vec![],
     };
-    let host = format!("api.prod.{}.tako.internal", registry.network.id);
+    let host = "api.prod.tako".to_string();
     let response = authoritative(&query(&host, RecordType::A), &directory, &view, 10).unwrap();
     assert_eq!(
         response.answers[0].data,
@@ -78,7 +127,7 @@ fn compose_dns_returns_only_gateway_a_and_never_external_fallback_for_private_na
     let response = authoritative(&query(&host, RecordType::AAAA), &directory, &view, 10).unwrap();
     assert_eq!(response.metadata.response_code, ResponseCode::NoError);
     assert!(response.answers.is_empty());
-    let missing = format!("missing.prod.{}.tako.internal", registry.network.id);
+    let missing = "missing.prod.tako".to_string();
     assert_eq!(
         authoritative(&query(&missing, RecordType::A), &directory, &view, 10)
             .unwrap()
@@ -166,7 +215,7 @@ async fn serves_real_udp_and_tcp_queries_and_stops_on_shutdown() {
     })
     .await
     .unwrap();
-    let host = format!("api.prod.{}.tako.internal", registry.network.id);
+    let host = "api.prod.tako".to_string();
     let request = query(&host, RecordType::AAAA).to_vec().unwrap();
     tcp.write_u16(request.len() as u16).await.unwrap();
     tcp.write_all(&request).await.unwrap();

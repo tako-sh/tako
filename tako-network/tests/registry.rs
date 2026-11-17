@@ -747,3 +747,28 @@ fn replicated_tako_ssh_without_both_admin_flags_fails_closed() {
         Err(Error::PermissionDenied(_))
     ));
 }
+
+#[test]
+fn active_servers_cannot_share_a_name_but_retired_names_can_be_reused() {
+    let (mut snapshot, _, root) = bootstrap();
+    let first = add_named_server(&mut snapshot, &root, "edge-a", 2).unwrap();
+    assert!(matches!(
+        add_named_server(&mut snapshot, &root, "EDGE-A", 3),
+        Err(Error::Conflict("server name"))
+    ));
+    // A laptop may share a server's name; only servers are published as names.
+    let keys = LocalDeviceKeys::generate().unwrap();
+    snapshot
+        .approve(
+            verified_named(&keys, &snapshot.network.id, DeviceKind::Laptop, "edge-a", 3),
+            approval(
+                MemberKind::Laptop,
+                Permissions::default(),
+                Some(root.clone()),
+                3,
+            ),
+        )
+        .unwrap();
+    revoke(&mut snapshot, &root, &first, 4);
+    add_named_server(&mut snapshot, &root, "edge-a", 5).unwrap();
+}

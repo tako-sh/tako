@@ -99,6 +99,7 @@ struct View {
     address: Ipv6Addr,
     peers: BTreeSet<IpAddr>,
     servers: BTreeMap<DeviceId, (IpAddr, tako_network::SshPublicKey)>,
+    server_names: BTreeMap<String, Ipv6Addr>,
     placements: BTreeMap<AppEnv, Vec<Placement>>,
     observed_at: u64,
     valid_until: u64,
@@ -191,6 +192,8 @@ impl ServiceDirectory {
         let address = self.network.address(&local.request.wg_public_key);
         let mut peers = BTreeSet::new();
         let mut servers = BTreeMap::new();
+        let mut server_names = BTreeMap::new();
+        let mut ambiguous = BTreeSet::new();
         let mut valid_until = now.saturating_add(MAX_LEASE_SECONDS);
         for member in effective.values() {
             if matches!(member.kind, MemberKind::Server(_))
@@ -205,9 +208,16 @@ impl ServiceDirectory {
                     ),
                 );
             }
-            peers.insert(IpAddr::V6(
-                self.network.address(&member.request.wg_public_key),
-            ));
+            let member_address = self.network.address(&member.request.wg_public_key);
+            peers.insert(IpAddr::V6(member_address));
+            // Older registries may contain duplicate names; never guess between them.
+            if let (MemberKind::Server(_), Some(label)) = (
+                &member.kind,
+                tako_network::services::server_label(member.request.name.as_str()),
+            ) && server_names.insert(label.clone(), member_address).is_some()
+            {
+                ambiguous.insert(label);
+            }
             if let Some(expiry) = member.expires_at {
                 valid_until = valid_until.min(expiry);
             }
@@ -266,10 +276,12 @@ impl ServiceDirectory {
         for placements in placements.values_mut() {
             placements.sort_by_key(|p| p.address);
         }
+        server_names.retain(|label, _| !ambiguous.contains(label));
         self.view = Some(View {
             address,
             peers,
             servers,
+            server_names,
             placements,
             observed_at: now,
             valid_until,
@@ -325,6 +337,11 @@ impl ServiceDirectory {
         Some(key.clone())
     }
 
+    /// Current WireGuard address of the uniquely named server.
+    pub fn server_address(&self, label: &str, now: u64) -> Option<Ipv6Addr> {
+        self.current(now)?.server_names.get(label).copied()
+    }
+
     pub fn admits(&self, destination: IpAddr, peer: IpAddr, now: u64) -> bool {
         let Some(view) = self.current(now) else {
             return false;
@@ -352,9 +369,9 @@ impl ServiceDirectory {
     ) -> PrivateRoute {
         let destination = destination.to_canonical();
         let peer = peer.to_canonical();
-        let app = match classify_host(authority, &self.network) {
+        let app = match classify_host(authority) {
             ServiceHost::Public => return PrivateRoute::Public,
-            ServiceHost::Reserved => return PrivateRoute::Forbidden,
+            ServiceHost::Reserved | ServiceHost::Server(_) => return PrivateRoute::Forbidden,
             ServiceHost::App(app) => app,
         };
         if !self.admits(destination, peer, now) {

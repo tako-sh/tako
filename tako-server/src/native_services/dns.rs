@@ -13,7 +13,7 @@ use std::{
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tako_network::services::{ServiceHost, classify_host};
+use tako_network::services::{PRIVATE_DOMAIN, ServiceHost, classify_host};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream, UdpSocket},
@@ -25,6 +25,8 @@ const MAX_QUERY: usize = 4096;
 const MAX_TCP_RESPONSE: usize = 65535;
 const CONNECTIONS: usize = 64;
 const TIMEOUT: Duration = Duration::from_secs(3);
+/// Membership changes are rare; keep server answers fresh without hammering peers.
+const SERVER_TTL: u32 = 30;
 
 #[derive(Clone, Debug)]
 pub enum DnsView {
@@ -104,11 +106,11 @@ fn authoritative(
     }
     let question = &query.queries[0];
     let host = question.name().to_ascii();
-    let scope = classify_host(&host, directory.network());
+    let scope = classify_host(&host);
     if scope == ServiceHost::Public {
         return None;
     }
-    let zone = format!("{}.tako.internal.", directory.network());
+    let zone = format!("{PRIVATE_DOMAIN}.");
     let hostname = format!("{}.", host.trim_end_matches('.').to_ascii_lowercase());
     if hostname != zone && !hostname.ends_with(&format!(".{zone}")) {
         return Some(response(query, ResponseCode::Refused));
@@ -119,12 +121,24 @@ fn authoritative(
         answer.metadata.response_code = ResponseCode::Refused;
         return Some(answer);
     }
+    // Server names answer only on the native view; containers keep app-only names.
+    let server = match (&scope, view) {
+        (ServiceHost::Server(label), DnsView::Native) => directory.server_address(label, now),
+        _ => None,
+    };
     let placements = match scope {
         ServiceHost::App(ref app) => directory.placements(app, now),
         _ => Vec::new(),
     };
-    if placements.is_empty() && hostname != zone {
+    if placements.is_empty() && server.is_none() && hostname != zone {
         answer.metadata.response_code = ResponseCode::NXDomain;
+    }
+    if let (Some(address), RecordType::AAAA) = (server, question.query_type()) {
+        answer.add_answer(Record::from_rdata(
+            question.name().clone(),
+            SERVER_TTL,
+            RData::AAAA(AAAA(address)),
+        ));
     }
     match (view, question.query_type()) {
         (DnsView::Native, RecordType::AAAA) => {

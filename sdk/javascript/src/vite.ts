@@ -4,7 +4,7 @@ import path from "node:path";
 import type { Plugin, ResolvedConfig, UserConfig } from "vite";
 import { bootstrapChannels, type ChannelBootstrapResult } from "./channels/bootstrap";
 import { createLogger } from "./logger";
-import { TAKO_INTERNAL_HOST_SUFFIX, handleTakoEndpoint } from "./tako/endpoints";
+import { handleTakoEndpoint, isSingleLabelInternalHost } from "./tako/endpoints";
 import { initServerRuntime } from "./tako/init";
 import { initBootstrapFromFd, readBootstrapData } from "./tako/secrets-fd";
 import { installConsoleBridge } from "./tako/console-bridge";
@@ -270,8 +270,8 @@ export function tako(): Plugin {
       };
 
       server.middlewares.use((req: IncomingMessage, res: ServerResponse, next: () => void) => {
-        const host = (req.headers.host ?? "").split(":")[0] ?? "";
-        if (!host.endsWith(TAKO_INTERNAL_HOST_SUFFIX)) {
+        const host = ((req.headers.host ?? "").split(":")[0] ?? "").toLowerCase();
+        if (!isSingleLabelInternalHost(host)) {
           next();
           return;
         }

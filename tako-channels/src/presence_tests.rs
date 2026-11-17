@@ -354,17 +354,20 @@ async fn a_member_between_two_samples_is_not_reported_to_other_sessions() {
         2
     );
     drop(page);
-    // Drop removes membership on a spawned task.
-    for _ in 0..100 {
-        if store
-            .presence("lobby", crate::store::now_unix_ms())
-            .unwrap()
-            .len()
-            == 1
-        {
-            break;
-        }
-        tokio::task::yield_now().await;
+    // Drop removes membership on a spawned task, which may run on another
+    // worker thread, so wait on a deadline rather than a number of yields.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while store
+        .presence("lobby", crate::store::now_unix_ms())
+        .unwrap()
+        .len()
+        != 1
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "dropped session was not removed"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     assert_eq!(observer.snapshot().await.unwrap(), None);
 }

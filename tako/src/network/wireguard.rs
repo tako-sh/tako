@@ -51,17 +51,7 @@ fn connect_with(
     let interface = interface_name(&profile.snapshot().network.id);
     let public_key = keys.wg_public_key()?.to_string();
     let network = profile.snapshot().network.id.to_string();
-    let names = super::server_members(profile)?
-        .values()
-        .map(|member| backend::ServerName {
-            name: member.request.name.to_string().to_ascii_lowercase(),
-            address: profile
-                .snapshot()
-                .network
-                .id
-                .address(&member.request.wg_public_key),
-        })
-        .collect::<Vec<_>>();
+    let names = server_names(profile)?;
     authorize()?;
     if let Some(active_key) = execute(Operation::Inspect {
         interface: interface.clone(),
@@ -140,6 +130,134 @@ fn disconnect_with(
     }
     fs::remove_file(path)?;
     Ok(())
+}
+
+/// Whether this machine holds an owned connection configuration for the network.
+pub(crate) fn is_connected(alias: &LocalNetwork, profile: &Profile) -> Result<bool> {
+    Ok(saved_configuration(&configuration_path(alias, profile)?)?.is_some())
+}
+
+/// Whether `alias` has a saved connection, without verifying its profile.
+pub(crate) fn has_saved_connection(alias: &LocalNetwork) -> Result<bool> {
+    let id: NetworkId = alias.id.parse()?;
+    let path = alias
+        .profile_path()?
+        .parent()
+        .unwrap()
+        .join("wireguard")
+        .join(format!("{}.conf", interface_name(&id)));
+    Ok(path.try_exists()?)
+}
+
+/// Short `.tako` names for the hosts file. Only single-label names qualify; a
+/// dotted server name such as `api.prod` would otherwise shadow an app's
+/// private name. Names that servers share, which registries from before
+/// unique names may still hold, are left out; those servers remain peers.
+fn server_names(profile: &Profile) -> Result<Vec<backend::ServerName>> {
+    let labeled: Vec<_> = super::server_members(profile)?
+        .into_values()
+        .filter_map(|member| {
+            let name = tako_network::services::server_label(member.request.name.as_str())?;
+            Some(backend::ServerName {
+                name,
+                address: profile
+                    .snapshot()
+                    .network
+                    .id
+                    .address(&member.request.wg_public_key),
+            })
+        })
+        .collect();
+    let mut uses = std::collections::BTreeMap::<String, usize>::new();
+    for record in &labeled {
+        *uses.entry(record.name.clone()).or_default() += 1;
+    }
+    Ok(labeled
+        .into_iter()
+        .filter(|record| uses[&record.name] == 1)
+        .collect())
+}
+
+/// Servers whose WireGuard handshake has not completed within `wait`.
+/// Call only after `connect`, which has already authorized administrator access.
+pub(crate) fn unreachable_servers(
+    profile: &Profile,
+    wait: std::time::Duration,
+) -> Result<Vec<tako_network::Member>> {
+    unreachable_with(profile, wait, backend::invoke)
+}
+
+fn unreachable_with(
+    profile: &Profile,
+    wait: std::time::Duration,
+    mut execute: impl FnMut(Operation) -> Result<Option<String>>,
+) -> Result<Vec<tako_network::Member>> {
+    let network = &profile.snapshot().network.id;
+    let interface = interface_name(network);
+    let servers: Vec<_> = super::server_members(profile)?.into_values().collect();
+    let mut report = || -> Result<PeerReport> {
+        Ok(PeerReport::parse(
+            &execute(Operation::Handshakes {
+                interface: interface.clone(),
+            })?
+            .unwrap_or_default(),
+        ))
+    };
+    // A reused interface keeps earlier handshakes, so measure against this
+    // attempt: a newer handshake or new inbound traffic proves the peer answered.
+    let baseline = report()?;
+    for server in &servers {
+        let address =
+            std::net::SocketAddr::new(network.address(&server.request.wg_public_key).into(), 53);
+        // Every member may reach the server resolver port; a reply is traffic.
+        std::thread::spawn(move || {
+            let _ =
+                std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_secs(2));
+        });
+    }
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        let current = report()?;
+        let missing: Vec<_> = servers
+            .iter()
+            .filter(|server| {
+                !current.answered_since(&baseline, &server.request.wg_public_key.to_string())
+            })
+            .cloned()
+            .collect();
+        if missing.is_empty() || std::time::Instant::now() >= deadline {
+            return Ok(missing);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+}
+
+/// Per-peer `(last handshake seconds, received bytes)` from the helper.
+#[derive(Default)]
+struct PeerReport(std::collections::BTreeMap<String, (u64, u64)>);
+
+impl PeerReport {
+    fn parse(text: &str) -> Self {
+        Self(
+            text.lines()
+                .filter_map(|line| {
+                    let mut words = line.split(' ');
+                    let key = words.next()?.to_string();
+                    let time = words.next()?.parse().ok()?;
+                    let rx = words.next()?.parse().ok()?;
+                    Some((key, (time, rx)))
+                })
+                .collect(),
+        )
+    }
+
+    fn answered_since(&self, baseline: &Self, key: &str) -> bool {
+        let Some(&(time, rx)) = self.0.get(key) else {
+            return false;
+        };
+        let (old_time, old_rx) = baseline.0.get(key).copied().unwrap_or((0, 0));
+        (time != 0 && time > old_time) || rx > old_rx
+    }
 }
 
 fn saved_configuration(path: &Path) -> Result<Option<String>> {
@@ -298,6 +416,72 @@ mod tests {
         tests::{TestHome, fixture},
     };
     use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[test]
+    fn shared_and_dotted_server_names_are_left_out_of_the_hosts_file() {
+        let mut fixture = fixture();
+        network::tests::add_legacy_server(&mut fixture, "Server");
+        network::tests::add_legacy_server(&mut fixture, "api.prod");
+        network::tests::add_legacy_server(&mut fixture, "edge");
+        let names: Vec<_> = server_names(&fixture.profile)
+            .unwrap()
+            .into_iter()
+            .map(|record| record.name)
+            .collect();
+        assert_eq!(names, ["edge"]);
+    }
+
+    #[test]
+    fn reachability_needs_a_new_handshake_or_new_traffic_from_this_attempt() {
+        let baseline = PeerReport::parse("a 100 50\nb 100 50\nc 0 0\nd 100 50\n");
+        let current = PeerReport::parse("a 160 50\nb 100 90\nc 0 0\nd 100 50\n");
+        assert!(current.answered_since(&baseline, "a"), "new handshake");
+        assert!(
+            current.answered_since(&baseline, "b"),
+            "new inbound traffic"
+        );
+        assert!(!current.answered_since(&baseline, "c"), "never answered");
+        assert!(
+            !current.answered_since(&baseline, "d"),
+            "stale handshake only"
+        );
+        assert!(!current.answered_since(&baseline, "missing"));
+    }
+
+    #[test]
+    fn stale_handshake_from_a_reused_interface_is_reported_unreachable() {
+        let fixture = fixture();
+        let server = fixture
+            .profile
+            .snapshot()
+            .members
+            .iter()
+            .find(|member| member.device_id == fixture.server)
+            .unwrap()
+            .request
+            .wg_public_key
+            .to_string();
+        let stale = format!("{server} 1700000000 500\n");
+        let unreachable =
+            unreachable_with(&fixture.profile, std::time::Duration::ZERO, |operation| {
+                assert!(matches!(operation, Operation::Handshakes { .. }));
+                Ok(Some(stale.clone()))
+            })
+            .unwrap();
+        assert_eq!(unreachable.len(), 1);
+        let mut calls = 0;
+        let reachable =
+            unreachable_with(&fixture.profile, std::time::Duration::from_secs(5), |_| {
+                calls += 1;
+                Ok(Some(if calls == 1 {
+                    stale.clone()
+                } else {
+                    format!("{server} 1700000000 600\n")
+                }))
+            })
+            .unwrap();
+        assert!(reachable.is_empty());
+    }
 
     #[test]
     fn configuration_routes_only_to_server_hosts_and_uses_own_private_key() {

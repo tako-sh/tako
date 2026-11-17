@@ -144,6 +144,43 @@ pub(crate) fn add_member(
     snapshot.members.push(member);
 }
 
+/// Adds a server the way a registry from before unique names could hold it:
+/// approved without the existing servers in view, so `name` may repeat one.
+pub(crate) fn add_legacy_server(fixture: &mut Fixture, name: &str) -> DeviceId {
+    let keys = LocalDeviceKeys::generate().unwrap();
+    let existing = super::server_members(&fixture.profile).unwrap();
+    let MemberKind::Server(info) = &existing[&fixture.server].kind else {
+        unreachable!()
+    };
+    let mut info = info.clone();
+    info.ssh_host_key = keys.ssh_public_key().unwrap();
+    let Profile::Active { profile } = &mut fixture.profile else {
+        panic!()
+    };
+    let request = keys
+        .enrollment_request(
+            Some(profile.snapshot.network.id.clone()),
+            DeviceKind::Server,
+            name.parse().unwrap(),
+        )
+        .unwrap();
+    let id = request.device_id_for(&profile.snapshot.network.id).unwrap();
+    let admin = profile.snapshot.network.initial_admin.clone();
+    let mut legacy = profile.snapshot.clone();
+    legacy
+        .members
+        .retain(|member| !matches!(member.kind, MemberKind::Server(_)));
+    add_member(
+        &mut legacy,
+        &keys,
+        request,
+        MemberKind::Server(info),
+        Some(admin),
+    );
+    profile.snapshot.members.push(legacy.members.pop().unwrap());
+    id
+}
+
 #[test]
 fn public_profile_roundtrip_requires_its_own_keys() {
     let Fixture { keys, profile, .. } = fixture();

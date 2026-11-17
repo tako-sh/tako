@@ -67,7 +67,19 @@ function isInternalHost(host: string | null): boolean {
   if (appName) {
     return host === internalAppHost(appName);
   }
-  return host.endsWith(TAKO_INTERNAL_HOST_SUFFIX) && host.length > TAKO_INTERNAL_HOST_SUFFIX.length;
+  return isSingleLabelInternalHost(host);
+}
+
+/**
+ * Tako addresses SDK endpoints as `<app>.tako`: exactly one label. Multi-label
+ * `.tako` names such as `api.prod.tako` are private network traffic for the app.
+ */
+export function isSingleLabelInternalHost(host: string): boolean {
+  if (!host.endsWith(TAKO_INTERNAL_HOST_SUFFIX)) {
+    return false;
+  }
+  const app = host.slice(0, -TAKO_INTERNAL_HOST_SUFFIX.length);
+  return app.length > 0 && !app.includes(".");
 }
 
 function internalToken(): string | null {

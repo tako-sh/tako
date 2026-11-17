@@ -178,7 +178,7 @@ fn private_host_requires_actual_destination_and_peer_even_for_local_app() {
     let lease = lease(&registry, &keys, &["api/prod"], 10);
     directory.replace(&registry, &[lease], 10).unwrap();
     let wg = IpAddr::V6(registry.network.id.address(&keys.wg_public_key().unwrap()));
-    let host = format!("api.prod.{}.tako.internal", registry.network.id);
+    let host = "api.prod.tako".to_string();
     assert_eq!(
         directory.route(&host, wg, wg, 10),
         PrivateRoute::Local("api/prod".parse().unwrap())
@@ -206,7 +206,7 @@ fn private_host_requires_actual_destination_and_peer_even_for_local_app() {
         PrivateRoute::Local("api/prod".parse().unwrap())
     );
     assert_eq!(
-        directory.route("unknown.tako.internal", wg, wg, 10),
+        directory.route("a.b.unknown.tako", wg, wg, 10),
         PrivateRoute::Forbidden
     );
     assert_eq!(
@@ -338,7 +338,7 @@ fn compose_may_relay_but_wireguard_requests_cannot_loop() {
     registry.members.push(member);
     let remote = lease(&registry, &remote_keys, &["api/prod"], 10);
     directory.replace(&registry, &[remote], 10).unwrap();
-    let host = format!("api.prod.{}.tako.internal", registry.network.id);
+    let host = "api.prod.tako".to_string();
     let local_ip = IpAddr::V6(registry.network.id.address(&keys.wg_public_key().unwrap()));
     let remote_ip = registry
         .network

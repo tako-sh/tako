@@ -57,10 +57,14 @@ fn read_only_transport(path: &str, body: &Value) -> RuntimeResult<Vec<u8>> {
 fn only_admitted_servers_are_queried_in_batches_and_bad_leases_are_isolated() {
     let (mut registry, root_keys) = crate::services::tests::fixture();
     let mut keys = vec![root_keys];
-    for _ in 0..34 {
+    for index in 0..34 {
         let key = LocalDeviceKeys::generate().unwrap();
         let request = key
-            .enrollment_request(None, DeviceKind::Server, "server".parse().unwrap())
+            .enrollment_request(
+                None,
+                DeviceKind::Server,
+                format!("server-{index}").parse().unwrap(),
+            )
             .unwrap();
         let (challenge, pending) =
             WgChallenge::begin(&request, registry.network.id.clone(), 2, 60).unwrap();
