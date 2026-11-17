@@ -665,7 +665,7 @@ impl SnapshotSpace {
     /// drops, if `available` covers them, the other reservations, and the
     /// disk reserve. Another reservation counts in full even after its files
     /// are partly written, so this errs toward refusing.
-    fn reserve(
+    pub(crate) fn reserve(
         &self,
         needed: u64,
         available: u64,
@@ -700,7 +700,7 @@ impl SnapshotSpace {
     }
 }
 
-struct SpaceReservation {
+pub(crate) struct SpaceReservation {
     reserved: Arc<parking_lot::Mutex<u64>>,
     bytes: u64,
 }

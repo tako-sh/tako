@@ -709,7 +709,6 @@ impl DatabaseHost {
     /// locks. Used when this process stops serving (drain or reload).
     pub async fn close_all(&self) {
         self.inner.closings.send_modify(|count| *count += 1);
-        let streams = self.take_streams(|_| true);
         let databases: Vec<_> = self
             .inner
             .databases
@@ -718,11 +717,15 @@ impl DatabaseHost {
             .map(|(_, db)| db)
             .collect();
         // Requests that already looked a database up may still be waiting
-        // for a slot; once closed, none of them can start.
+        // for a slot; once closed, none of them can start, and a request
+        // still running cannot retain a new stream.
         for database in &databases {
             database.state.lock().closed = true;
             database.permits.close();
         }
+        // Taken once the databases are closed: a stream retained before
+        // then is among these, and none can be retained after.
+        let streams = self.take_streams(|_| true);
         // New requests no longer find these databases. Requests already
         // running keep a connection to the file, so its lock is held until
         // they finish: a successor that replaced the file meanwhile would
@@ -1072,6 +1075,15 @@ impl DatabaseHost {
         }
         {
             let mut state = database.state.lock();
+            // Closing has taken, or is about to take, every stream; a new
+            // one would keep its connection, and any transaction, open
+            // after the handover. Dropping the entry rolls it back.
+            if state.closed {
+                return Err(Error::new(
+                    "STREAM_CLOSED",
+                    "the database was handed over while the request ran; its transaction was rolled back",
+                ));
+            }
             if state.streams >= config.max_streams_per_database {
                 return Err(Error::new(
                     "STREAM_LIMIT",

@@ -12,14 +12,13 @@ use sha2::{Digest, Sha256};
 use tako_core::{DATABASE_TRANSFER_CHUNK_BYTES, DatabaseExport};
 use tako_database::DatabaseId;
 
-use super::snapshots::{self, WorkDir, fresh_work_dir, sha256_file};
+use super::snapshots::{self, SpaceReservation, WorkDir, fresh_work_dir, sha256_file};
 use crate::ServerState;
 
 /// Transfers idle for longer are abandoned and their files removed.
 const TRANSFER_IDLE: Duration = Duration::from_secs(60 * 60);
 /// The largest database file accepted by an import.
 const MAX_IMPORT_BYTES: u64 = 64 * 1024 * 1024 * 1024;
-const DISK_RESERVE_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(Default)]
 pub(crate) struct Transfers {
@@ -39,6 +38,9 @@ struct Import {
     received: u64,
     hasher: Sha256,
     touched: Instant,
+    /// Disk space held for the upload, in the ledger snapshots and restores
+    /// share. Last, so it is released after the file and its directory.
+    _space: SpaceReservation,
 }
 
 struct Export {
@@ -47,6 +49,7 @@ struct Export {
     path: PathBuf,
     size: u64,
     touched: Instant,
+    _space: SpaceReservation,
 }
 
 pub(crate) fn expire(state: &ServerState) {
@@ -119,11 +122,13 @@ pub(crate) async fn begin_import(
     let stored = state.hosted_database(id)?;
     let work = fresh_work_dir(state, id, "import")?;
     let available = crate::operations::available_bytes(&work.path)?;
-    if available < size.saturating_mul(2).saturating_add(DISK_RESERVE_BYTES) {
-        return Err(format!(
-            "Not enough free disk space for this import ({available} bytes available)."
-        ));
-    }
+    // Held while the upload lasts, so imports started together cannot each
+    // count the same free space.
+    let space = state
+        .databases
+        .snapshot_space
+        .reserve(size.saturating_mul(2), available, "the import")
+        .map_err(|error| format!("Cannot import into {id}: {error}."))?;
     let path = work.path.join("import.sqlite");
     let file = std::fs::OpenOptions::new()
         .create_new(true)
@@ -143,6 +148,7 @@ pub(crate) async fn begin_import(
             received: 0,
             hasher: Sha256::new(),
             touched: Instant::now(),
+            _space: space,
         },
     );
     Ok(serde_json::json!({
@@ -272,11 +278,11 @@ pub(crate) async fn begin_export(
     let work = fresh_work_dir(state, id, "export")?;
     let size = state.databases.host.size_bytes(&database).unwrap_or(0);
     let available = crate::operations::available_bytes(&work.path)?;
-    if available < size.saturating_add(DISK_RESERVE_BYTES) {
-        return Err(format!(
-            "Not enough free disk space for an export ({available} bytes available)."
-        ));
-    }
+    let space = state
+        .databases
+        .snapshot_space
+        .reserve(size, available, "the export")
+        .map_err(|error| format!("Cannot export {id}: {error}."))?;
     let path = work.path.join("export.sqlite");
     // A snapshot copy marks the database unchanged, but an export is not a
     // backup: mark it changed again so the scheduler still uploads it, even a
@@ -297,6 +303,7 @@ pub(crate) async fn begin_export(
             path,
             size,
             touched: Instant::now(),
+            _space: space,
         },
     );
     Ok(serde_json::to_value(DatabaseExport {

@@ -1215,6 +1215,36 @@ async fn a_stream_closed_while_its_request_runs_reports_the_rollback() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_stream_opened_while_the_host_closes_is_not_kept() {
+    let h = harness(HostConfig {
+        pause_timeout: Duration::from_millis(100),
+        ..HostConfig::default()
+    });
+    pipeline(&h, Value::Null, vec![execute("CREATE TABLE t (x)")]).await;
+    // A new stream opens a transaction and runs a slow statement; the host
+    // closes, and stops waiting for it, before it finishes.
+    let slow = "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n LIMIT 5000000) SELECT count(*) FROM n";
+    let request = post(
+        &h,
+        "/v3/pipeline",
+        json!({"baton": null, "requests": [
+            execute("BEGIN"),
+            execute("INSERT INTO t VALUES (1)"),
+            execute(slow),
+        ]}),
+    );
+    let (result, ()) = tokio::join!(request, async {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        h.host.close_all().await;
+    });
+    let (status, body) = result;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert!(body.to_string().contains("rolled back"), "{body}");
+    // No baton was handed out, and no connection stays open for one.
+    assert_eq!(h.host.open_streams(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn administrator_queries_wait_for_a_slot_only_as_long_as_apps_do() {
     let h = harness(HostConfig {
         max_concurrent_per_database: 1,

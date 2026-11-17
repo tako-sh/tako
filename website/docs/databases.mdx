@@ -123,7 +123,7 @@ migrations/
   20261116143000_add_orders.sql
 ```
 
-Any number works as a prefix, up to 18 digits; files run in numeric order, so dated files sort after `0001`-style ones. When the project binds more than one database name, give each binding its own folder, `migrations/<binding>/…`, and pass `--binding` to `migrations new`; loose files in `migrations/` are then an error. Two files with one number are rejected, and other file types in the folder are ignored. One binding's migrations are sent to the server in one request, so together they may take at most 960 KiB as JSON; squash applied files, or load large data with `tako sqlite import`.
+Any number works as a prefix, up to 18 digits; files run in numeric order, so dated files sort after `0001`-style ones. When the project binds more than one database name, give each binding its own folder, `migrations/<binding>/…`, and pass `--binding` to `migrations new`; loose files in `migrations/` are then an error, as they are next to a binding's own folder. Two files with one number are rejected, and other file types in the folder are ignored. One binding's migrations are sent to the server in one request, so together they may take at most 960 KiB as JSON; squash applied files, or load large data with `tako sqlite import`.
 
 Tako applies pending migrations:
 

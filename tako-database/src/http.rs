@@ -804,7 +804,7 @@ fn settle(
             stream: Some(stream),
         },
     )
-    .map_err(|limit| limit.message)?;
+    .map_err(|refused| refused.message)?;
     Ok(Some(baton(key, 1)))
 }
 
@@ -836,7 +836,7 @@ fn retain_busy(
             stream: None,
         },
     )
-    .map_err(|limit| limit.message)?;
+    .map_err(|refused| refused.message)?;
     Ok(1)
 }
 

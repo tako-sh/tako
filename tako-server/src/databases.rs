@@ -860,12 +860,11 @@ impl ServerState {
             );
         }
         drop(grants);
-        self.state_store
-            .delete_database(id)
-            .map_err(|e| format!("forget database: {e}"))?;
         // An open import file would otherwise keep its disk space, and take
         // more chunks, after its directory is removed.
         transfer::cancel(self, id);
+        // The files go before the record, so a delete that fails here can be
+        // run again: it still finds the database, and its snapshots.
         let dir = self.databases.database_dir(id);
         tokio::task::spawn_blocking(move || std::fs::remove_dir_all(dir))
             .await
@@ -874,9 +873,14 @@ impl ServerState {
                 if e.kind() == std::io::ErrorKind::NotFound {
                     Ok(())
                 } else {
-                    Err(format!("remove database files: {e}"))
+                    Err(format!(
+                        "remove database files: {e}. The database is no longer served; run the delete again to finish it."
+                    ))
                 }
             })?;
+        self.state_store
+            .delete_database(id)
+            .map_err(|e| format!("forget database: {e}"))?;
         self.databases.backups.lock().remove(id);
         tracing::info!(database = %stored.name, "Deleted database");
         // Without the database's records its snapshots cannot be decrypted;

@@ -1558,6 +1558,16 @@ async fn deleting_a_database_ends_its_transfers() {
     let upload_id = upload["upload_id"].as_str().unwrap().to_owned();
     let export = ok(&state, Command::BeginDatabaseExport { name: ID.into() }).await;
     let export_id = export["export_id"].as_str().unwrap().to_owned();
+    // Both hold disk space in the ledger snapshots and restores share.
+    let size = state
+        .databases
+        .host
+        .size_bytes(&tako_database::DatabaseId::parse(ID).unwrap())
+        .unwrap();
+    assert_eq!(
+        state.databases.snapshot_space.reserved_bytes(),
+        2 * bytes.len() as u64 + size
+    );
     ok(
         &state,
         Command::DeleteDatabase {
@@ -1566,6 +1576,7 @@ async fn deleting_a_database_ends_its_transfers() {
         },
     )
     .await;
+    assert_eq!(state.databases.snapshot_space.reserved_bytes(), 0);
     // A database of the same name created afterwards receives none of the
     // old transfers' chunks.
     create(&state, ID, None).await;

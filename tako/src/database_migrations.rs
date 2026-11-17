@@ -48,10 +48,17 @@ pub(crate) fn directory(
 ) -> Result<Option<PathBuf>, String> {
     let root = project_dir.join("migrations");
     let own = root.join(binding);
+    let top = sql_files(&root)?;
     if own.is_dir() {
+        // Files beside the folder would otherwise be skipped without a word,
+        // leaving a new database without their schema.
+        if !top.is_empty() {
+            return Err(format!(
+                "migrations/ holds .sql files next to migrations/{binding}/. Move them into migrations/{binding}/ (or another binding's folder)."
+            ));
+        }
         return Ok(Some(own));
     }
-    let top = sql_files(&root)?;
     if top.is_empty() {
         return Ok(None);
     }
@@ -203,8 +210,22 @@ mod tests {
         write(dir.path(), "migrations/0001_loose.sql", "SELECT 1;");
         let error = load(dir.path(), &config, "events").unwrap_err();
         assert!(error.contains("migrations/<binding>/"), "{error}");
-        // A binding with its own folder is unaffected.
-        assert_eq!(load(dir.path(), &config, "main").unwrap().len(), 1);
+        // Nor are loose files skipped for a binding with its own folder.
+        let error = load(dir.path(), &config, "main").unwrap_err();
+        assert!(error.contains("next to migrations/main/"), "{error}");
+    }
+
+    #[test]
+    fn a_single_binding_cannot_mix_its_folder_with_loose_files() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "migrations/main/0002_b.sql", "SELECT 2;");
+        write(dir.path(), "migrations/0001_a.sql", "SELECT 1;");
+        let error = load(dir.path(), &config(ONE), "main").unwrap_err();
+        assert!(error.contains("next to migrations/main/"), "{error}");
+        // Other files beside the folder are fine.
+        std::fs::remove_file(dir.path().join("migrations/0001_a.sql")).unwrap();
+        write(dir.path(), "migrations/README.md", "notes");
+        assert_eq!(load(dir.path(), &config(ONE), "main").unwrap().len(), 1);
     }
 
     #[test]
