@@ -151,13 +151,12 @@ rewrite history as part of ordinary migration. App-data backups do not include
 network membership, shared secret records, or device keys; protect those separately.
 
 Native management uses signed pinned HTTPS without workstation WireGuard, TUN,
-or an SSH agent. Scoped sandbox deploys use administrator-provisioned routes and
-server-level bindings. Scoped clients can decrypt shared app secrets for their exact scopes; full
-administrators can also decrypt provider/storage credentials and backup keys. `network export` is public configuration, not secret-key export or
-a way to enroll another device. Membership revocation cascades through dependent
-approvals; independent bootstrap server membership does not depend on its
-creating laptop. Inspect pending enforcement rather than assuming offline peers
-have applied a revocation.
+or an SSH agent. Deploy clients (`--deploy app/env`) only release code: they read
+no secrets or logs, and servers apply the environment's published values at deploy.
+Full clients can decrypt app secrets, provider/storage credentials and backup keys. `network export` is public configuration, not secret-key export or
+a way to enroll another device. Revoking a client affects only that client, not
+the clients it invited. Inspect pending enforcement rather than assuming offline
+peers have applied a revocation.
 
 WireGuard private traffic needs the advertised UDP endpoint; there is no hosted
 relay. `tako ssh` uses embedded WireGuard without sudo or system network changes.

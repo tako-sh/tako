@@ -334,7 +334,7 @@ fn secret_publication_survives_lost_response_and_retry_cannot_win_again() {
 }
 
 #[test]
-fn secret_access_is_scoped_and_new_clients_receive_old_value_keys_via_server() {
+fn deploy_clients_get_no_values_and_new_full_clients_receive_old_value_keys() {
     use crate::shared::{RecordContent, RecordKind};
     let fixture = Fixture::new();
     let mut runtime = fixture.open();
@@ -353,45 +353,42 @@ fn secret_access_is_scoped_and_new_clients_receive_old_value_keys_via_server() {
             )
             .unwrap();
     }
+
+    // Admit both clients first: fixture approvals happen at time 10.
+    let deployer = LocalDeviceKeys::generate().unwrap();
+    let mut deployer_grant = fixture.grant(&deployer);
+    deployer_grant.permissions = Permissions::deploy(["shop/production".parse().unwrap()]);
+    fixture.approve(&mut runtime, &deployer_grant);
     let client = LocalDeviceKeys::generate().unwrap();
-    let mut grant = fixture.grant(&client);
-    grant.permissions = Permissions::deploy(["shop/production".parse().unwrap()]);
-    fixture.approve(&mut runtime, &grant);
-    let complete = fixture.challenge(&mut runtime, &client, &grant, 11);
+    let mut client_grant = fixture.grant(&client);
+    client_grant.client = Some("full-laptop".parse().unwrap());
+    client_grant.permissions = Permissions::Full;
+    fixture.approve(&mut runtime, &client_grant);
+    let complete = fixture.challenge(&mut runtime, &deployer, &deployer_grant, 11);
+    fixture.call(&mut runtime, &deployer, complete, 11).unwrap();
+    let complete = fixture.challenge(&mut runtime, &client, &client_grant, 12);
     fixture.call(&mut runtime, &client, complete, 12).unwrap();
+
+    // A deploy client neither reads nor writes values, even in its scope.
     let RpcResponse::Records(shared) = fixture
         .call(
             &mut runtime,
-            &client,
-            RpcRequest::PullRecords { scope: None },
+            &deployer,
+            RpcRequest::PullRecords {
+                scope: Some("shop/production".parse().unwrap()),
+            },
             13,
         )
         .unwrap()
     else {
         panic!("records expected");
     };
-    assert_eq!(shared.records.len(), 1);
-    assert!(
-        shared.records[0].keys.contains_key(
-            &client
-                .device_id(&fixture.config.network.id, DeviceKind::Laptop)
-                .unwrap()
-        )
-    );
-    let client_id = client
-        .device_id(&fixture.config.network.id, DeviceKind::Laptop)
-        .unwrap();
-    let plaintext = shared.records[0]
-        .open(&shared, &client, &client_id)
-        .unwrap()
-        .unwrap();
-    let content: RecordContent = serde_json::from_slice(&plaintext).unwrap();
-    assert_eq!(&*content.value, "original");
+    assert!(shared.records.is_empty());
     assert!(
         fixture
             .call(
                 &mut runtime,
-                &client,
+                &deployer,
                 RpcRequest::PullRecords {
                     scope: Some("shop/staging".parse().unwrap()),
                 },
@@ -399,23 +396,50 @@ fn secret_access_is_scoped_and_new_clients_receive_old_value_keys_via_server() {
             )
             .is_err()
     );
-    let denied = secret_mutation(
-        &fixture,
-        "shop/production",
-        RecordKind::Credential,
-        "postgres_url",
-        Some("changed"),
-    );
-    assert!(
-        fixture
-            .call(
-                &mut runtime,
-                &client,
-                RpcRequest::PublishRecord(Box::new(denied)),
-                15
-            )
-            .is_err()
-    );
+    for (kind, name) in [
+        (RecordKind::App, "API_KEY"),
+        (RecordKind::Credential, "postgres_url"),
+    ] {
+        let denied = secret_mutation(&fixture, "shop/production", kind, name, Some("changed"));
+        assert!(
+            fixture
+                .call(
+                    &mut runtime,
+                    &deployer,
+                    RpcRequest::PublishRecord(Box::new(denied)),
+                    15
+                )
+                .is_err()
+        );
+    }
+
+    // A full client admitted later receives keys for values published before it.
+    let client_id = client
+        .device_id(&fixture.config.network.id, DeviceKind::Laptop)
+        .unwrap();
+    let RpcResponse::Records(shared) = fixture
+        .call(
+            &mut runtime,
+            &client,
+            RpcRequest::PullRecords {
+                scope: Some("shop/production".parse().unwrap()),
+            },
+            18,
+        )
+        .unwrap()
+    else {
+        panic!("records expected");
+    };
+    assert_eq!(shared.records.len(), 2);
+    let record = shared
+        .records
+        .iter()
+        .find(|record| record.address.name == "API_KEY")
+        .unwrap();
+    assert!(record.keys.contains_key(&client_id));
+    let plaintext = record.open(&shared, &client, &client_id).unwrap().unwrap();
+    let content: RecordContent = serde_json::from_slice(&plaintext).unwrap();
+    assert_eq!(&*content.value, "original");
     let accepted = secret_mutation(
         &fixture,
         "shop/production",
@@ -428,7 +452,7 @@ fn secret_access_is_scoped_and_new_clients_receive_old_value_keys_via_server() {
             &mut runtime,
             &client,
             RpcRequest::PublishRecord(Box::new(accepted.clone())),
-            16,
+            19,
         )
         .unwrap();
     fixture
@@ -439,7 +463,7 @@ fn secret_access_is_scoped_and_new_clients_receive_old_value_keys_via_server() {
                 id: RevocationId::random().unwrap(),
                 target: client_id,
             },
-            17,
+            20,
         )
         .unwrap();
     assert!(
@@ -448,7 +472,7 @@ fn secret_access_is_scoped_and_new_clients_receive_old_value_keys_via_server() {
                 &mut runtime,
                 &client,
                 RpcRequest::PullRecords { scope: None },
-                18
+                21
             )
             .is_err()
     );
@@ -458,7 +482,7 @@ fn secret_access_is_scoped_and_new_clients_receive_old_value_keys_via_server() {
                 &mut runtime,
                 &client,
                 RpcRequest::PublishRecord(Box::new(accepted)),
-                18
+                21
             )
             .is_err()
     );
@@ -824,7 +848,7 @@ fn pull_returns_records_this_server_cannot_open_instead_of_failing() {
 
     let client = LocalDeviceKeys::generate().unwrap();
     let mut grant = fixture.grant(&client);
-    grant.permissions = Permissions::deploy(["shop/production".parse().unwrap()]);
+    grant.permissions = Permissions::Full;
     fixture.approve(&mut runtime, &grant);
     let complete = fixture.challenge(&mut runtime, &client, &grant, 11);
     fixture.call(&mut runtime, &client, complete, 12).unwrap();

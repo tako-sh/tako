@@ -150,7 +150,7 @@ fn new_members_receive_key_grants_and_revocation_excludes_future_values() {
         &mut registry,
         &client,
         Some(admin.clone()),
-        Permissions::Deploy(["shop/production".parse().unwrap()].into()),
+        Permissions::Full,
     );
     assert!(old.open(&state, &client, &client_id).is_err());
     let effective = registry.effective_members(2).unwrap();
@@ -198,10 +198,12 @@ fn new_members_receive_key_grants_and_revocation_excludes_future_values() {
 }
 
 #[test]
-fn scopes_and_administrative_categories_do_not_share_implicit_access() {
+fn deploy_clients_read_and_write_no_values() {
     let scoped = Permissions::Deploy(["shop/production".parse().unwrap()].into());
-    assert!(address("API_KEY").readable(&scoped));
-    assert!(address("API_KEY").writable(&scoped));
+    // A deploy client cannot read or change its own environment's values.
+    assert!(!address("API_KEY").readable(&scoped));
+    assert!(!address("API_KEY").writable(&scoped));
+    assert!(address("API_KEY").readable(&Permissions::Full));
     let mut other = address("API_KEY");
     other.scope = "shop/staging".parse().unwrap();
     assert!(!other.readable(&scoped));
@@ -324,7 +326,7 @@ fn concurrent_recipient_wraps_merge_and_legacy_grants_migrate_only_for_current_v
         &mut registry,
         &client,
         Some(admin.clone()),
-        Permissions::Deploy(["shop/production".parse().unwrap()].into()),
+        Permissions::Full,
     );
     let members = registry.effective_members(2).unwrap();
     let a = current

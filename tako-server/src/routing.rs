@@ -38,6 +38,22 @@ pub struct SelectedRoute {
 }
 
 impl RouteTable {
+    /// The first of `routes` that another app environment already claims,
+    /// with that app environment.
+    pub fn claimed_elsewhere<'a>(
+        &self,
+        app: &str,
+        routes: &'a [String],
+    ) -> Option<(&'a str, &str)> {
+        routes.iter().find_map(|route| {
+            self.app_routes
+                .iter()
+                .filter(|(owner, _)| owner.as_str() != app)
+                .find(|(_, claimed)| claimed.contains(route))
+                .map(|(owner, _)| (route.as_str(), owner.as_str()))
+        })
+    }
+
     pub fn set_app_routes(&mut self, app: String, routes: Vec<String>) {
         self.set_app_routes_with_source_ip(app, routes, tako_core::SourceIpMode::Auto);
     }

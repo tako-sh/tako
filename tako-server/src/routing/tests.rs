@@ -676,3 +676,23 @@ fn compose_routes_select_app_services_and_inherit_source_ip() {
             .is_none()
     );
 }
+
+#[test]
+fn a_route_belongs_to_one_app_environment() {
+    let mut table = RouteTable::default();
+    table.set_app_routes("shop/production".into(), vec!["shop.example.com".into()]);
+    let routes = vec![
+        "staging.example.com".to_string(),
+        "shop.example.com".to_string(),
+    ];
+    assert_eq!(
+        table.claimed_elsewhere("shop/staging", &routes),
+        Some(("shop.example.com", "shop/production"))
+    );
+    // An app environment may keep and redeploy its own routes.
+    assert_eq!(table.claimed_elsewhere("shop/production", &routes), None);
+    assert_eq!(
+        table.claimed_elsewhere("shop/staging", &["staging.example.com".to_string()]),
+        None
+    );
+}

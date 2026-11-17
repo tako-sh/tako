@@ -797,42 +797,37 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
         .unwrap();
     let cache: SharedSnapshot =
         serde_json::from_slice(&fs::read(device.path().join("secrets.json")).unwrap()).unwrap();
+    // A deploy client caches no values, not even its own environment's.
     assert!(
         cache
             .records
             .iter()
-            .all(|record| record.address.kind == tako_network::shared::RecordKind::App)
-    );
-    server.ok(
-        &scoped_home,
-        &scoped_project,
-        &["secrets", "set", "SCOPED", "--env", "production"],
-        Some("allowed"),
-    );
-    server.ok(
-        &scoped_home,
-        &scoped_project,
-        &["secrets", "sync", "--env", "production"],
-        None,
+            .all(|record| !record.address.kind.is_secret())
     );
     let count = server.store.0.lock().unwrap().1.records.len();
-    server.ok(
-        &scoped_home,
-        &scoped_project,
-        &["credentials", "set", "postgres_url", "--env", "production"],
-        Some("postgres://fixture:example@db.example.test/forbidden"),
-    );
-    assert!(
-        !server
-            .run(
-                &scoped_home,
-                &scoped_project,
-                &["secrets", "sync", "--env", "production"],
-                None
-            )
-            .status
-            .success()
-    );
+    for (command, value) in [
+        (
+            ["secrets", "set", "SCOPED", "--env", "production"],
+            "refused",
+        ),
+        (
+            ["credentials", "set", "postgres_url", "--env", "production"],
+            "postgres://fixture:example@db.example.test/forbidden",
+        ),
+    ] {
+        server.ok(&scoped_home, &scoped_project, &command, Some(value));
+        assert!(
+            !server
+                .run(
+                    &scoped_home,
+                    &scoped_project,
+                    &["secrets", "sync", "--env", "production"],
+                    None
+                )
+                .status
+                .success()
+        );
+    }
     assert_eq!(server.store.0.lock().unwrap().1.records.len(), count);
     server.ok(
         &server.owner_home,

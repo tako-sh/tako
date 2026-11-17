@@ -184,8 +184,16 @@ async fn run_async(
                 .get(&env)
                 .and_then(|env| env.network.as_deref());
             let servers = ServerInventory::load(network).map_err(|e| e.to_string())?;
-            let secrets = SecretsStore::load_for_environment(&project_dir, &tako_config, &env)
+            // Deploy clients never read local secrets or keys: servers resolve
+            // values from the network at deploy.
+            let full = super::helpers::can_configure_bindings(&tako_config, &env)
                 .map_err(|e| e.to_string())?;
+            let secrets = if full {
+                SecretsStore::load_for_environment(&project_dir, &tako_config, &env)
+                    .map_err(|e| e.to_string())?
+            } else {
+                SecretsStore::default()
+            };
 
             let config_result = validate_full_config(&tako_config, &servers, Some(&env));
             if config_result.has_errors() {
@@ -285,7 +293,8 @@ async fn run_async(
                 .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?,
         )
     };
-    if !output::is_dry_run() {
+    let configure_bindings = super::helpers::can_configure_bindings(&tako_config, &env)?;
+    if configure_bindings && !output::is_dry_run() {
         secrets = tokio::task::block_in_place(|| {
             crate::network::secrets::sync_environment(
                 &project_dir,
@@ -297,13 +306,14 @@ async fn run_async(
             )
         })?;
     }
-    let configure_bindings = super::helpers::can_configure_bindings(&tako_config, &env)?;
-    let secrets_result = validate_secrets_for_deployment(&secrets, &env);
-    if secrets_result.has_errors() {
-        return Err(format!("Secret errors: {}", secrets_result.errors.join("; ")).into());
-    }
-    for warning in secrets_result.warnings {
-        output::warning(&warning);
+    if configure_bindings {
+        let secrets_result = validate_secrets_for_deployment(&secrets, &env);
+        if secrets_result.has_errors() {
+            return Err(format!("Secret errors: {}", secrets_result.errors.join("; ")).into());
+        }
+        for warning in secrets_result.warnings {
+            output::warning(&warning);
+        }
     }
     let routes = required_env_routes(&tako_config, &env)
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
@@ -424,9 +434,9 @@ async fn run_async(
     // Check the secrets key now, before starting the task tree, so missing-key
     // errors are shown against a clean terminal instead of being overpainted by
     // the live viewport.
-    if !output::is_dry_run() {
+    if configure_bindings && !output::is_dry_run() {
         crate::commands::secret::ensure_secret_key_available(&env, &secrets, Some(&project_dir))?;
-        if configure_bindings {
+        {
             crate::commands::storage::ensure_backup_keys_for_env(
                 &project_dir,
                 &env,
@@ -436,30 +446,34 @@ async fn run_async(
         }
     }
 
-    secrets = tokio::task::block_in_place(|| {
-        crate::network::secrets::sync_environment(
+    // Only full clients publish secrets. A deploy client's servers apply what
+    // full clients last published.
+    if configure_bindings {
+        secrets = tokio::task::block_in_place(|| {
+            crate::network::secrets::sync_environment(
+                &project_dir,
+                &tako_config,
+                &app_name,
+                &env,
+                true,
+                false,
+            )
+        })?;
+        let final_validation = config::validate_release_secret_snapshot(
             &project_dir,
             &tako_config,
-            &app_name,
+            &secrets,
             &env,
-            true,
-            false,
-        )
-    })?;
-    let final_validation = config::validate_release_secret_snapshot(
-        &project_dir,
-        &tako_config,
-        &secrets,
-        &env,
-        server_names.len(),
-        configure_bindings,
-    );
-    if final_validation.has_errors() {
-        return Err(format!(
-            "Secret errors after network synchronization:\n  {}",
-            final_validation.errors.join("\n  ")
-        )
-        .into());
+            server_names.len(),
+            configure_bindings,
+        );
+        if final_validation.has_errors() {
+            return Err(format!(
+                "Secret errors after network synchronization:\n  {}",
+                final_validation.errors.join("\n  ")
+            )
+            .into());
+        }
     }
 
     let deploy_task_tree = should_use_deploy_task_tree()
@@ -488,7 +502,6 @@ async fn run_async(
         app_name.clone(),
         env.clone(),
         tako_config.clone(),
-        configure_bindings,
         preflight_preset_ref.clone(),
         preflight_runtime_adapter,
         server_targets.clone(),

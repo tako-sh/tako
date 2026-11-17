@@ -125,6 +125,9 @@ impl crate::ServerState {
                 if let Some(resp) = self.reject_mutating_when_upgrading("prepare-deploy").await {
                     return resp;
                 }
+                if let Err(error) = self.refuse_claimed_routes(&app, &routes) {
+                    return Response::error(error);
+                }
                 ssl.cloudflare_api_token = None;
                 if let Some(digest) = secrets_digest.as_deref() {
                     match crate::secret_snapshot::resolve(&self.runtime.data_dir, &app, Some(digest), &[]).await {
@@ -221,6 +224,9 @@ impl crate::ServerState {
                 }
                 if let Some(resp) = self.reject_mutating_when_upgrading("deploy").await {
                     return resp;
+                }
+                if let Err(error) = self.refuse_claimed_routes(&app, &routes) {
+                    return Response::error(error);
                 }
                 // Clients never send secret values. Fill them from the pinned
                 // snapshot, or keep what this server last applied.
@@ -578,6 +584,17 @@ fn strip_secret_parts(
 }
 
 impl crate::ServerState {
+    /// A route belongs to one app environment, so a staging deploy cannot
+    /// take over production's domain.
+    fn refuse_claimed_routes(&self, app: &str, routes: &[String]) -> Result<(), String> {
+        match self.routes.read().claimed_elsewhere(app, routes) {
+            Some((route, owner)) => Err(format!(
+                "Route '{route}' belongs to {owner}. Remove it from {owner} before deploying it here."
+            )),
+            None => Ok(()),
+        }
+    }
+
     /// App secrets of the pinned snapshot, or none without a pin.
     async fn pinned_app_secrets(
         &self,

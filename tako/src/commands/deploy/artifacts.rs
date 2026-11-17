@@ -36,24 +36,14 @@ struct DeploymentBindings {
     ssl: tako_core::SslBinding,
 }
 
-/// The deploy's bindings without secret parts. Servers fill access keys,
-/// backup keys and the Cloudflare token from the pinned secret snapshot.
-fn deployment_bindings(
-    config: &TakoToml,
-    env: &str,
-    configure: bool,
-) -> Result<DeploymentBindings, String> {
+/// The deploy's bindings without secret parts, the same for every client.
+/// Servers fill access keys, backup keys and the Cloudflare token from the
+/// pinned secret snapshot.
+fn deployment_bindings(config: &TakoToml, env: &str) -> Result<DeploymentBindings, String> {
     let ssl = tako_core::SslBinding {
         provider: config.get_ssl_provider(env),
         cloudflare_api_token: None,
     };
-    if !configure {
-        // The server checks routes/provider and retains its provisioned bindings.
-        return Ok(DeploymentBindings {
-            ssl,
-            ..Default::default()
-        });
-    }
     Ok(DeploymentBindings {
         storages: crate::commands::storage::plain_storage_bindings(env, config)
             .map_err(|e| e.to_string())?,
@@ -71,7 +61,6 @@ pub(super) async fn prepare_build_phase(
     app_name: String,
     env: String,
     tako_config: TakoToml,
-    configure_bindings: bool,
     preset_ref: String,
     runtime_adapter: BuildAdapter,
     server_targets: Vec<(String, crate::config::ServerTarget)>,
@@ -152,7 +141,7 @@ pub(super) async fn prepare_build_phase(
             storages: deploy_storages,
             backup: deploy_backup,
             ssl: deploy_ssl,
-        } = deployment_bindings(&tako_config, &env, configure_bindings)?;
+        } = deployment_bindings(&tako_config, &env)?;
 
         let app_json_bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
         let artifacts_by_target = build_container_target_artifacts(
@@ -302,7 +291,7 @@ pub(super) async fn prepare_build_phase(
         storages: deploy_storages,
         backup: deploy_backup,
         ssl: deploy_ssl,
-    } = deployment_bindings(&tako_config, &env, configure_bindings)?;
+    } = deployment_bindings(&tako_config, &env)?;
 
     let app_json_bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
 

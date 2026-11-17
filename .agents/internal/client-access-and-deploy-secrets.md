@@ -270,7 +270,13 @@ Each step updates the docs and skills it changes (`commands/sync-docs.md`,
    (`tako-network/src/runtime/shared.rs`), and the policy's binding checks.
 4. **Deploy clients are deploy-only.** Command allowlist and a separate logs check
    in the policy and `native_management.rs`; deploy CLI path without local
-   secrets or keys.
+   secrets or keys. Secret records become full-only in `RecordAddress::writable`
+   (`tako-network/src/shared.rs`). The CLI sends plain storage and backup bindings
+   from every client; database bindings stay full-only because they need grants.
+   The route guard is `RouteTable::claimed_elsewhere` (`tako-server/src/routing.rs`),
+   checked on `PrepareDeploy` and `Deploy` in `tako-server/src/operations/dispatch.rs`;
+   it matches exact route patterns, so a wildcard can still catch subdomains no
+   other app claims.
 5. **Identity.** Key serialization (`tako-network/src/keys.rs`), an identity module
    in `tako/src/network/`, in-process admission in `client add --identity`,
    profile loading from the environment, `join` accepting both strings.

@@ -198,9 +198,10 @@ impl RecordAddress {
     }
 
     /// Whether members with `permissions` may publish to this address.
+    /// Only full members publish. Deploy clients never read or write values:
+    /// servers resolve them at deploy.
     pub fn writable(&self, permissions: &Permissions) -> bool {
         permissions.is_full()
-            || (self.kind == RecordKind::App && permissions.can_deploy(&self.scope))
     }
 
     /// Whether members with `permissions` may read this address. Database

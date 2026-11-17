@@ -409,8 +409,8 @@ async fn send_deploy_command(
             routes: config.routes.clone(),
             source_ip: config.source_ip,
             secrets_digest: config.secrets_digest.clone(),
-            storages: server_admin.then(|| config.storages.clone()),
-            // Scoped deployers keep the bindings an administrator deployed.
+            storages: Some(config.storages.clone()),
+            // Database bindings need grants, which only full clients make.
             databases: server_admin.then(|| config.databases.clone()),
             ssl: ssl_binding_for_start_command(&config.ssl),
             backup: config.backup.clone().map(Box::new),
