@@ -92,15 +92,43 @@ fn read_secret_names(
     }
 }
 
-/// Read storage binding names from `tako.toml` environment assignments.
-/// Development names are preferred because that is what `tako dev` injects.
-fn read_storage_names(project_dir: &Path) -> Vec<String> {
-    read_binding_names(project_dir, "storages")
+/// Read storage binding names from `tako.toml` environment assignments, or
+/// from the selected config when one was given. Development names are
+/// preferred because that is what `tako dev` injects.
+fn read_storage_names(project_dir: &Path, config: Option<&TakoToml>) -> Vec<String> {
+    match config {
+        Some(config) => config_binding_names(config, |env| &env.storages),
+        None => read_binding_names(project_dir, "storages"),
+    }
 }
 
 /// Read database binding names, with the same preference as storages.
-fn read_database_names(project_dir: &Path) -> Vec<String> {
-    read_binding_names(project_dir, "databases")
+fn read_database_names(project_dir: &Path, config: Option<&TakoToml>) -> Vec<String> {
+    match config {
+        Some(config) => config_binding_names(config, |env| &env.databases),
+        None => read_binding_names(project_dir, "databases"),
+    }
+}
+
+/// [`read_binding_names`] for a loaded config.
+fn config_binding_names(
+    config: &TakoToml,
+    bindings: impl Fn(&crate::config::EnvConfig) -> &std::collections::HashMap<String, String>,
+) -> Vec<String> {
+    if let Some(development) = config.envs.get("development")
+        && !bindings(development).is_empty()
+    {
+        let mut names: Vec<String> = bindings(development).keys().cloned().collect();
+        names.sort();
+        return names;
+    }
+    config
+        .envs
+        .values()
+        .flat_map(|env| bindings(env).keys().cloned())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 /// Binding names from `[envs.development].<key>` when present, otherwise
@@ -477,8 +505,8 @@ fn write_tako_declarations_with_network_options(
     update: bool,
 ) -> std::io::Result<JsGeneratedFilesResult> {
     let secret_names = read_secret_names(project_dir, config, environment);
-    let storage_names = read_storage_names(project_dir);
-    let database_names = read_database_names(project_dir);
+    let storage_names = read_storage_names(project_dir, config);
+    let database_names = read_database_names(project_dir, config);
     let env_names = read_env_names(project_dir);
     let var_names = read_var_names(project_dir);
     let path = resolve_declaration_path(project_dir);
