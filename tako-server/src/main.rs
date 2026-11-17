@@ -48,6 +48,7 @@ mod request_drain;
 mod routing;
 mod runtime_events;
 mod scaling;
+mod secret_snapshot;
 mod server_state;
 #[cfg(target_os = "linux")]
 mod snapshot_live_wal;

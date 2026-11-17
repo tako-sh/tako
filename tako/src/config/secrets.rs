@@ -172,6 +172,10 @@ pub struct SecretsStore {
     /// Targets selected when loading this edit, including uncached environments.
     #[serde(skip)]
     pub(crate) targets: HashMap<String, (tako_network::AppEnv, tako_network::NetworkId)>,
+    /// Record versions the last synchronization published, so a deploy can
+    /// pin a snapshot that includes them.
+    #[serde(skip)]
+    pub(crate) published: Vec<tako_core::PublishedSecret>,
 }
 
 impl PartialEq for SecretsStore {

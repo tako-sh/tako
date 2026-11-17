@@ -464,51 +464,6 @@ fn save_credential_value(
     Ok(())
 }
 
-pub(crate) fn decrypt_ssl_binding(
-    env: &str,
-    provider: tako_core::SslProvider,
-    routes: &[String],
-    secrets: &crate::config::SecretsStore,
-    usage_path: Option<&Path>,
-) -> Result<tako_core::SslBinding, Box<dyn std::error::Error>> {
-    let needs_token = provider == tako_core::SslProvider::Cloudflare
-        || (provider == tako_core::SslProvider::LetsEncrypt
-            && crate::validation::letsencrypt_routes_need_cloudflare_token(routes));
-    if !needs_token {
-        return Ok(tako_core::SslBinding::default());
-    }
-
-    let Some(encrypted) = secrets.get_credential(env, SSL_CLOUDFLARE_CREDENTIAL_NAME) else {
-        return Err(missing_ssl_cloudflare_credential_message(env, provider).into());
-    };
-    let key = crate::commands::secret::load_secret_key(env, secrets, usage_path)?;
-    let token = crate::crypto::decrypt(&encrypted.value, &key)?;
-    if token.trim().is_empty() {
-        return Err(format!("Credential {SSL_CLOUDFLARE_CREDENTIAL_NAME} cannot be empty.").into());
-    }
-    Ok(tako_core::SslBinding {
-        provider,
-        cloudflare_api_token: Some(token),
-    })
-}
-
-pub(crate) fn decrypt_runtime_credentials(
-    env: &str,
-    secrets: &crate::config::SecretsStore,
-    usage_path: Option<&Path>,
-) -> Result<std::collections::HashMap<String, String>, Box<dyn std::error::Error>> {
-    let Some(encrypted) = secrets.get_credential(env, POSTGRES_CREDENTIAL_NAME) else {
-        return Ok(std::collections::HashMap::new());
-    };
-
-    let key = crate::commands::secret::load_secret_key(env, secrets, usage_path)?;
-    let value = crate::crypto::decrypt(&encrypted.value, &key)
-        .map_err(|e| format!("Failed to decrypt credential '{POSTGRES_CREDENTIAL_NAME}': {e}"))?;
-    let mut decrypted = std::collections::HashMap::with_capacity(1);
-    decrypted.insert(POSTGRES_CREDENTIAL_NAME.to_string(), value);
-    Ok(decrypted)
-}
-
 pub(crate) fn missing_ssl_cloudflare_credential_message(
     env: &str,
     provider: tako_core::SslProvider,
@@ -712,55 +667,5 @@ mod tests {
             err.to_string(),
             "Missing required credential name. Run `tako credentials set <name>` or run interactively to choose one."
         );
-    }
-
-    #[test]
-    fn decrypt_ssl_binding_reports_credentials_command_when_missing() {
-        let err = decrypt_ssl_binding(
-            "production",
-            tako_core::SslProvider::Cloudflare,
-            &["app.example.com".to_string()],
-            &crate::config::SecretsStore::default(),
-            None,
-        )
-        .unwrap_err();
-
-        assert_eq!(
-            err.to_string(),
-            "Cloudflare SSL requires credential ssl.cloudflare. Run `tako credentials set ssl.cloudflare --env production`."
-        );
-    }
-
-    #[test]
-    fn decrypt_runtime_credentials_only_includes_postgres_url() {
-        with_temp_tako_home(|| {
-            let project = tempfile::TempDir::new().unwrap();
-            set_credential_value(
-                project.path(),
-                "production",
-                SSL_CLOUDFLARE_CREDENTIAL_NAME,
-                "cloudflare-token",
-                None,
-            )
-            .unwrap();
-            set_credential_value(
-                project.path(),
-                "production",
-                POSTGRES_CREDENTIAL_NAME,
-                "postgres://runtime",
-                None,
-            )
-            .unwrap();
-
-            let secrets = crate::config::SecretsStore::load_from_dir(project.path()).unwrap();
-            let runtime =
-                decrypt_runtime_credentials("production", &secrets, Some(project.path())).unwrap();
-
-            assert_eq!(runtime.len(), 1);
-            assert_eq!(
-                runtime.get(POSTGRES_CREDENTIAL_NAME).map(String::as_str),
-                Some("postgres://runtime")
-            );
-        });
     }
 }

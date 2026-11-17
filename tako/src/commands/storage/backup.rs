@@ -2,11 +2,11 @@ use std::path::Path;
 
 use crate::config::{EncryptedBackupKey, TakoToml};
 
-pub(crate) fn decrypt_backup_binding(
+/// The environment's backup target for a server to fill in: storage without
+/// access keys and no backup keys.
+pub(crate) fn plain_backup_binding(
     env: &str,
     config: &TakoToml,
-    secrets: &crate::config::SecretsStore,
-    usage_path: Option<&Path>,
 ) -> Result<Option<tako_core::BackupBinding>, Box<dyn std::error::Error>> {
     let Some(backup) = config
         .envs
@@ -27,27 +27,11 @@ pub(crate) fn decrypt_backup_binding(
     if resource.public_base_url.is_some() {
         return Err("Backup storage must be private.".into());
     }
-
-    let mut key_cache = None;
-    let mut storage = super::decrypt_s3_storage_binding(
-        env,
-        resource_name,
-        resource,
-        secrets,
-        usage_path,
-        &mut key_cache,
-    )?;
+    let mut storage = super::plain_s3_storage_binding(resource_name, resource);
     storage.public_base_url = None;
-    let backup_keys = decrypt_backup_keys(env, secrets, usage_path)?;
-    if backup_keys.is_empty() {
-        return Err(
-            "Backup encryption key is missing. Deploy or run `tako backups now` to create it."
-                .into(),
-        );
-    }
     Ok(Some(tako_core::BackupBinding {
         storage,
-        backup_keys,
+        backup_keys: Vec::new(),
         retention_days: tako_core::DEFAULT_BACKUP_RETENTION_DAYS,
     }))
 }
@@ -78,31 +62,6 @@ pub(crate) fn ensure_backup_keys_for_env(
     )?;
     secrets.save_to_dir(project_dir)?;
     Ok(true)
-}
-
-fn decrypt_backup_keys(
-    env: &str,
-    secrets: &crate::config::SecretsStore,
-    usage_path: Option<&Path>,
-) -> Result<Vec<tako_core::BackupKeyBinding>, Box<dyn std::error::Error>> {
-    let Some(encrypted_keys) = secrets.get_backup_keys(env) else {
-        return Ok(Vec::new());
-    };
-    if encrypted_keys.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let env_key = crate::commands::secret::load_secret_key(env, secrets, usage_path)?;
-    let mut keys = Vec::with_capacity(encrypted_keys.len());
-    for encrypted_key in encrypted_keys {
-        let key_base64 = crate::crypto::decrypt(&encrypted_key.value, &env_key)?;
-        crate::crypto::EncryptionKey::from_base64(&key_base64)?;
-        keys.push(tako_core::BackupKeyBinding {
-            id: encrypted_key.id.clone(),
-            key_base64,
-        });
-    }
-    Ok(keys)
 }
 
 fn generate_backup_key_id() -> Result<String, getrandom::Error> {
@@ -141,7 +100,7 @@ mod tests {
     }
 
     #[test]
-    fn decrypt_backup_binding_uses_storage_resource_without_app_binding() {
+    fn plain_backup_binding_uses_storage_resource_without_app_binding() {
         with_temp_tako_home(|| {
             let temp = tempfile::TempDir::new().unwrap();
             let config_path = temp.path().join("tako.toml");
@@ -180,7 +139,8 @@ backup = { storage = "r2" }
                 ensure_backup_keys_for_env(temp.path(), "production", &config, &mut secrets)
                     .unwrap()
             );
-            let backup = decrypt_backup_binding("production", &config, &secrets, Some(temp.path()))
+            assert!(secrets.active_backup_key("production").is_some());
+            let backup = plain_backup_binding("production", &config)
                 .unwrap()
                 .expect("backup binding");
 
@@ -194,15 +154,12 @@ backup = { storage = "r2" }
                 backup.storage.endpoint.as_deref(),
                 Some("https://s3.example.com")
             );
-            assert_eq!(backup.storage.access_key_id.as_deref(), Some("key-id"));
-            assert_eq!(backup.storage.secret_access_key.as_deref(), Some("secret"));
+            // The server fills the access keys and backup keys.
+            assert_eq!(backup.storage.resource.as_deref(), Some("r2"));
+            assert_eq!(backup.storage.access_key_id, None);
+            assert_eq!(backup.storage.secret_access_key, None);
             assert_eq!(backup.storage.public_base_url, None);
-            assert_eq!(backup.backup_keys.len(), 1);
-            assert!(backup.backup_keys[0].id.starts_with("backup-key-"));
-            assert!(
-                crate::crypto::EncryptionKey::from_base64(&backup.backup_keys[0].key_base64)
-                    .is_ok()
-            );
+            assert!(backup.backup_keys.is_empty());
 
             let saved = crate::config::SecretsStore::load_from_dir(temp.path()).unwrap();
             assert_eq!(saved.get_backup_keys("production").unwrap().len(), 1);
@@ -249,15 +206,13 @@ backup = { storage = "r2" }
     }
 
     #[test]
-    fn decrypt_backup_binding_returns_none_when_backup_is_absent() {
+    fn plain_backup_binding_returns_none_when_backup_is_absent() {
         let mut config = TakoToml::default();
         config.envs.insert(
             "production".to_string(),
             crate::config::EnvConfig::default(),
         );
-        let secrets = crate::config::SecretsStore::default();
-
-        let binding = decrypt_backup_binding("production", &config, &secrets, None).unwrap();
+        let binding = plain_backup_binding("production", &config).unwrap();
 
         assert!(binding.is_none());
     }

@@ -166,7 +166,7 @@ pub(super) fn rpc_action(
         | Command::Status { app }
         | Command::ListReleases { app }
         | Command::Rollback { app, .. }
-        | Command::UpdateSecrets { app, .. }
+        | Command::SecretsDigest { app, .. }
         | Command::GetSecretsHash { app }
         | Command::EnqueueRun { app, .. }
         | Command::Signal { app, .. }

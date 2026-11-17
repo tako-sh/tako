@@ -373,11 +373,10 @@ fn default_ssl_is_allowed_only_after_provisioning_and_a_successful_state_read() 
         routes: routes.clone(),
         ssl: Default::default(),
         source_ip: Default::default(),
-        runtime_credentials: None,
+        secrets_digest: None,
         storages: None,
         databases: None,
         backup: None,
-        secrets: None,
         force: false,
     };
     let check = || authorize_command(&state, &scoped(), Some(&scope), &command);
@@ -433,6 +432,7 @@ async fn policy_reads_bindings_after_acquiring_the_dispatch_guard() {
         path: release.to_str().unwrap().into(),
         routes: vec!["old.example".into()],
         ssl: Default::default(),
+        secrets_digest: None,
         force: false,
     };
     let body = serde_json::to_vec(&command).unwrap();
@@ -729,11 +729,10 @@ fn scoped_deploy_preserves_backup_without_disclosing_keys_to_client() {
         routes,
         ssl: Default::default(),
         source_ip: Default::default(),
-        runtime_credentials: None,
+        secrets_digest: None,
         storages: None,
         databases: None,
         backup: None,
-        secrets: None,
         force: false,
     };
     inherit_scoped_backup(&state, &scoped(), Some(&scope), &mut command).unwrap();
@@ -781,8 +780,7 @@ fn scoped_compose_deploy_and_rollback_cannot_claim_routes_or_change_source_ip_tr
         routes: routes.clone(),
         source_ip: Default::default(),
         ssl: Default::default(),
-        secrets: None,
-        runtime_credentials: None,
+        secrets_digest: None,
         storages: None,
         databases: None,
         backup: None,

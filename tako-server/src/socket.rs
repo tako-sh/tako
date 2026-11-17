@@ -6,7 +6,7 @@
 //! - delete: Delete an app from runtime state
 //! - status: Get app status
 //! - list: List all apps
-//! - update_secrets: Update an app's secrets and apply by rolling restart
+//! - secrets_digest: Pin an app environment's secret snapshot for a deploy
 //! - server_info/enter_upgrading/exit_upgrading: Upgrade orchestration primitives
 
 use std::future::Future;
@@ -199,8 +199,7 @@ mod tests {
                 path,
                 routes,
                 source_ip,
-                secrets,
-                runtime_credentials: _,
+                secrets_digest,
                 storages,
                 ssl,
                 backup,
@@ -211,7 +210,7 @@ mod tests {
                 assert!(path.contains("releases"));
                 assert_eq!(routes.len(), 2);
                 assert_eq!(source_ip, tako_core::SourceIpMode::Auto);
-                assert!(secrets.is_none());
+                assert!(secrets_digest.is_none());
                 assert!(storages.is_none());
                 assert_eq!(ssl.provider, tako_core::SslProvider::LetsEncrypt);
                 assert!(backup.is_none());

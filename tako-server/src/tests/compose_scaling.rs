@@ -152,12 +152,34 @@ async fn assert_dependency_logs(state: &ServerState, runtime: &ComposeRuntime, m
     .expect("Dependency output must reach the group log");
 }
 
+/// Secrets change by redeploying the current release with a new snapshot.
 async fn rotate_dependency_secret(state: &ServerState, runtime: &ComposeRuntime, value: &str) {
+    let data_dir = state.runtime.data_dir.clone();
+    let version = state
+        .app_manager
+        .get_app(APP)
+        .expect("deployed app")
+        .config
+        .read()
+        .version
+        .clone();
+    let digest = crate::secret_snapshot::test_file::pin(
+        &data_dir,
+        APP,
+        crate::secret_snapshot::test_file::TestScope {
+            app: [("ROTATION".into(), value.into())].into(),
+            ..Default::default()
+        },
+    );
     ok(state
-        .handle_command(Command::UpdateSecrets {
-            app: APP.into(),
-            secrets: HashMap::from([("ROTATION".into(), value.into())]),
-        })
+        .handle_command(
+            serde_json::from_value(serde_json::json!({
+                "command":"deploy", "app":APP, "version":version,
+                "path":crate::release::app_release_root(&data_dir, APP, &version),
+                "routes":["scale.localhost"], "secrets_digest":digest
+            }))
+            .unwrap(),
+        )
         .await);
     let container = runtime
         .containers()

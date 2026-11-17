@@ -9,8 +9,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::path::{Component, Path};
 use tako_core::{
-    BackupBinding, Command, DatabaseBinding, SslBinding, SslProvider, StorageBinding,
-    StorageProvider,
+    BackupBinding, Command, DatabaseBinding, SslBinding, StorageBinding, StorageProvider,
 };
 use tako_network::{AppEnv, Permissions};
 
@@ -89,7 +88,7 @@ pub(crate) fn classify(command: &Command) -> CommandClass<'_> {
         | Command::Status { app }
         | Command::ListReleases { app }
         | Command::Rollback { app, .. }
-        | Command::UpdateSecrets { app, .. }
+        | Command::SecretsDigest { app, .. }
         | Command::GetSecretsHash { app }
         | Command::EnqueueRun { app, .. }
         | Command::Signal { app, .. }
@@ -108,7 +107,6 @@ pub(crate) struct ProvisionedApp<'a> {
     pub scope: &'a AppEnv,
     pub routes: &'a [String],
     pub ssl: &'a SslBinding,
-    pub runtime_credentials: &'a HashMap<String, String>,
     pub storages: &'a HashMap<String, StorageBinding>,
     pub databases: &'a HashMap<String, DatabaseBinding>,
     pub backup: Option<&'a BackupBinding>,
@@ -269,7 +267,6 @@ pub(crate) fn authorize_command(
             path,
             routes,
             ssl,
-            runtime_credentials,
             storages,
             databases,
             backup,
@@ -281,17 +278,9 @@ pub(crate) fn authorize_command(
                 let provisioned = provisioned_app(context, scope)?;
                 preserve_routes(provisioned, routes)?;
                 preserve_ssl(provisioned, ssl)?;
-                if runtime_credentials
-                    .as_ref()
-                    .is_some_and(|value| value != provisioned.runtime_credentials)
-                {
-                    return Err(Denial(
-                        "Scoped deployment cannot change server-held runtime credentials.",
-                    ));
-                }
                 if storages
                     .as_ref()
-                    .is_some_and(|value| value != provisioned.storages)
+                    .is_some_and(|value| !same_plain_storages(value, provisioned.storages))
                 {
                     return Err(Denial(
                         "Scoped deployment cannot change provisioned storage paths, endpoints, or credentials.",
@@ -304,7 +293,7 @@ pub(crate) fn authorize_command(
                 {
                     return Err(DATABASES_DENIED);
                 }
-                if backup.as_deref() != provisioned.backup {
+                if !same_plain_backup(backup.as_deref(), provisioned.backup) {
                     return Err(BACKUP_DENIED);
                 }
             }
@@ -365,7 +354,7 @@ pub(crate) fn authorize_command(
         | Command::Delete { .. }
         | Command::Status { .. }
         | Command::ListReleases { .. }
-        | Command::UpdateSecrets { .. }
+        | Command::SecretsDigest { .. }
         | Command::GetSecretsHash { .. }
         | Command::EnqueueRun { .. }
         | Command::Signal { .. }
@@ -442,23 +431,47 @@ fn preserve_routes(app: &ProvisionedApp<'_>, requested: &[String]) -> Result<(),
     crate::release::validate_deploy_routes(requested).map_err(|_| ROUTES_DENIED)
 }
 
+/// Clients send only the provider; the server supplies the token from the
+/// pinned secret snapshot.
 fn preserve_ssl(app: &ProvisionedApp<'_>, requested: &SslBinding) -> Result<(), Denial> {
-    if requested != app.ssl {
-        return Err(SSL_DENIED);
-    }
-    // Match resolve_deploy_ssl_binding's token requirement. Refuse its fallback
-    // to staged state: that state is not part of this checked snapshot.
-    let needs_token = requested.provider == SslProvider::Cloudflare
-        || app.routes.iter().any(|route| route.starts_with("*."));
-    if needs_token
-        && requested
-            .cloudflare_api_token
-            .as_deref()
-            .is_none_or(|token| token.trim().is_empty())
-    {
+    if requested.provider != app.ssl.provider {
         return Err(SSL_DENIED);
     }
     Ok(())
+}
+
+/// A storage binding without its access keys, which the server fills in.
+fn plain_storage(binding: &StorageBinding) -> StorageBinding {
+    let mut plain = binding.clone();
+    plain.access_key_id = None;
+    plain.secret_access_key = None;
+    plain
+}
+
+fn same_plain_storages(
+    requested: &HashMap<String, StorageBinding>,
+    provisioned: &HashMap<String, StorageBinding>,
+) -> bool {
+    requested.len() == provisioned.len()
+        && requested.iter().all(|(name, binding)| {
+            provisioned
+                .get(name)
+                .is_some_and(|current| plain_storage(binding) == plain_storage(current))
+        })
+}
+
+fn same_plain_backup(
+    requested: Option<&BackupBinding>,
+    provisioned: Option<&BackupBinding>,
+) -> bool {
+    match (requested, provisioned) {
+        (None, None) => true,
+        (Some(requested), Some(provisioned)) => {
+            requested.retention_days == provisioned.retention_days
+                && plain_storage(&requested.storage) == plain_storage(&provisioned.storage)
+        }
+        _ => false,
+    }
 }
 
 fn validate_version_path(data_dir: &Path, releases: &Path, version: &str) -> Result<(), Denial> {
@@ -556,7 +569,6 @@ mod tests {
         permissions: Permissions,
         routes: Vec<String>,
         ssl: SslBinding,
-        runtime_credentials: HashMap<String, String>,
         storages: HashMap<String, StorageBinding>,
         databases: HashMap<String, DatabaseBinding>,
         backup: Option<BackupBinding>,
@@ -582,7 +594,6 @@ mod tests {
                     "demo.example.test/assets/*".into(),
                 ],
                 ssl: SslBinding::default(),
-                runtime_credentials: HashMap::new(),
                 storages: HashMap::new(),
                 databases: HashMap::new(),
                 backup: None,
@@ -596,7 +607,6 @@ mod tests {
                     scope: &self.scope,
                     routes: &self.routes,
                     ssl: &self.ssl,
-                    runtime_credentials: &self.runtime_credentials,
                     storages: &self.storages,
                     databases: &self.databases,
                     backup: self.backup.as_ref(),
@@ -670,7 +680,7 @@ mod tests {
         "status",
         "list_releases",
         "rollback",
-        "update_secrets",
+        "secrets_digest",
         "get_secrets_hash",
         "enqueue_run",
         "signal",
@@ -1137,33 +1147,26 @@ mod tests {
     }
 
     #[test]
-    fn ssl_provider_tokens_and_unresolved_staging_cannot_be_changed() {
-        let mut f = Fixture::new();
+    fn ssl_provider_cannot_be_changed_and_client_tokens_are_ignored() {
+        let f = Fixture::new();
         for name in ["prepare_deploy", "deploy"] {
-            for ssl in [
-                json!({"provider":"cloudflare","cloudflare_api_token":"attacker-secret"}),
-                json!({"provider":"letsencrypt","cloudflare_api_token":"attacker-secret"}),
-            ] {
-                let error = f
-                    .authorize(&f.decode_command(json!({"command":name,"ssl":ssl,"force":true})))
-                    .unwrap_err();
-                assert_eq!(error, SSL_DENIED);
-                assert!(!error.to_string().contains("attacker-secret"));
-            }
+            let error = f
+                .authorize(&f.decode_command(
+                    json!({"command":name,"ssl":{"provider":"cloudflare"},"force":true}),
+                ))
+                .unwrap_err();
+            assert_eq!(error, SSL_DENIED);
+            // The server drops any token a client sends and supplies its own
+            // from the pinned secret snapshot.
+            assert_eq!(
+                f.authorize(&f.decode_command(json!({
+                    "command":name,
+                    "ssl":{"provider":"letsencrypt","cloudflare_api_token":"attacker-secret"},
+                    "force":true
+                }))),
+                Ok(())
+            );
         }
-        f.ssl.provider = SslProvider::Cloudflare;
-        assert_eq!(f.authorize(&f.command("deploy")), Err(SSL_DENIED));
-        f.ssl.cloudflare_api_token = Some("provisioned-token".into());
-        assert_eq!(f.authorize(&f.command("deploy")), Ok(()));
-        assert_eq!(
-            f.authorize(
-                &f.decode_command(json!({"command":"deploy","ssl":{"provider":"cloudflare"}}))
-            ),
-            Err(SSL_DENIED)
-        );
-        f.ssl = SslBinding::default();
-        f.routes = vec!["*.example.test".into()];
-        assert_eq!(f.authorize(&f.command("deploy")), Err(SSL_DENIED));
     }
 
     fn storage() -> StorageBinding {
@@ -1181,25 +1184,12 @@ mod tests {
     }
 
     #[test]
-    fn runtime_credentials_and_local_or_remote_storage_are_frozen() {
+    fn local_or_remote_storage_is_frozen() {
         let mut f = Fixture::new();
-        f.runtime_credentials
-            .insert("provider-key".into(), "server-secret".into());
         f.storages.insert("files".into(), storage());
         assert_eq!(f.authorize(&f.command("deploy")), Ok(()));
-        let command = f.decode_command(json!({"command":"deploy", "runtime_credentials":f.runtime_credentials,"storages":f.storages}));
+        let command = f.decode_command(json!({"command":"deploy","storages":f.storages}));
         assert_eq!(f.authorize(&command), Ok(()));
-        for value in [json!({}), json!({"provider-key":"attacker-secret"})] {
-            let command = f.decode_command(
-                json!({"command":"deploy","runtime_credentials":value,"force":true}),
-            );
-            assert!(
-                f.authorize(&command)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("runtime credentials")
-            );
-        }
         for value in [
             json!({}),
             json!({"files":{"provider":"local","path":"/etc","signing_key":"x"}}),
@@ -1215,13 +1205,6 @@ mod tests {
                     .contains("storage")
             );
         }
-        // Application secrets are a distinct, writable resource within this scope.
-        assert_eq!(
-            f.authorize(
-                &f.decode_command(json!({"command":"update_secrets","secrets":{"APP_KEY":"new"}}))
-            ),
-            Ok(())
-        );
     }
 
     #[test]
@@ -1297,7 +1280,7 @@ mod tests {
         f.permissions = Permissions::Full;
         let command = f.decode_command(json!({"command":"deploy", "routes":["new.example.test"],
             "ssl":{"provider":"cloudflare","cloudflare_api_token":"admin-token"},
-            "runtime_credentials":{"key":"value"}, "storages":{"files":storage()}, "backup":backup()}));
+            "storages":{"files":storage()}, "backup":backup()}));
         assert_eq!(f.authorize(&command), Ok(()));
         assert_eq!(
             f.authorize(&f.decode_command(

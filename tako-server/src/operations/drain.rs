@@ -45,7 +45,6 @@ pub(super) fn blocked_while_draining(command: &Command) -> bool {
             service: Some(_), ..
         }
         | Command::Rollback { .. }
-        | Command::UpdateSecrets { .. }
         | Command::EnqueueRun { .. }
         | Command::RegisterSchedules { .. }
         | Command::ClaimRun { .. }
@@ -58,6 +57,7 @@ pub(super) fn blocked_while_draining(command: &Command) -> bool {
         | Command::CleanupPreparedDeploy { .. }
         | Command::CleanupRelease { .. }
         | Command::CheckDeploySpace { .. }
+        | Command::SecretsDigest { .. }
         | Command::ListBackups { .. }
         | Command::BackupStatus { .. }
         | Command::BackupDownloadUrl { .. }

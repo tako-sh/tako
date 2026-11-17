@@ -1827,6 +1827,7 @@ mod tests {
     fn storage(bucket: &str) -> tako_core::StorageBinding {
         tako_core::StorageBinding {
             provider: tako_core::StorageProvider::S3,
+            resource: None,
             bucket: Some(bucket.into()),
             endpoint: Some("https://s3.example.test".into()),
             region: None,

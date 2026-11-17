@@ -187,7 +187,14 @@ mod tests {
             .handle_command(tako_core::Command::PrepareRelease {
                 app: app.into(),
                 path: release.display().to_string(),
-                secrets: HashMap::from([("DB_PASSWORD".into(), "fixture-only".into())]),
+                secrets_digest: Some(crate::secret_snapshot::test_file::pin(
+                    dir.path(),
+                    app,
+                    crate::secret_snapshot::test_file::TestScope {
+                        app: [("DB_PASSWORD".into(), "fixture-only".into())].into(),
+                        ..Default::default()
+                    },
+                )),
                 force: false,
             })
             .await;

@@ -134,6 +134,30 @@ pub async fn recheck_authority(data_dir: &Path, signed: &SignedRequest) -> Resul
     .await
 }
 
+/// Trusted local deploy path only: the opened values of one app environment
+/// on this server. The listener accepts it from root or the service account,
+/// never through the public HTTP relay.
+pub async fn scope_secrets(
+    data_dir: &Path,
+    scope: tako_network::AppEnv,
+    published: Vec<tako_network::shared::PublishedVersion>,
+) -> Result<tako_network::shared::ScopeSecrets> {
+    let response = exchange(
+        data_dir,
+        AgentCommand::Secrets(super::SecretsRequest {
+            secrets_scope: scope,
+            published,
+        }),
+    )
+    .await?;
+    if !response.ready {
+        return Err(AgentError::Invalid("native network is not ready"));
+    }
+    response.secrets.ok_or(AgentError::Invalid(
+        "the network agent could not read this app environment's secrets",
+    ))
+}
+
 pub fn recovery_config(data_dir: &Path) -> Result<NodeConfig> {
     if unsafe { libc::geteuid() } != 0 {
         return Err(AgentError::Invalid(
@@ -402,6 +426,8 @@ fn validate_command(request: &AgentCommand, peer_uid: u32) -> Result<()> {
             Err(AgentError::Invalid("host recovery requires root"))
         }
         AgentCommand::Recovery(_) => Ok(()),
+        // The listener already admits only root and the service account.
+        AgentCommand::Secrets(_) => Ok(()),
         AgentCommand::Rpc(request) => {
             if request.method.len() > 16 || request.path.len() > 256 {
                 return Err(AgentError::Invalid("IPC route exceeds limit"));

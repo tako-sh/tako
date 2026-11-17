@@ -93,8 +93,7 @@ async fn deploy_without_secrets_keeps_existing() {
             path: release_dir.to_string_lossy().to_string(),
             routes: vec!["keep.localhost".to_string()],
             source_ip: tako_core::SourceIpMode::Auto,
-            secrets: None,
-            runtime_credentials: None,
+            secrets_digest: None,
             storages: None,
             databases: None,
             ssl: tako_core::SslBinding::default(),
@@ -143,6 +142,7 @@ async fn failed_deploy_does_not_persist_credentials_for_unregistered_app() {
         "uploads".to_string(),
         tako_core::StorageBinding {
             provider: tako_core::StorageProvider::Local,
+            resource: None,
             bucket: None,
             endpoint: None,
             region: None,
@@ -164,8 +164,14 @@ async fn failed_deploy_does_not_persist_credentials_for_unregistered_app() {
             path: release_dir.to_string_lossy().to_string(),
             routes: vec!["bad.localhost".to_string()],
             source_ip: tako_core::SourceIpMode::Auto,
-            secrets: Some(secrets),
-            runtime_credentials: None,
+            secrets_digest: Some(crate::secret_snapshot::test_file::pin(
+                temp.path(),
+                "bad-app",
+                crate::secret_snapshot::test_file::TestScope {
+                    app: secrets.into_iter().collect(),
+                    ..Default::default()
+                },
+            )),
             storages: Some(storages),
             databases: None,
             ssl: tako_core::SslBinding::default(),

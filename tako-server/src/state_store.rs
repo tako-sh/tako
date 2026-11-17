@@ -109,6 +109,7 @@ impl SqliteStateStore {
 
     /// Upsert an encrypted per-app blob row into one of the
     /// `(app, encrypted_data)` tables.
+    #[cfg(test)]
     fn set_encrypted_row(
         &self,
         table: &str,

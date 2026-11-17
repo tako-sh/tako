@@ -1830,10 +1830,7 @@ mod tests {
                 matches!(cold_start, crate::proxy::BackendResolution::Unavailable),
                 "a request must not cold start a blocked app"
             );
-            for response in [
-                state.scale_app(&fixture.app, Some(1), None, false).await,
-                state.update_secrets(&fixture.app, Default::default()).await,
-            ] {
+            for response in [state.scale_app(&fixture.app, Some(1), None, false).await] {
                 assert!(
                     matches!(&response, Response::Error { message, .. } if names_dir(message)),
                     "an operator start must be refused with the same message"

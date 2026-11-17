@@ -365,10 +365,6 @@ fn authorize_command(
         .map_err(fail)?
         .flatten()
         .unwrap_or_default();
-    let credentials = scope
-        .map(|scope| state.state_store.get_runtime_credentials(scope.as_str()))
-        .transpose()
-        .map_err(fail)?;
     let storages = scope
         .map(|scope| state.state_store.get_storages(scope.as_str()))
         .transpose()
@@ -391,21 +387,17 @@ fn authorize_command(
     let app = match (
         scope,
         stored.as_ref(),
-        credentials.as_ref(),
         storages.as_ref(),
         databases.as_ref(),
     ) {
-        (Some(scope), Some(stored), Some(runtime_credentials), Some(storages), Some(databases)) => {
-            Some(ProvisionedApp {
-                scope,
-                routes: &stored.routes,
-                ssl: &ssl,
-                runtime_credentials,
-                storages,
-                databases,
-                backup: backup.as_ref(),
-            })
-        }
+        (Some(scope), Some(stored), Some(storages), Some(databases)) => Some(ProvisionedApp {
+            scope,
+            routes: &stored.routes,
+            ssl: &ssl,
+            storages,
+            databases,
+            backup: backup.as_ref(),
+        }),
         _ => None,
     };
     policy::authorize_command(

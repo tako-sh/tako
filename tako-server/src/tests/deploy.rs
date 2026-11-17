@@ -44,8 +44,15 @@ async fn native_deploy_keeps_previous_release_on_failed_commit_and_restart() {
         path: release(version).display().to_string(),
         routes: vec![format!("{version}.localhost")],
         source_ip: Default::default(),
-        secrets: Some(HashMap::from([("secret".into(), version.into())])),
-        runtime_credentials: Some(HashMap::from([("key".into(), version.into())])),
+        secrets_digest: Some(crate::secret_snapshot::test_file::pin(
+            temp.path(),
+            app_id,
+            crate::secret_snapshot::test_file::TestScope {
+                app: [("secret".into(), version.into())].into(),
+                credentials: [("postgres_url".into(), version.into())].into(),
+                ..Default::default()
+            },
+        )),
         storages: None,
         databases: None,
         ssl: Default::default(),
@@ -175,7 +182,7 @@ server.serve_forever()
     );
     assert_eq!(app.version(), "v1");
     assert_eq!(
-        state.state_store.get_runtime_credentials(app_id).unwrap()["key"],
+        state.state_store.get_runtime_credentials(app_id).unwrap()["postgres_url"],
         "v1"
     );
 
@@ -400,8 +407,7 @@ async fn native_deploy_must_stop_previous_compose_even_without_http_instances() 
             path: release.display().to_string(),
             routes: vec!["compose.localhost".into()],
             source_ip: Default::default(),
-            secrets: None,
-            runtime_credentials: None,
+            secrets_digest: None,
             storages: None,
             databases: None,
             ssl: Default::default(),
@@ -440,8 +446,7 @@ async fn deploy_rejects_invalid_app_name() {
             path: temp.path().to_string_lossy().to_string(),
             routes: vec!["api.example.com".to_string()],
             source_ip: tako_core::SourceIpMode::Auto,
-            secrets: Some(HashMap::new()),
-            runtime_credentials: None,
+            secrets_digest: None,
             storages: Some(HashMap::new()),
             databases: None,
             ssl: tako_core::SslBinding::default(),
@@ -571,13 +576,19 @@ async fn failed_deploy_does_not_persist_ssl_credentials() {
             path: release_dir.to_string_lossy().to_string(),
             routes: vec!["*.example.com".to_string()],
             source_ip: tako_core::SourceIpMode::Auto,
-            secrets: Some(HashMap::new()),
-            runtime_credentials: None,
+            secrets_digest: Some(crate::secret_snapshot::test_file::pin(
+                temp_dir.path(),
+                app_id,
+                crate::secret_snapshot::test_file::TestScope {
+                    credentials: [("ssl.cloudflare".to_string(), "ssl-token".to_string())].into(),
+                    ..Default::default()
+                },
+            )),
             storages: Some(HashMap::new()),
             databases: None,
             ssl: tako_core::SslBinding {
                 provider: tako_core::SslProvider::Cloudflare,
-                cloudflare_api_token: Some("ssl-token".to_string()),
+                cloudflare_api_token: None,
             },
             backup: None,
             force: false,
@@ -617,8 +628,7 @@ async fn deploy_rejects_release_path_outside_managed_root() {
             path: outside_release.to_string_lossy().to_string(),
             routes: vec!["api.example.com".to_string()],
             source_ip: tako_core::SourceIpMode::Auto,
-            secrets: Some(HashMap::new()),
-            runtime_credentials: None,
+            secrets_digest: None,
             storages: Some(HashMap::new()),
             databases: None,
             ssl: tako_core::SslBinding::default(),
@@ -667,8 +677,7 @@ async fn deploy_rejects_invalid_release_version() {
             path: release_dir.to_string_lossy().to_string(),
             routes: vec!["api.example.com".to_string()],
             source_ip: tako_core::SourceIpMode::Auto,
-            secrets: Some(HashMap::new()),
-            runtime_credentials: None,
+            secrets_digest: None,
             storages: Some(HashMap::new()),
             databases: None,
             ssl: tako_core::SslBinding::default(),
@@ -724,8 +733,7 @@ async fn deploy_rejects_protocol_mismatch_before_registering_app() {
             path: release_dir.to_string_lossy().to_string(),
             routes: vec!["app.localhost".to_string()],
             source_ip: tako_core::SourceIpMode::Auto,
-            secrets: Some(HashMap::new()),
-            runtime_credentials: None,
+            secrets_digest: None,
             storages: Some(HashMap::new()),
             databases: None,
             ssl: tako_core::SslBinding::default(),

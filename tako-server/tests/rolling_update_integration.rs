@@ -313,17 +313,34 @@ fn failed_rolling_update_keeps_previous_release_serving() {
     let new_secrets: HashMap<String, String> =
         HashMap::from([("API_KEY".to_string(), "new-secret".to_string())]);
 
+    // Debug server builds read an app environment's secrets from this file
+    // instead of the network agent, which this test does not run.
+    let pin = |secrets: &HashMap<String, String>, token: &str| -> String {
+        std::fs::write(
+            server.data_dir().join("test-secrets.json"),
+            serde_json::to_vec(&serde_json::json!({
+                app_id: {"app": secrets, "credentials": {"ssl.cloudflare": token}}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let response = server.send_command(&serde_json::json!({
+            "command": "secrets_digest",
+            "app": app_id,
+        }));
+        response["data"]["digest"]
+            .as_str()
+            .unwrap_or_else(|| panic!("secrets_digest should return a digest: {response}"))
+            .to_string()
+    };
     let resp = server.send_command(&serde_json::json!({
         "command": "deploy",
         "app": app_id,
         "version": "v1",
         "path": app_dir_v1.to_string_lossy(),
         "routes": [old_host],
-        "secrets": old_secrets,
-        "ssl": {
-            "provider": "letsencrypt",
-            "cloudflare_api_token": "old-token"
-        },
+        "secrets_digest": pin(&old_secrets, "old-token"),
+        "ssl": {"provider": "letsencrypt"},
     }));
     assert_eq!(
         resp.get("status").and_then(|s| s.as_str()),
@@ -354,7 +371,7 @@ fn failed_rolling_update_keeps_previous_release_serving() {
         "version": "v2",
         "path": app_dir_v2.to_string_lossy(),
         "routes": [new_host],
-        "secrets": new_secrets,
+        "secrets_digest": pin(&new_secrets, "new-token"),
     }));
     assert_eq!(
         resp.get("status").and_then(|s| s.as_str()),

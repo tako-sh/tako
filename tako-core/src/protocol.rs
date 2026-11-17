@@ -96,8 +96,12 @@ pub enum Command {
     PrepareRelease {
         app: String,
         path: String,
-        /// This deployment's secrets, used for preparation without persisting them.
-        secrets: HashMap<String, String>,
+        /// The app environment's secret snapshot to prepare with, from
+        /// [`Command::SecretsDigest`]. The server resolves its values and uses
+        /// them without persisting them. Without one, preparation gets no
+        /// secrets.
+        #[serde(default)]
+        secrets_digest: Option<String>,
         #[serde(default)]
         force: bool,
     },
@@ -115,9 +119,13 @@ pub enum Command {
         path: String,
         /// Route patterns for this app (host, wildcard, optional path).
         routes: Vec<String>,
-        /// SSL certificate provider and optional provider credentials.
+        /// SSL certificate provider. The server supplies the provider credential
+        /// from the secret snapshot.
         #[serde(default)]
         ssl: SslBinding,
+        /// The app environment's secret snapshot, from [`Command::SecretsDigest`].
+        #[serde(default)]
+        secrets_digest: Option<String>,
         #[serde(default)]
         force: bool,
     },
@@ -148,12 +156,12 @@ pub enum Command {
         /// Non-secret env vars (matches the env that HTTP instances receive).
         #[serde(default)]
         vars: HashMap<String, String>,
-        /// Decrypted secrets, injected as env vars for the duration of
-        /// this one-shot. Long-running app processes still receive secrets
-        /// via fd 3; release commands are short-lived and use env vars
-        /// instead.
+        /// The secret snapshot whose app secrets are injected as env vars for
+        /// the duration of this one-shot, from [`Command::SecretsDigest`].
+        /// Long-running app processes still receive secrets via fd 3;
+        /// release commands are short-lived and use env vars instead.
         #[serde(default)]
-        secrets: HashMap<String, String>,
+        secrets_digest: Option<String>,
         /// Databases of the release. The command receives a bootstrap
         /// envelope (`TAKO_BOOTSTRAP_DATA`) with a connection for each.
         #[serde(default)]
@@ -175,16 +183,16 @@ pub enum Command {
         #[serde(default)]
         source_ip: SourceIpMode,
 
-        /// Secret environment variables injected into app processes at spawn time.
-        /// Non-secret env vars are read by the server from app.json in the release dir.
-        /// When `None`, the server keeps existing secrets for this app.
+        /// The app environment's secret snapshot, from [`Command::SecretsDigest`].
+        /// The server resolves app secrets and provider credentials from it
+        /// and fills the secret parts of the bindings below. When `None`, the
+        /// server keeps the secrets and credentials it last applied.
+        /// Non-secret env vars are read by the server from app.json in the
+        /// release dir.
         #[serde(default)]
-        secrets: Option<HashMap<String, String>>,
-        /// Tako runtime/provider credentials used by the server only. These
-        /// are not injected into app processes.
-        #[serde(default)]
-        runtime_credentials: Option<HashMap<String, String>>,
-        /// Storage bindings injected into app processes at spawn time.
+        secrets_digest: Option<String>,
+        /// Storage bindings injected into app processes at spawn time. S3
+        /// bindings name their storage resource and carry no access keys.
         /// When `None`, the server keeps existing storage bindings for this app.
         #[serde(default)]
         storages: Option<HashMap<String, StorageBinding>>,
@@ -193,12 +201,12 @@ pub enum Command {
         /// existing database bindings for this app.
         #[serde(default)]
         databases: Option<HashMap<String, DatabaseBinding>>,
-        /// SSL certificate provider and optional provider credentials.
-        /// Defaults to Let's Encrypt when omitted.
+        /// SSL certificate provider. Defaults to Let's Encrypt when omitted.
         #[serde(default)]
         ssl: SslBinding,
-        /// Private backup target for this app/environment. When absent, any
-        /// existing backup configuration for the app is cleared.
+        /// Private backup target for this app/environment, without access
+        /// keys or backup keys. When absent, any existing backup configuration
+        /// for the app is cleared.
         #[serde(default)]
         backup: Option<Box<BackupBinding>>,
         #[serde(default)]
@@ -206,7 +214,8 @@ pub enum Command {
     },
 
     /// Create a backup for the app immediately. When backup is provided, the
-    /// server stores it before running the backup.
+    /// server fills its keys from the app environment's current secrets and
+    /// stores it before running the backup.
     BackupNow {
         app: String,
         #[serde(default)]
@@ -404,10 +413,14 @@ pub enum Command {
     /// List all configured routes (all apps)
     Routes,
 
-    /// Update secrets for an app
-    UpdateSecrets {
+    /// Pin the app environment's current secret snapshot for a deploy. The
+    /// server first waits for the listed versions, which the deploying client
+    /// just published, so a lagging server cannot pin older values. Returns
+    /// `{ "digest": "..." }` for the deploy's other commands.
+    SecretsDigest {
         app: String,
-        secrets: HashMap<String, String>,
+        #[serde(default)]
+        published: Vec<PublishedSecret>,
     },
 
     /// Get the SHA-256 hash of an app's current secrets
@@ -912,6 +925,17 @@ pub enum SslProvider {
     #[default]
     LetsEncrypt,
     Cloudflare,
+}
+
+/// A secret record version a client published for an app environment:
+/// its record kind (`app`, `credential`, `storage`, `backup_key` or
+/// `backup_active`), name and the revision the server accepted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublishedSecret {
+    pub kind: String,
+    pub name: String,
+    pub revision: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

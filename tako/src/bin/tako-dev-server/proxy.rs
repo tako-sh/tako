@@ -582,6 +582,7 @@ mod tests {
                     "uploads".into(),
                     tako_core::StorageBinding {
                         provider: tako_core::StorageProvider::Local,
+                        resource: None,
                         bucket: None,
                         endpoint: None,
                         region: None,

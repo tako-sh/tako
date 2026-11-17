@@ -58,16 +58,16 @@ struct DeployConfig {
     version: String,
     routes: Vec<String>,
     source_ip: tako_core::SourceIpMode,
-    secrets: HashMap<String, String>,
-    runtime_credentials: HashMap<String, String>,
+    /// The app environment's secret snapshot, pinned by the leader server.
+    /// Servers resolve secret values from it; the client never sends them.
+    secrets_digest: Option<String>,
+    /// S3 bindings name their resource and carry no access keys.
     storages: HashMap<String, tako_core::StorageBinding>,
     ssl: tako_core::SslBinding,
     backup: Option<tako_core::BackupBinding>,
     /// Database bindings, sent with the release command and the deploy.
     databases: HashMap<String, tako_core::DatabaseBinding>,
     force: bool,
-    /// SHA-256 hash of the decrypted secrets for this deploy.
-    secrets_hash: String,
     main: String,
     use_unified_target_process: bool,
 
@@ -101,8 +101,6 @@ struct PreflightPhaseResult {
 struct BuildPhaseResult {
     version: String,
     manifest_main: String,
-    deploy_secrets: HashMap<String, String>,
-    deploy_runtime_credentials: HashMap<String, String>,
     deploy_storages: HashMap<String, tako_core::StorageBinding>,
     deploy_ssl: tako_core::SslBinding,
     deploy_backup: Option<tako_core::BackupBinding>,
@@ -147,7 +145,7 @@ impl DeployConfig {
             path: release_dir.to_string(),
             command_line: command_line.clone(),
             vars: HashMap::new(),
-            secrets: self.secrets.clone(),
+            secrets_digest: self.secrets_digest.clone(),
             databases: self.databases.clone(),
             force: self.force,
         })
@@ -490,7 +488,6 @@ async fn run_async(
         app_name.clone(),
         env.clone(),
         tako_config.clone(),
-        secrets.clone(),
         configure_bindings,
         preflight_preset_ref.clone(),
         preflight_runtime_adapter,
@@ -570,8 +567,6 @@ async fn run_async(
     let BuildPhaseResult {
         version,
         manifest_main,
-        deploy_secrets,
-        deploy_runtime_credentials,
         deploy_storages,
         deploy_ssl,
         deploy_backup,
@@ -581,7 +576,6 @@ async fn run_async(
 
     // ===== Deploy =====
 
-    let secrets_hash = tako_core::compute_secrets_hash(&deploy_secrets);
     let deployment_app_name = tako_core::deployment_app_id(&app_name, &env);
     let leader_server = server_names
         .first()
@@ -610,19 +604,33 @@ async fn run_async(
         databases::apply_peer_keys(&mut database_plan, &prepared.peer_keys);
         granted = Some(prepared);
     }
+    // Pin the environment's secret snapshot on the leader once it holds what
+    // this deploy published. Every server then applies exactly that snapshot.
+    let secrets_digest = if output::is_dry_run() {
+        None
+    } else {
+        let leader = servers
+            .get(&leader_server)
+            .ok_or("Leader server is missing from the server inventory")?;
+        let mut client = crate::management_http::ManagementClient::for_server(leader).await?;
+        let published = std::mem::take(&mut secrets.published);
+        Some(
+            remote::query_secrets_digest(&mut client, &deployment_app_name, published)
+                .await
+                .map_err(|error| format!("Could not pin this deploy's secrets: {error}"))?,
+        )
+    };
     let deploy_config = Arc::new(DeployConfig {
         app_name: deployment_app_name.clone(),
         version: version.clone(),
         routes: routes.clone(),
         source_ip,
-        secrets: deploy_secrets,
-        runtime_credentials: deploy_runtime_credentials,
+        secrets_digest,
         storages: deploy_storages,
         ssl: deploy_ssl,
         backup: deploy_backup,
         databases: crate::commands::sqlite::target::wire_bindings(&database_plan),
         force,
-        secrets_hash,
         main: manifest_main,
         use_unified_target_process: use_unified_js_target_process,
         release_command,

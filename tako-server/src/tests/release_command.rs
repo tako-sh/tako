@@ -40,9 +40,9 @@ async fn run_release_executes_command_in_release_dir() {
     )
     .unwrap();
 
-    // Seed stale secrets for the app. The release command must use the
-    // command payload, because deploy sends fresh secrets before Deploy stores
-    // them in the state DB.
+    // Seed stale secrets for the app. The release command must use the pinned
+    // snapshot, because Deploy stores the new values only after the release
+    // command runs.
     state
         .state_store
         .set_secrets(
@@ -58,7 +58,14 @@ async fn run_release_executes_command_in_release_dir() {
             path: release_dir.to_string_lossy().to_string(),
             command_line: "printf %s \"$NODE_ENV-$DATABASE_URL\" > out.txt".to_string(),
             vars: HashMap::new(),
-            secrets: HashMap::from([("DATABASE_URL".to_string(), "postgres://new".to_string())]),
+            secrets_digest: Some(crate::secret_snapshot::test_file::pin(
+                temp.path(),
+                "my-app/production",
+                crate::secret_snapshot::test_file::TestScope {
+                    app: [("DATABASE_URL".to_string(), "postgres://new".to_string())].into(),
+                    ..Default::default()
+                },
+            )),
             databases: HashMap::new(),
             force: false,
         })
@@ -118,7 +125,7 @@ async fn run_release_returns_error_on_nonzero_exit() {
             path: release_dir.to_string_lossy().to_string(),
             command_line: "echo boom 1>&2; exit 3".to_string(),
             vars: HashMap::new(),
-            secrets: HashMap::new(),
+            secrets_digest: None,
             databases: HashMap::new(),
             force: false,
         })
@@ -162,7 +169,7 @@ async fn run_release_rejects_path_outside_release_root() {
             path: "/etc/passwd".to_string(),
             command_line: "true".to_string(),
             vars: HashMap::new(),
-            secrets: HashMap::new(),
+            secrets_digest: None,
             databases: HashMap::new(),
             force: false,
         })
@@ -213,7 +220,7 @@ async fn run_release_rejects_protocol_mismatch_before_executing_command() {
             path: release_dir.to_string_lossy().to_string(),
             command_line: "touch should-not-exist".to_string(),
             vars: HashMap::new(),
-            secrets: HashMap::new(),
+            secrets_digest: None,
             databases: HashMap::new(),
             force: false,
         })
@@ -273,7 +280,7 @@ async fn run_release_force_attempts_protocol_mismatch() {
             path: release_dir.to_string_lossy().to_string(),
             command_line: "touch forced".to_string(),
             vars: HashMap::new(),
-            secrets: HashMap::new(),
+            secrets_digest: None,
             databases: HashMap::new(),
             force: true,
         })

@@ -306,6 +306,7 @@ fn bootstrap_pipe_envelope_has_token_and_secrets() {
         "uploads".to_string(),
         tako_core::StorageBinding {
             provider: tako_core::StorageProvider::Local,
+            resource: None,
             bucket: None,
             endpoint: None,
             region: None,

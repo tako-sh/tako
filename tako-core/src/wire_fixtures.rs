@@ -450,6 +450,7 @@ fn bootstrap() -> Fixture {
             "uploads".to_string(),
             StorageBinding {
                 provider: StorageProvider::S3,
+                resource: None,
                 bucket: Some("demo-uploads".into()),
                 endpoint: Some("https://s3.example.com".into()),
                 region: Some("auto".into()),
@@ -465,6 +466,7 @@ fn bootstrap() -> Fixture {
             "files".to_string(),
             StorageBinding {
                 provider: StorageProvider::Local,
+                resource: None,
                 bucket: None,
                 endpoint: None,
                 region: None,

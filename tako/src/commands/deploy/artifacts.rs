@@ -16,8 +16,8 @@ use super::format::{
     should_use_unified_js_target_process,
 };
 use super::manifest::{
-    build_container_deploy_archive_manifest, build_deploy_archive_manifest, decrypt_deploy_secrets,
-    detect_release_sdk, resolve_deploy_main, resolve_deploy_version, resolve_git_commit_message,
+    build_container_deploy_archive_manifest, build_deploy_archive_manifest, detect_release_sdk,
+    resolve_deploy_main, resolve_deploy_version, resolve_git_commit_message,
 };
 use super::task_tree::{ArtifactBuildGroup, DeployTaskTreeController};
 
@@ -31,59 +31,35 @@ use packaging::{build_container_target_artifacts, build_target_artifacts};
 
 #[derive(Default)]
 struct DeploymentBindings {
-    runtime_credentials: HashMap<String, String>,
     storages: HashMap<String, tako_core::StorageBinding>,
     backup: Option<tako_core::BackupBinding>,
     ssl: tako_core::SslBinding,
 }
 
+/// The deploy's bindings without secret parts. Servers fill access keys,
+/// backup keys and the Cloudflare token from the pinned secret snapshot.
 fn deployment_bindings(
     config: &TakoToml,
-    secrets: &crate::config::SecretsStore,
     env: &str,
-    project: &Path,
     configure: bool,
 ) -> Result<DeploymentBindings, String> {
-    let provider = config.get_ssl_provider(env);
+    let ssl = tako_core::SslBinding {
+        provider: config.get_ssl_provider(env),
+        cloudflare_api_token: None,
+    };
     if !configure {
-        // The server checks routes/provider and retains its provisioned secrets.
+        // The server checks routes/provider and retains its provisioned bindings.
         return Ok(DeploymentBindings {
-            ssl: tako_core::SslBinding {
-                provider,
-                cloudflare_api_token: None,
-            },
+            ssl,
             ..Default::default()
         });
     }
     Ok(DeploymentBindings {
-        runtime_credentials: crate::commands::credentials::decrypt_runtime_credentials(
-            env,
-            secrets,
-            Some(project),
-        )
-        .map_err(|e| e.to_string())?,
-        storages: crate::commands::storage::decrypt_storage_bindings(
-            env,
-            config,
-            secrets,
-            Some(project),
-        )
-        .map_err(|e| e.to_string())?,
-        backup: crate::commands::storage::decrypt_backup_binding(
-            env,
-            config,
-            secrets,
-            Some(project),
-        )
-        .map_err(|e| e.to_string())?,
-        ssl: crate::commands::credentials::decrypt_ssl_binding(
-            env,
-            provider,
-            &config.get_routes(env).unwrap_or_default(),
-            secrets,
-            Some(project),
-        )
-        .map_err(|e| e.to_string())?,
+        storages: crate::commands::storage::plain_storage_bindings(env, config)
+            .map_err(|e| e.to_string())?,
+        backup: crate::commands::storage::plain_backup_binding(env, config)
+            .map_err(|e| e.to_string())?,
+        ssl,
     })
 }
 
@@ -95,7 +71,6 @@ pub(super) async fn prepare_build_phase(
     app_name: String,
     env: String,
     tako_config: TakoToml,
-    secrets: crate::config::SecretsStore,
     configure_bindings: bool,
     preset_ref: String,
     runtime_adapter: BuildAdapter,
@@ -156,7 +131,6 @@ pub(super) async fn prepare_build_phase(
             git_dirty,
             description.as_deref(),
             tako_config.get_merged_vars(&env),
-            secrets.get_env(&env),
             tako_config.images.clone(),
             app_dir,
             resolve_configured_workflow_run(&tako_config)?,
@@ -174,20 +148,11 @@ pub(super) async fn prepare_build_phase(
             manifest.runtime = "compose".into();
             manifest.compose = Some(compose.clone());
         }
-        let deploy_secrets = decrypt_deploy_secrets(&env, &secrets, Some(&project_dir))
-            .map_err(|e| e.to_string())?;
         let DeploymentBindings {
-            runtime_credentials: deploy_runtime_credentials,
             storages: deploy_storages,
             backup: deploy_backup,
             ssl: deploy_ssl,
-        } = deployment_bindings(
-            &tako_config,
-            &secrets,
-            &env,
-            &project_dir,
-            configure_bindings,
-        )?;
+        } = deployment_bindings(&tako_config, &env, configure_bindings)?;
 
         let app_json_bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
         let artifacts_by_target = build_container_target_artifacts(
@@ -209,8 +174,6 @@ pub(super) async fn prepare_build_phase(
         return Ok(BuildPhaseResult {
             version,
             manifest_main: "container".to_string(),
-            deploy_secrets,
-            deploy_runtime_credentials,
             deploy_storages,
             deploy_ssl,
             deploy_backup,
@@ -330,26 +293,16 @@ pub(super) async fn prepare_build_phase(
         description.as_deref(),
         tako_config.get_merged_vars(&env),
         runtime_env_vars,
-        secrets.get_env(&env),
         tako_config.images.clone(),
         app_dir,
         install_dir,
     );
     manifest.sdk = detect_release_sdk(runtime_adapter.id(), &eff_app_dir, &source_root);
-    let deploy_secrets =
-        decrypt_deploy_secrets(&env, &secrets, Some(&project_dir)).map_err(|e| e.to_string())?;
     let DeploymentBindings {
-        runtime_credentials: deploy_runtime_credentials,
         storages: deploy_storages,
         backup: deploy_backup,
         ssl: deploy_ssl,
-    } = deployment_bindings(
-        &tako_config,
-        &secrets,
-        &env,
-        &project_dir,
-        configure_bindings,
-    )?;
+    } = deployment_bindings(&tako_config, &env, configure_bindings)?;
 
     let app_json_bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
 
@@ -403,8 +356,6 @@ pub(super) async fn prepare_build_phase(
     Ok(BuildPhaseResult {
         version,
         manifest_main,
-        deploy_secrets,
-        deploy_runtime_credentials,
         deploy_storages,
         deploy_ssl,
         deploy_backup,

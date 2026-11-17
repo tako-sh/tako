@@ -6,6 +6,7 @@ use tako_core::{StorageBinding, StorageProvider};
 fn binding(force_path_style: bool) -> StorageBinding {
     StorageBinding {
         provider: StorageProvider::S3,
+        resource: None,
         bucket: Some("uploads".into()),
         endpoint: Some("https://s3.example.com/root".into()),
         region: Some("us-east-1".into()),

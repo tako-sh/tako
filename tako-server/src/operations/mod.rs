@@ -20,6 +20,5 @@ pub(crate) use release_artifacts::available_bytes;
 mod releases;
 #[cfg(test)]
 pub(crate) use releases::ReleaseRun;
-mod secrets;
 mod tls;
 mod workflows;

@@ -48,6 +48,70 @@ impl RecordContent {
     }
 }
 
+/// One opened value of an app environment, as a server reads it for a deploy.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScopeValue {
+    pub kind: RecordKind,
+    pub name: String,
+    pub content: RecordContent,
+}
+
+impl std::fmt::Debug for ScopeValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScopeValue")
+            .field("kind", &self.kind)
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
+}
+
+/// An app environment's current values on one server: what a deploy applies.
+/// Only the local server process receives it, never a client.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScopeSecrets {
+    /// Hash over the scope's current record versions, deletions included.
+    /// Servers that agree on it hold the same values.
+    pub digest: String,
+    /// Whether every requested published version has arrived here.
+    pub caught_up: bool,
+    /// Names of values this server cannot open yet because their key grant
+    /// has not arrived.
+    pub missing_keys: Vec<String>,
+    pub values: Vec<ScopeValue>,
+}
+
+/// A record version a client published in a scope, which a server waits for
+/// before pinning the scope's snapshot.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublishedVersion {
+    pub kind: RecordKind,
+    pub name: String,
+    pub revision: u64,
+}
+
+impl SharedSnapshot {
+    /// The digest of `scope`'s current record versions, deletions included.
+    pub fn scope_digest(&self, scope: &AppEnv) -> RuntimeResult<String> {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        for (address, record) in self.latest()? {
+            if &address.scope != scope {
+                continue;
+            }
+            hash.update(serde_json::to_vec(&(
+                &address.kind,
+                &address.name,
+                &record.id,
+            ))?);
+            hash.update(b"\n");
+        }
+        Ok(hex::encode(hash.finalize()))
+    }
+}
+
 /// The stored content of a record whose kind is not secret.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

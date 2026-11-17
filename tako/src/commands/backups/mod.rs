@@ -120,26 +120,36 @@ async fn run_async(
                 &tako_config,
                 &servers,
             )?;
+            let mut published = Vec::new();
             let backup = if output::is_dry_run()
                 || !super::helpers::can_configure_bindings(&tako_config, &target.env)?
             {
                 None
             } else {
                 let mut secrets = context.load_secrets_for_environment(Some(&target.env))?;
-                crate::commands::storage::ensure_backup_keys_for_env(
+                // A new backup key must reach the network: the servers fill
+                // the backup target's keys from published state.
+                if crate::commands::storage::ensure_backup_keys_for_env(
                     &context.project_dir,
                     &target.env,
                     &tako_config,
                     &mut secrets,
-                )?;
-                crate::commands::storage::decrypt_backup_binding(
-                    &target.env,
-                    &tako_config,
-                    &secrets,
-                    Some(&context.project_dir),
-                )?
+                )? {
+                    published = tokio::task::block_in_place(|| {
+                        crate::network::secrets::sync_environment(
+                            &context.project_dir,
+                            &tako_config,
+                            &app_name,
+                            &target.env,
+                            true,
+                            false,
+                        )
+                    })?
+                    .published;
+                }
+                crate::commands::storage::plain_backup_binding(&target.env, &tako_config)?
             };
-            backup_now(&target, &servers, backup).await
+            backup_now(&target, &servers, backup, published).await
         }
         BackupCommands::List { env, server } => {
             let target = resolve_backup_target(
@@ -193,6 +203,7 @@ async fn backup_now(
     target: &target::BackupTarget,
     servers: &ServerInventory,
     backup: Option<tako_core::BackupBinding>,
+    published: Vec<tako_core::PublishedSecret>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     output::section("Backups");
     output::info(&format!(
@@ -203,6 +214,20 @@ async fn backup_now(
     if output::is_dry_run() {
         output::dry_run_skip("Create backup");
         return Ok(());
+    }
+    // Wait until each server holds the backup key this command published.
+    if !published.is_empty() {
+        send_typed_to_servers::<serde_json::Value>(
+            &target.server_names,
+            servers,
+            Command::SecretsDigest {
+                app: target.remote_app_name.clone(),
+                published,
+            },
+            "secrets_digest",
+            "Waiting for the new backup key",
+        )
+        .await?;
     }
 
     let results = send_typed_to_servers::<BackupInfo>(

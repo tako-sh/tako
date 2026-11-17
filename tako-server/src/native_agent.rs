@@ -19,7 +19,7 @@ mod services;
 #[path = "native_agent/store.rs"]
 mod store;
 
-pub use ipc::{recheck_authority, recover_client, recovery_config, relay, run};
+pub use ipc::{recheck_authority, recover_client, recovery_config, relay, run, scope_secrets};
 use serde::{Deserialize, Serialize};
 use tako_network::{
     BootId,
@@ -62,12 +62,21 @@ pub struct AgentRequest {
 }
 
 /// The recovery variant is accepted only from a kernel-authenticated root peer.
-/// It is never constructible through the public HTTP relay.
+/// The secrets variant serves the local server process applying a deploy.
+/// Neither is constructible through the public HTTP relay.
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
 pub(super) enum AgentCommand {
     Rpc(AgentRequest),
     Recovery(RecoveryRequest),
+    Secrets(SecretsRequest),
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SecretsRequest {
+    pub secrets_scope: tako_network::AppEnv,
+    #[serde(default)]
+    pub published: Vec<tako_network::shared::PublishedVersion>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -80,6 +89,10 @@ pub(super) struct RecoveryRequest {
 pub struct AgentResponse {
     pub status: u16,
     pub response: Option<RpcResponse>,
+    /// Opened values for [`AgentCommand::Secrets`]. The HTTP relay forwards
+    /// only `response`, so these never leave the host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secrets: Option<tako_network::shared::ScopeSecrets>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     pub boot: BootId,
@@ -90,6 +103,7 @@ impl AgentResponse {
         Self {
             status: 503,
             response: None,
+            secrets: None,
             error: Some("native network is not ready".into()),
             boot: boot.clone(),
             ready: false,

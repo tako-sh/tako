@@ -88,14 +88,27 @@ it had to differ from the first draft, this note records what was built.
   into the bindings, builds the app environment and stores the result as the
   last-applied copy (`state_store` secrets, runtime credentials, storages, SSL,
   backup).
-- Deploy-time secret validation moves to the server. Today the client runs it
-  (`validate_release_secret_snapshot`, `tako/src/commands/deploy/config.rs:371`;
-  `validate_secrets_for_deployment`, `tako/src/validation/secrets.rs:47`). Servers
-  can read every environment, so the cross-environment name check still works.
-  Errors come back as the same messages.
-- Remove `UpdateSecrets` and `GetSecretsHash`. The CLI no longer sends
-  `UpdateSecrets`, and `GetSecretsHash` only feeds the hash skip in
-  `tako/src/commands/deploy/remote.rs:578`, which the digest replaces.
+- Deploy-time secret validation stays on full clients, which read names and
+  expiry dates from their local state without decrypting
+  (`validate_release_secret_snapshot`, `tako/src/commands/deploy/config.rs`).
+  Servers also refuse what they cannot apply: a missing storage credential or
+  backup key, and an expired app secret or credential, with the command that
+  fixes it (`tako-server/src/secret_snapshot.rs`). Deploy clients get those
+  errors without local state.
+- Remove `UpdateSecrets`: secret changes apply on the next deploy. Keep
+  `GetSecretsHash`, a hash of the last-applied values with no values in it;
+  tests use it to check that a failed deploy restores them. The CLI no longer
+  calls it.
+- The leader pins with `SecretsDigest { app, published }`. The server's main
+  process reads values through a local-only network agent command
+  (`AgentCommand::Secrets`), accepted from root and the service account over
+  the agent socket and never built by the HTTP relay; its reply carries values
+  in a field the relay never forwards.
+- Debug builds only: tests without a network agent put values in
+  `<data dir>/test-secrets.json`. Release builds never read it.
+- Database management commands (`CreateDatabase`, `ConfigureDatabaseBackup`)
+  still carry their snapshot key and storage credentials. Only full clients
+  send them.
 - Rollback keeps today's semantics: old code with the server's last-applied
   secrets and bindings (`rollback_app`, `tako-server/src/operations/releases.rs:350`
   passes `None` for all of them). It does not read the shared store.
@@ -250,8 +263,8 @@ Each step updates the docs and skills it changes (`commands/sync-docs.md`,
    `--name`, recovery invite rename, author names in `tako/src/network/secrets.rs`
    and `tako/src/commands/secret/sync.rs:173`.
 3. **Server-side secret resolution.** `tako-core/src/protocol.rs` (`Deploy`,
-   `PrepareDeploy`, `BackupNow` fields; secret-free binding configuration; remove
-   `UpdateSecrets` and `GetSecretsHash`), `tako/src/commands/deploy/{mod,artifacts,manifest,remote,config}.rs`,
+   `PrepareDeploy`, `PrepareRelease`, `RunRelease` fields; `SecretsDigest`;
+   secret-free binding configuration; remove `UpdateSecrets`), `tako/src/commands/deploy/{mod,artifacts,manifest,remote,config}.rs`,
    `tako/src/commands/backups/mod.rs:135`, `tako-server/src/operations/{deploy,releases,dispatch,drain}.rs`,
    a server module that opens the scope's records and computes the digest
    (`tako-network/src/runtime/shared.rs`), and the policy's binding checks.
@@ -292,8 +305,9 @@ Protocol v0, no shims. Servers and CLIs upgrade together.
 - Existing `--deploy` clients lose app-secret access, connect, logs, backups,
   scale and delete. Agent sandboxes that set secrets need a full client.
 - Removed: `--admin`, `--ssh`, `join --name`, `tako network revoke`,
-  `UpdateSecrets`, `GetSecretsHash`. `tako-server admin invite` became
-  `tako-server client invite`.
+  `UpdateSecrets`. `tako-server admin invite` became `tako-server client invite`.
+- Secret changes no longer reach running apps without a deploy; there is no
+  in-place secret update.
 
 ## Verification
 

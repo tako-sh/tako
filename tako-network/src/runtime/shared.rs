@@ -1,7 +1,8 @@
 use super::*;
+use crate::AppEnv;
 use crate::shared::{
-    LegacyKeyGrant, PUBLICATION_RETRY_SECONDS, RecordMutation, RecordReceipt, SharedRecord,
-    SharedSnapshot,
+    LegacyKeyGrant, PUBLICATION_RETRY_SECONDS, RecordAddress, RecordMutation, RecordReceipt,
+    SharedRecord, SharedSnapshot,
 };
 use sha2::{Digest, Sha256};
 
@@ -18,6 +19,49 @@ struct Publication {
 }
 
 impl<S: RegistryStore> ServerRuntime<S> {
+    /// Open `scope`'s current values with this server's key grants, for the
+    /// local server process applying a deploy. Never reachable over RPC.
+    pub fn scope_secrets(
+        &mut self,
+        scope: &AppEnv,
+        published: &[crate::shared::PublishedVersion],
+    ) -> RuntimeResult<crate::shared::ScopeSecrets> {
+        let state = self.shared_snapshot()?;
+        let latest = state.latest()?;
+        let caught_up = published.iter().all(|version| {
+            let address = RecordAddress {
+                scope: scope.clone(),
+                kind: version.kind,
+                name: version.name.clone(),
+            };
+            latest
+                .get(&address)
+                .is_some_and(|record| record.revision >= version.revision)
+        });
+        let mut values = Vec::new();
+        let mut missing_keys = Vec::new();
+        for (address, record) in &latest {
+            if &address.scope != scope {
+                continue;
+            }
+            match record.open(&state, &self.keys, &self.config.server_id) {
+                Ok(Some(bytes)) => values.push(crate::shared::ScopeValue {
+                    kind: address.kind,
+                    name: address.name.clone(),
+                    content: serde_json::from_slice(&bytes)?,
+                }),
+                Ok(None) => {}
+                Err(_) => missing_keys.push(address.name.clone()),
+            }
+        }
+        Ok(crate::shared::ScopeSecrets {
+            digest: state.scope_digest(scope)?,
+            caught_up,
+            missing_keys,
+            values,
+        })
+    }
+
     fn shared_snapshot(&mut self) -> RuntimeResult<SharedSnapshot> {
         let snapshot = self.store.shared_snapshot()?;
         snapshot.validate()?;
