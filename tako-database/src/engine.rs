@@ -424,12 +424,14 @@ pub struct Connection {
 /// `last_insert_rowid` leaves that value unchanged, and so does one into a
 /// `WITHOUT ROWID` table, which reports no rowid at all; SQLite's update
 /// hook runs only for the first, so it tells them apart.
-/// Triggers can insert too, so the table of each matching insert is kept:
-/// only an insert into the statement's own target counts.
+/// Triggers can insert too, so only an insert into the statement's own
+/// target counts; whether one happened is all that is kept, however many
+/// rows the statement writes.
 #[derive(Default)]
 struct RowidWatch {
     rowid: AtomicI64,
-    tables: parking_lot::Mutex<Vec<String>>,
+    target: parking_lot::Mutex<Option<String>>,
+    hit: AtomicBool,
 }
 
 impl Connection {
@@ -501,9 +503,15 @@ impl Connection {
         conn.update_hook(Some(
             move |action: rusqlite::hooks::Action, _: &str, table: &str, rowid: i64| {
                 if action == rusqlite::hooks::Action::SQLITE_INSERT
+                    && !hook_rowids.hit.load(Ordering::Relaxed)
                     && rowid == hook_rowids.rowid.load(Ordering::Relaxed)
+                    && hook_rowids
+                        .target
+                        .lock()
+                        .as_deref()
+                        .is_some_and(|target| target.eq_ignore_ascii_case(table))
                 {
-                    hook_rowids.tables.lock().push(table.to_owned());
+                    hook_rowids.hit.store(true, Ordering::Relaxed);
                 }
             },
         ))
@@ -691,7 +699,11 @@ impl Connection {
         let before_changes = self.conn.total_changes();
         let before_rowid = self.conn.last_insert_rowid();
         self.rowids.rowid.store(before_rowid, Ordering::Relaxed);
-        self.rowids.tables.lock().clear();
+        *self.rowids.target.lock() = starts_with_insert(sql)
+            .then(|| insert_target(sql))
+            .flatten()
+            .map(str::to_owned);
+        self.rowids.hit.store(false, Ordering::Relaxed);
         let in_transaction = !self.conn.is_autocommit();
         let (mut cached, mut fresh) = (None, None);
         // The time limit covers preparing the statement, which can take long
@@ -777,15 +789,7 @@ impl Connection {
         // An unchanged rowid counts only when this statement inserted a row
         // with it into its own target, not when it inserted into a WITHOUT
         // ROWID table (whose trigger may insert elsewhere).
-        let reinserted = inserts
-            && changed
-            && insert_target(sql).is_some_and(|target| {
-                self.rowids
-                    .tables
-                    .lock()
-                    .iter()
-                    .any(|table| table.eq_ignore_ascii_case(target))
-            });
+        let reinserted = inserts && changed && self.rowids.hit.load(Ordering::Relaxed);
         let last_insert_rowid = (after_rowid != before_rowid || reinserted).then_some(after_rowid);
         Ok(Outcome {
             rows: count,
@@ -837,9 +841,10 @@ pub enum Event<'a> {
 pub struct PendingRow<'a>(Vec<ValueRef<'a>>);
 
 impl PendingRow<'_> {
-    /// The row's JSON size, used for the response budget.
+    /// The row's JSON size, used for the response budget: an upper bound,
+    /// including the row's brackets and the comma after it.
     pub fn encoded_size(&self) -> usize {
-        self.0.iter().copied().map(value_size).sum()
+        ROW_FRAMING + self.0.iter().copied().map(value_size).sum::<usize>()
     }
 
     pub fn to_values(&self) -> Vec<Value> {
@@ -1191,19 +1196,27 @@ fn from_sql(value: ValueRef<'_>) -> Value {
     }
 }
 
-/// JSON size of a value, used for the response budget: exact for text and
-/// blobs, an upper bound for the fixed-size values and framing.
+/// A row's brackets and the comma after it.
+const ROW_FRAMING: usize = 8;
+/// A value's object around its content (`{"type":"blob","base64":""}` is
+/// the longest) and the comma after it.
+const VALUE_FRAMING: usize = 32;
+
+/// JSON size of a value, used for the response budget: an upper bound, exact
+/// for the content of text and blobs. Fixed-size values take at most 24
+/// bytes, such as `"-9223372036854775808"` or `-2.2250738585072014e-308`.
 fn value_size(value: ValueRef<'_>) -> usize {
-    24 + match value {
-        ValueRef::Null | ValueRef::Integer(_) | ValueRef::Real(_) => 24,
-        ValueRef::Text(bytes) => match std::str::from_utf8(bytes) {
-            Ok(text) => escaped_len(text),
-            // Without copying: a byte becomes at most a six-byte escape or
-            // a three-byte replacement character.
-            Err(_) => bytes.len() * 6,
-        },
-        ValueRef::Blob(blob) => blob.len().div_ceil(3) * 4,
-    }
+    VALUE_FRAMING
+        + match value {
+            ValueRef::Null | ValueRef::Integer(_) | ValueRef::Real(_) => 24,
+            ValueRef::Text(bytes) => match std::str::from_utf8(bytes) {
+                Ok(text) => escaped_len(text),
+                // Without copying: a byte becomes at most a six-byte escape or
+                // a three-byte replacement character.
+                Err(_) => bytes.len() * 6,
+            },
+            ValueRef::Blob(blob) => blob.len().div_ceil(3) * 4,
+        }
 }
 
 /// Length of `text` as a JSON string body: quotes and backslashes take two

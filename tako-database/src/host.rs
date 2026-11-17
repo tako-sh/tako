@@ -1147,21 +1147,37 @@ impl Drop for PauseGuard {
         if !self.resume {
             return;
         }
-        // Without waiting: this runs on an async worker, and a process that
-        // took the lock exclusively in between owns the file now.
+        // Without waiting: this runs on an async worker. A process that took
+        // the lock exclusively in between owns the file now, so this one
+        // stays paused rather than serve it without the lock.
         let mut lock = self.database.lock.lock();
-        if let Some(file) = lock.as_ref() {
-            let _ = file.unlock();
-            if file.try_lock_shared().is_err() {
-                *lock = None;
+        let shared = match lock.as_ref() {
+            Some(file) => {
+                let _ = file.unlock();
+                file.try_lock_shared().is_ok()
             }
-        } else if let Ok(file) = open_lock(&self.database.path)
-            && file.try_lock_shared().is_ok()
-        {
-            *lock = Some(file);
+            None => match open_lock(&self.database.path) {
+                Ok(file) if file.try_lock_shared().is_ok() => {
+                    *lock = Some(file);
+                    true
+                }
+                _ => false,
+            },
+        };
+        if !shared {
+            *lock = None;
         }
         drop(lock);
-        self.database.state.lock().paused = None;
+        let mut state = self.database.state.lock();
+        if shared {
+            state.paused = None;
+        } else {
+            tracing::warn!(
+                database = %self.database.id,
+                "another process holds the database's lock; this server no longer serves it"
+            );
+            state.paused = Some("another process took over this database".into());
+        }
     }
 }
 

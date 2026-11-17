@@ -172,7 +172,7 @@ pub(crate) fn run_pipeline(
         // statement cannot grow the response past its limit.
         let result = if budget.charge(metadata_size(&result)) {
             result
-        } else if budget.host_exhausted() && committed {
+        } else if committed {
             return unbuffered(results, result, total - index - 1, closed, budget);
         } else {
             let replacement = StreamResult::Error {
@@ -184,9 +184,6 @@ pub(crate) fn run_pipeline(
             // The replacement is charged too, so a long run of small
             // requests cannot keep adding uncharged errors.
             if !budget.charge(metadata_size(&replacement)) {
-                if budget.host_exhausted() && committed {
-                    return unbuffered(results, replacement, total - index - 1, closed, budget);
-                }
                 let stopped = if budget.host_exhausted() {
                     Stopped::HostBusy
                 } else {
@@ -211,10 +208,13 @@ pub(crate) fn run_pipeline(
     }
 }
 
-/// Ends a pipeline whose committed changes must be reported, once the host
-/// has no room left for its results: `current` is kept, and the `remaining`
-/// requests are answered with errors without running. These results count
-/// only against the response's own limit.
+/// Ends a pipeline whose committed changes must be reported, once its
+/// results find no more room, in the host's buffer or the response's own
+/// limit: discarding them would invite a retry that applies the changes
+/// twice. `current` ran and is kept when it fits the response's limit, or
+/// reported as run without its result; the `remaining` requests are answered
+/// with short errors without running. These count against neither budget:
+/// there are at most as many as the request had items, each of a fixed size.
 fn unbuffered(
     mut results: Vec<StreamResult>,
     current: StreamResult,
@@ -222,23 +222,35 @@ fn unbuffered(
     closed: bool,
     mut budget: Budget,
 ) -> PipelineOutcome {
-    let busy = || StreamResult::Error {
-        error: Error::new(
-            "HOST_BUSY",
-            "not run: the server is holding too many database responses; earlier requests in this pipeline were committed",
-        ),
-    };
-    for result in std::iter::once(current).chain(std::iter::repeat_with(busy).take(remaining)) {
-        if !budget.charge_unshared(metadata_size(&result)) {
-            return PipelineOutcome {
-                results,
-                closed: true,
-                stopped: Some(Stopped::TooLarge),
-                reservation: None,
-            };
+    let host_busy = budget.host_exhausted();
+    let current = if budget.charge_unshared(metadata_size(&current)) {
+        current
+    } else {
+        StreamResult::Error {
+            error: Error::new(
+                "RESPONSE_TOO_LARGE",
+                "this request ran, but its result does not fit in the response",
+            ),
         }
-        results.push(result);
-    }
+    };
+    results.push(current);
+    let (code, message) = if host_busy {
+        (
+            "HOST_BUSY",
+            "not run: the server is holding too many database responses",
+        )
+    } else {
+        (
+            "RESPONSE_TOO_LARGE",
+            "not run: the response reached its size limit",
+        )
+    };
+    results.extend(
+        std::iter::repeat_with(|| StreamResult::Error {
+            error: Error::new(code, message),
+        })
+        .take(remaining),
+    );
     PipelineOutcome {
         results,
         closed,

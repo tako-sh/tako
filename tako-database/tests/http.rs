@@ -916,6 +916,55 @@ async fn a_batch_stops_once_its_step_results_reach_the_response_limit() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_full_response_still_reports_changes_a_pipeline_committed() {
+    let h = harness(HostConfig {
+        max_response_bytes: 4 * 1024,
+        ..HostConfig::default()
+    });
+    pipeline(&h, Value::Null, vec![execute("CREATE TABLE t (x)")]).await;
+    // Each insert commits on its own; their results together outgrow the
+    // response before the last of them has run.
+    let requests: Vec<Value> = (0..60)
+        .map(|_| execute("INSERT INTO t VALUES (1)"))
+        .collect();
+    let (status, body) = post(
+        &h,
+        "/v3/pipeline",
+        json!({"baton": null, "requests": requests}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let results = body["results"].as_array().unwrap();
+    assert_eq!(results.len(), 60);
+    let first_error = results
+        .iter()
+        .position(|result| result["type"] == "error")
+        .expect("the response reached its limit");
+    assert!(first_error > 0, "{body}");
+    assert!(
+        results[first_error]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("ran"),
+        "{body}"
+    );
+    assert!(
+        results[first_error + 1..]
+            .iter()
+            .all(|result| result["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.starts_with("not run"))),
+        "{body}"
+    );
+    // Exactly the requests reported as run were applied.
+    let rows = pipeline(&h, Value::Null, vec![execute("SELECT count(*) FROM t")]).await;
+    assert_eq!(
+        rows["results"][0]["response"]["result"]["rows"][0][0]["value"],
+        (first_error + 1).to_string()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_busy_host_still_reports_changes_a_pipeline_committed() {
     let h = harness(HostConfig {
         max_buffered_bytes: 1024 * 1024,

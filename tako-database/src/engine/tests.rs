@@ -844,3 +844,30 @@ fn the_soft_heap_limit_is_set_for_the_process() {
     let current = unsafe { ffi::sqlite3_soft_heap_limit64(-1) };
     assert_eq!(current, 256 * 1024 * 1024);
 }
+
+#[test]
+fn value_sizes_cover_their_encoding() {
+    let text = "\u{0}\"é\n".repeat(3);
+    let blob = [0u8, 255, 7];
+    let values = [
+        ValueRef::Null,
+        ValueRef::Integer(i64::MIN),
+        ValueRef::Integer(i64::MAX),
+        ValueRef::Real(-2.225_073_858_507_201_4e-308),
+        ValueRef::Real(f64::MAX),
+        ValueRef::Text(b""),
+        ValueRef::Text(text.as_bytes()),
+        ValueRef::Text(&[0xff, 0xfe]),
+        ValueRef::Blob(&[]),
+        ValueRef::Blob(&blob),
+    ];
+    for value in values {
+        // With the comma after it.
+        let encoded = serde_json::to_vec(&from_sql(value)).unwrap().len() + 1;
+        assert!(value_size(value) >= encoded, "{value:?}: {encoded}");
+    }
+    // A row of empty values, with its brackets and comma.
+    let row = PendingRow(vec![ValueRef::Text(b""); 2000]);
+    let encoded = serde_json::to_vec(&row.to_values()).unwrap().len() + 1;
+    assert!(row.encoded_size() >= encoded, "{encoded}");
+}
