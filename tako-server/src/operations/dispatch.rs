@@ -586,7 +586,7 @@ fn strip_secret_parts(
 impl crate::ServerState {
     /// A route belongs to one app environment, so a staging deploy cannot
     /// take over production's domain.
-    fn refuse_claimed_routes(&self, app: &str, routes: &[String]) -> Result<(), String> {
+    pub(super) fn refuse_claimed_routes(&self, app: &str, routes: &[String]) -> Result<(), String> {
         match self.routes.read().claimed_elsewhere(app, routes) {
             Some((route, owner)) => Err(format!(
                 "Route '{route}' belongs to {owner}. Remove it from {owner} before deploying it here."

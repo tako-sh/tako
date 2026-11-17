@@ -388,6 +388,10 @@ impl crate::ServerState {
                 app_name
             ));
         }
+        // An older release may name a route another app environment owns now.
+        if let Err(error) = self.refuse_claimed_routes(app_name, &routes) {
+            return Response::error(error);
+        }
         let ssl = match self.state_store.get_ssl(app_name) {
             Ok(value) => value.unwrap_or_default(),
             Err(error) => {

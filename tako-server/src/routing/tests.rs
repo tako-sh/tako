@@ -695,4 +695,23 @@ fn a_route_belongs_to_one_app_environment() {
         table.claimed_elsewhere("shop/staging", &["staging.example.com".to_string()]),
         None
     );
+    // Hosts match requests without case, so a differently cased claim is the
+    // same route. Paths stay exact.
+    let upper = vec!["SHOP.Example.COM".to_string()];
+    assert_eq!(
+        table.claimed_elsewhere("shop/staging", &upper),
+        Some(("SHOP.Example.COM", "shop/production"))
+    );
+    table.set_app_routes(
+        "shop/production".into(),
+        vec!["shop.example.com/api/*".into()],
+    );
+    assert_eq!(
+        table.claimed_elsewhere("shop/staging", &["SHOP.example.com/api/*".to_string()]),
+        Some(("SHOP.example.com/api/*", "shop/production"))
+    );
+    assert_eq!(
+        table.claimed_elsewhere("shop/staging", &["shop.example.com/API/*".to_string()]),
+        None
+    );
 }

@@ -49,7 +49,7 @@ impl RouteTable {
             self.app_routes
                 .iter()
                 .filter(|(owner, _)| owner.as_str() != app)
-                .find(|(_, claimed)| claimed.contains(route))
+                .find(|(_, claimed)| claimed.iter().any(|other| same_route(other, route)))
                 .map(|(owner, _)| (route.as_str(), owner.as_str()))
         })
     }
@@ -280,6 +280,13 @@ fn route_specificity(pattern: &str) -> (u8, usize, u8) {
     };
 
     (host_score, path_len, exact_bonus)
+}
+
+/// Whether two route patterns claim the same requests. Hosts compare without
+/// case, as requests match them; paths compare exactly.
+fn same_route(a: &str, b: &str) -> bool {
+    let ((a_host, a_path), (b_host, b_path)) = (split_route(a), split_route(b));
+    a_host.eq_ignore_ascii_case(b_host) && a_path == b_path
 }
 
 fn split_route(route: &str) -> (&str, Option<&str>) {

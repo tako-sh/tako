@@ -105,10 +105,32 @@ impl Drop for TemporaryState {
     }
 }
 
+/// `TAKO_CLIENT_IDENTITY` as the process started, once [`take_from_env`] ran.
+static TAKEN: std::sync::OnceLock<Option<std::ffi::OsString>> = std::sync::OnceLock::new();
+
+/// Move `TAKO_CLIENT_IDENTITY` out of the environment, so build, install and
+/// other child commands never inherit the identity's private keys.
+///
+/// # Safety
+///
+/// Call before any other thread starts: it changes the process environment.
+pub(crate) unsafe fn take_from_env() {
+    let value = std::env::var_os(ENV);
+    if value.is_some() {
+        // SAFETY: the caller guarantees no other thread reads the environment.
+        unsafe { std::env::remove_var(ENV) };
+    }
+    let _ = TAKEN.set(value);
+}
+
 /// Use `TAKO_CLIENT_IDENTITY` for this process when it is set. The keys stay
 /// in a private temporary directory and never reach the Tako home.
 pub(crate) fn activate_from_env() -> Result<Option<TemporaryState>> {
-    let Some(value) = std::env::var_os(ENV) else {
+    let value = match TAKEN.get() {
+        Some(taken) => taken.clone(),
+        None => std::env::var_os(ENV),
+    };
+    let Some(value) = value else {
         return Ok(None);
     };
     let value = Zeroizing::new(
