@@ -774,26 +774,7 @@ fn transport_certificate_fields_reject_malformed_oversize_bundled_and_extra_data
 }
 
 #[test]
-fn recorded_four_field_permissions_read_as_access_levels() {
-    let read = |value: serde_json::Value| serde_json::from_value::<Permissions>(value).unwrap();
-    assert_eq!(
-        read(
-            serde_json::json!({"network_admin": true, "server_admin": true, "ssh_user": "tako", "deployments": []})
-        ),
-        Permissions::Full
-    );
-    assert_eq!(
-        read(
-            serde_json::json!({"network_admin": true, "server_admin": false, "ssh_user": null, "deployments": ["app/prod"]})
-        ),
-        Permissions::Deploy(scopes(&["app/prod"]))
-    );
-    assert_eq!(
-        read(
-            serde_json::json!({"network_admin": false, "server_admin": true, "ssh_user": null, "deployments": []})
-        ),
-        Permissions::Deploy(Default::default())
-    );
+fn permissions_have_one_shape_and_earlier_rows_do_not_decode() {
     assert_eq!(
         serde_json::to_value(Permissions::Full).unwrap(),
         serde_json::json!("full")
@@ -802,74 +783,27 @@ fn recorded_four_field_permissions_read_as_access_levels() {
         serde_json::to_value(Permissions::Deploy(scopes(&["app/prod"]))).unwrap(),
         serde_json::json!({"deploy": ["app/prod"]})
     );
-    let (snapshot, _, _) = bootstrap();
-    let mut recorded = serde_json::to_value(&snapshot.members[0]).unwrap();
-    recorded["permissions"] = serde_json::json!({"network_admin": true, "server_admin": true, "ssh_user": null, "deployments": []});
-    let independent = recorded["independent_root"].take();
-    recorded.as_object_mut().unwrap().remove("independent_root");
-    recorded["independent_admin"] = independent;
     assert_eq!(
-        serde_json::from_value::<Member>(recorded).unwrap(),
-        snapshot.members[0]
-    );
-}
-
-#[test]
-fn recorded_server_rows_read_as_full_whatever_their_bits() {
-    let (mut snapshot, _, root) = bootstrap();
-    let server = add_named_server(&mut snapshot, &root, "edge-a", 2).unwrap();
-    let server = snapshot
-        .members
-        .iter()
-        .find(|member| member.device_id == server)
-        .unwrap()
-        .clone();
-    let laptop = snapshot.members[0].clone();
-    for bits in [
-        serde_json::json!({"network_admin": false, "server_admin": true, "ssh_user": null, "deployments": []}),
-        serde_json::json!({"network_admin": true, "server_admin": false, "ssh_user": null, "deployments": ["app/prod"]}),
-        serde_json::json!({"network_admin": false, "server_admin": false, "ssh_user": null, "deployments": []}),
-    ] {
-        // A server row keeps serving after the upgrade.
-        let mut recorded = serde_json::to_value(&server).unwrap();
-        recorded["permissions"] = bits.clone();
-        let read = serde_json::from_value::<Member>(recorded).unwrap();
-        assert_eq!(read.permissions, Permissions::Full, "{bits}");
-        let mut grant = serde_json::to_value(approval(
-            server.kind.clone(),
-            Permissions::Full,
-            Some(root.clone()),
-            2,
-        ))
-        .unwrap();
-        grant["permissions"] = bits.clone();
-        assert_eq!(
-            serde_json::from_value::<Approval>(grant)
-                .unwrap()
-                .permissions,
-            Permissions::Full,
-            "{bits}"
-        );
-        // A laptop row keeps only the access its bits granted.
-        let mut recorded = serde_json::to_value(&laptop).unwrap();
-        recorded["permissions"] = bits.clone();
-        assert!(
-            !serde_json::from_value::<Member>(recorded)
-                .unwrap()
-                .permissions
-                .is_full(),
-            "{bits}"
-        );
-    }
-    // Current rows are read as written.
-    let mut current = serde_json::to_value(&laptop).unwrap();
-    current["permissions"] = serde_json::json!({"deploy": ["app/prod"]});
-    assert_eq!(
-        serde_json::from_value::<Member>(current)
-            .unwrap()
-            .permissions,
+        serde_json::from_value::<Permissions>(serde_json::json!({"deploy": ["app/prod"]})).unwrap(),
         Permissions::Deploy(scopes(&["app/prod"]))
     );
+    // The four-field shape written by earlier versions is not read.
+    assert!(
+        serde_json::from_value::<Permissions>(serde_json::json!(
+            {"network_admin": true, "server_admin": true, "ssh_user": "tako", "deployments": []}
+        ))
+        .is_err()
+    );
+    let (snapshot, _, _) = bootstrap();
+    let mut earlier = serde_json::to_value(&snapshot.members[0]).unwrap();
+    let independent = earlier["independent_root"].take();
+    earlier.as_object_mut().unwrap().remove("independent_root");
+    earlier["independent_admin"] = independent;
+    assert!(serde_json::from_value::<Member>(earlier).is_err());
+    // A laptop is always a key of a named client.
+    let mut unnamed = snapshot.members[0].clone();
+    unnamed.client = None;
+    assert!(unnamed.validate().is_err());
 }
 
 #[test]
@@ -913,50 +847,6 @@ fn add_client(
     let id = member.device_id.clone();
     snapshot.members.push(member);
     Ok(id)
-}
-
-#[test]
-fn unnamed_clients_get_stable_unique_names_in_admission_order() {
-    let (mut snapshot, _, root) = bootstrap();
-    // The root and the next two laptops all enrolled as "test-device".
-    let (_, second) = add_laptop(&mut snapshot, &root, admin(), false, 2);
-    let (_, third) = add_laptop(&mut snapshot, &root, admin(), false, 3);
-    let names = snapshot.client_names();
-    assert_eq!(names[&root], "test-device");
-    let second_id = second.to_string();
-    assert_eq!(names[&second], format!("test-device-{}", &second_id[..6]));
-    assert_ne!(names[&third], names[&second]);
-    // An earlier laptop already holding the suffixed name forces a longer one.
-    let (mut snapshot, _, root) = bootstrap();
-    let keys = LocalDeviceKeys::generate().unwrap();
-    let id = keys
-        .device_id(&snapshot.network.id, DeviceKind::Laptop)
-        .unwrap();
-    let squatter = format!("test-device-{}", &id.to_string()[..6]);
-    let member = snapshot
-        .approve(
-            verified_named(
-                &LocalDeviceKeys::generate().unwrap(),
-                &snapshot.network.id,
-                DeviceKind::Laptop,
-                &squatter,
-                2,
-            ),
-            approval(MemberKind::Laptop, admin(), Some(root.clone()), 2),
-        )
-        .unwrap();
-    snapshot.members.push(member);
-    let member = snapshot
-        .approve(
-            verified(&keys, &snapshot.network.id, DeviceKind::Laptop, 3),
-            approval(MemberKind::Laptop, admin(), Some(root.clone()), 3),
-        )
-        .unwrap();
-    snapshot.members.push(member);
-    let names = snapshot.client_names();
-    assert_eq!(names[&id], format!("test-device-{}", &id.to_string()[..7]));
-    let unique: std::collections::BTreeSet<_> = names.values().collect();
-    assert_eq!(unique.len(), names.len());
 }
 
 #[test]

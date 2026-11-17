@@ -23,7 +23,7 @@ pub struct NetworkDescriptor {
 /// everything: read and publish every secret, deploy any app, invite and revoke
 /// members, add servers, open the `tako` shell and join the private network.
 /// `Deploy` clients may only release code to the listed app environments.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Permissions {
     Full,
@@ -84,62 +84,6 @@ impl Permissions {
     /// Only full members invite, and they may invite anyone.
     pub(crate) fn can_delegate(&self, _child: &Self) -> bool {
         self.is_full()
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum CurrentPermissions {
-    Full,
-    Deploy(BTreeSet<AppEnv>),
-}
-
-/// The four fields registry rows stored before access levels existed.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RecordedPermissions {
-    network_admin: bool,
-    server_admin: bool,
-    #[allow(dead_code)]
-    ssh_user: Option<SshUser>,
-    #[serde(default)]
-    deployments: BTreeSet<AppEnv>,
-}
-
-/// A permissions field as it was written: in the current form, or as a row
-/// from before access levels existed. New rows are always written in the
-/// current form.
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum PermissionsWire {
-    Current(CurrentPermissions),
-    Recorded(RecordedPermissions),
-}
-
-impl PermissionsWire {
-    /// Read a recorded row as the access it granted: both administration bits
-    /// mean full access, anything else keeps only its deployment scopes. A
-    /// server was admitted to serve the network, and only full members serve,
-    /// so a recorded server row is full whatever its bits said.
-    fn resolve(self, server: bool) -> Permissions {
-        match self {
-            Self::Current(CurrentPermissions::Full) => Permissions::Full,
-            Self::Current(CurrentPermissions::Deploy(scopes)) => Permissions::Deploy(scopes),
-            Self::Recorded(recorded)
-                if server || (recorded.network_admin && recorded.server_admin) =>
-            {
-                Permissions::Full
-            }
-            Self::Recorded(recorded) => Permissions::Deploy(recorded.deployments),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for Permissions {
-    fn deserialize<D: serde::Deserializer<'de>>(
-        deserializer: D,
-    ) -> std::result::Result<Self, D::Error> {
-        Ok(PermissionsWire::deserialize(deserializer)?.resolve(false))
     }
 }
 
@@ -236,7 +180,7 @@ impl MemberKind {
 
 /// An immutable admission asserted by a trusted server agent, not client input.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, from = "MemberRecord")]
+#[serde(deny_unknown_fields)]
 pub struct Member {
     pub network_id: NetworkId,
     pub device_id: DeviceId,
@@ -245,56 +189,15 @@ pub struct Member {
     pub permissions: Permissions,
     pub approved_by: Option<DeviceId>,
     /// A root of authority with no approver, admitted by a host operator.
-    #[serde(alias = "independent_admin")]
     pub independent_root: bool,
     pub wg_verified: bool,
     pub created_at: u64,
     pub expires_at: Option<u64>,
     /// The client this laptop is a key of, asserted by the admitting server.
-    /// Each `client add` admits a new member under the same name. Laptops
-    /// admitted before client names existed have none and are named by
-    /// [`RegistrySnapshot::client_names`].
+    /// Each `client add` admits a new member under the same name. Every laptop
+    /// has one; servers have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client: Option<DeviceName>,
-}
-
-/// A stored [`Member`]. Its permissions are read with its kind, so a server
-/// recorded before access levels existed stays a full member.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MemberRecord {
-    network_id: NetworkId,
-    device_id: DeviceId,
-    request: EnrollmentRequest,
-    kind: MemberKind,
-    permissions: PermissionsWire,
-    approved_by: Option<DeviceId>,
-    #[serde(alias = "independent_admin")]
-    independent_root: bool,
-    wg_verified: bool,
-    created_at: u64,
-    expires_at: Option<u64>,
-    #[serde(default)]
-    client: Option<DeviceName>,
-}
-
-impl From<MemberRecord> for Member {
-    fn from(record: MemberRecord) -> Self {
-        let server = matches!(record.kind, MemberKind::Server(_));
-        Self {
-            network_id: record.network_id,
-            device_id: record.device_id,
-            request: record.request,
-            kind: record.kind,
-            permissions: record.permissions.resolve(server),
-            approved_by: record.approved_by,
-            independent_root: record.independent_root,
-            wg_verified: record.wg_verified,
-            created_at: record.created_at,
-            expires_at: record.expires_at,
-            client: record.client,
-        }
-    }
 }
 
 impl Member {
@@ -314,6 +217,12 @@ impl Member {
             return Err(invalid(
                 "member",
                 "network, kind, or ID does not match enrollment",
+            ));
+        }
+        if matches!(self.kind, MemberKind::Laptop) != self.client.is_some() {
+            return Err(invalid(
+                "member client",
+                "laptops are admitted under a client name; servers have none",
             ));
         }
         if self
@@ -380,48 +289,17 @@ pub enum MemberStatus {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, from = "ApprovalRecord")]
+#[serde(deny_unknown_fields)]
 pub struct Approval {
     pub kind: MemberKind,
     pub permissions: Permissions,
     pub approved_by: Option<DeviceId>,
     /// Requires the separate independently authenticated local-operator entry point.
-    #[serde(alias = "independent_admin")]
     pub independent_root: bool,
     pub created_at: u64,
     pub expires_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client: Option<DeviceName>,
-}
-
-/// A stored [`Approval`], read like [`MemberRecord`].
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ApprovalRecord {
-    kind: MemberKind,
-    permissions: PermissionsWire,
-    approved_by: Option<DeviceId>,
-    #[serde(alias = "independent_admin")]
-    independent_root: bool,
-    created_at: u64,
-    expires_at: Option<u64>,
-    #[serde(default)]
-    client: Option<DeviceName>,
-}
-
-impl From<ApprovalRecord> for Approval {
-    fn from(record: ApprovalRecord) -> Self {
-        let server = matches!(record.kind, MemberKind::Server(_));
-        Self {
-            kind: record.kind,
-            permissions: record.permissions.resolve(server),
-            approved_by: record.approved_by,
-            independent_root: record.independent_root,
-            created_at: record.created_at,
-            expires_at: record.expires_at,
-            client: record.client,
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -661,40 +539,16 @@ impl RegistrySnapshot {
         Ok(statuses)
     }
 
-    /// The client name of every admitted laptop. Laptops admitted with a name
-    /// keep it. Older laptops are named after their device, in admission order;
-    /// a name already taken gets `-` and the start of the device ID, lengthened
-    /// until unique, so every node derives the same names.
+    /// The client name of every admitted laptop.
     pub fn client_names(&self) -> BTreeMap<DeviceId, String> {
-        let mut laptops: Vec<&Member> = self
-            .members
+        self.members
             .iter()
             .filter(|member| member.wg_verified && matches!(member.kind, MemberKind::Laptop))
-            .collect();
-        laptops.sort_by(|a, b| (a.created_at, &a.device_id).cmp(&(b.created_at, &b.device_id)));
-        laptops.dedup_by(|a, b| a.device_id == b.device_id);
-        let mut taken: BTreeSet<String> = BTreeSet::new();
-        let mut names = BTreeMap::new();
-        for member in laptops {
-            let name = match &member.client {
-                Some(client) => client.to_string(),
-                None => {
-                    let base = member.request.name.as_str();
-                    let id = member.device_id.to_string();
-                    std::iter::once(base.to_owned())
-                        .chain((6..=id.len()).map(|len| {
-                            let suffix = format!("-{}", &id[..len]);
-                            let keep = base.len().min(63usize.saturating_sub(suffix.len()));
-                            format!("{}{suffix}", &base[..keep])
-                        }))
-                        .find(|name| !taken.contains(&name.to_ascii_lowercase()))
-                        .unwrap_or(id)
-                }
-            };
-            taken.insert(name.to_ascii_lowercase());
-            names.insert(member.device_id.clone(), name);
-        }
-        names
+            .filter_map(|member| {
+                let client = member.client.as_ref()?;
+                Some((member.device_id.clone(), client.to_string()))
+            })
+            .collect()
     }
 
     pub fn permissions(&self, device: &DeviceId, now: u64) -> Result<&Permissions> {

@@ -16,8 +16,6 @@ pub use backup_keys::{EncryptedBackupKey, validate_backup_key_id};
 
 /// This worktree's local state: drafts and cached values of the network state.
 const SECRETS_FILE_NAME: &str = "state.local.json";
-/// The local state's earlier name, moved to [`SECRETS_FILE_NAME`] on first load.
-const LEGACY_SECRETS_FILE_NAME: &str = "secrets.local.json";
 pub const SSL_CLOUDFLARE_CREDENTIAL_NAME: &str = "ssl.cloudflare";
 pub const POSTGRES_CREDENTIAL_NAME: &str = "postgres_url";
 
@@ -191,14 +189,6 @@ impl SecretsStore {
     /// This worktree's ignored local state.
     pub fn default_path<P: AsRef<Path>>(project_dir: P) -> PathBuf {
         project_dir.as_ref().join(".tako").join(SECRETS_FILE_NAME)
-    }
-
-    /// Where earlier releases kept the local state.
-    pub fn legacy_path<P: AsRef<Path>>(project_dir: P) -> PathBuf {
-        project_dir
-            .as_ref()
-            .join(".tako")
-            .join(LEGACY_SECRETS_FILE_NAME)
     }
 
     /// Load secrets from a project directory

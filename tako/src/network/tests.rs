@@ -124,6 +124,7 @@ pub(crate) fn add_member(
             now,
         )
         .unwrap();
+    let client = matches!(kind, MemberKind::Laptop).then(|| request.name.clone());
     let member = snapshot
         .approve(
             verified,
@@ -134,7 +135,7 @@ pub(crate) fn add_member(
                 permissions: Permissions::Full,
                 created_at: now,
                 expires_at: None,
-                client: None,
+                client,
             },
         )
         .unwrap();

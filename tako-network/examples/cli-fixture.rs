@@ -24,6 +24,7 @@ fn admit(
             now,
         )
         .unwrap();
+    let client = matches!(kind, MemberKind::Laptop).then(|| request.name.clone());
     let member = snapshot
         .approve(
             verified,
@@ -34,7 +35,7 @@ fn admit(
                 independent_root: false,
                 created_at: now,
                 expires_at: None,
-                client: None,
+                client,
             },
         )
         .unwrap();

@@ -47,7 +47,12 @@ fn admit(
                 independent_root: false,
                 created_at: 1,
                 expires_at: None,
-                client: None,
+                client: Some({
+                    static NEXT: std::sync::atomic::AtomicU64 =
+                        std::sync::atomic::AtomicU64::new(1);
+                    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    format!("client-{n}").parse().unwrap()
+                }),
             },
         )
         .unwrap();

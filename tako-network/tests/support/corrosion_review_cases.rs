@@ -90,7 +90,7 @@ fn byte_admission_limit_preserves_reads_and_denials_after_convergence() {
                 permissions: member.permissions.clone(),
                 expires_at: 1000,
                 member_expires_at: None,
-                client: None,
+                client: member.client.clone(),
             })),
         )
         .unwrap();

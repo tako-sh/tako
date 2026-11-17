@@ -30,7 +30,7 @@ fn invocations_require_server_attestation_and_bind_target_body_and_nonce() {
                 independent_root: false,
                 created_at: 1,
                 expires_at: None,
-                client: None,
+                client: Some(request.name.clone()),
             },
         )
         .unwrap();
@@ -335,7 +335,7 @@ fn compose_may_relay_but_wireguard_requests_cannot_loop() {
         independent_root: false,
         created_at: 2,
         expires_at: None,
-        client: None,
+        client: member.client.clone(),
     };
     member = registry.approve(verified, approval).unwrap();
     registry.members.push(member);

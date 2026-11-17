@@ -149,7 +149,7 @@ production's domain.
 On the CLI, a deploy client's `tako deploy` must not call `sync_environment`,
 `load_secrets_for_environment`, `load_secret_key`, `ensure_secret_key_available`
 or `ensure_backup_keys_for_env` (`tako/src/commands/deploy/mod.rs:291`, `:430`).
-It must work with no `.tako/secrets.local.json` and no environment key.
+It must work with no `.tako/state.local.json` and no environment key.
 `can_configure_bindings` (`tako/src/commands/helpers.rs:4`) becomes an access
 check.
 
@@ -161,7 +161,7 @@ check.
   fingerprints (`registry.rs:336`). Reactivation never un-revokes old keys.
 - Store the name on the approval and member as a server-asserted field (`client`),
   required for laptops and absent for servers. Do not reuse `request.name`: it is
-  part of the device-signed enrollment request, so a migration cannot rename it.
+  part of the device-signed enrollment request, so the inviter cannot set it.
   New devices set `request.name` to the client name for tidiness.
 - `tako network client add <name> [--deploy app/env]... [--identity] [--yes]`.
   The name is required and chosen by the inviter. It travels in the invitation,
@@ -298,31 +298,30 @@ Each step updates the docs and skills it changes (`commands/sync-docs.md`,
 
 ## Migration and breaking changes
 
-Protocol v0, no shims. Servers and CLIs upgrade together.
+Protocol v0, no shims: CLIs and servers upgrade together, and state written by
+earlier versions is not read.
 
-- Registry rows are immutable and replicated, so they keep their bytes. Every
-  node reads the old four-field permissions the same way: `network_admin &&
-  server_admin` becomes full; anything else becomes deploy with its scopes;
-  `ssh_user` is dropped. `independent_admin` reads as `independent_root`. New
-  rows are written in the new form (`Permissions` deserializer,
-  `tako-network/src/registry.rs`).
-- Existing full members without `--ssh` gain SSH. Call it out in release notes.
-- Existing laptops get `client` = `request.name`. Names default to the hostname
-  (`tako/src/commands/network.rs:387`), so duplicates exist. The oldest member
-  keeps the name; the others get `-` plus a fragment of their device ID,
-  allocated against existing and already generated names and lengthened until
-  unique, so a suffix cannot collide with an existing `foo-abcdef`. The result
-  is deterministic on every node.
-- Existing `--deploy` clients lose app-secret access, connect, logs, backups,
-  scale and delete. Agent sandboxes that set secrets need a full client.
+- Registry rows must use the new `Permissions` shape and `independent_root`.
+  Rows with the earlier four-field permissions or `independent_admin` fail to
+  decode, so a network created by an earlier version is not readable.
+- Every laptop member carries `client`; a laptop without one is invalid. There
+  is no name derivation for earlier members.
+- The local state is `.tako/state.local.json`. `.tako/secrets.local.json` is not
+  read. Its drafts are bound to the network they were made for (`bind`,
+  `tako/src/network/secrets.rs`), so they cannot be published to a new network:
+  set secrets again.
+- Upgrade: uninstall the servers with the earlier CLI (`tako network server
+  uninstall`, which also removes their app data), upgrade the CLI and servers,
+  create a new network, add the servers, invite clients and set secrets again.
 - Removed: `--admin`, `--ssh`, `join --name`, `tako network revoke`,
-  `UpdateSecrets`. `tako-server admin invite` became `tako-server client invite`.
+  `network request`/`approve`/`import`, `UpdateSecrets`. `tako-server admin
+  invite` became `tako-server client invite`.
 - Secret changes no longer reach running apps without a deploy; there is no
   in-place secret update.
 
 ## Verification
 
-1. Registry tests for the migration mapping, delegation and SSH projection; policy
+1. Registry tests for decoding, delegation and SSH projection; policy
    tests per command and access level; CLI integration tests for add, list and
    revoke (`tako/tests/cli_integration/`); `e2e/cli/tests/network.test.ts`.
 2. Name uniqueness, reactivation, replace (the old key is rejected on the next

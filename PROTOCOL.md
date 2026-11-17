@@ -26,9 +26,8 @@ deploy client may make an environment's first deploy and change its routes, SSL
 provider and plain storage and backup bindings; changing database bindings needs
 full access. Servers reject a deploy route that another app environment already
 claims, for every client. Servers neither peer with deploy clients nor authorize
-a shell for them. Registry rows recorded with the earlier four-field shape
-(`network_admin`, `server_admin`, `ssh_user`, `deployments`) read as full when
-both administration bits are set and as deploy with their scopes otherwise.
+a shell for them. Every laptop member carries its client name; a laptop
+without one is invalid. Rows from earlier versions are not read.
 Revocation applies only to the revoked device: an approval stays valid when its
 approver was live, unrevoked and validly approved at the approval's
 `created_at`. A device cannot revoke itself, and the last full client cannot be

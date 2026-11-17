@@ -86,7 +86,7 @@ pub struct RuntimeConfig {
 struct Entitlement {
     grant: ApproveRequest,
     approver: DeviceId,
-    #[serde(default, alias = "independent_admin")]
+    #[serde(default)]
     independent_root: bool,
     candidate: Option<Member>,
 }
@@ -1165,7 +1165,7 @@ mod tests {
                         independent_root: false,
                         created_at: 1,
                         expires_at: None,
-                        client: None,
+                        client: Some("admin".parse().unwrap()),
                     },
                 )
                 .unwrap();
@@ -1271,6 +1271,7 @@ mod tests {
         }
         /// Admit another full laptop, approved by the initial client.
         fn add_full_laptop(&self) -> LocalDeviceKeys {
+            static NEXT_LAPTOP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
             let keys = LocalDeviceKeys::generate().unwrap();
             let mut state = self.store.0.borrow_mut();
             let member = state
@@ -1284,7 +1285,14 @@ mod tests {
                         independent_root: false,
                         created_at: 2,
                         expires_at: None,
-                        client: None,
+                        client: Some(
+                            format!(
+                                "laptop-{}",
+                                NEXT_LAPTOP.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                            )
+                            .parse()
+                            .unwrap(),
+                        ),
                     },
                 )
                 .unwrap();

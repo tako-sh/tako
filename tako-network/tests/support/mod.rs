@@ -36,6 +36,12 @@ pub fn approval(
     by: Option<DeviceId>,
     now: u64,
 ) -> Approval {
+    // Every laptop is a key of a client; give each fixture laptop its own name.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let client = matches!(kind, MemberKind::Laptop).then(|| {
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        format!("client-{n}").parse().unwrap()
+    });
     Approval {
         kind,
         permissions,
@@ -43,7 +49,7 @@ pub fn approval(
         independent_root: false,
         created_at: now,
         expires_at: None,
-        client: None,
+        client,
     }
 }
 

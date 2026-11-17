@@ -81,7 +81,8 @@ fn only_admitted_servers_are_queried_in_batches_and_bad_leases_are_isolated() {
                     independent_root: false,
                     created_at: 2,
                     expires_at: None,
-                    client: None,
+                    client: matches!(registry.members[0].kind, MemberKind::Laptop)
+                        .then(|| request.name.clone()),
                 },
             )
             .unwrap();
