@@ -188,6 +188,13 @@ impl Databases {
         self.server_id.read().clone()
     }
 
+    /// Whether `binding` reaches this server's copy of database `name`. A
+    /// binding to the same name on another server (where a move took the
+    /// database) does not: that copy is someone else's.
+    pub(crate) fn binds_here(&self, binding: &DatabaseBinding, name: &str) -> bool {
+        binding.name == name && self.server_id().is_none_or(|own| own == binding.server)
+    }
+
     /// The connections app processes receive for their bindings.
     pub(crate) fn connections(
         &self,
@@ -908,7 +915,7 @@ impl ServerState {
                 if config
                     .databases
                     .values()
-                    .any(|binding| binding.binding.name == stored.name)
+                    .any(|binding| self.databases.binds_here(&binding.binding, &stored.name))
                 {
                     bindings.insert(config.deployment_id());
                 }
@@ -1025,7 +1032,7 @@ impl ServerState {
                 .read()
                 .databases
                 .values()
-                .any(|binding| binding.binding.name == id)
+                .any(|binding| self.databases.binds_here(&binding.binding, id))
         });
         bound
             || self

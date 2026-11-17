@@ -1292,6 +1292,24 @@ async fn opening_databases_again_after_a_failure_retries() {
 }
 
 #[tokio::test]
+async fn only_bindings_to_this_server_count_for_its_copy() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    state.open_databases(Some("server-a".into())).await.unwrap();
+    create(&state, ID, None).await;
+    let binding = |server: &str| tako_core::DatabaseBinding {
+        name: ID.into(),
+        server: server.into(),
+        peer_key: None,
+    };
+    assert!(state.databases.binds_here(&binding("server-a"), ID));
+    // The database moved: a binding to it on server-b leaves the copy here
+    // unbound, so it can be removed and an app's deployer cannot migrate it.
+    assert!(!state.databases.binds_here(&binding("server-b"), ID));
+    assert!(!state.databases.binds_here(&binding("server-a"), "other"));
+}
+
+#[tokio::test]
 async fn bindings_keep_their_token_only_for_the_same_home() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp);

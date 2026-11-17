@@ -199,7 +199,7 @@ tako storages credentials private_backups --env production
 tako deploy --env production
 ```
 
-A deploy by an administrator sends the destination and credentials to the database's server; removing the backup storage and deploying stops snapshots, and moving it to another storage snapshots the database there on the next scheduler pass. A new database has no snapshots until such a deploy. Without a backup storage, Tako takes no snapshots and a lost server loses the database. Environments that bind the same database should use the same storage, since each administrator's deploy sets it.
+A deploy by an administrator sends the destination and credentials to the database's server; removing the backup storage and deploying stops snapshots, and moving it to another storage snapshots the database there on the next scheduler pass. Snapshots already in the earlier storage stay there (retention and `delete` reach only the current one); remove `_tako/databases/<name>/` from it yourself once you no longer need them. A new database has no snapshots until such a deploy. Without a backup storage, Tako takes no snapshots and a lost server loses the database. Environments that bind the same database should use the same storage, since each administrator's deploy sets it.
 
 The server then takes snapshots:
 
@@ -266,7 +266,7 @@ tako sqlite reset main --local
 tako sqlite delete main
 ```
 
-`delete` (alias `rm`) removes the file from its server, every snapshot of it from backup storage, the network records, and the database's bindings and `[databases.<name>]` settings from `tako.toml`. It asks for confirmation; `--yes` skips it. When backup storage cannot be reached the database is still deleted, and a warning names the snapshot prefix to remove by hand. Remove the code that uses the binding and deploy first: a deploy that still binds a deleted database fails. Apps on the database's server that still bind it block the delete. Grants to app environments on other servers are revoked, since they can outlive the deployments that used them; `delete` names those environments before asking to confirm.
+`delete` (alias `rm`) removes the file from its server, every snapshot of it from its current backup storage, the network records, and the database's bindings and `[databases.<name>]` settings from `tako.toml`. It asks for confirmation; `--yes` skips it. When backup storage cannot be reached the database is still deleted, and a warning names the snapshot prefix to remove by hand. Remove the code that uses the binding and deploy first: a deploy that still binds a deleted database fails. Apps on the database's server that still bind it block the delete. Grants to app environments on other servers are revoked, since they can outlive the deployments that used them; `delete` names those environments before asking to confirm.
 
 ## Apps on other servers
 
