@@ -123,6 +123,24 @@ async fn read_holder(
         .map(|holder| holder.server))
 }
 
+/// The other server that holds the database's snapshots, if one does: a
+/// copy left behind by a move then shares them with the copy that moved.
+pub(crate) async fn other_holder(
+    state: &ServerState,
+    stored: &StoredDatabase,
+) -> Result<Option<String>, String> {
+    let Some(backup) = &stored.secrets.backup else {
+        return Ok(None);
+    };
+    let Some(own) = state.databases.server_id() else {
+        return Ok(None);
+    };
+    let remote = store(backup)?;
+    Ok(read_holder(remote.as_ref(), stored)
+        .await?
+        .filter(|holder| holder != &own))
+}
+
 /// Fails when another server holds the database.
 async fn check_holder(
     remote: &dyn ObjectStore,
@@ -634,7 +652,13 @@ async fn record(
     {
         let mut backups = state.databases.backups.lock();
         let current = backups.entry(stored.name.clone()).or_default();
-        current.last_attempt_unix_secs = Some(started);
+        // A failure counts from when it ended, so the retry waits its
+        // interval even after an attempt that ran until it timed out.
+        current.last_attempt_unix_secs = Some(if result.is_ok() {
+            started
+        } else {
+            now_unix_secs()
+        });
         match &result {
             Ok(snapshot) => {
                 current.last_snapshot = Some(snapshot.clone());
@@ -949,13 +973,20 @@ pub(crate) async fn list_command(
     Ok(serde_json::json!({"database": stored.name, "snapshots": snapshots}))
 }
 
-/// Which snapshots retention keeps: the newest overall, every snapshot of the
-/// last 24 hours (so a release or manual snapshot survives the hourly ones
-/// after it), and the newest of each of the last 7 days and 4 weeks.
-/// `snapshots` is newest first.
+/// Which snapshots retention keeps: the newest overall, the newest one a
+/// restore picks by default (copies taken before restores and imports are
+/// not), every snapshot of the last 24 hours (so a release or manual
+/// snapshot survives the hourly ones after it), and the newest of each of the
+/// last 7 days and 4 weeks. `snapshots` is newest first.
 fn retained(snapshots: &[DatabaseSnapshot], now: u64) -> BTreeSet<String> {
     let mut keep = BTreeSet::new();
     if let Some(newest) = snapshots.first() {
+        keep.insert(newest.id.clone());
+    }
+    if let Some(newest) = snapshots
+        .iter()
+        .find(|snapshot| snapshot.reason != SnapshotReason::Restore)
+    {
         keep.insert(newest.id.clone());
     }
     for snapshot in snapshots {
@@ -1069,10 +1100,18 @@ pub(crate) async fn restore(
     snapshot: Option<&str>,
     key_override: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let stored = state.hosted_database(id)?;
+    state.hosted_database(id)?;
     if let Some(key) = &key_override {
         super::decode_backup_key(key)?;
     }
+    // Held from choosing the snapshot through the swap, so a scheduled
+    // snapshot of the contents being replaced cannot be published meanwhile
+    // and become the newest one (a later `--latest` would undo the restore).
+    let lock = state.databases.lock(id);
+    let _operation = lock.lock().await;
+    // Read under the lock: a delete and create, or a change of backups, may
+    // have finished while this waited for it.
+    let stored = state.hosted_database(id)?;
     let Some(backup) = stored.secrets.backup.clone() else {
         return Err(format!(
             "Backups are not configured for database {}.",
@@ -1080,11 +1119,6 @@ pub(crate) async fn restore(
         ));
     };
     let remote = store(&backup)?;
-    // Held from choosing the snapshot through the swap, so a scheduled
-    // snapshot of the contents being replaced cannot be published meanwhile
-    // and become the newest one (a later `--latest` would undo the restore).
-    let lock = state.databases.lock(&stored.name);
-    let _operation = lock.lock().await;
     // This server holds the database from now on, so a copy that a move
     // leaves behind stops publishing snapshots, also one in flight, which
     // checks again before and after its manifest. Claiming before listing
@@ -1175,6 +1209,12 @@ async fn restore_from(
     manifest: Manifest,
     key_override: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    if manifest.format != MANIFEST_FORMAT {
+        return Err(format!(
+            "Snapshot {} is in format {}, which this server cannot read (it reads format {MANIFEST_FORMAT}); upgrade the server.",
+            manifest.snapshot.id, manifest.format
+        ));
+    }
     // Fetch and verify the snapshot before anything changes.
     let work = fresh_work_dir(state, &stored.name, "restore")?;
     // The download, its decrypted form, and the restored file, held in the
@@ -1251,6 +1291,15 @@ pub(crate) async fn replace_locked(
     pause_reason: &str,
 ) -> Result<Vec<String>, String> {
     let id = DatabaseId::parse(&stored.name)?;
+    // The caller read `stored` before it took the lock; a delete and create
+    // of the same name meanwhile leaves a different database under it.
+    let current = state.hosted_database(&stored.name)?;
+    if current.generation != stored.generation {
+        return Err(format!(
+            "Database {} was replaced by a new database of the same name meanwhile; nothing was changed.",
+            stored.name
+        ));
+    }
     let guard = state
         .databases
         .host
@@ -1451,6 +1500,19 @@ mod tests {
             .unwrap();
         assert!(now - oldest_kept < 4 * 604_800);
         assert!(now - oldest_kept > 3 * 604_800);
+    }
+
+    #[test]
+    fn retention_keeps_the_snapshot_a_restore_picks_by_default() {
+        let now = 365 * 86_400;
+        // On the same, long gone day: a scheduled snapshot, then the copy a
+        // restore took of what it replaced. The day keeps only its newest.
+        let mut before_restore = snapshot("2-b", now - 30 * 86_400 + 60);
+        before_restore.reason = SnapshotReason::Restore;
+        let scheduled = snapshot("1-a", now - 30 * 86_400);
+        let keep = retained(&[before_restore, scheduled], now);
+        assert!(keep.contains("1-a"), "{keep:?}");
+        assert!(keep.contains("2-b"), "{keep:?}");
     }
 
     #[test]

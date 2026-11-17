@@ -1205,6 +1205,59 @@ async fn a_failed_move_leaves_the_old_copy_snapshotting() {
 }
 
 #[tokio::test]
+async fn deleting_a_copy_left_behind_keeps_the_snapshots_the_moved_copy_holds() {
+    let (old_dir, new_dir) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+    let old = state(&old_dir);
+    old.open_databases(Some("server-a".into())).await.unwrap();
+    create(&old, ID, Some("left-behind-bucket")).await;
+    query(&old, ID, "CREATE TABLE items (name TEXT)").await;
+    ok(
+        &old,
+        Command::SnapshotDatabase {
+            name: ID.into(),
+            reason: SnapshotReason::Manual,
+            app: None,
+        },
+    )
+    .await;
+    // The database moves to another server, which restores and holds it.
+    let new = state(&new_dir);
+    new.open_databases(Some("server-b".into())).await.unwrap();
+    create(&new, ID, Some("left-behind-bucket")).await;
+    ok(
+        &new,
+        Command::RestoreDatabase {
+            name: ID.into(),
+            snapshot: None,
+            backup_key_base64: None,
+        },
+    )
+    .await;
+    // Deleting the old copy, even when asked to delete its snapshots,
+    // leaves the history the moved copy holds.
+    let deleted = ok(
+        &old,
+        Command::DeleteDatabase {
+            name: ID.into(),
+            keep_snapshots: false,
+        },
+    )
+    .await;
+    assert!(
+        deleted["warnings"][0]
+            .as_str()
+            .unwrap()
+            .contains("server-b"),
+        "{deleted}"
+    );
+    let listed = ok(&new, Command::ListDatabaseSnapshots { name: ID.into() }).await;
+    assert!(
+        !listed["snapshots"].as_array().unwrap().is_empty(),
+        "{listed}"
+    );
+}
+
+#[tokio::test]
 async fn moves_resume_and_abandoned_moves_give_the_snapshots_back() {
     let (old_dir, new_dir) = (TempDir::new().unwrap(), TempDir::new().unwrap());
     let old = state(&old_dir);

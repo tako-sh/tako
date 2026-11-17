@@ -339,7 +339,7 @@ where
                     &format!("request body exceeds {limit} bytes"),
                 );
             }
-            let reserve = declared.unwrap_or(limit).clamp(1, limit);
+            let reserve = declared.unwrap_or(limit).clamp(1, limit.max(1));
             let admitted = match admit(host, &database, reserve).await {
                 Ok(admitted) => admitted,
                 Err(response) => return response,
@@ -596,6 +596,12 @@ async fn cursor(
     let runtime = tokio::runtime::Handle::current();
     let send_timeout = host.config().cursor_send_timeout;
     tokio::task::spawn_blocking(move || {
+        // Dropped last; after a panic it fails the body and frees the stream.
+        let _panicked = CursorPanic {
+            host: task_host.clone(),
+            key,
+            aborted: task_aborted.clone(),
+        };
         let _active = active;
         let _permit = permit;
         // The parsed batch lives as long as the cursor.
@@ -673,8 +679,12 @@ async fn cursor(
                 &mut emit,
             )
             .is_ok();
+        // A stream closed meanwhile (the host was closed) rolled back what the
+        // cursor did; the client must not take the end as success.
         if connected {
-            restore_entry(&task_host, key, stream);
+            if !restore_entry(&task_host, key, stream) {
+                task_aborted.store(true, Ordering::Release);
+            }
         } else {
             task_aborted.store(true, Ordering::Release);
             remove_entry(&task_host, key);
@@ -840,11 +850,39 @@ fn retain_busy(
     Ok(1)
 }
 
-fn restore_entry(host: &DatabaseHost, key: StreamKey, stream: Stream) {
+/// Returns a cursor's stream to its entry. Returns false, dropping the
+/// stream and rolling back its transaction, when the entry was closed.
+fn restore_entry(host: &DatabaseHost, key: StreamKey, stream: Stream) -> bool {
     let mut streams = host.inner.streams.lock();
-    if let Some(entry) = streams.get_mut(&key) {
-        entry.last_used = Instant::now();
-        entry.stream = Some(stream);
+    match streams.get_mut(&key) {
+        Some(entry) => {
+            entry.last_used = Instant::now();
+            entry.stream = Some(stream);
+            true
+        }
+        None => {
+            drop(streams);
+            drop(stream);
+            false
+        }
+    }
+}
+
+/// Cleans up after a cursor task that panicked: its body fails rather than
+/// end as if complete, and its stream entry, which holds no stream while
+/// the cursor runs and so never expires, is removed.
+struct CursorPanic {
+    host: DatabaseHost,
+    key: StreamKey,
+    aborted: Arc<AtomicBool>,
+}
+
+impl Drop for CursorPanic {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.aborted.store(true, Ordering::Release);
+            remove_entry(&self.host, self.key);
+        }
     }
 }
 
@@ -916,6 +954,11 @@ fn client() -> &'static Client<HttpConnector, Body> {
         let mut connector = HttpConnector::new();
         connector.set_connect_timeout(Some(Duration::from_secs(5)));
         connector.set_nodelay(true);
+        // A home server that becomes unreachable mid-request is noticed
+        // within about a minute rather than when TCP gives up.
+        connector.set_keepalive(Some(Duration::from_secs(15)));
+        connector.set_keepalive_interval(Some(Duration::from_secs(5)));
+        connector.set_keepalive_retries(Some(6));
         // Below the home server's idle timeout, so this side lets a pooled
         // connection go before the other side closes it.
         Client::builder(TokioExecutor::new())
@@ -956,19 +999,88 @@ where
             "invalid forwarding request",
         );
     };
-    match client().request(request).await {
-        Ok(response) => response.map(|body| {
-            body.map_err(|e| -> BoxError { Box::new(e) })
-                .map_frame(|frame| frame.map_data(Chunk::from))
-                .boxed()
+    match tokio::time::timeout(FORWARD_RESPONSE_TIMEOUT, client().request(request)).await {
+        Ok(Ok(response)) => response.map(|body| {
+            IdleBody::new(
+                body.map_err(|e| -> BoxError { Box::new(e) })
+                    .map_frame(|frame| frame.map_data(Chunk::from))
+                    .boxed(),
+                FORWARD_BODY_IDLE,
+            )
+            .boxed()
         }),
-        Err(e) => {
+        Ok(Err(e)) => {
             tracing::warn!(%upstream, error = %e, "database forwarding failed");
             error(
                 StatusCode::BAD_GATEWAY,
                 "the server hosting this database is unreachable",
             )
         }
+        Err(_) => {
+            tracing::warn!(%upstream, "database forwarding timed out");
+            error(
+                StatusCode::GATEWAY_TIMEOUT,
+                "the server hosting this database did not answer in time",
+            )
+        }
+    }
+}
+
+/// How long a forwarded request waits for the home server's answer. A
+/// pipeline there runs each statement for at most the statement time limit;
+/// one that has not answered in this long is taken as hung.
+const FORWARD_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+/// How long a forwarded response may go without sending anything: a cursor
+/// sends each row as it is read, within a statement's time limit.
+const FORWARD_BODY_IDLE: Duration = Duration::from_secs(2 * 60);
+
+/// A body that fails once its inner body produces nothing for `idle`.
+struct IdleBody {
+    body: Body,
+    idle: Duration,
+    timer: std::pin::Pin<Box<tokio::time::Sleep>>,
+}
+
+impl IdleBody {
+    fn new(body: Body, idle: Duration) -> Self {
+        Self {
+            body,
+            idle,
+            timer: Box::pin(tokio::time::sleep(idle)),
+        }
+    }
+}
+
+impl http_body::Body for IdleBody {
+    type Data = Chunk;
+    type Error = BoxError;
+
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<Frame<Chunk>, BoxError>>> {
+        let this = &mut *self;
+        match std::pin::Pin::new(&mut this.body).poll_frame(cx) {
+            std::task::Poll::Ready(frame) => {
+                let deadline = tokio::time::Instant::now() + this.idle;
+                this.timer.as_mut().reset(deadline);
+                std::task::Poll::Ready(frame)
+            }
+            std::task::Poll::Pending => match this.timer.as_mut().poll(cx) {
+                std::task::Poll::Ready(()) => std::task::Poll::Ready(Some(Err(
+                    "the server hosting this database stopped sending its response".into(),
+                ))),
+                std::task::Poll::Pending => std::task::Poll::Pending,
+            },
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.body.is_end_stream()
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.body.size_hint()
     }
 }
 

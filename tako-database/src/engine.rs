@@ -135,6 +135,16 @@ impl Budget {
         true
     }
 
+    /// Charges only this response's own limit, for results that must be
+    /// returned although the host has no bytes left.
+    pub(crate) fn charge_unshared(&mut self, bytes: usize) -> bool {
+        let Some(remaining) = self.remaining.checked_sub(bytes) else {
+            return false;
+        };
+        self.remaining = remaining;
+        true
+    }
+
     /// A charge failed because the host had no bytes left, rather than
     /// because this response reached its own limit.
     pub(crate) fn host_exhausted(&self) -> bool {
@@ -604,12 +614,13 @@ impl Connection {
     }
 
     /// Executes semicolon-separated statements, discarding rows, and stops at
-    /// the first failure.
+    /// the first failure. The statements share one time limit, so a long
+    /// script cannot hold the connection for the limit once per statement.
     pub fn sequence(&mut self, sql: &str) -> Result<(), Error> {
         let mut wrote = false;
         let mut batch = rusqlite::Batch::new(&self.conn, sql);
+        self.arm_deadline();
         loop {
-            self.arm_deadline();
             let next = batch.next();
             let result = match next {
                 Ok(Some(mut stmt)) => {
@@ -630,12 +641,17 @@ impl Connection {
                 Ok(None) => Ok(false),
                 Err(error) => Err(error),
             };
-            self.disarm_deadline();
             self.wrote |= wrote;
             match result {
                 Ok(true) => continue,
-                Ok(false) => return Ok(()),
-                Err(error) => return Err(self.map_run_error(error)),
+                Ok(false) => {
+                    self.disarm_deadline();
+                    return Ok(());
+                }
+                Err(error) => {
+                    self.disarm_deadline();
+                    return Err(self.map_run_error(error));
+                }
             }
         }
     }
@@ -1277,8 +1293,9 @@ fn authorize(action: &AuthAction<'_>, dirty: &AtomicBool) -> Authorization {
             }
         }
         // A filename computed at run time, such as a parameter, is unknown
-        // when the statement is prepared.
-        AuthAction::Unknown { code, .. } if *code == ffi::SQLITE_ATTACH => Authorization::Deny,
+        // when the statement is prepared. Actions newer than this code knows
+        // are refused too.
+        AuthAction::Unknown { .. } => Authorization::Deny,
         // Temporary objects live on the connection, so it must not be reused
         // by another stream.
         AuthAction::CreateTempIndex { .. }

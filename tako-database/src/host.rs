@@ -346,6 +346,8 @@ impl StoredSqlBudget {
 pub(crate) struct Stream {
     pub(crate) conn: Option<engine::Connection>,
     pub(crate) stored_sql: HashMap<i32, String>,
+    /// A statement may have changed the database since this was cleared.
+    pub(crate) wrote: bool,
     /// Where the stored texts' bytes are counted; released on drop.
     budget: Arc<StoredSqlBudget>,
 }
@@ -355,6 +357,7 @@ impl Stream {
         Self {
             conn: None,
             stored_sql: HashMap::new(),
+            wrote: false,
             budget,
         }
     }
@@ -901,15 +904,16 @@ impl DatabaseHost {
         tokio::task::spawn_blocking(move || {
             let _active = active;
             let _permit = permit;
-            let mut conn = database
-                .acquire()
-                .map_err(|e| HostError::Engine(e.message))?;
+            // A connection of its own, with migrations' longer limits; it is
+            // not returned to the pool.
+            let mut conn =
+                engine::Connection::open(&database.path, &crate::migrate::config(&database.engine))
+                    .map_err(|e| HostError::Engine(e.message))?;
             let result = crate::migrate::run(&mut conn, &app, &migrations, dry_run);
             if conn.take_wrote() {
                 database.mark_changed();
             }
             conn.rollback();
-            database.release(conn);
             result.map_err(HostError::Engine)
         })
         .await
@@ -1143,14 +1147,16 @@ impl Drop for PauseGuard {
         if !self.resume {
             return;
         }
+        // Without waiting: this runs on an async worker, and a process that
+        // took the lock exclusively in between owns the file now.
         let mut lock = self.database.lock.lock();
         if let Some(file) = lock.as_ref() {
             let _ = file.unlock();
-            if file.lock_shared().is_err() {
+            if file.try_lock_shared().is_err() {
                 *lock = None;
             }
         } else if let Ok(file) = open_lock(&self.database.path)
-            && file.lock_shared().is_ok()
+            && file.try_lock_shared().is_ok()
         {
             *lock = Some(file);
         }

@@ -895,6 +895,24 @@ impl ServerState {
             }
             return Ok(serde_json::json!({"deleted": id, "warnings": warnings}));
         }
+        // Snapshots another server holds are its copy's history too.
+        match snapshots::other_holder(self, &stored).await {
+            Ok(None) => {}
+            Ok(Some(holder)) => {
+                warnings.push(format!(
+                    "Kept the snapshots of {}: the copy on another server ({holder}) holds them.",
+                    stored.name
+                ));
+                return Ok(serde_json::json!({"deleted": id, "warnings": warnings}));
+            }
+            Err(error) => {
+                warnings.push(format!(
+                    "Kept the snapshots of {}: could not check which server holds them ({error}). Remove `_tako/databases/{}/{}/` from the backup storage if no other copy uses them.",
+                    stored.name, stored.name, stored.generation
+                ));
+                return Ok(serde_json::json!({"deleted": id, "warnings": warnings}));
+            }
+        }
         match snapshots::delete_all(&stored).await {
             Ok(0) => {}
             Ok(count) => {

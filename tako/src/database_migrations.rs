@@ -102,7 +102,7 @@ pub(crate) fn load(
         .len();
     if encoded > MAX_ENCODED_BYTES {
         return Err(format!(
-            "The migrations in {} take {} KiB, more than the {} KiB one request carries; squash applied ones, or load large data with `tako sqlite import` instead.",
+            "The migrations in {} take {} KiB, more than the {} KiB one request carries. Load large data with `tako sqlite import` instead, or replace files every database has applied with one smaller file that is safe to run again (such as `CREATE TABLE IF NOT EXISTS`), numbered after them.",
             dir.display(),
             encoded / 1024,
             MAX_ENCODED_BYTES / 1024

@@ -113,9 +113,15 @@ pub(crate) fn run_pipeline(
     // Results count against the host's buffer budget as well as their own
     // limit, so concurrent responses cannot together hold more.
     let mut budget = Budget::shared(limits.max_response_bytes, host_bytes);
-    let mut results = Vec::with_capacity(requests.len());
+    let total = requests.len();
+    let mut results = Vec::with_capacity(total);
     let mut closed = false;
-    for request in requests {
+    // Whether a change this pipeline made is committed. Its results are then
+    // returned even when the host runs out of room: a retry after a "busy"
+    // answer would apply the change twice.
+    let mut committed = false;
+    stream.wrote = false;
+    for (index, request) in requests.into_iter().enumerate() {
         let result = match request {
             StreamRequest::Close => {
                 closed = true;
@@ -149,7 +155,11 @@ pub(crate) fn run_pipeline(
             Ok(response) => StreamResult::Ok { response },
             Err(error) => StreamResult::Error { error },
         };
+        committed |= std::mem::take(&mut stream.wrote) && is_autocommit(stream);
         if budget.host_exhausted() {
+            if committed {
+                return unbuffered(results, result, total - index - 1, closed, budget);
+            }
             return PipelineOutcome {
                 results,
                 closed: true,
@@ -162,6 +172,8 @@ pub(crate) fn run_pipeline(
         // statement cannot grow the response past its limit.
         let result = if budget.charge(metadata_size(&result)) {
             result
+        } else if budget.host_exhausted() && committed {
+            return unbuffered(results, result, total - index - 1, closed, budget);
         } else {
             let replacement = StreamResult::Error {
                 error: Error::new(
@@ -172,6 +184,9 @@ pub(crate) fn run_pipeline(
             // The replacement is charged too, so a long run of small
             // requests cannot keep adding uncharged errors.
             if !budget.charge(metadata_size(&replacement)) {
+                if budget.host_exhausted() && committed {
+                    return unbuffered(results, replacement, total - index - 1, closed, budget);
+                }
                 let stopped = if budget.host_exhausted() {
                     Stopped::HostBusy
                 } else {
@@ -196,52 +211,83 @@ pub(crate) fn run_pipeline(
     }
 }
 
+/// Ends a pipeline whose committed changes must be reported, once the host
+/// has no room left for its results: `current` is kept, and the `remaining`
+/// requests are answered with errors without running. These results count
+/// only against the response's own limit.
+fn unbuffered(
+    mut results: Vec<StreamResult>,
+    current: StreamResult,
+    remaining: usize,
+    closed: bool,
+    mut budget: Budget,
+) -> PipelineOutcome {
+    let busy = || StreamResult::Error {
+        error: Error::new(
+            "HOST_BUSY",
+            "not run: the server is holding too many database responses; earlier requests in this pipeline were committed",
+        ),
+    };
+    for result in std::iter::once(current).chain(std::iter::repeat_with(busy).take(remaining)) {
+        if !budget.charge_unshared(metadata_size(&result)) {
+            return PipelineOutcome {
+                results,
+                closed: true,
+                stopped: Some(Stopped::TooLarge),
+                reservation: None,
+            };
+        }
+        results.push(result);
+    }
+    PipelineOutcome {
+        results,
+        closed,
+        stopped: None,
+        reservation: budget.into_reservation(),
+    }
+}
+
+const FRAMING: usize = 64;
+
+fn text_size(text: &Option<String>) -> usize {
+    text.as_deref().map_or(4, engine::escaped_len) + 2
+}
+
+fn cols_size(cols: &[crate::proto::Col]) -> usize {
+    cols.iter()
+        .map(|col| 32 + text_size(&col.name) + text_size(&col.decltype))
+        .sum()
+}
+
+fn error_size(error: &Error) -> usize {
+    FRAMING
+        + engine::escaped_len(&error.message)
+        + error.code.len()
+        + error.extended_code.as_deref().map_or(0, str::len)
+}
+
+fn stmt_size(result: &StmtResult) -> usize {
+    // affected_row_count, last_insert_rowid, rows_read, rows_written,
+    // query_duration_ms, and the keys around the rows.
+    192 + cols_size(&result.cols)
+}
+
 /// The JSON size of a result apart from its rows: an upper bound for the
 /// fixed fields and framing, and the exact length of names and messages.
 fn metadata_size(result: &StreamResult) -> usize {
-    const FRAMING: usize = 64;
-    fn text(text: &Option<String>) -> usize {
-        text.as_deref().map_or(4, engine::escaped_len) + 2
-    }
-    fn cols(cols: &[crate::proto::Col]) -> usize {
-        cols.iter()
-            .map(|col| 32 + text(&col.name) + text(&col.decltype))
-            .sum()
-    }
-    fn error(error: &Error) -> usize {
-        FRAMING
-            + engine::escaped_len(&error.message)
-            + error.code.len()
-            + error.extended_code.as_deref().map_or(0, str::len)
-    }
-    fn stmt(result: &StmtResult) -> usize {
-        // affected_row_count, last_insert_rowid, rows_read, rows_written,
-        // query_duration_ms, and the keys around the rows.
-        192 + cols(&result.cols)
-    }
     FRAMING
         + match result {
-            StreamResult::Error { error: e } => error(e),
+            StreamResult::Error { error } => error_size(error),
             StreamResult::Ok { response } => match response {
-                StreamResponse::Execute { result } => stmt(result),
-                StreamResponse::Batch { result } => {
-                    result
-                        .step_results
-                        .iter()
-                        .map(|step| step.as_ref().map_or(8, stmt))
-                        .sum::<usize>()
-                        + result
-                            .step_errors
-                            .iter()
-                            .map(|step| step.as_ref().map_or(8, error))
-                            .sum::<usize>()
-                }
+                StreamResponse::Execute { result } => stmt_size(result),
+                // Each step is charged as the batch runs.
+                StreamResponse::Batch { .. } => 0,
                 StreamResponse::Describe { result } => {
-                    64 + cols(&result.cols)
+                    64 + cols_size(&result.cols)
                         + result
                             .params
                             .iter()
-                            .map(|param| 16 + text(&param.name))
+                            .map(|param| 16 + text_size(&param.name))
                             .sum::<usize>()
                 }
                 _ => 32,
@@ -394,24 +440,41 @@ fn run_batch(
             step_errors.push(None);
             continue;
         }
-        match execute(stream, database, &step.stmt, budget) {
-            Ok(result) => {
-                outcomes.push(Some(true));
-                step_results.push(Some(result));
-                step_errors.push(None);
-            }
-            Err(error) => {
-                outcomes.push(Some(false));
-                step_results.push(None);
-                step_errors.push(Some(error));
-            }
+        let (result, error) = match execute(stream, database, &step.stmt, budget) {
+            Ok(result) => (Some(result), None),
+            Err(error) => (None, Some(error)),
+        };
+        // Charged as each step finishes, so a long batch cannot pile up
+        // results beyond the response's and the host's budgets.
+        let size = result.as_ref().map_or(SKIPPED_STEP, stmt_size)
+            + error.as_ref().map_or(SKIPPED_STEP, error_size);
+        if !budget.charge(size) {
+            // The remaining steps do not run, and count as skipped.
+            let message = if budget.host_exhausted() {
+                "the server is holding too many database responses; the batch stopped here"
+            } else {
+                "the batch's results exceed the response size limit; it stopped here"
+            };
+            outcomes.push(Some(false));
+            step_results.push(None);
+            step_errors.push(Some(Error::new("RESPONSE_TOO_LARGE", message)));
+            let skipped = batch.steps.len() - step_results.len();
+            step_results.extend(std::iter::repeat_with(|| None).take(skipped));
+            step_errors.extend(std::iter::repeat_with(|| None).take(skipped));
+            break;
         }
+        outcomes.push(Some(result.is_some()));
+        step_results.push(result);
+        step_errors.push(error);
     }
     BatchResult {
         step_results,
         step_errors,
     }
 }
+
+/// The JSON size of a step's empty result or error slot.
+const SKIPPED_STEP: usize = 8;
 
 /// `outcomes[n]` is `Some(true)` when step `n` succeeded, `Some(false)` when it
 /// failed, and `None` when it was skipped; a skipped step is neither `ok` nor
@@ -441,7 +504,10 @@ fn execute(
     budget: &mut Budget,
 ) -> Result<StmtResult, Error> {
     let Stream {
-        conn, stored_sql, ..
+        conn,
+        stored_sql,
+        wrote,
+        ..
     } = stream;
     let (sql, args) = resolve_statement(stored_sql, stmt)?;
     let conn = connection(conn, database)?;
@@ -450,6 +516,7 @@ fn execute(
     // whose rows exceed the response budget.
     if conn.take_wrote() {
         database.mark_changed();
+        *wrote = true;
     }
     result
 }
@@ -461,7 +528,10 @@ fn sequence(
     sql_id: Option<i32>,
 ) -> Result<(), Error> {
     let Stream {
-        conn, stored_sql, ..
+        conn,
+        stored_sql,
+        wrote,
+        ..
     } = stream;
     let sql = resolve_sql(stored_sql, sql, sql_id)?;
     let conn = connection(conn, database)?;
@@ -469,6 +539,7 @@ fn sequence(
     // A failing statement may follow ones that already wrote.
     if conn.take_wrote() {
         database.mark_changed();
+        *wrote = true;
     }
     result
 }

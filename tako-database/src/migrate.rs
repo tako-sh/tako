@@ -374,9 +374,24 @@ pub fn migrate_file(
             return Err(error);
         }
     }
-    let mut conn = Connection::open(path, &EngineConfig::default()).map_err(engine_error)?;
+    let mut conn =
+        Connection::open(path, &config(&EngineConfig::default())).map_err(engine_error)?;
     run(&mut conn, app, migrations, dry_run)
 }
+
+/// The limits migrations run with: a file's statements share one time
+/// limit, longer than an app request's, and wait longer for the write lock,
+/// which apps' writes hold briefly.
+pub(crate) fn config(base: &EngineConfig) -> EngineConfig {
+    EngineConfig {
+        busy_timeout: MIGRATION_BUSY_TIMEOUT,
+        statement_timeout: MIGRATION_TIMEOUT,
+        ..base.clone()
+    }
+}
+
+const MIGRATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+const MIGRATION_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[cfg(test)]
 mod tests;

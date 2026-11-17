@@ -131,15 +131,28 @@ impl fmt::Display for Denial {
 
 impl std::error::Error for Denial {}
 
-/// Whether two binding sets name the same databases the same way. Peer keys
-/// are issued by servers, so they are not compared.
+/// Whether a requested binding names the database a provisioned one does.
+/// Peer keys are issued by servers to administrators: one left out keeps the
+/// provisioned key, and one sent must be that key.
+fn keeps_binding(requested: &DatabaseBinding, provisioned: &DatabaseBinding) -> bool {
+    provisioned.same_target(requested)
+        && requested
+            .peer_key
+            .as_ref()
+            .is_none_or(|key| provisioned.peer_key.as_ref() == Some(key))
+}
+
+/// Whether a requested binding set keeps the provisioned one.
 fn same_bindings(
-    a: &HashMap<String, DatabaseBinding>,
-    b: &HashMap<String, DatabaseBinding>,
+    requested: &HashMap<String, DatabaseBinding>,
+    provisioned: &HashMap<String, DatabaseBinding>,
 ) -> bool {
-    a.len() == b.len()
-        && a.iter()
-            .all(|(name, binding)| b.get(name).is_some_and(|other| other.same_target(binding)))
+    requested.len() == provisioned.len()
+        && requested.iter().all(|(name, binding)| {
+            provisioned
+                .get(name)
+                .is_some_and(|current| keeps_binding(binding, current))
+        })
 }
 
 const DATABASES_DENIED: Denial =
@@ -312,7 +325,7 @@ pub(crate) fn authorize_command(
                     !provisioned
                         .databases
                         .get(name)
-                        .is_some_and(|current| current.same_target(binding))
+                        .is_some_and(|current| keeps_binding(binding, current))
                 }) {
                     return Err(DATABASES_DENIED);
                 }
@@ -749,6 +762,17 @@ mod tests {
         let moved = json!({"main": {"name": "shop", "server": "other"}});
         let release = f.decode_command(json!({"command":"run_release","databases":moved}));
         assert_eq!(f.authorize(&release), Err(DATABASES_DENIED));
+        // Nor can they replace the issued key, on a release or a deploy.
+        let rekeyed = json!({"main": {"name": "shop", "server": "edge", "peer_key": "guessed"}});
+        let release = f.decode_command(json!({"command":"run_release","databases":rekeyed}));
+        assert_eq!(f.authorize(&release), Err(DATABASES_DENIED));
+        let deploy = f.decode_command(json!({"command":"deploy","databases":rekeyed}));
+        assert_eq!(f.authorize(&deploy), Err(DATABASES_DENIED));
+        // The issued key itself is accepted.
+        let issued =
+            json!({"main": {"name": "shop", "server": "edge", "peer_key": "issued-by-edge"}});
+        let deploy = f.decode_command(json!({"command":"deploy","databases":issued}));
+        assert_eq!(f.authorize(&deploy), Ok(()));
     }
 
     #[test]

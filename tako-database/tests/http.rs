@@ -879,6 +879,95 @@ async fn pipeline_responses_hold_the_hosts_buffer_budget_until_sent() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_batch_stops_once_its_step_results_reach_the_response_limit() {
+    let h = harness(HostConfig {
+        max_response_bytes: 8 * 1024,
+        ..HostConfig::default()
+    });
+    pipeline(&h, Value::Null, vec![execute("CREATE TABLE t (x)")]).await;
+    // Every step's result is small, but together they outgrow the limit:
+    // the batch stops where they do, and later steps do not run.
+    let steps: Vec<Value> = (0..200)
+        .map(|_| json!({"stmt": {"sql": "INSERT INTO t VALUES (1) RETURNING x AS a_long_column_name"}}))
+        .collect();
+    let (status, body) = post(
+        &h,
+        "/v3/pipeline",
+        json!({"baton": null, "requests": [{"type": "batch", "batch": {"steps": steps}}]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let result = &body["results"][0]["response"]["result"];
+    let errors = result["step_errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 200);
+    let stopped = errors
+        .iter()
+        .position(|error| !error.is_null())
+        .expect("a step reports the limit");
+    assert_eq!(errors[stopped]["code"], "RESPONSE_TOO_LARGE", "{body}");
+    assert!(stopped > 0 && stopped < 199, "stopped at step {stopped}");
+    assert!(result["step_results"][stopped + 1].is_null());
+    let rows = pipeline(&h, Value::Null, vec![execute("SELECT count(*) FROM t")]).await;
+    assert_eq!(
+        rows["results"][0]["response"]["result"]["rows"][0][0]["value"],
+        (stopped + 1).to_string(),
+        "the steps after it did not run"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_busy_host_still_reports_changes_a_pipeline_committed() {
+    let h = harness(HostConfig {
+        max_buffered_bytes: 1024 * 1024,
+        max_request_bytes: 4 * 1024,
+        admission_timeout: Duration::from_millis(300),
+        ..HostConfig::default()
+    });
+    pipeline(&h, Value::Null, vec![execute("CREATE TABLE t (x)")]).await;
+    let large = "SELECT hex(zeroblob(300000))";
+    // An unread response holds most of the host's buffer.
+    let request = Request::post("/v3/pipeline")
+        .header("authorization", format!("Bearer {}", h.token))
+        .body(Full::new(Bytes::from(
+            json!({"baton": null, "requests": [execute(large)]}).to_string(),
+        )))
+        .unwrap();
+    let unread = handle(&h.host, &Access::Apps, PEER.parse().unwrap(), request).await;
+    assert_eq!(unread.status(), StatusCode::OK);
+    // Without a committed change, the pipeline is told to retry.
+    let (status, _) = post(
+        &h,
+        "/v3/pipeline",
+        json!({"baton": null, "requests": [execute(large)]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    // With one, its results come back instead, and what did not run says so.
+    let (status, body) = post(
+        &h,
+        "/v3/pipeline",
+        json!({"baton": null, "requests": [
+            execute("INSERT INTO t VALUES (1)"),
+            execute(large),
+            execute("INSERT INTO t VALUES (2)"),
+        ]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let results = body["results"].as_array().unwrap();
+    assert_eq!(results.len(), 3);
+    assert_eq!(results[0]["type"], "ok", "{body}");
+    assert_eq!(results[1]["type"], "error", "{body}");
+    assert_eq!(results[2]["error"]["code"], "HOST_BUSY", "{body}");
+    drop(unread);
+    let rows = pipeline(&h, Value::Null, vec![execute("SELECT count(*) FROM t")]).await;
+    assert_eq!(
+        rows["results"][0]["response"]["result"]["rows"][0][0]["value"],
+        "1"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn request_bodies_share_the_hosts_buffer_budget() {
     use futures_util::StreamExt;
     let h = harness(HostConfig {
@@ -1242,6 +1331,39 @@ async fn a_stream_opened_while_the_host_closes_is_not_kept() {
     assert!(body.to_string().contains("rolled back"), "{body}");
     // No baton was handed out, and no connection stays open for one.
     assert_eq!(h.host.open_streams(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cursor_whose_stream_is_closed_while_it_runs_fails() {
+    let h = harness(HostConfig {
+        pause_timeout: Duration::from_millis(100),
+        ..HostConfig::default()
+    });
+    pipeline(&h, Value::Null, vec![execute("CREATE TABLE t (x)")]).await;
+    let slow = "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n LIMIT 5000000) SELECT count(*) FROM n";
+    let request = Request::post("/v3/cursor")
+        .header("authorization", format!("Bearer {}", h.token))
+        .body(Full::new(Bytes::from(
+            json!({"baton": null, "batch": {"steps": [
+                {"stmt": {"sql": "BEGIN"}},
+                {"stmt": {"sql": "INSERT INTO t VALUES (1)"}},
+                {"stmt": {"sql": slow}},
+            ]}})
+            .to_string(),
+        )))
+        .unwrap();
+    let response = handle(&h.host, &Access::Apps, PEER.parse().unwrap(), request).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    // The host closes while the slow step runs, which rolls back the insert.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    h.host.close_all().await;
+    let body = tokio::time::timeout(Duration::from_secs(30), response.into_body().collect())
+        .await
+        .expect("the cursor ends");
+    assert!(
+        body.is_err(),
+        "the body fails instead of ending as if complete"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

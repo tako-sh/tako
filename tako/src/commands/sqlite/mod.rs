@@ -806,6 +806,7 @@ fn list(ctx: &Context) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn status(ctx: &Context, name: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    ctx.require_admin()?;
     let names: Vec<String> = match name {
         Some(name) => vec![name.to_owned()],
         None => project_bindings(&ctx.config).into_keys().collect(),
