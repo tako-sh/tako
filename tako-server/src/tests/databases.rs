@@ -1017,6 +1017,8 @@ async fn resets_apply_migrations_before_the_new_file_is_served() {
         },
     )
     .await;
+    // CodeQL[rust/cleartext-logging]: test-only assertion on a command error
+    // string; these commands carry no secrets.
     assert!(failed.contains("was not reset"), "{failed}");
     assert_eq!(count(&state, ID).await, 1);
     // Otherwise the database is replaced with one that already has its
@@ -1143,6 +1145,8 @@ async fn a_copy_left_by_a_move_stops_publishing_snapshots() {
     // Back online, the old copy diverges but publishes nothing.
     query(&old, ID, "INSERT INTO items VALUES ('stale')").await;
     let refused = error(&old, snapshot(SnapshotReason::Manual)).await;
+    // CodeQL[rust/cleartext-logging]: test-only assertion on a command error
+    // string; these commands carry no secrets.
     assert!(refused.contains("was moved to another server"), "{refused}");
     let listed = ok(&new, Command::ListDatabaseSnapshots { name: ID.into() }).await;
     let manual = listed["snapshots"]
@@ -1250,6 +1254,8 @@ async fn deleting_a_database_fences_its_snapshots_from_a_copy_that_holds_them() 
         },
     )
     .await;
+    // CodeQL[rust/cleartext-logging]: test-only assertions on command results;
+    // these commands carry no secrets.
     assert_eq!(deleted["warnings"], json!([]), "{deleted}");
     let listed = ok(&target, Command::ListDatabaseSnapshots { name: ID.into() }).await;
     assert_eq!(listed["snapshots"], json!([]), "{listed}");
@@ -1288,6 +1294,8 @@ async fn a_copy_the_delete_could_not_reach_publishes_nothing_afterwards() {
     // Back online, it publishes nothing into the deleted history.
     query(&stale, ID, "CREATE TABLE later (name TEXT)").await;
     let refused = error(&stale, snapshot()).await;
+    // CodeQL[rust/cleartext-logging]: test-only assertion on a command error
+    // string; these commands carry no secrets.
     assert!(refused.contains("was deleted"), "{refused}");
     let store = crate::databases::snapshots::test_store("deleted-fence-bucket").unwrap();
     let prefix = object_store::path::Path::from(format!("_tako/databases/{ID}/{GENERATION}"));
@@ -1369,6 +1377,8 @@ async fn a_create_that_fails_to_open_leaves_nothing_behind() {
         },
     )
     .await;
+    // CodeQL[rust/cleartext-logging]: test-only assertion on a command error
+    // string; these commands carry no secrets.
     assert!(failed.contains("open database"), "{failed}");
     assert!(state.state_store.get_database(ID).unwrap().is_none());
     assert!(!state.databases.database_dir(ID).exists());
@@ -1691,6 +1701,8 @@ async fn deleting_a_database_ends_its_transfers() {
         },
     )
     .await;
+    // CodeQL[rust/cleartext-logging]: test-only assertions on command error
+    // strings; these commands carry no secrets.
     assert!(refused.contains("not found"), "{refused}");
     let refused = error(
         &state,
@@ -1717,6 +1729,8 @@ async fn a_database_being_deleted_cannot_be_granted() {
     // A delete has checked the database and is revoking its grants.
     let deleting = state.databases.start_deleting(ID).unwrap();
     let refused = error(&state, grant()).await;
+    // CodeQL[rust/cleartext-logging]: test-only assertion on a command error
+    // string; these commands carry no secrets.
     assert!(refused.contains("being deleted"), "{refused}");
     assert!(
         state
@@ -1745,6 +1759,8 @@ async fn a_delete_acts_only_on_the_generation_it_names() {
         },
     )
     .await;
+    // CodeQL[rust/cleartext-logging]: test-only assertion on a command error
+    // string; these commands carry no secrets.
     assert!(refused.contains("not the one asked for"), "{refused}");
     query(&state, ID, "SELECT 1").await;
     ok(
@@ -1789,6 +1805,8 @@ async fn a_database_a_draining_release_still_binds_cannot_be_deleted() {
         },
     )
     .await;
+    // CodeQL[rust/cleartext-logging]: test-only assertion on a command error
+    // string; these commands carry no secrets.
     assert!(refused.contains("web/production"), "{refused}");
     // Once the rollout commits, only the new set stays.
     state.databases.apply_bindings("web/production", &[&new]);
