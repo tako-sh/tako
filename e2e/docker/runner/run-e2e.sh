@@ -838,10 +838,10 @@ run_compose_lifecycle_checks() {
   [[ $(compose_container_id web) != "$web_id" ]]
   compose_assert_response 'Updated Bun release!'
   web_id=$(compose_container_id web)
+  # Secret changes apply on the next deploy: publish one and redeploy the same release.
+  printf '%s' 'rotated$VALUE' | HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" secrets set ROTATION_TOKEN --env production
   compose_probe_start
-  jq -nc --arg app "$APP_NAME/production" '{command:"update_secrets",app:$app,secrets:{ROTATION_TOKEN:"rotated$VALUE"}}' > "$TMP_ROOT/compose-secrets.json"
-  ssh_exec "$server_host" "python3 -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.settimeout(300); s.connect(\"/var/run/tako/tako.sock\"); s.sendall(sys.stdin.buffer.read()); s.shutdown(socket.SHUT_WR); print(s.makefile().readline(), end=\"\")'" < "$TMP_ROOT/compose-secrets.json" > "$TMP_ROOT/compose-secrets-result.json"
-  jq -e '.status == "ok" and .data.restarted == true' "$TMP_ROOT/compose-secrets-result.json" >/dev/null
+  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" deploy --env production --yes
   compose_probe_finish
   compose_assert_redis_unchanged
   [[ $(compose_container_id web) != "$web_id" ]]
