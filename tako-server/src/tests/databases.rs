@@ -1412,6 +1412,63 @@ async fn interrupted_work_directories_are_removed_once_stale() {
 }
 
 #[tokio::test]
+async fn finishing_a_transfer_under_another_name_leaves_it_in_place() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, None).await;
+    create(&state, "other", None).await;
+    let bytes = b"0123456789".repeat(10);
+    let upload = ok(
+        &state,
+        Command::BeginDatabaseImport {
+            name: ID.into(),
+            size_bytes: bytes.len() as u64,
+            sha256: hex::encode(Sha256::digest(&bytes)),
+        },
+    )
+    .await;
+    let upload_id = upload["upload_id"].as_str().unwrap().to_owned();
+    error(
+        &state,
+        Command::FinishDatabaseImport {
+            name: "other".into(),
+            upload_id: upload_id.clone(),
+        },
+    )
+    .await;
+    // The upload goes on under its own name.
+    ok(
+        &state,
+        Command::DatabaseImportChunk {
+            name: ID.into(),
+            upload_id: upload_id.clone(),
+            offset: 0,
+            data_base64: BASE64.encode(&bytes),
+        },
+    )
+    .await;
+    let export = ok(&state, Command::BeginDatabaseExport { name: ID.into() }).await;
+    let export_id = export["export_id"].as_str().unwrap().to_owned();
+    error(
+        &state,
+        Command::FinishDatabaseExport {
+            name: "other".into(),
+            export_id: export_id.clone(),
+        },
+    )
+    .await;
+    ok(
+        &state,
+        Command::DatabaseExportChunk {
+            name: ID.into(),
+            export_id,
+            offset: 0,
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn transfers_still_receiving_chunks_keep_their_work_directory() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp);

@@ -155,13 +155,22 @@ pub(crate) async fn finish_import(
     id: &str,
     upload_id: &str,
 ) -> Result<serde_json::Value, String> {
-    let import = state
-        .databases
-        .transfers()
-        .imports
-        .remove(upload_id)
-        .filter(|import| import.database == id)
-        .ok_or("Import not found or expired.")?;
+    // Checked before removing, so naming the wrong database leaves the
+    // upload in place.
+    let import = {
+        let mut transfers = state.databases.transfers();
+        if !transfers
+            .imports
+            .get(upload_id)
+            .is_some_and(|import| import.database == id)
+        {
+            return Err("Import not found or expired.".into());
+        }
+        transfers
+            .imports
+            .remove(upload_id)
+            .ok_or("Import not found or expired.")?
+    };
     if import.received != import.size {
         return Err(format!(
             "Import is incomplete: {} of {} bytes received.",
@@ -287,12 +296,17 @@ pub(crate) fn finish_export(
     id: &str,
     export_id: &str,
 ) -> Result<serde_json::Value, String> {
-    let removed = state
-        .databases
-        .transfers()
-        .exports
-        .remove(export_id)
-        .filter(|export| export.database == id);
+    let removed = {
+        let mut transfers = state.databases.transfers();
+        if !transfers
+            .exports
+            .get(export_id)
+            .is_some_and(|export| export.database == id)
+        {
+            return Err("Export not found or expired.".into());
+        }
+        transfers.exports.remove(export_id)
+    };
     if let Some(export) = removed {
         drop(export.work);
     }
