@@ -133,7 +133,7 @@ mod tests {
         let routes = Arc::new(parking_lot::RwLock::new(RouteTable::default()));
         routes
             .write()
-            .set_app_routes("public".into(), vec!["*.tako.internal".into()]);
+            .set_app_routes("public".into(), vec!["*.prod.tako".into()]);
         TakoProxy::new(
             Arc::new(LoadBalancer::new(manager)),
             routes,
@@ -151,11 +151,11 @@ mod tests {
             proxy
                 .routes
                 .read()
-                .select_with_route("api.prod.net.tako.internal", "/")
+                .select_with_route("api.prod.tako", "/")
                 .is_some()
         );
         let (mut client, stream) = tokio::io::duplex(8192);
-        client.write_all(b"GET / HTTP/1.1\r\nHost: api.prod.net.tako.internal\r\nX-Forwarded-For: fd00::1\r\nX-Forwarded-Proto: https\r\n\r\n").await.unwrap();
+        client.write_all(b"GET / HTTP/1.1\r\nHost: api.prod.tako\r\nX-Forwarded-For: fd00::1\r\nX-Forwarded-Proto: https\r\n\r\n").await.unwrap();
         let mut session = Session::new_h1(Box::new(stream));
         session.read_request().await.unwrap();
         let mut context = proxy.new_ctx();

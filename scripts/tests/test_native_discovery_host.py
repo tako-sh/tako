@@ -43,7 +43,7 @@ class ResolverTests(unittest.TestCase):
         original = copy.deepcopy(self.runner.resolver)
         self.assertTrue(self.apply()['dns_supported'])
         self.assertEqual(self.runner.resolver, {'dns': ['fd00:1234:5678::1'],
-            'domain': ['~' + ID + '.tako.internal'], 'default-route': ['no']})
+            'domain': ['~tako'], 'default-route': ['no']})
         self.assertTrue(self.apply()['dns_supported'])
         self.assertEqual(self.saved['networks'][ID]['dns_settings']['original'], original)
         self.host.remove(ID)
@@ -79,7 +79,7 @@ class ResolverTests(unittest.TestCase):
         self.runner = ResolverRunner()
         self.host.runner = self.runner
         original = copy.deepcopy(self.runner.resolver)
-        self.runner.fail = ('resolvectl', 'domain', DEV, '~' + ID + '.tako.internal')
+        self.runner.fail = ('resolvectl', 'domain', DEV, '~tako')
         result = self.apply()
         self.assertFalse(result['dns_supported'])
         self.assertEqual(self.runner.resolver, original)

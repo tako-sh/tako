@@ -175,10 +175,16 @@ pub async fn listener() -> io::Result<tokio::net::TcpListener> {
 }
 
 pub fn is_internal_status_request(host: Option<&str>, path: &str) -> bool {
-    path == "/status"
-        && host
-            .map(host_without_port)
-            .is_some_and(|host| host.ends_with(".tako"))
+    path == "/status" && host.is_some_and(is_internal_host)
+}
+
+/// Tako's server addresses SDK endpoints as `<app>.tako`: exactly one label.
+/// Multi-label `.tako` names such as `api.prod.tako` are private network
+/// traffic and belong to the application.
+pub(crate) fn is_internal_host(host: &str) -> bool {
+    host_without_port(host)
+        .strip_suffix(".tako")
+        .is_some_and(|app| !app.is_empty() && !app.contains('.'))
 }
 
 pub fn status_body() -> serde_json::Value {
@@ -603,6 +609,11 @@ mod tests {
         assert!(is_internal_status_request(Some("app.tako:3000"), "/status"));
         assert!(!is_internal_status_request(Some("example.com"), "/status"));
         assert!(!is_internal_status_request(Some("app.tako"), "/"));
+        assert!(!is_internal_status_request(
+            Some("api.prod.tako"),
+            "/status"
+        ));
+        assert!(!is_internal_status_request(Some(".tako"), "/status"));
     }
 
     #[test]

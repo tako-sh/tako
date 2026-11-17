@@ -194,8 +194,8 @@ pub(crate) fn proxy_main() -> ! {
         let profile = super::load_profile(&alias)?;
         let keys = LocalDeviceKeys::load(&super::keys_path(&profile.request().request_id)?)?;
         let config = configuration(&profile, &keys, &server.parse()?)?;
-        // OpenSSH aliases from `tako ssh config` place their ControlPath here
-        // and start the proxy before creating the socket, so ensure it exists.
+        // OpenSSH places its ControlPath here and starts the proxy before
+        // creating the socket, so ensure the directory exists.
         super::ssh_session::control_directory()?;
         let proxies = super::ssh_session::lock(&alias, "ssh-proxies.lock")?;
         proxies.lock_shared()?;

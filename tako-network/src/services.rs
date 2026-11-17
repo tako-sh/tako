@@ -137,9 +137,31 @@ impl ServiceLease {
     }
 }
 
-pub fn service_hostname(app: &AppEnv, network: &NetworkId) -> String {
+/// Private network names live under this single-label suffix.
+pub const PRIVATE_DOMAIN: &str = "tako";
+/// Internal server identity names. Never resolvable and never public routes.
+const IDENTITY_DOMAIN: &str = "tako.internal";
+
+pub fn service_hostname(app: &AppEnv) -> String {
     let (app, env) = app.as_str().split_once('/').expect("validated AppEnv");
-    format!("{app}.{env}.{network}.tako.internal")
+    format!("{app}.{env}.{PRIVATE_DOMAIN}")
+}
+
+/// Lowercased DNS label for a server name, when the name is usable as one.
+pub fn server_label(name: &str) -> Option<String> {
+    let label = name.to_ascii_lowercase();
+    let bytes = label.as_bytes();
+    (!bytes.is_empty()
+        && bytes.len() <= 63
+        && bytes[0].is_ascii_alphanumeric()
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-' || *b == b'_'))
+    .then_some(label)
+}
+
+pub fn server_hostname(name: &str) -> Option<String> {
+    server_label(name).map(|label| format!("{label}.{PRIVATE_DOMAIN}"))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -147,15 +169,26 @@ pub enum ServiceHost {
     Public,
     Reserved,
     App(AppEnv),
+    Server(String),
 }
 
-/// Classify the raw HTTP authority before public wildcard route matching.
-pub fn classify_host(authority: &str, network: &NetworkId) -> ServiceHost {
+fn in_domain(host: &str, domain: &str) -> bool {
+    host == domain
+        || host
+            .strip_suffix(domain)
+            .is_some_and(|prefix| prefix.ends_with('.'))
+}
+
+/// Classify the raw HTTP authority or DNS name before public wildcard route matching.
+pub fn classify_host(authority: &str) -> ServiceHost {
     let host = authority
         .split_once(':')
         .map_or(authority, |(host, _)| host);
     let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
-    if host != "tako.internal" && !host.ends_with(".tako.internal") {
+    if in_domain(&host, IDENTITY_DOMAIN) {
+        return ServiceHost::Reserved;
+    }
+    if !in_domain(&host, PRIVATE_DOMAIN) {
         return ServiceHost::Public;
     }
     if authority.len() > 254
@@ -168,16 +201,16 @@ pub fn classify_host(authority: &str, network: &NetworkId) -> ServiceHost {
     {
         return ServiceHost::Reserved;
     }
-    let suffix = format!(".{network}.tako.internal");
-    let Some(labels) = host.strip_suffix(&suffix) else {
+    let Some(labels) = host.strip_suffix(&format!(".{PRIVATE_DOMAIN}")) else {
         return ServiceHost::Reserved;
     };
-    let Some((app, env)) = labels.split_once('.') else {
-        return ServiceHost::Reserved;
-    };
-    match format!("{app}/{env}").parse() {
-        Ok(scope) => ServiceHost::App(scope),
-        Err(_) => ServiceHost::Reserved,
+    match labels.split('.').collect::<Vec<_>>().as_slice() {
+        [server] => server_label(server).map_or(ServiceHost::Reserved, ServiceHost::Server),
+        [app, env] => match format!("{app}/{env}").parse() {
+            Ok(scope) => ServiceHost::App(scope),
+            Err(_) => ServiceHost::Reserved,
+        },
+        _ => ServiceHost::Reserved,
     }
 }
 

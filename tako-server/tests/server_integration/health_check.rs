@@ -41,9 +41,10 @@ fn test_app_scoped_internal_status_host_is_not_exposed_by_proxy() {
         )
         .expect("status endpoint request should succeed");
 
+    // Private `.tako` names are reserved and never reach public routes.
     assert!(
-        response.starts_with("HTTP/1.1 404") || response.starts_with("HTTP/1.0 404"),
-        "expected 404 response: {response}"
+        response.starts_with("HTTP/1.1 403") || response.starts_with("HTTP/1.0 403"),
+        "expected 403 response: {response}"
     );
 }
 

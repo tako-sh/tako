@@ -32,7 +32,7 @@ pub(crate) fn claim_transport(alias: &LocalNetwork, server: &str) -> Result<File
     match transport.try_lock() {
         Ok(()) => Ok(transport),
         Err(std::fs::TryLockError::WouldBlock) => Err(
-            "Another SSH connection to this server is starting or open without a shared connection. Retry in a moment; `tako ssh` and `tako ssh config` aliases reuse one connection per server."
+            "Another SSH connection to this server is starting or open without a shared connection. Retry in a moment; `tako ssh` sessions reuse one connection per server."
                 .into(),
         ),
         Err(std::fs::TryLockError::Error(error)) => Err(error.into()),
@@ -62,8 +62,8 @@ fn server_prefix(alias: &LocalNetwork, server: &str) -> String {
 }
 
 /// The OpenSSH control socket for one server and one approved SSH setting.
-/// `tako ssh` and the aliases from `tako ssh config` derive the same path, so
-/// both share a single WireGuard transport. Approval changes yield a new path
+/// Concurrent `tako ssh` sessions derive the same path, so they share a single
+/// WireGuard transport. Approval changes yield a new path
 /// instead of reusing a connection authenticated under the old approval.
 /// Computes the path only; callers that bind or scan create the directory.
 pub(crate) fn control_path(alias: &LocalNetwork, server: &str, settings: &str) -> Result<PathBuf> {
@@ -157,7 +157,7 @@ pub(super) fn refuse_other_transport(
             && entry.file_type()?.is_socket()
             && control(&entry.path(), "check")?.status.success()
         {
-            return Err("SSH approval changed. Finish existing SSH sessions to this server, wait five seconds, then retry. Rerun `tako ssh config` if you use it.".into());
+            return Err("SSH approval changed. Finish existing SSH sessions to this server, wait five seconds, then retry.".into());
         }
     }
     Ok(())

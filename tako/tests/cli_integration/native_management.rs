@@ -99,6 +99,9 @@ impl Fixture {
             None,
         );
         let mut trusted_servers = BTreeMap::new();
+        // Approve each server against the laptop-only registry so fixtures can
+        // model registries from before active server names had to be unique.
+        let laptop_only = snapshot.clone();
         for (index, name) in names.iter().enumerate() {
             let server_keys = LocalDeviceKeys::generate().unwrap();
             let request = server_keys
@@ -118,13 +121,15 @@ impl Fixture {
                 https_spki_sha256: None,
                 corrosion_ca_certificate_pem: None,
             };
+            let mut scratch = laptop_only.clone();
             admit(
-                &mut snapshot,
+                &mut scratch,
                 &server_keys,
                 request,
                 MemberKind::Server(info.clone()),
                 Some(own.clone()),
             );
+            snapshot.members.push(scratch.members.pop().unwrap());
             trusted_servers.insert(id, info);
         }
         let servers = trusted_servers.keys().cloned().collect();

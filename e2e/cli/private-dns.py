@@ -104,10 +104,13 @@ try:
     assert Path("/etc/hosts").read_bytes() == hosts
     helper("start", **request)
     assert "fd42::1" in command("resolvectl", "dns", INTERFACE)
-    assert f"{NETWORK}.tako.internal" in command("resolvectl", "domain", INTERFACE)
+    assert "~tako" in command("resolvectl", "domain", INTERFACE).split()
     assert "no" in command("resolvectl", "default-route", INTERFACE)
-    for name in ["foobar", f"foobar.{NETWORK}.tako.internal", f"shop.production.{NETWORK}.tako.internal"]:
+    for name in ["foobar", "foobar.tako", "shop.production.tako"]:
         assert socket.getaddrinfo(name, 22, socket.AF_INET6)[0][4][0] == "fd42::1", name
+    # Resolving through the tunnel completed a handshake and received traffic.
+    report = helper("handshakes")["public_key"].split()
+    assert report[0] == key(PUBLIC_A) and int(report[1]) > 0 and int(report[2]) > 0, report
     helper("sync", **request)
     helper("stop", public_key=key(PUBLIC_B))
     assert Path("/etc/hosts").read_bytes() == hosts

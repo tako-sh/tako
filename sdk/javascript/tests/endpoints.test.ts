@@ -4,6 +4,7 @@ import {
   TAKO_INTERNAL_CHANNELS_REGISTRY_PATH,
   TAKO_INTERNAL_TOKEN_HEADER,
   handleTakoEndpoint,
+  isSingleLabelInternalHost,
 } from "../src/tako/endpoints";
 import { injectBootstrap } from "../src/tako/secrets";
 import type { TakoStatus } from "../src/types";
@@ -67,6 +68,20 @@ describe("handleTakoEndpoint", () => {
     const response = await invoke("test-app.tako", "test-token");
     expect(response?.status).toBe(404);
     expect(response?.headers.get(TAKO_INTERNAL_TOKEN_HEADER)).toBe("test-token");
+  });
+
+  test("leaves private network names to the app", async () => {
+    delete process.env["TAKO_APP_NAME"];
+    const request = new Request("http://test-app.production.tako/status");
+    const response = await handleTakoEndpoint(request, mockStatus, channels);
+    expect(response).toBeNull();
+  });
+
+  test("internal hosts are exactly one label before .tako", () => {
+    expect(isSingleLabelInternalHost("app.tako")).toBe(true);
+    expect(isSingleLabelInternalHost("api.prod.tako")).toBe(false);
+    expect(isSingleLabelInternalHost(".tako")).toBe(false);
+    expect(isSingleLabelInternalHost("app.tako.test")).toBe(false);
   });
 
   test("returns null for non-internal host paths", async () => {

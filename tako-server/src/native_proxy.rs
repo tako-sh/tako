@@ -80,13 +80,12 @@ impl NativeProxy {
                         Ok(scope) => scope,
                         Err(_) => return tako_core::Response::error("invalid caller app"),
                     };
-                    let (placement, network) = {
-                        let directory = router.directory.read();
-                        (
-                            directory.placements(&scope, now()).into_iter().next(),
-                            directory.network().to_string(),
-                        )
-                    };
+                    let placement = router
+                        .directory
+                        .read()
+                        .placements(&scope, now())
+                        .into_iter()
+                        .next();
                     let Some(placement) = placement else {
                         return tako_core::Response::coded_error(
                             tako_core::ErrorCode::Unavailable,
@@ -112,7 +111,10 @@ impl NativeProxy {
                         };
                         tako_workflows::network::invoke_http(
                             &format!("http://[{}]/_tako/network", placement.address),
-                            &format!("{app}.{environment}.{network}.tako.internal"),
+                            &format!(
+                                "{app}.{environment}.{}",
+                                tako_network::services::PRIVATE_DOMAIN
+                            ),
                             None,
                             &invocation,
                         )
@@ -208,7 +210,7 @@ impl NativeProxy {
 
     /// The private address of another server, for database forwarding.
     pub(crate) fn server_address(&self, server: &str) -> Option<IpAddr> {
-        self.directory.read().server_address(server, now())
+        self.directory.read().server_address_by_id(server, now())
     }
 
     /// Whether a peer address belongs to an effective server.
@@ -298,8 +300,10 @@ pub(crate) fn reserved_host(authority: &str) -> bool {
         .unwrap_or(authority)
         .trim()
         .trim_end_matches('.');
-    host.eq_ignore_ascii_case("tako.internal")
-        || host.to_ascii_lowercase().ends_with(".tako.internal")
+    !matches!(
+        tako_network::services::classify_host(host),
+        tako_network::services::ServiceHost::Public
+    )
 }
 
 fn now() -> u64 {
@@ -393,10 +397,13 @@ mod tests {
     #[test]
     fn reserved_namespace_cannot_fall_through_to_public_wildcards() {
         for host in [
+            "tako",
             "tako.internal",
-            "app.prod.net.tako.internal",
-            "APP.PROD.NET.TAKO.INTERNAL.:80",
-            "node.tako.internal:bad",
+            "node-abc.net.tako.internal",
+            "app.prod.tako",
+            "APP.PROD.TAKO.:80",
+            "edge-a.tako",
+            "app.prod.tako:bad",
         ] {
             assert!(reserved_host(host), "{host}");
         }
@@ -404,6 +411,8 @@ mod tests {
             "example.com",
             "tako.internal.attacker.test",
             "not-tako.internal",
+            "app.tako.test",
+            "nottako",
         ] {
             assert!(!reserved_host(host));
         }

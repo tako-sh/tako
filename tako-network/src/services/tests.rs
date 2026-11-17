@@ -172,37 +172,53 @@ fn lease_bounds_and_canonical_app_order_are_enforced() {
 
 #[test]
 fn private_hosts_never_fall_through_to_public_wildcards() {
-    let network = NetworkId::random().unwrap();
     let app: AppEnv = "api/prod".parse().unwrap();
-    let host = service_hostname(&app, &network);
+    let host = service_hostname(&app);
+    assert_eq!(host, "api.prod.tako");
     for authority in [&host, &format!("{}.:80", host.to_uppercase())] {
+        assert_eq!(classify_host(authority), ServiceHost::App(app.clone()));
+    }
+    for authority in ["edge-a.tako", "EDGE-A.tako.", "edge-a.tako:22"] {
         assert_eq!(
-            classify_host(authority, &network),
-            ServiceHost::App(app.clone())
+            classify_host(authority),
+            ServiceHost::Server("edge-a".into()),
+            "{authority}"
         );
     }
     for authority in [
+        "tako".to_string(),
+        "TAKO.".to_string(),
+        "a.b.c.tako".to_string(),
+        "-bad.tako".to_string(),
         "tako.internal".to_string(),
-        "TAKO.INTERNAL.".to_string(),
-        format!("node-abc.{network}.tako.internal"),
-        format!("a.b.c.{network}.tako.internal"),
-        format!("a.b.{}.tako.internal", NetworkId::random().unwrap()),
+        "node-abc.0123.tako.internal".to_string(),
         format!("{host}:nonsense"),
         format!("{host}:65536"),
         format!("{host}:80:90"),
         format!("{host}:"),
     ] {
         assert_eq!(
-            classify_host(&authority, &network),
+            classify_host(&authority),
             ServiceHost::Reserved,
             "{authority}"
         );
     }
     for authority in [
         "example.com",
-        "nottako.internal",
-        "tako.internal.example.com",
+        "nottako",
+        "app.nottako",
+        "tako.example.com",
+        "app.tako.test",
     ] {
-        assert_eq!(classify_host(authority, &network), ServiceHost::Public);
+        assert_eq!(classify_host(authority), ServiceHost::Public, "{authority}");
+    }
+}
+
+#[test]
+fn server_names_map_to_single_dns_labels() {
+    assert_eq!(server_hostname("Edge-A").as_deref(), Some("edge-a.tako"));
+    assert_eq!(server_hostname("edge_1").as_deref(), Some("edge_1.tako"));
+    for name in ["edge.a", "", "-edge", &"a".repeat(64)] {
+        assert_eq!(server_hostname(name), None, "{name}");
     }
 }

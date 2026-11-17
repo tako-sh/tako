@@ -15,8 +15,18 @@ pub fn verified(
     kind: DeviceKind,
     now: u64,
 ) -> VerifiedEnrollment {
+    verified_named(keys, network, kind, "test-device", now)
+}
+
+pub fn verified_named(
+    keys: &LocalDeviceKeys,
+    network: &NetworkId,
+    kind: DeviceKind,
+    name: &str,
+    now: u64,
+) -> VerifiedEnrollment {
     let request = keys
-        .enrollment_request(None, kind, "test-device".parse().unwrap())
+        .enrollment_request(None, kind, name.parse().unwrap())
         .unwrap();
     let (challenge, pending) =
         WgChallenge::begin(&request, network.clone(), now, now + 60).unwrap();
@@ -88,8 +98,12 @@ pub fn add_laptop(
 }
 
 pub fn add_server(snapshot: &mut RegistrySnapshot, by: &DeviceId, now: u64) -> DeviceId {
-    let keys = LocalDeviceKeys::generate().unwrap();
-    let server = ServerInfo {
+    let name = format!("server-{}", snapshot.members.len());
+    add_named_server(snapshot, by, &name, now).unwrap()
+}
+
+pub fn server_info(keys: &LocalDeviceKeys) -> ServerInfo {
+    ServerInfo {
         wireguard_endpoint: "203.0.113.7:51820".parse().unwrap(),
         ssh_host_key: keys.ssh_public_key().unwrap(),
         ssh_port: 22,
@@ -97,21 +111,28 @@ pub fn add_server(snapshot: &mut RegistrySnapshot, by: &DeviceId, now: u64) -> D
         https_certificate_pem: Some(certificate_pem()),
         corrosion_ca_certificate_pem: Some(certificate_pem()),
         https_spki_sha256: None,
-    };
-    let member = snapshot
-        .approve(
-            verified(&keys, &snapshot.network.id, DeviceKind::Server, now),
-            approval(
-                MemberKind::Server(server),
-                Permissions::default(),
-                Some(by.clone()),
-                now,
-            ),
-        )
-        .unwrap();
+    }
+}
+
+pub fn add_named_server(
+    snapshot: &mut RegistrySnapshot,
+    by: &DeviceId,
+    name: &str,
+    now: u64,
+) -> Result<DeviceId> {
+    let keys = LocalDeviceKeys::generate().unwrap();
+    let member = snapshot.approve(
+        verified_named(&keys, &snapshot.network.id, DeviceKind::Server, name, now),
+        approval(
+            MemberKind::Server(server_info(&keys)),
+            Permissions::default(),
+            Some(by.clone()),
+            now,
+        ),
+    )?;
     let id = member.device_id.clone();
     snapshot.members.push(member);
-    id
+    Ok(id)
 }
 
 pub fn revoke(
