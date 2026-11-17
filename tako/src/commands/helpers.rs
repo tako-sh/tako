@@ -8,12 +8,12 @@ pub(super) fn can_configure_bindings(
     let Some(id) = config.envs.get(env).and_then(|env| env.network.as_deref()) else {
         return Ok(true);
     };
-    is_network_server_admin(id)
+    is_full_client(id)
 }
 
-/// Whether this device is a network and server administrator of `network`.
-pub(super) fn is_network_server_admin(network: &str) -> Result<bool, Box<dyn std::error::Error>> {
-    Ok(network_permissions(network)?.server_admin)
+/// Whether this device has full access to `network`.
+pub(super) fn is_full_client(network: &str) -> Result<bool, Box<dyn std::error::Error>> {
+    Ok(network_permissions(network)?.is_full())
 }
 
 /// This device's permissions in `network`.

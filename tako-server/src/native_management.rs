@@ -328,7 +328,7 @@ fn inherit_scoped_backup(
     scope: Option<&AppEnv>,
     command: &mut Command,
 ) -> Result<(), String> {
-    if !permissions.server_admin
+    if !permissions.is_full()
         && let (Some(scope), Command::Deploy { backup, .. }) = (scope, command)
         && backup.is_none()
     {
@@ -415,7 +415,7 @@ fn authorize_command(
         &PolicyContext { data_dir, app },
     )
     .map_err(|denial| denial.to_string())?;
-    if !permissions.server_admin {
+    if !permissions.is_full() {
         // Check the bindings the handler will actually activate, including
         // Compose metadata from an uploaded rollback target. The management
         // lock keeps the provisioned snapshot stable through dispatch.
@@ -484,7 +484,7 @@ fn authorize_command(
                 &stored.config.environment,
             );
             if target.source_ips != current.source_ips {
-                return Err("Scoped deployment must preserve provisioned routes and source-IP policies; a server administrator must provision changes.".into());
+                return Err("Scoped deployment must preserve provisioned routes and source-IP policies; a full client must provision changes.".into());
             }
         }
     }

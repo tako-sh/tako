@@ -15,16 +15,7 @@ fn bootstrap() -> (RegistrySnapshot, LocalDeviceKeys, DeviceId) {
         revocations: Vec::new(),
         acks: Vec::new(),
     };
-    admit(
-        &mut registry,
-        &keys,
-        None,
-        Permissions {
-            network_admin: true,
-            server_admin: true,
-            ..Default::default()
-        },
-    );
+    admit(&mut registry, &keys, None, Permissions::Full);
     (registry, keys, id)
 }
 
@@ -53,7 +44,7 @@ fn admit(
                 kind: MemberKind::Laptop,
                 permissions,
                 approved_by: parent,
-                independent_admin: false,
+                independent_root: false,
                 created_at: 1,
                 expires_at: None,
             },
@@ -158,10 +149,7 @@ fn new_members_receive_key_grants_and_revocation_excludes_future_values() {
         &mut registry,
         &client,
         Some(admin.clone()),
-        Permissions {
-            deployments: ["shop/production".parse().unwrap()].into(),
-            ..Default::default()
-        },
+        Permissions::Deploy(["shop/production".parse().unwrap()].into()),
     );
     assert!(old.open(&state, &client, &client_id).is_err());
     let effective = registry.effective_members(2).unwrap();
@@ -210,10 +198,7 @@ fn new_members_receive_key_grants_and_revocation_excludes_future_values() {
 
 #[test]
 fn scopes_and_administrative_categories_do_not_share_implicit_access() {
-    let scoped = Permissions {
-        deployments: ["shop/production".parse().unwrap()].into(),
-        ..Default::default()
-    };
+    let scoped = Permissions::Deploy(["shop/production".parse().unwrap()].into());
     assert!(address("API_KEY").readable(&scoped));
     assert!(address("API_KEY").writable(&scoped));
     let mut other = address("API_KEY");
@@ -231,23 +216,13 @@ fn scopes_and_administrative_categories_do_not_share_implicit_access() {
         assert!(!other.readable(&scoped));
         assert!(!other.writable(&scoped));
     }
-    assert!(!address("API_KEY").readable(&Permissions {
-        network_admin: true,
-        ..Default::default()
-    }));
+    assert!(!address("API_KEY").readable(&Permissions::Deploy(Default::default())));
 }
 
 #[test]
 fn deployers_read_database_records_but_not_their_keys() {
-    let scoped = Permissions {
-        deployments: ["shop/production".parse().unwrap()].into(),
-        ..Default::default()
-    };
-    let admin = Permissions {
-        network_admin: true,
-        server_admin: true,
-        ..Default::default()
-    };
+    let scoped = Permissions::Deploy(["shop/production".parse().unwrap()].into());
+    let admin = Permissions::Full;
     let record = |kind| RecordAddress {
         scope: DATABASE_SCOPE.parse().unwrap(),
         kind,
@@ -257,7 +232,7 @@ fn deployers_read_database_records_but_not_their_keys() {
     assert!(directory.readable(&scoped));
     assert!(!directory.writable(&scoped), "only administrators publish");
     assert!(
-        !directory.readable(&Permissions::default()),
+        !directory.readable(&Permissions::Deploy(Default::default())),
         "members that cannot deploy do not need them"
     );
     let key = record(RecordKind::DatabaseKey);
@@ -348,10 +323,7 @@ fn concurrent_recipient_wraps_merge_and_legacy_grants_migrate_only_for_current_v
         &mut registry,
         &client,
         Some(admin.clone()),
-        Permissions {
-            deployments: ["shop/production".parse().unwrap()].into(),
-            ..Default::default()
-        },
+        Permissions::Deploy(["shop/production".parse().unwrap()].into()),
     );
     let members = registry.effective_members(2).unwrap();
     let a = current

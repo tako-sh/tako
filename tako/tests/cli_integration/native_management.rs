@@ -39,13 +39,9 @@ fn admit(
             verified,
             Approval {
                 kind,
-                permissions: Permissions {
-                    network_admin: true,
-                    server_admin: true,
-                    ..Default::default()
-                },
+                permissions: Permissions::Full,
                 approved_by: approver,
-                independent_admin: false,
+                independent_root: false,
                 created_at: now,
                 expires_at: None,
             },
@@ -265,19 +261,25 @@ fn deploy_ignores_unrelated_inactive_networks_but_rejects_a_selected_inactive_ne
         let mut stale = Fixture::with_servers(&["edge"]);
         let own = stale.profile.snapshot.network.initial_admin.clone();
         if revoked {
-            let revocation = stale
+            // Another device revoked this one.
+            let member = stale
                 .profile
                 .snapshot
-                .plan_revocation(
-                    tako_network::RevocationId::random().unwrap(),
-                    &own,
-                    &own,
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs(),
-                )
+                .members
+                .iter()
+                .find(|member| member.device_id == own)
                 .unwrap();
+            let revocation = tako_network::Revocation::of(
+                tako_network::RevocationId::random().unwrap(),
+                member,
+                own.clone(),
+                Default::default(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+            )
+            .unwrap();
             stale.profile.snapshot.revocations.push(revocation);
         } else {
             stale

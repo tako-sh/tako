@@ -1,26 +1,23 @@
-//! Host-console administration. Recovery never needs a pre-existing client key.
+//! Host-console recovery. Inviting a full client never needs a pre-existing client key.
 use clap::Subcommand;
 use std::path::Path;
 
 #[derive(Subcommand)]
 pub enum ServerCommand {
-    /// Recover administrator access from the server's root console
-    Admin {
+    /// Recover network access from the server's root console
+    Client {
         #[command(subcommand)]
-        command: AdminCommand,
+        command: ClientCommand,
     },
 }
 
 #[derive(Subcommand)]
-pub enum AdminCommand {
-    /// Create a single-use invitation for an independent administrator (requires root)
+pub enum ClientCommand {
+    /// Create a single-use invitation for an independent full client (requires root)
     Invite {
         /// Invitation validity in seconds
         #[arg(long, default_value_t = 3600, value_parser = clap::value_parser!(u64).range(60..=86400))]
         expires_in: u64,
-        /// Also grant the new administrator a Tako SSH shell
-        #[arg(long)]
-        ssh: bool,
         /// Print the invitation and its expiry as JSON
         #[arg(long)]
         json: bool,
@@ -32,13 +29,8 @@ pub fn run(command: &ServerCommand, data_dir: &Path) -> Result<(), Box<dyn std::
     use tako_network::api::RpcResponse;
     use tako_network::invitation::{CreateInvitation, Invitation, InvitationToken};
     use tako_network::{MemberKind, Permissions, RequestId};
-    let ServerCommand::Admin {
-        command:
-            AdminCommand::Invite {
-                expires_in,
-                ssh,
-                json,
-            },
+    let ServerCommand::Client {
+        command: ClientCommand::Invite { expires_in, json },
     } = command;
     let config = crate::native_agent::recovery_config(data_dir)?;
     let server = config
@@ -64,20 +56,15 @@ pub fn run(command: &ServerCommand, data_dir: &Path) -> Result<(), Box<dyn std::
         token_hash: token.hash()?,
         expires_at,
         member_expires_at: None,
-        permissions: Permissions {
-            network_admin: true,
-            server_admin: true,
-            ssh_user: ssh.then(|| "tako".parse()).transpose()?,
-            deployments: Default::default(),
-        },
+        permissions: Permissions::Full,
     };
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let response = runtime.block_on(crate::native_agent::recover_admin(data_dir, grant))?;
+    let response = runtime.block_on(crate::native_agent::recover_client(data_dir, grant))?;
     match response.response {
         Some(RpcResponse::InvitationCreated { id: returned }) if response.status == 200 && returned == id => (),
-        _ => return Err("Administrator invitation was not acknowledged. Check that the native network agent is running and this server is an active network member".into()),
+        _ => return Err("Recovery invitation was not acknowledged. Check that the native network agent is running and this server is an active network member".into()),
     }
     let invitation = Invitation {
         version: 1,
@@ -99,7 +86,7 @@ pub fn run(command: &ServerCommand, data_dir: &Path) -> Result<(), Box<dyn std::
     } else {
         println!("{}", invitation.as_str());
         eprintln!(
-            "Created administrator invitation for {}. Run `tako network join` on the new machine and paste it. The invitation expires in {expires_in} seconds.",
+            "Created an invitation for a full client of {}. Run `tako network join` on the new machine and paste it. The invitation expires in {expires_in} seconds.",
             config.network.name
         );
     }
@@ -108,7 +95,7 @@ pub fn run(command: &ServerCommand, data_dir: &Path) -> Result<(), Box<dyn std::
 
 #[cfg(not(target_os = "linux"))]
 pub fn run(_: &ServerCommand, _: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    Err("Server administrator recovery requires Linux".into())
+    Err("Host recovery requires Linux".into())
 }
 
 #[cfg(test)]
@@ -120,10 +107,9 @@ mod tests {
     fn recovery_options_are_bounded_and_do_not_require_a_client_identity() {
         let parsed = crate::Args::try_parse_from([
             "tako-server",
-            "admin",
+            "client",
             "invite",
             "--json",
-            "--ssh",
             "--expires-in",
             "60",
             "--data-dir",
@@ -132,10 +118,9 @@ mod tests {
         .unwrap();
         assert!(matches!(
             parsed.command,
-            Some(ServerCommand::Admin {
-                command: AdminCommand::Invite {
+            Some(ServerCommand::Client {
+                command: ClientCommand::Invite {
                     expires_in: 60,
-                    ssh: true,
                     json: true
                 }
             })
@@ -144,7 +129,7 @@ mod tests {
             assert!(
                 crate::Args::try_parse_from([
                     "tako-server",
-                    "admin",
+                    "client",
                     "invite",
                     "--expires-in",
                     expiry
@@ -154,10 +139,9 @@ mod tests {
         }
         #[cfg(target_os = "linux")]
         if unsafe { libc::geteuid() } != 0 {
-            let command = ServerCommand::Admin {
-                command: AdminCommand::Invite {
+            let command = ServerCommand::Client {
+                command: ClientCommand::Invite {
                     expires_in: 60,
-                    ssh: false,
                     json: false,
                 },
             };

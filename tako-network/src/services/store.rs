@@ -41,7 +41,7 @@ impl CorrosionStore {
         let members = registry.effective_members(now)?;
         let servers: Vec<_> = members
             .values()
-            .filter(|m| matches!(m.kind, MemberKind::Server(_)) && m.permissions.server_admin)
+            .filter(|m| matches!(m.kind, MemberKind::Server(_)) && m.permissions.is_full())
             .collect();
         if servers.len() > MAX_SERVERS {
             return Err(RuntimeError::Capacity("service publishers"));

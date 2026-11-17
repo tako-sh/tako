@@ -344,6 +344,6 @@ mod tests {
         assert!(
             serde_json::from_str::<RpcRequest>(r#"{"type":"snapshot","root_admin":true}"#).is_err()
         );
-        assert!(serde_json::from_str::<RpcRequest>(r#"{"type":"independent_admin"}"#).is_err());
+        assert!(serde_json::from_str::<RpcRequest>(r#"{"type":"independent_root"}"#).is_err());
     }
 }

@@ -15,7 +15,7 @@ fn adapter(snapshot: &RegistrySnapshot) -> CorrosionStore {
 #[test]
 fn historical_acks_compact_and_cannot_block_revocations() {
     let (mut snapshot, _, root) = support::bootstrap();
-    let (_, target) = support::add_laptop(&mut snapshot, &root, Permissions::default(), false, 2);
+    let (_, target) = support::add_laptop(&mut snapshot, &root, Permissions::Deploy(Default::default()), false, 2);
     let server = support::add_server(&mut snapshot, &root, 3);
     let revocation = support::revoke(&mut snapshot, &root, &target, 4);
     let next = snapshot
@@ -56,12 +56,11 @@ fn historical_acks_compact_and_cannot_block_revocations() {
 #[test]
 fn byte_admission_limit_preserves_reads_and_denials_after_convergence() {
     let (base, admin_keys, root) = support::bootstrap();
-    let permissions = Permissions {
-        deployments: (0..1024)
+    let permissions = Permissions::Deploy(
+        (0..1024)
             .map(|i| format!("a{:058}{i:04}/e{:049}", 0, 0).parse().unwrap())
             .collect(),
-        ..Permissions::default()
-    };
+    );
     let new_member = || {
         let keys = LocalDeviceKeys::generate().unwrap();
         let member = base
@@ -145,7 +144,7 @@ fn byte_admission_limit_preserves_reads_and_denials_after_convergence() {
 fn conflicting_immutable_records_across_page_boundary_fail_closed() {
     let (mut snapshot, _, root) = support::bootstrap();
     for _ in 0..8 {
-        support::add_laptop(&mut snapshot, &root, Permissions::default(), false, 2);
+        support::add_laptop(&mut snapshot, &root, Permissions::Deploy(Default::default()), false, 2);
     }
     snapshot.members.sort_by_key(|m| m.device_id.clone());
     let mut conflict = snapshot.members[7].clone();
@@ -161,7 +160,7 @@ fn conflicting_immutable_records_across_page_boundary_fail_closed() {
 #[test]
 fn positive_row_limit_keeps_denials_and_ack_progress_available() {
     let (mut snapshot, _, root) = support::bootstrap();
-    let (_, target) = support::add_laptop(&mut snapshot, &root, Permissions::default(), false, 2);
+    let (_, target) = support::add_laptop(&mut snapshot, &root, Permissions::Deploy(Default::default()), false, 2);
     let server = support::add_server(&mut snapshot, &root, 3);
     let denial = snapshot
         .plan_revocation(RevocationId::random().unwrap(), &root, &target, 4)
@@ -175,7 +174,7 @@ fn positive_row_limit_keeps_denials_and_ack_progress_available() {
     let (_, candidate_id) = support::add_laptop(
         &mut candidate_snapshot,
         &root,
-        Permissions::default(),
+        Permissions::Deploy(Default::default()),
         false,
         5,
     );
@@ -206,7 +205,7 @@ fn positive_row_limit_keeps_denials_and_ack_progress_available() {
 #[test]
 fn denial_writes_do_not_require_materializing_an_oversized_history() {
     let (mut snapshot, _, root) = support::bootstrap();
-    let (_, target) = support::add_laptop(&mut snapshot, &root, Permissions::default(), false, 2);
+    let (_, target) = support::add_laptop(&mut snapshot, &root, Permissions::Deploy(Default::default()), false, 2);
     let denial = snapshot
         .plan_revocation(RevocationId::random().unwrap(), &root, &target, 4)
         .unwrap();
@@ -234,7 +233,7 @@ fn denial_writes_do_not_require_materializing_an_oversized_history() {
 #[test]
 fn ack_projection_never_uses_authority_capacity_or_invents_a_boot() {
     let (mut snapshot, _, root) = support::bootstrap();
-    let (_, target) = support::add_laptop(&mut snapshot, &root, Permissions::default(), false, 2);
+    let (_, target) = support::add_laptop(&mut snapshot, &root, Permissions::Deploy(Default::default()), false, 2);
     let server = support::add_server(&mut snapshot, &root, 3);
     let denial = snapshot
         .plan_revocation(RevocationId::random().unwrap(), &root, &target, 4)
@@ -267,7 +266,7 @@ fn ack_projection_never_uses_authority_capacity_or_invents_a_boot() {
 #[test]
 fn targeted_mutations_still_pin_the_network_descriptor() {
     let (mut snapshot, _, root) = support::bootstrap();
-    let (_, target) = support::add_laptop(&mut snapshot, &root, Permissions::default(), false, 2);
+    let (_, target) = support::add_laptop(&mut snapshot, &root, Permissions::Deploy(Default::default()), false, 2);
     let denial = snapshot
         .plan_revocation(RevocationId::random().unwrap(), &root, &target, 3)
         .unwrap();
@@ -283,7 +282,7 @@ fn targeted_mutations_still_pin_the_network_descriptor() {
 #[test]
 fn denial_record_can_capture_every_server_in_a_bounded_projection() {
     let (mut snapshot, _, root) = support::bootstrap();
-    let (_, target) = support::add_laptop(&mut snapshot, &root, Permissions::default(), false, 2);
+    let (_, target) = support::add_laptop(&mut snapshot, &root, Permissions::Deploy(Default::default()), false, 2);
     let mut denial = snapshot
         .plan_revocation(RevocationId::random().unwrap(), &root, &target, 3)
         .unwrap();
@@ -300,7 +299,7 @@ fn denial_record_can_capture_every_server_in_a_bounded_projection() {
 #[test]
 fn ack_republication_compacts_history_without_a_serialization_conflict() {
     let (mut snapshot, _, root) = support::bootstrap();
-    let (_, target) = support::add_laptop(&mut snapshot, &root, Permissions::default(), false, 2);
+    let (_, target) = support::add_laptop(&mut snapshot, &root, Permissions::Deploy(Default::default()), false, 2);
     let server = support::add_server(&mut snapshot, &root, 3);
     let revocation = support::revoke(&mut snapshot, &root, &target, 4);
     let current = Ack {
@@ -383,7 +382,7 @@ fn replace_encoding(kind: &str, id: &str, payload: &str) {
 #[test]
 fn noncanonical_payload_bytes_cannot_break_admission_projection_accounting() {
     let (mut snapshot, _, root) = support::bootstrap();
-    let (_, target) = support::add_laptop(&mut snapshot, &root, Permissions::default(), false, 2);
+    let (_, target) = support::add_laptop(&mut snapshot, &root, Permissions::Deploy(Default::default()), false, 2);
     for _ in 0..25 {
         let denial = snapshot
             .plan_revocation(RevocationId::random().unwrap(), &root, &target, 3)
@@ -399,12 +398,11 @@ fn noncanonical_payload_bytes_cannot_break_admission_projection_accounting() {
     let mut store = adapter(&snapshot);
     let initial = store.snapshot().unwrap();
     assert_eq!(initial.revocations.len(), 25);
-    let permissions = Permissions {
-        deployments: (0..1024)
+    let permissions = Permissions::Deploy(
+        (0..1024)
             .map(|i| format!("a{:058}{i:04}/e{:049}", 0, 0).parse().unwrap())
             .collect(),
-        ..Permissions::default()
-    };
+    );
     let (_, candidate_id) = support::add_laptop(&mut snapshot, &root, permissions, false, 4);
     let candidate = snapshot
         .members
@@ -429,7 +427,7 @@ fn noncanonical_payload_bytes_cannot_break_admission_projection_accounting() {
 #[test]
 fn rereview_ack_digest_conflicts_and_metadata_mismatches_fail_closed() {
     let (mut snapshot, _, root) = support::bootstrap();
-    let (_, target) = support::add_laptop(&mut snapshot, &root, Permissions::default(), false, 2);
+    let (_, target) = support::add_laptop(&mut snapshot, &root, Permissions::Deploy(Default::default()), false, 2);
     let server = support::add_server(&mut snapshot, &root, 3);
     let revocation = support::revoke(&mut snapshot, &root, &target, 4);
     let ack = Ack {
@@ -515,10 +513,7 @@ fn nested_member_publication_capacity_stays_latched_after_rollback() {
         let (victim, victim_id) = support::add_laptop(
             &mut original,
             &root,
-            Permissions {
-                ssh_user: Some("app".parse().unwrap()),
-                ..Permissions::default()
-            },
+            Permissions::Deploy(Default::default()),
             false,
             2,
         );
@@ -526,7 +521,7 @@ fn nested_member_publication_capacity_stays_latched_after_rollback() {
         let server_keys = LocalDeviceKeys::generate().unwrap();
         server_keys.save_new(&dir.path().join("keys")).unwrap();
         let server = original
-            .approve_independent_admin(
+            .approve_independent_root(
                 support::verified(&server_keys, &original.network.id, DeviceKind::Server, 3),
                 Approval {
                     kind: MemberKind::Server(ServerInfo {
@@ -540,7 +535,7 @@ fn nested_member_publication_capacity_stays_latched_after_rollback() {
                     }),
                     permissions: support::admin(),
                     approved_by: None,
-                    independent_admin: true,
+                    independent_root: true,
                     created_at: 3,
                     expires_at: None,
                 },
@@ -591,7 +586,7 @@ fn nested_member_publication_capacity_stays_latched_after_rollback() {
                 .enrollment_request(None, DeviceKind::Laptop, "applicant".parse().unwrap())
                 .unwrap(),
             kind: MemberKind::Laptop,
-            permissions: Permissions::default(),
+            permissions: Permissions::Deploy(Default::default()),
             expires_at: 1000,
             member_expires_at: None,
         };

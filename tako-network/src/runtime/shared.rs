@@ -238,11 +238,9 @@ impl<S: RegistryStore> ServerRuntime<S> {
         // Deployers read the database directory; the filter below leaves out
         // what they may not read, such as snapshot keys.
         let database_directory = |scope: &crate::AppEnv| {
-            scope.as_str() == crate::shared::DATABASE_SCOPE
-                && !member.permissions.deployments.is_empty()
+            scope.as_str() == crate::shared::DATABASE_SCOPE && member.permissions.deploys()
         };
         if let Some(scope) = scope
-            && !(member.permissions.network_admin && member.permissions.server_admin)
             && !member.permissions.can_deploy(scope)
             && !database_directory(scope)
         {

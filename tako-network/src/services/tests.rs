@@ -37,13 +37,9 @@ pub(super) fn fixture() -> (RegistrySnapshot, LocalDeviceKeys) {
                     https_spki_sha256: None,
                     https_port: 443,
                 }),
-                permissions: Permissions {
-                    network_admin: true,
-                    server_admin: true,
-                    ..Default::default()
-                },
+                permissions: Permissions::Full,
                 approved_by: None,
-                independent_admin: false,
+                independent_root: false,
                 created_at: 1,
                 expires_at: None,
             },
@@ -132,18 +128,23 @@ fn revoked_expired_and_unprivileged_publishers_are_not_placements() {
     let (mut registry, keys) = fixture();
     let lease =
         ServiceLease::sign(&keys, registry.network.id.clone(), BTreeSet::new(), 10).unwrap();
-    registry.members[0].permissions.server_admin = false;
+    registry.members[0].permissions = crate::Permissions::Deploy(Default::default());
     assert!(lease.verify(&registry, 10).is_err());
-    registry.members[0].permissions.server_admin = true;
+    registry.members[0].permissions = crate::Permissions::Full;
     registry.members[0].expires_at = Some(11);
     assert!(lease.verify(&registry, 11).is_err());
     registry.members[0].expires_at = None;
     let id = registry.members[0].device_id.clone();
-    registry.revocations.push(
-        registry
-            .plan_revocation(crate::RevocationId::random().unwrap(), &id, &id, 10)
-            .unwrap(),
-    );
+    let member = registry.members[0].clone();
+    registry.revocations.push(crate::Revocation {
+        id: crate::RevocationId::random().unwrap(),
+        target: id.clone(),
+        wg_fingerprint: member.request.wg_public_key.fingerprint(),
+        ssh_fingerprint: member.request.ssh_public_key.fingerprint().unwrap(),
+        captured_servers: [id.clone()].into(),
+        by: id,
+        created_at: 10,
+    });
     assert!(lease.verify(&registry, 10).is_err());
 }
 

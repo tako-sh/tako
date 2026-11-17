@@ -6,18 +6,13 @@ use zeroize::Zeroizing;
 
 #[derive(Subcommand)]
 pub enum ClientCommands {
-    /// Create a single-use invitation for a new client
+    /// Create a single-use invitation for a new client. Without --deploy the client
+    /// gets full access
     Add {
         #[arg(long)]
         network: Option<String>,
-        /// Grant network and server administration
-        #[arg(long, required_unless_present = "deploy")]
-        admin: bool,
-        /// Grant an administrator shell (requires --admin)
-        #[arg(long, requires = "admin")]
-        ssh: bool,
-        /// Grant application deployment and secret access; repeat for more scopes
-        #[arg(long, value_name = "APP/ENV", required_unless_present = "admin")]
+        /// Restrict the client to deploying this app/environment; repeat for more
+        #[arg(long, value_name = "APP/ENV")]
         deploy: Vec<tako_network::AppEnv>,
         /// Invitation validity in seconds (at most one day)
         #[arg(long, default_value_t = 3600, value_parser = clap::value_parser!(u64).range(60..=86400))]
@@ -29,7 +24,7 @@ pub enum ClientCommands {
         #[arg(long)]
         network: Option<String>,
     },
-    /// Revoke a client and approvals derived from it
+    /// Revoke a client
     #[command(visible_alias = "rm")]
     Remove {
         client: String,
@@ -42,8 +37,6 @@ pub(super) fn run(command: ClientCommands) -> Result<()> {
     match command {
         ClientCommands::Add {
             network,
-            admin,
-            ssh,
             deploy,
             expires_in,
         } => {
@@ -69,12 +62,7 @@ pub(super) fn run(command: ClientCommands) -> Result<()> {
             let grant = CreateInvitation {
                 id: id.clone(),
                 token_hash: token.hash()?,
-                permissions: Permissions {
-                    network_admin: admin,
-                    server_admin: admin,
-                    ssh_user: ssh.then(|| "tako".parse()).transpose()?,
-                    deployments: deploy.into_iter().collect(),
-                },
+                permissions: super::access(deploy),
                 expires_at,
                 member_expires_at: None,
             };

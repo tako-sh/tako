@@ -17,10 +17,7 @@ fn removal_option_label(name: &str, entry: &crate::config::ServerEntry) -> Strin
 
 fn removal_prompt(name: &str, entry: &crate::config::ServerEntry) -> String {
     if entry.native.is_some() {
-        format!(
-            "Revoke network membership and delegated approvals for {}?",
-            output::strong(name)
-        )
+        format!("Revoke network membership for {}?", output::strong(name))
     } else {
         format!("Remove {}?", output::strong(name))
     }

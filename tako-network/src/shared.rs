@@ -135,7 +135,7 @@ impl RecordAddress {
 
     /// Whether members with `permissions` may publish to this address.
     pub fn writable(&self, permissions: &Permissions) -> bool {
-        (permissions.network_admin && permissions.server_admin)
+        permissions.is_full()
             || (self.kind == RecordKind::App && permissions.can_deploy(&self.scope))
     }
 
@@ -146,7 +146,7 @@ impl RecordAddress {
         self.writable(permissions)
             || (self.kind == RecordKind::Database
                 && self.scope.as_str() == DATABASE_SCOPE
-                && !permissions.deployments.is_empty())
+                && permissions.deploys())
     }
 
     // Context labels are bound into stored ciphertexts, so they keep the names

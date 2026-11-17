@@ -156,7 +156,7 @@ fn same_bindings(
 }
 
 const DATABASES_DENIED: Denial =
-    Denial("Scoped deployment cannot change database bindings; an administrator must deploy them.");
+    Denial("Scoped deployment cannot change database bindings; a full client must deploy them.");
 const SCOPE_REQUIRED: Denial = Denial("An explicit app/environment scope is required.");
 const SCOPE_MISMATCH: Denial = Denial("Command app must exactly match the app/environment scope.");
 const SCOPE_DENIED: Denial = Denial("Deployment permission is required for this app/environment.");
@@ -169,7 +169,7 @@ const MANAGED_PATH_DENIED: Denial = Denial(
 const STATE_REQUIRED: Denial =
     Denial("Trusted provisioned state for this app/environment is required.");
 const ROUTES_DENIED: Denial = Denial(
-    "Scoped deployment must preserve the provisioned routes; a server administrator must provision route changes.",
+    "Scoped deployment must preserve the provisioned routes; a full client must provision route changes.",
 );
 const SSL_DENIED: Denial = Denial(
     "Scoped deployment must preserve provisioned SSL credentials and provider; unresolved staged credentials are not allowed.",
@@ -193,7 +193,7 @@ pub(crate) fn authorize_app(
     // AppEnv permits a few names that existing server release handlers reject.
     crate::release::validate_app_name(scope.as_str())
         .map_err(|_| Denial("App/environment scope is not a valid managed deployment name."))?;
-    if !permissions.server_admin && !permissions.can_deploy(scope) {
+    if !permissions.can_deploy(scope) {
         return Err(SCOPE_DENIED);
     }
     Ok(())
@@ -216,16 +216,14 @@ pub(crate) fn authorize_command(
         }
         CommandClass::AuthenticatedProbe => return Ok(()),
         CommandClass::ServerAdmin => {
-            return if permissions.server_admin {
+            return if permissions.is_full() {
                 Ok(())
             } else {
-                Err(Denial(
-                    "This command requires server administrator permission.",
-                ))
+                Err(Denial("This command requires full access."))
             };
         }
         CommandClass::DeploymentPreflight => {
-            return if permissions.server_admin {
+            return if permissions.is_full() {
                 Ok(())
             } else {
                 let scope = scope.ok_or(SCOPE_REQUIRED)?;
@@ -260,7 +258,7 @@ pub(crate) fn authorize_command(
         } => {
             validate_version_path(context.data_dir, &releases, version)?;
             validate_release_path(context.data_dir, scope, path)?;
-            if !permissions.server_admin {
+            if !permissions.is_full() {
                 let provisioned = provisioned_app(context, scope)?;
                 preserve_routes(provisioned, routes)?;
                 preserve_ssl(provisioned, ssl)?;
@@ -279,7 +277,7 @@ pub(crate) fn authorize_command(
         } => {
             validate_version_path(context.data_dir, &releases, version)?;
             validate_release_path(context.data_dir, scope, path)?;
-            if !permissions.server_admin {
+            if !permissions.is_full() {
                 let provisioned = provisioned_app(context, scope)?;
                 preserve_routes(provisioned, routes)?;
                 preserve_ssl(provisioned, ssl)?;
@@ -319,7 +317,7 @@ pub(crate) fn authorize_command(
         } => {
             validate_version_path(context.data_dir, &releases, version)?;
             validate_release_path(context.data_dir, scope, path)?;
-            if !permissions.server_admin && !databases.is_empty() {
+            if !permissions.is_full() && !databases.is_empty() {
                 let provisioned = provisioned_app(context, scope)?;
                 if databases.iter().any(|(name, binding)| {
                     !provisioned
@@ -342,7 +340,7 @@ pub(crate) fn authorize_command(
             validate_version_path(context.data_dir, &releases, version)?;
             let path = context.data_dir.join(&releases).join(version);
             validate_release_path(context.data_dir, scope, path.to_str().ok_or(PATH_DENIED)?)?;
-            if !permissions.server_admin {
+            if !permissions.is_full() {
                 let provisioned = provisioned_app(context, scope)?;
                 preserve_routes(provisioned, provisioned.routes)?;
                 preserve_ssl(provisioned, provisioned.ssl)?;
@@ -350,7 +348,7 @@ pub(crate) fn authorize_command(
             }
         }
         Command::BackupNow { backup, .. } => {
-            if !permissions.server_admin
+            if !permissions.is_full()
                 && let Some(backup) = backup
                 && Some(backup.as_ref()) != provisioned_app(context, scope)?.backup
             {
@@ -574,10 +572,7 @@ mod tests {
             let scope: AppEnv = tako_core::deployment_app_id("demo", "staging")
                 .parse()
                 .unwrap();
-            let permissions = Permissions {
-                deployments: [scope.clone()].into_iter().collect(),
-                ..Permissions::default()
-            };
+            let permissions = Permissions::Deploy([scope.clone()].into_iter().collect());
             Self {
                 dir,
                 scope,
@@ -828,12 +823,9 @@ mod tests {
     }
 
     #[test]
-    fn public_worker_impersonation_is_denied_even_for_server_admin() {
+    fn public_worker_impersonation_is_denied_even_for_full_clients() {
         let f = Fixture::new();
-        let admin = Permissions {
-            server_admin: true,
-            ..f.permissions.clone()
-        };
+        let admin = Permissions::Full;
         for name in [
             "register_schedules",
             "claim_run",
@@ -861,17 +853,10 @@ mod tests {
     }
 
     #[test]
-    fn network_admin_and_ssh_are_not_server_or_deployment_authority() {
+    fn deploy_clients_have_no_server_or_unlisted_deployment_authority() {
         let f = Fixture::new();
-        let network_admin = Permissions {
-            network_admin: true,
-            ssh_user: Some("developer".parse().unwrap()),
-            ..Permissions::default()
-        };
-        let admin = Permissions {
-            server_admin: true,
-            ..Permissions::default()
-        };
+        let network_admin = Permissions::Deploy(Default::default());
+        let admin = Permissions::Full;
         for command in [
             Command::List,
             Command::Routes,
@@ -924,7 +909,13 @@ mod tests {
         ] {
             assert_eq!(classify(&command), CommandClass::AuthenticatedProbe);
             assert!(
-                authorize_command(&Permissions::default(), None, &command, &f.context()).is_ok()
+                authorize_command(
+                    &Permissions::Deploy(Default::default()),
+                    None,
+                    &command,
+                    &f.context()
+                )
+                .is_ok()
             );
         }
         let command = Command::CheckDeploySpace {
@@ -938,17 +929,18 @@ mod tests {
         );
         assert_eq!(
             authorize_command(
-                &Permissions::default(),
+                &Permissions::Deploy(Default::default()),
                 Some(&f.scope),
                 &command,
                 &f.context()
             ),
             Err(SCOPE_DENIED)
         );
-        let invalid = Permissions {
-            ssh_user: Some("root".parse().unwrap()),
-            ..Permissions::default()
-        };
+        let invalid = Permissions::Deploy(
+            (0..1025)
+                .map(|index| format!("app{index}/prod").parse().unwrap())
+                .collect(),
+        );
         assert!(authorize_command(&invalid, None, &Command::ServerInfo, &f.context()).is_err());
     }
 
@@ -1300,12 +1292,9 @@ mod tests {
     }
 
     #[test]
-    fn server_admin_can_provision_but_never_bypass_path_confinement() {
+    fn full_clients_can_provision_but_never_bypass_path_confinement() {
         let mut f = Fixture::new();
-        f.permissions = Permissions {
-            server_admin: true,
-            ..Permissions::default()
-        };
+        f.permissions = Permissions::Full;
         let command = f.decode_command(json!({"command":"deploy", "routes":["new.example.test"],
             "ssl":{"provider":"cloudflare","cloudflare_api_token":"admin-token"},
             "runtime_credentials":{"key":"value"}, "storages":{"files":storage()}, "backup":backup()}));

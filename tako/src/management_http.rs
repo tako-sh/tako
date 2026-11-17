@@ -123,21 +123,17 @@ impl ManagementClient {
 
     pub(crate) fn can_manage_server(&self) -> bool {
         match &self.signer {
-            ManagementAuth::Native(identity) => identity.permissions.server_admin,
+            ManagementAuth::Native(identity) => identity.permissions.is_full(),
             ManagementAuth::Legacy { .. } => true,
         }
     }
 
     pub(crate) fn scoped_apps(&self) -> Option<Vec<String>> {
         match &self.signer {
-            ManagementAuth::Native(identity) if !identity.permissions.server_admin => Some(
-                identity
-                    .permissions
-                    .deployments
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect(),
-            ),
+            ManagementAuth::Native(identity) => identity
+                .permissions
+                .deploy_scopes()
+                .map(|scopes| scopes.iter().map(ToString::to_string).collect()),
             _ => None,
         }
     }

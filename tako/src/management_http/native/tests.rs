@@ -40,10 +40,7 @@ fn identity() -> Identity {
         kind: DeviceKind::Laptop,
         keys,
         info,
-        permissions: Permissions {
-            deployments: ["demo/production".parse().unwrap()].into(),
-            ..Default::default()
-        },
+        permissions: Permissions::Deploy(["demo/production".parse().unwrap()].into()),
     }
 }
 

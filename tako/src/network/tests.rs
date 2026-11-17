@@ -130,12 +130,8 @@ pub(crate) fn add_member(
             Approval {
                 kind,
                 approved_by: by,
-                independent_admin: false,
-                permissions: Permissions {
-                    network_admin: true,
-                    server_admin: true,
-                    ..Default::default()
-                },
+                independent_root: false,
+                permissions: Permissions::Full,
                 created_at: now,
                 expires_at: None,
             },
@@ -313,15 +309,21 @@ fn revoked_local_identity_is_persisted_and_cannot_be_restored_by_stale_import() 
         panic!()
     };
     let own = active.snapshot.network.initial_admin.clone();
-    let revocation = active
+    // Another device revoked this one; this device records what it observes.
+    let member = active
         .snapshot
-        .plan_revocation(
-            tako_network::RevocationId::random().unwrap(),
-            &own,
-            &own,
-            now().unwrap(),
-        )
+        .members
+        .iter()
+        .find(|member| member.device_id == own)
         .unwrap();
+    let revocation = tako_network::Revocation::of(
+        tako_network::RevocationId::random().unwrap(),
+        member,
+        own.clone(),
+        Default::default(),
+        now().unwrap(),
+    )
+    .unwrap();
     active.snapshot.revocations.push(revocation.clone());
     active.trusted_servers.clear();
     revoked.validate_for_storage(&keys).unwrap();
@@ -581,15 +583,20 @@ fn recording_self_or_last_server_revocation_succeeds_and_is_idempotent() {
         let alias = save_profile(&profile).unwrap();
         let own = &profile.snapshot().network.initial_admin;
         let target = if revoke_self { own } else { &server };
-        let revocation = profile
+        let member = profile
             .snapshot()
-            .plan_revocation(
-                tako_network::RevocationId::random().unwrap(),
-                own,
-                target,
-                now().unwrap(),
-            )
+            .members
+            .iter()
+            .find(|member| &member.device_id == target)
             .unwrap();
+        let revocation = tako_network::Revocation::of(
+            tako_network::RevocationId::random().unwrap(),
+            member,
+            own.clone(),
+            Default::default(),
+            now().unwrap(),
+        )
+        .unwrap();
         record_revocation(&alias, revocation.clone()).unwrap();
         record_revocation(&alias, revocation.clone()).unwrap();
         let saved: Profile = read_json(&alias.profile_path().unwrap()).unwrap();

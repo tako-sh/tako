@@ -9,9 +9,7 @@ pub async fn implode_server(
 
     if output::is_dry_run() {
         if server.native.is_some() {
-            output::dry_run_skip(&format!(
-                "Revoke network membership and delegated approvals for {server_name}"
-            ));
+            output::dry_run_skip(&format!("Revoke network membership for {server_name}"));
         }
         output::dry_run_skip(&format!("Remove tako-server and all data on {server_name}"));
         return Ok(());
@@ -30,7 +28,7 @@ pub async fn implode_server(
     output::muted("  Sockets:   /var/run/tako/");
     output::muted("  Service files (systemd)");
     if server.native.is_some() {
-        output::muted("  Network:   revoke membership and delegated approvals");
+        output::muted("  Network:   revoke membership");
     }
     eprintln!();
 
@@ -53,7 +51,7 @@ pub async fn implode_server(
         async { Ok(SshClient::connect_to(server).await?) },
         |target| {
             output::with_spinner(
-                "Revoking network membership and delegated approvals",
+                "Revoking network membership",
                 "Recorded network revocation",
                 || {
                     tokio::task::block_in_place(|| {

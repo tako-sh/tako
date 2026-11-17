@@ -29,13 +29,9 @@ fn admit(
             verified,
             Approval {
                 kind,
-                permissions: Permissions {
-                    network_admin: true,
-                    server_admin: true,
-                    ..Default::default()
-                },
+                permissions: Permissions::Full,
                 approved_by: parent,
-                independent_admin: false,
+                independent_root: false,
                 created_at: now,
                 expires_at: None,
             },

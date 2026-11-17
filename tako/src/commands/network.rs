@@ -1,6 +1,5 @@
 mod client;
 
-use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -32,7 +31,7 @@ pub enum NetworkCommands {
         #[arg(long)]
         invitation_stdin: bool,
     },
-    /// Create a private network and this machine's administrator identity
+    /// Create a private network with this machine as its first full client
     Create { name: String },
     /// Generate this machine's keys and write a public enrollment request
     Request {
@@ -44,27 +43,21 @@ pub enum NetworkCommands {
         #[arg(long, value_name = "FILE")]
         output: PathBuf,
     },
-    /// Approve a machine's request with explicit permissions
+    /// Approve a machine's request. Without --deploy the machine gets full access
     Approve {
         file: PathBuf,
         #[arg(long)]
         network: Option<String>,
         #[arg(long, value_name = "FILE")]
         output: PathBuf,
-        /// Grant network and server administration
-        #[arg(long)]
-        admin: bool,
-        /// Grant a Tako administrator shell (requires --admin)
-        #[arg(long, requires = "admin")]
-        ssh: bool,
-        /// Grant deployment scope as app/environment; repeat for additional scopes
+        /// Restrict the machine to deploying this app/environment; repeat for more
         #[arg(long, value_name = "APP/ENV")]
         deploy: Vec<tako_network::AppEnv>,
         /// Expire this device's membership after this many seconds.
         #[arg(long, value_name = "SECONDS", value_parser = clap::value_parser!(u64).range(1..=31_536_000))]
         expires_in: Option<u64>,
     },
-    /// Revoke a device and approvals derived from it
+    /// Revoke a device
     Revoke {
         device: String,
         #[arg(long)]
@@ -128,24 +121,40 @@ pub fn run(command: NetworkCommands) -> Result<()> {
             file,
             network,
             output,
-            admin,
-            ssh,
             deploy,
             expires_in,
         } => approve(
             &file,
             network.as_deref(),
             &output,
-            Permissions {
-                network_admin: admin,
-                server_admin: admin,
-                ssh_user: ssh.then(|| "tako".parse()).transpose()?,
-                deployments: deploy.into_iter().collect(),
-            },
+            access(deploy),
             expires_in,
         ),
         NetworkCommands::Revoke { device, network } => revoke(&device, network.as_deref()),
         NetworkCommands::Status { network } => status(network.as_deref()),
+    }
+}
+
+/// Servers only peer with full clients, so a deploy client has nothing to join.
+fn require_full_client(profile: &Profile) -> Result<()> {
+    let own = profile
+        .request()
+        .device_id_for(&profile.snapshot().network.id)?;
+    if !profile.snapshot().is_full(&own, network::now()?)? {
+        return Err(
+            "Deploy clients cannot join the private network; they manage apps over HTTPS only."
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+/// Full access unless the client is restricted to deploying some scopes.
+pub(super) fn access(deploy: Vec<tako_network::AppEnv>) -> Permissions {
+    if deploy.is_empty() {
+        Permissions::Full
+    } else {
+        Permissions::deploy(deploy)
     }
 }
 
@@ -249,14 +258,9 @@ fn create(name: &str) -> Result<()> {
         verified,
         Approval {
             kind: MemberKind::Laptop,
-            permissions: Permissions {
-                network_admin: true,
-                server_admin: true,
-                ssh_user: Some("tako".parse()?),
-                deployments: BTreeSet::new(),
-            },
+            permissions: Permissions::Full,
             approved_by: None,
-            independent_admin: false,
+            independent_root: false,
             created_at: now,
             expires_at: None,
         },
@@ -305,7 +309,7 @@ fn request(name: Option<&str>, network: Option<&str>, destination: &Path) -> Res
         "Wrote enrollment request",
         serde_json::json!({"output": destination, "request_id": request.request_id, "name": request.name}),
     )?;
-    output::hint("Transfer this request to an administrator. Private keys remain on this machine.");
+    output::hint("Transfer this request to a full client. Private keys remain on this machine.");
     Ok(())
 }
 
@@ -314,7 +318,7 @@ fn import(path: &Path) -> Result<()> {
     let id = profile.snapshot().network.id.to_string();
     let name = profile.snapshot().network.name.as_str();
     let keys = LocalDeviceKeys::load(&network::keys_path(&profile.request().request_id)?)
-        .map_err(|_| "This profile needs the keys from its enrollment request. Run `tako network request` on this machine and have an administrator approve it.")?;
+        .map_err(|_| "This profile needs the keys from its enrollment request. Run `tako network request` on this machine and have a full client approve it.")?;
     profile.validate(&keys)?;
     if output::is_dry_run() {
         return finish(
@@ -412,13 +416,15 @@ fn finish(message: &str, value: serde_json::Value) -> Result<()> {
 pub fn connect(value: Option<&str>) -> Result<()> {
     let alias = network::resolve_network(value)?;
     if output::is_dry_run() {
-        network::load_profile(&alias)?;
+        let profile = network::load_profile(&alias)?;
+        require_full_client(&profile)?;
         return finish(
             "Would connect to the network",
             serde_json::json!({"dry_run": true, "network": alias.name}),
         );
     }
     let profile = network::client::refresh(&alias)?;
+    require_full_client(&profile)?;
     // One network owns `.tako` names at a time, so connecting switches. Hold a
     // machine-wide lock so concurrent connects cannot both find nothing to replace.
     let _switch = switch_lock()?;
@@ -641,9 +647,8 @@ pub fn ssh(server: &str, value: Option<&str>, remote_command: &[String]) -> Resu
         .device_id_for(&profile.snapshot().network.id)?;
     let permissions = profile.snapshot().permissions(&own, network::now()?)?;
     let user = permissions
-        .ssh_user
-        .as_ref()
-        .ok_or("This device has no SSH permission")?;
+        .ssh_user()
+        .ok_or("Deploy clients have no SSH access")?;
     if output::is_dry_run() {
         return finish(
             "Would connect using the approved SSH identity",
@@ -784,7 +789,7 @@ fn revoke(device: &str, value: Option<&str>) -> Result<()> {
     if output::is_dry_run() {
         let revocation = network::revocation::project(&alias, device)?;
         return finish(
-            "Would revoke the device and its delegated approvals",
+            "Would revoke the device",
             serde_json::json!({"dry_run": true, "network": alias.name, "device": revocation.target}),
         );
     }

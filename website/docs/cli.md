@@ -226,13 +226,13 @@ Lists release/build history or rolls an environment back to a previous release. 
 
 ```bash
 tako network create <name>
-tako network client add [--network <id-or-name>] [--admin | --deploy <app/env>] [--ssh] [--expires-in <seconds>]
+tako network client add [--network <id-or-name>] [--deploy <app/env>]... [--expires-in <seconds>]
 tako network client list [--network <id-or-name>]
 tako network client remove <device> [--network <id-or-name>]
 tako network join [--name <device>] [--invitation-stdin]
 tako network sync [network]
 tako network request [--name <device>] [--network <id-or-name>] --output <file>
-tako network approve <request-file> [--network <id-or-name>] --output <file> [--deploy <app/env>] [--admin] [--ssh] [--expires-in <seconds>]
+tako network approve <request-file> [--network <id-or-name>] --output <file> [--deploy <app/env>]... [--expires-in <seconds>]
 tako network import <profile-file>
 tako network export [network] --output <file>
 tako network list --json
@@ -250,21 +250,21 @@ Commands that act on one network take it from an explicit `--network` or positio
 
 Invitations are single-use, expire after 3600 seconds by default (`client add --expires-in` accepts 60–86400), and are redeemed through their issuing server. `join` prompts for the invitation or reads stdin. `network sync` pulls published ciphertext without publishing worktree drafts. Network names are shared and currently immutable.
 
-Each device generates and retains its own keys. Repeat `--deploy` for exact app/environment scopes; `--ssh` requires `--admin`. `network approve --expires-in` accepts `1..31536000` seconds and limits membership lifetime, separately from the request's activation window. Import requires the original requesting device's keys. Export contains public network configuration, not private keys or app secrets.
+Each device generates and retains its own keys. Without `--deploy`, a client gets full access, including the `tako` SSH shell and `connect`; repeat `--deploy` to restrict it to deploying exact app/environment scopes. Deploy clients cannot `connect` or `ssh`. `network approve --expires-in` accepts `1..31536000` seconds and limits membership lifetime, separately from the request's activation window. Import requires the original requesting device's keys. Export contains public network configuration, not private keys or app secrets.
 
-`drain` and `resume` require server administration and a unique member name or device ID. Drain defaults to 120 seconds and accepts `0..3600`; zero requests immediate force. Inspect the structured completion report, not only the drained intent. See [Native server maintenance](/operations/#native-server-maintenance).
+`drain` and `resume` require full access and a unique member name or device ID. Drain defaults to 120 seconds and accepts `0..3600`; zero requests immediate force. Inspect the structured completion report, not only the drained intent. See [Native server maintenance](/operations/#native-server-maintenance).
 
-`ssh` uses embedded WireGuard and userspace TCP without sudo or system network changes; OpenSSH is required. When the WireGuard handshake gets no reply, it fails after 10 seconds and names the UDP port and host. `connect` enables local applications, private DNS, short server names, and approved SSH aliases such as `ssh edge-a` for scp, rsync, loopback port forwarding, and VS Code Remote-SSH. It explains the required administrator access before prompting. `connect` also reports servers without a WireGuard handshake and disconnects any other connected network. `disconnect` removes those managed settings; without a network it disconnects whichever is connected. No external WireGuard executable is required. Normal native management uses pinned HTTPS without a tunnel or SSH agent. See [Native networks](/networks/) for platform requirements, enrollment, endpoints, and private service names.
+`ssh` uses embedded WireGuard and userspace TCP without sudo or system network changes; OpenSSH is required. When the WireGuard handshake gets no reply, it fails after 10 seconds and names the UDP port and host. `connect` enables local applications, private DNS, short server names, and approved SSH aliases such as `ssh edge-a` for scp, rsync, loopback port forwarding, and VS Code Remote-SSH. It explains the required local administrator access before prompting. `connect` also reports servers without a WireGuard handshake and disconnects any other connected network. `disconnect` removes those managed settings; without a network it disconnects whichever is connected. No external WireGuard executable is required. Normal native management uses pinned HTTPS without a tunnel or SSH agent. See [Native networks](/networks/) for platform requirements, enrollment, endpoints, and private service names.
 
-## Server administrator recovery
+## Host recovery
 
-Run on a surviving Linux server through its provider console or administrator SSH:
+Run on a surviving Linux server through its provider console or root SSH:
 
 ```bash
-sudo tako-server admin invite [--expires-in <seconds>] [--ssh] [--json]
+sudo tako-server client invite [--expires-in <seconds>] [--json]
 ```
 
-Requires root and a running native network agent with intact state and keys. Prints a single-use invitation for an independent administrator, with a default validity of 3600 seconds (60–86400 accepted). Join from the replacement machine with `tako network join`. `--ssh` also grants a Tako administrator shell. Ordinary client invitations remain delegated. See [Recover administrator access](/networks/#recover-administrator-access).
+Requires root and a running native network agent with intact state and keys. Prints a single-use invitation for an independent full client, with a default validity of 3600 seconds (60–86400 accepted). Join from the replacement machine with `tako network join`. See [Recover access](/networks/#recover-access).
 
 ## Servers
 

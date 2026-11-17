@@ -93,7 +93,7 @@ pub(super) fn worker(
                 let response = match work.request {
                     AgentCommand::Rpc(request) => controller.handle(request),
                     AgentCommand::Recovery(request) => {
-                        controller.recover_admin(request.recover_admin)
+                        controller.recover_client(request.recover_client)
                     }
                 };
                 let _ = work.reply.send(response);
@@ -575,7 +575,7 @@ impl Controller {
             &self.control,
         ))
     }
-    fn recover_admin(
+    fn recover_client(
         &mut self,
         grant: tako_network::invitation::CreateInvitation,
     ) -> AgentResponse {
@@ -832,7 +832,7 @@ fn serving(config: &NodeConfig, snapshot: &RegistrySnapshot, now: u64) -> Result
         .effective_members(now)?
         .get(&config.server_id)
         .is_some_and(|member| {
-            matches!(member.kind, MemberKind::Server(_)) && member.permissions.server_admin
+            matches!(member.kind, MemberKind::Server(_)) && member.permissions.is_full()
         }))
 }
 

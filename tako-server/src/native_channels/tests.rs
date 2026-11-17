@@ -53,13 +53,9 @@ fn member(network: &NetworkId, keys: &LocalDeviceKeys) -> Member {
             https_spki_sha256: None,
         }),
         request,
-        permissions: Permissions {
-            network_admin: true,
-            server_admin: true,
-            ..Default::default()
-        },
+        permissions: Permissions::Full,
         approved_by: None,
-        independent_admin: true,
+        independent_root: true,
         wg_verified: true,
         created_at: 1,
         expires_at: None,

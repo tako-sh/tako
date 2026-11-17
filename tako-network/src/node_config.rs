@@ -69,7 +69,7 @@ impl NodeConfig {
             member.device_id == self.server_id
                 && member.wg_verified
                 && matches!(member.kind, MemberKind::Server(_))
-                && member.permissions.server_admin
+                && member.permissions.is_full()
         }) {
             return Err(invalid("node config", "missing admitted server"));
         }

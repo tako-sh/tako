@@ -113,7 +113,7 @@ impl ServiceLease {
             || member.network_id != *network
             || member.device_id != self.server_id
             || !matches!(member.kind, MemberKind::Server(_))
-            || !member.permissions.server_admin
+            || !member.permissions.is_full()
             || self.issued_at > now.saturating_add(CLOCK_SKEW_SECONDS)
             || self.expires_at <= now
         {

@@ -16,7 +16,7 @@ Use a hosted database for application data. `TAKO_DATA_DIR` and `TAKO_SHARED_DAT
 
 ## Create and bind a database
 
-A database belongs to the network, not to an environment. Its name identifies it: names are unique within a network, start with a lowercase letter, and contain lowercase letters, digits, `-`, and `_` (at most 63 characters). Creating one requires network and server administrator permission:
+A database belongs to the network, not to an environment. Its name identifies it: names are unique within a network, start with a lowercase letter, and contain lowercase letters, digits, `-`, and `_` (at most 63 characters). Creating one requires full access:
 
 ```bash
 tako sqlite create main --server edge-a
@@ -172,7 +172,7 @@ tako sqlite shell main
 
 `status` reports the size, the app environments using the database on its server (`bindings`), those granted from other servers (`remote_grants`), and backup state: destination, last snapshot, last attempt, and last error. Without a name it reports every database the project binds.
 
-`shell` runs SQL with an administrator connection. With SQL as an argument it runs that statement and exits; with `--json` it prints `columns`, `rows`, `affected_row_count`, and `truncated`. Results stop at 1,000 rows and 8 MiB; use `export` for more. Each statement commits on its own: `BEGIN` is rejected rather than silently leaving later statements outside a transaction, so run multi-statement changes from a migration or a script. Without SQL it reads statements from standard input; an interactive terminal also accepts `.tables`, `.schema [table]`, and `.quit`. The shell has the same restrictions as apps.
+`shell` runs SQL with a full-access connection. With SQL as an argument it runs that statement and exits; with `--json` it prints `columns`, `rows`, `affected_row_count`, and `truncated`. Results stop at 1,000 rows and 8 MiB; use `export` for more. Each statement commits on its own: `BEGIN` is rejected rather than silently leaving later statements outside a transaction, so run multi-statement changes from a migration or a script. Without SQL it reads statements from standard input; an interactive terminal also accepts `.tables`, `.schema [table]`, and `.quit`. The shell has the same restrictions as apps.
 
 ## Back up and restore
 
@@ -199,7 +199,7 @@ tako storages credentials private_backups --env production
 tako deploy --env production
 ```
 
-A deploy by an administrator sends the destination and credentials to the database's server; removing the backup storage and deploying stops snapshots, and moving it to another storage snapshots the database there on the next scheduler pass. Snapshots already in the earlier storage stay there (retention and `delete` reach only the current one); remove `_tako/databases/<name>/` from it yourself once you no longer need them. A new database has no snapshots until such a deploy. Without a backup storage, Tako takes no snapshots and a lost server loses the database. Environments that bind the same database should use the same storage, since each administrator's deploy sets it.
+A deploy by a full client sends the destination and credentials to the database's server; removing the backup storage and deploying stops snapshots, and moving it to another storage snapshots the database there on the next scheduler pass. Snapshots already in the earlier storage stay there (retention and `delete` reach only the current one); remove `_tako/databases/<name>/` from it yourself once you no longer need them. A new database has no snapshots until such a deploy. Without a backup storage, Tako takes no snapshots and a lost server loses the database. Environments that bind the same database should use the same storage, since each full client's deploy sets it.
 
 The server then takes snapshots:
 
@@ -209,7 +209,7 @@ The server then takes snapshots:
 - before a restore, import, or reset replaces the database,
 - on demand with `tako sqlite backup <name>`.
 
-A snapshot is a consistent copy (`VACUUM INTO`) that passes `PRAGMA integrity_check`, compressed with zstd and encrypted with AES-256-GCM using the database's own key. The key is generated at `create` and kept in the network's encrypted shared state, readable only by administrators. Objects are written under `_tako/databases/<name>/<generation>/snapshots/`, where the generation is a random ID chosen at `create`, so a database created again under an earlier one's name never sees its snapshots. The manifest is written last, so only complete snapshots are listed; data left without a manifest by an interrupted upload is deleted after 24 hours. A failed snapshot is retried after five minutes.
+A snapshot is a consistent copy (`VACUUM INTO`) that passes `PRAGMA integrity_check`, compressed with zstd and encrypted with AES-256-GCM using the database's own key. The key is generated at `create` and kept in the network's encrypted shared state, readable only by full clients. Objects are written under `_tako/databases/<name>/<generation>/snapshots/`, where the generation is a random ID chosen at `create`, so a database created again under an earlier one's name never sees its snapshots. The manifest is written last, so only complete snapshots are listed; data left without a manifest by an interrupted upload is deleted after 24 hours. A failed snapshot is retried after five minutes.
 
 Retention keeps every snapshot of the last 24 hours (so a release or manual snapshot survives the hourly ones after it), then the newest of each day for 7 days and of each week for 4 weeks. Recovery is to a snapshot, not to an arbitrary point in time: up to an hour of writes can be lost with the server.
 
@@ -270,7 +270,7 @@ tako sqlite delete main
 
 ## Apps on other servers
 
-An app on another server than its database's connects to its own server as usual. That server forwards the request over the network's private WireGuard transport to the database's server on port 9847, which the network firewall opens only to other servers. An administrator's deploy grants the app environment the database on its server, and revokes grants the new release no longer uses only after its rollout succeeds, so the previous release keeps working until then; the grant comes with a key that the deploy hands to the app's servers, and forwarded requests must carry it, so other processes on a granted server cannot act for the environment. Tokens never leave the app's server. A deploy without administration keeps the bindings and keys an administrator provisioned.
+An app on another server than its database's connects to its own server as usual. That server forwards the request over the network's private WireGuard transport to the database's server on port 9847, which the network firewall opens only to other servers. A full client's deploy grants the app environment the database on its server, and revokes grants the new release no longer uses only after its rollout succeeds, so the previous release keeps working until then; the grant comes with a key that the deploy hands to the app's servers, and forwarded requests must carry it, so other processes on a granted server cannot act for the environment. Tokens never leave the app's server. A deploy client keeps the bindings and keys a full client provisioned.
 
 Each remote query adds a private-network round trip, so place a database on the server where most of its traffic runs. The database is unavailable to every server while its home server is down; forwarded requests then fail with `502`. Writes are serialized on one server: there is no replication or failover.
 
@@ -283,9 +283,9 @@ Each remote query adds a private-network round trip, so place a database on the 
 - `foreign_keys` is on for every connection. A statement may take at most 30 seconds to prepare and run, and the statements of one `sequence` (such as `executeMultiple`) share that limit; a statement waits up to 5 seconds for the write lock. A migration file's statements may run for 5 minutes together and wait up to 30 seconds for the write lock. Interactive transactions idle for 10 seconds are rolled back.
 - Requests are limited to 32 MiB and 65,536 statements and batch steps, and a request's body must arrive within 30 seconds (otherwise `408`); a request that waits 30 seconds for one of the database's 32 request slots, or for room in the server's 256 MiB of buffered requests and cursor output, gets `503`, as does a pipeline whose results find no room left in that buffer (results stay counted until the response is sent); a connection that sends no request for 30 seconds, or stops reading its response for 30 seconds, is closed, and a server holds at most 1,024 connections per listener; responses are limited to 64 MiB, counted as encoded JSON, including column names and error messages; a single string, blob, or row is limited to 64 MiB, also on the cursor endpoint. Use a cursor (`@tursodatabase/serverless` `iterate`) or pagination for larger results.
 - Database bindings are available to native releases. [Container and Compose releases](/docker/) cannot use them yet.
-- A scoped deploy client cannot change an environment's database bindings; an administrator must deploy the change.
-- Managing databases (`create`, `status`, `shell`, `backup`, `backups`, `restore`, `import`, `export`, `reset`, `delete`) requires network and server administrator permission. Every member that may deploy can read where databases live (`list` and deploys) and apply their own app's migrations; snapshot keys are readable only by administrators.
-- `create` refuses a name the network already has. When two administrators create the same name at the same moment, one record wins; the other create undoes itself when it sees the winner, and otherwise leaves an unused copy on its server that `tako sqlite delete <name> --server <server>` removes.
+- A scoped deploy client cannot change an environment's database bindings; a full client must deploy the change.
+- Managing databases (`create`, `status`, `shell`, `backup`, `backups`, `restore`, `import`, `export`, `reset`, `delete`) requires full access. Every member that may deploy can read where databases live (`list` and deploys) and apply their own app's migrations; snapshot keys are readable only by full clients.
+- `create` refuses a name the network already has. When two clients create the same name at the same moment, one record wins; the other create undoes itself when it sees the winner, and otherwise leaves an unused copy on its server that `tako sqlite delete <name> --server <server>` removes.
 
 ## Verify
 

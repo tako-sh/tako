@@ -224,7 +224,7 @@ mod unix {
             .ok_or("prepared server is not a current member")?;
         if member.request != *identity.request()
             || member.kind != MemberKind::Server(identity.server_info().clone())
-            || !member.permissions.server_admin
+            || !member.permissions.is_full()
         {
             return Err(
                 "admission does not match the prepared server identity and permissions".into(),

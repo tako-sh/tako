@@ -176,7 +176,7 @@ impl Publisher {
         let effective = registry.effective_members(now)?;
         if !effective
             .get(&config.server_id)
-            .is_some_and(|m| matches!(m.kind, MemberKind::Server(_)) && m.permissions.server_admin)
+            .is_some_and(|m| matches!(m.kind, MemberKind::Server(_)) && m.permissions.is_full())
         {
             return Err(AgentError::Invalid(
                 "local service publisher is not effective",

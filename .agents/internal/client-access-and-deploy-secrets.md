@@ -2,7 +2,8 @@
 
 Plan for simplifying network clients to two access levels, making a client name a
 stable identity across keys, moving secret resolution for deploys onto servers,
-and giving CI a reusable identity. Nothing here is implemented yet.
+and giving CI a reusable identity. The implementation lands with this note; where
+it had to differ from the first draft, this note records what was built.
 
 ## Goal and trust model
 
@@ -34,8 +35,17 @@ and giving CI a reusable identity. Nothing here is implemented yet.
   `tako ssh` fail early for deploy clients. Deploy clients use management over
   pinned HTTPS only, which needs no peer.
 - Delegation: only full clients invite. A full client may invite full or deploy
-  clients; a deploy client invites nobody. Revocation keeps cascading down the
-  approval chain (`delegated_by`, `registry.rs:224`).
+  clients; a deploy client invites nobody.
+- **Revocation does not cascade.** Revoking a client, or replacing its key, affects
+  only that client; the clients it invited keep their access. A member is valid
+  when its inviter was valid at the moment the member was approved: no revocation
+  of the inviter with `created_at` at or before the member's `created_at`, the
+  inviter not yet expired then, and the inviter's own approval valid in the same
+  way. Revocations already carry `created_at`. `client list` shows who invited each
+  client, and revoke output lists the clients the revoked one invited so they can
+  be revoked too. Trade-off: a thief who invites a client with a stolen device
+  before you revoke that device keeps the invited client until you revoke it as
+  well. The invited list in the revoke output is how you find it.
 
 ### Secrets
 
@@ -52,16 +62,24 @@ and giving CI a reusable identity. Nothing here is implemented yet.
 
 ### Deploy
 
-- The `Deploy` and `PrepareDeploy` commands stop carrying `secrets`,
-  `runtime_credentials`, storage access keys, backup keys and the Cloudflare token.
+- No command carries secret values. `Deploy`, `PrepareDeploy`, `PrepareRelease`
+  and `RunRelease` stop carrying `secrets` (`PrepareRelease` has them today,
+  `tako-core/src/protocol.rs:99`, for release commands and private dependency
+  installs), `runtime_credentials`, storage access keys, backup keys and the
+  Cloudflare token. Release preparation and release commands resolve the same
+  pinned snapshot on the server, so a deploy client with no local secrets can run
+  release commands and install private dependencies.
   They carry non-secret binding configuration from `tako.toml` (provider, bucket,
   endpoint, region, retention) plus a **snapshot digest**.
 - Snapshot digest: a hash over the sorted `(address, record id)` winners,
   tombstones included, for the deploy's `app/env` scope. A full client publishes
   its drafts first (deploy already does, `tako/src/commands/deploy/mod.rs:441`),
-  then asks the leader server (`mod.rs:587`) for the digest, passing the
-  operation IDs it published so the leader waits for them. A deploy client only
-  asks for the digest.
+  then asks the leader server (`mod.rs:587`) for the digest, passing the record
+  versions its publication produced so the leader and every target wait for
+  those writes instead of pinning older winners from a lagging server. Today
+  `sync_environment` returns only the `SecretsStore` and `publish_changes`
+  consumes the operation IDs, so the publication result is threaded through the
+  deploy flow. A deploy client only asks for the digest.
 - Each target server computes its own digest. If it differs it waits, bounded, for
   replication, then fails with "secrets are still replicating" or "secrets changed
   during deploy; run it again". The client cannot tamper with the digest to gain
@@ -105,12 +123,15 @@ The new list closes all of that.
 Logs are authorized as `Status` (`tako-server/src/native_management.rs:258`).
 Give logs their own check so allowing `Status` does not allow logs.
 
-Keep the existing preservation rules: a deploy client cannot change routes, SSL,
-runtime credentials, storage, database bindings or backup
-(`native_management_policy.rs:159`, `:172`–`:178`, `:291`, `:299`). It also still
-needs provisioned state on each target server (`STATE_REQUIRED`, `:169`), so the first
-deploy of an `app/env` to a server, and any route or binding change, comes from a
-full client.
+A CI-only setup must work end to end, so deploy clients are not limited to
+redeploying what a full client provisioned. The `STATE_REQUIRED` and preservation
+rules for scoped deploys (`native_management_policy.rs:159`, `:169`, `:172`–`:178`,
+`:291`, `:299`) go away: a deploy client may make the first deploy of its
+`app/env` and may change its routes and the plain configuration of its bindings.
+Secret parts of bindings still come only from the server's view of the shared
+store. One guard applies to every client: a server rejects a route that another
+app or environment already claims, so a staging deploy client cannot take over
+production's domain.
 
 On the CLI, a deploy client's `tako deploy` must not call `sync_environment`,
 `load_secrets_for_environment`, `load_secret_key`, `ensure_secret_key_available`
@@ -145,22 +166,24 @@ check.
     later.
 - One name holds one active key. A person with two machines uses two names, for
   example `alice-laptop` and `alice-desktop`. Document this.
-- Replace and revoke refuse to target the client the CLI is running as, or any
-  client in its approval chain. Revoking either would cut off the running device,
-  and with it the new generation, which it approved.
+- Replace and revoke refuse to target the client the CLI is running as, and
+  refuse to leave the network with no active full client.
 - `client revoke <name>`, with `rm` and `remove` as aliases, revokes the active
   generation. It also accepts a device ID, to target one generation such as a
   conflicting duplicate. Add `server revoke` beside `server drain` and
   `server resume`. Remove the top-level `tako network revoke`
   (`tako/src/commands/network.rs:68`), which duplicates both.
-- Revoke and replace list the clients that lose access with it (everything that
-  generation invited, recursively) and include them in the prompt and in `--json`.
-- `client list` shows one row per client: name, access, status (`active`,
-  `revoked`, `expired`, `conflict`) and the active generation's device ID and
-  creation time. `--json` returns a specialized object with each client's
-  generations (`.agents/internal/cli-output.md`, Modes). Today the list only
-  shows effective members (`tako/src/commands/network/client.rs`, `List`), so
-  revoked clients vanish.
+- Revoke and replace list the clients the revoked generation invited, in the
+  prompt and in `--json`. They keep their access; the list is there so they can be
+  revoked too.
+- `client list` shows active clients by default: name, access, invited-by, and
+  the active generation's device ID and creation time. `--all` also shows
+  revoked and expired clients and replaced key generations, each with a status
+  column (`active`, `revoked`, `expired`, `replaced`, `conflict`) and invited-by.
+  `--json` returns a specialized object whose rows carry the same `status` field
+  (`.agents/internal/cli-output.md`, Modes). Today the list only shows effective
+  members (`tako/src/commands/network/client.rs`, `List`), so revoked clients
+  vanish.
 - History shows the client name across generations. `secrets list` already looks
   authors up across all members, revoked ones included
   (`tako/src/network/secrets.rs:258`); switch it from `request.name` to the client
@@ -183,7 +206,7 @@ check.
   (`LocalDeviceKeys`, `tako-network/src/keys.rs:14`), creates the invitation,
   claims it as the new device and answers the WireGuard possession challenge
   (`tako-network/src/challenge.rs:35`) in-process, since it holds every key.
-  The approver is the issuing device, which matters for the revocation cascade.
+  The approver is the issuing device, which `client list` shows.
 - Contents: a versioned prefix and base64url JSON with the network ID and name,
   client name, device ID, the three private keys (SSH signing, WireGuard,
   encryption) and up to three servers with HTTPS endpoint and certificate pin.
@@ -253,18 +276,24 @@ Each step updates the docs and skills it changes (`commands/sync-docs.md`,
 
 Protocol v0, no shims. Servers and CLIs upgrade together.
 
-- Each server migrates its registry rows deterministically, so replicated rows
-  match: `network_admin && server_admin` becomes full; scopes without both become
-  deploy; `ssh_user` is dropped. Client caches are discarded and fetched again.
+- Registry rows are immutable and replicated, so they keep their bytes. Every
+  node reads the old four-field permissions the same way: `network_admin &&
+  server_admin` becomes full; anything else becomes deploy with its scopes;
+  `ssh_user` is dropped. `independent_admin` reads as `independent_root`. New
+  rows are written in the new form (`Permissions` deserializer,
+  `tako-network/src/registry.rs`).
 - Existing full members without `--ssh` gain SSH. Call it out in release notes.
 - Existing laptops get `client` = `request.name`. Names default to the hostname
   (`tako/src/commands/network.rs:387`), so duplicates exist. The oldest member
-  keeps the name; the others get `-` plus the first six characters of their device
-  ID. This is a one-time migration, not a runtime rule.
+  keeps the name; the others get `-` plus a fragment of their device ID,
+  allocated against existing and already generated names and lengthened until
+  unique, so a suffix cannot collide with an existing `foo-abcdef`. The result
+  is deterministic on every node.
 - Existing `--deploy` clients lose app-secret access, connect, logs, backups,
   scale and delete. Agent sandboxes that set secrets need a full client.
 - Removed: `--admin`, `--ssh`, `join --name`, `tako network revoke`,
-  `tako-server admin invite`, `UpdateSecrets`, `GetSecretsHash`.
+  `UpdateSecrets`, `GetSecretsHash`. `tako-server admin invite` became
+  `tako-server client invite`.
 
 ## Verification
 
@@ -272,11 +301,13 @@ Protocol v0, no shims. Servers and CLIs upgrade together.
    tests per command and access level; CLI integration tests for add, list and
    revoke (`tako/tests/cli_integration/`); `e2e/cli/tests/network.test.ts`.
 2. Name uniqueness, reactivation, replace (the old key is rejected on the next
-   request), the self and ancestor guards, cascade listing, and continuous
+   request), the self and last-full-client guards, invited listing, no cascade, and continuous
    "set by" history. A two-agent Corrosion test with concurrent same-name
    admissions on two servers that converges on one active generation.
 3. Deploy with a pinned digest across two servers; wait and timeout paths;
-   mismatch after a concurrent publish; a server still missing key grants reports
+   mismatch after a concurrent publish; a lagging leader that has not yet seen
+   the client's publication waits for it rather than pinning older winners;
+   release preparation and release commands use the pinned snapshot; a server still missing key grants reports
    that, not missing secrets; rollback uses last-applied values; the deploy
    request types carry no secret fields.
 4. A table test of every `Command` variant for deploy access; logs denied; a deploy
@@ -292,16 +323,15 @@ Protocol v0, no shims. Servers and CLIs upgrade together.
   `github-ci` before replication. Uniqueness checks at invitation creation and
   approval cannot see each other. Resolution in `effective_members`: among
   effective laptop members with the same client name (case-insensitive), the
-  smallest `(created_at, device_id)` is active; the others are `conflict`, not
-  effective, and their descendants lose access through the chain. Every node
-  computes the same answer. Either may have worked briefly before convergence.
-  Servers are out of scope; their name check (`registry.rs:471`) has the same
-  race.
-- **Revocation cascades.** Replacing or revoking a client also cuts off everything
-  that generation invited, including CI identities it minted. Revoking a lost
-  laptop can silently stop CI. The listing in the prompt is the mitigation.
-- **Self-revocation.** Replacing your own client, or one in your approval chain,
-  would revoke the device doing it and the new generation it approved. Guarded.
+  smallest `(created_at, device_id)` is active; the others are `conflict` and not
+  effective. Every node computes the same answer. Either may have worked briefly
+  before convergence. Servers are out of scope; their name check
+  (`registry.rs:471`) has the same race.
+- **No cascade.** A thief holding a stolen full device can invite a client before
+  you revoke the device, and that client survives the revocation. Revoke output
+  lists what the revoked client invited; revoke those too.
+- **Self-revocation.** Revoking or replacing the client the CLI runs as would cut
+  off the device doing it. Refused, as is revoking the last active full client.
 - **Replace before redeem.** The old key is revoked when the invitation is
   created. If the invitation expires unused, the client has no active key until
   the next `client add`.
@@ -317,21 +347,21 @@ Protocol v0, no shims. Servers and CLIs upgrade together.
   `tako gen`, init and secret commands, not at deploy. CI with a deploy client must
   use the committed files rather than regenerate them.
 
-## Open questions
+## Questions decided
 
 1. **Logs for deploy clients.** Recommend deny. Logs can contain secret values, and
    CI can report `Status` on failure. Allow later behind an explicit flag if needed.
 2. **Rollback for deploy clients.** Recommend allow. It only reactivates a release
    already on the server, with last-applied values.
-3. **First deploy by a deploy client.** Recommend keeping the requirement that a
-   full client deploys first and makes route or binding changes. The alternative,
-   servers provisioning routes from a deploy client's `tako.toml`, reopens route
-   hijacking across apps.
-4. **Re-parenting after revocation.** Recommend listing dependents now and deciding
-   later whether another full client can re-approve them.
-5. **`network request`, `approve` and `import`.** Their main use, enrolling CI
-   runners, moves to identities. Recommend removing them in step 5 unless another
-   use appears.
+Answered:
+
+1. **Logs for deploy clients:** denied.
+2. **Rollback for deploy clients:** allowed; rollback counts as a deploy.
+3. **First deploy and route changes by a deploy client:** allowed, so CI alone can
+   run an app. Servers reject a route another app or environment already claims,
+   for every client.
+4. **Re-parenting after revocation:** not needed; revocation no longer cascades.
+5. **`network request`, `approve` and `import`:** removed once identities exist.
 
 ## Later
 

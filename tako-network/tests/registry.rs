@@ -19,14 +19,23 @@ fn one_server_bootstrap_then_second_server_preserves_network_and_existing_addres
 }
 
 #[test]
-fn membership_alone_has_no_management_ssh_or_deployment_authority() {
+fn deploy_clients_have_no_management_ssh_or_unlisted_deployment_authority() {
     let (mut snapshot, _, root) = bootstrap();
-    let (_, laptop) = add_laptop(&mut snapshot, &root, Permissions::default(), false, 2);
+    let (_, laptop) = add_laptop(
+        &mut snapshot,
+        &root,
+        Permissions::Deploy(scopes(&["app/prod"])),
+        false,
+        2,
+    );
     let permissions = snapshot.permissions(&laptop, 2).unwrap();
-    assert!(!snapshot.can_admin(&laptop, 2).unwrap());
-    assert!(!permissions.server_admin);
-    assert!(permissions.ssh_user.is_none());
+    assert!(!snapshot.is_full(&laptop, 2).unwrap());
+    assert!(permissions.ssh_user().is_none());
+    assert!(permissions.can_deploy(&"app/prod".parse().unwrap()));
     assert!(!permissions.can_deploy(&"app/dev".parse().unwrap()));
+    let full = snapshot.permissions(&root, 2).unwrap();
+    assert_eq!(full.ssh_user().unwrap().as_str(), "tako");
+    assert!(full.can_deploy(&"app/dev".parse().unwrap()));
     let keys = LocalDeviceKeys::generate().unwrap();
     assert!(
         snapshot
@@ -34,7 +43,7 @@ fn membership_alone_has_no_management_ssh_or_deployment_authority() {
                 verified(&keys, &snapshot.network.id, DeviceKind::Laptop, 3),
                 approval(
                     MemberKind::Laptop,
-                    Permissions::default(),
+                    Permissions::Deploy(Default::default()),
                     Some(laptop.clone()),
                     3
                 )
@@ -49,73 +58,93 @@ fn membership_alone_has_no_management_ssh_or_deployment_authority() {
 }
 
 #[test]
-fn delegation_cannot_expand_environment_ssh_server_rights_or_lifetime() {
+fn only_full_clients_delegate_and_never_beyond_their_lifetime() {
     let (mut snapshot, _, root) = bootstrap();
-    let restricted = Permissions {
-        network_admin: true,
-        deployments: scopes(&["app/dev"]),
-        ..Permissions::default()
-    };
-    let (_, admin_id) = add_laptop(&mut snapshot, &root, restricted.clone(), false, 2);
+    let (_, deployer) = add_laptop(
+        &mut snapshot,
+        &root,
+        Permissions::Deploy(scopes(&["app/dev"])),
+        false,
+        2,
+    );
+    let (_, full_id) = add_laptop(&mut snapshot, &root, admin(), false, 2);
     snapshot
         .members
         .iter_mut()
-        .find(|m| m.device_id == admin_id)
+        .find(|m| m.device_id == full_id)
         .unwrap()
         .expires_at = Some(20);
     let keys = LocalDeviceKeys::generate().unwrap();
     let evidence = verified(&keys, &snapshot.network.id, DeviceKind::Laptop, 3);
+    for permissions in [admin(), Permissions::Deploy(scopes(&["app/dev"]))] {
+        let command = approval(MemberKind::Laptop, permissions, Some(deployer.clone()), 3);
+        assert!(snapshot.approve(evidence.clone(), command).is_err());
+    }
     let mut command = approval(
         MemberKind::Laptop,
-        Permissions {
-            deployments: scopes(&["app/dev"]),
-            ..Permissions::default()
-        },
-        Some(admin_id.clone()),
+        Permissions::Deploy(scopes(&["app/prod"])),
+        Some(full_id.clone()),
         3,
     );
     command.expires_at = Some(19);
     snapshot.approve(evidence.clone(), command.clone()).unwrap();
-    for permissions in [
-        admin(),
-        Permissions {
-            deployments: scopes(&["app/prod"]),
-            ..Permissions::default()
-        },
-        Permissions {
-            ssh_user: Some("root".parse().unwrap()),
-            ..Permissions::default()
-        },
-    ] {
-        let mut expanded = command.clone();
-        expanded.permissions = permissions;
-        assert!(snapshot.approve(evidence.clone(), expanded).is_err());
-    }
+    command.permissions = admin();
+    snapshot.approve(evidence.clone(), command.clone()).unwrap();
     command.expires_at = None;
     assert!(snapshot.approve(evidence.clone(), command.clone()).is_err());
     command.expires_at = Some(19);
-    command.independent_admin = true;
-    command.permissions = admin();
+    command.independent_root = true;
     assert!(snapshot.approve(evidence, command).is_err());
-    assert!(!snapshot.can_admin(&admin_id, 20).unwrap());
-    assert!(snapshot.can_admin(&root, 20).unwrap());
+    assert!(!snapshot.is_full(&full_id, 20).unwrap());
+    assert!(snapshot.is_full(&root, 20).unwrap());
 }
 
 #[test]
-fn stale_approvals_and_all_descendants_die_when_approving_admin_is_revoked() {
+fn revoking_an_approver_keeps_earlier_approvals_and_voids_later_ones() {
     let (mut snapshot, _, root) = bootstrap();
     let (_, successor) = add_laptop(&mut snapshot, &root, admin(), true, 2);
     let (_, delegated) = add_laptop(&mut snapshot, &root, admin(), false, 3);
     let mut stale = snapshot.clone();
     revoke(&mut snapshot, &successor, &root, 4);
-    let (_, late) = add_laptop(&mut stale, &delegated, Permissions::default(), false, 5);
-    snapshot.members.push(stale.members.last().unwrap().clone());
+    // A replica that has not seen the revocation keeps accepting the revoked
+    // approver, and the approved device's own grants.
+    let (_, late) = add_laptop(
+        &mut stale,
+        &root,
+        Permissions::Deploy(Default::default()),
+        false,
+        5,
+    );
+    let (_, grandchild) = add_laptop(
+        &mut stale,
+        &delegated,
+        Permissions::Deploy(Default::default()),
+        false,
+        5,
+    );
+    for id in [&late, &grandchild] {
+        let member = stale.members.iter().find(|m| &m.device_id == id).unwrap();
+        snapshot.members.push(member.clone());
+    }
     let effective = snapshot.effective_members(5).unwrap();
     assert!(effective.contains_key(&successor));
-    for denied in [&root, &delegated, &late] {
-        assert!(!effective.contains_key(denied));
-    }
-    let (_, replacement) = add_laptop(&mut snapshot, &successor, Permissions::default(), false, 6);
+    assert!(!effective.contains_key(&root));
+    assert!(
+        !effective.contains_key(&late),
+        "approved after its approver was revoked"
+    );
+    assert!(
+        effective.contains_key(&delegated),
+        "revocation does not cascade"
+    );
+    assert!(effective.contains_key(&grandchild));
+    let (_, replacement) = add_laptop(
+        &mut snapshot,
+        &successor,
+        Permissions::Deploy(Default::default()),
+        false,
+        6,
+    );
     assert!(
         snapshot
             .effective_members(6)
@@ -125,10 +154,33 @@ fn stale_approvals_and_all_descendants_die_when_approving_admin_is_revoked() {
 }
 
 #[test]
+fn revocation_refuses_self_and_the_last_full_client() {
+    let (mut snapshot, _, root) = bootstrap();
+    assert!(matches!(
+        snapshot.plan_revocation(RevocationId::random().unwrap(), &root, &root, 2),
+        Err(Error::PermissionDenied(_))
+    ));
+    let server = add_server(&mut snapshot, &root, 2);
+    assert!(matches!(
+        snapshot.plan_revocation(RevocationId::random().unwrap(), &server, &root, 3),
+        Err(Error::PermissionDenied(_))
+    ));
+    let (_, second) = add_laptop(&mut snapshot, &root, admin(), false, 3);
+    revoke(&mut snapshot, &server, &root, 4);
+    assert!(snapshot.is_full(&second, 4).unwrap());
+}
+
+#[test]
 fn accepted_denials_survive_revocation_of_their_actor_and_stale_actor_acceptance() {
     let (mut snapshot, _, root) = bootstrap();
     let (_, second) = add_laptop(&mut snapshot, &root, admin(), true, 2);
-    let (_, target) = add_laptop(&mut snapshot, &second, Permissions::default(), false, 3);
+    let (_, target) = add_laptop(
+        &mut snapshot,
+        &second,
+        Permissions::Deploy(Default::default()),
+        false,
+        3,
+    );
     let mut stale = snapshot.clone();
     revoke(&mut snapshot, &second, &root, 4);
     let denial = stale
@@ -137,13 +189,19 @@ fn accepted_denials_survive_revocation_of_their_actor_and_stale_actor_acceptance
     stale.revocations.push(denial.clone());
     snapshot.revocations.push(denial);
     assert!(!snapshot.effective_members(6).unwrap().contains_key(&target));
-    assert!(snapshot.can_admin(&second, 6).unwrap());
+    assert!(snapshot.is_full(&second, 6).unwrap());
 }
 
 #[test]
 fn revocation_bans_reused_keys_even_with_new_device_ids_and_fresh_approvals() {
     let (mut snapshot, _, root) = bootstrap();
-    let (victim_keys, victim) = add_laptop(&mut snapshot, &root, Permissions::default(), false, 2);
+    let (victim_keys, victim) = add_laptop(
+        &mut snapshot,
+        &root,
+        Permissions::Deploy(Default::default()),
+        false,
+        2,
+    );
     revoke(&mut snapshot, &root, &victim, 3);
     let attacker = LocalDeviceKeys::generate().unwrap();
     let mut reused_wg = snapshot
@@ -199,7 +257,13 @@ fn revocation_bans_reused_keys_even_with_new_device_ids_and_fresh_approvals() {
 #[test]
 fn unverified_copied_key_claim_does_not_quarantine_existing_peer() {
     let (mut snapshot, _, root) = bootstrap();
-    let (_, victim) = add_laptop(&mut snapshot, &root, Permissions::default(), false, 2);
+    let (_, victim) = add_laptop(
+        &mut snapshot,
+        &root,
+        Permissions::Deploy(Default::default()),
+        false,
+        2,
+    );
     let attacker = LocalDeviceKeys::generate().unwrap();
     let mut claim = snapshot
         .members
@@ -240,22 +304,22 @@ fn missing_ancestry_cycles_and_unauthorized_roots_grant_nothing() {
     assert_eq!(effective.len(), 1);
     assert!(effective.contains_key(&root));
     snapshot.members.retain(|m| m.device_id != b);
-    assert!(!snapshot.can_admin(&a, 4).unwrap());
+    assert!(!snapshot.is_full(&a, 4).unwrap());
     snapshot
         .members
         .iter_mut()
         .find(|m| m.device_id == a)
         .unwrap()
         .approved_by = None;
-    assert!(!snapshot.can_admin(&a, 4).unwrap());
+    assert!(!snapshot.is_full(&a, 4).unwrap());
 }
 
 #[test]
 fn immutable_conflicts_fail_closed_but_identical_duplicate_delivery_is_safe() {
     let (mut snapshot, _, root) = bootstrap();
     snapshot.members.push(snapshot.members[0].clone());
-    assert!(snapshot.can_admin(&root, 2).unwrap());
-    snapshot.members[1].permissions.ssh_user = Some("root".parse().unwrap());
+    assert!(snapshot.is_full(&root, 2).unwrap());
+    snapshot.members[1].permissions = Permissions::Deploy(Default::default());
     assert!(matches!(
         snapshot.effective_members(2),
         Err(Error::Conflict("member"))
@@ -267,7 +331,13 @@ fn offline_restarted_removed_and_new_servers_remain_pending_without_current_ack(
     let (mut snapshot, _, root) = bootstrap();
     let a = add_server(&mut snapshot, &root, 2);
     let b = add_server(&mut snapshot, &root, 3);
-    let (_, target) = add_laptop(&mut snapshot, &root, Permissions::default(), false, 4);
+    let (_, target) = add_laptop(
+        &mut snapshot,
+        &root,
+        Permissions::Deploy(Default::default()),
+        false,
+        4,
+    );
     let denial = revoke(&mut snapshot, &root, &target, 5);
     let boot_a = BootId::random().unwrap();
     let boot_b = BootId::random().unwrap();
@@ -324,7 +394,13 @@ fn offline_restarted_removed_and_new_servers_remain_pending_without_current_ack(
 fn server_retirement_does_not_invalidate_admissions_accepted_on_that_server() {
     let (mut snapshot, _, root) = bootstrap();
     let server = add_server(&mut snapshot, &root, 2);
-    let (_, laptop) = add_laptop(&mut snapshot, &root, Permissions::default(), false, 3);
+    let (_, laptop) = add_laptop(
+        &mut snapshot,
+        &root,
+        Permissions::Deploy(Default::default()),
+        false,
+        3,
+    );
     revoke(&mut snapshot, &root, &server, 4);
     let effective = snapshot.effective_members(4).unwrap();
     assert!(!effective.contains_key(&server));
@@ -336,7 +412,13 @@ fn server_retirement_does_not_invalidate_admissions_accepted_on_that_server() {
 fn public_profile_binds_device_request_and_server_pins_but_contains_no_private_key() {
     let (mut snapshot, _, root) = bootstrap();
     add_server(&mut snapshot, &root, 2);
-    let (keys, id) = add_laptop(&mut snapshot, &root, Permissions::default(), false, 3);
+    let (keys, id) = add_laptop(
+        &mut snapshot,
+        &root,
+        Permissions::Deploy(Default::default()),
+        false,
+        3,
+    );
     let request = snapshot
         .members
         .iter()
@@ -380,13 +462,13 @@ fn even_full_device_admin_cannot_mint_an_independent_root_on_a_stale_replica() {
     let (snapshot, _, root) = bootstrap();
     let keys = LocalDeviceKeys::generate().unwrap();
     let mut command = approval(MemberKind::Laptop, admin(), Some(root), 2);
-    command.independent_admin = true;
+    command.independent_root = true;
     let evidence = verified(&keys, &snapshot.network.id, DeviceKind::Laptop, 2);
     assert!(snapshot.approve(evidence.clone(), command.clone()).is_err());
     command.approved_by = None;
     assert!(snapshot.approve(evidence.clone(), command.clone()).is_err());
     snapshot
-        .approve_independent_admin(evidence, command)
+        .approve_independent_root(evidence, command)
         .unwrap();
 }
 
@@ -415,29 +497,35 @@ fn endpoint_validation_rejects_loopback_broadcast_mapped_loopback_and_zero_ports
 }
 
 #[test]
-fn independent_operator_recovery_works_after_all_device_admins_are_revoked() {
+fn independent_operator_recovery_works_after_every_full_client_is_revoked() {
     let (mut snapshot, _, root) = bootstrap();
-    revoke(&mut snapshot, &root, &root, 2);
+    deny(&mut snapshot, &root, 2);
     assert!(snapshot.effective_members(3).unwrap().is_empty());
     let keys = LocalDeviceKeys::generate().unwrap();
     let mut command = approval(MemberKind::Laptop, admin(), None, 3);
-    command.independent_admin = true;
+    command.independent_root = true;
     let member = snapshot
-        .approve_independent_admin(
+        .approve_independent_root(
             verified(&keys, &snapshot.network.id, DeviceKind::Laptop, 3),
             command,
         )
         .unwrap();
     let id = member.device_id.clone();
     snapshot.members.push(member);
-    assert!(snapshot.can_admin(&id, 3).unwrap());
-    assert!(!snapshot.can_admin(&root, 3).unwrap());
+    assert!(snapshot.is_full(&id, 3).unwrap());
+    assert!(!snapshot.is_full(&root, 3).unwrap());
 }
 
 #[test]
 fn conflicting_revocation_and_unknown_nested_permissions_fail_closed() {
     let (mut snapshot, _, root) = bootstrap();
-    let (_, target) = add_laptop(&mut snapshot, &root, Permissions::default(), false, 2);
+    let (_, target) = add_laptop(
+        &mut snapshot,
+        &root,
+        Permissions::Deploy(Default::default()),
+        false,
+        2,
+    );
     revoke(&mut snapshot, &root, &target, 3);
     let mut conflicting = snapshot.revocations[0].clone();
     conflicting.target = root;
@@ -447,7 +535,13 @@ fn conflicting_revocation_and_unknown_nested_permissions_fail_closed() {
         Err(Error::Conflict("revocation"))
     ));
     let mut encoded = serde_json::to_value(&snapshot.members[0]).unwrap();
-    encoded["permissions"]["sql_writer"] = serde_json::json!(true);
+    encoded["permissions"] = serde_json::json!({
+        "network_admin": true,
+        "server_admin": true,
+        "ssh_user": null,
+        "deployments": [],
+        "sql_writer": true
+    });
     assert!(serde_json::from_value::<Member>(encoded).is_err());
 }
 
@@ -462,10 +556,10 @@ fn request_approval_profile_and_online_import_activate_without_a_third_file() {
     let request_file = serde_json::to_vec(&request).unwrap();
     let received_request: EnrollmentRequest = serde_json::from_slice(&request_file).unwrap();
     received_request.verify().unwrap();
-    assert!(server_state.can_admin(&admin_id, 3).unwrap());
+    assert!(server_state.is_full(&admin_id, 3).unwrap());
     let stored_entitlement = approval(
         MemberKind::Laptop,
-        Permissions::default(),
+        Permissions::Deploy(Default::default()),
         Some(admin_id.clone()),
         3,
     );
@@ -587,7 +681,7 @@ fn pending_profile_requires_own_keys_live_deadlines_and_an_effective_pinned_issu
 }
 
 #[test]
-fn online_wg_proof_does_not_activate_an_entitlement_whose_admin_was_revoked() {
+fn online_wg_proof_does_not_activate_an_entitlement_whose_approver_was_revoked() {
     let (mut snapshot, _, root) = bootstrap();
     add_server(&mut snapshot, &root, 2);
     let keys = LocalDeviceKeys::generate().unwrap();
@@ -596,11 +690,11 @@ fn online_wg_proof_does_not_activate_an_entitlement_whose_admin_was_revoked() {
         .unwrap();
     let mut stored_entitlement = approval(
         MemberKind::Laptop,
-        Permissions::default(),
+        Permissions::Deploy(Default::default()),
         Some(root.clone()),
         3,
     );
-    revoke(&mut snapshot, &root, &root, 4);
+    deny(&mut snapshot, &root, 4);
     let (challenge, pending) =
         WgChallenge::begin(&request, snapshot.network.id.clone(), 5, 65).unwrap();
     let response = keys.answer_challenge(&challenge, &request, 5).unwrap();
@@ -680,72 +774,44 @@ fn transport_certificate_fields_reject_malformed_oversize_bundled_and_extra_data
 }
 
 #[test]
-fn privileged_ssh_accounts_require_both_admin_capabilities_and_explicit_ssh_scope() {
-    let (snapshot, _, admin_id) = bootstrap();
-    assert!(
-        snapshot
-            .permissions(&admin_id, 2)
-            .unwrap()
-            .ssh_user
-            .is_none()
+fn recorded_four_field_permissions_read_as_access_levels() {
+    let read = |value: serde_json::Value| serde_json::from_value::<Permissions>(value).unwrap();
+    assert_eq!(
+        read(
+            serde_json::json!({"network_admin": true, "server_admin": true, "ssh_user": "tako", "deployments": []})
+        ),
+        Permissions::Full
     );
-    let keys = LocalDeviceKeys::generate().unwrap();
-    let evidence = verified(&keys, &snapshot.network.id, DeviceKind::Laptop, 2);
-    for user in ["tako", "root"] {
-        for (network_admin, server_admin) in
-            [(false, false), (true, false), (false, true), (true, true)]
-        {
-            let permissions = Permissions {
-                network_admin,
-                server_admin,
-                ssh_user: Some(user.parse().unwrap()),
-                deployments: Default::default(),
-            };
-            let command = approval(
-                MemberKind::Laptop,
-                permissions.clone(),
-                Some(admin_id.clone()),
-                2,
-            );
-            let result = snapshot.approve(evidence.clone(), command);
-            if network_admin && server_admin {
-                permissions.validate().unwrap();
-                assert_eq!(result.unwrap().permissions.ssh_user.unwrap().as_str(), user);
-            } else {
-                assert!(matches!(
-                    permissions.validate(),
-                    Err(Error::PermissionDenied(_))
-                ));
-                assert!(matches!(result, Err(Error::PermissionDenied(_))));
-            }
-        }
-    }
-    let permissions = Permissions {
-        ssh_user: Some("member".parse().unwrap()),
-        ..Permissions::default()
-    };
-    snapshot
-        .approve(
-            evidence,
-            approval(MemberKind::Laptop, permissions, Some(admin_id), 2),
-        )
-        .unwrap();
-}
-
-#[test]
-fn replicated_tako_ssh_without_both_admin_flags_fails_closed() {
-    let (mut snapshot, _, admin_id) = bootstrap();
-    let (_, member_id) = add_laptop(&mut snapshot, &admin_id, Permissions::default(), false, 2);
-    let member = snapshot
-        .members
-        .iter_mut()
-        .find(|member| member.device_id == member_id)
-        .unwrap();
-    member.permissions.ssh_user = Some("tako".parse().unwrap());
-    assert!(matches!(
-        snapshot.effective_members(3),
-        Err(Error::PermissionDenied(_))
-    ));
+    assert_eq!(
+        read(
+            serde_json::json!({"network_admin": true, "server_admin": false, "ssh_user": null, "deployments": ["app/prod"]})
+        ),
+        Permissions::Deploy(scopes(&["app/prod"]))
+    );
+    assert_eq!(
+        read(
+            serde_json::json!({"network_admin": false, "server_admin": true, "ssh_user": null, "deployments": []})
+        ),
+        Permissions::Deploy(Default::default())
+    );
+    assert_eq!(
+        serde_json::to_value(Permissions::Full).unwrap(),
+        serde_json::json!("full")
+    );
+    assert_eq!(
+        serde_json::to_value(Permissions::Deploy(scopes(&["app/prod"]))).unwrap(),
+        serde_json::json!({"deploy": ["app/prod"]})
+    );
+    let (snapshot, _, _) = bootstrap();
+    let mut recorded = serde_json::to_value(&snapshot.members[0]).unwrap();
+    recorded["permissions"] = serde_json::json!({"network_admin": true, "server_admin": true, "ssh_user": null, "deployments": []});
+    let independent = recorded["independent_root"].take();
+    recorded.as_object_mut().unwrap().remove("independent_root");
+    recorded["independent_admin"] = independent;
+    assert_eq!(
+        serde_json::from_value::<Member>(recorded).unwrap(),
+        snapshot.members[0]
+    );
 }
 
 #[test]
@@ -763,7 +829,7 @@ fn active_servers_cannot_share_a_name_but_retired_names_can_be_reused() {
             verified_named(&keys, &snapshot.network.id, DeviceKind::Laptop, "edge-a", 3),
             approval(
                 MemberKind::Laptop,
-                Permissions::default(),
+                Permissions::Deploy(Default::default()),
                 Some(root.clone()),
                 3,
             ),

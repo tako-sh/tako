@@ -19,7 +19,7 @@ mod services;
 #[path = "native_agent/store.rs"]
 mod store;
 
-pub use ipc::{recheck_authority, recover_admin, recovery_config, relay, run};
+pub use ipc::{recheck_authority, recover_client, recovery_config, relay, run};
 use serde::{Deserialize, Serialize};
 use tako_network::{
     BootId,
@@ -72,7 +72,7 @@ pub(super) enum AgentCommand {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RecoveryRequest {
-    pub recover_admin: tako_network::invitation::CreateInvitation,
+    pub recover_client: tako_network::invitation::CreateInvitation,
 }
 
 #[derive(Serialize, Deserialize)]

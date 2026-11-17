@@ -50,7 +50,7 @@ pub(super) fn check(
     }
     let effective = snapshot.effective_members(now)?;
     if !effective.get(&config.server_id).is_some_and(|server| {
-        matches!(server.kind, MemberKind::Server(_)) && server.permissions.server_admin
+        matches!(server.kind, MemberKind::Server(_)) && server.permissions.is_full()
     }) {
         return Err(RuntimeError::Denied.into());
     }
@@ -121,7 +121,7 @@ mod tests {
     }
 
     #[test]
-    fn recheck_denies_revoked_expired_or_delegation_lost_callers() {
+    fn recheck_denies_revoked_or_expired_callers_without_cascading() {
         let f = Fixture::new();
         let signed = envelope(&f, &f.admin);
         let mut snapshot = f.config.bootstrap.clone();
@@ -148,15 +148,16 @@ mod tests {
                 "uploader".parse().unwrap(),
             )
             .unwrap();
-        member.permissions = Permissions {
-            deployments: ["api/prod".parse().unwrap()].into(),
-            ..Default::default()
-        };
+        member.permissions = Permissions::Deploy(["api/prod".parse().unwrap()].into());
         member.approved_by = Some(signed.signer.clone());
-        member.independent_admin = false;
+        member.independent_root = false;
         snapshot.members.push(member);
         assert!(checked(&f, &child, &snapshot, 2).is_ok());
         f.revoke(&mut snapshot, &signed.signer);
+        // Revoking the approver keeps what it approved earlier...
+        assert!(checked(&f, &child, &snapshot, 3).is_ok());
+        // ...and voids what it approved after the revocation.
+        snapshot.members.last_mut().unwrap().created_at = 3;
         assert!(checked(&f, &child, &snapshot, 3).is_err());
     }
 
@@ -173,8 +174,8 @@ mod tests {
                     .retain(|m| m.device_id != f.config.server_id),
                 2 => snapshot.members[1].expires_at = Some(3),
                 _ => {
-                    snapshot.members[1].permissions.server_admin = false;
-                    snapshot.members[1].permissions.ssh_user = None;
+                    snapshot.members[1].permissions =
+                        tako_network::Permissions::Deploy(Default::default());
                 }
             }
             assert!(checked(&f, &signed, &snapshot, 3).is_err());

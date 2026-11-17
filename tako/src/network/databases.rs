@@ -90,7 +90,7 @@ pub(crate) fn backup_key(
         .remove(&key_name(record))
         .ok_or_else(|| {
             format!(
-                "The snapshot key of database '{}' is not available to this device; it needs network and server administrator permission.",
+                "The snapshot key of database '{}' is not available to this device; it needs full access.",
                 record.name
             )
             .into()

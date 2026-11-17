@@ -137,7 +137,7 @@ pub async fn recheck_authority(data_dir: &Path, signed: &SignedRequest) -> Resul
 pub fn recovery_config(data_dir: &Path) -> Result<NodeConfig> {
     if unsafe { libc::geteuid() } != 0 {
         return Err(AgentError::Invalid(
-            "administrator recovery requires root; run with sudo",
+            "host recovery requires root; run with sudo",
         ));
     }
     Ok(NodeConfig::load_for_owner(data_dir, service_uid()?)?)
@@ -145,17 +145,17 @@ pub fn recovery_config(data_dir: &Path) -> Result<NodeConfig> {
 
 /// Invoked only by the root-only host console command. The listener checks the
 /// kernel peer UID again; service-account and public requests cannot elevate.
-pub async fn recover_admin(
+pub async fn recover_client(
     data_dir: &Path,
     grant: tako_network::invitation::CreateInvitation,
 ) -> Result<AgentResponse> {
     if unsafe { libc::geteuid() } != 0 {
-        return Err(AgentError::Invalid("administrator recovery requires root"));
+        return Err(AgentError::Invalid("host recovery requires root"));
     }
     exchange(
         data_dir,
         AgentCommand::Recovery(RecoveryRequest {
-            recover_admin: grant,
+            recover_client: grant,
         }),
     )
     .await
@@ -399,7 +399,7 @@ impl Drop for SocketCleanup {
 fn validate_command(request: &AgentCommand, peer_uid: u32) -> Result<()> {
     match request {
         AgentCommand::Recovery(_) if peer_uid != 0 => {
-            Err(AgentError::Invalid("administrator recovery requires root"))
+            Err(AgentError::Invalid("host recovery requires root"))
         }
         AgentCommand::Recovery(_) => Ok(()),
         AgentCommand::Rpc(request) => {
@@ -457,14 +457,10 @@ mod tests {
             token_hash: "ab".repeat(32),
             expires_at: 3600,
             member_expires_at: None,
-            permissions: tako_network::Permissions {
-                network_admin: true,
-                server_admin: true,
-                ..Default::default()
-            },
+            permissions: tako_network::Permissions::Full,
         };
         let request = AgentCommand::Recovery(RecoveryRequest {
-            recover_admin: grant,
+            recover_client: grant,
         });
         assert!(validate_command(&request, 0).is_ok());
         for uid in [1, 1000, 65534] {

@@ -9,13 +9,13 @@ Network names are currently immutable and need not be globally unique. If two en
 
 Network commands such as `network status`, `network client add`, `network server add`, `connect`, and `ssh` act on the network named in the command. Without one, they use the network chosen with `tako network use <network>`, then the only configured network; with several networks and no choice, name the network in the command. `tako network list --json` marks the network they use with `"default": true`. [Server maintenance selectors](/servers/#server-maintenance) include IDs when needed to distinguish names.
 
-Management uses signed requests over pinned HTTPS. Deploy, status, logs, releases, and scaling do not require a workstation WireGuard interface, TUN device, or SSH agent. Server installation still needs administrator SSH access. Tako networking is the supported enrollment path; see [re-enrollment](/servers/#choose-the-vpn-provider) for older installations.
+Management uses signed requests over pinned HTTPS. Deploy, status, logs, releases, and scaling do not require a workstation WireGuard interface, TUN device, or SSH agent. Server installation still needs root or sudo SSH access to the server. Tako networking is the supported enrollment path; see [re-enrollment](/servers/#choose-the-vpn-provider) for older installations.
 
 This protocol-v0 update changes the enrollment format to bind a separate secret-encryption key. Older native identities and profiles require a coordinated upgrade and fresh enrollment; ordinary server upgrade does not migrate them in place. Preserve application data, old network state, and legacy environment keys before rebuilding an existing network. `secrets migrate` preserves app secret values and keys, but does not convert old network identities.
 
 ## Create a network and enroll a server
 
-Run these commands on the administrator's machine:
+Run these commands on your machine:
 
 ```bash
 tako network create production
@@ -66,8 +66,8 @@ Deploy resolves membership and cached secret values for the selected environment
 Create a short-lived, single-use invitation on an authorized machine:
 
 ```bash
-tako network client add --network production --admin
-# Or limit a deployment client to a specific app/environment:
+tako network client add --network production
+# Or restrict a client to deploying a specific app/environment:
 tako network client add --network production --deploy shop/production
 ```
 
@@ -81,7 +81,7 @@ tako deploy --env production --ci
 
 `join` prompts for the invitation; automation can supply it on stdin with `--invitation-stdin`. Each joining device generates its own signing, WireGuard, and encryption keys. An invitation is a one-use enrollment credential, not a reusable device key. It expires after one hour by default; `client add --expires-in` accepts 60–86400 seconds. The issuing server must be reachable to redeem it. Retrying the same join on the same machine can recover a lost response; another machine cannot reuse the invitation.
 
-Authorized administrators can decrypt shared app secrets, provider credentials, storage credentials, and backup keys. Scoped clients can decrypt app secrets only for their granted app/environments. Add `--ssh` to an administrator invitation only when the device needs a Tako administrator shell. Network access does not replace application authentication.
+A client has one of two access levels. A **full** client, the default, can do everything in the network: decrypt shared app secrets, provider credentials, storage credentials, and backup keys, deploy any app, invite and revoke clients, add servers, open the `tako` shell, and join the private network with `tako connect`. A **deploy** client, created with one or more `--deploy app/env` scopes, can only release code to those environments. It manages over pinned HTTPS and never becomes a WireGuard peer, so `tako connect` and `tako ssh` refuse it. Treat a network as the trust boundary: put people or environments you do not fully trust on a separate network. Network access does not replace application authentication.
 
 Clients contact servers only. Servers replicate membership and encrypted values with Corrosion; clients do not run Corrosion or connect to each other. A join and membership changes refresh the local cache. `network sync` pulls published values without publishing worktree drafts. `deploy` and `secrets sync` also publish that worktree's changes for the selected environment. No background client connection is required.
 
@@ -99,23 +99,23 @@ tako network export production --output production.public.json
 
 Network export contains public membership and server trust information. It contains neither private device keys nor app secrets, and it cannot enroll a different device by itself. Use an invitation to enroll a new device.
 
-Network membership grants access according to the device's permissions; published secrets are encrypted to authorized device keys. Keep `tako.toml` in Git, including app configuration and network IDs. Keep `.tako/` local and ignored. An invitation restores access to published values, but cannot recover another machine's unpublished drafts. Back up server state and administrator keys. Before revoking an administrator, verify that a remaining administrator's authority does not depend on it: an invited client remains subject to its inviter's revocation chain.
+Network membership grants access according to the device's access level; published secrets are encrypted to authorized device keys. Keep `tako.toml` in Git, including app configuration and network IDs. Keep `.tako/` local and ignored. An invitation restores access to published values, but cannot recover another machine's unpublished drafts. Back up server state and the keys of at least one full client.
 
 See [Secrets](/secrets/) for worktree isolation, publication, and migration from a tracked secret file. Legacy environment-key import/export remains available for migration and explicit recovery; it is no longer the normal new-device workflow.
 
-## Recover administrator access
+## Recover access
 
-If the administrator's laptop is lost, open a surviving server through the provider's web console or administrator SSH and run:
+If the only full client's laptop is lost, open a surviving server through the provider's web console or the server's SSH and run:
 
 ```bash
-sudo tako-server admin invite
+sudo tako-server client invite
 ```
 
 On the replacement machine, run `tako network join` and paste the invitation at the prompt. The string includes the issuing server's IP and ports, certificate trust information, network name and ID, a single-use token, and its expiry. The replacement generates its own private keys. The issuing server must remain reachable until the join completes.
 
-The invitation defaults to one hour; `--expires-in` accepts 60–86400 seconds. Add `--ssh` to grant a Tako administrator shell, or `--json` for structured output. The token is sensitive: give it only to the intended administrator. Only root on the server can issue recovery invitations; this command is unavailable through the public management API or the unprivileged `tako` account.
+The invitation creates a full client. It defaults to one hour; `--expires-in` accepts 60–86400 seconds, and `--json` prints structured output. The token is sensitive: give it only to the intended person. Only root on the server can issue recovery invitations; this command is unavailable through the public management API or the unprivileged `tako` account.
 
-A recovered administrator has independent authority. Verify access with `tako network sync NETWORK_NAME`, list the clients, then revoke the lost device with `tako network client remove DEVICE --network NETWORK_NAME`. Revoking the lost device does not revoke the recovered administrator. Ordinary `network client add --admin` invitations retain their inviter's delegation chain, so use this host recovery flow for an independent administrator handoff as well.
+Verify access with `tako network sync NETWORK_NAME`, list the clients, then revoke the lost device with `tako network client remove DEVICE --network NETWORK_NAME`. The recovered client has no inviter, so nothing about the lost device affects it.
 
 Recovery requires an active server with its network state, private keys, and network agent intact. A server whose membership is revoked cannot issue recovery invitations. This restores access to surviving published state; it cannot reconstruct unpublished laptop drafts or a network whose every copy and key has been lost. App-data backups do not include the network registry or device keys.
 
@@ -130,18 +130,18 @@ tako network client remove DEVICE_ID --network production
 tako network status production --json
 ```
 
-Revocation invalidates the device and approvals derived from it. Descendants cannot retain authority through an expired or revoked issuer. The first server bootstrapped from a newly created network receives independent administrator membership, so revoking the creating laptop does not remove that server solely through the laptop's delegation chain. Later delegated memberships remain subject to their issuer chains.
+Revocation affects only the revoked device. Clients it invited keep their access, because an invitation stays valid once the inviter approved it while still valid; an approval recorded after the inviter's revocation grants nothing. Revoke the clients a revoked device invited separately when you no longer trust them: someone holding a stolen full device can invite a client before you revoke the device, and that client survives the revocation. A device cannot revoke itself, and the last full client cannot be revoked; use [host recovery](#recover-access) when no full client remains.
 
-Revocations merge monotonically: importing or refreshing an older snapshot cannot restore a revoked identity. Offline servers still need to receive the updated state before they enforce it. Revocation prevents access to future secret values after enforcement; it cannot erase plaintext or keys the device already copied. A revoke response can report enforcement as pending; inspect refreshed membership and enforcement acknowledgments rather than assuming every peer has already applied the change. If the response is lost, repeat the same revoke command on the same device. Tako keeps the original request ID and issuer so the retry cannot become a different revocation, even after that device revokes itself. An unreachable issuer leaves the attempt pending.
+Revocations merge monotonically: importing or refreshing an older snapshot cannot restore a revoked identity. Offline servers still need to receive the updated state before they enforce it. Revocation prevents access to future secret values after enforcement; it cannot erase plaintext or keys the device already copied. A revoke response can report enforcement as pending; inspect refreshed membership and enforcement acknowledgments rather than assuming every peer has already applied the change. If the response is lost, repeat the same revoke command on the same device. Tako keeps the original request ID and issuer so the retry cannot become a different revocation. An unreachable issuer leaves the attempt pending.
 
-## SSH without administrator access
+## SSH without a public port
 
 ```bash
 tako ssh edge-a --network production
 tako ssh edge-a --network production -- uname -a
 ```
 
-The device needs an approved SSH permission (`--admin --ssh` during approval). Tako uses that device's SSH identity, the approved username, and the server's pinned host key. Public TCP port 22 can stay closed; the server's WireGuard UDP endpoint must be reachable and its private SSH listener must be running.
+Full clients have SSH access to the `tako` account; deploy clients have none. Tako uses the device's SSH identity and the server's pinned host key. Public TCP port 22 can stay closed; the server's WireGuard UDP endpoint must be reachable and its private SSH listener must be running.
 
 Tako embeds BoringTun and a userspace TCP stack. `tako ssh` needs OpenSSH but no WireGuard executable, sudo, TUN device, system routes, or DNS changes. Concurrent sessions to the same server share an SSH transport. If `tako connect` is already active, SSH uses that system connection.
 

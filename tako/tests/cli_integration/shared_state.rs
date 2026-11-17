@@ -71,13 +71,9 @@ fn admit(
             verified,
             Approval {
                 kind,
-                permissions: Permissions {
-                    network_admin: true,
-                    server_admin: true,
-                    ..Default::default()
-                },
+                permissions: Permissions::Full,
                 approved_by: parent,
-                independent_admin: false,
+                independent_root: false,
                 created_at: now(),
                 expires_at: None,
             },
@@ -618,7 +614,7 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
     let invitation = server.ok(
         &server.owner_home,
         &owner,
-        &["network", "client", "add", "--admin", "--network", "fleet"],
+        &["network", "client", "add", "--network", "fleet"],
         None,
     )["invitation"]
         .as_str()

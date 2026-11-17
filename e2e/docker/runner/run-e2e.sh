@@ -1031,13 +1031,13 @@ run_admin_recovery_checks() {
     "$TAKO_BIN" --ci --config "$source/tako.toml" secrets set RECOVERY_TOKEN --env production
   HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$source/tako.toml" secrets sync --env production
   for host in server-ubuntu server-alma; do
-    if ssh_exec "$host" /usr/local/bin/tako-server admin invite >/dev/null 2>&1; then
+    if ssh_exec "$host" /usr/local/bin/tako-server client invite >/dev/null 2>&1; then
       echo "Service account issued a recovery invitation" >&2
       return 1
     fi
     # Capture the token without logging it, as on a provider's root console.
     invitation=$(HOME="$HOME_DIR" ssh "${SSH_OPTS[@]}" "e2e-admin@$host" \
-      sudo -n /usr/local/bin/tako-server admin invite --json | jq -er '.invitation')
+      sudo -n /usr/local/bin/tako-server client invite --json | jq -er '.invitation')
     client_home="$TMP_ROOT/recovered-$host"
     project="$TMP_ROOT/recovered-project-$host"
     mkdir -p "$client_home" "$project"

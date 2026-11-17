@@ -61,7 +61,7 @@ impl Fixture {
             .device_id(&snapshot.network.id, DeviceKind::Server)
             .unwrap();
         let server = snapshot
-            .approve_independent_admin(
+            .approve_independent_root(
                 support::verified(&server_keys, &snapshot.network.id, DeviceKind::Server, 2),
                 Approval {
                     kind: MemberKind::Server(ServerInfo {
@@ -75,7 +75,7 @@ impl Fixture {
                     }),
                     permissions: support::admin(),
                     approved_by: None,
-                    independent_admin: true,
+                    independent_root: true,
                     created_at: 2,
                     expires_at: None,
                 },
@@ -86,15 +86,9 @@ impl Fixture {
         let laptop_id = laptop
             .device_id(&snapshot.network.id, DeviceKind::Laptop)
             .unwrap();
-        let mut approval = support::approval(
-            MemberKind::Laptop,
-            Permissions {
-                ssh_user: Some("app".parse().unwrap()),
-                ..Permissions::default()
-            },
-            Some(admin_id),
-            3,
-        );
+        // A full laptop: servers peer only with full clients and servers.
+        let mut approval =
+            support::approval(MemberKind::Laptop, Permissions::Full, Some(admin_id), 3);
         approval.expires_at = expiry;
         let member = snapshot
             .approve(
@@ -344,9 +338,14 @@ fn replay_quotas_never_evict_unexpired_nonces() {
 fn observed_authority_cannot_be_replaced_after_reopen() {
     let fixture = Fixture::new(None);
     drop(fixture.open());
-    fixture.store.0.borrow_mut().members[2]
-        .permissions
-        .network_admin = true;
+    {
+        let members = &mut fixture.store.0.borrow_mut().members;
+        members[2].permissions = if members[2].permissions.is_full() {
+            tako_network::Permissions::Deploy(Default::default())
+        } else {
+            tako_network::Permissions::Full
+        };
+    }
     assert!(matches!(
         ServerRuntime::open(
             fixture.store.clone(),
@@ -534,7 +533,7 @@ fn candidate_capacity_rejection_does_not_latch_the_runtime() {
                 .enrollment_request(None, DeviceKind::Laptop, "applicant".parse().unwrap())
                 .unwrap(),
             kind: MemberKind::Laptop,
-            permissions: Permissions::default(),
+            permissions: Permissions::Deploy(Default::default()),
             expires_at: 1000,
             member_expires_at: None,
         };
@@ -674,7 +673,7 @@ fn rereview_full_ordinary_pool_still_allows_administrative_revocation() {
             support::add_laptop(
                 &mut fixture.store.0.borrow_mut(),
                 &root,
-                Permissions::default(),
+                Permissions::Deploy(Default::default()),
                 false,
                 4,
             )
@@ -742,7 +741,7 @@ fn rereview_full_ordinary_pool_still_allows_administrative_revocation() {
 }
 
 #[test]
-fn failed_self_or_serving_server_denial_can_retry_without_authority() {
+fn failed_serving_server_denial_can_retry_without_authority() {
     struct FailPublication(Store);
     impl RegistryStore for FailPublication {
         fn snapshot(&mut self) -> RuntimeResult<RegistrySnapshot> {
@@ -758,13 +757,11 @@ fn failed_self_or_serving_server_denial_can_retry_without_authority() {
             self.0.append_ack(ack)
         }
     }
-    for revoke_server in [false, true] {
+    // A device cannot revoke itself, so only the serving server's denial is
+    // exercised; it leaves the runtime without authority, like a self-denial did.
+    {
         let fixture = Fixture::new(None);
-        let target = if revoke_server {
-            fixture.config.server_id.clone()
-        } else {
-            fixture.config.network.initial_admin.clone()
-        };
+        let target = fixture.config.server_id.clone();
         let request = RpcRequest::Revoke {
             id: RevocationId::random().unwrap(),
             target,

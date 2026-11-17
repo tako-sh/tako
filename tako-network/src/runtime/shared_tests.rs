@@ -355,10 +355,7 @@ fn secret_access_is_scoped_and_new_clients_receive_old_value_keys_via_server() {
     }
     let client = LocalDeviceKeys::generate().unwrap();
     let mut grant = fixture.grant(&client);
-    grant
-        .permissions
-        .deployments
-        .insert("shop/production".parse().unwrap());
+    grant.permissions = Permissions::deploy(["shop/production".parse().unwrap()]);
     fixture.approve(&mut runtime, &grant);
     let complete = fixture.challenge(&mut runtime, &client, &grant, 11);
     fixture.call(&mut runtime, &client, complete, 12).unwrap();
@@ -488,10 +485,7 @@ fn deployers_pull_database_records_but_not_snapshot_keys() {
     }
     let client = LocalDeviceKeys::generate().unwrap();
     let mut grant = fixture.grant(&client);
-    grant
-        .permissions
-        .deployments
-        .insert("shop/production".parse().unwrap());
+    grant.permissions = Permissions::deploy(["shop/production".parse().unwrap()]);
     fixture.approve(&mut runtime, &grant);
     let complete = fixture.challenge(&mut runtime, &client, &grant, 11);
     fixture.call(&mut runtime, &client, complete, 12).unwrap();
@@ -830,10 +824,7 @@ fn pull_returns_records_this_server_cannot_open_instead_of_failing() {
 
     let client = LocalDeviceKeys::generate().unwrap();
     let mut grant = fixture.grant(&client);
-    grant
-        .permissions
-        .deployments
-        .insert("shop/production".parse().unwrap());
+    grant.permissions = Permissions::deploy(["shop/production".parse().unwrap()]);
     fixture.approve(&mut runtime, &grant);
     let complete = fixture.challenge(&mut runtime, &client, &grant, 11);
     fixture.call(&mut runtime, &client, complete, 12).unwrap();

@@ -96,10 +96,7 @@ fn authorized(signed: &SignedRequest, permissions: Permissions) -> RpcResponse {
     }
 }
 fn scoped() -> Permissions {
-    Permissions {
-        deployments: ["demo/production".parse().unwrap()].into_iter().collect(),
-        ..Default::default()
-    }
+    Permissions::Deploy(["demo/production".parse().unwrap()].into_iter().collect())
 }
 
 #[tokio::test]
@@ -150,13 +147,7 @@ async fn server_admin_still_requires_exact_application_scope() {
     .unwrap();
     for scope in [None, Some("other/production")] {
         let signed = rpc(&body, scope);
-        let response = authorized(
-            &signed,
-            Permissions {
-                server_admin: true,
-                ..Default::default()
-            },
-        );
+        let response = authorized(&signed, Permissions::Full);
         let response = handle_using(
             request("/v1/management/rpc", &signed, body.clone()),
             state.clone(),
@@ -222,7 +213,7 @@ async fn duplex_http_transport_dispatches_authenticated_probe() {
     })
     .unwrap();
     let signed = rpc(&body, None);
-    let response = authorized(&signed, Permissions::default());
+    let response = authorized(&signed, Permissions::Deploy(Default::default()));
     let expected = signed.clone();
     let (mut client, server) = tokio::io::duplex(16 * 1024);
     let serve = tokio::spawn(async move {
@@ -760,11 +751,7 @@ fn scoped_deploy_preserves_backup_without_disclosing_keys_to_client() {
     if let Command::Deploy { backup, .. } = &mut command {
         *backup = None;
     }
-    let admin = Permissions {
-        server_admin: true,
-        network_admin: true,
-        ..Default::default()
-    };
+    let admin = Permissions::Full;
     inherit_scoped_backup(&state, &admin, Some(&scope), &mut command).unwrap();
     assert!(matches!(command, Command::Deploy { backup: None, .. }));
 }
@@ -801,10 +788,7 @@ fn scoped_compose_deploy_and_rollback_cannot_claim_routes_or_change_source_ip_tr
         backup: None,
         force: false,
     };
-    let admin = Permissions {
-        server_admin: true,
-        ..Default::default()
-    };
+    let admin = Permissions::Full;
     for (route, source_ip, allowed) in [
         ("demo.example", "auto", true),
         ("victim.example", "auto", false),
