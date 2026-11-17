@@ -707,6 +707,29 @@ async fn create(
         },
     )
     .await?;
+    // Checked again just before publishing, so another create of the name
+    // since the first check is found here rather than after both publish.
+    // The network's records have no conditional write, so two creates
+    // that publish at the same moment can still both succeed.
+    if ctx
+        .records()?
+        .iter()
+        .any(|published| published.name == name)
+    {
+        let _ = send::<serde_json::Value>(
+            &home,
+            Command::DeleteDatabase {
+                generation: Some(record.generation.clone()),
+                name: name.to_owned(),
+                keep_snapshots: false,
+            },
+        )
+        .await;
+        return Err(format!(
+            "Another administrator created a database named '{name}' meanwhile. This create was undone; use theirs, or pick another name."
+        )
+        .into());
+    }
     // The snapshot key is needed to recover the database elsewhere, so a
     // failure to record it undoes the creation.
     if let Err(error) = ctx.publish(&record, Some(&backup_key)) {

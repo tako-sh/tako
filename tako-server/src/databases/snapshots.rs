@@ -128,24 +128,6 @@ async fn read_holder(
         .map(|holder| holder.server))
 }
 
-/// The other server that holds the database's snapshots, if one does: a
-/// copy left behind by a move then shares them with the copy that moved.
-pub(crate) async fn other_holder(
-    state: &ServerState,
-    stored: &StoredDatabase,
-) -> Result<Option<String>, String> {
-    let Some(backup) = &stored.secrets.backup else {
-        return Ok(None);
-    };
-    let Some(own) = state.databases.server_id() else {
-        return Ok(None);
-    };
-    let remote = store(backup)?;
-    Ok(read_holder(remote.as_ref(), stored)
-        .await?
-        .filter(|holder| holder != &own))
-}
-
 /// Fails when another server holds the database.
 async fn check_holder(
     remote: &dyn ObjectStore,
