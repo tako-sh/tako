@@ -1004,8 +1004,12 @@ where
             "invalid forwarding request",
         );
     };
-    match tokio::time::timeout(FORWARD_RESPONSE_TIMEOUT, client().request(request)).await {
-        Ok(Ok(response)) => response.map(|body| {
+    // No limit on the wait for the answer: a pipeline there may run for
+    // long, one statement within its time limit at a time, and giving up
+    // would not stop it, so a retry could apply its writes twice. A home
+    // server that becomes unreachable is noticed by TCP keepalive instead.
+    match client().request(request).await {
+        Ok(response) => response.map(|body| {
             IdleBody::new(
                 body.map_err(|e| -> BoxError { Box::new(e) })
                     .map_frame(|frame| frame.map_data(Chunk::from))
@@ -1014,28 +1018,18 @@ where
             )
             .boxed()
         }),
-        Ok(Err(e)) => {
+        Err(e) => {
             tracing::warn!(%upstream, error = %e, "database forwarding failed");
             error(
                 StatusCode::BAD_GATEWAY,
                 "the server hosting this database is unreachable",
             )
         }
-        Err(_) => {
-            tracing::warn!(%upstream, "database forwarding timed out");
-            error(
-                StatusCode::GATEWAY_TIMEOUT,
-                "the server hosting this database did not answer in time",
-            )
-        }
     }
 }
 
-/// How long a forwarded request waits for the home server's answer. A
-/// pipeline there runs each statement for at most the statement time limit;
-/// one that has not answered in this long is taken as hung.
-const FORWARD_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-/// How long a forwarded response may go without sending anything: a cursor
+/// How long a forwarded response may go without sending anything once it
+/// has started: a pipeline's body follows its head at once, and a cursor
 /// sends each row as it is read, within a statement's time limit.
 const FORWARD_BODY_IDLE: Duration = Duration::from_secs(2 * 60);
 

@@ -1071,7 +1071,8 @@ async fn deleting_a_database_deletes_its_snapshots() {
     )
     .await;
     assert_eq!(deleted["warnings"], json!([]));
-    assert_eq!(objects().await, 0);
+    // Only the fence that stops copies left elsewhere from publishing.
+    assert_eq!(objects().await, 1);
 }
 
 #[tokio::test]
@@ -1255,6 +1256,49 @@ async fn deleting_a_copy_left_behind_keeps_the_snapshots_the_moved_copy_holds() 
         !listed["snapshots"].as_array().unwrap().is_empty(),
         "{listed}"
     );
+}
+
+#[tokio::test]
+async fn a_copy_the_delete_could_not_reach_publishes_nothing_afterwards() {
+    let (home_dir, stale_dir) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+    let home = state(&home_dir);
+    home.open_databases(Some("server-a".into())).await.unwrap();
+    create(&home, ID, Some("deleted-fence-bucket")).await;
+    query(&home, ID, "CREATE TABLE items (name TEXT)").await;
+    let snapshot = || Command::SnapshotDatabase {
+        name: ID.into(),
+        reason: SnapshotReason::Manual,
+        app: None,
+    };
+    ok(&home, snapshot()).await;
+    // A copy of the same database, such as one an unfinished move left on
+    // a server that is offline while the database is deleted.
+    let stale = state(&stale_dir);
+    stale.open_databases(Some("server-b".into())).await.unwrap();
+    create(&stale, ID, Some("deleted-fence-bucket")).await;
+    ok(
+        &home,
+        Command::DeleteDatabase {
+            name: ID.into(),
+            keep_snapshots: false,
+        },
+    )
+    .await;
+    // Back online, it publishes nothing into the deleted history.
+    query(&stale, ID, "CREATE TABLE later (name TEXT)").await;
+    let refused = error(&stale, snapshot()).await;
+    assert!(refused.contains("was deleted"), "{refused}");
+    let store = crate::databases::snapshots::test_store("deleted-fence-bucket").unwrap();
+    let prefix = object_store::path::Path::from(format!("_tako/databases/{ID}/{GENERATION}"));
+    let left: Vec<String> =
+        futures_util::TryStreamExt::try_collect::<Vec<_>>(store.list(Some(&prefix)))
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|meta| meta.location.to_string())
+            .collect();
+    assert_eq!(left.len(), 1, "only the fence remains: {left:?}");
+    assert!(left[0].ends_with("/holder"), "{left:?}");
 }
 
 #[tokio::test]

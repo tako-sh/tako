@@ -101,6 +101,11 @@ struct Holder {
     since_unix_secs: u64,
 }
 
+/// The holder a deleted database's snapshot prefix keeps: no server is
+/// named so, so a copy that a delete could not reach publishes nothing into
+/// the deleted history when it comes back.
+const DELETED_HOLDER: &str = "(deleted)";
+
 async fn read_holder(
     remote: &dyn ObjectStore,
     stored: &StoredDatabase,
@@ -151,6 +156,10 @@ async fn check_holder(
         return Ok(());
     };
     match read_holder(remote, stored).await? {
+        Some(holder) if holder == DELETED_HOLDER => Err(format!(
+            "database {} was deleted; this copy no longer publishes snapshots. Remove it with `tako sqlite delete {} --server <this server>`",
+            stored.name, stored.name
+        )),
         Some(holder) if holder != own => Err(format!(
             "database {} was moved to another server ({holder}); this copy no longer publishes snapshots. Remove it with `tako sqlite delete {} --server <this server>`",
             stored.name, stored.name
@@ -1010,16 +1019,24 @@ fn retained(snapshots: &[DatabaseSnapshot], now: u64) -> BTreeSet<String> {
 }
 
 /// Deletes every snapshot object of a database from its backup storage and
-/// returns how many objects were removed.
+/// returns how many objects were removed. A holder naming no server stays
+/// behind as the deletion's fence.
 pub(crate) async fn delete_all(stored: &StoredDatabase) -> Result<usize, String> {
     let Some(backup) = &stored.secrets.backup else {
         return Ok(0);
     };
     let remote = store(backup)?;
+    // First, and kept: a copy on a server the delete could not reach stops
+    // publishing, also when it comes back after the delete.
+    claim_holder(remote.as_ref(), stored, DELETED_HOLDER)
+        .await
+        .map_err(|e| format!("mark the snapshots deleted: {e}"))?;
+    let holder = holder_key(stored);
     let keys = list_objects(remote.as_ref(), stored)
         .await?
         .into_iter()
-        .map(|(key, _)| key);
+        .map(|(key, _)| key)
+        .filter(|key| key.as_ref() != holder);
     // Manifests first, so a partial deletion lists no snapshot without data.
     let (manifests, data): (Vec<_>, Vec<_>) = keys.partition(|key| key.as_ref().ends_with(".json"));
     let mut deleted = 0;

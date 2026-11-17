@@ -1197,6 +1197,22 @@ impl ServerState {
         if !migrations.is_empty() && owner.as_deref().is_none_or(str::is_empty) {
             return Err("A reset with migrations must name the app they belong to.".into());
         }
+        // The new file, with whatever the migrations write into it, is held
+        // in the ledger snapshots, restores and transfers share. What they
+        // write is not known ahead; twice their text is the estimate.
+        let estimate = migrations
+            .iter()
+            .map(|migration| migration.sql.len() as u64)
+            .sum::<u64>()
+            .saturating_mul(2)
+            .saturating_add(1024 * 1024);
+        let available = crate::operations::available_bytes(&self.databases.database_dir(id))?;
+        // Declared before the work directory, so it is released after it.
+        let _space = self
+            .databases
+            .snapshot_space
+            .reserve(estimate, available, "the reset")
+            .map_err(|error| format!("Cannot reset {id}: {error}."))?;
         let work = snapshots::fresh_work_dir(self, id, "reset")?;
         let empty = work.path.join("empty.sqlite");
         let create = empty.clone();
