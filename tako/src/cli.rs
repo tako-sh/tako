@@ -150,10 +150,10 @@ pub enum Commands {
         args: DevArgs,
     },
 
-    /// Print a local diagnostic report
+    /// Print a local diagnostic report, with project checks inside a project
     Doctor,
 
-    /// Show deployment status across configured servers
+    /// Show deployment status across configured servers, with a project's resources inside one
     Status,
 
     /// Private network membership and portable configuration
@@ -477,7 +477,7 @@ impl Cli {
             Commands::Version => print_version(json),
             Commands::Status => {
                 let rt = tokio::runtime::Runtime::new()?;
-                rt.block_on(commands::status::run(json))
+                rt.block_on(commands::status::run(json, self.config.as_deref()))
             }
             Commands::Init => {
                 commands::init::run(self.config.as_deref())?;
@@ -530,7 +530,7 @@ impl Cli {
             }
             Commands::Doctor => {
                 let rt = tokio::runtime::Runtime::new()?;
-                rt.block_on(commands::doctor::run())
+                rt.block_on(commands::doctor::run(self.config.as_deref()))
             }
             Commands::Network(cmd) => commands::network::run(cmd),
             Commands::Connect { network } => commands::network::connect(network.as_deref()),
