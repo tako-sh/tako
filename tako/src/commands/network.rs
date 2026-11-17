@@ -430,22 +430,18 @@ pub fn connect(value: Option<&str>) -> Result<()> {
     let replacing: Vec<&str> = others.iter().map(|(other, _)| other.id.as_str()).collect();
     let _lifecycle = network::wireguard::lifecycle_lock(&alias)?;
     network::local_access::preflight(&alias, &profile, &replacing)?;
-    for (other, other_profile) in &others {
-        teardown(other, other_profile)?;
+    // Teardown and setup can both fail after the preflight. Bring back what the
+    // switch disconnected, including a partly torn-down network, rather than
+    // leaving no network connected.
+    for (index, (other, other_profile)) in others.iter().enumerate() {
+        if let Err(error) = teardown(other, other_profile) {
+            restore_all(&others[..=index]);
+            return Err(error);
+        }
         output::muted(&format!("Disconnected from {}", other.name));
     }
     if let Err(error) = network::wireguard::connect(&alias, &profile) {
-        // Interface and DNS setup can still fail after the preflight; bring back
-        // what the switch disconnected rather than leaving no network connected.
-        for (other, other_profile) in &others {
-            match restore(other, other_profile) {
-                Ok(()) => output::muted(&format!("Reconnected to {}", other.name)),
-                Err(restore_error) => output::warning(&format!(
-                    "Could not reconnect to {}: {restore_error}",
-                    other.name
-                )),
-            }
-        }
+        restore_all(&others);
         return Err(error);
     }
     network::local_access::install(&alias, &profile).map_err(|error| {
@@ -550,6 +546,17 @@ fn teardown(alias: &crate::config::LocalNetwork, profile: &Profile) -> Result<()
     let _lifecycle = network::wireguard::lifecycle_lock(alias)?;
     network::wireguard::disconnect(alias, profile)?;
     network::local_access::remove(alias)
+}
+
+fn restore_all(networks: &[(crate::config::LocalNetwork, Profile)]) {
+    for (alias, profile) in networks {
+        match restore(alias, profile) {
+            Ok(()) => output::muted(&format!("Reconnected to {}", alias.name)),
+            Err(error) => {
+                output::warning(&format!("Could not reconnect to {}: {error}", alias.name))
+            }
+        }
+    }
 }
 
 fn restore(alias: &crate::config::LocalNetwork, profile: &Profile) -> Result<()> {
