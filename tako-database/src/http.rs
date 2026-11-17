@@ -19,7 +19,7 @@ use tokio::net::TcpListener;
 
 use crate::exec::{self, Limits};
 use crate::host::{Database, DatabaseHost, DatabaseId, Principal, Resolved, Stream, StreamEntry};
-use crate::proto::{CursorRequest, CursorResponse, PipelineRequest, PipelineResponse, Version};
+use crate::proto::{CursorRequest, CursorResponse, PipelineRequest, Version};
 
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 pub type Body = http_body_util::combinators::BoxBody<Chunk, BoxError>;
@@ -510,14 +510,14 @@ async fn pipeline(
             ),
         },
         Ok((outcome, Ok(baton))) => {
-            let mut response = json(
-                StatusCode::OK,
-                &PipelineResponse {
-                    baton,
-                    base_url: None,
-                    results: outcome.results,
-                },
-            );
+            let capacity = outcome
+                .reservation
+                .as_ref()
+                .map_or(0, tokio::sync::OwnedSemaphorePermit::num_permits);
+            let mut response = Response::new(full(pipeline_body(baton, outcome.results, capacity)));
+            response
+                .headers_mut()
+                .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
             // The host's bytes stay reserved until the connection has
             // written the last of the body, or dropped it.
             if let Some(reservation) = outcome.reservation {
@@ -1089,6 +1089,30 @@ impl http_body::Body for IdleBody {
     }
 }
 
+/// Encodes a pipeline response as [`PipelineResponse`] does, dropping each
+/// result once it is written: the results and their encoding are not both
+/// held in full, so the host's reservation for the results covers the body.
+/// `capacity` is the encoded size reserved for them, so the buffer does not
+/// grow by copying.
+fn pipeline_body(
+    baton: Option<String>,
+    results: Vec<crate::proto::StreamResult>,
+    capacity: usize,
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(capacity.saturating_add(128));
+    out.extend_from_slice(b"{\"baton\":");
+    serde_json::to_writer(&mut out, &baton).expect("baton serializes");
+    out.extend_from_slice(b",\"base_url\":null,\"results\":[");
+    for (index, result) in results.into_iter().enumerate() {
+        if index > 0 {
+            out.push(b',');
+        }
+        serde_json::to_writer(&mut out, &result).expect("result serializes");
+    }
+    out.extend_from_slice(b"]}");
+    out
+}
+
 fn json(status: StatusCode, value: &impl Serialize) -> Response<Body> {
     let body = serde_json::to_vec(value).expect("response serializes");
     let mut response = Response::new(full(body));
@@ -1182,4 +1206,42 @@ fn full(bytes: Vec<u8>) -> Body {
     Full::new(Chunk::from(Bytes::from(bytes)))
         .map_err(|never| -> BoxError { match never {} })
         .boxed()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::{Error, PipelineResponse, StreamResponse, StreamResult};
+
+    #[test]
+    fn pipeline_bodies_encode_as_the_response_type_does() {
+        let results = || {
+            vec![
+                StreamResult::Ok {
+                    response: StreamResponse::Close,
+                },
+                StreamResult::Error {
+                    error: Error::new("SQLITE_ERROR", "no such table: \"t\"\n"),
+                },
+            ]
+        };
+        let expected = |baton: &Option<String>, results| {
+            serde_json::to_vec(&PipelineResponse {
+                baton: baton.clone(),
+                base_url: None,
+                results,
+            })
+            .unwrap()
+        };
+        for baton in [None, Some("abc.1".to_owned())] {
+            assert_eq!(
+                pipeline_body(baton.clone(), results(), 0),
+                expected(&baton, results())
+            );
+            assert_eq!(
+                pipeline_body(baton.clone(), Vec::new(), 16),
+                expected(&baton, Vec::new())
+            );
+        }
+    }
 }
