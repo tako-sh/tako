@@ -105,11 +105,12 @@ set the network ID and desired servers for each environment, and remove old glob
 inventory entries. Legacy inventory files are ignored; only enrolled membership grants access.
 
 Enroll each new laptop or sandbox with `network client add` and `network join`.
-The administrator creates a single-use invitation with `--admin` or exact
-`--deploy app/env` scopes. Joining generates fresh device keys and pulls published
-state through servers. Never copy an existing device's private keys. `--ssh`
-additionally grants shell access to an administrator. Clients never connect to
-other clients and do not run Corrosion. Servers replicate network state.
+A full client creates a single-use invitation. Without flags the new client gets
+full access, including the `tako` SSH shell and `connect`; exact `--deploy app/env`
+scopes restrict it to deploying those environments over HTTPS. Joining generates
+fresh device keys and pulls published state through servers. Never copy an
+existing device's private keys. Clients never connect to other clients and do not
+run Corrosion. Servers replicate network state.
 
 Keep `tako.toml` in Git; keep `.tako/` ignored. Each worktree has separate secret
 drafts. Set/remove changes remain local until deploy or `secrets sync` publishes
@@ -126,13 +127,12 @@ seven days; after expiry, review preserved drafts before explicitly publishing
 with `secrets sync --retry-expired`. That action can overwrite remote changes.
 An invitation cannot recover unpublished drafts.
 
-For a lost administrator or an independent device handoff, run
-`sudo tako-server admin invite` from a surviving server's provider console or
-administrator SSH, then `network join` on the replacement. Verify the new
-administrator before revoking the lost device. This host recovery path creates
-independent authority; ordinary admin invitations remain tied to their inviter.
-It requires intact server state, keys, and a running network agent. It cannot
-restore a network after every copy and key is lost.
+When every full client is lost, run `sudo tako-server client invite` from a
+surviving server's provider console or root SSH, then `network join` on the
+replacement. Verify the new client before revoking the lost device. Revocation
+affects only the revoked device: clients it invited keep their access, so revoke
+them too when needed. Recovery requires intact server state, keys, and a running
+network agent. It cannot restore a network after every copy and key is lost.
 
 Deploy loads membership and cached values only for its selected environment's
 network; an unrelated inactive membership must not block it. Honor `--config`:
