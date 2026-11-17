@@ -452,6 +452,9 @@ async fn pipeline(
         Ok(request) => request,
         Err(e) => return error(StatusCode::BAD_REQUEST, &format!("invalid pipeline: {e}")),
     };
+    // The parsed request owns its text now; the admitted buffer bytes count
+    // it in place of the body, so the body must not stay alive beside it.
+    drop(body);
     let config = host.config();
     if let Err(exec::ProtocolError(message)) =
         exec::validate_pipeline(&request.requests, version, config.max_condition_depth)
@@ -554,6 +557,8 @@ async fn cursor(
             );
         }
     };
+    // As for pipelines: the parsed batch replaces the body.
+    drop(body);
     if let Err(exec::ProtocolError(message)) =
         exec::validate_batch(&request.batch, host.config().max_condition_depth)
     {

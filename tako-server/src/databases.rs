@@ -1167,6 +1167,14 @@ impl ServerState {
         }
         let lock = self.databases.lock(id);
         let _guard = lock.lock().await;
+        // The database was read before the lock; a delete and create of the
+        // same name meanwhile leaves one these migrations were not planned
+        // and snapshotted for.
+        if self.hosted_database(id)?.generation != stored.generation {
+            return Err(format!(
+                "Database {id} was replaced by a new database of the same name meanwhile; no migrations were applied."
+            ));
+        }
         let applied = self
             .databases
             .host
