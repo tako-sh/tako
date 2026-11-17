@@ -414,10 +414,12 @@ pub struct Connection {
 /// `last_insert_rowid` leaves that value unchanged, and so does one into a
 /// `WITHOUT ROWID` table, which reports no rowid at all; SQLite's update
 /// hook runs only for the first, so it tells them apart.
+/// Triggers can insert too, so the table of each matching insert is kept:
+/// only an insert into the statement's own target counts.
 #[derive(Default)]
 struct RowidWatch {
     rowid: AtomicI64,
-    inserted: AtomicBool,
+    tables: parking_lot::Mutex<Vec<String>>,
 }
 
 impl Connection {
@@ -487,11 +489,11 @@ impl Connection {
         let rowids = Arc::new(RowidWatch::default());
         let hook_rowids = rowids.clone();
         conn.update_hook(Some(
-            move |action: rusqlite::hooks::Action, _: &str, _: &str, rowid: i64| {
+            move |action: rusqlite::hooks::Action, _: &str, table: &str, rowid: i64| {
                 if action == rusqlite::hooks::Action::SQLITE_INSERT
                     && rowid == hook_rowids.rowid.load(Ordering::Relaxed)
                 {
-                    hook_rowids.inserted.store(true, Ordering::Relaxed);
+                    hook_rowids.tables.lock().push(table.to_owned());
                 }
             },
         ))
@@ -669,7 +671,7 @@ impl Connection {
         let before_changes = self.conn.total_changes();
         let before_rowid = self.conn.last_insert_rowid();
         self.rowids.rowid.store(before_rowid, Ordering::Relaxed);
-        self.rowids.inserted.store(false, Ordering::Relaxed);
+        self.rowids.tables.lock().clear();
         let in_transaction = !self.conn.is_autocommit();
         let (mut cached, mut fresh) = (None, None);
         let stmt = prepare(&self.conn, sql, &mut cached, &mut fresh)?;
@@ -742,8 +744,17 @@ impl Connection {
         let affected = if changed { self.conn.changes() } else { 0 };
         let after_rowid = self.conn.last_insert_rowid();
         // An unchanged rowid counts only when this statement inserted a row
-        // with it, not when it inserted into a WITHOUT ROWID table.
-        let reinserted = inserts && changed && self.rowids.inserted.load(Ordering::Relaxed);
+        // with it into its own target, not when it inserted into a WITHOUT
+        // ROWID table (whose trigger may insert elsewhere).
+        let reinserted = inserts
+            && changed
+            && insert_target(sql).is_some_and(|target| {
+                self.rowids
+                    .tables
+                    .lock()
+                    .iter()
+                    .any(|table| table.eq_ignore_ascii_case(target))
+            });
         let last_insert_rowid = (after_rowid != before_rowid || reinserted).then_some(after_rowid);
         Ok(Outcome {
             rows: count,
@@ -844,13 +855,45 @@ fn starts_with_insert(sql: &str) -> bool {
 /// `WITH [RECURSIVE] name [(columns)] AS [[NOT] MATERIALIZED] (select), …`.
 /// `None` when the text does not have that shape.
 fn statement_verb(sql: &str) -> Option<&str> {
+    statement_head(sql).map(|(verb, _)| verb)
+}
+
+/// The table an `INSERT` or `REPLACE` writes to, without its schema.
+fn insert_target(sql: &str) -> Option<&str> {
+    let (verb, mut tokens) = statement_head(sql)?;
+    if !(verb.eq_ignore_ascii_case("insert") || verb.eq_ignore_ascii_case("replace")) {
+        return None;
+    }
+    let name = |token| match token {
+        SqlToken::Word(name) | SqlToken::Quoted(name) => Some(name),
+        _ => None,
+    };
+    let mut token = tokens.next()?;
+    // INSERT OR <conflict> INTO
+    if matches!(token, SqlToken::Word(word) if word.eq_ignore_ascii_case("or")) {
+        tokens.next()?;
+        token = tokens.next()?;
+    }
+    if !matches!(token, SqlToken::Word(word) if word.eq_ignore_ascii_case("into")) {
+        return None;
+    }
+    let first = name(tokens.next()?)?;
+    let mut rest = SqlTokens { rest: tokens.rest };
+    if rest.next() == Some(SqlToken::Dot) {
+        return name(rest.next()?);
+    }
+    Some(first)
+}
+
+/// The statement's keyword and the tokens after it; see [`statement_verb`].
+fn statement_head(sql: &str) -> Option<(&str, SqlTokens<'_>)> {
     let mut tokens = SqlTokens { rest: sql };
     let first = tokens.next()?;
     let SqlToken::Word(first) = first else {
         return None;
     };
     if !first.eq_ignore_ascii_case("with") {
-        return Some(first);
+        return Some((first, tokens));
     }
     let mut token = tokens.next()?;
     if matches!(token, SqlToken::Word(word) if word.eq_ignore_ascii_case("recursive")) {
@@ -858,7 +901,7 @@ fn statement_verb(sql: &str) -> Option<&str> {
     }
     loop {
         // The table name, then its optional column list.
-        if !matches!(token, SqlToken::Word(_) | SqlToken::Quoted) {
+        if !matches!(token, SqlToken::Word(_) | SqlToken::Quoted(_)) {
             return None;
         }
         token = tokens.next()?;
@@ -883,7 +926,7 @@ fn statement_verb(sql: &str) -> Option<&str> {
         token = tokens.next()?;
         match token {
             SqlToken::Comma => token = tokens.next()?,
-            SqlToken::Word(verb) => return Some(verb),
+            SqlToken::Word(verb) => return Some((verb, tokens)),
             _ => return None,
         }
     }
@@ -892,11 +935,12 @@ fn statement_verb(sql: &str) -> Option<&str> {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum SqlToken<'a> {
     Word(&'a str),
-    /// A quoted identifier.
-    Quoted,
+    /// A quoted identifier, without its quotes.
+    Quoted(&'a str),
     Open,
     Close,
     Comma,
+    Dot,
     Other,
 }
 
@@ -921,20 +965,22 @@ impl<'a> SqlTokens<'a> {
     }
 
     /// Advances past a quoted run that ends at `close`, where a doubled
-    /// `close` stands for itself.
-    fn skip_quoted(&mut self, close: char) {
-        let mut chars = self.rest.char_indices().skip(1).peekable();
+    /// `close` stands for itself, and returns what was between the quotes.
+    fn skip_quoted(&mut self, close: char) -> &'a str {
+        let text = self.rest;
+        let mut chars = text.char_indices().skip(1).peekable();
         while let Some((index, c)) = chars.next() {
             if c == close {
                 if close != ']' && chars.peek().is_some_and(|&(_, next)| next == close) {
                     chars.next();
                     continue;
                 }
-                self.rest = &self.rest[index + c.len_utf8()..];
-                return;
+                self.rest = &text[index + c.len_utf8()..];
+                return &text[1..index];
             }
         }
         self.rest = "";
+        text.get(1..).unwrap_or_default()
     }
 }
 
@@ -948,16 +994,17 @@ impl<'a> Iterator for SqlTokens<'a> {
             '(' => SqlToken::Open,
             ')' => SqlToken::Close,
             ',' => SqlToken::Comma,
+            '.' => SqlToken::Dot,
             '\'' => {
                 self.skip_quoted('\'');
                 return Some(SqlToken::Other);
             }
             '"' | '`' | '[' => {
-                self.skip_quoted(match c {
+                let name = self.skip_quoted(match c {
                     '[' => ']',
                     other => other,
                 });
-                return Some(SqlToken::Quoted);
+                return Some(SqlToken::Quoted(name));
             }
             c if c.is_ascii_alphabetic() || c == '_' => {
                 let end = self

@@ -596,9 +596,16 @@ async fn spawn_app(
     #[cfg(unix)]
     {
         drop(bootstrap_read);
-        bootstrap_writer
-            .join()
-            .map_err(|_| std::io::Error::other("bootstrap writer thread panicked"))??;
+        // An app may read its bootstrap only when first needed (the Rust SDK
+        // reads it on first use), after it is ready; the spawn does not wait
+        // for the whole payload to be taken.
+        std::thread::spawn(move || match bootstrap_writer.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::debug!(%error, "app stopped before reading its bootstrap");
+            }
+            Err(_) => tracing::warn!("bootstrap writer thread panicked"),
+        });
     }
 
     // Keep the read end; dropping the write end (OwnedFd) closes it in the parent

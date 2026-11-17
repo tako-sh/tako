@@ -115,12 +115,35 @@ impl Spawner {
             .await;
 
         // Bootstrap backpressure and fd-4 readiness share one startup deadline.
-        match timeout(config.startup_timeout, async {
-            bootstrap.write().await.map_err(InstanceError::SpawnError)?;
-            wait_for_ready(instance.clone(), readiness_fd).await
+        // An app may read its bootstrap only when first needed (the Rust SDK
+        // reads it on first use, often in a request handler), so readiness
+        // does not wait for the whole payload; what is left is written once
+        // the app reads it.
+        let mut write = Box::pin(bootstrap.write());
+        let mut written = false;
+        let started = timeout(config.startup_timeout, async {
+            let ready = wait_for_ready(instance.clone(), readiness_fd);
+            tokio::pin!(ready);
+            loop {
+                tokio::select! {
+                    result = &mut write, if !written => {
+                        result.map_err(InstanceError::SpawnError)?;
+                        written = true;
+                    }
+                    result = &mut ready => return result,
+                }
+            }
         })
-        .await
-        {
+        .await;
+        if matches!(started, Ok(Ok(()))) && !written {
+            let (app_name, instance_id) = (app_name.clone(), instance_id.clone());
+            tokio::spawn(async move {
+                if let Err(error) = write.await {
+                    tracing::debug!(app = %app_name, instance = %instance_id, %error, "Instance stopped before reading its bootstrap");
+                }
+            });
+        }
+        match started {
             Ok(Ok(())) => {
                 app.set_instance_state(&instance, InstanceState::Healthy);
 

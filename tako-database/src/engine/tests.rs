@@ -694,6 +694,36 @@ fn with_updates_and_deletes_report_no_insert_rowid() {
         assert_eq!(result.affected_row_count, 1, "{sql}");
         assert_eq!(result.last_insert_rowid, None, "{sql}");
     }
+    // Nor does one whose trigger inserts a row with the previous rowid
+    // elsewhere.
+    run(&mut conn, "CREATE TABLE log (id INTEGER PRIMARY KEY)").unwrap();
+    run(
+        &mut conn,
+        "CREATE TRIGGER tagged AFTER INSERT ON tags BEGIN INSERT INTO log VALUES (9); END",
+    )
+    .unwrap();
+    let result = run(&mut conn, "INSERT INTO tags VALUES ('c')").unwrap();
+    assert_eq!(result.last_insert_rowid, None);
+}
+
+#[test]
+fn insert_targets_name_the_written_table() {
+    for (sql, target) in [
+        ("INSERT INTO t VALUES (1)", Some("t")),
+        (
+            "insert or replace into main.items (a) values (1)",
+            Some("items"),
+        ),
+        ("REPLACE INTO \"odd name\" VALUES (1)", Some("odd name")),
+        (
+            "WITH c AS (SELECT 1) INSERT INTO [tags] SELECT * FROM c",
+            Some("tags"),
+        ),
+        ("UPDATE t SET a = 1", None),
+        ("INSERT t VALUES (1)", None),
+    ] {
+        assert_eq!(insert_target(sql), target, "{sql}");
+    }
 }
 
 #[test]
