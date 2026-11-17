@@ -40,7 +40,7 @@ Native networks support bounded channel replication, presence leases, and store 
 
 ## Deploy and operate
 
-- [Native networks](/networks/): enroll devices and servers, deploy from scoped sandboxes, and operate private networking.
+- [Native networks](/networks/): enroll devices and servers, deploy from CI with a client identity, and operate private networking.
 - [Servers](/servers/): provision a host, enroll management access, and maintain the service.
 - [Deployment](/deployment/): build artifacts, run migrations, and roll a release into traffic.
 - [Routing and TLS](/routing/): configure domains, path routes, certificates, and client-IP policy.

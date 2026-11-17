@@ -44,6 +44,37 @@ Inspect a mismatch before choosing to force it. For automation, select the envir
 
 Deploy validates secrets, storage credentials, provider credentials, routes, server target metadata, workflow/channel storage requirements, and local-storage limitations before build work starts.
 
+## Deploy From CI
+
+Deploy from CI with a deploy client's identity: its keys and network profile in one string. Create it on a full client and pipe it straight into a secret:
+
+```bash
+tako network client add github-ci --network production --deploy shop/production --identity \
+  | gh secret set TAKO_CLIENT_IDENTITY --env production
+```
+
+The identity is printed on stdout; other output goes to stderr. Store it as an **environment** secret, not a repository secret: anyone who can push a branch can run a workflow that prints repository secrets. In the repository's GitHub settings, give the `production` environment a deployment branch rule that allows only `main`, so only reviewed code reaches the job that holds the identity:
+
+```yaml
+# .github/workflows/deploy.yml
+name: Deploy
+on:
+  push:
+    branches: [main]
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - run: curl -fsSL https://tako.sh/install.sh | sh
+      - run: ~/.local/bin/tako deploy --env production --ci
+        env:
+          TAKO_CLIENT_IDENTITY: ${{ secrets.TAKO_CLIENT_IDENTITY }}
+```
+
+With `TAKO_CLIENT_IDENTITY` set, the command acts as that client and keeps its keys in a private temporary directory, never in the Tako home. A deploy client only releases code: it reads no secrets or logs, and the servers apply the values full clients published. If the identity leaks, `tako network client revoke github-ci` stops it. Running `tako network client add github-ci --deploy shop/production --identity --yes` replaces it, revoking the old key first. See [Networks](/networks/#enroll-another-laptop-or-sandbox).
+
 ## Build And Artifact Rules
 
 Build precedence:

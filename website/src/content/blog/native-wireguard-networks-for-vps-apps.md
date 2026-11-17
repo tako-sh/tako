@@ -96,29 +96,19 @@ The app socket authenticates callers. Cross-server requests carry a signed proof
 
 ## Give a build runner one job
 
-Suppose the shop's release pipeline needs one hour to ship a fix. Generate an enrollment request on the runner. The request is the piece to transfer to the administrator. The private signing and WireGuard keys stay on the machine that generated them.
+Suppose the shop's release pipeline should ship fixes from `main` without anyone's laptop. Create a client identity for it on a full client. An identity is a deploy client's keys and network profile in one string, made for machines that keep no state between runs:
 
 ```bash
-# On the runner, using the shop's real network ID
-tako network request --name shop-ci \
-  --network 0123456789abcdef0123456789abcdef \
-  --output shop-ci.request.json
-
-# On an administrator's enrolled machine
-tako network approve shop-ci.request.json --network shop \
-  --deploy shop/production --expires-in 3600 \
-  --output shop-ci.profile.json
+tako network client add shop-ci --network shop \
+  --deploy shop/production --identity
 ```
 
-Return the approved profile to the requesting runner through a trusted channel. It contains the information the runner uses to find the server and check its identity. Import checks that the local keys match the original request. Copying an approved profile onto a different build agent will therefore fail. A replacement runner should make its own request, which also gives you a distinct device ID to revoke later.
+The identity prints on stdout, so you can pipe it straight into a secret store. Store it as `TAKO_CLIENT_IDENTITY` in a CI environment that only the `main` branch can use. With that variable set, the runner deploys as `shop-ci`; the keys stay in a private temporary directory for the command and never land in the runner's Tako home:
 
 ```bash
-# Back on the same runner, in the shop project
-tako network import shop-ci.profile.json --name shop
-tako network status shop --json
 tako deploy --env production --ci
 ```
 
-Before handing this job to CI, have an administrator provision the app's public route and any required server-level storage or credential bindings. A deployment grant authorizes the named workload. It leaves global ingress changes and shell access under separate permissions. App secret keys have their own distribution process as well. If the job cannot decrypt an environment secret, check its access to that environment's key. Granting network administration would give the job more authority without supplying the missing key. [Secrets and key sharing](/docs/secrets/)
+A deploy client only releases code. It can't read secrets or logs, open a shell, or join the private network; the servers apply the environment's secrets that full clients published. It can make the app's first deploy and change its routes, but a route another app already owns is refused. Anyone holding the identity is `shop-ci`, so keep it in a protected secret. If it leaks, `tako network client revoke shop-ci --network shop` stops it, and `tako network client add shop-ci --identity` issues a replacement. [Networks](/docs/networks/)
 
 For a first rollout, pick one host and one read-only operation you already know how to check. Look up the running release through native management, open a new private shell if you need one, and request a familiar public URL. Each check answers a different operational question. If the VPS already uses Tailscale, keep that SSH session open as you work through the [Tailscale migration guide](/blog/migrate-tailscale-to-tako-wireguard/).

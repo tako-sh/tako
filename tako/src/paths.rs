@@ -21,12 +21,6 @@ pub fn tako_config_dir() -> Result<PathBuf, std::io::Error> {
     Ok(base.join("tako"))
 }
 
-/// Get Tako's data directory (XDG-compliant).
-///
-/// - `TAKO_HOME` set → that directory (all-in-one).
-/// - Debug builds from source checkout → `{repo}/local-dev/.tako` (all-in-one).
-/// - Otherwise → `dirs::data_dir()/tako` (e.g. `~/.local/share/tako` on Linux,
-///   `~/Library/Application Support/tako` on macOS).
 /// Where network identities, keys and caches live: the Tako home, unless a
 /// client identity is active for this process.
 static NETWORK_STATE: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
@@ -49,6 +43,12 @@ pub fn set_network_state_dir(directory: Option<PathBuf>) {
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = directory;
 }
 
+/// Get Tako's data directory (XDG-compliant).
+///
+/// - `TAKO_HOME` set → that directory (all-in-one).
+/// - Debug builds from source checkout → `{repo}/local-dev/.tako` (all-in-one).
+/// - Otherwise → `dirs::data_dir()/tako` (e.g. `~/.local/share/tako` on Linux,
+///   `~/Library/Application Support/tako` on macOS).
 pub fn tako_data_dir() -> Result<PathBuf, std::io::Error> {
     if let Some(home) = tako_home_override() {
         return Ok(home);
