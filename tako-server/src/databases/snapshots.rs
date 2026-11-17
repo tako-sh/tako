@@ -221,7 +221,90 @@ pub(crate) fn test_store(bucket: &str) -> Result<Arc<dyn ObjectStore>, String> {
     if bucket == "stalled" {
         return Ok(Arc::new(StalledStore(store)));
     }
+    if bucket == "lost-response" {
+        return Ok(Arc::new(LostResponseStore(store)));
+    }
     Ok(store)
+}
+
+/// Writes manifests, then reports failure, like storage whose response is
+/// lost after it committed the object. Everything else passes through.
+#[cfg(test)]
+#[derive(Debug)]
+struct LostResponseStore(Arc<object_store::memory::InMemory>);
+
+#[cfg(test)]
+impl std::fmt::Display for LostResponseStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LostResponseStore")
+    }
+}
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl ObjectStore for LostResponseStore {
+    async fn put_opts(
+        &self,
+        location: &ObjectPath,
+        payload: object_store::PutPayload,
+        opts: object_store::PutOptions,
+    ) -> object_store::Result<object_store::PutResult> {
+        let result = self.0.put_opts(location, payload, opts).await?;
+        if location.as_ref().ends_with(".json") {
+            return Err(object_store::Error::Generic {
+                store: "LostResponseStore",
+                source: "the response was lost".into(),
+            });
+        }
+        Ok(result)
+    }
+
+    async fn put_multipart_opts(
+        &self,
+        location: &ObjectPath,
+        opts: object_store::PutMultipartOptions,
+    ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
+        self.0.put_multipart_opts(location, opts).await
+    }
+
+    async fn get_opts(
+        &self,
+        location: &ObjectPath,
+        options: object_store::GetOptions,
+    ) -> object_store::Result<object_store::GetResult> {
+        self.0.get_opts(location, options).await
+    }
+
+    fn delete_stream(
+        &self,
+        locations: futures_util::stream::BoxStream<'static, object_store::Result<ObjectPath>>,
+    ) -> futures_util::stream::BoxStream<'static, object_store::Result<ObjectPath>> {
+        self.0.delete_stream(locations)
+    }
+
+    fn list(
+        &self,
+        prefix: Option<&ObjectPath>,
+    ) -> futures_util::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
+    {
+        self.0.list(prefix)
+    }
+
+    async fn list_with_delimiter(
+        &self,
+        prefix: Option<&ObjectPath>,
+    ) -> object_store::Result<object_store::ListResult> {
+        self.0.list_with_delimiter(prefix).await
+    }
+
+    async fn copy_opts(
+        &self,
+        from: &ObjectPath,
+        to: &ObjectPath,
+        options: object_store::CopyOptions,
+    ) -> object_store::Result<()> {
+        self.0.copy_opts(from, to, options).await
+    }
 }
 
 /// Serves reads from the store it wraps; writes wait forever.
@@ -744,13 +827,19 @@ async fn upload_copy(
         other => other,
     };
     if let Err(error) = published {
-        // Listing and retention find data through manifests; without one the
-        // object would never be removed.
-        if let Ok(path) = ObjectPath::parse(&data) {
-            let _ = with_deadline(METADATA_TIMEOUT, async {
-                remote.delete(&path).await.map_err(|e| e.to_string())
-            })
-            .await;
+        // The manifest may have been written although the call failed (a
+        // response lost to a timeout), so it goes first, then the data:
+        // listing and retention find data only through manifests.
+        for key in [manifest_key(stored, &snapshot_id), data] {
+            if let Ok(path) = ObjectPath::parse(&key) {
+                let _ = with_deadline(METADATA_TIMEOUT, async {
+                    match remote.delete(&path).await {
+                        Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
+                        Err(error) => Err(error.to_string()),
+                    }
+                })
+                .await;
+            }
         }
         return Err(error);
     }
@@ -976,6 +1065,11 @@ pub(crate) async fn restore(
         ));
     };
     let remote = store(&backup)?;
+    // Held from choosing the snapshot through the swap, so a scheduled
+    // snapshot of the contents being replaced cannot be published meanwhile
+    // and become the newest one (a later `--latest` would undo the restore).
+    let lock = state.databases.lock(&stored.name);
+    let _operation = lock.lock().await;
     // This server holds the database from now on, so a copy that a move
     // leaves behind stops publishing snapshots, also one in flight, which
     // checks again before and after its manifest. Claiming before listing
@@ -1103,7 +1197,7 @@ async fn restore_from(
         .map_err(|e| e.to_string())??;
     }
 
-    let warnings = replace(state, stored, restored, "database is being restored").await?;
+    let warnings = replace_locked(state, stored, restored, "database is being restored").await?;
     tracing::info!(database = %stored.name, snapshot = %manifest.snapshot.id, "Restored database");
     Ok(serde_json::json!({
         "database": stored.name,
@@ -1124,9 +1218,19 @@ pub(crate) async fn replace(
     replacement: PathBuf,
     pause_reason: &str,
 ) -> Result<Vec<String>, String> {
-    let id = DatabaseId::parse(&stored.name)?;
     let lock = state.databases.lock(&stored.name);
     let _operation = lock.lock().await;
+    replace_locked(state, stored, replacement, pause_reason).await
+}
+
+/// [`replace`], for a caller that already holds the database's lock.
+async fn replace_locked(
+    state: &ServerState,
+    stored: &StoredDatabase,
+    replacement: PathBuf,
+    pause_reason: &str,
+) -> Result<Vec<String>, String> {
+    let id = DatabaseId::parse(&stored.name)?;
     let guard = state
         .databases
         .host

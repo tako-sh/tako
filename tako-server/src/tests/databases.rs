@@ -228,6 +228,29 @@ async fn latest_restores_pick_the_newer_of_two_snapshots_in_one_second() {
 }
 
 #[tokio::test]
+async fn a_failed_manifest_write_leaves_no_snapshot_behind() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp);
+    create(&state, ID, Some("lost-response")).await;
+    query(&state, ID, "CREATE TABLE items (name TEXT)").await;
+    // The manifest is written, but the storage reports failure.
+    error(
+        &state,
+        Command::SnapshotDatabase {
+            name: ID.into(),
+            reason: SnapshotReason::Manual,
+            app: None,
+        },
+    )
+    .await;
+    // Neither it nor its data is left for a restore to pick.
+    let store = crate::databases::snapshots::test_store("lost-response").unwrap();
+    use futures_util::TryStreamExt;
+    let objects: Vec<_> = store.list(None).try_collect().await.unwrap();
+    assert!(objects.is_empty(), "{objects:?}");
+}
+
+#[tokio::test]
 async fn snapshots_are_encrypted_with_the_database_key() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp);
