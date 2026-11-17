@@ -57,6 +57,8 @@ pub(crate) struct Databases {
     /// Held while grants are read and rewritten, so a grant and a delete's
     /// revocation do not overwrite each other's changes.
     grants: Mutex<()>,
+    /// Databases release commands are using, by app, until each ends.
+    release_pins: Mutex<HashMap<String, DatabasePins>>,
 }
 
 #[derive(Default)]
@@ -122,6 +124,7 @@ impl Databases {
             locks: Mutex::new(HashMap::new()),
             pins: Arc::new(Mutex::new(HashMap::new())),
             grants: Mutex::new(()),
+            release_pins: Mutex::new(HashMap::new()),
         }
     }
 
@@ -358,13 +361,19 @@ impl Databases {
                 binding.peer_key = current.binding.peer_key.clone();
             }
         }
+        // The app's committed configuration may not bind these yet (a first
+        // deploy runs its release command before the bindings are stored),
+        // so the command pins them itself until it ends.
+        let pins = self.pin(requested.values().map(|binding| binding.name.as_str()))?;
         let bindings = self.prepare_bindings(&HashMap::new(), requested, config)?;
         self.apply_bindings(&format!("{app}{RELEASE_SCOPE_SUFFIX}"), &[&bindings]);
+        self.release_pins.lock().insert(app.to_owned(), pins);
         Ok(self.connections(&bindings))
     }
 
     pub(crate) fn end_release(&self, app: &str) {
         self.remove_bindings(&format!("{app}{RELEASE_SCOPE_SUFFIX}"));
+        self.release_pins.lock().remove(app);
     }
 
     pub(crate) fn transfers(&self) -> parking_lot::MutexGuard<'_, transfer::Transfers> {
@@ -1366,8 +1375,14 @@ mod tests {
             connections["main"].auth_token, "app-token",
             "release commands get their own token"
         );
-        let applied = databases.applied.lock();
-        let release = &applied["demo/production#release"][0]["main"];
-        assert_eq!(release.binding.peer_key.as_deref(), Some("issued"));
+        {
+            let applied = databases.applied.lock();
+            let release = &applied["demo/production#release"][0]["main"];
+            assert_eq!(release.binding.peer_key.as_deref(), Some("issued"));
+        }
+        // The database cannot be deleted while the release command runs.
+        assert!(databases.start_deleting("shop").is_err());
+        databases.end_release("demo/production");
+        assert!(databases.start_deleting("shop").is_ok());
     }
 }

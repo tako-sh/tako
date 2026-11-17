@@ -330,13 +330,32 @@ pub(crate) fn run_cursor(
                 let conn = connection(conn, database)?;
                 conn.execute_streaming(sql, &args, |event| {
                     let (entry, reserved) = match event {
-                        engine::Event::Begin(cols) => (
-                            CursorEntry::StepBegin {
-                                step: step_index,
-                                cols,
-                            },
-                            None,
-                        ),
+                        // Column names can be long too: their share of the
+                        // host's budget is reserved before they are copied
+                        // into the line.
+                        engine::Event::Begin(cols) => {
+                            let size = FRAMING + cols_size(&cols);
+                            if size > max_row_bytes {
+                                return Err(Error::new(
+                                    "RESPONSE_TOO_LARGE",
+                                    "the statement's columns exceed the response size limit",
+                                ));
+                            }
+                            let Some(reserved) = reserve(size) else {
+                                disconnected = true;
+                                return Err(Error::new(
+                                    "CLIENT_DISCONNECTED",
+                                    "client disconnected",
+                                ));
+                            };
+                            (
+                                CursorEntry::StepBegin {
+                                    step: step_index,
+                                    cols,
+                                },
+                                Some(reserved),
+                            )
+                        }
                         engine::Event::Row(row) => {
                             // Rows stream one at a time, but each must still
                             // fit in a response.
@@ -395,13 +414,17 @@ pub(crate) fn run_cursor(
             }
             Err(error) => {
                 outcomes.push(Some(false));
-                emit(
-                    CursorEntry::StepError {
-                        step: step_index,
-                        error,
-                    },
-                    None,
-                )
+                // An error's message can be as long as its statement.
+                match reserve(FRAMING + error_size(&error)) {
+                    Some(reserved) => emit(
+                        CursorEntry::StepError {
+                            step: step_index,
+                            error,
+                        },
+                        Some(reserved),
+                    ),
+                    None => false,
+                }
             }
         };
         if !delivered {

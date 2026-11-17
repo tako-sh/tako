@@ -185,9 +185,9 @@ pub struct Stmt {
     #[serde(default)]
     pub want_rows: Option<bool>,
     /// Sent by some libSQL clients; replication is not supported, so it is
-    /// accepted and ignored.
+    /// accepted and skipped while parsing, without keeping what it holds.
     #[serde(default)]
-    pub replication_index: Option<serde_json::Value>,
+    pub replication_index: Option<serde::de::IgnoredAny>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -204,7 +204,7 @@ pub struct Batch {
     pub steps: Vec<BatchStep>,
     /// See [`Stmt::replication_index`].
     #[serde(default)]
-    pub replication_index: Option<serde_json::Value>,
+    pub replication_index: Option<serde::de::IgnoredAny>,
 }
 
 impl Batch {
