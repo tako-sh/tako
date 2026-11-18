@@ -163,7 +163,7 @@ export default function fetch(req: Request): Response {
 }
 ```
 
-`tako generate` preserves an existing `tako.d.ts` in `app/`, `src/`, or the project root, in that order. Otherwise it writes to the first existing `app/` or `src/` directory, falling back to the project root. This location is independent of `app_root`, which controls definition discovery. It augments `tako.sh` with typed secrets, environment names, channel metadata, store metadata, workflow metadata, and `process.env` / `import.meta.env` types for user vars. App code imports Tako runtime values from `tako.sh`, not from generated env-var globals.
+`tako generate` writes to the app's package: the nearest directory with a `package.json` between `app_root` and `tako.toml`, or the project root when there is none. In that directory it preserves an existing `tako.d.ts` in `app/`, `src/`, or the root, in that order, and otherwise writes to the root. It augments `tako.sh` with typed secrets, environment names, channel metadata, store metadata, workflow metadata, and `process.env` / `import.meta.env` types for user vars. App code imports Tako runtime values from `tako.sh`, not from generated env-var globals.
 
 ## Images
 

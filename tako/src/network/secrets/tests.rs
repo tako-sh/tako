@@ -587,3 +587,34 @@ fn last_changes_name_the_publishing_device_and_mark_unpublished_drafts() {
             .is_empty()
     );
 }
+
+#[test]
+fn apps_without_network_environments_ignore_unreadable_network_profiles() {
+    let home = TestHome::new();
+    let network = NetworkId::random().unwrap();
+    let device = "ab".repeat(32);
+    let networks = home.directory.path().join("networks");
+    let profile = networks
+        .join(network.to_string())
+        .join(&device)
+        .join("profile.json");
+    super::super::private_directory(profile.parent().unwrap()).unwrap();
+    super::super::write_bytes(&profile, br#"{"state":"created"}"#, false).unwrap();
+    super::super::write_json(
+        &networks.join("identities.json"),
+        &serde_json::json!([{"id": network.to_string(), "device": device}]),
+        false,
+    )
+    .unwrap();
+    let project = home.directory.path().join("checkout");
+    let config =
+        TakoToml::parse("name='plain'\n[envs.production]\nroute='plain.example.test'\n").unwrap();
+
+    SecretsStore::load_with_config(&project, &config).unwrap();
+
+    let error = LocalNetworks::load().unwrap_err().to_string();
+    assert!(
+        error.contains(&profile.display().to_string()),
+        "error should name the unreadable profile: {error}"
+    );
+}

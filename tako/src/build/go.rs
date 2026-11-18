@@ -117,7 +117,7 @@ pub(crate) fn detect_package_name(project_dir: &Path) -> String {
 /// Returns `true` if the file was written (created or updated),
 /// `false` if it already existed with the same content.
 pub fn write_secret_accessors(project_dir: &Path) -> std::io::Result<bool> {
-    let secret_names = read_secret_names(project_dir, None, None);
+    let secret_names = super::secret_names(project_dir, None, None)?;
     write_secret_accessors_with_secrets(project_dir, &secret_names)
 }
 
@@ -126,7 +126,7 @@ pub fn write_secret_accessors_with_config(
     config: &crate::config::TakoToml,
     environment: Option<&str>,
 ) -> std::io::Result<bool> {
-    let secret_names = read_secret_names(project_dir, Some(config), environment);
+    let secret_names = super::secret_names(project_dir, Some(config), environment)?;
     write_secret_accessors_with_secrets(project_dir, &secret_names)
 }
 
@@ -146,33 +146,6 @@ pub fn write_secret_accessors_with_secrets(
     }
     fs::write(&path, &content)?;
     Ok(true)
-}
-
-/// Read secret names from the local drafts and published cache.
-///
-/// Prefers "development" env, falls back to union of all envs.
-fn read_secret_names(
-    project_dir: &Path,
-    config: Option<&crate::config::TakoToml>,
-    environment: Option<&str>,
-) -> Vec<String> {
-    let store = match (config, environment) {
-        (Some(config), Some(env)) => {
-            crate::config::SecretsStore::load_for_environment(project_dir, config, env)
-        }
-        (Some(config), None) => crate::config::SecretsStore::load_with_config(project_dir, config),
-        (None, _) => crate::config::SecretsStore::load_from_dir(project_dir),
-    };
-    let Ok(store) = store else {
-        return vec![];
-    };
-    if let Some(development) = store.get_env("development") {
-        let mut names: Vec<_> = development.keys().cloned().collect();
-        names.sort();
-        names
-    } else {
-        store.all_secret_names()
-    }
 }
 
 #[cfg(test)]

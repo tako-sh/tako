@@ -115,7 +115,9 @@ pub(crate) fn load_local_with_config(
     if let Some(config) = config
         && let Some(app) = config.name.as_deref()
     {
-        let networks = LocalNetworks::load()?;
+        // Read saved networks only for an environment that needs one, so an
+        // unreadable profile never breaks apps that use no network.
+        let mut saved_networks = None;
         for (env, spec) in &config.envs {
             if environment.is_some_and(|selected| selected != env) {
                 continue;
@@ -133,6 +135,10 @@ pub(crate) fn load_local_with_config(
                 bind(&mut state, env, &scope, &network)?;
                 continue;
             }
+            let networks = match &mut saved_networks {
+                Some(networks) => &*networks,
+                empty => &*empty.insert(LocalNetworks::load()?),
+            };
             let Ok(alias) = networks.select(Some(id)) else {
                 continue;
             };

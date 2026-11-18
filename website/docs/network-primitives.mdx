@@ -117,7 +117,7 @@ Direct calls have no automatic retries. A timeout or disconnected caller does no
 
 ## Export and import types
 
-Run `tako gen` in each producer to generate **`tako-schema.json` beside `tako.toml`**. It is ordinary JSON with a `$comment` saying not to edit it. JSON Schema 2020-12 describes the wire values; the versioned `x-tako` section identifies the app and its handlers, workflows, and channels. It includes only the app's own primitives.
+Run `tako gen` in each producer to generate **`tako-schema.json` beside `tako.toml`**. A JavaScript app whose `app_root` is inside a nested package (a directory with its own `package.json`) gets it in that package instead. It is ordinary JSON with a `$comment` saying not to edit it. JSON Schema 2020-12 describes the wire values; the versioned `x-tako` section identifies the app and its handlers, workflows, and channels. It includes only the app's own primitives. A JavaScript app with no channels, workflows, network handlers, or `schemas` gets no `tako-schema.json`, `tako.imports.ts`, or `tako.exports.d.ts`.
 
 List the producer schemas at the root of the consumer's `tako.toml`:
 
@@ -143,7 +143,7 @@ Remote schemas are fetched on first use. **Commit `tako-schema.lock`**: it embed
 | `tako_imports.go`   | Generated            | Go DTOs, address constants, and channel message-name constants |
 | `tako_imports.rs`   | Generated            | Rust Serde DTOs and corresponding constants                    |
 
-The three TypeScript files stay beside the existing `tako.d.ts`, normally at root; existing `src/` or `app/` locations are preserved. `app_root` controls discovery, not output placement. Include `tako.d.ts` in the TypeScript project. Native source files go in `build.cwd` when configured, otherwise beside `tako.toml`. Rust consumers include the generated module explicitly. Native import generation uses the CLI and does not need Bun or the producer's compiler. Run `tako gen` explicitly for native applications before building them; JavaScript development and deployment also regenerate automatically.
+The three TypeScript files stay beside `tako.d.ts`. JavaScript output goes in the app's package: the nearest directory with a `package.json` between `app_root` and `tako.toml`, or beside `tako.toml` when there is none, so configs for different packages in one directory keep separate files. Within that directory an existing `tako.d.ts` in `src/` or `app/` is preserved. Include `tako.d.ts` in the TypeScript project. Native source files go in `build.cwd` when configured, otherwise beside `tako.toml`. Rust consumers include the generated module explicitly. Native import generation uses the CLI and does not need Bun or the producer's compiler. Run `tako gen` explicitly for native applications before building them; JavaScript development and deployment also regenerate automatically.
 
 Generated native DTO names combine app, primitive, kind, and field, such as `MailSendEmailWorkflowPayload`. TypeScript imports use `MailSendEmailWorkflow`. Colliding generated names fail generation. The following examples use the `mail.send-email` definition above:
 

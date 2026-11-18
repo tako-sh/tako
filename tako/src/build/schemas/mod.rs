@@ -7,7 +7,7 @@ mod rust;
 mod types;
 mod typescript;
 
-pub use model::{Manifest, Primitive};
+pub use model::{COMMENT, Manifest, Primitive};
 pub use native::{generate_native, native_root};
 pub use resolve::{Resolved, resolve};
 use std::{fs, io, path::Path};

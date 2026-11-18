@@ -133,7 +133,9 @@ impl ConfigWatcher {
                 known_runtime_dirs.insert(dir.clone());
             }
         }
-        for dir in crate::build::js::generated_declaration_parent_dirs(&self.project_dir) {
+        let generated_dir =
+            crate::build::js::generated_output_dir(&self.project_dir, &watched_app_root);
+        for dir in crate::build::js::generated_declaration_parent_dirs(&generated_dir) {
             if dir != self.project_dir && dir.is_dir() {
                 let _ = watch_path(&debouncer, &dir, RecursiveMode::NonRecursive);
             }
@@ -195,7 +197,7 @@ impl ConfigWatcher {
                                 }
                             }
                             for dir in
-                                crate::build::js::generated_declaration_parent_dirs(&project_dir)
+                                crate::build::js::generated_declaration_parent_dirs(&generated_dir)
                             {
                                 if dir != project_dir && event.path == dir && dir.is_dir() {
                                     let _ = watch_path(
@@ -264,14 +266,15 @@ fn classify_path(
     {
         return Some(WatchChange::Migrations);
     }
-    let declaration_dirs = crate::build::js::generated_declaration_parent_dirs(project_dir);
+    let generated_dir = crate::build::js::generated_output_dir(project_dir, app_root);
+    let declaration_dirs = crate::build::js::generated_declaration_parent_dirs(&generated_dir);
     if declaration_dirs
         .iter()
         .any(|dir| path == dir.join("tako.imports.ts"))
     {
         return Some(WatchChange::GeneratedDeclarations);
     }
-    if crate::build::js::is_generated_declaration_path(project_dir, path)
+    if crate::build::js::is_generated_declaration_path(&generated_dir, path)
         || declaration_dirs
             .iter()
             .any(|dir| path == dir.join("tako.exports.d.ts"))
@@ -873,5 +876,29 @@ mod tests {
             ),
             Some(WatchChange::Workflows)
         );
+    }
+
+    #[test]
+    fn generated_files_in_the_app_package_do_not_restart() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project_dir = temp.path();
+        let package = project_dir.join("apps/dashboard");
+        let app_root = package.join("src");
+        std::fs::create_dir_all(&app_root).unwrap();
+        std::fs::write(package.join("package.json"), "{}").unwrap();
+        let config_path = project_dir.join("tako.dashboard.toml");
+        for file in ["tako.d.ts", "tako.imports.ts", "tako.exports.d.ts"] {
+            assert_eq!(
+                classify_path(
+                    project_dir,
+                    &app_root,
+                    &config_path,
+                    &package.join(file),
+                    None
+                ),
+                Some(WatchChange::GeneratedDeclarations),
+                "{file}"
+            );
+        }
     }
 }
