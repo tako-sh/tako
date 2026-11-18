@@ -1,4 +1,3 @@
-use super::server::build_server_implode_command;
 use super::*;
 use tempfile::TempDir;
 
@@ -40,14 +39,6 @@ fn find_tako_binaries_returns_existing_siblings() {
     assert_eq!(found.len(), 2);
     assert!(found[0].ends_with("tako"));
     assert!(found[1].ends_with("tako-dev-server"));
-}
-
-#[test]
-fn server_implode_command_uses_approved_helper() {
-    assert_eq!(
-        build_server_implode_command(),
-        crate::ssh::SshClient::run_as_root("/usr/local/bin/tako-server-service implode")
-    );
 }
 
 #[cfg(target_os = "macos")]

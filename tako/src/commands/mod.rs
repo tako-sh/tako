@@ -18,6 +18,7 @@ pub mod lifecycle;
 mod log_style;
 pub mod logs;
 pub mod project_context;
+pub(crate) mod project_resources;
 pub mod releases;
 pub mod run;
 pub mod scale;

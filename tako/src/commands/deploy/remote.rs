@@ -191,7 +191,8 @@ async fn prepare_deploy_metadata(
             version: config.version.clone(),
             path: release_dir.to_string(),
             routes: config.routes.clone(),
-            ssl: config.ssl.clone(),
+            ssl: ssl_binding_for_start_command(&config.ssl),
+            secrets_digest: config.secrets_digest.clone(),
             force: config.force,
         })
         .await?;
@@ -265,7 +266,7 @@ async fn prepare_release(
         .send(&Command::PrepareRelease {
             app: config.app_name.clone(),
             path: release_dir.to_string(),
-            secrets: config.secrets.clone(),
+            secrets_digest: config.secrets_digest.clone(),
             force: config.force,
         })
         .await?;
@@ -398,7 +399,6 @@ async fn send_deploy_command(
     config: &DeployConfig,
     client: &mut ManagementClient,
     release_dir: &str,
-    deploy_secrets: Option<std::collections::HashMap<String, String>>,
 ) -> Result<(), management_http::ManagementError> {
     let server_admin = client.can_manage_server();
     let response = client
@@ -408,10 +408,9 @@ async fn send_deploy_command(
             path: release_dir.to_string(),
             routes: config.routes.clone(),
             source_ip: config.source_ip,
-            secrets: deploy_secrets,
-            runtime_credentials: server_admin.then(|| config.runtime_credentials.clone()),
-            storages: server_admin.then(|| config.storages.clone()),
-            // Scoped deployers keep the bindings an administrator deployed.
+            secrets_digest: config.secrets_digest.clone(),
+            storages: Some(config.storages.clone()),
+            // Database bindings need grants, which only full clients make.
             databases: server_admin.then(|| config.databases.clone()),
             ssl: ssl_binding_for_start_command(&config.ssl),
             backup: config.backup.clone().map(Box::new),
@@ -574,11 +573,6 @@ pub(super) async fn deploy_to_server(
             )
         );
 
-        // Resolve secrets before the starting step to keep it fast.
-        let deploy_secrets = match query_remote_secrets_hash(&mut client, &config.app_name).await {
-            Some(remote_hash) if remote_hash == config.secrets_hash => None,
-            _ => Some(config.secrets.clone()),
-        };
         release_start_attempted = true;
 
         let start_result = if let Some(task_tree) = &task_tree {
@@ -587,15 +581,13 @@ pub(super) async fn deploy_to_server(
                 server_name,
                 "starting",
                 None,
-                async {
-                    send_deploy_command(config, &mut client, &release_dir, deploy_secrets).await
-                },
+                async { send_deploy_command(config, &mut client, &release_dir).await },
                 || async {},
             )
             .await
         } else {
             run_deploy_step("Starting…", "Started", use_spinner, async {
-                send_deploy_command(config, &mut client, &release_dir, deploy_secrets).await
+                send_deploy_command(config, &mut client, &release_dir).await
             })
             .await
         };
@@ -638,20 +630,25 @@ pub(super) async fn deploy_to_server(
 
 /// Query the remote server for the SHA-256 hash of an app's current secrets.
 /// Returns `None` if the query fails.
-pub(super) async fn query_remote_secrets_hash(
+/// Pin the app environment's secret snapshot on the leader server, after it
+/// holds every version this deploy published.
+pub(super) async fn query_secrets_digest(
     client: &mut ManagementClient,
     app_name: &str,
-) -> Option<String> {
+    published: Vec<tako_core::PublishedSecret>,
+) -> Result<String, String> {
     let response = client
-        .send(&Command::GetSecretsHash {
+        .send(&Command::SecretsDigest {
             app: app_name.to_string(),
+            published,
         })
         .await
-        .ok()?;
-    let data = release_response_result(response).ok()?;
-    data.get("hash")
-        .and_then(|hash| hash.as_str())
+        .map_err(|error| error.to_string())?;
+    let data = release_response_result(response)?;
+    data.get("digest")
+        .and_then(|digest| digest.as_str())
         .map(str::to_string)
+        .ok_or_else(|| "The server did not return a secret snapshot".to_string())
 }
 
 #[cfg(test)]

@@ -6,20 +6,18 @@ use std::os::unix::fs::PermissionsExt;
 use tempfile::TempDir;
 
 #[test]
-fn release_command_payload_includes_deploy_secrets() {
+fn release_command_payload_pins_the_secret_snapshot() {
     let cfg = DeployConfig {
         app_name: "my-app/production".to_string(),
         version: "v1".to_string(),
         routes: vec![],
         source_ip: tako_core::SourceIpMode::Auto,
-        secrets: HashMap::from([("DATABASE_URL".to_string(), "postgres://new".to_string())]),
-        runtime_credentials: HashMap::new(),
+        secrets_digest: Some("digest".to_string()),
         storages: HashMap::new(),
         databases: HashMap::new(),
         ssl: tako_core::SslBinding::default(),
         backup: None,
         force: true,
-        secrets_hash: String::new(),
         main: "index.ts".to_string(),
         use_unified_target_process: false,
         release_command: Some("bun run migrate".to_string()),
@@ -31,7 +29,7 @@ fn release_command_payload_includes_deploy_secrets() {
         version,
         path,
         command_line,
-        secrets,
+        secrets_digest,
         force,
         ..
     }) = cfg.release_command_payload("/opt/tako/apps/my-app/production/releases/v1")
@@ -44,10 +42,7 @@ fn release_command_payload_includes_deploy_secrets() {
     assert_eq!(path, "/opt/tako/apps/my-app/production/releases/v1");
     assert_eq!(command_line, "bun run migrate");
     assert!(force);
-    assert_eq!(
-        secrets.get("DATABASE_URL").map(String::as_str),
-        Some("postgres://new")
-    );
+    assert_eq!(secrets_digest.as_deref(), Some("digest"));
 }
 
 #[test]

@@ -25,6 +25,7 @@ pub(super) fn render_global_status(
     servers: &ServerInventory,
     server_names: &[String],
     server_results: &mut std::collections::HashMap<String, GlobalServerStatusResult>,
+    project: Option<&crate::commands::project_resources::ProjectResources>,
 ) {
     for server_name in server_names {
         let Some(global) = server_results.remove(server_name.as_str()) else {
@@ -36,7 +37,10 @@ pub(super) fn render_global_status(
             .filter(|d| !d.trim().is_empty())
             .map(str::to_string);
 
-        for line in format_server_status_lines(server_name, description.as_deref(), &global) {
+        let databases = super::server_databases(servers, server_name, project);
+        for line in
+            format_server_status_lines(server_name, description.as_deref(), &global, &databases)
+        {
             eprintln!("{line}");
         }
         eprintln!();
@@ -47,6 +51,7 @@ fn format_server_status_lines(
     server_name: &str,
     description: Option<&str>,
     global: &GlobalServerStatusResult,
+    databases: &[(String, Vec<String>)],
 ) -> Vec<String> {
     let mut lines = vec![format!("Server {}", output::strong(server_name))];
 
@@ -71,6 +76,12 @@ fn format_server_status_lines(
         lines.push(String::new());
         lines.push(format!("{}Apps", output::INDENT));
         lines.extend(format_app_lines(&global.apps));
+    }
+
+    if !databases.is_empty() {
+        lines.push(String::new());
+        lines.push(format!("{}Databases", output::INDENT));
+        lines.extend(format_database_lines(databases));
     }
 
     if let Some(desc) = description {
@@ -276,6 +287,113 @@ pub(super) fn app_state_summary(status: Option<&ServerStatusResult>) -> (String,
     }
 }
 
+/// One line per database homed on a server, naming the app environments of
+/// this project that bind it.
+fn format_database_lines(databases: &[(String, Vec<String>)]) -> Vec<String> {
+    let width = databases
+        .iter()
+        .map(|(name, _)| name.len())
+        .max()
+        .unwrap_or(0);
+    databases
+        .iter()
+        .map(|(name, bound_by)| {
+            let detail = if bound_by.is_empty() {
+                output::theme_muted("not bound by this project").to_string()
+            } else {
+                format!("bound by {}", bound_by.join(", "))
+            };
+            format!(
+                "{indent}{name:<width$}  {detail}",
+                indent = output::INDENT.repeat(2)
+            )
+        })
+        .collect()
+}
+
+/// The project's app environments and what each holds, after the servers.
+pub(super) fn render_project(project: &crate::commands::project_resources::ProjectResources) {
+    for line in format_project_lines(project) {
+        eprintln!("{line}");
+    }
+    eprintln!();
+}
+
+fn format_project_lines(
+    project: &crate::commands::project_resources::ProjectResources,
+) -> Vec<String> {
+    use crate::commands::project_resources::Access;
+    let mut lines = vec![format!("App {}", output::strong(&project.app))];
+    let width = project
+        .envs
+        .iter()
+        .map(|env| env.name.len())
+        .max()
+        .unwrap_or(0);
+    for env in &project.envs {
+        let mut header = vec![format!("{:<width$}", env.name)];
+        match (&env.network, &env.access) {
+            (_, Access::Local) => header.push("local only".to_string()),
+            (Some(network), Access::Full) => header.push(format!("network {network}")),
+            (Some(network), Access::Deploy) => {
+                header.push(format!("network {network} (deploy client)"))
+            }
+            (Some(network), _) => header.push(format!("network {network} (not a member)")),
+            (None, _) => {}
+        }
+        if !env.servers.is_empty() {
+            header.push(format!("servers {}", env.servers.join(", ")));
+        }
+        lines.push(format!("{}{}", output::INDENT, header.join("  ")));
+
+        let indent = output::INDENT.repeat(2);
+        let mut held = Vec::new();
+        if let Some(count) = env.secrets {
+            held.push(format!(
+                "{count} secret{}",
+                if count == 1 { "" } else { "s" }
+            ));
+        }
+        if let Some(credentials) = &env.credentials
+            && !credentials.is_empty()
+        {
+            held.push(format!("credentials {}", credentials.join(", ")));
+        }
+        for storage in &env.storages {
+            let missing = if storage.credentials == Some(false) {
+                " (no credentials)"
+            } else {
+                ""
+            };
+            held.push(format!(
+                "storage {} → {}{missing}",
+                storage.binding, storage.resource
+            ));
+        }
+        if env.backup_key == Some(true) {
+            held.push("backup key".to_string());
+        }
+        if !held.is_empty() {
+            lines.push(format!("{indent}{}", held.join("  ")));
+        }
+        if !env.databases.is_empty() {
+            let databases: Vec<String> = env
+                .databases
+                .iter()
+                .map(|db| match &db.server {
+                    Some(server) => format!("{} → {} on {server}", db.binding, db.database),
+                    None => format!("{} → {} (no network record)", db.binding, db.database),
+                })
+                .collect();
+            lines.push(format!("{indent}databases {}", databases.join(", ")));
+        }
+        if let Some(note) = &env.note {
+            lines.push(format!("{indent}{}", output::theme_muted(note)));
+        }
+    }
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,7 +449,7 @@ mod tests {
             error: None,
         };
 
-        let lines = format_server_status_lines("prod-a", None, &global);
+        let lines = format_server_status_lines("prod-a", None, &global, &[]);
 
         assert_eq!(
             lines,
@@ -439,7 +557,7 @@ mod tests {
             error: None,
         };
 
-        let lines = format_server_status_lines("prod-a", None, &global);
+        let lines = format_server_status_lines("prod-a", None, &global, &[]);
         assert_eq!(
             &lines[lines.len() - 2..],
             [
@@ -449,7 +567,7 @@ mod tests {
         );
 
         global.apps[0].status.app_status.as_mut().unwrap().recovery = None;
-        let lines = format_server_status_lines("prod-a", None, &global);
+        let lines = format_server_status_lines("prod-a", None, &global, &[]);
         assert_eq!(
             lines.last().unwrap(),
             "    web  healthy 0/0  production  abc123"
@@ -468,11 +586,108 @@ mod tests {
             error: Some("Remote management failed".to_string()),
         };
 
-        let lines = format_server_status_lines("prod-a", None, &global);
+        let lines = format_server_status_lines("prod-a", None, &global, &[]);
 
         assert_eq!(
             lines,
             vec!["Server prod-a", "  Error  Remote management failed"]
+        );
+    }
+
+    fn project_with(
+        envs: Vec<crate::commands::project_resources::EnvResources>,
+    ) -> crate::commands::project_resources::ProjectResources {
+        crate::commands::project_resources::ProjectResources {
+            app: "shop".into(),
+            config: crate::config::TakoToml::default(),
+            secrets: crate::config::SecretsStore::default(),
+            envs,
+            databases: Default::default(),
+        }
+    }
+
+    fn env(
+        name: &str,
+        access: crate::commands::project_resources::Access,
+    ) -> crate::commands::project_resources::EnvResources {
+        use crate::commands::project_resources::*;
+        let readable = matches!(access, Access::Full);
+        EnvResources {
+            name: name.into(),
+            network: Some("main".into()),
+            network_id: Some("0123456789abcdef0123456789abcdef".into()),
+            servers: vec!["edge-a".into()],
+            secrets: readable.then_some(3),
+            credentials: readable.then(|| vec!["postgres_url".into()]),
+            storages: vec![StorageBinding {
+                binding: "uploads".into(),
+                resource: "media".into(),
+                credentials: readable.then_some(false),
+            }],
+            backup_key: readable.then_some(true),
+            databases: vec![DatabaseBinding {
+                binding: "main".into(),
+                database: "orders".into(),
+                server: Some("edge-a".into()),
+            }],
+            note: (!readable).then(|| DEPLOY_CLIENT_NOTE.into()),
+            access,
+        }
+    }
+
+    #[test]
+    fn project_lines_show_each_environments_resources_without_values() {
+        use crate::commands::project_resources::Access;
+        let project = project_with(vec![
+            env("production", Access::Full),
+            env("staging", Access::Deploy),
+        ]);
+        let lines: Vec<String> = format_project_lines(&project)
+            .into_iter()
+            .map(|line| console::strip_ansi_codes(&line).to_string())
+            .collect();
+        assert_eq!(
+            lines,
+            vec![
+                "App shop",
+                "  production  network main  servers edge-a",
+                "    3 secrets  credentials postgres_url  storage uploads → media (no credentials)  backup key",
+                "    databases main → orders on edge-a",
+                "  staging     network main (deploy client)  servers edge-a",
+                "    storage uploads → media",
+                "    databases main → orders on edge-a",
+                "    Secrets, credentials and backup keys need a full client.",
+            ]
+        );
+    }
+
+    #[test]
+    fn server_lines_list_the_databases_homed_there() {
+        let global = GlobalServerStatusResult {
+            service_status: "active".into(),
+            server_version: None,
+            server_uptime: None,
+            process_uptime: None,
+            routes: vec![],
+            apps: vec![],
+            error: None,
+        };
+        let databases = vec![
+            ("audit".to_string(), vec![]),
+            ("orders".to_string(), vec!["shop/production".to_string()]),
+        ];
+        let lines: Vec<String> = format_server_status_lines("edge-a", None, &global, &databases)
+            .into_iter()
+            .map(|line| console::strip_ansi_codes(&line).to_string())
+            .collect();
+        assert_eq!(
+            &lines[2..],
+            &[
+                String::new(),
+                "  Databases".to_string(),
+                "    audit   not bound by this project".to_string(),
+                "    orders  bound by shop/production".to_string(),
+            ]
         );
     }
 }

@@ -34,7 +34,7 @@ fn configure(
         .request()
         .device_id_for(&profile.snapshot().network.id)?;
     let permissions = profile.snapshot().permissions(&own, super::now()?)?;
-    let Some(ref user) = permissions.ssh_user else {
+    let Some(ref user) = permissions.ssh_user() else {
         return if write { remove(alias) } else { Ok(()) };
     };
     let directory = directory(alias)?;

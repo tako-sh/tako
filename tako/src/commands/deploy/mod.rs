@@ -58,16 +58,16 @@ struct DeployConfig {
     version: String,
     routes: Vec<String>,
     source_ip: tako_core::SourceIpMode,
-    secrets: HashMap<String, String>,
-    runtime_credentials: HashMap<String, String>,
+    /// The app environment's secret snapshot, pinned by the leader server.
+    /// Servers resolve secret values from it; the client never sends them.
+    secrets_digest: Option<String>,
+    /// S3 bindings name their resource and carry no access keys.
     storages: HashMap<String, tako_core::StorageBinding>,
     ssl: tako_core::SslBinding,
     backup: Option<tako_core::BackupBinding>,
     /// Database bindings, sent with the release command and the deploy.
     databases: HashMap<String, tako_core::DatabaseBinding>,
     force: bool,
-    /// SHA-256 hash of the decrypted secrets for this deploy.
-    secrets_hash: String,
     main: String,
     use_unified_target_process: bool,
 
@@ -101,8 +101,6 @@ struct PreflightPhaseResult {
 struct BuildPhaseResult {
     version: String,
     manifest_main: String,
-    deploy_secrets: HashMap<String, String>,
-    deploy_runtime_credentials: HashMap<String, String>,
     deploy_storages: HashMap<String, tako_core::StorageBinding>,
     deploy_ssl: tako_core::SslBinding,
     deploy_backup: Option<tako_core::BackupBinding>,
@@ -147,7 +145,7 @@ impl DeployConfig {
             path: release_dir.to_string(),
             command_line: command_line.clone(),
             vars: HashMap::new(),
-            secrets: self.secrets.clone(),
+            secrets_digest: self.secrets_digest.clone(),
             databases: self.databases.clone(),
             force: self.force,
         })
@@ -186,8 +184,16 @@ async fn run_async(
                 .get(&env)
                 .and_then(|env| env.network.as_deref());
             let servers = ServerInventory::load(network).map_err(|e| e.to_string())?;
-            let secrets = SecretsStore::load_for_environment(&project_dir, &tako_config, &env)
+            // Deploy clients never read local secrets or keys: servers resolve
+            // values from the network at deploy.
+            let full = super::helpers::can_configure_bindings(&tako_config, &env)
                 .map_err(|e| e.to_string())?;
+            let secrets = if full {
+                SecretsStore::load_for_environment(&project_dir, &tako_config, &env)
+                    .map_err(|e| e.to_string())?
+            } else {
+                SecretsStore::default()
+            };
 
             let config_result = validate_full_config(&tako_config, &servers, Some(&env));
             if config_result.has_errors() {
@@ -242,21 +248,27 @@ async fn run_async(
 
     let source_root = source_bundle_root(&project_dir, preflight_runtime_adapter.id());
 
+    // Code generation and the lockfile check run project code. A client
+    // identity's keys stay off disk while they do.
     if !output::is_dry_run() && preflight_runtime_adapter.preset_group() == PresetGroup::Js {
-        js::write_generated_files_with_schemas(
-            &project_dir,
-            preflight_runtime_adapter,
-            &tako_config,
-            Some(&env),
-            false,
-        )?;
+        crate::network::identity::without_keys(|| {
+            js::write_generated_files_with_schemas(
+                &project_dir,
+                preflight_runtime_adapter,
+                &tako_config,
+                Some(&env),
+                false,
+            )
+        })??;
     }
 
     if !output::is_dry_run() && should_run_bun_lockfile_preflight(preflight_runtime_adapter) {
-        output::with_spinner_silent("Checking Bun lockfile", || {
-            let _t = output::timed("Bun lockfile check");
-            run_bun_lockfile_preflight(&source_root)
-        })
+        crate::network::identity::without_keys(|| {
+            output::with_spinner_silent("Checking Bun lockfile", || {
+                let _t = output::timed("Bun lockfile check");
+                run_bun_lockfile_preflight(&source_root)
+            })
+        })?
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
     }
 
@@ -287,7 +299,8 @@ async fn run_async(
                 .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?,
         )
     };
-    if !output::is_dry_run() {
+    let configure_bindings = super::helpers::can_configure_bindings(&tako_config, &env)?;
+    if configure_bindings && !output::is_dry_run() {
         secrets = tokio::task::block_in_place(|| {
             crate::network::secrets::sync_environment(
                 &project_dir,
@@ -299,13 +312,14 @@ async fn run_async(
             )
         })?;
     }
-    let configure_bindings = super::helpers::can_configure_bindings(&tako_config, &env)?;
-    let secrets_result = validate_secrets_for_deployment(&secrets, &env);
-    if secrets_result.has_errors() {
-        return Err(format!("Secret errors: {}", secrets_result.errors.join("; ")).into());
-    }
-    for warning in secrets_result.warnings {
-        output::warning(&warning);
+    if configure_bindings {
+        let secrets_result = validate_secrets_for_deployment(&secrets, &env);
+        if secrets_result.has_errors() {
+            return Err(format!("Secret errors: {}", secrets_result.errors.join("; ")).into());
+        }
+        for warning in secrets_result.warnings {
+            output::warning(&warning);
+        }
     }
     let routes = required_env_routes(&tako_config, &env)
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
@@ -426,9 +440,9 @@ async fn run_async(
     // Check the secrets key now, before starting the task tree, so missing-key
     // errors are shown against a clean terminal instead of being overpainted by
     // the live viewport.
-    if !output::is_dry_run() {
+    if configure_bindings && !output::is_dry_run() {
         crate::commands::secret::ensure_secret_key_available(&env, &secrets, Some(&project_dir))?;
-        if configure_bindings {
+        {
             crate::commands::storage::ensure_backup_keys_for_env(
                 &project_dir,
                 &env,
@@ -438,30 +452,34 @@ async fn run_async(
         }
     }
 
-    secrets = tokio::task::block_in_place(|| {
-        crate::network::secrets::sync_environment(
+    // Only full clients publish secrets. A deploy client's servers apply what
+    // full clients last published.
+    if configure_bindings {
+        secrets = tokio::task::block_in_place(|| {
+            crate::network::secrets::sync_environment(
+                &project_dir,
+                &tako_config,
+                &app_name,
+                &env,
+                true,
+                false,
+            )
+        })?;
+        let final_validation = config::validate_release_secret_snapshot(
             &project_dir,
             &tako_config,
-            &app_name,
+            &secrets,
             &env,
-            true,
-            false,
-        )
-    })?;
-    let final_validation = config::validate_release_secret_snapshot(
-        &project_dir,
-        &tako_config,
-        &secrets,
-        &env,
-        server_names.len(),
-        configure_bindings,
-    );
-    if final_validation.has_errors() {
-        return Err(format!(
-            "Secret errors after network synchronization:\n  {}",
-            final_validation.errors.join("\n  ")
-        )
-        .into());
+            server_names.len(),
+            configure_bindings,
+        );
+        if final_validation.has_errors() {
+            return Err(format!(
+                "Secret errors after network synchronization:\n  {}",
+                final_validation.errors.join("\n  ")
+            )
+            .into());
+        }
     }
 
     let deploy_task_tree = should_use_deploy_task_tree()
@@ -483,25 +501,55 @@ async fn run_async(
         force,
         deploy_task_tree.clone(),
     ));
-    let mut build_handle = tokio::spawn(prepare_build_phase(
+    let build = prepare_build_phase(
         project_dir.clone(),
         source_root.clone(),
         eff_app_dir.clone(),
         app_name.clone(),
         env.clone(),
         tako_config.clone(),
-        secrets.clone(),
-        configure_bindings,
         preflight_preset_ref.clone(),
         preflight_runtime_adapter,
         server_targets.clone(),
         build_groups.clone(),
         deploy_task_tree.clone(),
         description.map(str::to_owned),
-    ));
+    );
 
     let mut preflight_result: Option<Result<PreflightPhaseResult, String>> = None;
     let mut build_result: Option<BuildPhaseResult> = None;
+
+    // The build runs project code. A client identity signs the server checks
+    // first, then keeps its keys off disk until the build finishes.
+    let mut suspended_keys = None;
+    if crate::network::identity::is_active() {
+        let result = (&mut preflight_handle)
+            .await
+            .map_err(|e| format!("Server checks task failed: {}", e))
+            .and_then(|result| result);
+        match result {
+            Ok(preflight) => {
+                if deploy_task_tree.is_none() {
+                    output::success_with_elapsed(
+                        &format_preflight_complete_message(&server_names),
+                        preflight.elapsed,
+                    );
+                }
+                preflight_result = Some(Ok(preflight));
+            }
+            Err(error) => {
+                if let Some(task_tree) = &deploy_task_tree {
+                    task_tree.abort_incomplete("Aborted");
+                    task_tree.set_error_summary("Deploy failed".to_string());
+                    task_tree.finalize();
+                    return Err(output::silent_exit_error().into());
+                }
+                return Err(error.into());
+            }
+        }
+        suspended_keys = crate::network::identity::suspend_keys()?;
+    }
+    let mut build_handle = tokio::spawn(build);
 
     while preflight_result.is_none() || build_result.is_none() {
         tokio::select! {
@@ -563,6 +611,10 @@ async fn run_async(
         }
     }
 
+    if let Some(suspended_keys) = suspended_keys {
+        suspended_keys.resume()?;
+    }
+
     preflight_result
         .unwrap()
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
@@ -570,8 +622,6 @@ async fn run_async(
     let BuildPhaseResult {
         version,
         manifest_main,
-        deploy_secrets,
-        deploy_runtime_credentials,
         deploy_storages,
         deploy_ssl,
         deploy_backup,
@@ -581,7 +631,6 @@ async fn run_async(
 
     // ===== Deploy =====
 
-    let secrets_hash = tako_core::compute_secrets_hash(&deploy_secrets);
     let deployment_app_name = tako_core::deployment_app_id(&app_name, &env);
     let leader_server = server_names
         .first()
@@ -610,19 +659,33 @@ async fn run_async(
         databases::apply_peer_keys(&mut database_plan, &prepared.peer_keys);
         granted = Some(prepared);
     }
+    // Pin the environment's secret snapshot on the leader once it holds what
+    // this deploy published. Every server then applies exactly that snapshot.
+    let secrets_digest = if output::is_dry_run() {
+        None
+    } else {
+        let leader = servers
+            .get(&leader_server)
+            .ok_or("Leader server is missing from the server inventory")?;
+        let mut client = crate::management_http::ManagementClient::for_server(leader).await?;
+        let published = std::mem::take(&mut secrets.published);
+        Some(
+            remote::query_secrets_digest(&mut client, &deployment_app_name, published)
+                .await
+                .map_err(|error| format!("Could not pin this deploy's secrets: {error}"))?,
+        )
+    };
     let deploy_config = Arc::new(DeployConfig {
         app_name: deployment_app_name.clone(),
         version: version.clone(),
         routes: routes.clone(),
         source_ip,
-        secrets: deploy_secrets,
-        runtime_credentials: deploy_runtime_credentials,
+        secrets_digest,
         storages: deploy_storages,
         ssl: deploy_ssl,
         backup: deploy_backup,
         databases: crate::commands::sqlite::target::wire_bindings(&database_plan),
         force,
-        secrets_hash,
         main: manifest_main,
         use_unified_target_process: use_unified_js_target_process,
         release_command,

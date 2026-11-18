@@ -52,7 +52,7 @@ The network section reports each server's handshake:
 - **refused**: nothing is listening on that UDP port, or a firewall is rejecting it. Check that `tako-server` is running and that the advertised endpoint is the server's current public address.
 - **reachable** but `tako ssh` still fails: the server's private SSH listener did not answer. Check `tako-server` on that host.
 
-There is no relay for servers behind NAT or networks that block UDP. Use the provider console or administrator SSH to recover access.
+There is no relay for servers behind NAT or networks that block UDP. Use the provider console or root SSH to recover access.
 
 ## `.test` Hostnames Do Not Resolve
 
@@ -196,7 +196,7 @@ For a hosted database, check `backup.last_error` and `backup.last_snapshot` in `
 
 ## Secret Or Credential Key Problems
 
-For shared network values, check `tako network status --json`, device permissions, and `tako network sync` first. A newly enrolled administrator can decrypt published values; a scoped client can decrypt app secrets only for its granted app/environments. Unpublished drafts remain on the original worktree.
+For values in the network state, check `tako network status --json`, device permissions, and `tako network sync` first. A newly enrolled full client can decrypt the network state; a deploy client cannot decrypt any of it. Unpublished drafts remain on the original worktree.
 
 For a legacy tracked secret file or local encrypted draft with a missing environment key, recover the original key:
 
@@ -212,7 +212,7 @@ On macOS, iCloud Keychain storage requires the signed `Tako.app` CLI. If Keychai
 
 ## Server Commands Fail
 
-Normal app operations use signed, pinned HTTPS with an enrolled device identity. SSH is used for setup, repair, reload, upgrade, and uninstall flows.
+Normal app operations use signed, pinned HTTPS with an enrolled device identity. SSH is used for setup, repair, reload, upgrade, and remove flows.
 
 If a server is unreachable:
 

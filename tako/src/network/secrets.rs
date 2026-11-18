@@ -48,10 +48,11 @@ fn lock(project: &Path) -> Result<std::fs::File> {
     if !ignore.try_exists()? {
         super::write_bytes(&ignore, b"*\n", false)?;
     }
-    let lock = super::private_file(&directory.join("secrets.lock"), true)?;
+    let lock = super::private_file(&directory.join("state.lock"), true)?;
     lock.lock()?;
     Ok(lock)
 }
+
 fn read_workspace(project: &Path) -> Result<Workspace> {
     let path = SecretsStore::default_path(project);
     if path.try_exists()? {
@@ -255,11 +256,19 @@ pub(crate) fn last_changes(
     };
     if let Some(cache) = read_cache(alias)? {
         let profile = super::load_profile(alias)?;
+        // Clients keep one name across their keys, so history reads the same
+        // after a key is replaced or a client comes back.
+        let clients = profile.snapshot().client_names();
         let names: BTreeMap<_, _> = profile
             .snapshot()
             .members
             .iter()
-            .map(|member| (&member.device_id, member.request.name.as_str()))
+            .map(|member| {
+                let name = clients
+                    .get(&member.device_id)
+                    .map_or(member.request.name.as_str(), String::as_str);
+                (&member.device_id, name)
+            })
             .collect();
         for record in &cache.records {
             if record.address.scope == scope
@@ -394,6 +403,7 @@ pub(crate) fn sync_environment(
     let (profile, cache) = pull(&alias, Some(scope.clone()))?;
     merge_remote(&mut state, env, &scope, &profile, &cache)?;
     write_workspace(project, &state)?;
+    let mut published = Vec::new();
     if publish {
         if retry_expired {
             let now = super::now()?;
@@ -402,12 +412,13 @@ pub(crate) fn sync_environment(
                 .retain(|pending| pending.mutation.expires_at > now);
             write_workspace(project, &state)?;
         }
-        publish_changes(project, &mut state, env, &scope, &alias, &profile, None)?;
+        published = publish_changes(project, &mut state, env, &scope, &alias, &profile, None)?;
         let (profile, cache) = pull(&alias, Some(scope.clone()))?;
         merge_remote(&mut state, env, &scope, &profile, &cache)?;
         write_workspace(project, &state)?;
     }
     let mut values = state.values;
+    values.published = published;
     values.targets.insert(env.into(), (scope, cache.network));
     values.loaded = Some(values.environments.clone());
     Ok(values)
@@ -516,8 +527,9 @@ fn publish_changes(
     profile: &Profile,
     // Publish only changes of this kind; other drafts stay local.
     only: Option<RecordKind>,
-) -> Result<()> {
+) -> Result<Vec<tako_core::PublishedSecret>> {
     let network = &profile.snapshot().network.id;
+    let mut published = Vec::new();
     // Finish durable commands first, even when a subsequent edit superseded
     // their local values. They retain their original server-assigned revision.
     // Commands of other kinds stay queued, in order, for the next full sync.
@@ -561,6 +573,14 @@ fn publish_changes(
         {
             return Err("Secret publication response does not match the pending command".into());
         }
+        published.push(tako_core::PublishedSecret {
+            kind: serde_json::to_value(pending.mutation.address.kind)?
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            name: pending.mutation.address.name.clone(),
+            revision: record.revision,
+        });
         let entry = bind(state, env, scope, network)?;
         let key = RowKey {
             kind: pending.mutation.address.kind,
@@ -580,7 +600,7 @@ fn publish_changes(
         .filter(|key| only.is_none_or(|kind| key.kind == kind))
         .collect();
     if dirty.is_empty() {
-        return Ok(());
+        return Ok(published);
     }
     let issuer = super::client::available_server(profile)?;
     let members = profile.snapshot().effective_members(super::now()?)?;
@@ -638,7 +658,10 @@ fn publish_changes(
     write_workspace(project, state)?;
     // The second pass only drains the just-persisted operations. No new dirty
     // records remain once their exact local values become the baseline.
-    publish_changes(project, state, env, scope, alias, profile, only)
+    published.extend(publish_changes(
+        project, state, env, scope, alias, profile, only,
+    )?);
+    Ok(published)
 }
 
 #[cfg(test)]

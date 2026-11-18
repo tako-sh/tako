@@ -213,12 +213,18 @@ where
                 {
                     return error(StatusCode::INTERNAL_SERVER_ERROR, &message);
                 }
+                policy::keep_database_bindings(&permissions, &mut command);
                 if let Err(message) =
                     authorize_command(&state, &permissions, scope.as_ref(), &command)
                 {
                     return error(StatusCode::FORBIDDEN, &message);
                 }
-                rpc_response(state.handle_command(command).await)
+                let caller = if permissions.is_full() {
+                    crate::operations::Caller::Full
+                } else {
+                    crate::operations::Caller::Deploy
+                };
+                rpc_response(state.handle_command_as(command, caller).await)
             })
             .await
             {
@@ -258,7 +264,10 @@ where
             let command = Command::Status {
                 app: metadata.app.clone(),
             };
-            if authorize_command(&state, &permissions, Some(&scope), &command).is_err()
+            // Logs can contain secrets, so they need full access; allowing
+            // Status alone does not allow them.
+            if !permissions.is_full()
+                || authorize_command(&state, &permissions, Some(&scope), &command).is_err()
                 || upload::confined_logs(&state.runtime_config().data_dir, &metadata.app).is_err()
             {
                 return error(StatusCode::FORBIDDEN, "Log access denied");
@@ -328,7 +337,7 @@ fn inherit_scoped_backup(
     scope: Option<&AppEnv>,
     command: &mut Command,
 ) -> Result<(), String> {
-    if !permissions.server_admin
+    if !permissions.is_full()
         && let (Some(scope), Command::Deploy { backup, .. }) = (scope, command)
         && backup.is_none()
     {
@@ -359,20 +368,6 @@ fn authorize_command(
     } else {
         None
     };
-    let ssl = scope
-        .map(|scope| state.state_store.get_ssl(scope.as_str()))
-        .transpose()
-        .map_err(fail)?
-        .flatten()
-        .unwrap_or_default();
-    let credentials = scope
-        .map(|scope| state.state_store.get_runtime_credentials(scope.as_str()))
-        .transpose()
-        .map_err(fail)?;
-    let storages = scope
-        .map(|scope| state.state_store.get_storages(scope.as_str()))
-        .transpose()
-        .map_err(fail)?;
     let databases: Option<std::collections::HashMap<String, tako_core::DatabaseBinding>> = scope
         .map(|scope| state.state_store.get_app_databases(scope.as_str()))
         .transpose()
@@ -383,29 +378,8 @@ fn authorize_command(
                 .map(|(name, binding)| (name, binding.binding))
                 .collect()
         });
-    let backup = scope
-        .map(|scope| state.state_store.get_backup(scope.as_str()))
-        .transpose()
-        .map_err(fail)?
-        .flatten();
-    let app = match (
-        scope,
-        stored.as_ref(),
-        credentials.as_ref(),
-        storages.as_ref(),
-        databases.as_ref(),
-    ) {
-        (Some(scope), Some(stored), Some(runtime_credentials), Some(storages), Some(databases)) => {
-            Some(ProvisionedApp {
-                scope,
-                routes: &stored.routes,
-                ssl: &ssl,
-                runtime_credentials,
-                storages,
-                databases,
-                backup: backup.as_ref(),
-            })
-        }
+    let app = match (scope, stored.as_ref(), databases.as_ref()) {
+        (Some(scope), Some(_), Some(databases)) => Some(ProvisionedApp { scope, databases }),
         _ => None,
     };
     policy::authorize_command(
@@ -415,79 +389,6 @@ fn authorize_command(
         &PolicyContext { data_dir, app },
     )
     .map_err(|denial| denial.to_string())?;
-    if !permissions.server_admin {
-        // Check the bindings the handler will actually activate, including
-        // Compose metadata from an uploaded rollback target. The management
-        // lock keeps the provisioned snapshot stable through dispatch.
-        let target = match command {
-            Command::Deploy {
-                path,
-                source_ip,
-                routes,
-                ..
-            } => Some((
-                std::path::PathBuf::from(path),
-                Some((*source_ip, routes.clone())),
-            )),
-            Command::Rollback { app, version } => Some((
-                crate::release::app_release_root(data_dir, app, version),
-                None,
-            )),
-            _ => None,
-        };
-        if let Some((path, deployment)) = target {
-            let stored = stored
-                .as_ref()
-                .ok_or("Cannot read provisioned route state")?;
-            let app = stored.config.deployment_id();
-            let current = state
-                .state_store
-                .release_routing(&app, &stored.config.version)
-                .map_err(fail)?
-                .unwrap_or_else(|| {
-                    crate::state_store::ReleaseRouting::new(
-                        stored.routes.clone(),
-                        stored.config.source_ip,
-                        None,
-                        &stored.config.environment,
-                    )
-                });
-            let manifest = crate::app_command::load_release_manifest(&path)
-                .map_err(|_| "Cannot read target release route state")?;
-            let (source_ip, native_routes) = match deployment {
-                Some(value) => value,
-                None => {
-                    let version = match command {
-                        Command::Rollback { version, .. } => version,
-                        _ => unreachable!(),
-                    };
-                    let historical = state
-                        .state_store
-                        .release_routing(&app, version)
-                        .map_err(fail)?;
-                    historical
-                        .map(|routing| (routing.source_ip, routing.routes))
-                        .unwrap_or((current.source_ip, current.routes.clone()))
-                }
-            };
-            let routes = manifest
-                .compose
-                .as_ref()
-                // The handler activates the deployment's environment, never
-                // the one an uploaded manifest claims.
-                .map(|compose| compose.routes(&stored.config.environment))
-                .unwrap_or(native_routes);
-            let target = crate::state_store::ReleaseRouting::new(
-                routes,
-                source_ip,
-                manifest.compose.as_ref(),
-                &stored.config.environment,
-            );
-            if target.source_ips != current.source_ips {
-                return Err("Scoped deployment must preserve provisioned routes and source-IP policies; a server administrator must provision changes.".into());
-            }
-        }
-    }
     if let policy::CommandClass::Application { app } = policy::classify(command) {
         upload::confined_directory(&crate::release::app_root(data_dir, app).join("shared/logs"))
             .map_err(|_| "Managed shared log directory must not redirect".to_string())?;

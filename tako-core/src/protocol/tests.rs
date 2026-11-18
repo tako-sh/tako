@@ -137,7 +137,7 @@ fn test_prepare_release_command_roundtrip() {
     let cmd = Command::PrepareRelease {
         app: "my-app".to_string(),
         path: "/opt/tako/apps/my-app/releases/v1".to_string(),
-        secrets: HashMap::from([("DATABASE_PASSWORD".into(), "new-deployment-secret".into())]),
+        secrets_digest: Some("digest".into()),
         force: false,
     };
     let json = serde_json::to_string(&cmd).unwrap();
@@ -147,12 +147,12 @@ fn test_prepare_release_command_roundtrip() {
         Command::PrepareRelease {
             app,
             path,
-            secrets,
+            secrets_digest,
             force,
         } => {
             assert_eq!(app, "my-app");
             assert_eq!(path, "/opt/tako/apps/my-app/releases/v1");
-            assert_eq!(secrets["DATABASE_PASSWORD"], "new-deployment-secret");
+            assert_eq!(secrets_digest.as_deref(), Some("digest"));
             assert!(!force);
         }
         _ => panic!("Expected PrepareRelease command"),
@@ -173,8 +173,9 @@ fn release_upload_commands_roundtrip() {
             routes: vec!["*.example.com".to_string()],
             ssl: SslBinding {
                 provider: SslProvider::LetsEncrypt,
-                cloudflare_api_token: Some("token".to_string()),
+                cloudflare_api_token: None,
             },
+            secrets_digest: Some("digest".to_string()),
             force: false,
         },
         Command::CleanupRelease {
@@ -212,11 +213,7 @@ fn test_deploy_command_serialization_includes_scaling() {
         path: "/opt/tako/apps/my-app/releases/v1".to_string(),
         routes: vec!["example.com".to_string()],
         source_ip: SourceIpMode::Auto,
-        secrets: Some(HashMap::from([(
-            "API_KEY".to_string(),
-            "secret123".to_string(),
-        )])),
-        runtime_credentials: None,
+        secrets_digest: Some("digest".to_string()),
         storages: None,
         databases: None,
         ssl: SslBinding::default(),
@@ -225,7 +222,7 @@ fn test_deploy_command_serialization_includes_scaling() {
     };
     let json = serde_json::to_string(&cmd).unwrap();
     assert!(json.contains(r#""command":"deploy""#));
-    assert!(json.contains(r#""secrets":{"API_KEY":"secret123"}"#));
+    assert!(json.contains(r#""secrets_digest":"digest""#));
 }
 
 #[test]
@@ -236,8 +233,7 @@ fn test_deploy_command_serialization_includes_ssl_binding() {
         path: "/opt/tako/apps/my-app/releases/v1".to_string(),
         routes: vec!["example.com".to_string()],
         source_ip: SourceIpMode::Auto,
-        secrets: None,
-        runtime_credentials: None,
+        secrets_digest: None,
         storages: None,
         databases: None,
         ssl: SslBinding {
@@ -259,6 +255,7 @@ fn backup_binding_serializes_backup_keys() {
     let binding = BackupBinding {
         storage: StorageBinding {
             provider: crate::StorageProvider::S3,
+            resource: None,
             bucket: Some("bucket".to_string()),
             endpoint: Some("https://s3.example.com".to_string()),
             region: Some("auto".to_string()),
@@ -443,8 +440,7 @@ fn test_deploy_command_serialization_includes_source_ip_mode() {
         path: "/opt/tako/apps/my-app/releases/v1".to_string(),
         routes: vec!["example.com".to_string()],
         source_ip: SourceIpMode::TrustedProxy,
-        secrets: None,
-        runtime_credentials: None,
+        secrets_digest: None,
         storages: None,
         databases: None,
         ssl: SslBinding::default(),
@@ -470,7 +466,7 @@ fn test_deploy_command_deserialization_defaults_secrets_when_missing() {
     match cmd {
         Command::Deploy {
             source_ip,
-            secrets,
+            secrets_digest,
             storages,
             ssl,
             backup,
@@ -478,7 +474,7 @@ fn test_deploy_command_deserialization_defaults_secrets_when_missing() {
             ..
         } => {
             assert_eq!(source_ip, SourceIpMode::Auto);
-            assert!(secrets.is_none());
+            assert!(secrets_digest.is_none());
             assert!(storages.is_none());
             assert_eq!(ssl.provider, SslProvider::LetsEncrypt);
             assert!(backup.is_none());
@@ -885,8 +881,7 @@ fn test_deploy_with_none_secrets_keeps_existing() {
         path: "/opt/tako/apps/my-app/releases/v1".to_string(),
         routes: vec!["example.com".to_string()],
         source_ip: SourceIpMode::Auto,
-        secrets: None,
-        runtime_credentials: None,
+        secrets_digest: None,
         storages: None,
         databases: None,
         ssl: SslBinding::default(),
@@ -898,14 +893,14 @@ fn test_deploy_with_none_secrets_keeps_existing() {
     match parsed {
         Command::Deploy {
             source_ip,
-            secrets,
+            secrets_digest,
             storages,
             ssl,
             backup,
             ..
         } => {
             assert_eq!(source_ip, SourceIpMode::Auto);
-            assert!(secrets.is_none());
+            assert!(secrets_digest.is_none());
             assert!(storages.is_none());
             assert_eq!(ssl.provider, SslProvider::LetsEncrypt);
             assert!(backup.is_none());
@@ -923,7 +918,7 @@ fn parses_run_release_command() {
             "path": "/var/lib/tako/my-app/releases/abc1234",
             "command_line": "bun run db:migrate",
             "vars": {"NODE_ENV": "production"},
-            "secrets": {"DATABASE_URL": "postgres://x"}
+            "secrets_digest": "digest"
         }"#;
     let cmd: Command = serde_json::from_str(json).unwrap();
     match cmd {
@@ -933,7 +928,7 @@ fn parses_run_release_command() {
             path,
             command_line,
             vars,
-            secrets,
+            secrets_digest,
             databases,
             force,
         } => {
@@ -943,10 +938,7 @@ fn parses_run_release_command() {
             assert!(path.contains("releases"));
             assert_eq!(command_line, "bun run db:migrate");
             assert_eq!(vars.get("NODE_ENV").map(String::as_str), Some("production"));
-            assert_eq!(
-                secrets.get("DATABASE_URL").map(String::as_str),
-                Some("postgres://x")
-            );
+            assert_eq!(secrets_digest.as_deref(), Some("digest"));
             assert!(!force);
         }
         _ => panic!("Expected RunRelease command"),

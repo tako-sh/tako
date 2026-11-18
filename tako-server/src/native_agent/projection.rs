@@ -59,20 +59,20 @@ pub(super) fn desired(
     let effective = snapshot.effective_members(now)?;
     let serving = effective
         .get(&config.server_id)
-        .is_some_and(|m| matches!(m.kind, MemberKind::Server(_)) && m.permissions.server_admin);
+        .is_some_and(|m| matches!(m.kind, MemberKind::Server(_)) && m.permissions.is_full());
     let mut peers = Vec::new();
     if serving && !isolate {
         for (id, member) in effective {
-            if id == config.server_id {
+            // Deploy clients manage over pinned HTTPS only: no peer, no shell.
+            if id == config.server_id || !member.permissions.is_full() {
                 continue;
             }
-            // The host service intentionally grants only the service account.
-            // Unsupported user grants do not become a broader `tako` grant.
-            let ssh = member
-                .permissions
-                .ssh_user
-                .as_ref()
-                .filter(|u| u.as_str() == "tako");
+            // The host service grants only the service account, and only to
+            // full clients. Servers manage each other without a shell.
+            let ssh = matches!(member.kind, MemberKind::Laptop)
+                .then(|| member.permissions.ssh_user())
+                .flatten();
+            let ssh = ssh.as_ref();
             peers.push(Peer {
                 device_id: id,
                 name: member.request.name.as_str().to_owned(),

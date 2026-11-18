@@ -187,7 +187,7 @@ impl ServiceDirectory {
         let effective = registry.effective_members(now).map_err(|e| e.to_string())?;
         let local = effective
             .get(&self.local_server)
-            .filter(|m| matches!(m.kind, MemberKind::Server(_)) && m.permissions.server_admin)
+            .filter(|m| matches!(m.kind, MemberKind::Server(_)) && m.permissions.is_full())
             .ok_or("local server is not admitted")?;
         let address = self.network.address(&local.request.wg_public_key);
         let mut peers = BTreeSet::new();
@@ -197,7 +197,7 @@ impl ServiceDirectory {
         let mut valid_until = now.saturating_add(MAX_LEASE_SECONDS);
         for member in effective.values() {
             if matches!(member.kind, MemberKind::Server(_))
-                && member.permissions.server_admin
+                && member.permissions.is_full()
                 && member.wg_verified
             {
                 servers.insert(

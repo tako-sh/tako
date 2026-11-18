@@ -253,7 +253,8 @@ fn dev_start_is_finite_and_dry_run_is_exposed_only_where_supported() {
         "tako_scale",
         "tako_secrets_sync",
         "tako_secrets_clear",
-        "tako_network_server_uninstall",
+        "tako_network_server_remove",
+        "tako_network_server_revoke",
         "tako_workflows_retry",
     ] {
         assert!(

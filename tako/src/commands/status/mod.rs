@@ -64,7 +64,10 @@ struct GlobalServerStatusResult {
 #[cfg(test)]
 static LOCAL_OFFSET: std::sync::OnceLock<::time::UtcOffset> = std::sync::OnceLock::new();
 
-pub async fn run(json: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(
+    json: bool,
+    config: Option<&std::path::Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut servers = super::helpers::load_management_servers(None, None).await?;
 
     if !json
@@ -78,11 +81,38 @@ pub async fn run(json: bool) -> Result<(), Box<dyn std::error::Error>> {
         servers = crate::commands::helpers::load_management_servers(None, None).await?;
     }
 
-    run_global_status(&servers, json).await
+    let project = load_project(config, &servers);
+    run_global_status(&servers, project.as_ref(), json).await
+}
+
+/// The resources of the project in or named by `config`, when there is one.
+/// Status still renders servers when they can't be read.
+fn load_project(
+    config: Option<&std::path::Path>,
+    servers: &ServerInventory,
+) -> Option<super::project_resources::ProjectResources> {
+    let context = match super::project_context::resolve_optional(config) {
+        Ok(Some(context)) => context,
+        Ok(None) => return None,
+        Err(error) => {
+            tracing::debug!("No project for status: {error}");
+            return None;
+        }
+    };
+    let _t = output::timed("Read project resources");
+    match tokio::task::block_in_place(|| super::project_resources::load(&context, servers)) {
+        Ok(project) => Some(project),
+        Err(error) => {
+            output::warning(&format!("Could not read the project's resources: {error}"));
+            tracing::warn!("Could not read the project's resources: {error}");
+            None
+        }
+    }
 }
 
 async fn run_global_status(
     servers: &ServerInventory,
+    project: Option<&super::project_resources::ProjectResources>,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if servers.is_empty() {
@@ -91,6 +121,7 @@ async fn run_global_status(
                 "ok": true,
                 "command": "status",
                 "servers": [],
+                "project": project.map(json_project),
             }))?;
         } else {
             output::warning("No servers configured.");
@@ -100,6 +131,9 @@ async fn run_global_status(
                 output::strong("tako network server add")
             ));
         }
+        if let Some(project) = project {
+            render::render_project(project);
+        }
         return Ok(());
     }
 
@@ -107,9 +141,12 @@ async fn run_global_status(
 
     let mut results = collect_global_status_results(servers, &server_names, !json).await?;
     if json {
-        render_global_status_json(servers, &server_names, &results)?;
+        render_global_status_json(servers, &server_names, &results, project)?;
     } else {
-        render_global_status(servers, &server_names, &mut results);
+        render_global_status(servers, &server_names, &mut results, project);
+        if let Some(project) = project {
+            render::render_project(project);
+        }
     }
 
     Ok(())
@@ -119,6 +156,7 @@ fn render_global_status_json(
     servers: &ServerInventory,
     server_names: &[String],
     server_results: &HashMap<String, GlobalServerStatusResult>,
+    project: Option<&super::project_resources::ProjectResources>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let servers = server_names
         .iter()
@@ -141,6 +179,13 @@ fn render_global_status_json(
                     })
                 }).collect::<Vec<_>>(),
                 "apps": &result.apps,
+                "databases": server_databases(servers, name, project)
+                    .into_iter()
+                    .map(|(name, bound_by)| serde_json::json!({
+                        "name": name,
+                        "bound_by": bound_by,
+                    }))
+                    .collect::<Vec<_>>(),
                 "error": &result.error,
             }))
         })
@@ -150,7 +195,31 @@ fn render_global_status_json(
         "ok": true,
         "command": "status",
         "servers": servers,
+        "project": project.map(json_project),
     }))
+}
+
+/// The project's databases homed on server `name`, with their binders.
+pub(super) fn server_databases(
+    servers: &ServerInventory,
+    name: &str,
+    project: Option<&super::project_resources::ProjectResources>,
+) -> Vec<(String, Vec<String>)> {
+    let Some(project) = project else {
+        return Vec::new();
+    };
+    servers
+        .get(name)
+        .and_then(|entry| entry.native.as_ref())
+        .map(|target| project.databases_on(&target.server_id.to_string()))
+        .unwrap_or_default()
+}
+
+fn json_project(project: &super::project_resources::ProjectResources) -> serde_json::Value {
+    serde_json::json!({
+        "app": project.app,
+        "environments": project.envs,
+    })
 }
 
 fn sorted_server_names(servers: &ServerInventory) -> Vec<String> {

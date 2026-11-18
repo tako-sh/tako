@@ -93,8 +93,9 @@ pub(super) fn worker(
                 let response = match work.request {
                     AgentCommand::Rpc(request) => controller.handle(request),
                     AgentCommand::Recovery(request) => {
-                        controller.recover_admin(request.recover_admin)
+                        controller.recover_client(request.recover_client)
                     }
+                    AgentCommand::Secrets(request) => controller.scope_secrets(request),
                 };
                 let _ = work.reply.send(response);
             }
@@ -575,7 +576,7 @@ impl Controller {
             &self.control,
         ))
     }
-    fn recover_admin(
+    fn recover_client(
         &mut self,
         grant: tako_network::invitation::CreateInvitation,
     ) -> AgentResponse {
@@ -589,6 +590,30 @@ impl Controller {
                 .map_err(Into::into)
         });
         self.response(result)
+    }
+
+    fn scope_secrets(&mut self, request: super::SecretsRequest) -> AgentResponse {
+        self.reconcile_or_isolate();
+        if !self.ready {
+            return AgentResponse::unavailable(&self.boot);
+        }
+        match self
+            .runtime
+            .scope_secrets(&request.secrets_scope, &request.published)
+        {
+            Ok(secrets) => AgentResponse {
+                status: 200,
+                response: None,
+                secrets: Some(secrets),
+                error: None,
+                boot: self.boot.clone(),
+                ready: self.ready,
+            },
+            Err(error) => {
+                tracing::warn!("Could not read app environment secrets: {error}");
+                self.response(Err(error.into()))
+            }
+        }
     }
 
     fn handle(&mut self, request: AgentRequest) -> AgentResponse {
@@ -645,6 +670,7 @@ impl Controller {
             Ok(response) => AgentResponse {
                 status: 200,
                 response: Some(response),
+                secrets: None,
                 error: None,
                 boot: self.boot.clone(),
                 ready: self.ready,
@@ -669,6 +695,7 @@ impl Controller {
                 AgentResponse {
                     status,
                     response: None,
+                    secrets: None,
                     error: Some(message.into()),
                     boot: self.boot.clone(),
                     ready: self.ready,
@@ -832,7 +859,7 @@ fn serving(config: &NodeConfig, snapshot: &RegistrySnapshot, now: u64) -> Result
         .effective_members(now)?
         .get(&config.server_id)
         .is_some_and(|member| {
-            matches!(member.kind, MemberKind::Server(_)) && member.permissions.server_admin
+            matches!(member.kind, MemberKind::Server(_)) && member.permissions.is_full()
         }))
 }
 

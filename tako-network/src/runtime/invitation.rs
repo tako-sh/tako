@@ -8,7 +8,7 @@ struct StoredInvitation {
     grant: CreateInvitation,
     approver: DeviceId,
     #[serde(default)]
-    independent_admin: bool,
+    independent_root: bool,
     claim: Option<crate::EnrollmentRequest>,
 }
 
@@ -33,11 +33,17 @@ impl<S: RegistryStore> ServerRuntime<S> {
         self.advance_clock(now)?;
         let snapshot = self.snapshot()?;
         self.require_server(&snapshot, now)?;
-        if !grant.permissions.network_admin
-            || !grant.permissions.server_admin
-            || grant.member_expires_at.is_some()
-        {
+        if !grant.permissions.is_full() || grant.member_expires_at.is_some() {
             return Err(RuntimeError::Denied);
+        }
+        // Recovery adds a client; replacing an active one goes through a full client.
+        let names = snapshot.client_names();
+        if snapshot.effective_members(now)?.keys().any(|id| {
+            names
+                .get(id)
+                .is_some_and(|name| name.eq_ignore_ascii_case(grant.client.as_str()))
+        }) {
+            return Err(RuntimeError::Conflict("client name"));
         }
         self.store_invitation(grant, self.config.server_id.clone(), true, snapshot, now)
     }
@@ -46,12 +52,12 @@ impl<S: RegistryStore> ServerRuntime<S> {
         &mut self,
         grant: CreateInvitation,
         approver: DeviceId,
-        independent_admin: bool,
+        independent_root: bool,
         snapshot: RegistrySnapshot,
         now: u64,
     ) -> RuntimeResult<RpcResponse> {
         grant.permissions.validate()?;
-        if !independent_admin {
+        if !independent_root {
             let parent = snapshot
                 .effective_members(now)?
                 .get(&approver)
@@ -102,7 +108,7 @@ impl<S: RegistryStore> ServerRuntime<S> {
             let previous: StoredInvitation = serde_json::from_str(&previous)?;
             if previous.grant != grant
                 || previous.approver != approver
-                || previous.independent_admin != independent_admin
+                || previous.independent_root != independent_root
             {
                 return Err(RuntimeError::Conflict("invitation ID"));
             }
@@ -121,7 +127,7 @@ impl<S: RegistryStore> ServerRuntime<S> {
                     serde_json::to_string(&StoredInvitation {
                         grant: grant.clone(),
                         approver,
-                        independent_admin,
+                        independent_root,
                         claim: None
                     })?
                 ],
@@ -175,12 +181,13 @@ impl<S: RegistryStore> ServerRuntime<S> {
             permissions: invitation.grant.permissions.clone(),
             expires_at: invitation.grant.expires_at,
             member_expires_at: invitation.grant.member_expires_at,
+            client: Some(invitation.grant.client.clone()),
         };
         self.check_grant(
             &Entitlement {
                 grant: grant.clone(),
                 approver: invitation.approver.clone(),
-                independent_admin: invitation.independent_admin,
+                independent_root: invitation.independent_root,
                 candidate: None,
             },
             &snapshot,
@@ -196,7 +203,7 @@ impl<S: RegistryStore> ServerRuntime<S> {
         self.approve_pending_with_authority(
             grant,
             invitation.approver,
-            invitation.independent_admin,
+            invitation.independent_root,
             snapshot,
             now,
         )

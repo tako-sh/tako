@@ -258,6 +258,7 @@ mod tests {
         let mut secrets = database.secrets.clone();
         secrets.backup = Some(tako_core::StorageBinding {
             provider: tako_core::StorageProvider::S3,
+            resource: None,
             bucket: Some("b".into()),
             endpoint: Some("https://s3.example.test".into()),
             region: Some("auto".into()),

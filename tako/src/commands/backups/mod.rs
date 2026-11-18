@@ -120,26 +120,36 @@ async fn run_async(
                 &tako_config,
                 &servers,
             )?;
+            let mut published = Vec::new();
             let backup = if output::is_dry_run()
                 || !super::helpers::can_configure_bindings(&tako_config, &target.env)?
             {
                 None
             } else {
                 let mut secrets = context.load_secrets_for_environment(Some(&target.env))?;
-                crate::commands::storage::ensure_backup_keys_for_env(
+                // A new backup key must reach the network: the servers fill
+                // the backup target's keys from published state.
+                if crate::commands::storage::ensure_backup_keys_for_env(
                     &context.project_dir,
                     &target.env,
                     &tako_config,
                     &mut secrets,
-                )?;
-                crate::commands::storage::decrypt_backup_binding(
-                    &target.env,
-                    &tako_config,
-                    &secrets,
-                    Some(&context.project_dir),
-                )?
+                )? {
+                    published = tokio::task::block_in_place(|| {
+                        crate::network::secrets::sync_environment(
+                            &context.project_dir,
+                            &tako_config,
+                            &app_name,
+                            &target.env,
+                            true,
+                            false,
+                        )
+                    })?
+                    .published;
+                }
+                crate::commands::storage::plain_backup_binding(&target.env, &tako_config)?
             };
-            backup_now(&target, &servers, backup).await
+            backup_now(&target, &servers, backup, published).await
         }
         BackupCommands::List { env, server } => {
             let target = resolve_backup_target(
@@ -193,6 +203,7 @@ async fn backup_now(
     target: &target::BackupTarget,
     servers: &ServerInventory,
     backup: Option<tako_core::BackupBinding>,
+    published: Vec<tako_core::PublishedSecret>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     output::section("Backups");
     output::info(&format!(
@@ -204,6 +215,12 @@ async fn backup_now(
         output::dry_run_skip("Create backup");
         return Ok(());
     }
+    // Every server backs up with one snapshot: the first server pins it once it
+    // holds what this command published, and the others wait for that one.
+    let secrets_digest = match &backup {
+        Some(_) => Some(pin_backup_snapshot(target, servers, published).await?),
+        None => None,
+    };
 
     let results = send_typed_to_servers::<BackupInfo>(
         &target.server_names,
@@ -211,6 +228,7 @@ async fn backup_now(
         Command::BackupNow {
             app: target.remote_app_name.clone(),
             backup: backup.map(Box::new),
+            secrets_digest,
         },
         "backup_now",
         &format!(
@@ -242,6 +260,43 @@ async fn backup_now(
     } else {
         Err(format!("Failed to back up {} server(s)", failures.len()).into())
     }
+}
+
+/// Pin the app environment's secret snapshot on the first target server, once
+/// it holds the versions this command published. Every target backs up with it.
+async fn pin_backup_snapshot(
+    target: &target::BackupTarget,
+    servers: &ServerInventory,
+    published: Vec<tako_core::PublishedSecret>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let leader = target
+        .server_names
+        .first()
+        .ok_or("No servers selected for the backup")?;
+    let pinned = send_typed_to_servers::<serde_json::Value>(
+        std::slice::from_ref(leader),
+        servers,
+        Command::SecretsDigest {
+            app: target.remote_app_name.clone(),
+            published,
+        },
+        "secrets_digest",
+        "Pinning the environment's secrets",
+    )
+    .await?;
+    let (server, result) = pinned
+        .into_iter()
+        .next()
+        .ok_or("No servers selected for the backup")?;
+    let data = result.map_err(|error| format!("{server}: {error}"))?;
+    Ok(snapshot_digest(&data)?)
+}
+
+fn snapshot_digest(data: &serde_json::Value) -> Result<String, String> {
+    data.get("digest")
+        .and_then(|digest| digest.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| "The server did not return a secret snapshot".to_string())
 }
 
 async fn list_backups(

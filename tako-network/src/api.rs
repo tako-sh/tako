@@ -109,6 +109,9 @@ pub struct ApproveRequest {
     pub permissions: Permissions,
     pub expires_at: u64,
     pub member_expires_at: Option<u64>,
+    /// The client name a laptop is admitted under. Servers have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<crate::DeviceName>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -344,6 +347,6 @@ mod tests {
         assert!(
             serde_json::from_str::<RpcRequest>(r#"{"type":"snapshot","root_admin":true}"#).is_err()
         );
-        assert!(serde_json::from_str::<RpcRequest>(r#"{"type":"independent_admin"}"#).is_err());
+        assert!(serde_json::from_str::<RpcRequest>(r#"{"type":"independent_root"}"#).is_err());
     }
 }

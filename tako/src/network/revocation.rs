@@ -131,8 +131,13 @@ fn target<'a>(
             .map(|member| (member.device_id.clone(), member))
             .collect()
     };
+    let names = snapshot.client_names();
     let mut matches = members.into_values().filter(|member| {
-        member.device_id.to_string() == device || member.request.name.as_str() == device
+        member.device_id.to_string() == device
+            || match names.get(&member.device_id) {
+                Some(client) => client.eq_ignore_ascii_case(device),
+                None => member.request.name.as_str() == device,
+            }
     });
     match (matches.next(), matches.next()) {
         (Some(member), None) => Ok(member),

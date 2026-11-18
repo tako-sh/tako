@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Component, Path};
 
 use crate::build::{BuildAdapter, BuildError, BuildExecutor};
-use crate::config::{EncryptedSecretValue, SecretsStore, TakoToml};
+use crate::config::TakoToml;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub(super) struct DeployArchiveManifest {
@@ -24,7 +24,6 @@ pub(super) struct DeployArchiveManifest {
     pub(super) workflow_retention_ms: Option<i64>,
     pub(super) idle_timeout: u32,
     pub(super) env_vars: BTreeMap<String, String>,
-    pub(super) secret_names: Vec<String>,
     #[serde(default)]
     pub(super) images: tako_images::ImagesConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -237,16 +236,10 @@ pub(super) fn build_deploy_archive_manifest(
     description: Option<&str>,
     app_env_vars: HashMap<String, String>,
     runtime_env_vars: HashMap<String, String>,
-    env_secrets: Option<&HashMap<String, EncryptedSecretValue>>,
     images: tako_images::ImagesConfig,
     app_dir: String,
     install_dir: String,
 ) -> DeployArchiveManifest {
-    let mut secret_names = env_secrets
-        .map(|map| map.keys().cloned().collect::<Vec<_>>())
-        .unwrap_or_default();
-    secret_names.sort();
-
     let mut env_vars =
         build_manifest_env_vars(app_env_vars, runtime_env_vars, environment, runtime_name);
     // TAKO_BUILD is a non-secret env var derived from the version.
@@ -267,7 +260,6 @@ pub(super) fn build_deploy_archive_manifest(
         workflow_retention_ms,
         idle_timeout,
         env_vars,
-        secret_names,
         images,
         package_manager,
         package_manager_version: None,
@@ -295,17 +287,11 @@ pub(super) fn build_container_deploy_archive_manifest(
     git_dirty: Option<bool>,
     description: Option<&str>,
     app_env_vars: HashMap<String, String>,
-    env_secrets: Option<&HashMap<String, EncryptedSecretValue>>,
     images: tako_images::ImagesConfig,
     app_dir: String,
     workflow_run: Option<Vec<String>>,
     workflow_retention_ms: Option<i64>,
 ) -> DeployArchiveManifest {
-    let mut secret_names = env_secrets
-        .map(|map| map.keys().cloned().collect::<Vec<_>>())
-        .unwrap_or_default();
-    secret_names.sort();
-
     let mut env_vars =
         build_manifest_env_vars(app_env_vars, HashMap::new(), environment, "container");
     env_vars.insert("TAKO_BUILD".to_string(), version.to_string());
@@ -324,7 +310,6 @@ pub(super) fn build_container_deploy_archive_manifest(
         workflow_retention_ms,
         idle_timeout,
         env_vars,
-        secret_names,
         images,
         package_manager: None,
         package_manager_version: None,
@@ -355,26 +340,6 @@ pub(super) fn detect_release_sdk(
         name: sdk.name,
         version: sdk.version,
     })
-}
-
-pub(super) fn decrypt_deploy_secrets(
-    env: &str,
-    secrets: &SecretsStore,
-    usage_path: Option<&Path>,
-) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
-    let encrypted = match secrets.get_env(env) {
-        Some(s) if !s.is_empty() => s,
-        _ => return Ok(HashMap::new()),
-    };
-
-    let key = super::super::secret::load_secret_key(env, secrets, usage_path)?;
-    let mut decrypted = HashMap::new();
-    for (name, encrypted_value) in encrypted {
-        let value = crate::crypto::decrypt(&encrypted_value.value, &key)
-            .map_err(|e| format!("Failed to decrypt secret '{}': {}", name, e))?;
-        decrypted.insert(name.clone(), value);
-    }
-    Ok(decrypted)
 }
 
 pub(super) fn build_manifest_env_vars(
@@ -413,7 +378,7 @@ pub(super) fn build_manifest_env_vars(
 mod tests {
     use super::*;
     use crate::build::BuildExecutor;
-    use crate::config::{SecretsStore, TakoToml};
+    use crate::config::TakoToml;
     use std::collections::HashMap;
     use tempfile::TempDir;
 
@@ -451,13 +416,6 @@ mod tests {
     }
 
     #[test]
-    fn decrypt_deploy_secrets_returns_empty_for_no_secrets() {
-        let secrets = SecretsStore::default();
-        let result = decrypt_deploy_secrets("production", &secrets, None).unwrap();
-        assert!(result.is_empty());
-    }
-
-    #[test]
     fn build_deploy_archive_manifest_includes_tako_build_in_env_vars() {
         let manifest = build_deploy_archive_manifest(
             "my-app",
@@ -475,7 +433,6 @@ mod tests {
             None,
             HashMap::new(),
             HashMap::new(),
-            None,
             tako_images::ImagesConfig::default(),
             String::new(),
             String::new(),
@@ -504,11 +461,6 @@ mod tests {
 
     #[test]
     fn build_container_deploy_archive_manifest_marks_container_release() {
-        let secrets = HashMap::from([(
-            "API_KEY".to_string(),
-            EncryptedSecretValue::new("x".to_string(), None),
-        )]);
-
         let manifest = build_container_deploy_archive_manifest(
             "my-app",
             "production",
@@ -519,7 +471,6 @@ mod tests {
             Some(false),
             Some("Ship container update"),
             HashMap::from([("APP_ENV".to_string(), "prod".to_string())]),
-            Some(&secrets),
             tako_images::ImagesConfig::default(),
             "apps/web".to_string(),
             Some(vec!["./worker".to_string(), "video".to_string()]),
@@ -541,7 +492,6 @@ mod tests {
             manifest.workflow_run,
             Some(vec!["./worker".to_string(), "video".to_string()])
         );
-        assert_eq!(manifest.secret_names, vec!["API_KEY".to_string()]);
         assert_eq!(
             manifest.env_vars.get("TAKO_BUILD"),
             Some(&"v123".to_string())
@@ -566,7 +516,6 @@ mod tests {
             None,
             None,
             HashMap::new(),
-            None,
             tako_images::ImagesConfig::default(),
             String::new(),
             None,
@@ -607,7 +556,7 @@ mod tests {
     }
 
     #[test]
-    fn build_deploy_archive_manifest_includes_sorted_env_and_secret_names() {
+    fn build_deploy_archive_manifest_includes_sorted_env_vars() {
         let app_env_vars = HashMap::from([
             ("Z_KEY".to_string(), "z".to_string()),
             ("A_KEY".to_string(), "a".to_string()),
@@ -616,17 +565,6 @@ mod tests {
             ("NODE_ENV".to_string(), "production".to_string()),
             ("BUN_ENV".to_string(), "production".to_string()),
         ]);
-        let secrets = HashMap::from([
-            (
-                "API_KEY".to_string(),
-                EncryptedSecretValue::new("x".to_string(), None),
-            ),
-            (
-                "DB_URL".to_string(),
-                EncryptedSecretValue::new("y".to_string(), None),
-            ),
-        ]);
-
         let manifest = build_deploy_archive_manifest(
             "my-app",
             "staging",
@@ -643,7 +581,6 @@ mod tests {
             None,
             app_env_vars,
             runtime_env_vars,
-            Some(&secrets),
             tako_images::ImagesConfig::default(),
             String::new(),
             String::new(),
@@ -679,10 +616,6 @@ mod tests {
             manifest.env_vars.get("BUN_ENV"),
             Some(&"production".to_string())
         );
-        assert_eq!(
-            manifest.secret_names,
-            vec!["API_KEY".to_string(), "DB_URL".to_string()]
-        );
     }
 
     #[test]
@@ -703,7 +636,6 @@ mod tests {
             None,
             HashMap::new(),
             HashMap::new(),
-            None,
             tako_images::ImagesConfig::default(),
             String::new(),
             String::new(),

@@ -60,6 +60,10 @@ checks exercise the same configuration the application deploys with.
    local app logs with `tako_dev_logs`; pass its `next_after` as `after` to fetch
    new entries on the next call.
 3. For production, inspect `tako_status`, `tako_releases_list`, and `tako_logs`.
+   In a project, `tako_status` also lists each environment's resources
+   (secret count, credentials, storage, backup key, databases and their
+   servers) and `tako_doctor` checks for a missing `ssl.cloudflare`,
+   expiring secrets, unrecorded databases and servers lacking key grants.
    Use a finite log window rather than an unbounded tail. Distinguish build,
    readiness, routing/TLS, and application errors before changing code.
    For a failing or stuck workflow run, read its stored state with
@@ -104,12 +108,16 @@ External VPN integrations are removed. Re-enroll older servers in a Tako network
 set the network ID and desired servers for each environment, and remove old global
 inventory entries. Legacy inventory files are ignored; only enrolled membership grants access.
 
-Enroll each new laptop or sandbox with `network client add` and `network join`.
-The administrator creates a single-use invitation with `--admin` or exact
-`--deploy app/env` scopes. Joining generates fresh device keys and pulls published
-state through servers. Never copy an existing device's private keys. `--ssh`
-additionally grants shell access to an administrator. Clients never connect to
-other clients and do not run Corrosion. Servers replicate network state.
+Enroll each new laptop or sandbox with `network client add <name>` and
+`network join`. A full client creates a single-use invitation. Without flags the
+new client gets full access, including the `tako` SSH shell and `connect`; exact
+`--deploy app/env` scopes restrict it to deploying those environments over HTTPS.
+Joining generates fresh device keys and pulls published state through servers.
+For CI, `client add <name> --deploy app/env --identity` prints a client identity
+instead; store it as the `TAKO_CLIENT_IDENTITY` secret and `tako deploy` acts as
+that client without writing keys to the Tako home. Never copy a joined device's
+private keys; create an identity or a new invitation instead. Clients never connect to other clients and do not
+run Corrosion. Servers replicate network state.
 
 Keep `tako.toml` in Git; keep `.tako/` ignored. Each worktree has separate secret
 drafts. Set/remove changes remain local until deploy or `secrets sync` publishes
@@ -126,13 +134,12 @@ seven days; after expiry, review preserved drafts before explicitly publishing
 with `secrets sync --retry-expired`. That action can overwrite remote changes.
 An invitation cannot recover unpublished drafts.
 
-For a lost administrator or an independent device handoff, run
-`sudo tako-server admin invite` from a surviving server's provider console or
-administrator SSH, then `network join` on the replacement. Verify the new
-administrator before revoking the lost device. This host recovery path creates
-independent authority; ordinary admin invitations remain tied to their inviter.
-It requires intact server state, keys, and a running network agent. It cannot
-restore a network after every copy and key is lost.
+When every full client is lost, run `sudo tako-server client invite` from a
+surviving server's provider console or root SSH, then `network join` on the
+replacement. Verify the new client before revoking the lost device. Revocation
+affects only the revoked device: clients it invited keep their access, so revoke
+them too when needed. Recovery requires intact server state, keys, and a running
+network agent. It cannot restore a network after every copy and key is lost.
 
 Deploy loads membership and cached values only for its selected environment's
 network; an unrelated inactive membership must not block it. Honor `--config`:
@@ -141,6 +148,12 @@ directory share drafts, and an environment already bound to another app/network
 cannot be silently reused. Use a separate worktree for a different target.
 For maintenance, copy the exact selector from `network server list --json`;
 colliding network or server names add stable IDs to that selector.
+`network server revoke` revokes only membership and keeps the server's apps and data.
+To retire a server or move it to another network, `network server remove <server>`
+revokes it, then deletes every app, its data and backups on it, and its network
+identity, keeping Tako installed for a later `server add`; `--uninstall` also
+removes Tako. It refuses the network's last server without `--yes`; confirm with
+the user before removing one.
 
 For legacy tracked secrets, `secrets migrate` requires the original local keys,
 retains an ignored recovery copy, and removes the tracked file. Commit that
@@ -151,13 +164,13 @@ rewrite history as part of ordinary migration. App-data backups do not include
 network membership, shared secret records, or device keys; protect those separately.
 
 Native management uses signed pinned HTTPS without workstation WireGuard, TUN,
-or an SSH agent. Scoped sandbox deploys use administrator-provisioned routes and
-server-level bindings. Scoped clients can decrypt shared app secrets for their exact scopes; full
-administrators can also decrypt provider/storage credentials and backup keys. `network export` is public configuration, not secret-key export or
-a way to enroll another device. Membership revocation cascades through dependent
-approvals; independent bootstrap server membership does not depend on its
-creating laptop. Inspect pending enforcement rather than assuming offline peers
-have applied a revocation.
+or an SSH agent. Deploy clients (`--deploy app/env`) only release code: they read
+no secrets or logs, and servers apply the environment's values from the network state at deploy.
+Full clients can decrypt app secrets, provider/storage credentials and backup keys. `network export` is public configuration, not secret-key export or
+a way to enroll another device. Revoking a client affects only that client, not
+the clients it invited; `client revoke <name> --include-invited` also revokes
+every client it invited, directly or indirectly. Inspect pending enforcement rather than assuming offline
+peers have applied a revocation.
 
 WireGuard private traffic needs the advertised UDP endpoint; there is no hosted
 relay. `tako ssh` uses embedded WireGuard without sudo or system network changes.

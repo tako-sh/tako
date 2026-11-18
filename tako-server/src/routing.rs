@@ -38,6 +38,47 @@ pub struct SelectedRoute {
 }
 
 impl RouteTable {
+    /// The first of `routes` that another app environment already claims,
+    /// with that app environment.
+    pub fn claimed_elsewhere<'a>(
+        &self,
+        app: &str,
+        routes: &'a [String],
+    ) -> Option<(&'a str, &str)> {
+        routes.iter().find_map(|route| {
+            self.app_routes
+                .iter()
+                .filter(|(owner, _)| owner.as_str() != app)
+                .find(|(_, claimed)| claimed.iter().any(|other| same_route(other, route)))
+                .map(|(owner, _)| (route.as_str(), owner.as_str()))
+        })
+    }
+
+    /// The first of `routes` that this app environment doesn't hold yet and
+    /// that could take a request from a route another app environment owns,
+    /// with that route and its app environment.
+    pub fn overlapping_elsewhere<'a, 'b>(
+        &'b self,
+        app: &str,
+        routes: &'a [String],
+    ) -> Option<(&'a str, &'b str, &'b str)> {
+        let held = self.app_routes.get(app);
+        routes
+            .iter()
+            .filter(|route| !held.is_some_and(|held| held.iter().any(|own| same_route(own, route))))
+            .find_map(|route| {
+                self.app_routes
+                    .iter()
+                    .filter(|(owner, _)| owner.as_str() != app)
+                    .find_map(|(owner, claimed)| {
+                        claimed
+                            .iter()
+                            .find(|other| tako_core::routes::routes_overlap(other, route))
+                            .map(|other| (route.as_str(), other.as_str(), owner.as_str()))
+                    })
+            })
+    }
+
     pub fn set_app_routes(&mut self, app: String, routes: Vec<String>) {
         self.set_app_routes_with_source_ip(app, routes, tako_core::SourceIpMode::Auto);
     }
@@ -264,6 +305,13 @@ fn route_specificity(pattern: &str) -> (u8, usize, u8) {
     };
 
     (host_score, path_len, exact_bonus)
+}
+
+/// Whether two route patterns claim the same requests. Hosts compare without
+/// case, as requests match them; paths compare exactly.
+fn same_route(a: &str, b: &str) -> bool {
+    let ((a_host, a_path), (b_host, b_path)) = (split_route(a), split_route(b));
+    a_host.eq_ignore_ascii_case(b_host) && a_path == b_path
 }
 
 fn split_route(route: &str) -> (&str, Option<&str>) {

@@ -157,6 +157,6 @@ If a check fails, follow the boundary that failed:
 
 Repairs and upgrades preserve the inventory's VPN choice. Keep administrator SSH access available for recovery, and use the [server maintenance guide](/docs/servers/#server-maintenance) when the service itself needs attention.
 
-For an existing Tailscale entry, migration requires configuring the server on NetBird as administrator, then removing and re-adding the local inventory entry. Removal forgets the local entry; server uninstall removes the remote service and data. Follow the [provider selection guide](/docs/servers/#choose-the-vpn-provider) and retain the inventory name referenced by your apps.
+For an existing Tailscale entry, migration requires configuring the server on NetBird as administrator, then removing and re-adding the local inventory entry. Removal forgets the local entry; `tako network server remove --uninstall` removes the remote service and data. Follow the [provider selection guide](/docs/servers/#choose-the-vpn-provider) and retain the inventory name referenced by your apps.
 
 You now have a repeatable path from your laptop to a public app: NetBird supplies private connectivity, your enrolled key authenticates management, and Tako handles the release and HTTPS routing. The earlier [Tailscale management post](/blog/self-hosted-deployments-over-tailscale/) explains the signing model in more depth; this setup brings the same workflow to your existing NetBird network.

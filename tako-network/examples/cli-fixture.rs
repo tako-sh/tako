@@ -24,20 +24,18 @@ fn admit(
             now,
         )
         .unwrap();
+    let client = matches!(kind, MemberKind::Laptop).then(|| request.name.clone());
     let member = snapshot
         .approve(
             verified,
             Approval {
                 kind,
-                permissions: Permissions {
-                    network_admin: true,
-                    server_admin: true,
-                    ..Default::default()
-                },
+                permissions: Permissions::Full,
                 approved_by: parent,
-                independent_admin: false,
+                independent_root: false,
                 created_at: now,
                 expires_at: None,
+                client,
             },
         )
         .unwrap();

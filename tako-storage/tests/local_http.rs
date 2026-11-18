@@ -16,6 +16,7 @@ fn storage(dir: &std::path::Path, secret: &str) -> LocalStorage {
             "uploads".into(),
             StorageBinding {
                 provider: StorageProvider::Local,
+                resource: None,
                 bucket: None,
                 endpoint: None,
                 region: None,

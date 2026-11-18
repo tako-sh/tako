@@ -32,6 +32,7 @@ fn state(temp: &TempDir) -> Arc<ServerState> {
 fn backup(bucket: &str) -> StorageBinding {
     StorageBinding {
         provider: StorageProvider::S3,
+        resource: None,
         bucket: Some(bucket.into()),
         endpoint: Some("https://s3.example.test".into()),
         region: Some("auto".into()),

@@ -2,11 +2,7 @@ use std::collections::BTreeSet;
 use tako_network::*;
 
 pub fn admin() -> Permissions {
-    Permissions {
-        network_admin: true,
-        server_admin: true,
-        ..Permissions::default()
-    }
+    Permissions::Full
 }
 
 pub fn verified(
@@ -40,13 +36,20 @@ pub fn approval(
     by: Option<DeviceId>,
     now: u64,
 ) -> Approval {
+    // Every laptop is a key of a client; give each fixture laptop its own name.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let client = matches!(kind, MemberKind::Laptop).then(|| {
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        format!("client-{n}").parse().unwrap()
+    });
     Approval {
         kind,
         permissions,
         approved_by: by,
-        independent_admin: false,
+        independent_root: false,
         created_at: now,
         expires_at: None,
+        client,
     }
 }
 
@@ -83,11 +86,11 @@ pub fn add_laptop(
 ) -> (LocalDeviceKeys, DeviceId) {
     let keys = LocalDeviceKeys::generate().unwrap();
     let mut command = approval(MemberKind::Laptop, permissions, Some(by.clone()), now);
-    command.independent_admin = independent;
+    command.independent_root = independent;
     let evidence = verified(&keys, &snapshot.network.id, DeviceKind::Laptop, now);
     let member = if independent {
         command.approved_by = None;
-        snapshot.approve_independent_admin(evidence, command)
+        snapshot.approve_independent_root(evidence, command)
     } else {
         snapshot.approve(evidence, command)
     }
@@ -125,7 +128,7 @@ pub fn add_named_server(
         verified_named(&keys, &snapshot.network.id, DeviceKind::Server, name, now),
         approval(
             MemberKind::Server(server_info(&keys)),
-            Permissions::default(),
+            Permissions::Full,
             Some(by.clone()),
             now,
         ),
@@ -147,6 +150,27 @@ pub fn revoke(
     let id = revocation.id.clone();
     snapshot.revocations.push(revocation);
     id
+}
+
+/// Record a denial directly, as a replica that accepted another device's
+/// revocation would. `plan_revocation` refuses self-revocation and revoking the
+/// last full client, which some scenarios need to bypass.
+pub fn deny(snapshot: &mut RegistrySnapshot, target: &DeviceId, now: u64) {
+    let member = snapshot
+        .members
+        .iter()
+        .find(|member| &member.device_id == target)
+        .unwrap()
+        .clone();
+    snapshot.revocations.push(Revocation {
+        id: RevocationId::random().unwrap(),
+        target: target.clone(),
+        wg_fingerprint: member.request.wg_public_key.fingerprint(),
+        ssh_fingerprint: member.request.ssh_public_key.fingerprint().unwrap(),
+        captured_servers: Default::default(),
+        by: target.clone(),
+        created_at: now,
+    });
 }
 
 pub fn scopes(values: &[&str]) -> BTreeSet<AppEnv> {

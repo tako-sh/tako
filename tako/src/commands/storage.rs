@@ -11,7 +11,7 @@ use crate::config::{
 use crate::output;
 
 mod backup;
-pub(crate) use backup::{decrypt_backup_binding, ensure_backup_keys_for_env};
+pub(crate) use backup::{ensure_backup_keys_for_env, plain_backup_binding};
 
 #[derive(Subcommand)]
 pub enum StorageCommands {
@@ -343,6 +343,70 @@ fn trim_trailing_slash(value: &str) -> String {
     value.trim_end_matches('/').to_string()
 }
 
+/// An environment's storage bindings for a deploy: S3 bindings name their
+/// resource and carry no access keys, which the server fills in.
+pub(crate) fn plain_storage_bindings(
+    env: &str,
+    config: &TakoToml,
+) -> Result<HashMap<String, tako_core::StorageBinding>, Box<dyn std::error::Error>> {
+    let Some(env_config) = config.envs.get(env) else {
+        return Ok(HashMap::new());
+    };
+    let mut bindings = HashMap::new();
+    for (binding_name, resource_name) in &env_config.storages {
+        let Some(resource) = config.storage_resource_for_env(env, resource_name) else {
+            return Err(format!(
+                "Storage binding '{binding_name}' references missing resource '{resource_name}'."
+            )
+            .into());
+        };
+        let binding = match resource.provider {
+            tako_core::StorageProvider::Local => local_storage_binding(resource_name)?,
+            tako_core::StorageProvider::S3 => plain_s3_storage_binding(resource_name, &resource),
+        };
+        bindings.insert(binding_name.clone(), binding);
+    }
+    Ok(bindings)
+}
+
+fn local_storage_binding(
+    resource_name: &str,
+) -> Result<tako_core::StorageBinding, Box<dyn std::error::Error>> {
+    Ok(tako_core::StorageBinding {
+        provider: tako_core::StorageProvider::Local,
+        resource: None,
+        bucket: None,
+        endpoint: None,
+        region: None,
+        access_key_id: None,
+        secret_access_key: None,
+        force_path_style: false,
+        public_base_url: None,
+        path: Some(format!("storage/{resource_name}")),
+        signing_key: Some(generate_local_storage_signing_key()?),
+    })
+}
+
+/// An S3 binding without its access keys.
+pub(crate) fn plain_s3_storage_binding(
+    resource_name: &str,
+    resource: &StorageResourceConfig,
+) -> tako_core::StorageBinding {
+    tako_core::StorageBinding {
+        provider: tako_core::StorageProvider::S3,
+        resource: Some(resource_name.to_string()),
+        bucket: resource.bucket.clone(),
+        endpoint: resource.endpoint.clone(),
+        region: resource.region.clone(),
+        access_key_id: None,
+        secret_access_key: None,
+        force_path_style: resource.force_path_style,
+        public_base_url: resource.public_base_url.clone(),
+        path: None,
+        signing_key: None,
+    }
+}
+
 pub(crate) fn decrypt_storage_bindings(
     env: &str,
     config: &TakoToml,
@@ -363,18 +427,7 @@ pub(crate) fn decrypt_storage_bindings(
             .into());
         };
         let binding = match resource.provider {
-            tako_core::StorageProvider::Local => tako_core::StorageBinding {
-                provider: tako_core::StorageProvider::Local,
-                bucket: None,
-                endpoint: None,
-                region: None,
-                access_key_id: None,
-                secret_access_key: None,
-                force_path_style: false,
-                public_base_url: None,
-                path: Some(format!("storage/{resource_name}")),
-                signing_key: Some(generate_local_storage_signing_key()?),
-            },
+            tako_core::StorageProvider::Local => local_storage_binding(resource_name)?,
             tako_core::StorageProvider::S3 => decrypt_s3_storage_binding(
                 env,
                 resource_name,
@@ -412,24 +465,16 @@ fn decrypt_s3_storage_binding(
             loaded
         }
     };
-    Ok(tako_core::StorageBinding {
-        provider: tako_core::StorageProvider::S3,
-        bucket: resource.bucket.clone(),
-        endpoint: resource.endpoint.clone(),
-        region: resource.region.clone(),
-        access_key_id: Some(crate::crypto::decrypt(
-            &encrypted.access_key_id.value,
-            &key,
-        )?),
-        secret_access_key: Some(crate::crypto::decrypt(
-            &encrypted.secret_access_key.value,
-            &key,
-        )?),
-        force_path_style: resource.force_path_style,
-        public_base_url: resource.public_base_url.clone(),
-        path: None,
-        signing_key: None,
-    })
+    let mut binding = plain_s3_storage_binding(resource_name, resource);
+    binding.access_key_id = Some(crate::crypto::decrypt(
+        &encrypted.access_key_id.value,
+        &key,
+    )?);
+    binding.secret_access_key = Some(crate::crypto::decrypt(
+        &encrypted.secret_access_key.value,
+        &key,
+    )?);
+    Ok(binding)
 }
 
 /// The decrypted storage binding a database's snapshots upload to, from the

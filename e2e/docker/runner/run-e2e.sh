@@ -325,12 +325,12 @@ post_route_json() {
 
 fixture_has_secrets_for_env() {
   local env_name=$1
-  [[ -f "$PROJECT_DIR/.tako/secrets.local.json" ]] && \
+  [[ -f "$PROJECT_DIR/.tako/state.local.json" ]] && \
     jq -e --arg env_name "$env_name" '
       ((.values[$env_name].app // {}) | length > 0) or
       ((.values[$env_name].storages // {}) | length > 0)
     ' \
-      "$PROJECT_DIR/.tako/secrets.local.json" >/dev/null 2>&1
+      "$PROJECT_DIR/.tako/state.local.json" >/dev/null 2>&1
 }
 
 seed_fixture_secrets() {
@@ -838,10 +838,10 @@ run_compose_lifecycle_checks() {
   [[ $(compose_container_id web) != "$web_id" ]]
   compose_assert_response 'Updated Bun release!'
   web_id=$(compose_container_id web)
+  # Secret changes apply on the next deploy: publish one and redeploy the same release.
+  printf '%s' 'rotated$VALUE' | HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" secrets set ROTATION_TOKEN --env production
   compose_probe_start
-  jq -nc --arg app "$APP_NAME/production" '{command:"update_secrets",app:$app,secrets:{ROTATION_TOKEN:"rotated$VALUE"}}' > "$TMP_ROOT/compose-secrets.json"
-  ssh_exec "$server_host" "python3 -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.settimeout(300); s.connect(\"/var/run/tako/tako.sock\"); s.sendall(sys.stdin.buffer.read()); s.shutdown(socket.SHUT_WR); print(s.makefile().readline(), end=\"\")'" < "$TMP_ROOT/compose-secrets.json" > "$TMP_ROOT/compose-secrets-result.json"
-  jq -e '.status == "ok" and .data.restarted == true' "$TMP_ROOT/compose-secrets-result.json" >/dev/null
+  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" deploy --env production --yes
   compose_probe_finish
   compose_assert_redis_unchanged
   [[ $(compose_container_id web) != "$web_id" ]]
@@ -902,6 +902,9 @@ run_compose_lifecycle_checks() {
   sed -i 's#127.0.0.1:3000/missing#127.0.0.1:3000/health#' "$PROJECT_DIR/compose.yaml"
   sed -i 's/Updated Bun release!/Hello from Bun!/' "$PROJECT_DIR/server.ts"
   sed -i '/ROTATION_TOKEN:/d' "$PROJECT_DIR/compose.yaml"
+  # Drop the rotation secret too, so later runs of this fixture don't treat it
+  # as an app with injected secrets. The next deploy publishes the removal.
+  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" secrets rm ROTATION_TOKEN --env production --yes
 
   desired_web=2
   compose_probe_start
@@ -1031,25 +1034,25 @@ run_admin_recovery_checks() {
     "$TAKO_BIN" --ci --config "$source/tako.toml" secrets set RECOVERY_TOKEN --env production
   HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$source/tako.toml" secrets sync --env production
   for host in server-ubuntu server-alma; do
-    if ssh_exec "$host" /usr/local/bin/tako-server admin invite >/dev/null 2>&1; then
+    if ssh_exec "$host" /usr/local/bin/tako-server client invite "recovered-$host" >/dev/null 2>&1; then
       echo "Service account issued a recovery invitation" >&2
       return 1
     fi
     # Capture the token without logging it, as on a provider's root console.
     invitation=$(HOME="$HOME_DIR" ssh "${SSH_OPTS[@]}" "e2e-admin@$host" \
-      sudo -n /usr/local/bin/tako-server admin invite --json | jq -er '.invitation')
+      sudo -n /usr/local/bin/tako-server client invite "recovered-$host" --json | jq -er '.invitation')
     client_home="$TMP_ROOT/recovered-$host"
     project="$TMP_ROOT/recovered-project-$host"
     mkdir -p "$client_home" "$project"
     chmod 0700 "$client_home"
     cp "$source/tako.toml" "$project/tako.toml"
     printf '%s' "$invitation" | HOME="$client_home" TAKO_HOME="$client_home/tako" \
-      "$TAKO_BIN" --ci network join --name "recovered-$host" --invitation-stdin
+      "$TAKO_BIN" --ci network join --invitation-stdin
     unset invitation
     HOME="$client_home" TAKO_HOME="$client_home/tako" "$TAKO_BIN" --ci --json \
       network client list --network e2e > "$client_home/clients.json"
     jq -e --arg name "recovered-$host" \
-      'any(.clients[]; .request.name == $name and .independent_admin == true and .approved_by == null)' \
+      'any(.clients[]; .name == $name and .invited_by == "host recovery" and .access == "full")' \
       "$client_home/clients.json" >/dev/null
     # Materializing a fresh worktree exercises decryption with the new device's
     # wrapped key, without importing the original laptop's environment key.
@@ -1060,13 +1063,13 @@ run_admin_recovery_checks() {
     jq -e 'any(.secrets[]; .name == "RECOVERY_TOKEN")' "$client_home/secrets.json" >/dev/null
   done
   HOME="$client_home" TAKO_HOME="$client_home/tako" "$TAKO_BIN" --ci \
-    network client remove recovered-server-ubuntu --network e2e
+    network client revoke recovered-server-ubuntu --network e2e
   HOME="$client_home" TAKO_HOME="$client_home/tako" "$TAKO_BIN" --ci network sync e2e
   HOME="$client_home" TAKO_HOME="$client_home/tako" "$TAKO_BIN" --ci --json \
     network client list --network e2e > "$client_home/clients.json"
-  jq -e 'any(.clients[]; .request.name == "recovered-server-alma") and
-    (all(.clients[]; .request.name != "recovered-server-ubuntu"))' "$client_home/clients.json" >/dev/null
-  echo "Independent administrator recovery passed on Ubuntu and AlmaLinux"
+  jq -e 'any(.clients[]; .name == "recovered-server-alma") and
+    (all(.clients[]; .name != "recovered-server-ubuntu"))' "$client_home/clients.json" >/dev/null
+  echo "Host recovery passed on Ubuntu and AlmaLinux"
 }
 
 # Wait for SSH on all servers

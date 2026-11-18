@@ -1,11 +1,9 @@
-mod server;
 mod system;
 
 use std::path::PathBuf;
 use std::process::Command;
 
 use crate::output;
-pub use server::implode_server;
 use system::{
     gather_system_targets, has_ca_certs_in_keychain, remove_ca_certs_from_keychain,
     remove_system_targets,

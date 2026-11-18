@@ -29,6 +29,8 @@ use tracing_subscriber::prelude::*;
 use cli::Cli;
 
 fn main() {
+    // SAFETY: nothing else runs yet, so no other thread reads the environment.
+    unsafe { network::identity::take_from_env() };
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     if std::env::args_os().nth(1).as_deref()
         == Some(std::ffi::OsStr::new(network::wireguard::HELPER_COMMAND))

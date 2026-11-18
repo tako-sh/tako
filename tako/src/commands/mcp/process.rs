@@ -60,6 +60,12 @@ pub(super) async fn execute(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    // The child is `tako` itself: it takes the identity out of its own
+    // environment before running anything, and activates it only for network
+    // commands. This process removed it from its environment at startup.
+    if let Some(identity) = crate::network::identity::from_env() {
+        command.env(crate::network::identity::ENV, identity);
+    }
     use std::os::unix::process::CommandExt;
     command.as_std_mut().process_group(0);
     let mut child = command.spawn().map_err(|error| error.to_string())?;

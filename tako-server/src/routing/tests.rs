@@ -676,3 +676,69 @@ fn compose_routes_select_app_services_and_inherit_source_ip() {
             .is_none()
     );
 }
+
+#[test]
+fn a_route_belongs_to_one_app_environment() {
+    let mut table = RouteTable::default();
+    table.set_app_routes("shop/production".into(), vec!["shop.example.com".into()]);
+    let routes = vec![
+        "staging.example.com".to_string(),
+        "shop.example.com".to_string(),
+    ];
+    assert_eq!(
+        table.claimed_elsewhere("shop/staging", &routes),
+        Some(("shop.example.com", "shop/production"))
+    );
+    // An app environment may keep and redeploy its own routes.
+    assert_eq!(table.claimed_elsewhere("shop/production", &routes), None);
+    assert_eq!(
+        table.claimed_elsewhere("shop/staging", &["staging.example.com".to_string()]),
+        None
+    );
+    // Hosts match requests without case, so a differently cased claim is the
+    // same route. Paths stay exact.
+    let upper = vec!["SHOP.Example.COM".to_string()];
+    assert_eq!(
+        table.claimed_elsewhere("shop/staging", &upper),
+        Some(("SHOP.Example.COM", "shop/production"))
+    );
+    table.set_app_routes(
+        "shop/production".into(),
+        vec!["shop.example.com/api/*".into()],
+    );
+    assert_eq!(
+        table.claimed_elsewhere("shop/staging", &["SHOP.example.com/api/*".to_string()]),
+        Some(("SHOP.example.com/api/*", "shop/production"))
+    );
+    assert_eq!(
+        table.claimed_elsewhere("shop/staging", &["shop.example.com/API/*".to_string()]),
+        None
+    );
+}
+
+#[test]
+fn an_overlapping_route_of_another_app_environment_is_found() {
+    let mut table = RouteTable::default();
+    table.set_app_routes("shop/production".into(), vec!["*.example.com".into()]);
+    table.set_app_routes("api/production".into(), vec!["api.example.org".into()]);
+    table.set_app_routes("shop/staging".into(), vec!["staging.example.com".into()]);
+    // A more specific route under another environment's wildcard.
+    assert_eq!(
+        table.overlapping_elsewhere("shop/staging", &["shop.EXAMPLE.com".to_string()]),
+        Some(("shop.EXAMPLE.com", "*.example.com", "shop/production"))
+    );
+    // A path under another environment's whole host.
+    assert_eq!(
+        table.overlapping_elsewhere("shop/staging", &["api.example.org/v2/*".to_string()]),
+        Some(("api.example.org/v2/*", "api.example.org", "api/production"))
+    );
+    // Routes this environment already holds stay, even when they overlap.
+    assert_eq!(
+        table.overlapping_elsewhere("shop/staging", &["staging.example.com".to_string()]),
+        None
+    );
+    assert_eq!(
+        table.overlapping_elsewhere("shop/staging", &["shop.example.net".to_string()]),
+        None
+    );
+}

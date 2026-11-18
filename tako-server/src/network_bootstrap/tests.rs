@@ -92,16 +92,13 @@ impl Fixture {
                 device_id: device,
                 request,
                 kind: MemberKind::Server(server),
-                permissions: Permissions {
-                    network_admin: true,
-                    server_admin: true,
-                    ..Default::default()
-                },
+                permissions: Permissions::Full,
                 approved_by: None,
-                independent_admin: true,
+                independent_root: true,
                 wg_verified: true,
                 created_at: now() - 1,
                 expires_at: None,
+                client: None,
             }],
             revocations: vec![],
             acks: vec![],
@@ -218,7 +215,7 @@ fn install_rejects_invalid_members_without_creating_config_or_token() {
         let member = &mut snapshot.members[0];
         match case {
             0 => snapshot.members.clear(),
-            1 => member.permissions.server_admin = false,
+            1 => member.permissions = tako_network::Permissions::Deploy(Default::default()),
             2 => member.wg_verified = false,
             3 => member.created_at = now() + 600,
             4 => {
@@ -237,10 +234,10 @@ fn install_rejects_invalid_members_without_creating_config_or_token() {
                 }
             }
             8 => {
-                member.independent_admin = false;
+                member.independent_root = false;
                 member.approved_by = Some("ab".repeat(32).parse().unwrap());
             }
-            9 => member.permissions.network_admin = false,
+            9 => member.permissions = tako_network::Permissions::Deploy(["app/prod".parse().unwrap()].into()),
             10 => {
                 member.request = LocalDeviceKeys::generate()
                     .unwrap()
@@ -280,14 +277,14 @@ fn install_rejects_invalid_members_without_creating_config_or_token() {
     }
     let mut revoked = valid.clone();
     revoked.revocations.push(
-        valid
-            .plan_revocation(
-                tako_network::RevocationId::random().unwrap(),
-                &valid.members[0].device_id,
-                &valid.members[0].device_id,
-                now(),
-            )
-            .unwrap(),
+        tako_network::Revocation::of(
+            tako_network::RevocationId::random().unwrap(),
+            &valid.members[0],
+            valid.members[0].device_id.clone(),
+            [valid.members[0].device_id.clone()].into(),
+            now(),
+        )
+        .unwrap(),
     );
     assert!(
         f.call(BootstrapRequest::Install { snapshot: revoked })
@@ -343,12 +340,13 @@ fn installation_retry_accepts_new_members_without_replacing_bootstrap() {
         device_id: request.device_id_for(&f.network).unwrap(),
         request,
         kind: MemberKind::Laptop,
-        permissions: Permissions::default(),
+        permissions: Permissions::Deploy(Default::default()),
         approved_by: Some(snapshot.network.initial_admin.clone()),
-        independent_admin: false,
+        independent_root: false,
         wg_verified: true,
         created_at: now(),
         expires_at: None,
+        client: Some("new-laptop".parse().unwrap()),
     });
     f.call(BootstrapRequest::Install { snapshot }).unwrap();
     assert_eq!(fs::read(f.data.join(NODE_CONFIG_FILE)).unwrap(), previous);

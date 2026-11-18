@@ -14,7 +14,8 @@ mod tests;
 use backup_keys::validate_encrypted_backup_key_value;
 pub use backup_keys::{EncryptedBackupKey, validate_backup_key_id};
 
-const SECRETS_FILE_NAME: &str = "secrets.local.json";
+/// This worktree's local state: drafts and cached values of the network state.
+const SECRETS_FILE_NAME: &str = "state.local.json";
 pub const SSL_CLOUDFLARE_CREDENTIAL_NAME: &str = "ssl.cloudflare";
 pub const POSTGRES_CREDENTIAL_NAME: &str = "postgres_url";
 
@@ -172,6 +173,10 @@ pub struct SecretsStore {
     /// Targets selected when loading this edit, including uncached environments.
     #[serde(skip)]
     pub(crate) targets: HashMap<String, (tako_network::AppEnv, tako_network::NetworkId)>,
+    /// Record versions the last synchronization published, so a deploy can
+    /// pin a snapshot that includes them.
+    #[serde(skip)]
+    pub(crate) published: Vec<tako_core::PublishedSecret>,
 }
 
 impl PartialEq for SecretsStore {
@@ -181,7 +186,7 @@ impl PartialEq for SecretsStore {
 }
 
 impl SecretsStore {
-    /// Get the default path for ignored local secrets in this worktree
+    /// This worktree's ignored local state.
     pub fn default_path<P: AsRef<Path>>(project_dir: P) -> PathBuf {
         project_dir.as_ref().join(".tako").join(SECRETS_FILE_NAME)
     }

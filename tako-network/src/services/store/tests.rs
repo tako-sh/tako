@@ -76,14 +76,13 @@ fn only_admitted_servers_are_queried_in_batches_and_bad_leases_are_isolated() {
                 verified,
                 Approval {
                     kind: registry.members[0].kind.clone(),
-                    permissions: Permissions {
-                        server_admin: true,
-                        ..Default::default()
-                    },
+                    permissions: Permissions::Full,
                     approved_by: Some(registry.members[0].device_id.clone()),
-                    independent_admin: false,
+                    independent_root: false,
                     created_at: 2,
                     expires_at: None,
+                    client: matches!(registry.members[0].kind, MemberKind::Laptop)
+                        .then(|| request.name.clone()),
                 },
             )
             .unwrap();

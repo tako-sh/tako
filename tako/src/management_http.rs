@@ -123,21 +123,17 @@ impl ManagementClient {
 
     pub(crate) fn can_manage_server(&self) -> bool {
         match &self.signer {
-            ManagementAuth::Native(identity) => identity.permissions.server_admin,
+            ManagementAuth::Native(identity) => identity.permissions.is_full(),
             ManagementAuth::Legacy { .. } => true,
         }
     }
 
     pub(crate) fn scoped_apps(&self) -> Option<Vec<String>> {
         match &self.signer {
-            ManagementAuth::Native(identity) if !identity.permissions.server_admin => Some(
-                identity
-                    .permissions
-                    .deployments
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect(),
-            ),
+            ManagementAuth::Native(identity) => identity
+                .permissions
+                .deploy_scopes()
+                .map(|scopes| scopes.iter().map(ToString::to_string).collect()),
             _ => None,
         }
     }
@@ -398,6 +394,8 @@ fn management_rpc_timeout_for_command(command: &Command) -> Duration {
         | Command::Stop { .. }
         | Command::Delete { .. }
         | Command::Rollback { .. }
+        // A server waits for a pinned secret snapshot to replicate to it.
+        | Command::SecretsDigest { .. }
         // Snapshots, restores, transfers, and queries can outlast a probe.
         | Command::CreateDatabase { .. }
         | Command::DeleteDatabase { .. }
@@ -430,7 +428,6 @@ fn management_rpc_timeout_for_command(command: &Command) -> Duration {
         | Command::BackupDownloadUrl { .. }
         | Command::Status { .. }
         | Command::ListReleases { .. }
-        | Command::UpdateSecrets { .. }
         | Command::GetSecretsHash { .. }
         | Command::EnqueueRun { .. }
         | Command::Signal { .. }
@@ -646,7 +643,7 @@ mod tests {
             management_rpc_timeout_for_command(&Command::PrepareRelease {
                 app: "demo".to_string(),
                 path: "/opt/tako/apps/demo/production/releases/v1".to_string(),
-                secrets: Default::default(),
+                secrets_digest: None,
                 force: false,
             }),
             MANAGEMENT_DEPLOY_RPC_TIMEOUT
@@ -658,8 +655,7 @@ mod tests {
                 path: "/opt/tako/apps/demo/production/releases/v1".to_string(),
                 routes: vec!["demo.tako.sh".to_string()],
                 source_ip: tako_core::SourceIpMode::Direct,
-                secrets: None,
-                runtime_credentials: None,
+                secrets_digest: None,
                 storages: None,
                 databases: None,
                 ssl: tako_core::SslBinding::default(),

@@ -1830,10 +1830,7 @@ mod tests {
                 matches!(cold_start, crate::proxy::BackendResolution::Unavailable),
                 "a request must not cold start a blocked app"
             );
-            for response in [
-                state.scale_app(&fixture.app, Some(1), None, false).await,
-                state.update_secrets(&fixture.app, Default::default()).await,
-            ] {
+            for response in [state.scale_app(&fixture.app, Some(1), None, false).await] {
                 assert!(
                     matches!(&response, Response::Error { message, .. } if names_dir(message)),
                     "an operator start must be refused with the same message"
@@ -1946,5 +1943,58 @@ mod tests {
             .unwrap();
         assert_eq!(body.as_ref(), fixture.objects[&fixture.info.archive_key]);
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn backup_now_applies_only_the_pinned_snapshot() {
+        use crate::secret_snapshot::test_file::{TestScope, pin};
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+        let app = tako_core::deployment_app_id("shop", "production");
+        let digest = pin(
+            dir.path(),
+            &app,
+            TestScope {
+                storages: [("r2".into(), ("access".into(), "secret".into()))].into(),
+                backup_keys: vec![(KEY_ID.into(), KEY.into())],
+                ..Default::default()
+            },
+        );
+        let binding = tako_core::BackupBinding {
+            storage: tako_core::StorageBinding {
+                provider: tako_core::StorageProvider::S3,
+                resource: Some("r2".into()),
+                bucket: Some("bucket".into()),
+                endpoint: Some("https://s3.example.test".into()),
+                region: None,
+                access_key_id: None,
+                secret_access_key: None,
+                force_path_style: false,
+                public_base_url: None,
+                path: None,
+                signing_key: None,
+            },
+            backup_keys: Vec::new(),
+            retention_days: 7,
+        };
+        // A server whose values differ from the pinned snapshot waits for it,
+        // then refuses rather than back up with its own keys.
+        tokio::time::pause();
+        let response = state
+            .handle_command(tako_core::Command::BackupNow {
+                app: app.clone(),
+                backup: Some(Box::new(binding)),
+                secrets_digest: Some(format!("not-{digest}")),
+            })
+            .await;
+        match response {
+            Response::Error { message, .. } => {
+                assert!(
+                    message.contains("have not reached this server"),
+                    "{message}"
+                )
+            }
+            other => panic!("expected an error, got {other:?}"),
+        }
     }
 }

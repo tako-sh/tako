@@ -1,5 +1,6 @@
 use crate::release::{validate_app_name, validate_release_version};
 use crate::socket::{Command, Response};
+use std::collections::HashMap;
 use tako_core::{HelloResponse, PROTOCOL_VERSION};
 
 /// Commands that only inspect state. Management dispatch runs them without the
@@ -42,6 +43,11 @@ pub(crate) fn command_is_read_only(command: &Command) -> bool {
 impl crate::ServerState {
     /// Handle a command from the management socket
     pub async fn handle_command(&self, cmd: Command) -> Response {
+        self.handle_command_as(cmd, super::Caller::Full).await
+    }
+
+    /// Handle a command sent by `caller`.
+    pub(crate) async fn handle_command_as(&self, cmd: Command, caller: super::Caller) -> Response {
         if self.is_draining() && super::drain::blocked_while_draining(&cmd) {
             return Response::error(
                 "Server is drained; resume it before starting new application work.",
@@ -78,10 +84,19 @@ impl crate::ServerState {
 
                 Response::ok(data)
             }
-            Command::PrepareRelease { app, path, secrets, force } => {
+            Command::PrepareRelease {
+                app,
+                path,
+                secrets_digest,
+                force,
+            } => {
                 if let Err(msg) = validate_app_name(&app) {
                     return Response::error(msg);
                 }
+                let secrets = match self.pinned_app_secrets(&app, secrets_digest.as_deref()).await {
+                    Ok(secrets) => secrets,
+                    Err(error) => return Response::error(error),
+                };
                 self.prepare_release(&app, &path, secrets, force).await
             }
             Command::PrepareReleaseUpload { app, version } => {
@@ -102,7 +117,8 @@ impl crate::ServerState {
                 version,
                 path,
                 routes,
-                ssl,
+                mut ssl,
+                secrets_digest,
                 force,
             } => {
                 if let Err(msg) = validate_app_name(&app) {
@@ -113,6 +129,21 @@ impl crate::ServerState {
                 }
                 if let Some(resp) = self.reject_mutating_when_upgrading("prepare-deploy").await {
                     return resp;
+                }
+                if let Err(error) = self.refuse_claimed_routes(&app, &routes, caller) {
+                    return Response::error(error);
+                }
+                ssl.cloudflare_api_token = None;
+                if let Some(digest) = secrets_digest.as_deref() {
+                    match crate::secret_snapshot::resolve(&self.runtime.data_dir, &app, Some(digest), &[]).await {
+                        Ok(resolved) => {
+                            if let Err(error) = resolved.refuse_expired() {
+                                return Response::error(error);
+                            }
+                            resolved.fill_ssl(&mut ssl)
+                        }
+                        Err(error) => return Response::error(error),
+                    }
                 }
                 self.prepare_deploy(&app, &version, &path, routes, ssl, force)
                     .await
@@ -156,7 +187,7 @@ impl crate::ServerState {
                 path,
                 command_line,
                 vars,
-                secrets,
+                secrets_digest,
                 databases,
                 force,
             } => {
@@ -166,6 +197,10 @@ impl crate::ServerState {
                 if let Err(msg) = validate_release_version(&version) {
                     return Response::error(msg);
                 }
+                let secrets = match self.pinned_app_secrets(&app, secrets_digest.as_deref()).await {
+                    Ok(secrets) => secrets,
+                    Err(error) => return Response::error(error),
+                };
                 self.run_release(super::releases::ReleaseRun {
                     app_name: &app,
                     version: &version,
@@ -184,12 +219,11 @@ impl crate::ServerState {
                 path,
                 routes,
                 source_ip,
-                secrets,
-                runtime_credentials,
-                storages,
+                secrets_digest,
+                mut storages,
                 databases,
-                ssl,
-                backup,
+                mut ssl,
+                mut backup,
                 force,
             } => {
                 if let Err(msg) = validate_app_name(&app) {
@@ -201,6 +235,48 @@ impl crate::ServerState {
                 if let Some(resp) = self.reject_mutating_when_upgrading("deploy").await {
                     return resp;
                 }
+                if let Err(error) = self.refuse_claimed_routes(&app, &routes, caller) {
+                    return Response::error(error);
+                }
+                // Clients never send secret values. Fill them from the pinned
+                // snapshot, or keep what this server last applied.
+                strip_secret_parts(&mut storages, &mut ssl, &mut backup);
+                let (secrets, runtime_credentials) = match secrets_digest.as_deref() {
+                    Some(digest) => {
+                        let resolved = match crate::secret_snapshot::resolve(
+                            &self.runtime.data_dir,
+                            &app,
+                            Some(digest),
+                            &[],
+                        )
+                        .await
+                        {
+                            Ok(resolved) => resolved,
+                            Err(error) => return Response::error(error),
+                        };
+                        if let Err(error) = resolved.refuse_expired() {
+                            return Response::error(error);
+                        }
+                        resolved.fill_ssl(&mut ssl);
+                        if let Some(storages) = storages.as_mut()
+                            && let Err(error) = resolved.fill_storages(storages)
+                        {
+                            return Response::error(error);
+                        }
+                        if let Some(backup) = backup.as_deref_mut()
+                            && let Err(error) = resolved.fill_backup(backup)
+                        {
+                            return Response::error(error);
+                        }
+                        (Some(resolved.app.clone()), Some(resolved.runtime_credentials()))
+                    }
+                    None => {
+                        if let Err(error) = self.keep_applied_secret_parts(&app, &mut storages, &mut backup) {
+                            return Response::error(error);
+                        }
+                        (None, None)
+                    }
+                };
                 self.deploy_app(super::deploy::DeployRequest {
                     app_name: &app,
                     version: &version,
@@ -217,12 +293,38 @@ impl crate::ServerState {
                 })
                 .await
             }
-            Command::BackupNow { app, backup } => {
+            Command::BackupNow {
+                app,
+                mut backup,
+                secrets_digest,
+            } => {
                 if let Err(msg) = validate_app_name(&app) {
                     return Response::error(msg);
                 }
                 if let Some(resp) = self.reject_mutating_when_upgrading("backup-now").await {
                     return resp;
+                }
+                if let Some(binding) = backup.as_deref_mut() {
+                    binding.storage.access_key_id = None;
+                    binding.storage.secret_access_key = None;
+                    binding.backup_keys.clear();
+                    // Every server backs up with the snapshot the client pinned.
+                    // Only the backup target's keys and the backup keys need
+                    // to be current; expired app secrets don't block a backup.
+                    let resolved = match crate::secret_snapshot::resolve(
+                        &self.runtime.data_dir,
+                        &app,
+                        secrets_digest.as_deref(),
+                        &[],
+                    )
+                    .await
+                    {
+                        Ok(resolved) => resolved,
+                        Err(error) => return Response::error(error),
+                    };
+                    if let Err(error) = resolved.fill_backup(binding) {
+                        return Response::error(error);
+                    }
                 }
                 if let Some(backup) = backup.as_deref()
                     && let Err(error) = self.state_store.set_backup(&app, Some(backup))
@@ -353,16 +455,18 @@ impl crate::ServerState {
                 if let Some(resp) = self.reject_mutating_when_upgrading("rollback").await {
                     return resp;
                 }
-                self.rollback_app(&app, &version).await
+                self.rollback_app_as(&app, &version, caller).await
             }
-            Command::UpdateSecrets { app, secrets } => {
+            Command::SecretsDigest { app, published } => {
                 if let Err(msg) = validate_app_name(&app) {
                     return Response::error(msg);
                 }
-                if let Some(resp) = self.reject_mutating_when_upgrading("update-secrets").await {
-                    return resp;
+                match crate::secret_snapshot::resolve(&self.runtime.data_dir, &app, None, &published)
+                    .await
+                {
+                    Ok(resolved) => Response::ok(serde_json::json!({ "digest": resolved.digest })),
+                    Err(error) => Response::error(error),
                 }
-                self.update_secrets(&app, secrets).await
             }
             Command::GetSecretsHash { app } => {
                 if let Err(msg) = validate_app_name(&app) {
@@ -473,5 +577,122 @@ impl crate::ServerState {
                     .to_string(),
             ),
         }
+    }
+}
+
+/// Drop any secret parts a client sent in bindings; the server fills them.
+fn strip_secret_parts(
+    storages: &mut Option<HashMap<String, tako_core::StorageBinding>>,
+    ssl: &mut tako_core::SslBinding,
+    backup: &mut Option<Box<tako_core::BackupBinding>>,
+) {
+    ssl.cloudflare_api_token = None;
+    for binding in storages
+        .iter_mut()
+        .flat_map(|storages| storages.values_mut())
+    {
+        if binding.provider == tako_core::StorageProvider::S3 {
+            binding.access_key_id = None;
+            binding.secret_access_key = None;
+        }
+    }
+    if let Some(backup) = backup.as_deref_mut() {
+        backup.storage.access_key_id = None;
+        backup.storage.secret_access_key = None;
+        backup.backup_keys.clear();
+    }
+}
+
+impl crate::ServerState {
+    /// A route belongs to one app environment, so a staging deploy cannot
+    /// take over production's domain.
+    pub(super) fn refuse_claimed_routes(
+        &self,
+        app: &str,
+        routes: &[String],
+        caller: super::Caller,
+    ) -> Result<(), String> {
+        let table = self.routes.read();
+        if let Some((route, owner)) = table.claimed_elsewhere(app, routes) {
+            return Err(format!(
+                "Route '{route}' belongs to {owner}. Remove it from {owner} before deploying it here."
+            ));
+        }
+        // Routing prefers the most specific route, so an overlapping route
+        // could take some of another app environment's requests.
+        if caller == super::Caller::Deploy
+            && let Some((route, other, owner)) = table.overlapping_elsewhere(app, routes)
+        {
+            return Err(format!(
+                "Route '{route}' overlaps route '{other}' of {owner}. A deploy client can't add a route that shares requests with another app environment; deploy it with a full client."
+            ));
+        }
+        Ok(())
+    }
+
+    /// App secrets of the pinned snapshot, or none without a pin.
+    async fn pinned_app_secrets(
+        &self,
+        app: &str,
+        digest: Option<&str>,
+    ) -> Result<HashMap<String, String>, String> {
+        match digest {
+            Some(digest) => {
+                let resolved =
+                    crate::secret_snapshot::resolve(&self.runtime.data_dir, app, Some(digest), &[])
+                        .await?;
+                resolved.refuse_expired()?;
+                Ok(resolved.app)
+            }
+            None => Ok(HashMap::new()),
+        }
+    }
+
+    /// Without a pinned snapshot, bindings keep the access keys this server
+    /// last applied for the same storage.
+    fn keep_applied_secret_parts(
+        &self,
+        app: &str,
+        storages: &mut Option<HashMap<String, tako_core::StorageBinding>>,
+        backup: &mut Option<Box<tako_core::BackupBinding>>,
+    ) -> Result<(), String> {
+        let same = |a: &tako_core::StorageBinding, b: &tako_core::StorageBinding| {
+            a.provider == b.provider
+                && a.resource == b.resource
+                && a.bucket == b.bucket
+                && a.endpoint == b.endpoint
+                && a.region == b.region
+        };
+        if let Some(storages) = storages.as_mut() {
+            let applied = self
+                .state_store
+                .get_storages(app)
+                .map_err(|error| format!("Failed to read storages: {error}"))?;
+            for (name, binding) in storages.iter_mut() {
+                if binding.provider != tako_core::StorageProvider::S3 {
+                    continue;
+                }
+                let previous = applied
+                    .get(name)
+                    .filter(|previous| same(previous, binding))
+                    .ok_or_else(|| {
+                        format!("Storage binding '{name}' needs its access keys; deploy it with a secret snapshot.")
+                    })?;
+                binding.access_key_id = previous.access_key_id.clone();
+                binding.secret_access_key = previous.secret_access_key.clone();
+            }
+        }
+        if let Some(binding) = backup.as_deref_mut() {
+            let previous = self
+                .state_store
+                .get_backup(app)
+                .map_err(|error| format!("Failed to read backup config: {error}"))?
+                .filter(|previous| same(&previous.storage, &binding.storage))
+                .ok_or("The backup target needs its keys; deploy it with a secret snapshot.")?;
+            binding.storage.access_key_id = previous.storage.access_key_id;
+            binding.storage.secret_access_key = previous.storage.secret_access_key;
+            binding.backup_keys = previous.backup_keys;
+        }
+        Ok(())
     }
 }

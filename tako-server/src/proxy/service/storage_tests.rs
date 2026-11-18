@@ -14,6 +14,7 @@ async fn storage_uses_the_routed_app_binding_and_waits_for_restore_without_start
     let manager = Arc::new(AppManager::new(dir.path().into()));
     let binding = StorageBinding {
         provider: StorageProvider::Local,
+        resource: None,
         bucket: None,
         endpoint: None,
         region: None,

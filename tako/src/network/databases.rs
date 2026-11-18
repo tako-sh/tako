@@ -1,4 +1,4 @@
-//! Database records in the network's shared state.
+//! Database records in the network state.
 //!
 //! A database's name identifies it within the network. Each database has two
 //! records under its name: a directory record with its home server, which
@@ -90,7 +90,7 @@ pub(crate) fn backup_key(
         .remove(&key_name(record))
         .ok_or_else(|| {
             format!(
-                "The snapshot key of database '{}' is not available to this device; it needs network and server administrator permission.",
+                "The snapshot key of database '{}' is not available to this device; it needs full access.",
                 record.name
             )
             .into()

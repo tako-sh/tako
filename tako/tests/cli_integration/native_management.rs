@@ -34,20 +34,18 @@ fn admit(
             now,
         )
         .unwrap();
+    let client = matches!(kind, MemberKind::Laptop).then(|| request.name.clone());
     let member = snapshot
         .approve(
             verified,
             Approval {
                 kind,
-                permissions: Permissions {
-                    network_admin: true,
-                    server_admin: true,
-                    ..Default::default()
-                },
+                permissions: Permissions::Full,
                 approved_by: approver,
-                independent_admin: false,
+                independent_root: false,
                 created_at: now,
                 expires_at: None,
+                client,
             },
         )
         .unwrap();
@@ -242,7 +240,7 @@ fn same_named_networks_keep_distinct_servers_and_lifecycle_selectors() {
             "--dry-run",
             "network",
             "server",
-            "uninstall",
+            "remove",
             "fleet/edge",
             "--yes",
         ],
@@ -265,19 +263,25 @@ fn deploy_ignores_unrelated_inactive_networks_but_rejects_a_selected_inactive_ne
         let mut stale = Fixture::with_servers(&["edge"]);
         let own = stale.profile.snapshot.network.initial_admin.clone();
         if revoked {
-            let revocation = stale
+            // Another device revoked this one.
+            let member = stale
                 .profile
                 .snapshot
-                .plan_revocation(
-                    tako_network::RevocationId::random().unwrap(),
-                    &own,
-                    &own,
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs(),
-                )
+                .members
+                .iter()
+                .find(|member| member.device_id == own)
                 .unwrap();
+            let revocation = tako_network::Revocation::of(
+                tako_network::RevocationId::random().unwrap(),
+                member,
+                own.clone(),
+                Default::default(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+            )
+            .unwrap();
             stale.profile.snapshot.revocations.push(revocation);
         } else {
             stale
@@ -372,7 +376,7 @@ fn selected_environment_ignores_another_environments_inactive_secret_cache() {
         &healthy.tako_home,
     );
     assert!(edit.status.success(), "{}", stderr_str(&edit));
-    let path = healthy.directory.path().join(".tako/secrets.local.json");
+    let path = healthy.directory.path().join(".tako/state.local.json");
     let before = fs::read(&path).unwrap();
     let state: serde_json::Value = serde_json::from_slice(&before).unwrap();
     assert!(state["environments"].get("production").is_some());
@@ -498,7 +502,7 @@ fn secret_sync_dry_run_preserves_drafts_with_retry_expired() {
         &fixture.tako_home,
     );
     assert!(set.status.success(), "{}", stderr_str(&set));
-    let draft = project.join(".tako/secrets.local.json");
+    let draft = project.join(".tako/state.local.json");
     let before = fs::read(&draft).unwrap();
     let preview = run_tako_with_env(
         &[

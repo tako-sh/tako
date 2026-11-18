@@ -152,12 +152,40 @@ async fn assert_dependency_logs(state: &ServerState, runtime: &ComposeRuntime, m
     .expect("Dependency output must reach the group log");
 }
 
-async fn rotate_dependency_secret(state: &ServerState, runtime: &ComposeRuntime, value: &str) {
+/// Secrets change by redeploying the current release, with its own routes, and
+/// a new snapshot.
+async fn rotate_dependency_secret(
+    state: &ServerState,
+    runtime: &ComposeRuntime,
+    routes: &[String],
+    value: &str,
+) {
+    let data_dir = state.runtime.data_dir.clone();
+    let version = state
+        .app_manager
+        .get_app(APP)
+        .expect("deployed app")
+        .config
+        .read()
+        .version
+        .clone();
+    let digest = crate::secret_snapshot::test_file::pin(
+        &data_dir,
+        APP,
+        crate::secret_snapshot::test_file::TestScope {
+            app: [("ROTATION".into(), value.into())].into(),
+            ..Default::default()
+        },
+    );
     ok(state
-        .handle_command(Command::UpdateSecrets {
-            app: APP.into(),
-            secrets: HashMap::from([("ROTATION".into(), value.into())]),
-        })
+        .handle_command(
+            serde_json::from_value(serde_json::json!({
+                "command":"deploy", "app":APP, "version":version,
+                "path":crate::release::app_release_root(&data_dir, APP, &version),
+                "routes":routes, "secrets_digest":digest
+            }))
+            .unwrap(),
+        )
         .await);
     let container = runtime
         .containers()
@@ -735,7 +763,13 @@ services:
     let restarted = state(dir.path(), false);
     restarted.restore_from_state_store().await.unwrap();
     // SQLite loads routes in lexical order, independently of service order.
-    rotate_dependency_secret(&restarted, &runtime, "after-restart").await;
+    rotate_dependency_secret(
+        &restarted,
+        &runtime,
+        &compose.routes("production"),
+        "after-restart",
+    )
+    .await;
     ok(restarted
         .handle_command(Command::Stop {
             app: APP.into(),
@@ -750,7 +784,13 @@ services:
             .get_instances()
             .is_empty()
     );
-    rotate_dependency_secret(&restarted, &runtime, "all-paused").await;
+    rotate_dependency_secret(
+        &restarted,
+        &runtime,
+        &compose.routes("production"),
+        "all-paused",
+    )
+    .await;
     assert_dependency_logs(&restarted, &runtime, "all-http-apps-paused").await;
     ok(restarted
         .handle_command(Command::Start {
@@ -919,7 +959,7 @@ services:
     let containers = private_runtime.containers().await.unwrap();
     assert_eq!(containers.len(), 1);
     assert!(containers.iter().all(|c| c.running() && c.port.is_none()));
-    rotate_dependency_secret(&private_server, &private_runtime, "docker-only").await;
+    rotate_dependency_secret(&private_server, &private_runtime, &[], "docker-only").await;
     assert_dependency_logs(
         &private_server,
         &private_runtime,

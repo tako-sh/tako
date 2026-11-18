@@ -48,6 +48,31 @@ fn fail_publication(alias: &LocalNetwork, fixture: &Fixture, device: &str) -> Si
     attempted.unwrap()
 }
 
+/// Admit another full laptop, approved by this device, and return its ID.
+fn add_peer(fixture: &mut Fixture) -> DeviceId {
+    let Profile::Active { profile } = &mut fixture.profile else {
+        panic!()
+    };
+    let keys = LocalDeviceKeys::generate().unwrap();
+    let request = keys
+        .enrollment_request(
+            Some(profile.snapshot.network.id.clone()),
+            tako_network::DeviceKind::Laptop,
+            "peer".parse().unwrap(),
+        )
+        .unwrap();
+    let id = request.device_id_for(&profile.snapshot.network.id).unwrap();
+    let own = profile.snapshot.network.initial_admin.clone();
+    network::tests::add_member(
+        &mut profile.snapshot,
+        &keys,
+        request,
+        MemberKind::Laptop,
+        Some(own),
+    );
+    id
+}
+
 fn response(fixture: &Fixture, signed: &SignedRequest) -> Revocation {
     let RpcRequest::Revoke { id, target } = &signed.request else {
         panic!()
@@ -60,14 +85,15 @@ fn response(fixture: &Fixture, signed: &SignedRequest) -> Revocation {
 }
 
 #[test]
-fn lost_response_retries_after_self_revocation_with_the_same_id_issuer_and_new_envelope() {
+fn lost_response_retries_with_the_same_id_issuer_and_new_envelope() {
     let _home = TestHome::new();
-    let fixture = fixture();
+    let mut fixture = fixture();
+    let peer = add_peer(&mut fixture).to_string();
     let alias = saved(&fixture);
-    let first = fail_publication(&alias, &fixture, &alias.device);
+    let first = fail_publication(&alias, &fixture, &peer);
     let denied = response(&fixture, &first);
     network::record_revocation(&alias, denied.clone()).unwrap();
-    assert!(network::load_profile(&alias).is_err());
+    assert!(network::load_profile(&alias).is_ok());
     let before = std::fs::read(
         alias
             .profile_path()
@@ -75,7 +101,7 @@ fn lost_response_retries_after_self_revocation_with_the_same_id_issuer_and_new_e
             .with_file_name("revocation.json"),
     )
     .unwrap();
-    assert_eq!(project(&alias, &alias.device).unwrap().id, denied.id);
+    assert_eq!(project(&alias, &peer).unwrap().id, denied.id);
     assert_eq!(
         std::fs::read(
             alias
@@ -88,8 +114,8 @@ fn lost_response_retries_after_self_revocation_with_the_same_id_issuer_and_new_e
     );
     let result = run_with(
         &alias,
-        &alias.device,
-        |_| panic!("retry must not refresh revoked membership"),
+        &peer,
+        |_| panic!("retry must not refresh membership"),
         |pin, signed| {
             let saved = journal(&alias);
             assert_eq!(pin, &saved.pin);
@@ -109,7 +135,6 @@ fn lost_response_retries_after_self_revocation_with_the_same_id_issuer_and_new_e
     assert_eq!(journal(&alias).recorded, Some(denied.clone()));
     let profile: Profile = network::read_json(&alias.profile_path().unwrap()).unwrap();
     assert_eq!(profile.snapshot().revocations, vec![denied]);
-    assert!(profile.validate(&fixture.keys).is_err());
     let bytes = std::fs::read_to_string(
         alias
             .profile_path()
@@ -224,9 +249,10 @@ fn retry_requires_original_keys_and_immutable_network_request_target_and_pin() {
 #[test]
 fn recorded_response_repairs_local_persistence_without_new_authority_or_rpc() {
     let _home = TestHome::new();
-    let fixture = fixture();
+    let mut fixture = fixture();
+    let peer = add_peer(&mut fixture).to_string();
     let alias = saved(&fixture);
-    let first = fail_publication(&alias, &fixture, &alias.device);
+    let first = fail_publication(&alias, &fixture, &peer);
     let denied = response(&fixture, &first);
     let mut recorded = journal(&alias);
     recorded.recorded = Some(denied.clone());
@@ -242,7 +268,7 @@ fn recorded_response_repairs_local_persistence_without_new_authority_or_rpc() {
     for _ in 0..2 {
         let result = run_with(
             &alias,
-            &alias.device,
+            &peer,
             |_| panic!("must not refresh"),
             |_, _| panic!("receipt needs no RPC"),
             network::now,
@@ -251,7 +277,6 @@ fn recorded_response_repairs_local_persistence_without_new_authority_or_rpc() {
         assert_eq!(result, denied);
         let profile: Profile = network::read_json(&alias.profile_path().unwrap()).unwrap();
         assert_eq!(profile.snapshot().revocations, vec![denied.clone()]);
-        assert!(profile.validate(&fixture.keys).is_err());
     }
 }
 
@@ -299,7 +324,7 @@ fn add_server(fixture: &mut Fixture, parent: &DeviceId, name: &str) -> DeviceId 
 }
 
 #[test]
-fn new_attempt_uses_a_surviving_issuer_and_excludes_the_target_and_its_descendants() {
+fn new_attempt_uses_a_surviving_issuer_and_keeps_what_the_target_approved() {
     let _home = TestHome::new();
     let mut fixture = fixture();
     let target = fixture.server.clone();
@@ -323,7 +348,7 @@ fn new_attempt_uses_a_surviving_issuer_and_excludes_the_target_and_its_descendan
         |_| Ok(fixture.profile.clone()),
         |_, signed| {
             sent.push(signed.clone());
-            assert_eq!(signed.server_id, survivor);
+            assert_ne!(signed.server_id, target);
             match &signed.request {
                 RpcRequest::Snapshot => {
                     Ok(RpcResponse::Snapshot(fixture.profile.snapshot().clone()))
@@ -342,7 +367,10 @@ fn new_attempt_uses_a_surviving_issuer_and_excludes_the_target_and_its_descendan
         .effective_members(network::now().unwrap())
         .unwrap();
     assert!(!effective.contains_key(&target));
-    assert!(!effective.contains_key(&child));
+    assert!(
+        effective.contains_key(&child),
+        "revocation does not cascade"
+    );
     assert!(effective.contains_key(&survivor));
     assert_eq!(profile.snapshot().revocations, vec![result]);
 }

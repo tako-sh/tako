@@ -1,5 +1,5 @@
-//! Versioned shared records: sealed values for secrets and plaintext for
-//! non-secret kinds. Membership remains in its own immutable registry.
+//! The network state: versioned records, sealed values for secrets and
+//! plaintext for non-secret kinds. Membership remains in its own immutable registry.
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
@@ -45,6 +45,70 @@ pub struct RecordContent {
 impl RecordContent {
     pub fn validate(&self) -> RuntimeResult<()> {
         validate_content(&self.value, self.expires_on.as_deref())
+    }
+}
+
+/// One opened value of an app environment, as a server reads it for a deploy.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScopeValue {
+    pub kind: RecordKind,
+    pub name: String,
+    pub content: RecordContent,
+}
+
+impl std::fmt::Debug for ScopeValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScopeValue")
+            .field("kind", &self.kind)
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
+}
+
+/// An app environment's current values on one server: what a deploy applies.
+/// Only the local server process receives it, never a client.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScopeSecrets {
+    /// Hash over the scope's current record versions, deletions included.
+    /// Servers that agree on it hold the same values.
+    pub digest: String,
+    /// Whether every requested published version has arrived here.
+    pub caught_up: bool,
+    /// Names of values this server cannot open yet because their key grant
+    /// has not arrived.
+    pub missing_keys: Vec<String>,
+    pub values: Vec<ScopeValue>,
+}
+
+/// A record version a client published in a scope, which a server waits for
+/// before pinning the scope's snapshot.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublishedVersion {
+    pub kind: RecordKind,
+    pub name: String,
+    pub revision: u64,
+}
+
+impl SharedSnapshot {
+    /// The digest of `scope`'s current record versions, deletions included.
+    pub fn scope_digest(&self, scope: &AppEnv) -> RuntimeResult<String> {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        for (address, record) in self.latest()? {
+            if &address.scope != scope {
+                continue;
+            }
+            hash.update(serde_json::to_vec(&(
+                &address.kind,
+                &address.name,
+                &record.id,
+            ))?);
+            hash.update(b"\n");
+        }
+        Ok(hex::encode(hash.finalize()))
     }
 }
 
@@ -134,9 +198,10 @@ impl RecordAddress {
     }
 
     /// Whether members with `permissions` may publish to this address.
+    /// Only full members publish. Deploy clients never read or write values:
+    /// servers resolve them at deploy.
     pub fn writable(&self, permissions: &Permissions) -> bool {
-        (permissions.network_admin && permissions.server_admin)
-            || (self.kind == RecordKind::App && permissions.can_deploy(&self.scope))
+        permissions.is_full()
     }
 
     /// Whether members with `permissions` may read this address. Database
@@ -146,7 +211,7 @@ impl RecordAddress {
         self.writable(permissions)
             || (self.kind == RecordKind::Database
                 && self.scope.as_str() == DATABASE_SCOPE
-                && !permissions.deployments.is_empty())
+                && permissions.deploys())
     }
 
     // Context labels are bound into stored ciphertexts, so they keep the names

@@ -1,6 +1,6 @@
 use crate::{
-    AppEnv, BootId, DeviceId, DeviceKind, EnrollmentRequest, Error, KeyFingerprint, NetworkId,
-    Result, RevocationId, SshPublicKey, SshUser, VerifiedEnrollment, error::invalid,
+    AppEnv, BootId, DeviceId, DeviceKind, DeviceName, EnrollmentRequest, Error, KeyFingerprint,
+    NetworkId, Result, RevocationId, SshPublicKey, SshUser, VerifiedEnrollment, error::invalid,
 };
 use openssl::x509::X509;
 use serde::{Deserialize, Serialize};
@@ -17,42 +17,73 @@ pub struct NetworkDescriptor {
     pub initial_admin: DeviceId,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Permissions {
-    pub network_admin: bool,
-    pub server_admin: bool,
-    pub ssh_user: Option<SshUser>,
-    pub deployments: BTreeSet<AppEnv>,
+/// What a member may do in its network.
+///
+/// `Full` members (every server, and clients added without a restriction) may do
+/// everything: read and publish every secret, deploy any app, invite and revoke
+/// members, add servers, open the `tako` shell and join the private network.
+/// `Deploy` clients may only release code to the listed app environments.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Permissions {
+    Full,
+    Deploy(BTreeSet<AppEnv>),
 }
 
+/// The account a full member's SSH key opens on servers.
+pub const SSH_USER: &str = "tako";
+
 impl Permissions {
+    pub fn deploy(scopes: impl IntoIterator<Item = AppEnv>) -> Self {
+        Self::Deploy(scopes.into_iter().collect())
+    }
+
     pub fn validate(&self) -> Result<()> {
-        if self
-            .ssh_user
-            .as_ref()
-            .is_some_and(|user| matches!(user.as_str(), "tako" | "root"))
-            && !(self.network_admin && self.server_admin)
+        if let Self::Deploy(scopes) = self
+            && scopes.len() > 1024
         {
-            return Err(Error::PermissionDenied(
-                "SSH access to tako or root requires both network_admin and server_admin",
-            ));
-        }
-        if self.deployments.len() > 1024 {
             return Err(invalid("deployment permissions", "too many scopes"));
         }
         Ok(())
     }
 
-    pub fn can_deploy(&self, scope: &AppEnv) -> bool {
-        self.deployments.contains(scope)
+    pub fn is_full(&self) -> bool {
+        matches!(self, Self::Full)
     }
 
-    pub(crate) fn can_delegate(&self, child: &Self) -> bool {
-        self.network_admin
-            && (!child.server_admin || self.server_admin)
-            && (child.ssh_user.is_none() || self.server_admin || child.ssh_user == self.ssh_user)
-            && (self.server_admin || child.deployments.is_subset(&self.deployments))
+    /// Whether this member may release code to `scope`.
+    pub fn can_deploy(&self, scope: &AppEnv) -> bool {
+        match self {
+            Self::Full => true,
+            Self::Deploy(scopes) => scopes.contains(scope),
+        }
+    }
+
+    /// Whether this member may deploy anything at all.
+    pub fn deploys(&self) -> bool {
+        match self {
+            Self::Full => true,
+            Self::Deploy(scopes) => !scopes.is_empty(),
+        }
+    }
+
+    /// The scopes of a deploy client; `None` for full members.
+    pub fn deploy_scopes(&self) -> Option<&BTreeSet<AppEnv>> {
+        match self {
+            Self::Full => None,
+            Self::Deploy(scopes) => Some(scopes),
+        }
+    }
+
+    /// The server account this member's SSH key opens, if any.
+    pub fn ssh_user(&self) -> Option<SshUser> {
+        self.is_full()
+            .then(|| SSH_USER.parse().expect("valid SSH user"))
+    }
+
+    /// Only full members invite, and they may invite anyone.
+    pub(crate) fn can_delegate(&self, _child: &Self) -> bool {
+        self.is_full()
     }
 }
 
@@ -157,10 +188,16 @@ pub struct Member {
     pub kind: MemberKind,
     pub permissions: Permissions,
     pub approved_by: Option<DeviceId>,
-    pub independent_admin: bool,
+    /// A root of authority with no approver, admitted by a host operator.
+    pub independent_root: bool,
     pub wg_verified: bool,
     pub created_at: u64,
     pub expires_at: Option<u64>,
+    /// The client this laptop is a key of, asserted by the admitting server.
+    /// Each `client add` admits a new member under the same name. Every laptop
+    /// has one; servers have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<DeviceName>,
 }
 
 impl Member {
@@ -182,6 +219,12 @@ impl Member {
                 "network, kind, or ID does not match enrollment",
             ));
         }
+        if matches!(self.kind, MemberKind::Laptop) != self.client.is_some() {
+            return Err(invalid(
+                "member client",
+                "laptops are admitted under a client name; servers have none",
+            ));
+        }
         if self
             .expires_at
             .is_some_and(|expiry| expiry <= self.created_at)
@@ -195,16 +238,14 @@ impl Member {
                 "approval must precede request and membership expiry",
             ));
         }
-        if self.independent_admin
-            && !(self.permissions.network_admin && self.permissions.server_admin)
-        {
-            return Err(invalid(
-                "independent admin",
-                "requires both administrator capabilities",
-            ));
+        if self.independent_root && !self.permissions.is_full() {
+            return Err(invalid("independent root", "requires full access"));
+        }
+        if self.client.is_some() && !matches!(self.kind, MemberKind::Laptop) {
+            return Err(invalid("client name", "only clients have one"));
         }
         if self.approved_by.as_ref() == Some(&self.device_id)
-            || (self.independent_admin && self.approved_by.is_some())
+            || (self.independent_root && self.approved_by.is_some())
         {
             return Err(invalid(
                 "approval authority",
@@ -224,13 +265,27 @@ impl Member {
     fn delegated_by(&self, parent: &Member) -> bool {
         parent.created_at <= self.created_at
             && parent.permissions.can_delegate(&self.permissions)
-            && (!matches!(self.kind, MemberKind::Server(_)) || parent.permissions.server_admin)
             && match (parent.expires_at, self.expires_at) {
                 (Some(parent), Some(child)) => child <= parent,
                 (Some(_), None) => false,
                 (None, _) => true,
             }
     }
+}
+
+/// Where a member stands in a local view of the registry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemberStatus {
+    Active,
+    /// Revoked, and a later key of the same client exists.
+    Replaced,
+    Revoked,
+    Expired,
+    /// Approved by a device that was not valid at the time.
+    Invalid,
+    /// Admitted concurrently with an earlier key of the same client name.
+    Conflict,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -240,9 +295,11 @@ pub struct Approval {
     pub permissions: Permissions,
     pub approved_by: Option<DeviceId>,
     /// Requires the separate independently authenticated local-operator entry point.
-    pub independent_admin: bool,
+    pub independent_root: bool,
     pub created_at: u64,
     pub expires_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<DeviceName>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -255,6 +312,28 @@ pub struct Revocation {
     pub captured_servers: BTreeSet<DeviceId>,
     pub by: DeviceId,
     pub created_at: u64,
+}
+
+impl Revocation {
+    /// The denial of `member`'s device and keys. This checks no authority; use
+    /// [`RegistrySnapshot::plan_revocation`] for that.
+    pub fn of(
+        id: RevocationId,
+        member: &Member,
+        by: DeviceId,
+        captured_servers: BTreeSet<DeviceId>,
+        created_at: u64,
+    ) -> Result<Self> {
+        Ok(Self {
+            id,
+            target: member.device_id.clone(),
+            wg_fingerprint: member.request.wg_public_key.fingerprint(),
+            ssh_fingerprint: member.request.ssh_public_key.fingerprint()?,
+            captured_servers,
+            by,
+            created_at,
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -334,49 +413,142 @@ impl RegistrySnapshot {
     }
 
     fn denied(&self, member: &Member) -> Result<bool> {
+        self.denied_by(member, u64::MAX)
+    }
+
+    /// Whether a revocation recorded at or before `at` denies `member`.
+    fn denied_by(&self, member: &Member, at: u64) -> Result<bool> {
         let wg = member.request.wg_public_key.fingerprint();
         let ssh = member.request.ssh_public_key.fingerprint()?;
         Ok(self.revocations.iter().any(|denial| {
-            denial.target == member.device_id
-                || denial.wg_fingerprint == wg
-                || denial.ssh_fingerprint == ssh
+            denial.created_at <= at
+                && (denial.target == member.device_id
+                    || denial.wg_fingerprint == wg
+                    || denial.ssh_fingerprint == ssh)
         }))
+    }
+
+    /// Whether `member` was validly approved. An approval stays valid once made:
+    /// the approver must have been live, unrevoked and itself validly approved
+    /// when it approved `member`. Revoking an approver later does not affect the
+    /// members it approved.
+    fn approval_valid<'a>(
+        &'a self,
+        member: &'a Member,
+        verified: &BTreeMap<&'a DeviceId, &'a Member>,
+        memo: &mut BTreeMap<&'a DeviceId, Option<bool>>,
+    ) -> Result<bool> {
+        match memo.get(&member.device_id) {
+            Some(Some(valid)) => return Ok(*valid),
+            // An approval cycle never reaches a root.
+            Some(None) => return Ok(false),
+            None => {}
+        }
+        memo.insert(&member.device_id, None);
+        let valid = match &member.approved_by {
+            None if member.independent_root => true,
+            None => member.device_id == self.network.initial_admin && member.permissions.is_full(),
+            Some(parent) => match verified.get(parent) {
+                Some(parent) => {
+                    member.delegated_by(parent)
+                        && parent.live(member.created_at)
+                        && !self.denied_by(parent, member.created_at)?
+                        && self.approval_valid(parent, verified, memo)?
+                }
+                None => false,
+            },
+        };
+        memo.insert(&member.device_id, Some(valid));
+        Ok(valid)
     }
 
     /// Evaluate a local view. This is not a global-freshness or enforcement guarantee.
     pub fn effective_members(&self, now: u64) -> Result<BTreeMap<DeviceId, &Member>> {
+        Ok(self
+            .member_statuses(now)?
+            .into_iter()
+            .filter(|(_, (_, status))| *status == MemberStatus::Active)
+            .map(|(id, (member, _))| (id, member))
+            .collect())
+    }
+
+    /// Every admitted member's status in this local view.
+    pub fn member_statuses(&self, now: u64) -> Result<BTreeMap<DeviceId, (&Member, MemberStatus)>> {
         self.validate()?;
-        let mut pending = BTreeMap::new();
-        for member in &self.members {
-            if member.wg_verified && member.live(now) && !self.denied(member)? {
-                pending.insert(member.device_id.clone(), member);
-            }
+        let verified: BTreeMap<&DeviceId, &Member> = self
+            .members
+            .iter()
+            .filter(|member| member.wg_verified)
+            .map(|member| (&member.device_id, member))
+            .collect();
+        let names = self.client_names();
+        let mut memo = BTreeMap::new();
+        let mut statuses = BTreeMap::new();
+        for member in verified.values().copied() {
+            let status = if self.denied(member)? {
+                let replaced = matches!(member.kind, MemberKind::Laptop)
+                    && verified.values().any(|other| {
+                        other.device_id != member.device_id
+                            && other.created_at >= member.created_at
+                            && names.get(&other.device_id) == names.get(&member.device_id)
+                    });
+                if replaced {
+                    MemberStatus::Replaced
+                } else {
+                    MemberStatus::Revoked
+                }
+            } else if !member.live(now) {
+                MemberStatus::Expired
+            } else if !self.approval_valid(member, &verified, &mut memo)? {
+                MemberStatus::Invalid
+            } else {
+                MemberStatus::Active
+            };
+            statuses.insert(member.device_id.clone(), (member, status));
         }
-        let mut effective: BTreeMap<DeviceId, &Member> = BTreeMap::new();
-        loop {
-            let ready: Vec<_> = pending
-                .iter()
-                .filter(|(_, member)| match &member.approved_by {
-                    None if member.independent_admin => true,
-                    None => {
-                        member.device_id == self.network.initial_admin
-                            && member.permissions.network_admin
+        // Two servers can each admit a key for one name before they replicate.
+        // Every node keeps the earliest admission and sets the others aside.
+        let mut holders: BTreeMap<String, (u64, DeviceId)> = BTreeMap::new();
+        for (id, (member, status)) in &statuses {
+            if *status != MemberStatus::Active || !matches!(member.kind, MemberKind::Laptop) {
+                continue;
+            }
+            let Some(name) = names.get(id) else { continue };
+            let key = (member.created_at, id.clone());
+            holders
+                .entry(name.to_ascii_lowercase())
+                .and_modify(|holder| {
+                    if key < *holder {
+                        *holder = key.clone();
                     }
-                    Some(parent) => effective
-                        .get(parent)
-                        .is_some_and(|parent| member.delegated_by(parent)),
                 })
-                .map(|(id, member)| (id.clone(), *member))
-                .collect();
-            if ready.is_empty() {
-                break;
-            }
-            for (id, member) in ready {
-                pending.remove(&id);
-                effective.insert(id, member);
+                .or_insert(key);
+        }
+        for (id, (member, status)) in statuses.iter_mut() {
+            if *status == MemberStatus::Active
+                && matches!(member.kind, MemberKind::Laptop)
+                && names.get(id).is_some_and(|name| {
+                    holders
+                        .get(&name.to_ascii_lowercase())
+                        .is_some_and(|(_, holder)| holder != id)
+                })
+            {
+                *status = MemberStatus::Conflict;
             }
         }
-        Ok(effective)
+        Ok(statuses)
+    }
+
+    /// The client name of every admitted laptop.
+    pub fn client_names(&self) -> BTreeMap<DeviceId, String> {
+        self.members
+            .iter()
+            .filter(|member| member.wg_verified && matches!(member.kind, MemberKind::Laptop))
+            .filter_map(|member| {
+                let client = member.client.as_ref()?;
+                Some((member.device_id.clone(), client.to_string()))
+            })
+            .collect()
     }
 
     pub fn permissions(&self, device: &DeviceId, now: u64) -> Result<&Permissions> {
@@ -386,11 +558,11 @@ impl RegistrySnapshot {
             .ok_or_else(|| Error::NotEffective(device.clone()))
     }
 
-    pub fn can_admin(&self, device: &DeviceId, now: u64) -> Result<bool> {
+    pub fn is_full(&self, device: &DeviceId, now: u64) -> Result<bool> {
         Ok(self
             .effective_members(now)?
             .get(device)
-            .is_some_and(|member| member.permissions.network_admin))
+            .is_some_and(|member| member.permissions.is_full()))
     }
 
     pub fn approve(&self, verified: VerifiedEnrollment, approval: Approval) -> Result<Member> {
@@ -398,14 +570,14 @@ impl RegistrySnapshot {
     }
 
     /// Only call after authenticating a local operator independently of network
-    /// device grants, such as a protected root console. A device's server_admin
-    /// permission is insufficient. This also supports recovery without live admins.
-    pub fn approve_independent_admin(
+    /// device grants, such as a protected root console. A device's full access
+    /// is insufficient. This also supports recovery without live full clients.
+    pub fn approve_independent_root(
         &self,
         verified: VerifiedEnrollment,
         approval: Approval,
     ) -> Result<Member> {
-        if !approval.independent_admin || approval.approved_by.is_some() {
+        if !approval.independent_root || approval.approved_by.is_some() {
             return Err(Error::PermissionDenied(
                 "independent approval requires explicit local-operator authority",
             ));
@@ -427,10 +599,11 @@ impl RegistrySnapshot {
             kind: approval.kind,
             permissions: approval.permissions,
             approved_by: approval.approved_by,
-            independent_admin: approval.independent_admin,
+            independent_root: approval.independent_root,
             wg_verified: true,
             created_at: approval.created_at,
             expires_at: approval.expires_at,
+            client: approval.client,
         };
         member.validate()?;
         if member.network_id != self.network.id {
@@ -439,20 +612,20 @@ impl RegistrySnapshot {
         if self.denied(&member)? {
             return Err(Error::PermissionDenied("revocation overrides approval"));
         }
-        if member.independent_admin && !local_operator {
+        if member.independent_root && !local_operator {
             return Err(Error::PermissionDenied(
                 "device grants cannot create independent roots",
             ));
         }
         match &member.approved_by {
-            None if local_operator && member.independent_admin => {}
+            None if local_operator && member.independent_root => {}
             None => {
                 if member.device_id != self.network.initial_admin
-                    || !member.permissions.network_admin
+                    || !member.permissions.is_full()
                     || !self.members.is_empty()
                 {
                     return Err(Error::PermissionDenied(
-                        "only the descriptor's initial admin can bootstrap an empty registry",
+                        "only the network's first device can bootstrap an empty registry",
                     ));
                 }
             }
@@ -465,6 +638,19 @@ impl RegistrySnapshot {
                         "approval exceeds delegated authority or expiry",
                     ));
                 }
+            }
+        }
+        // A client name holds one active key. Replacing a key revokes the old one
+        // before the new one is admitted.
+        if let Some(client) = &member.client {
+            let names = self.client_names();
+            if effective.values().any(|existing| {
+                existing.device_id != member.device_id
+                    && names
+                        .get(&existing.device_id)
+                        .is_some_and(|name| name.eq_ignore_ascii_case(client.as_str()))
+            }) {
+                return Err(Error::Conflict("client name"));
             }
         }
         // Server names are private DNS names, so active servers must not share one.
@@ -510,31 +696,34 @@ impl RegistrySnapshot {
         target: &DeviceId,
         now: u64,
     ) -> Result<Revocation> {
-        let permissions = self.permissions(by, now)?;
-        if !permissions.network_admin {
-            return Err(Error::PermissionDenied(
-                "revocation requires network administration",
-            ));
+        if !self.permissions(by, now)?.is_full() {
+            return Err(Error::PermissionDenied("revocation requires full access"));
+        }
+        if by == target {
+            return Err(Error::PermissionDenied("a device cannot revoke itself"));
         }
         let member = self
             .members
             .iter()
             .find(|member| member.wg_verified && &member.device_id == target)
             .ok_or_else(|| Error::NotEffective(target.clone()))?;
-        if matches!(member.kind, MemberKind::Server(_)) && !permissions.server_admin {
+        // Revocation does not cascade, but the network must keep someone who can
+        // manage it. Host recovery remains for a network that lost every client.
+        let effective = self.effective_members(now)?;
+        if effective.contains_key(target)
+            && matches!(member.kind, MemberKind::Laptop)
+            && member.permissions.is_full()
+            && !effective.values().any(|other| {
+                &other.device_id != target
+                    && matches!(other.kind, MemberKind::Laptop)
+                    && other.permissions.is_full()
+            })
+        {
             return Err(Error::PermissionDenied(
-                "server revocation requires server administration",
+                "revoking the last full client would leave the network without one",
             ));
         }
-        let revocation = Revocation {
-            id,
-            target: target.clone(),
-            wg_fingerprint: member.request.wg_public_key.fingerprint(),
-            ssh_fingerprint: member.request.ssh_public_key.fingerprint()?,
-            captured_servers: self.server_ids(),
-            by: by.clone(),
-            created_at: now,
-        };
+        let revocation = Revocation::of(id, member, by.clone(), self.server_ids(), now)?;
         if self
             .revocations
             .iter()

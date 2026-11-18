@@ -226,7 +226,7 @@ impl Databases {
                     key: key.clone(),
                 },
                 (_, None) => Home::Unavailable {
-                    reason: "the database's server has not granted this app access; deploy it again as an administrator".into(),
+                    reason: "the database's server has not granted this app access; deploy it again from a full client".into(),
                 },
                 (None, _) => Home::Unavailable {
                     reason: "the server hosting this database is not reachable right now".into(),
@@ -1372,7 +1372,7 @@ mod tests {
         let Home::Unavailable { reason } = databases.home(&binding("other", None)) else {
             panic!("a remote binding without a key is unavailable");
         };
-        assert!(reason.contains("administrator"));
+        assert!(reason.contains("full client"));
         // Without the network, other servers' addresses are unknown.
         let Home::Unavailable { reason } = databases.home(&binding("other", Some("key"))) else {
             panic!("an unknown address is unavailable");

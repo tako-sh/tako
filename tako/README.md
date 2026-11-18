@@ -66,7 +66,7 @@ Operational behavior highlights:
 - `tako deploy` writes `app.json` in the deployed app directory and `tako-server` uses it to resolve the runtime start command.
 - `tako releases list` shows release/build history for the current app and environment with commit metadata when available.
 - `tako releases rollback <release-id>` rolls target servers back to a previous release id using the normal rolling-update path.
-- `tako backups now/list/status/download/restore` manages encrypted private app data backups configured with `[envs.<env>].backup`; backup keys are encrypted in shared network records and ignored worktree drafts.
+- `tako backups now/list/status/download/restore` manages encrypted private app data backups configured with `[envs.<env>].backup`; backup keys are encrypted in the network state and this worktree's local state.
 - `tako network server add admin@host --network <network>` installs and enrolls a server over administrator SSH. Native membership supplies server identities and targets; normal management uses signed, pinned HTTPS. Without `--network`, it uses the network chosen with `tako network use`, or the only configured network.
 - `tako deploy` requires valid target metadata for each selected server and does not probe targets during deploy.
 - Production environments use Let’s Encrypt certificates by default. Run `tako credentials set ssl.cloudflare --env <env>` for wildcard routes that need Cloudflare DNS-01, or set `ssl = "cloudflare"` and store the same credential to use Cloudflare Origin CA certificates. Wildcard DNS-01 needs a Cloudflare user or account API token with Zone Read and DNS Write for the matching zone, and any token IP restriction must include each target server's egress IP.

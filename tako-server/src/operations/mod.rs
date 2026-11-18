@@ -1,4 +1,12 @@
 mod backup;
+
+/// Who sent a management command. A deploy client may not add a route that
+/// shares requests with another app environment's route.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Caller {
+    Full,
+    Deploy,
+}
 pub(crate) use backup::{
     METADATA_TIMEOUT, backup_store, decrypt_backup_file, download_object, encrypt_backup_file,
     put_json_object, upload_file, with_deadline,
@@ -20,6 +28,5 @@ pub(crate) use release_artifacts::available_bytes;
 mod releases;
 #[cfg(test)]
 pub(crate) use releases::ReleaseRun;
-mod secrets;
 mod tls;
 mod workflows;

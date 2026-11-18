@@ -66,20 +66,18 @@ fn admit(
             now(),
         )
         .unwrap();
+    let client = matches!(kind, MemberKind::Laptop).then(|| request.name.clone());
     let member = snapshot
         .approve(
             verified,
             Approval {
                 kind,
-                permissions: Permissions {
-                    network_admin: true,
-                    server_admin: true,
-                    ..Default::default()
-                },
+                permissions: Permissions::Full,
                 approved_by: parent,
-                independent_admin: false,
+                independent_root: false,
                 created_at: now(),
                 expires_at: None,
+                client,
             },
         )
         .unwrap();
@@ -278,7 +276,7 @@ impl ApiServer {
                     let (status, body) = if headers.starts_with("POST /v1/management/rpc ") {
                         let command: tako_core::Command = serde_json::from_slice(&bytes).unwrap();
                         assert!(
-                            matches!(command, tako_core::Command::BackupNow {ref app, backup: None}
+                            matches!(command, tako_core::Command::BackupNow {ref app, backup: None, secrets_digest: None}
                             if app == &tako_core::deployment_app_id("demo", "production"))
                         );
                         let backup = serde_json::json!({
@@ -371,6 +369,27 @@ impl ApiServer {
         }
         child.wait_with_output().unwrap()
     }
+    /// Run with `TAKO_CLIENT_IDENTITY` set.
+    pub(super) fn run_as(
+        &self,
+        identity: &str,
+        home: &Path,
+        project: &Path,
+        args: &[&str],
+    ) -> std::process::Output {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_tako"));
+        command
+            .env("TAKO_HOME", home)
+            .env("TAKO_TELEMETRY", "0")
+            .env("TAKO_CLIENT_IDENTITY", identity)
+            .env_remove("RUST_LOG")
+            .current_dir(project)
+            .args(["--ci", "--json"])
+            .args(args)
+            .stdin(Stdio::null());
+        apply_coverage_env(&mut command);
+        command.output().unwrap()
+    }
     pub(super) fn ok(
         &self,
         home: &Path,
@@ -442,7 +461,7 @@ fn cached_network_secrets_do_not_block_legacy_key_recovery() {
             &["secrets", "set", "LEGACY", "--env", "production"],
             Some("recovered-local"),
         );
-        let local = project.join(".tako/secrets.local.json");
+        let local = project.join(".tako/state.local.json");
         let state: serde_json::Value = serde_json::from_slice(&fs::read(&local).unwrap()).unwrap();
         let values = &state["values"];
         let key_id = values["production"]["key_id"].as_str().unwrap();
@@ -490,7 +509,7 @@ fn cached_network_secrets_do_not_block_legacy_key_recovery() {
             None,
         );
         let migrated: serde_json::Value =
-            serde_json::from_slice(&fs::read(project.join(".tako/secrets.local.json")).unwrap())
+            serde_json::from_slice(&fs::read(project.join(".tako/state.local.json")).unwrap())
                 .unwrap();
         let env = &migrated["values"]["production"];
         let local_key = fs::read_to_string(
@@ -561,7 +580,7 @@ fn deploy_and_secret_commands_materialize_the_selected_config() {
             assert!(result.status.success(), "{}", stderr_str(&result));
         }
         let state: serde_json::Value =
-            serde_json::from_slice(&fs::read(project.join(".tako/secrets.local.json")).unwrap())
+            serde_json::from_slice(&fs::read(project.join(".tako/state.local.json")).unwrap())
                 .unwrap();
         let secrets = &state["values"]["production"]["app"];
         assert!(secrets.get("ALTERNATE_ONLY").is_some());
@@ -584,6 +603,165 @@ fn deploy_and_secret_commands_materialize_the_selected_config() {
             None,
         );
     }
+}
+
+#[test]
+fn project_code_run_with_an_identity_finds_no_identity_keys() {
+    let server = ApiServer::new();
+    let owner = server.project("owner-checkout");
+    let created = server.ok(
+        &server.owner_home,
+        &owner,
+        &[
+            "network",
+            "client",
+            "add",
+            "github-ci",
+            "--network",
+            "fleet",
+            "--identity",
+        ],
+        None,
+    );
+    let identity = created["identity"].as_str().unwrap().to_owned();
+
+    let ci_home = server.directory.path().join("ci-home");
+    let ci_project = server.project("ci-checkout");
+    let temporary = server.directory.path().join("ci-tmp");
+    std::fs::create_dir_all(&temporary).unwrap();
+    // The child sees neither the identity nor a key file written from it.
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tako"));
+    command
+        .env("TAKO_HOME", &ci_home)
+        .env("TAKO_TELEMETRY", "0")
+        .env("TAKO_CLIENT_IDENTITY", &identity)
+        .env("TMPDIR", &temporary)
+        .env_remove("RUST_LOG")
+        .current_dir(&ci_project)
+        .args(["--ci", "run", "--", "sh", "-c"])
+        .arg(
+            "test -z \"${TAKO_CLIENT_IDENTITY-}\" || exit 3; \
+             find \"$TMPDIR\" \"$TAKO_HOME\" -path '*tako-identity-*' -o -path '*network-keys*' \
+             | grep -q . && exit 4; exit 0",
+        )
+        .stdin(Stdio::null());
+    apply_coverage_env(&mut command);
+    let result = command.output().unwrap();
+    assert_eq!(result.status.code(), Some(0), "{}", stderr_str(&result));
+}
+
+#[test]
+fn client_identities_work_from_the_environment_or_join_without_touching_the_home() {
+    let server = ApiServer::new();
+    let owner = server.project("owner-checkout");
+    let add = |name: &str, extra: &[&str]| -> serde_json::Value {
+        let mut args = vec![
+            "network",
+            "client",
+            "add",
+            name,
+            "--network",
+            "fleet",
+            "--identity",
+        ];
+        args.extend_from_slice(extra);
+        server.ok(&server.owner_home, &owner, &args, None)
+    };
+    let created = add("github-ci", &["--deploy", "demo/production"]);
+    let identity = created["identity"].as_str().unwrap().to_owned();
+    assert!(identity.starts_with("tako-identity-v1-"));
+    assert!(created.get("invitation").is_none());
+
+    // From the environment: the client acts with no state in its home.
+    let ci_home = server.directory.path().join("ci-home");
+    let ci_project = server.project("ci-checkout");
+    let result = server.run_as(
+        &identity,
+        &ci_home,
+        &ci_project,
+        &["network", "status", "fleet"],
+    );
+    assert!(result.status.success(), "{}", stderr_str(&result));
+    assert!(!ci_home.join("network-keys").exists());
+    assert!(!ci_home.join("networks").exists());
+
+    // The owner sees one admitted deploy client under that name.
+    let rows = server.ok(
+        &server.owner_home,
+        &owner,
+        &["network", "client", "list", "--network", "fleet"],
+        None,
+    );
+    let row = rows["clients"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "github-ci")
+        .unwrap()
+        .clone();
+    assert_eq!(row["access"], "deploy");
+    assert_eq!(row["status"], "active");
+
+    // `join` stores an identity like a joined device.
+    let laptop_home = server.directory.path().join("laptop-home");
+    let laptop_project = server.project("laptop-checkout");
+    server.ok(
+        &laptop_home,
+        &laptop_project,
+        &["network", "join", "--invitation-stdin"],
+        Some(&identity),
+    );
+    server.ok(
+        &laptop_home,
+        &laptop_project,
+        &["network", "status", "fleet"],
+        None,
+    );
+    assert!(laptop_home.join("network-keys").exists());
+
+    // Revoking the client stops the identity.
+    server.ok(
+        &server.owner_home,
+        &owner,
+        &[
+            "network",
+            "client",
+            "revoke",
+            "github-ci",
+            "--network",
+            "fleet",
+        ],
+        None,
+    );
+    let result = server.run_as(
+        &identity,
+        &ci_home,
+        &ci_project,
+        &["network", "status", "fleet"],
+    );
+    assert!(!result.status.success());
+
+    // A full-access identity comes with a warning.
+    let result = server.run(
+        &server.owner_home,
+        &owner,
+        &[
+            "network",
+            "client",
+            "add",
+            "ops",
+            "--network",
+            "fleet",
+            "--identity",
+        ],
+        None,
+    );
+    assert!(result.status.success(), "{}", stderr_str(&result));
+    assert!(
+        stderr_str(&result).contains("full access"),
+        "{}",
+        stderr_str(&result)
+    );
 }
 
 #[test]
@@ -618,7 +796,7 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
     let invitation = server.ok(
         &server.owner_home,
         &owner,
-        &["network", "client", "add", "--admin", "--network", "fleet"],
+        &["network", "client", "add", "second", "--network", "fleet"],
         None,
     )["invitation"]
         .as_str()
@@ -629,7 +807,7 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
     server.ok(
         &client_home,
         &client,
-        &["network", "join", "--name", "second", "--invitation-stdin"],
+        &["network", "join", "--invitation-stdin"],
         Some(&invitation),
     );
     let listed = server.ok(&client_home, &client, &["secrets", "list"], None);
@@ -761,6 +939,7 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
             "network",
             "client",
             "add",
+            "scoped",
             "--network",
             "fleet",
             "--deploy",
@@ -776,7 +955,7 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
     server.ok(
         &scoped_home,
         &scoped_project,
-        &["network", "join", "--name", "scoped", "--invitation-stdin"],
+        &["network", "join", "--invitation-stdin"],
         Some(&scoped_invitation),
     );
     let config = scoped_project.join("tako.toml");
@@ -786,7 +965,7 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
     );
     fs::write(config, contents).unwrap();
     server.ok(&scoped_home, &scoped_project, &["backups", "now"], None);
-    assert!(!scoped_project.join(".tako/secrets.local.json").exists());
+    assert!(!scoped_project.join(".tako/state.local.json").exists());
     let devices = fs::read_dir(
         scoped_home
             .join("networks")
@@ -799,55 +978,93 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
         .unwrap();
     let cache: SharedSnapshot =
         serde_json::from_slice(&fs::read(device.path().join("secrets.json")).unwrap()).unwrap();
+    // A deploy client caches no values, not even its own environment's.
     assert!(
         cache
             .records
             .iter()
-            .all(|record| record.address.kind == tako_network::shared::RecordKind::App)
-    );
-    server.ok(
-        &scoped_home,
-        &scoped_project,
-        &["secrets", "set", "SCOPED", "--env", "production"],
-        Some("allowed"),
-    );
-    server.ok(
-        &scoped_home,
-        &scoped_project,
-        &["secrets", "sync", "--env", "production"],
-        None,
+            .all(|record| !record.address.kind.is_secret())
     );
     let count = server.store.0.lock().unwrap().1.records.len();
-    server.ok(
-        &scoped_home,
-        &scoped_project,
-        &["credentials", "set", "postgres_url", "--env", "production"],
-        Some("postgres://fixture:example@db.example.test/forbidden"),
+    for (command, value) in [
+        (
+            ["secrets", "set", "SCOPED", "--env", "production"],
+            "refused",
+        ),
+        (
+            ["credentials", "set", "postgres_url", "--env", "production"],
+            "postgres://fixture:example@db.example.test/forbidden",
+        ),
+    ] {
+        server.ok(&scoped_home, &scoped_project, &command, Some(value));
+        assert!(
+            !server
+                .run(
+                    &scoped_home,
+                    &scoped_project,
+                    &["secrets", "sync", "--env", "production"],
+                    None
+                )
+                .status
+                .success()
+        );
+    }
+    assert_eq!(server.store.0.lock().unwrap().1.records.len(), count);
+    // A client that `second` invited goes with it under --include-invited.
+    let third = server.ok(
+        &client_home,
+        &client,
+        &["network", "client", "add", "third", "--network", "fleet"],
+        None,
     );
+    let third_home = server.directory.path().join("third-home");
+    let third_project = server.project("third-checkout");
+    server.ok(
+        &third_home,
+        &third_project,
+        &["network", "join", "--invitation-stdin"],
+        Some(third["invitation"].as_str().unwrap()),
+    );
+    let revoke_with_invited = |extra: &[&str]| {
+        let mut args = vec![
+            "network",
+            "client",
+            "revoke",
+            "second",
+            "--include-invited",
+            "--network",
+            "fleet",
+        ];
+        args.extend_from_slice(extra);
+        server.run(&server.owner_home, &owner, &args, None)
+    };
+    let asked = revoke_with_invited(&[]);
+    assert!(!asked.status.success());
+    assert!(
+        stderr_str(&asked).contains("--yes"),
+        "{}",
+        stderr_str(&asked)
+    );
+    let revoked = revoke_with_invited(&["--yes"]);
+    assert!(revoked.status.success(), "{}", stderr_str(&revoked));
+    let revoked: serde_json::Value = serde_json::from_slice(&revoked.stdout).unwrap();
+    let names: Vec<_> = revoked["revoked"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["client"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["second", "third"]);
     assert!(
         !server
             .run(
-                &scoped_home,
-                &scoped_project,
-                &["secrets", "sync", "--env", "production"],
+                &third_home,
+                &third_project,
+                &["network", "sync", "fleet"],
                 None
             )
             .status
             .success()
-    );
-    assert_eq!(server.store.0.lock().unwrap().1.records.len(), count);
-    server.ok(
-        &server.owner_home,
-        &owner,
-        &[
-            "network",
-            "client",
-            "remove",
-            "second",
-            "--network",
-            "fleet",
-        ],
-        None,
     );
     assert!(
         !server
@@ -855,6 +1072,94 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
             .status
             .success()
     );
+    let clients = |all: bool| {
+        let mut args = vec!["network", "client", "list", "--network", "fleet"];
+        if all {
+            args.push("--all");
+        }
+        server.ok(&server.owner_home, &owner, &args, None)["clients"]
+            .as_array()
+            .unwrap()
+            .clone()
+    };
+    let named = |rows: &[serde_json::Value], status: &str| {
+        rows.iter()
+            .filter(|row| row["name"] == "second" && row["status"] == status)
+            .count()
+    };
+    assert_eq!(named(&clients(false), "active"), 0);
+    assert_eq!(named(&clients(true), "revoked"), 1);
+
+    // Adding a revoked client's name brings the same client back with a new key.
+    let returned = server.ok(
+        &server.owner_home,
+        &owner,
+        &["network", "client", "add", "second", "--network", "fleet"],
+        None,
+    );
+    assert_eq!(returned["replaced"], serde_json::Value::Null);
+    let back_home = server.directory.path().join("back-home");
+    let back = server.project("back-checkout");
+    server.ok(
+        &back_home,
+        &back,
+        &["network", "join", "--invitation-stdin"],
+        Some(returned["invitation"].as_str().unwrap()),
+    );
+    server.ok(&back_home, &back, &["network", "sync", "fleet"], None);
+    // The revoked key now shows as replaced by the new one.
+    let rows = clients(true);
+    assert_eq!(named(&rows, "active"), 1);
+    assert_eq!(named(&rows, "replaced"), 1);
+
+    // An active name needs --yes outside a terminal, and replacing it revokes
+    // the current key before the new invitation is shown.
+    let refused = server.run(
+        &server.owner_home,
+        &owner,
+        &["network", "client", "add", "second", "--network", "fleet"],
+        None,
+    );
+    assert!(!refused.status.success());
+    assert!(
+        stderr_str(&refused).contains("--yes"),
+        "{}",
+        stderr_str(&refused)
+    );
+    let replaced = server.ok(
+        &server.owner_home,
+        &owner,
+        &[
+            "network",
+            "client",
+            "add",
+            "second",
+            "--network",
+            "fleet",
+            "--yes",
+        ],
+        None,
+    );
+    assert!(replaced["replaced"].is_string());
+    assert!(
+        !server
+            .run(&back_home, &back, &["network", "sync", "fleet"], None)
+            .status
+            .success()
+    );
+    // The new key has not joined yet, so the last key shows as revoked.
+    let rows = clients(true);
+    assert_eq!(named(&rows, "active"), 0);
+    assert_eq!(named(&rows, "replaced"), 1);
+    assert_eq!(named(&rows, "revoked"), 1);
+    // The owner cannot revoke or replace the client it runs as.
+    let own = server.run(
+        &server.owner_home,
+        &owner,
+        &["network", "client", "revoke", "owner", "--network", "fleet"],
+        None,
+    );
+    assert!(!own.status.success());
 }
 
 #[test]
@@ -883,7 +1188,7 @@ fn expired_publication_preserves_current_draft_and_requires_explicit_retry() {
         // Simulate returning after the durable request's fixed retry window.
         // The draft is edited since that failed attempt; only its current value
         // should be published when the user explicitly retries.
-        let path = project.join(".tako/secrets.local.json");
+        let path = project.join(".tako/state.local.json");
         let mut state: serde_json::Value =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         let pending = state["environments"]["production"]["pending"]
@@ -1070,7 +1375,7 @@ fn clearing_an_environment_publishes_deletions_and_leaves_other_drafts_local() {
                 && record.address.name != "postgres_url")
     );
     let local: serde_json::Value =
-        serde_json::from_slice(&fs::read(owner.join(".tako/secrets.local.json")).unwrap()).unwrap();
+        serde_json::from_slice(&fs::read(owner.join(".tako/state.local.json")).unwrap()).unwrap();
     let values = &local["values"]["production"];
     assert!(values["app"].as_object().is_none_or(|app| app.is_empty()));
     assert!(values["credentials"].get("postgres_url").is_some());
@@ -1159,8 +1464,7 @@ fn interrupted_clear_keeps_its_deletions_and_finishes_when_rerun() {
     let latest = state.latest().unwrap();
     assert!(latest.values().all(|record| record.is_deletion()));
     let local: serde_json::Value =
-        serde_json::from_slice(&fs::read(project.join(".tako/secrets.local.json")).unwrap())
-            .unwrap();
+        serde_json::from_slice(&fs::read(project.join(".tako/state.local.json")).unwrap()).unwrap();
     assert!(
         local["environments"]["production"]["pending"]
             .as_array()
@@ -1203,7 +1507,7 @@ fn clear_supersedes_expired_app_secret_commands() {
             .status
             .success()
     );
-    let path = project.join(".tako/secrets.local.json");
+    let path = project.join(".tako/state.local.json");
     let mut local: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     let pending = local["environments"]["production"]["pending"]
         .as_array_mut()
@@ -1275,7 +1579,7 @@ fn clear_leaves_other_pending_publications_queued() {
             .status
             .success()
     );
-    let path = project.join(".tako/secrets.local.json");
+    let path = project.join(".tako/state.local.json");
     let mut local: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     let pending = local["environments"]["production"]["pending"]
         .as_array_mut()

@@ -6,7 +6,7 @@ fn pad_to_display_width(value: &str, width: usize) -> String {
     format!("{value}{}", " ".repeat(width.saturating_sub(value.width())))
 }
 
-fn removal_option_label(name: &str, entry: &crate::config::ServerEntry) -> String {
+fn revocation_option_label(name: &str, entry: &crate::config::ServerEntry) -> String {
     match entry.description.as_deref().map(str::trim) {
         Some(description) if !description.is_empty() => {
             format!("{name} ({description})  {}:{}", entry.host, entry.port)
@@ -15,18 +15,15 @@ fn removal_option_label(name: &str, entry: &crate::config::ServerEntry) -> Strin
     }
 }
 
-fn removal_prompt(name: &str, entry: &crate::config::ServerEntry) -> String {
+fn revocation_prompt(name: &str, entry: &crate::config::ServerEntry) -> String {
     if entry.native.is_some() {
-        format!(
-            "Revoke network membership and delegated approvals for {}?",
-            output::strong(name)
-        )
+        format!("Revoke network membership for {}?", output::strong(name))
     } else {
         format!("Remove {}?", output::strong(name))
     }
 }
 
-pub(super) async fn remove_server(
+pub(super) async fn revoke_server(
     name: Option<&str>,
     network: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -47,26 +44,29 @@ pub(super) async fn remove_server(
             &crate::commands::helpers::resolve_server_selector(&networks, &servers, name, network)?;
 
         if output::is_dry_run() {
-            output::dry_run_skip(&format!("Remove server {}", output::strong(name)));
+            output::dry_run_skip(&format!(
+                "Revoke network membership for {}",
+                output::strong(name)
+            ));
             return Ok(());
         }
 
-        let confirm = output::confirm(&removal_prompt(name, servers.get(name).unwrap()), false)?;
+        let confirm = output::confirm(&revocation_prompt(name, servers.get(name).unwrap()), false)?;
 
         if !confirm {
             output::operation_cancelled();
             return Ok(());
         }
 
-        remove_entry(name, servers.get(name).unwrap())?;
+        revoke_entry(name, servers.get(name).unwrap())?;
 
-        output::success(&format!("Removed {}", output::strong(name)));
+        output::success(&format!("Revoked {}", output::strong(name)));
         return Ok(());
     }
 
     if !output::is_interactive() {
         return Err(
-            "No server name provided and selection requires an interactive terminal. Run 'tako network server remove <name>'."
+            "No server name provided and selection requires an interactive terminal. Run 'tako network server revoke <name>'."
                 .into(),
         );
     }
@@ -84,14 +84,14 @@ pub(super) async fn remove_server(
                     .filter_map(|server_name| {
                         servers.get(server_name).map(|entry| {
                             (
-                                removal_option_label(server_name, entry),
+                                revocation_option_label(server_name, entry),
                                 server_name.clone(),
                             )
                         })
                     })
                     .collect();
 
-                match output::select("Select server to remove", None, options) {
+                match output::select("Select server to revoke", None, options) {
                     Ok(name) => {
                         output::muted(&format!("Server: {name}"));
                         selected_name = name;
@@ -104,12 +104,12 @@ pub(super) async fn remove_server(
             // Step 1: Confirm
             1 => {
                 match output::confirm(
-                    &removal_prompt(&selected_name, servers.get(&selected_name).unwrap()),
+                    &revocation_prompt(&selected_name, servers.get(&selected_name).unwrap()),
                     false,
                 ) {
                     Ok(true) => {
-                        remove_entry(&selected_name, servers.get(&selected_name).unwrap())?;
-                        output::success(&format!("Removed {}", output::strong(&selected_name)));
+                        revoke_entry(&selected_name, servers.get(&selected_name).unwrap())?;
+                        output::success(&format!("Revoked {}", output::strong(&selected_name)));
                         return Ok(());
                     }
                     Ok(false) => {
@@ -127,12 +127,15 @@ pub(super) async fn remove_server(
     }
 }
 
-fn remove_entry(
+fn revoke_entry(
     name: &str,
     entry: &crate::config::ServerEntry,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if output::is_dry_run() {
-        output::dry_run_skip(&format!("Remove server {}", output::strong(name)));
+        output::dry_run_skip(&format!(
+            "Revoke network membership for {}",
+            output::strong(name)
+        ));
         return Ok(());
     }
     if let Some(target) = &entry.native {

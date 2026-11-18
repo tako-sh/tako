@@ -760,8 +760,6 @@ fn prepare_build_phase_packages_container_release_without_native_entrypoint() {
         "app".to_string(),
         "production".to_string(),
         tako_config,
-        crate::config::SecretsStore::default(),
-        true,
         "javascript/vite".to_string(),
         BuildAdapter::Unknown,
         vec![(
@@ -820,8 +818,6 @@ fn prepare_build_phase_packages_native_artifact_with_start_without_runtime() {
             "app".to_string(),
             "production".to_string(),
             tako_config.clone(),
-            crate::config::SecretsStore::default(),
-            true,
             "unknown".to_string(),
             BuildAdapter::Unknown,
             vec![(
@@ -909,8 +905,6 @@ dev = ["vite", "dev"]
         "app".to_string(),
         "production".to_string(),
         tako_config,
-        crate::config::SecretsStore::default(),
-        true,
         format!("javascript/vite@{branch_sha}"),
         BuildAdapter::Node,
         vec![(
@@ -992,12 +986,12 @@ ssl="cloudflare"
 "#,
     )
     .unwrap();
-    let secrets = crate::config::SecretsStore::default();
-    assert!(deployment_bindings(&config, &secrets, "production", project.path(), true).is_err());
-    let bindings =
-        deployment_bindings(&config, &secrets, "production", project.path(), false).unwrap();
+    let _ = project;
+    // Neither kind of deploy sends the Cloudflare token: servers supply it
+    // from the pinned secret snapshot.
+    let bindings = deployment_bindings(&config, "production").unwrap();
     assert_eq!(bindings.ssl.provider, config.get_ssl_provider("production"));
     assert!(bindings.ssl.cloudflare_api_token.is_none());
-    assert!(bindings.runtime_credentials.is_empty() && bindings.storages.is_empty());
+    assert!(bindings.storages.is_empty());
     assert!(bindings.backup.is_none());
 }

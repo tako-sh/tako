@@ -242,7 +242,7 @@ pub struct DatabaseResourceConfig {
 }
 
 /// S3-compatible storage resource from [storages.*]. Credentials are stored
-/// encrypted in ignored local state and shared network records, not here.
+/// encrypted in the ignored local state and the network state, not here.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]

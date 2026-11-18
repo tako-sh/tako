@@ -87,7 +87,7 @@ struct Entitlement {
     grant: ApproveRequest,
     approver: DeviceId,
     #[serde(default)]
-    independent_admin: bool,
+    independent_root: bool,
     candidate: Option<Member>,
 }
 
@@ -355,14 +355,7 @@ impl<S: RegistryStore> ServerRuntime<S> {
                 .find(|m| m.device_id == signed.signer)
                 .ok_or(RuntimeError::Denied)?;
             signed.verify(&member.request.ssh_public_key)?;
-            if !member.wg_verified
-                || !member.permissions.network_admin
-                || (snapshot
-                    .members
-                    .iter()
-                    .any(|m| &m.device_id == target && matches!(m.kind, MemberKind::Server(_)))
-                    && !member.permissions.server_admin)
-            {
+            if !member.wg_verified || !member.permissions.is_full() {
                 return Err(RuntimeError::Denied);
             }
             self.consume_nonce(&signed, now)?;
@@ -402,7 +395,7 @@ impl<S: RegistryStore> ServerRuntime<S> {
                     RpcRequest::Approve(_)
                         | RpcRequest::CreateInvitation(_)
                         | RpcRequest::Revoke { .. }
-                ) && !member.permissions.network_admin
+                ) && !member.permissions.is_full()
                 {
                     return Err(RuntimeError::Denied);
                 }
@@ -472,7 +465,7 @@ impl<S: RegistryStore> ServerRuntime<S> {
     fn require_server(&self, snapshot: &RegistrySnapshot, now: u64) -> RuntimeResult<()> {
         let effective = snapshot.effective_members(now)?;
         if !effective.get(&self.config.server_id).is_some_and(|member| {
-            matches!(member.kind, MemberKind::Server(_)) && member.permissions.server_admin
+            matches!(member.kind, MemberKind::Server(_)) && member.permissions.is_full()
         }) {
             return Err(RuntimeError::Denied);
         }
@@ -560,14 +553,14 @@ impl<S: RegistryStore> ServerRuntime<S> {
         &mut self,
         grant: ApproveRequest,
         approver: DeviceId,
-        independent_admin: bool,
+        independent_root: bool,
         snapshot: RegistrySnapshot,
         now: u64,
     ) -> RuntimeResult<RpcResponse> {
         let entitlement = Entitlement {
             grant,
             approver,
-            independent_admin,
+            independent_root,
             candidate: None,
         };
         self.check_grant(&entitlement, &snapshot, now)?;
@@ -597,7 +590,7 @@ impl<S: RegistryStore> ServerRuntime<S> {
             let previous: Entitlement = serde_json::from_str(&existing)?;
             if previous.grant != entitlement.grant
                 || previous.approver != entitlement.approver
-                || previous.independent_admin != entitlement.independent_admin
+                || previous.independent_root != entitlement.independent_root
             {
                 return Err(RuntimeError::Conflict("pending ID"));
             }
@@ -657,13 +650,17 @@ impl<S: RegistryStore> ServerRuntime<S> {
         if let MemberKind::Server(info) = &grant.kind {
             info.validate()?;
         }
-        if entitlement.independent_admin {
+        if matches!(grant.kind, MemberKind::Laptop) != grant.client.is_some() {
+            return Err(RuntimeError::Invalid(
+                "clients need a name; servers have none",
+            ));
+        }
+        if entitlement.independent_root {
             // This bit only comes from a durable invitation minted by the
             // authenticated local host operator, never from a public request.
             if entitlement.approver != self.config.server_id
                 || !matches!(grant.kind, MemberKind::Laptop)
-                || !grant.permissions.network_admin
-                || !grant.permissions.server_admin
+                || !grant.permissions.is_full()
             {
                 return Err(RuntimeError::Denied);
             }
@@ -673,15 +670,7 @@ impl<S: RegistryStore> ServerRuntime<S> {
             let parent = effective
                 .get(&entitlement.approver)
                 .ok_or(RuntimeError::Denied)?;
-            let rights = &parent.permissions;
-            if !rights.network_admin
-                || (grant.permissions.server_admin && !rights.server_admin)
-                || (matches!(grant.kind, MemberKind::Server(_)) && !rights.server_admin)
-                || (grant.permissions.ssh_user.is_some()
-                    && !rights.server_admin
-                    && grant.permissions.ssh_user != rights.ssh_user)
-                || (!rights.server_admin
-                    && !grant.permissions.deployments.is_subset(&rights.deployments))
+            if !parent.permissions.can_delegate(&grant.permissions)
                 || parent
                     .expires_at
                     .is_some_and(|e| grant.member_expires_at.is_none_or(|child| child > e))
@@ -801,20 +790,21 @@ impl<S: RegistryStore> ServerRuntime<S> {
         let approval = Approval {
             kind: entitlement.grant.kind.clone(),
             permissions: entitlement.grant.permissions.clone(),
-            approved_by: if entitlement.independent_admin {
+            approved_by: if entitlement.independent_root {
                 None
             } else {
                 Some(entitlement.approver.clone())
             },
-            independent_admin: entitlement.independent_admin,
+            independent_root: entitlement.independent_root,
             created_at: entitlement
                 .candidate
                 .as_ref()
                 .map_or(now, |candidate| candidate.created_at),
             expires_at: entitlement.grant.member_expires_at,
+            client: entitlement.grant.client.clone(),
         };
-        let candidate = if entitlement.independent_admin {
-            snapshot.approve_independent_admin(verified, approval)?
+        let candidate = if entitlement.independent_root {
+            snapshot.approve_independent_root(verified, approval)?
         } else {
             snapshot.approve(verified, approval)?
         };
@@ -882,10 +872,16 @@ impl<S: RegistryStore> ServerRuntime<S> {
             if !serving || id == self.config.server_id {
                 continue;
             }
-            if let Some(user) = &member.permissions.ssh_user {
+            // Deploy clients manage over pinned HTTPS only: no peer, no shell.
+            if !member.permissions.is_full() {
+                continue;
+            }
+            if matches!(member.kind, MemberKind::Laptop)
+                && let Some(user) = member.permissions.ssh_user()
+            {
                 ssh_authorizations.push(SshAuthorization {
                     device_id: id.clone(),
-                    user: user.clone(),
+                    user,
                     public_key: member.request.ssh_public_key.clone(),
                 });
             }
@@ -1048,11 +1044,7 @@ mod tests {
     }
 
     fn admin() -> Permissions {
-        Permissions {
-            network_admin: true,
-            server_admin: true,
-            ..Permissions::default()
-        }
+        Permissions::Full
     }
     fn verified(
         keys: &LocalDeviceKeys,
@@ -1135,25 +1127,7 @@ mod tests {
             runtime.handle(signed.clone(), "POST", path, 10),
             Err(RuntimeError::Replay)
         ));
-        let revoke = fixture
-            .store
-            .0
-            .borrow()
-            .snapshot
-            .plan_revocation(
-                RevocationId::random().unwrap(),
-                &signed.signer,
-                &signed.signer,
-                11,
-            )
-            .unwrap();
-        fixture
-            .store
-            .0
-            .borrow_mut()
-            .snapshot
-            .revocations
-            .push(revoke);
+        fixture.deny(&signed.signer, 11);
         let fresh = fixture.signed(&fixture.admin, signed.request, 12);
         assert!(runtime.handle(fresh, "POST", path, 12).is_err());
     }
@@ -1188,9 +1162,10 @@ mod tests {
                         kind: MemberKind::Laptop,
                         permissions: admin(),
                         approved_by: None,
-                        independent_admin: false,
+                        independent_root: false,
                         created_at: 1,
                         expires_at: None,
+                        client: Some("admin".parse().unwrap()),
                     },
                 )
                 .unwrap();
@@ -1199,7 +1174,7 @@ mod tests {
             server_keys.save_new(&dir.path().join("keys")).unwrap();
             let server_id = server_keys.device_id(&network, DeviceKind::Server).unwrap();
             let server = snapshot
-                .approve_independent_admin(
+                .approve_independent_root(
                     verified(&server_keys, &network, DeviceKind::Server),
                     Approval {
                         kind: MemberKind::Server(ServerInfo {
@@ -1213,9 +1188,10 @@ mod tests {
                         }),
                         permissions: admin(),
                         approved_by: None,
-                        independent_admin: true,
+                        independent_root: true,
                         created_at: 1,
                         expires_at: None,
+                        client: None,
                     },
                 )
                 .unwrap();
@@ -1270,6 +1246,59 @@ mod tests {
             let path = request.path();
             runtime.handle(self.signed(keys, request, now), "POST", path, now)
         }
+        /// Record a revocation directly, bypassing `plan_revocation`'s refusal to
+        /// revoke oneself or the last full client.
+        fn deny(&self, target: &DeviceId, at: u64) -> Revocation {
+            let mut state = self.store.0.borrow_mut();
+            let member = state
+                .snapshot
+                .members
+                .iter()
+                .find(|member| &member.device_id == target)
+                .unwrap()
+                .clone();
+            let revocation = Revocation {
+                id: RevocationId::random().unwrap(),
+                target: target.clone(),
+                wg_fingerprint: member.request.wg_public_key.fingerprint(),
+                ssh_fingerprint: member.request.ssh_public_key.fingerprint().unwrap(),
+                captured_servers: [self.config.server_id.clone()].into(),
+                by: self.config.server_id.clone(),
+                created_at: at,
+            };
+            state.snapshot.revocations.push(revocation.clone());
+            revocation
+        }
+        /// Admit another full laptop, approved by the initial client.
+        fn add_full_laptop(&self) -> LocalDeviceKeys {
+            static NEXT_LAPTOP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+            let keys = LocalDeviceKeys::generate().unwrap();
+            let mut state = self.store.0.borrow_mut();
+            let member = state
+                .snapshot
+                .approve(
+                    verified(&keys, &self.config.network.id, DeviceKind::Laptop),
+                    Approval {
+                        kind: MemberKind::Laptop,
+                        permissions: admin(),
+                        approved_by: Some(self.config.network.initial_admin.clone()),
+                        independent_root: false,
+                        created_at: 2,
+                        expires_at: None,
+                        client: Some(
+                            format!(
+                                "laptop-{}",
+                                NEXT_LAPTOP.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                            )
+                            .parse()
+                            .unwrap(),
+                        ),
+                    },
+                )
+                .unwrap();
+            state.snapshot.members.push(member);
+            keys
+        }
         fn grant(&self, keys: &LocalDeviceKeys) -> ApproveRequest {
             ApproveRequest {
                 pending_id: RequestId::random().unwrap(),
@@ -1277,9 +1306,10 @@ mod tests {
                     .enrollment_request(None, DeviceKind::Laptop, "new-laptop".parse().unwrap())
                     .unwrap(),
                 kind: MemberKind::Laptop,
-                permissions: Permissions::default(),
+                permissions: Permissions::Deploy(Default::default()),
                 expires_at: 1000,
                 member_expires_at: None,
+                client: Some("test-laptop".parse().unwrap()),
             }
         }
         fn approve(&self, runtime: &mut ServerRuntime<MemoryStore>, grant: &ApproveRequest) {
@@ -1551,6 +1581,10 @@ mod tests {
     #[test]
     fn revocation_between_begin_and_complete_denies_activation_and_acks_require_helper_success() {
         let fixture = Fixture::new();
+        let other = fixture.add_full_laptop();
+        let other_id = other
+            .device_id(&fixture.config.network.id, DeviceKind::Laptop)
+            .unwrap();
         let mut runtime = fixture.open();
         let keys = LocalDeviceKeys::generate().unwrap();
         let grant = fixture.grant(&keys);
@@ -1559,20 +1593,23 @@ mod tests {
         let target = fixture.config.network.initial_admin.clone();
         let id = RevocationId::random().unwrap();
         let RpcResponse::Revoked(revocation) = fixture
-            .call(
-                &mut runtime,
-                &fixture.admin,
-                RpcRequest::Revoke { id, target },
-                12,
-            )
+            .call(&mut runtime, &other, RpcRequest::Revoke { id, target }, 12)
             .unwrap()
         else {
             panic!("expected revocation");
         };
         assert!(fixture.call(&mut runtime, &keys, command, 13).is_err());
         let desired = runtime.desired_host_state(13).unwrap();
-        assert!(desired.peers.is_empty());
-        assert!(desired.ssh_authorizations.is_empty());
+        // Only the surviving full laptop remains a peer with a shell.
+        assert_eq!(
+            desired
+                .peers
+                .iter()
+                .map(|peer| &peer.device_id)
+                .collect::<Vec<_>>(),
+            vec![&other_id]
+        );
+        assert_eq!(desired.ssh_authorizations.len(), 1);
         assert!(desired.snapshot.acks.is_empty());
         fixture.store.0.borrow_mut().fail_ack = true;
         assert!(runtime.acknowledge_applied(&desired.snapshot).is_err());
@@ -1591,44 +1628,40 @@ mod tests {
     }
 
     #[test]
-    fn current_delegation_and_explicit_ssh_permissions_bound_pending_approval() {
+    fn deploy_clients_cannot_invite() {
         let fixture = Fixture::new();
-        fixture.store.0.borrow_mut().snapshot.members[0]
-            .permissions
-            .server_admin = false;
+        fixture.store.0.borrow_mut().snapshot.members[0].permissions =
+            Permissions::deploy(["app/prod".parse().unwrap()]);
         let mut runtime = fixture.open();
         let keys = LocalDeviceKeys::generate().unwrap();
-        let mut grant = fixture.grant(&keys);
-        grant
-            .permissions
-            .deployments
-            .insert("app/prod".parse().unwrap());
-        assert!(
-            fixture
-                .call(
-                    &mut runtime,
-                    &fixture.admin,
-                    RpcRequest::Approve(Box::new(grant.clone())),
-                    10
-                )
-                .is_err()
-        );
-        grant.permissions.deployments.clear();
-        grant.permissions.ssh_user = Some("root".parse().unwrap());
-        assert!(
-            fixture
-                .call(
-                    &mut runtime,
-                    &fixture.admin,
-                    RpcRequest::Approve(Box::new(grant.clone())),
-                    10
-                )
-                .is_err()
-        );
-        grant.permissions = Permissions::default();
+        for permissions in [
+            Permissions::deploy(["app/prod".parse().unwrap()]),
+            Permissions::Full,
+        ] {
+            let mut grant = fixture.grant(&keys);
+            grant.permissions = permissions;
+            assert!(
+                fixture
+                    .call(
+                        &mut runtime,
+                        &fixture.admin,
+                        RpcRequest::Approve(Box::new(grant)),
+                        10
+                    )
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn current_access_bounds_pending_approval() {
+        let fixture = Fixture::new();
+        let mut runtime = fixture.open();
+        let keys = LocalDeviceKeys::generate().unwrap();
+        let grant = fixture.grant(&keys);
         fixture.approve(&mut runtime, &grant);
         let mut changed = grant.clone();
-        changed.permissions.network_admin = true;
+        changed.permissions = Permissions::Full;
         assert!(matches!(
             fixture.call(
                 &mut runtime,
@@ -1639,9 +1672,8 @@ mod tests {
             Err(RuntimeError::Conflict(_))
         ));
         let command = fixture.challenge(&mut runtime, &keys, &grant, 11);
-        fixture.store.0.borrow_mut().snapshot.members[0]
-            .permissions
-            .network_admin = false;
+        fixture.store.0.borrow_mut().snapshot.members[0].permissions =
+            Permissions::Deploy(Default::default());
         assert!(fixture.call(&mut runtime, &keys, command, 12).is_err());
         assert!(matches!(
             runtime.snapshot(),
@@ -1893,6 +1925,7 @@ mod tests {
     #[test]
     fn revoked_approver_cannot_resume_an_uncommitted_activation_journal() {
         let fixture = Fixture::new();
+        let other = fixture.add_full_laptop();
         let mut runtime = fixture.open();
         let keys = LocalDeviceKeys::generate().unwrap();
         let grant = fixture.grant(&keys);
@@ -1903,7 +1936,7 @@ mod tests {
         fixture
             .call(
                 &mut runtime,
-                &fixture.admin,
+                &other,
                 RpcRequest::Revoke {
                     id: RevocationId::random().unwrap(),
                     target: fixture.config.network.initial_admin.clone(),
@@ -1925,7 +1958,7 @@ mod tests {
                 )
                 .is_err()
         );
-        assert_eq!(runtime.snapshot().unwrap().members.len(), 2);
+        assert_eq!(runtime.snapshot().unwrap().members.len(), 3);
     }
 
     #[test]

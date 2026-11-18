@@ -286,14 +286,14 @@ impl Context {
     }
 
     fn is_admin(&self) -> Result<bool, Box<dyn std::error::Error>> {
-        crate::commands::helpers::is_network_server_admin(&self.network)
+        crate::commands::helpers::is_full_client(&self.network)
     }
 
     fn require_admin(&self) -> Result<(), Box<dyn std::error::Error>> {
         if self.is_admin()? {
             Ok(())
         } else {
-            Err("Managing databases requires network and server administrator permission.".into())
+            Err("Managing databases requires full access.".into())
         }
     }
 
@@ -726,7 +726,7 @@ async fn create(
         )
         .await;
         return Err(format!(
-            "Another administrator created a database named '{name}' meanwhile. This create was undone; use theirs, or pick another name."
+            "Another client created a database named '{name}' meanwhile. This create was undone; use theirs, or pick another name."
         )
         .into());
     }
@@ -765,7 +765,7 @@ async fn create(
         )
         .await;
         return Err(format!(
-            "Another administrator created a database named '{name}' at the same time, and theirs was recorded. This create was undone; use theirs, or pick another name."
+            "Another client created a database named '{name}' at the same time, and theirs was recorded. This create was undone; use theirs, or pick another name."
         )
         .into());
     }
@@ -1439,13 +1439,13 @@ async fn migrate(
     }
     let owner = migration_owner(ctx)?;
     let permissions = crate::commands::helpers::network_permissions(&ctx.network)?;
-    let admin = permissions.server_admin;
+    let full = permissions.is_full();
     let dry_run = dry_run || output::is_dry_run();
     let mut results = Vec::new();
     for (database, bindings) in bound {
         // Deployers act for an environment that binds the database and that
         // they may deploy.
-        let app = if admin {
+        let app = if full {
             None
         } else {
             let deployable = binding_envs(&ctx.config, &database)
@@ -1457,7 +1457,7 @@ async fn migrate(
                 });
             Some(deployable.ok_or_else(|| {
                 format!(
-                    "Applying {database}'s migrations needs permission to deploy an environment that binds it, or administrator permission."
+                    "Applying {database}'s migrations needs permission to deploy an environment that binds it, or full access."
                 )
             })?)
         };
@@ -1827,6 +1827,7 @@ mod tests {
     fn storage(bucket: &str) -> tako_core::StorageBinding {
         tako_core::StorageBinding {
             provider: tako_core::StorageProvider::S3,
+            resource: None,
             bucket: Some(bucket.into()),
             endpoint: Some("https://s3.example.test".into()),
             region: None,

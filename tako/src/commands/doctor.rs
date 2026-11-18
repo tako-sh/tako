@@ -3,6 +3,7 @@ mod common;
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+mod project;
 #[cfg(all(test, target_os = "macos"))]
 mod tests;
 
@@ -16,7 +17,7 @@ use linux::{format_linux_dns, format_linux_sections, gather_linux_data};
 use macos::{format_local_dns, format_macos_sections, gather_macos_data};
 use serde_json::{Value, json};
 
-pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(config: Option<&std::path::Path>) -> Result<(), Box<dyn std::error::Error>> {
     // ── Gather all data upfront ──────────────────────────────────────────
 
     let config_dir = crate::paths::tako_config_dir()
@@ -34,6 +35,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_default();
 
     let networks = crate::network::diagnose::gather().await;
+    // Project checks run only inside a project.
+    let project = project::gather(config).await;
 
     #[cfg(target_os = "macos")]
     let macos_data = gather_macos_data(&dev_info, &apps);
@@ -53,6 +56,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             &linux_data,
         );
         report["networks"] = json_networks(&networks);
+        report["project"] = project::json(project.as_ref());
         return crate::output::json_result(report);
     }
 
@@ -71,6 +75,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     format_apps(&mut buf, &apps);
     format_networks(&mut buf, &networks);
+    if let Some(project) = &project {
+        project::format(&mut buf, project);
+    }
 
     #[cfg(target_os = "macos")]
     format_local_dns(&mut buf, &dev_info, &apps, &macos_data);

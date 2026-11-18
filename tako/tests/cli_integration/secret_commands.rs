@@ -139,7 +139,7 @@ fn test_secret_set_reads_from_stdin() {
         stderr_str(&output)
     );
 
-    let secrets_path = project_dir.join(".tako").join("secrets.local.json");
+    let secrets_path = project_dir.join(".tako").join("state.local.json");
     assert!(secrets_path.exists(), "secrets file should be created");
 
     let raw = fs::read_to_string(&secrets_path).expect("read secrets file");
@@ -186,7 +186,7 @@ fn test_secret_set_reads_multiline_value_from_stdin() {
         stderr_str(&output)
     );
 
-    let raw = fs::read_to_string(project_dir.join(".tako").join("secrets.local.json"))
+    let raw = fs::read_to_string(project_dir.join(".tako").join("state.local.json"))
         .expect("read secrets file");
     let parsed: serde_json::Value = serde_json::from_str(&raw).expect("parse secrets json");
     let key_id = parsed["values"]["production"]["key_id"]
@@ -223,7 +223,7 @@ fn test_secret_set_omits_expiry_when_not_provided() {
         stderr_str(&output)
     );
 
-    let raw = fs::read_to_string(project_dir.join(".tako").join("secrets.local.json"))
+    let raw = fs::read_to_string(project_dir.join(".tako").join("state.local.json"))
         .expect("read secrets file");
     let parsed: serde_json::Value = serde_json::from_str(&raw).expect("parse secrets json");
     assert!(
@@ -430,7 +430,7 @@ fn test_secret_key_import_passphrase_initializes_environment_key() {
     );
 
     let secrets_json: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(project_dir.join(".tako/secrets.local.json")).unwrap(),
+        &fs::read_to_string(project_dir.join(".tako/state.local.json")).unwrap(),
     )
     .unwrap();
     let key_id = secrets_json["values"]["production"]["key_id"]
@@ -477,7 +477,7 @@ fn test_secret_sync_reports_network_failure_and_preserves_draft() {
         &fixture.tako_home,
     );
     assert!(output.status.success(), "{}", stderr_str(&output));
-    let path = project.join(".tako/secrets.local.json");
+    let path = project.join(".tako/state.local.json");
     let before = fs::read(&path).unwrap();
     let draft: serde_json::Value = serde_json::from_slice(&before).unwrap();
     assert_eq!(

@@ -4,6 +4,7 @@ use super::StateStoreError;
 use crate::state_store::SqliteStateStore;
 
 impl SqliteStateStore {
+    #[cfg(test)]
     pub fn set_secrets(
         &self,
         app: &str,

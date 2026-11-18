@@ -321,6 +321,7 @@ fn set_and_get_backup_round_trip() {
     let backup = tako_core::BackupBinding {
         storage: tako_core::StorageBinding {
             provider: tako_core::StorageProvider::S3,
+            resource: None,
             bucket: Some("demo-backups".to_string()),
             endpoint: Some("https://s3.example.com".to_string()),
             region: Some("us-east-1".to_string()),
@@ -352,6 +353,7 @@ fn set_backup_none_clears_existing_backup() {
     let backup = tako_core::BackupBinding {
         storage: tako_core::StorageBinding {
             provider: tako_core::StorageProvider::S3,
+            resource: None,
             bucket: Some("demo-backups".to_string()),
             endpoint: Some("https://s3.example.com".to_string()),
             region: Some("us-east-1".to_string()),

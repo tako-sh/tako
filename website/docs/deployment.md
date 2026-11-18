@@ -23,7 +23,7 @@ network = "0123456789abcdef0123456789abcdef"
 route = "app.example.com"
 ```
 
-The CLI resolves current trusted server members and uses per-device signed HTTPS. No local WireGuard interface or SSH agent is needed. A scoped deployment requires administrator-provisioned routes and server-level bindings. App secrets remain separate per-environment credentials. See [sandbox enrollment](/networks/#enroll-another-laptop-or-sandbox).
+The CLI resolves current trusted server members and uses per-device signed HTTPS. No local WireGuard interface or SSH agent is needed. A deploy client sends no secrets and needs no local keys; servers apply the environment's values from the network state. A route already claimed by another app or environment is rejected. See [sandbox enrollment](/networks/#enroll-another-laptop-or-sandbox).
 
 Set `servers = ["edge-a", "edge-b"]` alongside `network` to deploy this app to those two members. Omit `servers` to deploy to the entire network. Other applications can choose other members and communicate over the same private network. See [re-enrollment](/servers/#choose-the-vpn-provider) when replacing an external VPN installation.
 
@@ -43,6 +43,37 @@ The CLI, server, and release artifact must use the same protocol version. Tako c
 Inspect a mismatch before choosing to force it. For automation, select the environment explicitly and use `--yes` only when the deployment is already authorized.
 
 Deploy validates secrets, storage credentials, provider credentials, routes, server target metadata, workflow/channel storage requirements, and local-storage limitations before build work starts.
+
+## Deploy From CI
+
+Deploy from CI with a deploy client's identity: its keys and network profile in one string. Create it on a full client and pipe it straight into a secret:
+
+```bash
+tako network client add github-ci --network production --deploy shop/production --identity \
+  | gh secret set TAKO_CLIENT_IDENTITY --env production
+```
+
+The identity is printed on stdout; other output goes to stderr. Store it as an **environment** secret, not a repository secret: anyone who can push a branch can run a workflow that prints repository secrets. In the repository's GitHub settings, give the `production` environment a deployment branch rule that allows only `main`, so only reviewed code reaches the job that holds the identity:
+
+```yaml
+# .github/workflows/deploy.yml
+name: Deploy
+on:
+  push:
+    branches: [main]
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - run: curl -fsSL https://tako.sh/install.sh | sh
+      - run: ~/.local/bin/tako deploy --env production --ci
+        env:
+          TAKO_CLIENT_IDENTITY: ${{ secrets.TAKO_CLIENT_IDENTITY }}
+```
+
+With `TAKO_CLIENT_IDENTITY` set, the command acts as that client and keeps its keys in a private temporary directory, never in the Tako home. A deploy client only releases code: it reads no secrets or logs, and the servers apply the values full clients published. If the identity leaks, `tako network client revoke github-ci` stops it. Running `tako network client add github-ci --deploy shop/production --identity --yes` replaces it, revoking the old key first. See [Networks](/networks/#enroll-another-laptop-or-sandbox).
 
 ## Build And Artifact Rules
 
@@ -136,7 +167,7 @@ See [Routing and TLS](/routing/) for domain routes, certificate providers, wildc
 
 ## Server Maintenance
 
-See [Servers](/servers/#server-maintenance) for reloads, protocol-checked upgrades, recovery, and uninstall behavior.
+See [Servers](/servers/#server-maintenance) for reloads, protocol-checked upgrades, recovery, and server removal.
 
 ## Logs And Releases
 

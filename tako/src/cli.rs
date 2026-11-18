@@ -150,10 +150,10 @@ pub enum Commands {
         args: DevArgs,
     },
 
-    /// Print a local diagnostic report
+    /// Print a local diagnostic report, with project checks inside a project
     Doctor,
 
-    /// Show deployment status across configured servers
+    /// Show deployment status across configured servers, with a project's resources inside one
     Status,
 
     /// Private network membership and portable configuration
@@ -343,6 +343,27 @@ pub enum Commands {
     },
 }
 
+/// Whether `command` talks to a Tako network, and so may act as the client in
+/// `TAKO_CLIENT_IDENTITY`. The others never activate an identity: several run
+/// project code (`run`, `dev`, `generate`, `init`), which must not find its keys
+/// on disk. `mcp` runs each tool as a child `tako` process that decides for
+/// itself.
+fn uses_network_identity(command: &Commands) -> bool {
+    !matches!(
+        command,
+        Commands::Version
+            | Commands::Init
+            | Commands::Agents { .. }
+            | Commands::Mcp
+            | Commands::Dev { .. }
+            | Commands::Run { .. }
+            | Commands::Generate { .. }
+            | Commands::Upgrade
+            | Commands::Completions { .. }
+            | Commands::Uninstall { .. }
+    )
+}
+
 fn telemetry_command(command: &Commands) -> &'static str {
     match command {
         Commands::Init => "init",
@@ -399,23 +420,14 @@ pub(crate) fn supports_dry_run(path: &[&str]) -> bool {
             | "ssh"]
             | [
                 "network",
-                "sync"
-                    | "join"
-                    | "create"
-                    | "request"
-                    | "approve"
-                    | "revoke"
-                    | "status"
-                    | "import"
-                    | "export"
-                    | "list"
+                "sync" | "join" | "create" | "status" | "export" | "list"
             ]
             | [
                 "network",
                 "server",
-                "drain" | "resume" | "add" | "remove" | "list" | "uninstall"
+                "drain" | "resume" | "add" | "revoke" | "remove" | "list"
             ]
-            | ["network", "client", "add" | "remove" | "list"]
+            | ["network", "client", "add" | "revoke" | "list"]
             | ["secrets", "migrate" | "sync" | "clear"]
             | ["backups", "now" | "download" | "restore"]
             | [
@@ -478,12 +490,21 @@ impl Cli {
             }
         }
         crate::telemetry::maybe_send(telemetry_command(&command), self.ci, &display_version());
+        // With TAKO_CLIENT_IDENTITY, network commands act as that client for
+        // this process only; its keys stay in a private temporary directory.
+        // Commands that need no network, several of which run project code,
+        // never write the keys at all.
+        let _identity = if uses_network_identity(&command) {
+            crate::network::identity::activate_from_env()?
+        } else {
+            None
+        };
 
         match command {
             Commands::Version => print_version(json),
             Commands::Status => {
                 let rt = tokio::runtime::Runtime::new()?;
-                rt.block_on(commands::status::run(json))
+                rt.block_on(commands::status::run(json, self.config.as_deref()))
             }
             Commands::Init => {
                 commands::init::run(self.config.as_deref())?;
@@ -536,7 +557,7 @@ impl Cli {
             }
             Commands::Doctor => {
                 let rt = tokio::runtime::Runtime::new()?;
-                rt.block_on(commands::doctor::run())
+                rt.block_on(commands::doctor::run(self.config.as_deref()))
             }
             Commands::Network(cmd) => commands::network::run(cmd),
             Commands::Connect { network } => commands::network::connect(network.as_deref()),

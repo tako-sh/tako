@@ -96,10 +96,7 @@ fn authorized(signed: &SignedRequest, permissions: Permissions) -> RpcResponse {
     }
 }
 fn scoped() -> Permissions {
-    Permissions {
-        deployments: ["demo/production".parse().unwrap()].into_iter().collect(),
-        ..Default::default()
-    }
+    Permissions::Deploy(["demo/production".parse().unwrap()].into_iter().collect())
 }
 
 #[tokio::test]
@@ -150,13 +147,7 @@ async fn server_admin_still_requires_exact_application_scope() {
     .unwrap();
     for scope in [None, Some("other/production")] {
         let signed = rpc(&body, scope);
-        let response = authorized(
-            &signed,
-            Permissions {
-                server_admin: true,
-                ..Default::default()
-            },
-        );
+        let response = authorized(&signed, Permissions::Full);
         let response = handle_using(
             request("/v1/management/rpc", &signed, body.clone()),
             state.clone(),
@@ -222,7 +213,7 @@ async fn duplex_http_transport_dispatches_authenticated_probe() {
     })
     .unwrap();
     let signed = rpc(&body, None);
-    let response = authorized(&signed, Permissions::default());
+    let response = authorized(&signed, Permissions::Deploy(Default::default()));
     let expected = signed.clone();
     let (mut client, server) = tokio::io::duplex(16 * 1024);
     let serve = tokio::spawn(async move {
@@ -277,7 +268,8 @@ async fn log_descriptor_matches_scope_and_reads_existing_format() {
         scope: Some("demo/production".parse().unwrap()),
         sha256: hex::encode(Sha256::digest(&descriptor)),
     });
-    let response = authorized(&signed, scoped());
+    // Logs can contain secrets, so they need full access.
+    let response = authorized(&signed, Permissions::Full);
     let req = Request::post("/v1/management/logs")
         .header(
             AUTH_HEADER,
@@ -364,7 +356,7 @@ async fn upload_verifies_digest_and_confines_extraction() {
 }
 
 #[test]
-fn default_ssl_is_allowed_only_after_provisioning_and_a_successful_state_read() {
+fn deploy_clients_make_first_deploys_and_failed_state_reads_deny() {
     let (dir, state) = state();
     let scope: AppEnv = "demo/production".parse().unwrap();
     let release = dir.path().join("apps/demo/production/releases/v1");
@@ -382,92 +374,22 @@ fn default_ssl_is_allowed_only_after_provisioning_and_a_successful_state_read() 
         routes: routes.clone(),
         ssl: Default::default(),
         source_ip: Default::default(),
-        runtime_credentials: None,
+        secrets_digest: None,
         storages: None,
         databases: None,
         backup: None,
-        secrets: None,
         force: false,
     };
     let check = || authorize_command(&state, &scoped(), Some(&scope), &command);
-    assert!(check().is_err());
-    state
-        .state_store
-        .upsert_app(
-            &crate::instances::AppConfig {
-                name: "demo".into(),
-                environment: "production".into(),
-                version: "v1".into(),
-                ..Default::default()
-            },
-            &routes,
-        )
-        .unwrap();
+    // CI alone can run an app: a deploy client may make the first deploy.
     assert_eq!(check(), Ok(()));
+    // A failed state read never authorizes.
     let conn = rusqlite::Connection::open(state.state_store.path()).unwrap();
-    conn.execute_batch("DROP TABLE app_ssl").unwrap();
+    conn.execute_batch("DROP TABLE app_databases").unwrap();
     assert_eq!(
         check().unwrap_err(),
         "Cannot read provisioned management state"
     );
-}
-
-#[tokio::test]
-async fn policy_reads_bindings_after_acquiring_the_dispatch_guard() {
-    let (dir, state) = state();
-    let release = dir.path().join("apps/demo/production/releases/v1");
-    std::fs::create_dir_all(&release).unwrap();
-    std::fs::write(
-        release.join("app.json"),
-        r#"{"protocol_version":0,"idle_timeout":300,"environment":"production"}"#,
-    )
-    .unwrap();
-    let config = crate::instances::AppConfig {
-        name: "demo".into(),
-        environment: "production".into(),
-        version: "v1".into(),
-        ..Default::default()
-    };
-    state
-        .state_store
-        .upsert_app(&config, &["old.example".into()])
-        .unwrap();
-    state
-        .state_store
-        .set_ssl("demo/production", &Default::default())
-        .unwrap();
-    let command = Command::PrepareDeploy {
-        app: "demo/production".into(),
-        version: "v1".into(),
-        path: release.to_str().unwrap().into(),
-        routes: vec!["old.example".into()],
-        ssl: Default::default(),
-        force: false,
-    };
-    let body = serde_json::to_vec(&command).unwrap();
-    let signed = rpc(&body, Some("demo/production"));
-    let authorized = authorized(&signed, scoped());
-    let guard = state.management_lock.lock().await;
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    let pending = tokio::spawn(handle_using(
-        request("/v1/management/rpc", &signed, body),
-        state.clone(),
-        move |_| async {
-            tx.send(()).unwrap();
-            Ok(authorized)
-        },
-    ));
-    // Authorization must wait behind the dispatch guard too.
-    state
-        .state_store
-        .upsert_app(&config, &["new.example".into()])
-        .unwrap();
-    drop(guard);
-    rx.await.unwrap();
-    let response = pending.await.unwrap();
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    let body = response.into_body().collect().await.unwrap().to_bytes();
-    assert!(String::from_utf8_lossy(&body).contains("provisioned routes"));
 }
 
 #[test]
@@ -696,173 +618,5 @@ async fn received_upload_cannot_publish_after_authority_is_withdrawn() {
             .unwrap()
             .count(),
         0
-    );
-}
-
-#[test]
-fn scoped_deploy_preserves_backup_without_disclosing_keys_to_client() {
-    let (dir, state) = state();
-    let scope: AppEnv = "demo/production".parse().unwrap();
-    let release = dir.path().join("apps/demo/production/releases/v1");
-    std::fs::create_dir_all(&release).unwrap();
-    std::fs::write(
-        release.join("app.json"),
-        r#"{"protocol_version":0,"idle_timeout":300,"environment":"production"}"#,
-    )
-    .unwrap();
-    let routes = vec!["demo.example".into()];
-    state
-        .state_store
-        .upsert_app(
-            &crate::instances::AppConfig {
-                name: "demo".into(),
-                environment: "production".into(),
-                version: "v1".into(),
-                ..Default::default()
-            },
-            &routes,
-        )
-        .unwrap();
-    let backup: tako_core::BackupBinding = serde_json::from_value(serde_json::json!({
-        "storage":{"provider":"s3","bucket":"private","endpoint":"https://storage.example.test","access_key_id":"key-id","secret_access_key":"server-only"},
-        "backup_keys":[{"id":"key-1","key_base64":"server-only-key"}],"retention_days":7
-    })).unwrap();
-    state
-        .state_store
-        .set_backup(scope.as_str(), Some(&backup))
-        .unwrap();
-    let mut command = Command::Deploy {
-        app: scope.as_str().into(),
-        version: "v1".into(),
-        path: release.to_str().unwrap().into(),
-        routes,
-        ssl: Default::default(),
-        source_ip: Default::default(),
-        runtime_credentials: None,
-        storages: None,
-        databases: None,
-        backup: None,
-        secrets: None,
-        force: false,
-    };
-    inherit_scoped_backup(&state, &scoped(), Some(&scope), &mut command).unwrap();
-    assert!(matches!(&command, Command::Deploy {backup:Some(value),..} if value.as_ref()==&backup));
-    authorize_command(&state, &scoped(), Some(&scope), &command).unwrap();
-    if let Command::Deploy {
-        backup: Some(value),
-        ..
-    } = &mut command
-    {
-        value.retention_days = 1;
-    }
-    inherit_scoped_backup(&state, &scoped(), Some(&scope), &mut command).unwrap();
-    assert!(authorize_command(&state, &scoped(), Some(&scope), &command).is_err());
-    if let Command::Deploy { backup, .. } = &mut command {
-        *backup = None;
-    }
-    let admin = Permissions {
-        server_admin: true,
-        network_admin: true,
-        ..Default::default()
-    };
-    inherit_scoped_backup(&state, &admin, Some(&scope), &mut command).unwrap();
-    assert!(matches!(command, Command::Deploy { backup: None, .. }));
-}
-
-#[test]
-fn scoped_compose_deploy_and_rollback_cannot_claim_routes_or_change_source_ip_trust() {
-    let (dir, state) = state();
-    let scope: AppEnv = "demo/production".parse().unwrap();
-    let routes = vec!["demo.example".to_string()];
-    let current = crate::instances::AppConfig {
-        name: "demo".into(),
-        environment: "production".into(),
-        version: "v1".into(),
-        ..Default::default()
-    };
-    state.state_store.upsert_app(&current, &routes).unwrap();
-    let release = crate::release::app_release_root(dir.path(), scope.as_str(), "uploaded");
-    std::fs::create_dir_all(&release).unwrap();
-    let rollback = Command::Rollback {
-        app: scope.as_str().into(),
-        version: "uploaded".into(),
-    };
-    let deploy = Command::Deploy {
-        app: scope.as_str().into(),
-        version: "uploaded".into(),
-        path: release.to_string_lossy().into(),
-        routes: routes.clone(),
-        source_ip: Default::default(),
-        ssl: Default::default(),
-        secrets: None,
-        runtime_credentials: None,
-        storages: None,
-        databases: None,
-        backup: None,
-        force: false,
-    };
-    let admin = Permissions {
-        server_admin: true,
-        ..Default::default()
-    };
-    for (route, source_ip, allowed) in [
-        ("demo.example", "auto", true),
-        ("victim.example", "auto", false),
-        ("demo.example", "trusted-proxy", false),
-    ] {
-        std::fs::write(release.join("app.json"), serde_json::json!({
-            "protocol_version":0, "idle_timeout":300, "environment":"production", "release_kind":"compose",
-            "compose":{"file":"compose.yaml", "services":{"web":{"envs":{"production":{"route":route,"source_ip":source_ip}}}}}
-        }).to_string()).unwrap();
-        for command in [&rollback, &deploy] {
-            assert_eq!(
-                authorize_command(&state, &scoped(), Some(&scope), command).is_ok(),
-                allowed
-            );
-            assert!(authorize_command(&state, &admin, Some(&scope), command).is_ok());
-        }
-    }
-    // The handler activates the deployment's environment, so a manifest that
-    // claims another environment cannot hide a production policy change.
-    std::fs::write(release.join("app.json"), serde_json::json!({
-        "protocol_version":0, "idle_timeout":300, "environment":"staging", "release_kind":"compose",
-        "compose":{"file":"compose.yaml", "services":{"web":{"envs":{
-            "staging":{"route":"demo.example"},
-            "production":{"route":"demo.example","source_ip":"trusted-proxy"}
-        }}}}
-    }).to_string()).unwrap();
-    for command in [&rollback, &deploy] {
-        assert!(authorize_command(&state, &scoped(), Some(&scope), command).is_err());
-    }
-    // A native rollback also cannot recover historical routes that an admin
-    // has since removed from this deployment's provisioned set.
-    state
-        .state_store
-        .upsert_app(
-            &crate::instances::AppConfig {
-                version: "v2".into(),
-                ..current
-            },
-            &[],
-        )
-        .unwrap();
-    let old = crate::release::app_release_root(dir.path(), scope.as_str(), "v1");
-    std::fs::create_dir_all(&old).unwrap();
-    std::fs::write(
-        old.join("app.json"),
-        r#"{"protocol_version":0,"idle_timeout":300}"#,
-    )
-    .unwrap();
-    assert!(
-        authorize_command(
-            &state,
-            &scoped(),
-            Some(&scope),
-            &Command::Rollback {
-                app: scope.as_str().into(),
-                version: "v1".into(),
-            }
-        )
-        .is_err()
     );
 }

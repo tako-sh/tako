@@ -96,6 +96,23 @@ rm() { printf 'rm %s\\n' "$*"; command rm "$@"; }
         self.assertFalse((root / 'etc/systemd/system/tako-network-agent.service').exists())
         self.assertFalse((root / 'opt/tako').exists())
 
+    def test_reset_withdraws_the_agent_and_deletes_data_but_keeps_tako_installed(self):
+        root, result = self.maintenance('reset')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = result.stdout.splitlines()
+        self.assertLess(calls.index('systemctl disable --now tako-network-agent.service'),
+                        calls.index(f'rm -rf -- {root}/opt/tako'))
+        self.assertNotIn('systemctl daemon-reload', calls)
+        self.assertFalse((root / 'opt/tako').exists())
+        # Packages, helpers and unit files stay so the machine can be added again.
+        self.assertTrue((root / 'etc/systemd/system/tako-network-agent.service').exists())
+        self.assertTrue((root / 'usr/local/bin/tako-server.prev').exists())
+        self.assertTrue((root / 'usr/local/libexec/tako/install-settings').exists())
+
+    def test_reset_is_allowed_to_the_service_account(self):
+        sudoers = SOURCE.split('cat > /etc/sudoers.d/tako <<EOF\n', 1)[1].split('\nEOF\n', 1)[0]
+        self.assertIn('$TAKO_SERVER_SERVICE_HELPER reset,', sudoers)
+
 
 if __name__ == '__main__':
     unittest.main()

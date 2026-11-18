@@ -12,6 +12,7 @@ fn invitation_grant(
             permissions: admin(),
             expires_at: 200,
             member_expires_at: None,
+            client: "test-client".parse().unwrap(),
         },
         token,
     )
@@ -91,6 +92,7 @@ fn invitation_claim_is_single_use_and_restart_retry_keeps_original_identity() {
         permissions: grant.permissions,
         expires_at: grant.expires_at,
         member_expires_at: None,
+        client: Some("test-laptop".parse().unwrap()),
     };
     let complete = fixture.challenge(&mut runtime, &keys, &approval, 14);
     assert!(matches!(
@@ -152,22 +154,7 @@ fn invitation_checks_token_expiry_signer_and_current_inviter_authority() {
         ),
         Err(RuntimeError::Authentication)
     ));
-    let snapshot = fixture.store.0.borrow().snapshot.clone();
-    let revocation = snapshot
-        .plan_revocation(
-            RevocationId::random().unwrap(),
-            &fixture.config.server_id,
-            &fixture.config.network.initial_admin,
-            13,
-        )
-        .unwrap();
-    fixture
-        .store
-        .0
-        .borrow_mut()
-        .snapshot
-        .revocations
-        .push(revocation);
+    fixture.deny(&fixture.config.network.initial_admin.clone(), 13);
     assert!(matches!(
         fixture.call(
             &mut runtime,
@@ -216,25 +203,7 @@ fn host_recovery_survives_restart_and_lost_administrator_revocation() {
     let mut runtime = fixture.open();
     // No surviving client key is needed to issue or claim this invitation.
     let lost = fixture.config.network.initial_admin.clone();
-    let revocation = fixture
-        .store
-        .0
-        .borrow()
-        .snapshot
-        .plan_revocation(
-            RevocationId::random().unwrap(),
-            &fixture.config.server_id,
-            &lost,
-            11,
-        )
-        .unwrap();
-    fixture
-        .store
-        .0
-        .borrow_mut()
-        .snapshot
-        .revocations
-        .push(revocation);
+    fixture.deny(&lost, 11);
     let keys = LocalDeviceKeys::generate().unwrap();
     let request = keys
         .enrollment_request(
@@ -293,6 +262,7 @@ fn host_recovery_survives_restart_and_lost_administrator_revocation() {
         permissions: grant.permissions,
         expires_at: grant.expires_at,
         member_expires_at: None,
+        client: Some("test-laptop".parse().unwrap()),
     };
     assert!(
         fixture
@@ -307,7 +277,7 @@ fn host_recovery_survives_restart_and_lost_administrator_revocation() {
     let snapshot = fixture.store.0.borrow().snapshot.clone();
     let members = snapshot.effective_members(18).unwrap();
     assert!(!members.contains_key(&lost));
-    assert!(members[&id].independent_admin);
+    assert!(members[&id].independent_root);
     assert!(members[&id].approved_by.is_none());
     let RpcResponse::Records(shared) = fixture
         .call(
@@ -368,7 +338,7 @@ fn recovery_invitation_expiry_and_public_request_cannot_elevate() {
     );
     let (recovery, recovery_token) = invitation_grant(&fixture);
     let mut invalid = recovery.clone();
-    invalid.permissions.server_admin = false;
+    invalid.permissions = Permissions::Deploy(Default::default());
     assert!(runtime.create_recovery_invitation(invalid, 12).is_err());
     runtime
         .create_recovery_invitation(recovery.clone(), 13)

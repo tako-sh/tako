@@ -15,6 +15,7 @@ mod error_codes;
 pub mod instance_env;
 pub mod network;
 mod protocol;
+pub mod routes;
 pub mod storage;
 #[cfg(test)]
 mod wire_fixtures;

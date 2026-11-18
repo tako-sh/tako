@@ -247,7 +247,7 @@ mod tests {
         let secrets_dir = dir.path().join(".tako");
         fs::create_dir_all(&secrets_dir).unwrap();
         fs::write(
-            secrets_dir.join("secrets.local.json"),
+            secrets_dir.join("state.local.json"),
             r#"{"values": {
                 "development": {
                     "key_id": "0123456789abcdef",

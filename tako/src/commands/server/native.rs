@@ -81,8 +81,8 @@ pub(super) async fn add(
     let own = profile
         .request()
         .device_id_for(&profile.snapshot().network.id)?;
-    if !profile.snapshot().can_admin(&own, network::now()?)? {
-        return Err("Network administration permission is required to add a server".into());
+    if !profile.snapshot().is_full(&own, network::now()?)? {
+        return Err("Full access is required to add a server".into());
     }
     let endpoint = match endpoint {
         Some(endpoint) => endpoint,
@@ -155,15 +155,16 @@ pub(super) async fn add(
             };
             let verified = pending.verify(&proof, network::now()?)?;
             let mut snapshot = profile.snapshot().clone();
-            let member = snapshot.approve_independent_admin(
+            let member = snapshot.approve_independent_root(
                 verified,
                 Approval {
                     kind: MemberKind::Server(server.clone()),
                     permissions: server_permissions(),
                     approved_by: None,
-                    independent_admin: true,
+                    independent_root: true,
                     created_at: now,
                     expires_at: None,
+                    client: None,
                 },
             )?;
             snapshot.members.push(member);
@@ -180,6 +181,7 @@ pub(super) async fn add(
                     permissions: server_permissions(),
                     expires_at: now + 86400,
                     member_expires_at: None,
+                    client: None,
                 }),
             }
         };
@@ -347,12 +349,7 @@ pub(super) async fn add(
 }
 
 fn server_permissions() -> Permissions {
-    Permissions {
-        network_admin: true,
-        server_admin: true,
-        ssh_user: None,
-        deployments: Default::default(),
-    }
+    Permissions::Full
 }
 
 async fn remote_call(

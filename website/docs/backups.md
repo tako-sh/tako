@@ -31,7 +31,7 @@ tako sqlite backups main --json
 tako sqlite restore main --latest
 ```
 
-Snapshots are consistent, integrity-checked copies, compressed with zstd and encrypted with the database's own key, which the network stores for administrators. Retention keeps every snapshot of the last 24 hours, then one per day for 7 days and one per week for 4 weeks. See [Databases](/databases/#back-up-and-restore) for the full behavior, import and export, and recovery onto another server.
+Snapshots are consistent, integrity-checked copies, compressed with zstd and encrypted with the database's own key, which the network stores for full clients. Retention keeps every snapshot of the last 24 hours, then one per day for 7 days and one per week for 4 weeks. See [Databases](/databases/#back-up-and-restore) for the full behavior, import and export, and recovery onto another server.
 
 ## Configure an app data destination
 

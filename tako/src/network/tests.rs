@@ -124,20 +124,18 @@ pub(crate) fn add_member(
             now,
         )
         .unwrap();
+    let client = matches!(kind, MemberKind::Laptop).then(|| request.name.clone());
     let member = snapshot
         .approve(
             verified,
             Approval {
                 kind,
                 approved_by: by,
-                independent_admin: false,
-                permissions: Permissions {
-                    network_admin: true,
-                    server_admin: true,
-                    ..Default::default()
-                },
+                independent_root: false,
+                permissions: Permissions::Full,
                 created_at: now,
                 expires_at: None,
+                client,
             },
         )
         .unwrap();
@@ -305,7 +303,11 @@ fn stale_import_cannot_erase_a_revocation_or_corrupt_saved_state() {
 #[test]
 fn revoked_local_identity_is_persisted_and_cannot_be_restored_by_stale_import() {
     let _home = TestHome::new();
-    let Fixture { keys, profile, .. } = fixture();
+    let Fixture {
+        keys,
+        profile,
+        server,
+    } = fixture();
     store_keys(&profile.request().request_id, &keys).unwrap();
     let alias = save_profile(&profile).unwrap();
     let mut revoked = profile.clone();
@@ -313,17 +315,32 @@ fn revoked_local_identity_is_persisted_and_cannot_be_restored_by_stale_import() 
         panic!()
     };
     let own = active.snapshot.network.initial_admin.clone();
-    let revocation = active
+    // Another device revoked this one after it approved the server; this device
+    // records what it observes.
+    let member = active
         .snapshot
-        .plan_revocation(
-            tako_network::RevocationId::random().unwrap(),
-            &own,
-            &own,
-            now().unwrap(),
-        )
+        .members
+        .iter()
+        .find(|member| member.device_id == own)
         .unwrap();
+    let server_approved_at = active
+        .snapshot
+        .members
+        .iter()
+        .find(|member| member.device_id == server)
+        .unwrap()
+        .created_at;
+    let revocation = tako_network::Revocation::of(
+        tako_network::RevocationId::random().unwrap(),
+        member,
+        own.clone(),
+        Default::default(),
+        server_approved_at + 1,
+    )
+    .unwrap();
     active.snapshot.revocations.push(revocation.clone());
-    active.trusted_servers.clear();
+    // Revocation doesn't cascade: the server this device approved stays a
+    // member, so its pin stays.
     revoked.validate_for_storage(&keys).unwrap();
     assert!(revoked.validate(&keys).is_err());
     assert!(save_profile(&revoked).is_err());
@@ -581,15 +598,20 @@ fn recording_self_or_last_server_revocation_succeeds_and_is_idempotent() {
         let alias = save_profile(&profile).unwrap();
         let own = &profile.snapshot().network.initial_admin;
         let target = if revoke_self { own } else { &server };
-        let revocation = profile
+        let member = profile
             .snapshot()
-            .plan_revocation(
-                tako_network::RevocationId::random().unwrap(),
-                own,
-                target,
-                now().unwrap(),
-            )
+            .members
+            .iter()
+            .find(|member| &member.device_id == target)
             .unwrap();
+        let revocation = tako_network::Revocation::of(
+            tako_network::RevocationId::random().unwrap(),
+            member,
+            own.clone(),
+            Default::default(),
+            now().unwrap(),
+        )
+        .unwrap();
         record_revocation(&alias, revocation.clone()).unwrap();
         record_revocation(&alias, revocation.clone()).unwrap();
         let saved: Profile = read_json(&alias.profile_path().unwrap()).unwrap();

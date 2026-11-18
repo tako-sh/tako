@@ -299,10 +299,10 @@ fn configuration(
     if profile
         .snapshot()
         .permissions(&own, super::now()?)?
-        .ssh_user
+        .ssh_user()
         .is_none()
     {
-        return Err("This device has no SSH permission".into());
+        return Err("Deploy clients have no SSH access".into());
     }
     let members = super::server_members(profile)?;
     let member = members
@@ -693,11 +693,18 @@ mod tests {
     #[test]
     fn transport_uses_approved_identity_and_private_server_address() {
         let mut fixture = super::super::tests::fixture();
+        {
+            let Profile::Active { profile } = &mut fixture.profile else {
+                panic!()
+            };
+            profile.snapshot.members[0].permissions =
+                tako_network::Permissions::deploy(["app/prod".parse().unwrap()]);
+        }
         assert!(configuration(&fixture.profile, &fixture.keys, &fixture.server).is_err());
         let Profile::Active { profile } = &mut fixture.profile else {
             panic!()
         };
-        profile.snapshot.members[0].permissions.ssh_user = Some("tako".parse().unwrap());
+        profile.snapshot.members[0].permissions = tako_network::Permissions::Full;
         let config = configuration(&fixture.profile, &fixture.keys, &fixture.server).unwrap();
         assert_eq!(
             config.source,

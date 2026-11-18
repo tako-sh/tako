@@ -250,7 +250,7 @@ fn parse_database_resources(raw: &toml::Value) -> Result<HashMap<String, Databas
             .find(|key| value.get(key).is_some())
         {
             return Err(ConfigError::Validation(format!(
-                "[databases.{name}].{key} is no longer set in tako.toml: the network records where each database lives. Remove it; `tako sqlite list` shows the network's databases."
+                "[databases.{name}].{key} is no longer set in tako.toml: the network state records where each database lives. Remove it; `tako sqlite list` shows the network's databases."
             )));
         }
         let resource: DatabaseResourceConfig = toml::from_str(&toml::to_string(value)?)

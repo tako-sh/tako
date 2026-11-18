@@ -25,11 +25,12 @@ fn invocations_require_server_attestation_and_bind_target_body_and_nonce() {
             verified,
             Approval {
                 kind: MemberKind::Laptop,
-                permissions: Permissions::default(),
+                permissions: Permissions::Deploy(Default::default()),
                 approved_by: Some(registry.network.initial_admin.clone()),
-                independent_admin: false,
+                independent_root: false,
                 created_at: 1,
                 expires_at: None,
+                client: Some(request.name.clone()),
             },
         )
         .unwrap();
@@ -135,15 +136,12 @@ pub(super) fn fixture() -> (RegistrySnapshot, LocalDeviceKeys, ServiceDirectory)
                     https_spki_sha256: None,
                     https_port: 443,
                 }),
-                permissions: Permissions {
-                    network_admin: true,
-                    server_admin: true,
-                    ..Default::default()
-                },
+                permissions: Permissions::Full,
                 approved_by: None,
-                independent_admin: false,
+                independent_root: false,
                 created_at: 1,
                 expires_at: None,
+                client: None,
             },
         )
         .unwrap();
@@ -235,11 +233,15 @@ fn withdrawal_stale_replay_expiry_and_revocation_remove_placements() {
     assert!(directory.placements(&app, 20).is_empty());
     registry.members[0].expires_at = None;
     let id = registry.members[0].device_id.clone();
-    registry.revocations.push(
-        registry
-            .plan_revocation(tako_network::RevocationId::random().unwrap(), &id, &id, 15)
-            .unwrap(),
-    );
+    let revocation = tako_network::Revocation::of(
+        tako_network::RevocationId::random().unwrap(),
+        &registry.members[0],
+        id.clone(),
+        [id].into(),
+        15,
+    )
+    .unwrap();
+    registry.revocations.push(revocation);
     assert!(directory.replace(&registry, &[fresh], 15).is_err());
     assert!(directory.placements(&app, 15).is_empty());
 }
@@ -330,9 +332,10 @@ fn compose_may_relay_but_wireguard_requests_cannot_loop() {
         kind: member.kind.clone(),
         permissions: member.permissions.clone(),
         approved_by: Some(member.device_id.clone()),
-        independent_admin: false,
+        independent_root: false,
         created_at: 2,
         expires_at: None,
+        client: member.client.clone(),
     };
     member = registry.approve(verified, approval).unwrap();
     registry.members.push(member);

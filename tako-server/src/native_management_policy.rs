@@ -5,13 +5,10 @@
 //! separately, and retain handler validation and process isolation. These read-only
 //! checks neither authenticate a request nor provide race-free filesystem handles.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::fmt;
 use std::path::{Component, Path};
-use tako_core::{
-    BackupBinding, Command, DatabaseBinding, SslBinding, SslProvider, StorageBinding,
-    StorageProvider,
-};
+use tako_core::{Command, DatabaseBinding, StorageBinding, StorageProvider};
 use tako_network::{AppEnv, Permissions};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,7 +86,7 @@ pub(crate) fn classify(command: &Command) -> CommandClass<'_> {
         | Command::Status { app }
         | Command::ListReleases { app }
         | Command::Rollback { app, .. }
-        | Command::UpdateSecrets { app, .. }
+        | Command::SecretsDigest { app, .. }
         | Command::GetSecretsHash { app }
         | Command::EnqueueRun { app, .. }
         | Command::Signal { app, .. }
@@ -100,18 +97,12 @@ pub(crate) fn classify(command: &Command) -> CommandClass<'_> {
     }
 }
 
-/// A trusted snapshot for exactly one deployment. Never construct from request
-/// metadata or substitute empty values when reading server state fails.
-/// Routes must already be provisioned by an administrator. Existing overlapping
-/// route claims and shared external credentials are not repaired by this policy.
+/// The database bindings this server holds for one app environment. Never
+/// construct from request metadata or substitute empty values when reading
+/// server state fails.
 pub(crate) struct ProvisionedApp<'a> {
     pub scope: &'a AppEnv,
-    pub routes: &'a [String],
-    pub ssl: &'a SslBinding,
-    pub runtime_credentials: &'a HashMap<String, String>,
-    pub storages: &'a HashMap<String, StorageBinding>,
     pub databases: &'a HashMap<String, DatabaseBinding>,
-    pub backup: Option<&'a BackupBinding>,
 }
 
 pub(crate) struct PolicyContext<'a> {
@@ -156,7 +147,7 @@ fn same_bindings(
 }
 
 const DATABASES_DENIED: Denial =
-    Denial("Scoped deployment cannot change database bindings; an administrator must deploy them.");
+    Denial("Scoped deployment cannot change database bindings; a full client must deploy them.");
 const SCOPE_REQUIRED: Denial = Denial("An explicit app/environment scope is required.");
 const SCOPE_MISMATCH: Denial = Denial("Command app must exactly match the app/environment scope.");
 const SCOPE_DENIED: Denial = Denial("Deployment permission is required for this app/environment.");
@@ -168,14 +159,8 @@ const MANAGED_PATH_DENIED: Denial = Denial(
 );
 const STATE_REQUIRED: Denial =
     Denial("Trusted provisioned state for this app/environment is required.");
-const ROUTES_DENIED: Denial = Denial(
-    "Scoped deployment must preserve the provisioned routes; a server administrator must provision route changes.",
-);
-const SSL_DENIED: Denial = Denial(
-    "Scoped deployment must preserve provisioned SSL credentials and provider; unresolved staged credentials are not allowed.",
-);
-const BACKUP_DENIED: Denial =
-    Denial("Scoped deployment must preserve the provisioned backup target and keys.");
+const DEPLOY_ONLY: Denial =
+    Denial("Deploy clients can only deploy, roll back, and read status and releases.");
 
 /// Also use for authenticated non-RPC app descriptors (logs and artifact uploads).
 /// Uploads still require version, managed-path, and archive validation.
@@ -193,7 +178,7 @@ pub(crate) fn authorize_app(
     // AppEnv permits a few names that existing server release handlers reject.
     crate::release::validate_app_name(scope.as_str())
         .map_err(|_| Denial("App/environment scope is not a valid managed deployment name."))?;
-    if !permissions.server_admin && !permissions.can_deploy(scope) {
+    if !permissions.can_deploy(scope) {
         return Err(SCOPE_DENIED);
     }
     Ok(())
@@ -216,16 +201,14 @@ pub(crate) fn authorize_command(
         }
         CommandClass::AuthenticatedProbe => return Ok(()),
         CommandClass::ServerAdmin => {
-            return if permissions.server_admin {
+            return if permissions.is_full() {
                 Ok(())
             } else {
-                Err(Denial(
-                    "This command requires server administrator permission.",
-                ))
+                Err(Denial("This command requires full access."))
             };
         }
         CommandClass::DeploymentPreflight => {
-            return if permissions.server_admin {
+            return if permissions.is_full() {
                 Ok(())
             } else {
                 let scope = scope.ok_or(SCOPE_REQUIRED)?;
@@ -235,6 +218,9 @@ pub(crate) fn authorize_command(
         CommandClass::Application { app } => {
             let scope = scope.ok_or(SCOPE_REQUIRED)?;
             authorize_app(permissions, scope, app)?;
+            if !permissions.is_full() && !deploy_client_command(command) {
+                return Err(DEPLOY_ONLY);
+            }
             scope
         }
     };
@@ -251,63 +237,34 @@ pub(crate) fn authorize_command(
         Command::PrepareRelease { path, .. } => {
             validate_release_path(context.data_dir, scope, path)?;
         }
-        Command::PrepareDeploy {
-            version,
-            path,
-            routes,
-            ssl,
-            ..
-        } => {
+        // A deploy client may make the first deploy of its app environment
+        // and change its routes, SSL provider and the plain configuration of
+        // its bindings: servers fill every secret part from the pinned
+        // snapshot, and reject routes another app environment claims.
+        Command::PrepareDeploy { version, path, .. } => {
             validate_version_path(context.data_dir, &releases, version)?;
             validate_release_path(context.data_dir, scope, path)?;
-            if !permissions.server_admin {
-                let provisioned = provisioned_app(context, scope)?;
-                preserve_routes(provisioned, routes)?;
-                preserve_ssl(provisioned, ssl)?;
-            }
         }
         Command::Deploy {
             version,
             path,
-            routes,
-            ssl,
-            runtime_credentials,
             storages,
             databases,
-            backup,
             ..
         } => {
             validate_version_path(context.data_dir, &releases, version)?;
             validate_release_path(context.data_dir, scope, path)?;
-            if !permissions.server_admin {
-                let provisioned = provisioned_app(context, scope)?;
-                preserve_routes(provisioned, routes)?;
-                preserve_ssl(provisioned, ssl)?;
-                if runtime_credentials
-                    .as_ref()
-                    .is_some_and(|value| value != provisioned.runtime_credentials)
-                {
-                    return Err(Denial(
-                        "Scoped deployment cannot change server-held runtime credentials.",
-                    ));
+            if !permissions.is_full() {
+                if let Some(storages) = storages {
+                    validate_local_storages(context.data_dir, scope, storages)?;
                 }
-                if storages
-                    .as_ref()
-                    .is_some_and(|value| value != provisioned.storages)
-                {
-                    return Err(Denial(
-                        "Scoped deployment cannot change provisioned storage paths, endpoints, or credentials.",
-                    ));
-                }
-                validate_local_storages(context.data_dir, scope, provisioned.storages)?;
-                if databases
-                    .as_ref()
-                    .is_some_and(|value| !same_bindings(value, provisioned.databases))
+                // Database bindings need grants, which only full clients make.
+                // An empty set would remove every binding; see
+                // `keep_database_bindings`.
+                if let Some(databases) = databases.as_ref()
+                    && !same_bindings(databases, provisioned_app(context, scope)?.databases)
                 {
                     return Err(DATABASES_DENIED);
-                }
-                if backup.as_deref() != provisioned.backup {
-                    return Err(BACKUP_DENIED);
                 }
             }
         }
@@ -319,7 +276,7 @@ pub(crate) fn authorize_command(
         } => {
             validate_version_path(context.data_dir, &releases, version)?;
             validate_release_path(context.data_dir, scope, path)?;
-            if !permissions.server_admin && !databases.is_empty() {
+            if !permissions.is_full() && !databases.is_empty() {
                 let provisioned = provisioned_app(context, scope)?;
                 if databases.iter().any(|(name, binding)| {
                     !provisioned
@@ -342,22 +299,9 @@ pub(crate) fn authorize_command(
             validate_version_path(context.data_dir, &releases, version)?;
             let path = context.data_dir.join(&releases).join(version);
             validate_release_path(context.data_dir, scope, path.to_str().ok_or(PATH_DENIED)?)?;
-            if !permissions.server_admin {
-                let provisioned = provisioned_app(context, scope)?;
-                preserve_routes(provisioned, provisioned.routes)?;
-                preserve_ssl(provisioned, provisioned.ssl)?;
-                validate_local_storages(context.data_dir, scope, provisioned.storages)?;
-            }
         }
-        Command::BackupNow { backup, .. } => {
-            if !permissions.server_admin
-                && let Some(backup) = backup
-                && Some(backup.as_ref()) != provisioned_app(context, scope)?.backup
-            {
-                return Err(BACKUP_DENIED);
-            }
-        }
-        Command::ListBackups { .. }
+        Command::BackupNow { .. }
+        | Command::ListBackups { .. }
         | Command::BackupStatus { .. }
         | Command::BackupDownloadUrl { .. }
         | Command::RestoreBackup { .. }
@@ -367,7 +311,7 @@ pub(crate) fn authorize_command(
         | Command::Delete { .. }
         | Command::Status { .. }
         | Command::ListReleases { .. }
-        | Command::UpdateSecrets { .. }
+        | Command::SecretsDigest { .. }
         | Command::GetSecretsHash { .. }
         | Command::EnqueueRun { .. }
         | Command::Signal { .. }
@@ -432,35 +376,25 @@ fn provisioned_app<'a, 'b>(
         .ok_or(STATE_REQUIRED)
 }
 
-fn preserve_routes(app: &ProvisionedApp<'_>, requested: &[String]) -> Result<(), Denial> {
-    let existing: BTreeSet<_> = app.routes.iter().collect();
-    let requested_set: BTreeSet<_> = requested.iter().collect();
-    if existing != requested_set || requested.len() != requested_set.len() {
-        return Err(ROUTES_DENIED);
-    }
-    if requested.is_empty() {
-        return Ok(());
-    }
-    crate::release::validate_deploy_routes(requested).map_err(|_| ROUTES_DENIED)
-}
-
-fn preserve_ssl(app: &ProvisionedApp<'_>, requested: &SslBinding) -> Result<(), Denial> {
-    if requested != app.ssl {
-        return Err(SSL_DENIED);
-    }
-    // Match resolve_deploy_ssl_binding's token requirement. Refuse its fallback
-    // to staged state: that state is not part of this checked snapshot.
-    let needs_token = requested.provider == SslProvider::Cloudflare
-        || app.routes.iter().any(|route| route.starts_with("*."));
-    if needs_token
-        && requested
-            .cloudflare_api_token
-            .as_deref()
-            .is_none_or(|token| token.trim().is_empty())
-    {
-        return Err(SSL_DENIED);
-    }
-    Ok(())
+/// What a deploy client may send in its app environments.
+fn deploy_client_command(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::PrepareRelease { .. }
+            | Command::PrepareReleaseUpload { .. }
+            | Command::PrepareDeploy { .. }
+            | Command::Deploy { .. }
+            | Command::RunRelease { .. }
+            | Command::FinalizeRelease { .. }
+            | Command::CleanupPreparedDeploy { .. }
+            | Command::CleanupRelease { .. }
+            | Command::SnapshotDatabase { .. }
+            | Command::MigrateDatabase { .. }
+            | Command::SecretsDigest { .. }
+            | Command::Status { .. }
+            | Command::ListReleases { .. }
+            | Command::Rollback { .. }
+    )
 }
 
 fn validate_version_path(data_dir: &Path, releases: &Path, version: &str) -> Result<(), Denial> {
@@ -546,6 +480,19 @@ fn validate_managed_directories(data_dir: &Path, relative: &Path) -> Result<(), 
     Ok(())
 }
 
+/// A deploy client never changes database bindings, so a deploy from one
+/// that sends an empty set keeps the environment's bindings instead of
+/// removing them. Call before [`authorize_command`]; a non-empty set that
+/// differs is still refused there.
+pub(crate) fn keep_database_bindings(permissions: &Permissions, command: &mut Command) {
+    if !permissions.is_full()
+        && let Command::Deploy { databases, .. } = command
+        && databases.as_ref().is_some_and(HashMap::is_empty)
+    {
+        *databases = None;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -557,11 +504,7 @@ mod tests {
         scope: AppEnv,
         permissions: Permissions,
         routes: Vec<String>,
-        ssl: SslBinding,
-        runtime_credentials: HashMap<String, String>,
-        storages: HashMap<String, StorageBinding>,
         databases: HashMap<String, DatabaseBinding>,
-        backup: Option<BackupBinding>,
     }
 
     impl Fixture {
@@ -574,10 +517,7 @@ mod tests {
             let scope: AppEnv = tako_core::deployment_app_id("demo", "staging")
                 .parse()
                 .unwrap();
-            let permissions = Permissions {
-                deployments: [scope.clone()].into_iter().collect(),
-                ..Permissions::default()
-            };
+            let permissions = Permissions::Deploy([scope.clone()].into_iter().collect());
             Self {
                 dir,
                 scope,
@@ -586,11 +526,7 @@ mod tests {
                     "demo.example.test/api/*".into(),
                     "demo.example.test/assets/*".into(),
                 ],
-                ssl: SslBinding::default(),
-                runtime_credentials: HashMap::new(),
-                storages: HashMap::new(),
                 databases: HashMap::new(),
-                backup: None,
             }
         }
 
@@ -599,12 +535,7 @@ mod tests {
                 data_dir: self.dir.path(),
                 app: Some(ProvisionedApp {
                     scope: &self.scope,
-                    routes: &self.routes,
-                    ssl: &self.ssl,
-                    runtime_credentials: &self.runtime_credentials,
-                    storages: &self.storages,
                     databases: &self.databases,
-                    backup: self.backup.as_ref(),
                 }),
             }
         }
@@ -632,7 +563,9 @@ mod tests {
                 .entry("path")
                 .or_insert(json!(self.release(self.scope.as_str())));
             object.entry("routes").or_insert(json!(self.routes));
-            object.entry("ssl").or_insert(json!(self.ssl));
+            object
+                .entry("ssl")
+                .or_insert(json!(tako_core::SslBinding::default()));
             object.entry("secrets").or_insert(json!({}));
             object.entry("backup_id").or_insert(json!("backup-1"));
             object.entry("reason").or_insert(json!("release"));
@@ -675,7 +608,7 @@ mod tests {
         "status",
         "list_releases",
         "rollback",
-        "update_secrets",
+        "secrets_digest",
         "get_secrets_hash",
         "enqueue_run",
         "signal",
@@ -745,6 +678,41 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_database_set_from_a_deploy_client_keeps_the_bindings() {
+        let mut f = Fixture::new();
+        f.databases.insert(
+            "main".into(),
+            DatabaseBinding {
+                name: "shop".into(),
+                server: "edge".into(),
+                peer_key: None,
+            },
+        );
+        let databases = |command: &Command| match command {
+            Command::Deploy { databases, .. } => databases.clone(),
+            _ => unreachable!(),
+        };
+        let mut empty = f.decode_command(json!({"command":"deploy","databases":{}}));
+        // Unchanged, the policy alone refuses it: it would drop the binding.
+        assert_eq!(f.authorize(&empty), Err(DATABASES_DENIED));
+        keep_database_bindings(&f.permissions, &mut empty);
+        assert_eq!(databases(&empty), None);
+        assert_eq!(f.authorize(&empty), Ok(()));
+
+        // A different, non-empty set is still refused.
+        let other = json!({"main": {"name": "shop", "server": "other"}});
+        let mut moved = f.decode_command(json!({"command":"deploy","databases":other}));
+        keep_database_bindings(&f.permissions, &mut moved);
+        assert!(databases(&moved).is_some());
+        assert_eq!(f.authorize(&moved), Err(DATABASES_DENIED));
+
+        // A full client's empty set still removes the bindings.
+        let mut full = f.decode_command(json!({"command":"deploy","databases":{}}));
+        keep_database_bindings(&Permissions::Full, &mut full);
+        assert_eq!(databases(&full), Some(HashMap::new()));
+    }
+
+    #[test]
     fn scoped_release_commands_keep_provisioned_bindings_without_their_keys() {
         let mut f = Fixture::new();
         f.databases.insert(
@@ -775,6 +743,24 @@ mod tests {
         assert_eq!(f.authorize(&deploy), Ok(()));
     }
 
+    /// Everything else in an app environment needs full access, including
+    /// backups, scaling, deletion, workflow commands and logs.
+    const DEPLOY_CLIENT_COMMANDS: &[&str] = &[
+        "prepare_release",
+        "prepare_release_upload",
+        "prepare_deploy",
+        "cleanup_prepared_deploy",
+        "cleanup_release",
+        "finalize_release",
+        "run_release",
+        "deploy",
+        "snapshot_database",
+        "status",
+        "list_releases",
+        "rollback",
+        "secrets_digest",
+    ];
+
     #[test]
     fn all_application_commands_require_exact_explicit_app_and_environment() {
         let f = Fixture::new();
@@ -786,7 +772,17 @@ mod tests {
                     app: f.scope.as_str()
                 }
             );
-            assert_eq!(f.authorize(&command), Ok(()), "{name}");
+            let expected = if DEPLOY_CLIENT_COMMANDS.contains(name) {
+                Ok(())
+            } else {
+                Err(DEPLOY_ONLY)
+            };
+            assert_eq!(f.authorize(&command), expected, "{name}");
+            assert_eq!(
+                authorize_command(&Permissions::Full, Some(&f.scope), &command, &f.context()),
+                Ok(()),
+                "{name}"
+            );
             assert_eq!(
                 authorize_command(&f.permissions, None, &command, &f.context()),
                 Err(SCOPE_REQUIRED),
@@ -828,12 +824,9 @@ mod tests {
     }
 
     #[test]
-    fn public_worker_impersonation_is_denied_even_for_server_admin() {
+    fn public_worker_impersonation_is_denied_even_for_full_clients() {
         let f = Fixture::new();
-        let admin = Permissions {
-            server_admin: true,
-            ..f.permissions.clone()
-        };
+        let admin = Permissions::Full;
         for name in [
             "register_schedules",
             "claim_run",
@@ -861,17 +854,10 @@ mod tests {
     }
 
     #[test]
-    fn network_admin_and_ssh_are_not_server_or_deployment_authority() {
+    fn deploy_clients_have_no_server_or_unlisted_deployment_authority() {
         let f = Fixture::new();
-        let network_admin = Permissions {
-            network_admin: true,
-            ssh_user: Some("developer".parse().unwrap()),
-            ..Permissions::default()
-        };
-        let admin = Permissions {
-            server_admin: true,
-            ..Permissions::default()
-        };
+        let network_admin = Permissions::Deploy(Default::default());
+        let admin = Permissions::Full;
         for command in [
             Command::List,
             Command::Routes,
@@ -924,7 +910,13 @@ mod tests {
         ] {
             assert_eq!(classify(&command), CommandClass::AuthenticatedProbe);
             assert!(
-                authorize_command(&Permissions::default(), None, &command, &f.context()).is_ok()
+                authorize_command(
+                    &Permissions::Deploy(Default::default()),
+                    None,
+                    &command,
+                    &f.context()
+                )
+                .is_ok()
             );
         }
         let command = Command::CheckDeploySpace {
@@ -938,75 +930,51 @@ mod tests {
         );
         assert_eq!(
             authorize_command(
-                &Permissions::default(),
+                &Permissions::Deploy(Default::default()),
                 Some(&f.scope),
                 &command,
                 &f.context()
             ),
             Err(SCOPE_DENIED)
         );
-        let invalid = Permissions {
-            ssh_user: Some("root".parse().unwrap()),
-            ..Permissions::default()
-        };
+        let invalid = Permissions::Deploy(
+            (0..1025)
+                .map(|index| format!("app{index}/prod").parse().unwrap())
+                .collect(),
+        );
         assert!(authorize_command(&invalid, None, &Command::ServerInfo, &f.context()).is_err());
     }
 
     #[test]
-    fn route_takeover_and_ownership_changes_are_denied_despite_force() {
+    fn deploy_clients_may_make_the_first_deploy_and_change_routes_ssl_and_plain_bindings() {
         let f = Fixture::new();
-        for name in ["prepare_deploy", "deploy"] {
-            for force in [false, true] {
-                for routes in [
-                    vec!["victim.example.test"],
-                    vec!["*.example.test"],
-                    vec!["demo.example.test/*"],
-                    vec!["demo.example.test/api/private"],
-                    vec!["demo.example.test/api/*"],
-                    vec![],
-                ] {
-                    let command =
-                        f.decode_command(json!({"command":name,"routes":routes,"force":force}));
-                    assert_eq!(
-                        f.authorize(&command),
-                        Err(ROUTES_DENIED),
-                        "{name} {routes:?}"
-                    );
-                }
-            }
-            let command =
-                f.decode_command(json!({"command":name,"routes":[f.routes[1],f.routes[0]]}));
-            assert_eq!(f.authorize(&command), Ok(()));
-            let command = f.decode_command(
-                json!({"command":name,"routes":[f.routes[0],f.routes[1],f.routes[0]]}),
-            );
-            assert_eq!(f.authorize(&command), Err(ROUTES_DENIED));
-        }
-    }
-
-    #[test]
-    fn missing_or_cross_scope_provisioning_cannot_grant_routes() {
-        let mut f = Fixture::new();
-        let command = f.command("deploy");
         let missing = PolicyContext {
             data_dir: f.dir.path(),
             app: None,
         };
+        for name in ["prepare_deploy", "deploy"] {
+            let command = f.decode_command(json!({
+                "command": name,
+                "routes": ["new.example.test", "*.example.test"],
+                "ssl": {"provider": "cloudflare"},
+                "backup": backup(),
+                "storages": {"files": storage(), "media": s3()},
+            }));
+            assert_eq!(f.authorize(&command), Ok(()), "{name}");
+            assert_eq!(
+                authorize_command(&f.permissions, Some(&f.scope), &command, &missing),
+                Ok(()),
+                "{name}: no provisioned state"
+            );
+        }
+        // Database bindings need grants, which only full clients make.
+        let bound = f.decode_command(
+            json!({"command":"deploy","databases":{"main":{"name":"shop","server":"edge"}}}),
+        );
         assert_eq!(
-            authorize_command(&f.permissions, Some(&f.scope), &command, &missing),
+            authorize_command(&f.permissions, Some(&f.scope), &bound, &missing),
             Err(STATE_REQUIRED)
         );
-        let other: AppEnv = "other/staging".parse().unwrap();
-        let mut context = f.context();
-        context.app.as_mut().unwrap().scope = &other;
-        assert_eq!(
-            authorize_command(&f.permissions, Some(&f.scope), &command, &context),
-            Err(STATE_REQUIRED)
-        );
-        f.routes.clear();
-        assert_eq!(f.authorize(&command), Err(ROUTES_DENIED));
-        // An already provisioned private group can remain private.
-        assert_eq!(f.authorize(&f.command("deploy")), Ok(()));
     }
 
     #[test]
@@ -1077,7 +1045,9 @@ mod tests {
     #[test]
     fn symlinks_cannot_redirect_releases_or_the_app_root() {
         use std::os::unix::fs::symlink;
-        let f = Fixture::new();
+        // Confinement applies to every client; full access reaches every command.
+        let mut f = Fixture::new();
+        f.permissions = Permissions::Full;
         let releases = f.dir.path().join("apps/demo/staging/releases");
         symlink(f.release("other/staging"), releases.join("escape")).unwrap();
         for name in ["prepare_release", "prepare_deploy", "run_release", "deploy"] {
@@ -1124,7 +1094,9 @@ mod tests {
     fn backup_and_runtime_data_roots_cannot_redirect_to_another_deployment() {
         use std::os::unix::fs::symlink;
         for relative in ["data", "data/app", "data/tako"] {
-            let f = Fixture::new();
+            // Confinement applies to every client; full access reaches every command.
+            let mut f = Fixture::new();
+            f.permissions = Permissions::Full;
             let link = f.dir.path().join("apps/demo/staging").join(relative);
             std::fs::create_dir_all(link.parent().unwrap()).unwrap();
             symlink(f.dir.path().join("apps/other/staging"), &link).unwrap();
@@ -1144,36 +1116,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn ssl_provider_tokens_and_unresolved_staging_cannot_be_changed() {
-        let mut f = Fixture::new();
-        for name in ["prepare_deploy", "deploy"] {
-            for ssl in [
-                json!({"provider":"cloudflare","cloudflare_api_token":"attacker-secret"}),
-                json!({"provider":"letsencrypt","cloudflare_api_token":"attacker-secret"}),
-            ] {
-                let error = f
-                    .authorize(&f.decode_command(json!({"command":name,"ssl":ssl,"force":true})))
-                    .unwrap_err();
-                assert_eq!(error, SSL_DENIED);
-                assert!(!error.to_string().contains("attacker-secret"));
-            }
-        }
-        f.ssl.provider = SslProvider::Cloudflare;
-        assert_eq!(f.authorize(&f.command("deploy")), Err(SSL_DENIED));
-        f.ssl.cloudflare_api_token = Some("provisioned-token".into());
-        assert_eq!(f.authorize(&f.command("deploy")), Ok(()));
-        assert_eq!(
-            f.authorize(
-                &f.decode_command(json!({"command":"deploy","ssl":{"provider":"cloudflare"}}))
-            ),
-            Err(SSL_DENIED)
-        );
-        f.ssl = SslBinding::default();
-        f.routes = vec!["*.example.test".into()];
-        assert_eq!(f.authorize(&f.command("deploy")), Err(SSL_DENIED));
-    }
-
     fn storage() -> StorageBinding {
         serde_json::from_value(
             json!({"provider":"local","path":"storage/files","signing_key":"key"}),
@@ -1181,85 +1123,23 @@ mod tests {
         .unwrap()
     }
 
-    fn backup() -> BackupBinding {
+    fn s3() -> StorageBinding {
         serde_json::from_value(json!({
-            "storage":{"provider":"s3","bucket":"demo-staging","endpoint":"https://storage.example.test", "access_key_id":"key-id","secret_access_key":"secret"},
-            "backup_keys":[{"id":"key-1","key_base64":"secret-key"}],"retention_days":7
+            "provider":"s3","resource":"media","bucket":"demo-media","endpoint":"https://storage.example.test"
+        }))
+        .unwrap()
+    }
+
+    fn backup() -> tako_core::BackupBinding {
+        serde_json::from_value(json!({
+            "storage":{"provider":"s3","resource":"backups","bucket":"demo-staging","endpoint":"https://storage.example.test"},
+            "backup_keys":[],"retention_days":7
         })).unwrap()
     }
 
     #[test]
-    fn runtime_credentials_and_local_or_remote_storage_are_frozen() {
-        let mut f = Fixture::new();
-        f.runtime_credentials
-            .insert("provider-key".into(), "server-secret".into());
-        f.storages.insert("files".into(), storage());
-        assert_eq!(f.authorize(&f.command("deploy")), Ok(()));
-        let command = f.decode_command(json!({"command":"deploy", "runtime_credentials":f.runtime_credentials,"storages":f.storages}));
-        assert_eq!(f.authorize(&command), Ok(()));
-        for value in [json!({}), json!({"provider-key":"attacker-secret"})] {
-            let command = f.decode_command(
-                json!({"command":"deploy","runtime_credentials":value,"force":true}),
-            );
-            assert!(
-                f.authorize(&command)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("runtime credentials")
-            );
-        }
-        for value in [
-            json!({}),
-            json!({"files":{"provider":"local","path":"/etc","signing_key":"x"}}),
-            json!({"files":{"provider":"local","path":"/managed/other/production"}}),
-            json!({"files":{"provider":"s3","endpoint":"http://127.0.0.1","bucket":"other"}}),
-        ] {
-            let command =
-                f.decode_command(json!({"command":"deploy","storages":value,"force":true}));
-            assert!(
-                f.authorize(&command)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("storage")
-            );
-        }
-        // Application secrets are a distinct, writable resource within this scope.
-        assert_eq!(
-            f.authorize(
-                &f.decode_command(json!({"command":"update_secrets","secrets":{"APP_KEY":"new"}}))
-            ),
-            Ok(())
-        );
-    }
-
-    #[test]
-    fn backup_binding_is_preserved_by_scoped_deploy_rollback_and_backup_now() {
-        let mut f = Fixture::new();
-        let unprovisioned = f.decode_command(json!({"command":"backup_now","backup":backup()}));
-        assert_eq!(f.authorize(&unprovisioned), Err(BACKUP_DENIED));
-        f.backup = Some(backup());
-        assert_eq!(f.authorize(&f.command("deploy")), Err(BACKUP_DENIED));
-        assert_eq!(f.authorize(&f.command("rollback")), Ok(()));
-        assert_eq!(f.authorize(&f.command("backup_now")), Ok(()));
-        for name in ["deploy", "backup_now"] {
-            assert_eq!(
-                f.authorize(&f.decode_command(json!({"command":name,"backup":f.backup}))),
-                Ok(())
-            );
-            let mut changed = backup();
-            changed.storage.bucket = Some("other-production".into());
-            assert_eq!(
-                f.authorize(
-                    &f.decode_command(json!({"command":name,"backup":changed,"force":true}))
-                ),
-                Err(BACKUP_DENIED)
-            );
-        }
-    }
-
-    #[test]
-    fn retained_local_storage_does_not_authorize_cross_app_filesystem_access() {
-        let mut f = Fixture::new();
+    fn deploy_client_local_storage_stays_inside_its_data_directory() {
+        let f = Fixture::new();
         for path in [
             "/etc",
             "/managed/other/production",
@@ -1271,28 +1151,25 @@ mod tests {
         ] {
             let mut binding = storage();
             binding.path = Some(path.into());
-            f.storages.insert("files".into(), binding);
-            for name in ["deploy", "rollback"] {
-                let error = f.authorize(&f.command(name)).unwrap_err();
-                assert!(
-                    error.to_string().starts_with("Local storage"),
-                    "{name}: {path}"
-                );
-            }
+            let command = f.decode_command(
+                json!({"command":"deploy","storages":{"files":binding},"force":true}),
+            );
+            let error = f.authorize(&command).unwrap_err();
+            assert!(error.to_string().starts_with("Local storage"), "{path}");
         }
     }
 
     #[cfg(unix)]
     #[test]
-    fn retained_local_storage_cannot_follow_a_cross_app_symlink() {
-        let mut f = Fixture::new();
+    fn deploy_client_local_storage_cannot_follow_a_cross_app_symlink() {
+        let f = Fixture::new();
         let root = f.dir.path().join("apps/demo/staging/data/app/storage");
         std::fs::create_dir_all(&root).unwrap();
         std::os::unix::fs::symlink(f.dir.path().join("apps/other/staging"), root.join("files"))
             .unwrap();
-        f.storages.insert("files".into(), storage());
+        let command = f.decode_command(json!({"command":"deploy","storages":{"files":storage()}}));
         assert!(
-            f.authorize(&f.command("deploy"))
+            f.authorize(&command)
                 .unwrap_err()
                 .to_string()
                 .starts_with("Local storage")
@@ -1300,15 +1177,12 @@ mod tests {
     }
 
     #[test]
-    fn server_admin_can_provision_but_never_bypass_path_confinement() {
+    fn full_clients_can_provision_but_never_bypass_path_confinement() {
         let mut f = Fixture::new();
-        f.permissions = Permissions {
-            server_admin: true,
-            ..Permissions::default()
-        };
+        f.permissions = Permissions::Full;
         let command = f.decode_command(json!({"command":"deploy", "routes":["new.example.test"],
             "ssl":{"provider":"cloudflare","cloudflare_api_token":"admin-token"},
-            "runtime_credentials":{"key":"value"}, "storages":{"files":storage()}, "backup":backup()}));
+            "storages":{"files":storage()}, "backup":backup()}));
         assert_eq!(f.authorize(&command), Ok(()));
         assert_eq!(
             f.authorize(&f.decode_command(

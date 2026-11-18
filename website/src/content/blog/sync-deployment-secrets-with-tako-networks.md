@@ -45,7 +45,7 @@ There is no background client connection to maintain. Offline edits work locally
 
 ## Bring a new machine onto the network
 
-On an administrator's machine, a fresh setup starts with a named network and an enrolled server:
+On your machine, a fresh setup starts with a named network and an enrolled server:
 
 ```bash
 tako network create production
@@ -68,31 +68,31 @@ route = "shop.example.com"
 
 Use your own network ID and hostname, keeping the rest of your app configuration. The `servers` list selects placement; omitting it targets every trusted server in that network. It is not another server registry.
 
-An administrator can create an invitation for another administrator:
+A full client can invite another full client:
 
 ```bash
-tako network client add --network production --admin
+tako network client add laptop-b --network production
 ```
 
-For a deployment agent, grant a specific app and environment instead:
+For a deployment agent, create a deploy client for one app and environment instead:
 
 ```bash
-tako network client add --network production --deploy shop/production
+tako network client add shop-ci --network production --deploy shop/production
 ```
 
-That scoped client can access the app secrets for `shop/production`. It uses routes and server credential bindings an administrator has already provisioned, so arrange those before its first deployment. Administrators and trusted servers can decrypt the broader shared secret categories; deployment clients do not receive that authority automatically.
+A deploy client only releases code. It cannot read or change secrets: when it deploys, the servers apply the values full clients published. For CI, add `--identity` to get a single string to store as the `TAKO_CLIENT_IDENTITY` secret instead of an invitation.
 
 Transfer the invitation privately. On the new machine, clone your app repository, enter it, then run:
 
 ```bash
-tako network join --name laptop-b
+tako network join
 tako network sync production
 tako secrets list --json
 ```
 
 `join` prompts for the invitation; automation can use `--invitation-stdin`. The invitation is single-use and expires after an hour by default. Its issuing server must be reachable to redeem it. The new device generates its own keys: the string grants enrollment, rather than copying an existing client's identity. Secret listing shows metadata without printing values.
 
-An invitation recovers access to published state. It cannot recover edits somebody never published. Keep backups of server state and administrator keys, and review the [revocation rules](/docs/networks/#revoke-a-device) before removing an administrator: delegated clients depend on their inviter's authority. Revocation also cannot erase secrets a device already copied.
+An invitation recovers access to published state. It cannot recover edits somebody never published. Keep backups of server state and full clients' keys, and review the [revocation rules](/docs/networks/#revoke-a-device) before removing an administrator: delegated clients depend on their inviter's authority. Revocation also cannot erase secrets a device already copied.
 
 ## Publish secret edits deliberately
 
@@ -102,7 +102,7 @@ From the app directory, set a value using the masked prompt:
 tako secrets set DATABASE_URL --env production
 ```
 
-This writes encrypted, ignored `.tako/secrets.local.json` state in the current worktree. It makes no network request. Removing a secret is local too. For automation, pass values on stdin; avoid putting them into shell arguments or history.
+This writes encrypted, ignored `.tako/state.local.json` state in the current worktree. It makes no network request. Removing a secret is local too. For automation, pass values on stdin; avoid putting them into shell arguments or history.
 
 Publication happens when you choose it:
 

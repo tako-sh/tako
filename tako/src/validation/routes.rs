@@ -12,6 +12,8 @@
 //! - Examples valid: `"my-app.test"`, `"*.my-app.test"`, `"my-app.tako.test"`, `"local.example.com"`
 //! - Examples invalid: `"/api/*"` (path-only)
 
+use tako_core::routes::split_route;
+pub use tako_core::routes::{route_matches, routes_overlap};
 use thiserror::Error;
 
 /// Errors that can occur during route validation
@@ -72,14 +74,6 @@ pub fn validate_dev_route(route: &str, _app_name: &str) -> RouteResult<()> {
 /// Generates the default development route for an app
 pub fn default_dev_route(app_name: &str) -> String {
     format!("{}.{}", app_name, crate::dev::SHORT_DEV_DOMAIN)
-}
-
-/// Splits a route into hostname and optional path components
-fn split_route(route: &str) -> (&str, Option<&str>) {
-    match route.find('/') {
-        Some(idx) => (&route[..idx], Some(&route[idx..])),
-        None => (route, None),
-    }
 }
 
 /// Validates a hostname (with optional wildcard prefix)
@@ -143,84 +137,6 @@ fn validate_hostname(hostname: &str) -> RouteResult<()> {
     Ok(())
 }
 
-/// Checks if a hostname matches a route pattern
-///
-/// Supports:
-/// - Exact match: `api.example.com` matches `api.example.com`
-/// - Wildcard: `*.example.com` matches `api.example.com`, `www.example.com`
-/// - Path matching: `api.example.com/v1/*` matches `api.example.com/v1/users`
-pub fn route_matches(pattern: &str, hostname: &str, path: &str) -> bool {
-    let (pattern_host, pattern_path) = split_route(pattern);
-
-    // Check hostname match
-    if !hostname_matches(pattern_host, hostname) {
-        return false;
-    }
-
-    // Check path match if pattern has a path
-    if let Some(p_path) = pattern_path {
-        return path_matches(p_path, path);
-    }
-
-    true
-}
-
-/// Checks if a hostname matches a pattern (with wildcard support)
-fn hostname_matches(pattern: &str, hostname: &str) -> bool {
-    if let Some(suffix) = pattern.strip_prefix("*.") {
-        // Wildcard match - hostname must end with suffix and have at least one more label
-        if hostname == suffix {
-            return false; // *.example.com should not match example.com
-        }
-        hostname.ends_with(&format!(".{}", suffix))
-    } else {
-        // Exact match
-        pattern == hostname
-    }
-}
-
-/// Checks if a path matches a pattern (with wildcard support)
-fn path_matches(pattern: &str, path: &str) -> bool {
-    if let Some(prefix) = pattern.strip_suffix("/*") {
-        // Wildcard path match
-        path.starts_with(prefix)
-            && (path.len() == prefix.len() || path[prefix.len()..].starts_with('/'))
-    } else if let Some(prefix) = pattern.strip_suffix('*') {
-        // Prefix match
-        path.starts_with(prefix)
-    } else {
-        // Exact match
-        normalize_exact_path(pattern) == normalize_exact_path(path)
-    }
-}
-
-fn normalize_exact_path(path: &str) -> &str {
-    if path == "/" {
-        return "/";
-    }
-    let trimmed = path.trim_end_matches('/');
-    if trimmed.is_empty() { "/" } else { trimmed }
-}
-
-/// Returns true if two route patterns could both match the same request.
-///
-/// This is used for deploy-time conflict detection between apps.
-pub fn routes_overlap(_a: &str, _b: &str) -> bool {
-    let (a_host, a_path) = split_route(_a);
-    let (b_host, b_path) = split_route(_b);
-
-    if !host_patterns_overlap(a_host, b_host) {
-        return false;
-    }
-
-    match (a_path, b_path) {
-        (None, None) => true,
-        (None, Some(_)) => true,
-        (Some(_), None) => true,
-        (Some(a), Some(b)) => path_patterns_overlap(a, b),
-    }
-}
-
 /// Validate that a new app's routes don't conflict with existing deployed apps.
 ///
 /// `existing` is a list of (app_name, routes). Empty lists describe private groups;
@@ -248,60 +164,6 @@ pub fn validate_no_route_conflicts(
     }
 
     Ok(())
-}
-
-fn host_patterns_overlap(a: &str, b: &str) -> bool {
-    match (a.strip_prefix("*."), b.strip_prefix("*.")) {
-        (None, None) => a == b,
-        (Some(suffix), None) => host_matches_wildcard(suffix, b),
-        (None, Some(suffix)) => host_matches_wildcard(suffix, a),
-        (Some(a_suffix), Some(b_suffix)) => suffixes_overlap(a_suffix, b_suffix),
-    }
-}
-
-fn host_matches_wildcard(suffix: &str, host: &str) -> bool {
-    // *.example.com should match foo.example.com but NOT example.com
-    host != suffix && host.ends_with(&format!(".{}", suffix))
-}
-
-fn suffixes_overlap(a_suffix: &str, b_suffix: &str) -> bool {
-    a_suffix == b_suffix
-        || a_suffix.ends_with(&format!(".{}", b_suffix))
-        || b_suffix.ends_with(&format!(".{}", a_suffix))
-}
-
-fn path_patterns_overlap(a: &str, b: &str) -> bool {
-    // If either pattern is exact, representative testing is sufficient.
-    // For wildcard/prefix patterns, test a couple representative matches from both sides.
-    for candidate in representative_paths(a) {
-        if path_matches(b, &candidate) {
-            return true;
-        }
-    }
-    for candidate in representative_paths(b) {
-        if path_matches(a, &candidate) {
-            return true;
-        }
-    }
-    false
-}
-
-fn representative_paths(pattern: &str) -> Vec<String> {
-    if let Some(prefix) = pattern.strip_suffix("/*") {
-        let mut reps = Vec::new();
-        reps.push(prefix.to_string());
-        if prefix == "/" {
-            reps.push("/x".to_string());
-        } else {
-            reps.push(format!("{}/x", prefix));
-        }
-        reps
-    } else if pattern.ends_with('*') {
-        let prefix = &pattern[..pattern.len().saturating_sub(1)];
-        vec![prefix.to_string(), format!("{}x", prefix)]
-    } else {
-        vec![pattern.to_string()]
-    }
 }
 
 #[cfg(test)]

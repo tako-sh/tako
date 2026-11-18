@@ -553,8 +553,7 @@ async fn successful_deploy_resets_the_backoff() {
         path: path.to_string_lossy().into_owned(),
         routes: vec!["deployed.example.com".into()],
         source_ip: tako_core::SourceIpMode::Auto,
-        secrets: Some(HashMap::new()),
-        runtime_credentials: None,
+        secrets_digest: None,
         storages: Some(HashMap::new()),
         databases: None,
         ssl: tako_core::SslBinding::default(),
@@ -733,8 +732,6 @@ async fn operators_get_through_automatic_recovery_without_waiting_for_it() {
         try_lock_deploy_for_background(app_ref, lock_ref, BackgroundWork::AutomaticRecovery, now)
     };
     let priority = || app.deploy_lock_access.lock().operator_priority_until;
-    let update_secrets =
-        || state.update_secrets(&name, HashMap::from([("FIX".into(), "1".into())]));
     let release_dir = dir.path().join("apps/crash-loop/production/releases/v1");
     std::fs::create_dir_all(&release_dir).unwrap();
     std::fs::write(
@@ -777,7 +774,7 @@ async fn operators_get_through_automatic_recovery_without_waiting_for_it() {
         let _deploying = lock.lock().await;
         let started = std::time::Instant::now();
         assert!(
-            error(update_secrets().await)
+            error(run_release().await)
                 == format!(
                     "Deploy already in progress for app '{name}'. Please wait and try again."
                 ),
@@ -789,19 +786,18 @@ async fn operators_get_through_automatic_recovery_without_waiting_for_it() {
 
     // Recovery holds the lock briefly: the operator waits it out.
     let held = recovery(Instant::now()).unwrap();
-    let (response, ()) = tokio::join!(update_secrets(), async {
+    let (response, ()) = tokio::join!(run_release(), async {
         tokio::time::sleep(OPERATOR_DEPLOY_LOCK_WAIT / 4).await;
         drop(held);
     });
     assert!(response.is_ok(), "operator must outwait a short recovery");
-    assert_eq!(app.config.read().secrets["FIX"], "1");
     assert_eq!(priority(), None);
 
     // Recovery holds it longer (think: a Compose reconcile waiting for a
     // hanging container). Both operations fail after the short wait, saying
     // why, and recovery yields the lock to the retry from then on.
     let held = recovery(Instant::now()).unwrap();
-    for response in [update_secrets().await, run_release().await] {
+    for response in [run_release().await, run_release().await] {
         assert!(
             error(response) == recovering,
             "operator must report automatic recovery contention"
@@ -826,7 +822,7 @@ async fn operators_get_through_automatic_recovery_without_waiting_for_it() {
     // the window it opened expires on its own.
     let held = recovery(Instant::now()).unwrap();
     assert!(
-        tokio::time::timeout(OPERATOR_DEPLOY_LOCK_WAIT / 4, update_secrets())
+        tokio::time::timeout(OPERATOR_DEPLOY_LOCK_WAIT / 4, run_release())
             .await
             .is_err()
     );

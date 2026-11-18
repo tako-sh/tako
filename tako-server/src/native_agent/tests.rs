@@ -21,12 +21,7 @@ impl Fixture {
         let keys = LocalDeviceKeys::generate().unwrap();
         let admin_id = admin.device_id(&network_id, DeviceKind::Laptop).unwrap();
         let server_id = keys.device_id(&network_id, DeviceKind::Server).unwrap();
-        let mut rights = Permissions {
-            network_admin: true,
-            server_admin: true,
-            ..Default::default()
-        };
-        rights.ssh_user = Some("tako".parse().unwrap());
+        let rights = Permissions::Full;
         let root = Member {
             network_id: network_id.clone(),
             device_id: admin_id.clone(),
@@ -40,10 +35,11 @@ impl Fixture {
             kind: MemberKind::Laptop,
             permissions: rights.clone(),
             approved_by: None,
-            independent_admin: false,
+            independent_root: false,
             wg_verified: true,
             created_at: 1,
             expires_at: None,
+            client: Some("operator".parse().unwrap()),
         };
         let server = Member {
             network_id: network_id.clone(),
@@ -66,10 +62,11 @@ impl Fixture {
             }),
             permissions: rights,
             approved_by: None,
-            independent_admin: true,
+            independent_root: true,
             wg_verified: true,
             created_at: 1,
             expires_at: None,
+            client: None,
         };
         let network = NetworkDescriptor {
             name: "test".parse().unwrap(),
@@ -105,15 +102,22 @@ impl Fixture {
             admin,
         }
     }
+    /// Record a denial as another replica would, without `plan_revocation`'s
+    /// refusal to revoke oneself or the last full client.
     pub fn revoke(&self, snapshot: &mut RegistrySnapshot, target: &tako_network::DeviceId) {
-        let revocation = snapshot
-            .plan_revocation(
-                RevocationId::random().unwrap(),
-                &self.config.network.initial_admin,
-                target,
-                2,
-            )
+        let member = snapshot
+            .members
+            .iter()
+            .find(|member| &member.device_id == target)
             .unwrap();
+        let revocation = tako_network::Revocation::of(
+            RevocationId::random().unwrap(),
+            member,
+            self.config.network.initial_admin.clone(),
+            [self.config.server_id.clone()].into(),
+            2,
+        )
+        .unwrap();
         snapshot.revocations.push(revocation);
     }
 }
@@ -189,14 +193,40 @@ fn helper_projection_revokes_peers_and_ssh_on_self_revocation() {
 }
 
 #[test]
-fn cached_projection_does_not_map_other_ssh_users_to_tako() {
+fn deploy_clients_are_neither_peers_nor_shell_users() {
     let fixture = Fixture::new();
     let mut snapshot = fixture.config.bootstrap.clone();
-    snapshot.members[0].permissions.ssh_user = Some("app".parse().unwrap());
+    let network_id = snapshot.network.id.clone();
+    let ci = LocalDeviceKeys::generate().unwrap();
+    let request = ci
+        .enrollment_request(
+            Some(network_id.clone()),
+            DeviceKind::Laptop,
+            "ci".parse().unwrap(),
+        )
+        .unwrap();
+    snapshot.members.push(Member {
+        network_id: network_id.clone(),
+        device_id: request.device_id_for(&network_id).unwrap(),
+        request,
+        kind: MemberKind::Laptop,
+        permissions: Permissions::Deploy(["shop/production".parse().unwrap()].into()),
+        approved_by: Some(snapshot.network.initial_admin.clone()),
+        independent_root: false,
+        wg_verified: true,
+        created_at: 1,
+        expires_at: None,
+        client: Some("ci".parse().unwrap()),
+    });
     let bytes = projection::desired(&fixture.config, &fixture.keys, &snapshot, 2, false).unwrap();
     let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert!(value["peers"][0].get("ssh_user").is_none());
-    assert!(value["peers"][0].get("ssh_public_key").is_none());
+    let peers = value["peers"].as_array().unwrap();
+    assert_eq!(peers.len(), 1, "only the full laptop peers");
+    assert_eq!(
+        peers[0]["device_id"],
+        snapshot.network.initial_admin.to_string()
+    );
+    assert_eq!(peers[0]["ssh_user"], "tako");
     let bytes = projection::desired(&fixture.config, &fixture.keys, &snapshot, 2, true).unwrap();
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["peers"],
