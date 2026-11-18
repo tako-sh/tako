@@ -127,6 +127,15 @@ pub(super) async fn remove_server(
         if !output::is_interactive() {
             return Err(format!("Pass --yes to remove {server_name}.").into());
         }
+        // Another removal may have run since the inventory was read.
+        if let Some(target) = &server.native
+            && let Some(reason) = last_server_now(target)
+        {
+            return Err(format!(
+                "{server_name} {reason}. Removing it leaves nothing to deploy to and no server to recover client access from. Pass --yes to remove it anyway."
+            )
+            .into());
+        }
         let question = match removal {
             Removal::Reset => format!(
                 "Remove {} and delete its apps?",
@@ -161,6 +170,15 @@ pub(super) async fn remove_server(
                     })
                 },
             )
+        },
+        // Check again before deleting anything: a concurrent removal of another
+        // server can leave this one the last after all.
+        |target| {
+            if assume_yes {
+                None
+            } else {
+                last_server_now(target)
+            }
         },
         async |ssh| {
             let (loading, done) = match removal {
@@ -216,6 +234,35 @@ fn is_last_server(servers: &ServerInventory, server: &ServerEntry) -> bool {
     })
 }
 
+/// Why `target` is, or may be, its network's last server according to freshly
+/// refreshed membership, or `None` when another effective server remains.
+fn last_server_now(target: &crate::management_http::NativeTarget) -> Option<String> {
+    tokio::task::block_in_place(|| {
+        let remaining = crate::network::client::refresh(&target.network).and_then(|profile| {
+            let now = crate::network::now()?;
+            Ok(profile
+                .snapshot()
+                .effective_members(now)?
+                .values()
+                .any(|member| {
+                    matches!(member.kind, tako_network::MemberKind::Server(_))
+                        && member.device_id != target.server_id
+                }))
+        });
+        match remaining {
+            Ok(true) => None,
+            Ok(false) => Some(format!(
+                "is the last server in network {}",
+                target.network.name
+            )),
+            Err(error) => Some(format!(
+                "may be the last server in network {}: membership could not be refreshed ({error})",
+                target.network.name
+            )),
+        }
+    })
+}
+
 /// The app environments deployed on `server`, sorted.
 async fn server_apps(server: &ServerEntry) -> Result<Vec<String>, String> {
     let mut client = crate::management_http::ManagementClient::for_server(server)
@@ -228,12 +275,14 @@ async fn server_apps(server: &ServerEntry) -> Result<Vec<String>, String> {
     crate::commands::delete::parse_list_apps_response(response)
 }
 
-/// Keep SSH available until revocation is durably recorded, then clean up the server.
+/// Keep SSH available until revocation is durably recorded, then clean up the
+/// server, unless `keep_data` gives a reason to stop before deleting anything.
 async fn remove_remote_with<C>(
     server: &ServerEntry,
     removal: Removal,
     connect: impl std::future::Future<Output = Result<C, Box<dyn std::error::Error>>>,
     revoke: impl FnOnce(&crate::management_http::NativeTarget) -> Result<(), Box<dyn std::error::Error>>,
+    keep_data: impl FnOnce(&crate::management_http::NativeTarget) -> Option<String>,
     remove: impl AsyncFnOnce(C) -> Result<(), Box<dyn std::error::Error>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let connection = connect.await?;
@@ -243,6 +292,14 @@ async fn remove_remote_with<C>(
                 "Removal incomplete: could not confirm network revocation; nothing on the server was deleted. {error}"
             )
         })?;
+        if let Some(reason) = keep_data(target) {
+            return Err(format!(
+                "Removal stopped: {} is revoked, but its apps and data were kept because it {reason}. To delete them, run `sudo /usr/local/bin/tako-server-service {}` on the server over SSH.",
+                target.server_name,
+                removal.helper_action()
+            )
+            .into());
+        }
     }
     remove(connection).await.map_err(|error| {
         if server.native.is_some() {

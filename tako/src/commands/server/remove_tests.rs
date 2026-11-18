@@ -55,6 +55,7 @@ async fn native_removal_requires_publication_with_ssh_still_connected() {
                     Err("authority unreachable or response lost".into())
                 }
             },
+            |_| None,
             async |_connection| {
                 assert!(connected.get(), "cleanup must reuse the live SSH session");
                 events.borrow_mut().push("remove");
@@ -89,6 +90,7 @@ async fn unavailable_ssh_does_not_revoke_or_delete_the_server() {
         Removal::Reset,
         async { Err::<(), _>("SSH unavailable".into()) },
         |_| panic!("must establish SSH before revoking"),
+        |_| panic!("must not check before revoking"),
         async |()| panic!("must not remove the server"),
     )
     .await
@@ -107,6 +109,7 @@ async fn remote_cleanup_failure_reports_revoked_membership_and_how_to_finish() {
             revoked.set(true);
             Ok(())
         },
+        |_| None,
         async |()| {
             assert!(revoked.get());
             Err("remote helper failed".into())
@@ -125,12 +128,47 @@ async fn remote_cleanup_failure_reports_revoked_membership_and_how_to_finish() {
 }
 
 #[tokio::test]
+async fn becoming_the_last_server_after_revocation_keeps_its_data() {
+    // Another operator removed the other server meanwhile: stop before wiping.
+    let revoked = Cell::new(false);
+    let error = remove_remote_with(
+        &native_server(),
+        Removal::Reset,
+        async { Ok(()) },
+        |_| {
+            revoked.set(true);
+            Ok(())
+        },
+        |target| {
+            assert!(revoked.get(), "check after revocation");
+            Some(format!(
+                "is the last server in network {}",
+                target.network.name
+            ))
+        },
+        async |()| panic!("must not delete the last server's data without --yes"),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("Removal stopped"), "{error}");
+    assert!(error.contains("node is revoked"), "{error}");
+    assert!(error.contains("apps and data were kept"), "{error}");
+    assert!(error.contains("last server in network fleet"), "{error}");
+    assert!(
+        error.contains("sudo /usr/local/bin/tako-server-service reset"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
 async fn legacy_removal_does_not_require_network_revocation() {
     let removed = Cell::new(false);
     remove_remote_with(
         &ServerEntry::default(),
         Removal::Uninstall,
         async { Ok(()) },
+        |_| panic!("legacy servers have no native membership"),
         |_| panic!("legacy servers have no native membership"),
         async |()| {
             removed.set(true);

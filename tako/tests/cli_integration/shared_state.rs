@@ -606,6 +606,51 @@ fn deploy_and_secret_commands_materialize_the_selected_config() {
 }
 
 #[test]
+fn project_code_run_with_an_identity_finds_no_identity_keys() {
+    let server = ApiServer::new();
+    let owner = server.project("owner-checkout");
+    let created = server.ok(
+        &server.owner_home,
+        &owner,
+        &[
+            "network",
+            "client",
+            "add",
+            "github-ci",
+            "--network",
+            "fleet",
+            "--identity",
+        ],
+        None,
+    );
+    let identity = created["identity"].as_str().unwrap().to_owned();
+
+    let ci_home = server.directory.path().join("ci-home");
+    let ci_project = server.project("ci-checkout");
+    let temporary = server.directory.path().join("ci-tmp");
+    std::fs::create_dir_all(&temporary).unwrap();
+    // The child sees neither the identity nor a key file written from it.
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tako"));
+    command
+        .env("TAKO_HOME", &ci_home)
+        .env("TAKO_TELEMETRY", "0")
+        .env("TAKO_CLIENT_IDENTITY", &identity)
+        .env("TMPDIR", &temporary)
+        .env_remove("RUST_LOG")
+        .current_dir(&ci_project)
+        .args(["--ci", "run", "--", "sh", "-c"])
+        .arg(
+            "test -z \"${TAKO_CLIENT_IDENTITY-}\" || exit 3; \
+             find \"$TMPDIR\" \"$TAKO_HOME\" -path '*tako-identity-*' -o -path '*network-keys*' \
+             | grep -q . && exit 4; exit 0",
+        )
+        .stdin(Stdio::null());
+    apply_coverage_env(&mut command);
+    let result = command.output().unwrap();
+    assert_eq!(result.status.code(), Some(0), "{}", stderr_str(&result));
+}
+
+#[test]
 fn client_identities_work_from_the_environment_or_join_without_touching_the_home() {
     let server = ApiServer::new();
     let owner = server.project("owner-checkout");

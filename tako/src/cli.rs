@@ -343,6 +343,27 @@ pub enum Commands {
     },
 }
 
+/// Whether `command` talks to a Tako network, and so may act as the client in
+/// `TAKO_CLIENT_IDENTITY`. The others never activate an identity: several run
+/// project code (`run`, `dev`, `generate`, `init`), which must not find its keys
+/// on disk. `mcp` runs each tool as a child `tako` process that decides for
+/// itself.
+fn uses_network_identity(command: &Commands) -> bool {
+    !matches!(
+        command,
+        Commands::Version
+            | Commands::Init
+            | Commands::Agents { .. }
+            | Commands::Mcp
+            | Commands::Dev { .. }
+            | Commands::Run { .. }
+            | Commands::Generate { .. }
+            | Commands::Upgrade
+            | Commands::Completions { .. }
+            | Commands::Uninstall { .. }
+    )
+}
+
 fn telemetry_command(command: &Commands) -> &'static str {
     match command {
         Commands::Init => "init",
@@ -471,7 +492,13 @@ impl Cli {
         crate::telemetry::maybe_send(telemetry_command(&command), self.ci, &display_version());
         // With TAKO_CLIENT_IDENTITY, network commands act as that client for
         // this process only; its keys stay in a private temporary directory.
-        let _identity = crate::network::identity::activate_from_env()?;
+        // Commands that need no network, several of which run project code,
+        // never write the keys at all.
+        let _identity = if uses_network_identity(&command) {
+            crate::network::identity::activate_from_env()?
+        } else {
+            None
+        };
 
         match command {
             Commands::Version => print_version(json),

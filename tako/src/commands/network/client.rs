@@ -124,15 +124,17 @@ fn client_rows(snapshot: &tako_network::RegistrySnapshot, now: u64) -> Result<Ve
     Ok(rows)
 }
 
-/// The names of active clients that `device` invited. They keep their access
-/// when `device` is revoked.
+/// The clients that `device` invited and that still hold a key. They keep their
+/// access when `device` is revoked. A key in conflict with another of the same
+/// name is listed too, marked as such: it becomes active if that key is revoked.
 fn invited_by<'a>(rows: &[ClientRow<'a>], device: &tako_network::DeviceId) -> Vec<String> {
     rows.iter()
-        .filter(|row| {
-            row.status == tako_network::MemberStatus::Active
-                && row.member.approved_by.as_ref() == Some(device)
+        .filter(|row| row.member.approved_by.as_ref() == Some(device))
+        .filter_map(|row| match row.status {
+            tako_network::MemberStatus::Active => Some(row.name.clone()),
+            tako_network::MemberStatus::Conflict => Some(format!("{} (conflicting key)", row.name)),
+            _ => None,
         })
-        .map(|row| row.name.clone())
         .collect()
 }
 
@@ -819,6 +821,60 @@ mod tests {
             .collect();
         assert_eq!(held, [("ci", Active), ("CI", Conflict)]);
         assert!(held_keys(&rows, "nobody").is_empty());
+    }
+
+    #[test]
+    fn revoke_notices_and_subtrees_include_conflicting_invitees() {
+        use tako_network::MemberStatus::*;
+        let fixture = crate::network::tests::fixture();
+        let network = fixture.profile.snapshot().network.id.clone();
+        let template = fixture.profile.snapshot().members[0].clone();
+        let device = |name: &str| {
+            tako_network::LocalDeviceKeys::generate()
+                .unwrap()
+                .enrollment_request(
+                    Some(network.clone()),
+                    tako_network::DeviceKind::Laptop,
+                    name.parse().unwrap(),
+                )
+                .unwrap()
+                .device_id_for(&network)
+                .unwrap()
+        };
+        let owner = device("owner");
+        let members: Vec<_> = [None, Some(&owner), Some(&owner), Some(&owner)]
+            .into_iter()
+            .enumerate()
+            .map(|(index, by)| {
+                let mut member = template.clone();
+                member.device_id = if index == 0 {
+                    owner.clone()
+                } else {
+                    device(&format!("invitee{index}"))
+                };
+                member.approved_by = by.cloned();
+                member
+            })
+            .collect();
+        let rows: Vec<_> = members
+            .iter()
+            .zip([Active, Active, Conflict, Revoked])
+            .zip(["owner", "ci", "ci", "old"])
+            .map(|((member, status), name)| ClientRow {
+                name: name.into(),
+                member,
+                status,
+                invited_by: "-".into(),
+            })
+            .collect();
+        // The conflicting key keeps its approval and would become active, so
+        // the notice names it; the revoked key holds nothing and is left out.
+        assert_eq!(invited_by(&rows, &owner), ["ci", "ci (conflicting key)"]);
+        let subtree: Vec<_> = invited_subtree(&rows, &owner)
+            .into_iter()
+            .map(|row| (row.name.as_str(), row.status))
+            .collect();
+        assert_eq!(subtree, [("ci", Active), ("ci", Conflict)]);
     }
 
     #[test]

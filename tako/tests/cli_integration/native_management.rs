@@ -240,7 +240,7 @@ fn same_named_networks_keep_distinct_servers_and_lifecycle_selectors() {
             "--dry-run",
             "network",
             "server",
-            "uninstall",
+            "remove",
             "fleet/edge",
             "--yes",
         ],

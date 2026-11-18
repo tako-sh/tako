@@ -128,13 +128,19 @@ pub(crate) unsafe fn take_from_env() {
     let _ = TAKEN.set(value);
 }
 
+/// `TAKO_CLIENT_IDENTITY` as this process received it, for passing on to a child
+/// `tako` process only, never to project code.
+pub(crate) fn from_env() -> Option<std::ffi::OsString> {
+    match TAKEN.get() {
+        Some(taken) => taken.clone(),
+        None => std::env::var_os(ENV),
+    }
+}
+
 /// Use `TAKO_CLIENT_IDENTITY` for this process when it is set. The keys stay
 /// in a private temporary directory and never reach the Tako home.
 pub(crate) fn activate_from_env() -> Result<Option<TemporaryState>> {
-    let value = match TAKEN.get() {
-        Some(taken) => taken.clone(),
-        None => std::env::var_os(ENV),
-    };
+    let value = from_env();
     let Some(value) = value else {
         return Ok(None);
     };
