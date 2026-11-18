@@ -144,7 +144,10 @@ rules for scoped deploys (`native_management_policy.rs:159`, `:169`, `:172`–`:
 Secret parts of bindings still come only from the server's view of the shared
 store. One guard applies to every client: a server rejects a route that another
 app or environment already claims, so a staging deploy client cannot take over
-production's domain.
+production's domain. Deploy clients get a stricter one on deploy and rollback: a
+new route may not overlap another app environment's route, since routing picks
+the most specific match. Overlap logic lives in `tako-core::routes`, shared with
+the CLI's preflight.
 
 On the CLI, a deploy client's `tako deploy` must not call `sync_environment`,
 `load_secrets_for_environment`, `load_secret_key`, `ensure_secret_key_available`
@@ -383,7 +386,7 @@ Answered:
 2. **Rollback for deploy clients:** allowed; rollback counts as a deploy.
 3. **First deploy and route changes by a deploy client:** allowed, so CI alone can
    run an app. Servers reject a route another app or environment already claims,
-   for every client.
+   for every client, and a new route from a deploy client that overlaps one.
 4. **Re-parenting after revocation:** not needed; revocation no longer cascades.
 5. **`network request`, `approve` and `import`:** removed once identities exist.
 

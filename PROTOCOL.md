@@ -24,8 +24,10 @@ only release to their scopes: `prepare_release`, `prepare_release_upload`,
 `rollback`. Every other management command and log reads need full access. A
 deploy client may make an environment's first deploy and change its routes, SSL
 provider and plain storage and backup bindings; changing database bindings needs
-full access. Servers reject a deploy route that another app environment already
-claims, for every client. Servers neither peer with deploy clients nor authorize
+full access. Servers reject a deploy or rollback route that another app environment
+already claims, for every client. From a deploy client they also reject a new
+route that overlaps another app environment's route (it could take some of its
+requests); routes the environment already holds may stay. Servers neither peer with deploy clients nor authorize
 a shell for them. Every laptop member carries its client name; a laptop
 without one is invalid. Rows from earlier versions are not read.
 Revocation applies only to the revoked device: an approval stays valid when its

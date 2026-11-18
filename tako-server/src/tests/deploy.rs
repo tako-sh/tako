@@ -884,3 +884,95 @@ async fn list_releases_reports_the_sdk_recorded_in_each_manifest() {
     );
     assert_eq!(sdk_of("without-sdk"), None);
 }
+
+#[tokio::test]
+async fn deploy_clients_cannot_add_a_route_overlapping_another_app_environment() {
+    use crate::operations::Caller;
+    let temp = TempDir::new().unwrap();
+    let state = ServerState::new(
+        temp.path().into(),
+        Arc::new(CertManager::new(CertManagerConfig {
+            cert_dir: temp.path().join("certs"),
+            ..Default::default()
+        })),
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let app_id = "shop/staging";
+    let release = crate::release::app_release_root(temp.path(), app_id, "v1");
+    std::fs::create_dir_all(&release).unwrap();
+    write_release_manifest(&release, "node", "index.js", &["true"], None, 300);
+    let config = AppConfig {
+        name: "shop".into(),
+        environment: "staging".into(),
+        version: "v1".into(),
+        path: release.clone(),
+        ..Default::default()
+    };
+    // Release v1 once served shop.example.com; production now owns *.example.com.
+    state
+        .state_store
+        .upsert_app(&config, &["shop.example.com".to_string()])
+        .unwrap();
+    state.app_manager.register_app(config);
+    {
+        let mut routes = state.routes.write();
+        routes.set_app_routes("shop/production".into(), vec!["*.example.com".into()]);
+        routes.set_app_routes(app_id.into(), vec!["staging.example.com".into()]);
+    }
+    let deploy = |route: &str| {
+        serde_json::from_value::<Command>(serde_json::json!({
+            "command": "deploy", "app": app_id, "version": "v2",
+            "path": temp.path().join("missing").to_string_lossy(),
+            "routes": [route],
+        }))
+        .unwrap()
+    };
+    let message = |response: Response| match response {
+        Response::Error { message, .. } => message,
+        Response::Ok { .. } => String::new(),
+    };
+
+    let refused = message(
+        state
+            .handle_command_as(deploy("shop.example.com"), Caller::Deploy)
+            .await,
+    );
+    assert!(
+        refused.contains("overlaps route '*.example.com' of shop/production"),
+        "{refused}"
+    );
+    let refused = message(state.rollback_app_as(app_id, "v1", Caller::Deploy).await);
+    assert!(
+        refused.contains("overlaps route '*.example.com'"),
+        "{refused}"
+    );
+    // A route the environment already holds may stay.
+    let kept = message(
+        state
+            .handle_command_as(deploy("staging.example.com"), Caller::Deploy)
+            .await,
+    );
+    assert!(!kept.contains("overlaps"), "{kept}");
+    // Full clients may split a domain; identical routes stay refused for everyone.
+    let full = message(
+        state
+            .handle_command_as(deploy("shop.example.com"), Caller::Full)
+            .await,
+    );
+    assert!(
+        !full.contains("overlaps") && !full.contains("belongs to"),
+        "{full}"
+    );
+    let full = message(state.rollback_app_as(app_id, "v1", Caller::Full).await);
+    assert!(!full.contains("overlaps"), "{full}");
+    for caller in [Caller::Full, Caller::Deploy] {
+        let taken = message(
+            state
+                .handle_command_as(deploy("*.example.com"), caller)
+                .await,
+        );
+        assert!(taken.contains("belongs to shop/production"), "{taken}");
+    }
+}

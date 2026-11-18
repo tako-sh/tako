@@ -54,6 +54,31 @@ impl RouteTable {
         })
     }
 
+    /// The first of `routes` that this app environment doesn't hold yet and
+    /// that could take a request from a route another app environment owns,
+    /// with that route and its app environment.
+    pub fn overlapping_elsewhere<'a, 'b>(
+        &'b self,
+        app: &str,
+        routes: &'a [String],
+    ) -> Option<(&'a str, &'b str, &'b str)> {
+        let held = self.app_routes.get(app);
+        routes
+            .iter()
+            .filter(|route| !held.is_some_and(|held| held.iter().any(|own| same_route(own, route))))
+            .find_map(|route| {
+                self.app_routes
+                    .iter()
+                    .filter(|(owner, _)| owner.as_str() != app)
+                    .find_map(|(owner, claimed)| {
+                        claimed
+                            .iter()
+                            .find(|other| tako_core::routes::routes_overlap(other, route))
+                            .map(|other| (route.as_str(), other.as_str(), owner.as_str()))
+                    })
+            })
+    }
+
     pub fn set_app_routes(&mut self, app: String, routes: Vec<String>) {
         self.set_app_routes_with_source_ip(app, routes, tako_core::SourceIpMode::Auto);
     }

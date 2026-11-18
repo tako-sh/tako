@@ -43,6 +43,11 @@ pub(crate) fn command_is_read_only(command: &Command) -> bool {
 impl crate::ServerState {
     /// Handle a command from the management socket
     pub async fn handle_command(&self, cmd: Command) -> Response {
+        self.handle_command_as(cmd, super::Caller::Full).await
+    }
+
+    /// Handle a command sent by `caller`.
+    pub(crate) async fn handle_command_as(&self, cmd: Command, caller: super::Caller) -> Response {
         if self.is_draining() && super::drain::blocked_while_draining(&cmd) {
             return Response::error(
                 "Server is drained; resume it before starting new application work.",
@@ -125,7 +130,7 @@ impl crate::ServerState {
                 if let Some(resp) = self.reject_mutating_when_upgrading("prepare-deploy").await {
                     return resp;
                 }
-                if let Err(error) = self.refuse_claimed_routes(&app, &routes) {
+                if let Err(error) = self.refuse_claimed_routes(&app, &routes, caller) {
                     return Response::error(error);
                 }
                 ssl.cloudflare_api_token = None;
@@ -225,7 +230,7 @@ impl crate::ServerState {
                 if let Some(resp) = self.reject_mutating_when_upgrading("deploy").await {
                     return resp;
                 }
-                if let Err(error) = self.refuse_claimed_routes(&app, &routes) {
+                if let Err(error) = self.refuse_claimed_routes(&app, &routes, caller) {
                     return Response::error(error);
                 }
                 // Clients never send secret values. Fill them from the pinned
@@ -440,7 +445,7 @@ impl crate::ServerState {
                 if let Some(resp) = self.reject_mutating_when_upgrading("rollback").await {
                     return resp;
                 }
-                self.rollback_app(&app, &version).await
+                self.rollback_app_as(&app, &version, caller).await
             }
             Command::SecretsDigest { app, published } => {
                 if let Err(msg) = validate_app_name(&app) {
@@ -591,13 +596,28 @@ fn strip_secret_parts(
 impl crate::ServerState {
     /// A route belongs to one app environment, so a staging deploy cannot
     /// take over production's domain.
-    pub(super) fn refuse_claimed_routes(&self, app: &str, routes: &[String]) -> Result<(), String> {
-        match self.routes.read().claimed_elsewhere(app, routes) {
-            Some((route, owner)) => Err(format!(
+    pub(super) fn refuse_claimed_routes(
+        &self,
+        app: &str,
+        routes: &[String],
+        caller: super::Caller,
+    ) -> Result<(), String> {
+        let table = self.routes.read();
+        if let Some((route, owner)) = table.claimed_elsewhere(app, routes) {
+            return Err(format!(
                 "Route '{route}' belongs to {owner}. Remove it from {owner} before deploying it here."
-            )),
-            None => Ok(()),
+            ));
         }
+        // Routing prefers the most specific route, so an overlapping route
+        // could take some of another app environment's requests.
+        if caller == super::Caller::Deploy
+            && let Some((route, other, owner)) = table.overlapping_elsewhere(app, routes)
+        {
+            return Err(format!(
+                "Route '{route}' overlaps route '{other}' of {owner}. A deploy client can't add a route that shares requests with another app environment; deploy it with a full client."
+            ));
+        }
+        Ok(())
     }
 
     /// App secrets of the pinned snapshot, or none without a pin.

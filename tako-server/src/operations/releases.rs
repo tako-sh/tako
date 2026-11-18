@@ -348,6 +348,16 @@ impl crate::ServerState {
     }
 
     pub(crate) async fn rollback_app(&self, app_name: &str, version: &str) -> Response {
+        self.rollback_app_as(app_name, version, super::Caller::Full)
+            .await
+    }
+
+    pub(crate) async fn rollback_app_as(
+        &self,
+        app_name: &str,
+        version: &str,
+        caller: super::Caller,
+    ) -> Response {
         let environment = match self.app_manager.get_app(app_name) {
             Some(app) => app.config.read().environment.clone(),
             None => return Response::error(format!("App not found: {}", app_name)),
@@ -389,7 +399,7 @@ impl crate::ServerState {
             ));
         }
         // An older release may name a route another app environment owns now.
-        if let Err(error) = self.refuse_claimed_routes(app_name, &routes) {
+        if let Err(error) = self.refuse_claimed_routes(app_name, &routes, caller) {
             return Response::error(error);
         }
         let ssl = match self.state_store.get_ssl(app_name) {

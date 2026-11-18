@@ -715,3 +715,30 @@ fn a_route_belongs_to_one_app_environment() {
         None
     );
 }
+
+#[test]
+fn an_overlapping_route_of_another_app_environment_is_found() {
+    let mut table = RouteTable::default();
+    table.set_app_routes("shop/production".into(), vec!["*.example.com".into()]);
+    table.set_app_routes("api/production".into(), vec!["api.example.org".into()]);
+    table.set_app_routes("shop/staging".into(), vec!["staging.example.com".into()]);
+    // A more specific route under another environment's wildcard.
+    assert_eq!(
+        table.overlapping_elsewhere("shop/staging", &["shop.EXAMPLE.com".to_string()]),
+        Some(("shop.EXAMPLE.com", "*.example.com", "shop/production"))
+    );
+    // A path under another environment's whole host.
+    assert_eq!(
+        table.overlapping_elsewhere("shop/staging", &["api.example.org/v2/*".to_string()]),
+        Some(("api.example.org/v2/*", "api.example.org", "api/production"))
+    );
+    // Routes this environment already holds stay, even when they overlap.
+    assert_eq!(
+        table.overlapping_elsewhere("shop/staging", &["staging.example.com".to_string()]),
+        None
+    );
+    assert_eq!(
+        table.overlapping_elsewhere("shop/staging", &["shop.example.net".to_string()]),
+        None
+    );
+}

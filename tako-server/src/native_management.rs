@@ -218,7 +218,12 @@ where
                 {
                     return error(StatusCode::FORBIDDEN, &message);
                 }
-                rpc_response(state.handle_command(command).await)
+                let caller = if permissions.is_full() {
+                    crate::operations::Caller::Full
+                } else {
+                    crate::operations::Caller::Deploy
+                };
+                rpc_response(state.handle_command_as(command, caller).await)
             })
             .await
             {
