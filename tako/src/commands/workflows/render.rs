@@ -331,12 +331,12 @@ pub(super) fn show_lines(
                 .unwrap_or_else(|| "with no timeout".to_string());
             // Waits on another run's outcome park on the reserved `__run:<id>` event.
             let target = match wait.event_name.strip_prefix("__run:") {
-                Some(run) => format!("run {run}"),
-                None => wait.event_name.clone(),
+                Some(run) => format!("run {}", printable(run)),
+                None => printable(&wait.event_name),
             };
             lines.push(Line::Text(format!(
                 "{} waits for {target} {until}",
-                wait.step_name
+                printable(&wait.step_name)
             )));
         }
     }
@@ -351,23 +351,42 @@ pub(super) fn show_lines(
                 run.signals_total
             )));
         }
-        let name_width = run
+        // Senders choose these names; never let one drive the terminal.
+        let names: Vec<String> = run
             .signals
             .iter()
-            .map(|signal| signal.event_name.width())
+            .map(|signal| printable(&signal.event_name))
+            .collect();
+        let name_width = names
+            .iter()
+            .map(|name| name.width())
             .max()
             .unwrap_or_default();
-        for signal in &run.signals {
+        for (signal, name) in run.signals.iter().zip(&names) {
             lines.push(Line::Text(format!(
                 "{}{}  {}  {} bytes",
-                signal.event_name,
-                " ".repeat(name_width.saturating_sub(signal.event_name.width())),
+                name,
+                " ".repeat(name_width.saturating_sub(name.width())),
                 clock.absolute(signal.received_at_ms),
                 signal.bytes
             )));
         }
     }
     lines
+}
+
+/// `text` with control characters (ANSI escapes, newlines) shown as escapes,
+/// so stored names cannot move the cursor or forge lines.
+fn printable(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_control() {
+                c.escape_default().collect()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
 }
 
 fn capped_lines(value: &CappedJson) -> Vec<Line> {
@@ -726,7 +745,7 @@ mod tests {
                 bytes: 17,
             },
             WorkflowRunSignal {
-                event_name: "delivered".into(),
+                event_name: "delivered\u{1b}[2J".into(),
                 received_at_ms: NOW_MS - MINUTE,
                 bytes: 4,
             },
@@ -755,8 +774,8 @@ mod tests {
                 "invoice:outcome waits for run child:42 with no timeout",
                 "# Buffered signals",
                 "~ 1 newer signal(s) omitted; showing the 2 oldest of 3.",
-                "shipped    2026-11-12 11:58:00  17 bytes",
-                "delivered  2026-11-12 11:59:00  4 bytes",
+                "shipped             2026-11-12 11:58:00  17 bytes",
+                "delivered\\u{1b}[2J  2026-11-12 11:59:00  4 bytes",
             ]
         );
     }

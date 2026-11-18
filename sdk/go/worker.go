@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -120,6 +121,13 @@ func (s *StepAPI) ownershipLost() bool {
 func (s *StepAPI) once(name string, step func() error) error {
 	if s.ownershipLost() {
 		return errOwnershipLost
+	}
+	// Tako saves its own checkpoints (__sleep:, __wait:) in the same
+	// namespace; a step of the same name would read one back.
+	if strings.HasPrefix(name, "__") {
+		return &failSignal{err: fmt.Errorf(
+			"step name %q starts with \"__\", which is reserved for Tako; rename the step (for example %q)",
+			name, strings.TrimLeft(name, "_"))}
 	}
 	s.mu.Lock()
 	if _, reused := s.used[name]; reused {

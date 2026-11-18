@@ -29,9 +29,11 @@ export default async function fetch(request: Request): Promise<Response> {
     const { id } = (await request.json()) as { id: string };
     try {
       const result = await approval.result(id, { timeout: "1s" });
-      return Response.json({ status: "succeeded", result });
+      return Response.json({ ok: true, status: "succeeded", result });
     } catch (error) {
-      if (error instanceof WorkflowResultError) return Response.json({ status: error.status });
+      if (error instanceof WorkflowResultError) {
+        return Response.json({ ok: true, status: error.status });
+      }
       throw error;
     }
   }

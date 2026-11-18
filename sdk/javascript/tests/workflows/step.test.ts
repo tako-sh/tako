@@ -186,3 +186,16 @@ test("a wait that parks the run does not consume its name for the next execution
   fixture.state["approval"] = { approved: true };
   expect(await fixture.execution().waitFor("approval")).toEqual({ approved: true });
 });
+
+test("step names starting with __ are reserved for Tako and fail the run", async () => {
+  const fixture = checkpointFixture({ "__wait:approval": { timeoutAt: 1 } }, 0);
+  let ran = false;
+  const message = await reuseError(
+    fixture.api.run("__wait:approval", () => {
+      ran = true;
+      return "side effect";
+    }),
+  );
+  expect(message).toContain('starts with "__", which is reserved for Tako');
+  expect(ran).toBe(false);
+});

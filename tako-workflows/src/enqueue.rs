@@ -756,9 +756,12 @@ fn validate_run_id(id: &str) -> Result<(), RunsDbError> {
 /// Rules for event names a signal addresses to one run. Broadcast signals
 /// keep accepting any name a wait could use, except the reserved prefix.
 fn validate_event_name(name: &str) -> Result<(), RunsDbError> {
-    if name.is_empty() || name.len() > WORKFLOW_EVENT_NAME_MAX_BYTES || name.contains('\0') {
+    if name.is_empty()
+        || name.len() > WORKFLOW_EVENT_NAME_MAX_BYTES
+        || name.chars().any(char::is_control)
+    {
         return Err(RunsDbError::InvalidEventName(
-            "event names must contain 1–255 bytes and no NUL characters",
+            "event names must contain 1–255 bytes and no control characters",
         ));
     }
     if name.starts_with(RESERVED_EVENT_PREFIX) {

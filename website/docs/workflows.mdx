@@ -228,7 +228,7 @@ See [Network Primitives](/network-primitives/#workflow-results) for typed exampl
 
 `ctx.run(name, fn)` saves the function's result. When the workflow is claimed again, a completed step with the same name returns its saved result instead of calling `fn` again. Keep step names stable for the lifetime of a workflow run, and keep returned values JSON serializable.
 
-Step names must also be unique within a run. `ctx.run`, `ctx.sleep`, and `ctx.waitFor` (Go: `ctx.Step.Run`, `Sleep`, and `WaitFor`) share one namespace of saved steps, so give repeated work an index or ID in its name:
+Step names must also be unique within a run, and must not start with `__`, which is reserved for Tako's own checkpoints; a reserved name fails the run as `dead` without running the step. `ctx.run`, `ctx.sleep`, and `ctx.waitFor` (Go: `ctx.Step.Run`, `Sleep`, and `WaitFor`) share one namespace of saved steps, so give repeated work an index or ID in its name:
 
 <CodeGroup>
 
@@ -423,7 +423,7 @@ The result says what happened to the payload:
 | `finished`  | The run has finished. Nothing is stored.                                                         |
 | `missing`   | No retained run has that ID. Nothing is stored.                                                  |
 
-Each run can hold 1,000 unconsumed signals and 8 MiB of their payloads. A signal past either limit is rejected rather than dropped: JavaScript throws a `TakoError` with `reason: "signal_inbox_full"`, and Go returns an error matching `workflow.ErrSignalInboxFull`. Run-addressed event names are 1–255 bytes. Names starting with `__` are reserved for Tako in both forms of `signal`.
+Each run can hold 1,000 unconsumed signals and 8 MiB of their payloads. A signal past either limit is rejected rather than dropped: JavaScript throws a `TakoError` with `reason: "signal_inbox_full"`, and Go returns an error matching `workflow.ErrSignalInboxFull`. Run-addressed event names are 1–255 bytes without control characters. Names starting with `__` are reserved for Tako in both forms of `signal`.
 
 A step name holds one value, so a run receives each event name once. To wait for one of several outcomes, send one event with a payload that says which, such as `{ decision: "approved" }`, rather than racing waits with `Promise.race`, which the workflow cannot resume from. `tako workflows show <run-id>` lists a run's buffered signals.
 

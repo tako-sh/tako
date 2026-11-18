@@ -220,6 +220,16 @@ export function createStepAPI(
   // the run immediately. A step that throws releases its name: nothing was
   // saved, and the handler may catch the error and try the same step again.
   async function once<T>(name: string, step: () => Promise<T>): Promise<T> {
+    // Tako saves its own checkpoints (`__sleep:`, `__wait:`, `__workflow:`)
+    // in the same namespace; a step of the same name would read one back.
+    if (name.startsWith("__")) {
+      throw new FailSignal(
+        new Error(
+          `Step name ${JSON.stringify(name)} starts with "__", which is reserved for Tako. ` +
+            `Rename the step, for example ${JSON.stringify(name.replace(/^_+/, ""))}.`,
+        ),
+      );
+    }
     if (used.has(name)) {
       throw new FailSignal(
         new Error(

@@ -160,13 +160,15 @@ With `run_id`, a signal goes to that run only and the reply is `{status}`:
 | ----------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `delivered` | The run was parked on `event_name`; the payload became its step result and the run is due now.                           |
 | `buffered`  | The run is not parked on `event_name`; the payload is stored in the run's inbox.                                         |
-| `duplicate` | The run already holds a value for `event_name`, buffered or as a saved step. The first value wins; this one is not kept. |
+| `duplicate` | The run already holds a value for `event_name`: a buffered signal, or a saved step named `event_name` (SDK waits use the event name as their step name). The first value wins; this one is not kept. |
 | `finished`  | The run has finished. Nothing is stored.                                                                                 |
 | `missing`   | No retained run has this ID. Nothing is stored.                                                                          |
 
-Run-addressed event names are 1–255 bytes without NUL. `WaitForEvent` consumes a buffered payload for its `event_name` in the same transaction that would park the run: the payload becomes the step result, the inbox entry is removed, the run is due now, and the reply is `{delivered: true}`. The worker loses its claim either way. The run's row lock (Postgres) or the write lock (SQLite) orders a signal with the wait, so a run-addressed signal is either delivered to a parked run or consumed by its next wait; it cannot fall between the two. Signals reach the inbox only after their transaction commits.
+Run-addressed event names are 1–255 bytes without control characters. `WaitForEvent` consumes a buffered payload for its `event_name` in the same transaction that would park the run: the payload becomes the step result, the inbox entry is removed, the run is due now, and the reply is `{delivered: true}`. The worker loses its claim either way. The run's row lock (Postgres) or the write lock (SQLite) orders a signal with the wait, so a run-addressed signal is either delivered to a parked run or consumed by its next wait; it cannot fall between the two. Signals reach the inbox only after their transaction commits.
 
 An inbox holds at most 1,000 entries and 8 MiB of payload JSON per run. A signal past either limit is rejected with `signal_inbox_full` and nothing is stored; delivery to a parked run needs no inbox room. Entries a run never consumes stay until the run is pruned with its history, so a reused run ID starts with an empty inbox. `GetWorkflowRun` lists the 100 oldest entries (name, receipt time, payload size) with the total count.
+
+A raw `WaitForEvent` whose `step_name` differs from its `event_name` saves the payload under `step_name`, so a later signal for the event is buffered for the next wait rather than reported as a duplicate. Step names starting with `__` are reserved for Tako's own checkpoints; SDK workers fail a run that uses one.
 
 SDK workers save a wait's deadline as the step `__wait:<step_name>` (`{timeoutAt}` in Unix ms) before the first `WaitForEvent`, and reuse it on replay, so the timeout counts from the first time the run reached the wait.
 

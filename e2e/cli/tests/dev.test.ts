@@ -346,7 +346,10 @@ describe.skipIf(SKIP)("tako dev fixtures", () => {
       while (outcome.status === "timeout" && Date.now() < deadline) {
         outcome = await (await postJson(devUrl, "/approval/result", { id: runId })).json();
       }
-      expect(outcome, safeRead(lf)).toEqual({ status: "succeeded", result: { approved: true } });
+      expect(outcome, safeRead(lf)).toMatchObject({
+        status: "succeeded",
+        result: { approved: true },
+      });
 
       const late = await postJson(devUrl, "/signal", { runId, event: "decision", payload: {} });
       expect(await late.json()).toMatchObject({ status: "finished" });

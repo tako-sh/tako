@@ -287,7 +287,7 @@ fn an_oversized_inbox_rejects_instead_of_dropping(open: Open) {
 fn names_and_ids_are_validated(open: Open) {
     let db = open();
     let id = enqueue(&db, "names");
-    for name in ["", "__run:x", "a\0b", &"n".repeat(256)] {
+    for name in ["", "__run:x", "a\0b", "a\nb", "\u{1b}[2J", &"n".repeat(256)] {
         let error = db.signal_run(&id, name, &payload("x")).unwrap_err();
         assert_eq!(
             error.socket_code(),
