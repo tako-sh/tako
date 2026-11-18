@@ -29,6 +29,11 @@ pub(crate) struct Resolved {
     storages: HashMap<String, (String, String)>,
     /// Older keys first; the active key last.
     backup_keys: Vec<BackupKeyBinding>,
+    /// Values past their expiry, in snapshot order, with the refusal to
+    /// report: the storage resource for storage credentials, `None` for app
+    /// secrets and provider credentials. Each operation refuses only the ones
+    /// it would apply.
+    expired: Vec<(Option<String>, String)>,
     env: String,
 }
 
@@ -64,6 +69,7 @@ impl Resolved {
         let mut storages = HashMap::new();
         let mut keys = BTreeMap::new();
         let mut active = None;
+        let mut expired = Vec::new();
         for value in scope.values {
             let content = value.content;
             if matches!(value.kind, RecordKind::App | RecordKind::Credential)
@@ -75,10 +81,10 @@ impl Resolved {
                 } else {
                     "credentials set"
                 };
-                return Err(format!(
+                expired.push((None, format!(
                     "Secret '{}' in environment '{env}' expired on {expires_on}. Run `tako {command} {} --env {env}` to update it.",
                     value.name, value.name
-                ));
+                )));
             }
             let text = content.value.to_string();
             match value.kind {
@@ -100,10 +106,10 @@ impl Resolved {
                         .filter(|expires_on| *expires_on <= today.as_str())
                         .min()
                     {
-                        return Err(format!(
+                        expired.push((Some(value.name.clone()), format!(
                             "Storage credentials for '{}' in environment '{env}' expired on {expires_on}. Run `tako storages credentials {} --env {env}` to update them.",
                             value.name, value.name
-                        ));
+                        )));
                     }
                     storages.insert(
                         value.name,
@@ -139,8 +145,18 @@ impl Resolved {
             credentials,
             storages,
             backup_keys,
+            expired,
             env,
         })
+    }
+
+    /// Refuse a deploy or release while any app secret, provider credential,
+    /// or storage credential of the snapshot has expired.
+    pub(crate) fn refuse_expired(&self) -> Result<(), String> {
+        match self.expired.first() {
+            Some((_, refusal)) => Err(refusal.clone()),
+            None => Ok(()),
+        }
     }
 
     /// The credentials the server itself uses at runtime. Never passed to app
@@ -172,6 +188,14 @@ impl Resolved {
             .resource
             .as_deref()
             .ok_or_else(|| format!("Storage binding '{name}' names no storage resource."))?;
+        // Expired keys are never handed out, whatever the operation.
+        if let Some((_, refusal)) = self
+            .expired
+            .iter()
+            .find(|(expired, _)| expired.as_deref() == Some(resource))
+        {
+            return Err(refusal.clone());
+        }
         let (access_key_id, secret_access_key) =
             self.storages.get(resource).ok_or_else(|| {
                 format!(
@@ -505,7 +529,10 @@ mod tests {
                 },
             }],
         };
-        let error = Resolved::from_scope(APP, scope).unwrap_err();
+        let error = Resolved::from_scope(APP, scope)
+            .unwrap()
+            .refuse_expired()
+            .unwrap_err();
         assert!(
             error.contains("expired on 2000-01-01")
                 && error.contains("tako secrets set OLD_KEY --env production"),
@@ -531,14 +558,94 @@ mod tests {
                 },
             }],
         };
-        let error = Resolved::from_scope(APP, storage(Some("2000-01-01"))).unwrap_err();
+        let resolved = Resolved::from_scope(APP, storage(Some("2000-01-01"))).unwrap();
+        let mut storages = HashMap::from([("uploads".to_string(), s3("r2"))]);
+        for error in [
+            resolved.refuse_expired().unwrap_err(),
+            resolved.fill_storages(&mut storages).unwrap_err(),
+        ] {
+            assert!(
+                error.contains("Storage credentials for 'r2'")
+                    && error.contains("expired on 2000-01-01")
+                    && error.contains("tako storages credentials r2 --env production"),
+                "{error}"
+            );
+        }
+        assert!(storages["uploads"].access_key_id.is_none());
+        let resolved = Resolved::from_scope(APP, storage(None)).unwrap();
+        assert!(resolved.refuse_expired().is_ok());
+    }
+
+    #[test]
+    fn a_backup_needs_only_its_target_and_keys_to_be_current() {
+        let value = |kind, name: &str, value: String, expires_on: Option<&str>| {
+            tako_network::shared::ScopeValue {
+                kind,
+                name: name.into(),
+                content: tako_network::shared::RecordContent {
+                    value: value.into(),
+                    expires_on: expires_on.map(Into::into),
+                },
+            }
+        };
+        let storage = |expires_on: &str| {
+            serde_json::json!({
+                "access_key_id": {"value": "access"},
+                "secret_access_key": {"value": "secret", "expires_on": expires_on},
+            })
+            .to_string()
+        };
+        let scope = ScopeSecrets {
+            digest: "d".into(),
+            caught_up: true,
+            missing_keys: Vec::new(),
+            values: vec![
+                value(RecordKind::App, "OLD_KEY", "x".into(), Some("2000-01-01")),
+                value(
+                    RecordKind::Credential,
+                    POSTGRES_URL,
+                    "postgres://old".into(),
+                    Some("2000-01-01"),
+                ),
+                value(RecordKind::Storage, "uploads", storage("2000-01-01"), None),
+                value(RecordKind::Storage, "backups", storage("2999-01-01"), None),
+                value(RecordKind::BackupKey, "backup-key-1", "key".into(), None),
+                value(
+                    RecordKind::BackupActive,
+                    "active",
+                    "backup-key-1".into(),
+                    None,
+                ),
+            ],
+        };
+        let resolved = Resolved::from_scope(APP, scope).unwrap();
+
+        // A deploy still refuses the expired app secret.
+        let error = resolved.refuse_expired().unwrap_err();
+        assert!(error.contains("Secret 'OLD_KEY'"), "{error}");
+
+        // A backup to a current target succeeds with an expired app secret,
+        // credential, and unrelated storage resource.
+        let mut backup = BackupBinding {
+            storage: s3("backups"),
+            backup_keys: Vec::new(),
+            retention_days: 7,
+        };
+        resolved.fill_backup(&mut backup).unwrap();
+        assert_eq!(backup.storage.secret_access_key.as_deref(), Some("secret"));
+        assert_eq!(backup.backup_keys.len(), 1);
+
+        // A backup to the expired target is refused.
+        let mut backup = BackupBinding {
+            storage: s3("uploads"),
+            backup_keys: Vec::new(),
+            retention_days: 7,
+        };
+        let error = resolved.fill_backup(&mut backup).unwrap_err();
         assert!(
-            error.contains("Storage credentials for 'r2'")
-                && error.contains("expired on 2000-01-01")
-                && error.contains("tako storages credentials r2 --env production"),
+            error.contains("Storage credentials for 'uploads'"),
             "{error}"
         );
-        assert!(Resolved::from_scope(APP, storage(None)).is_ok());
     }
 
     #[test]

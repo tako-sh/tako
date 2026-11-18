@@ -213,6 +213,7 @@ where
                 {
                     return error(StatusCode::INTERNAL_SERVER_ERROR, &message);
                 }
+                policy::keep_database_bindings(&permissions, &mut command);
                 if let Err(message) =
                     authorize_command(&state, &permissions, scope.as_ref(), &command)
                 {

@@ -136,7 +136,12 @@ impl crate::ServerState {
                 ssl.cloudflare_api_token = None;
                 if let Some(digest) = secrets_digest.as_deref() {
                     match crate::secret_snapshot::resolve(&self.runtime.data_dir, &app, Some(digest), &[]).await {
-                        Ok(resolved) => resolved.fill_ssl(&mut ssl),
+                        Ok(resolved) => {
+                            if let Err(error) = resolved.refuse_expired() {
+                                return Response::error(error);
+                            }
+                            resolved.fill_ssl(&mut ssl)
+                        }
                         Err(error) => return Response::error(error),
                     }
                 }
@@ -249,6 +254,9 @@ impl crate::ServerState {
                             Ok(resolved) => resolved,
                             Err(error) => return Response::error(error),
                         };
+                        if let Err(error) = resolved.refuse_expired() {
+                            return Response::error(error);
+                        }
                         resolved.fill_ssl(&mut ssl);
                         if let Some(storages) = storages.as_mut()
                             && let Err(error) = resolved.fill_storages(storages)
@@ -301,6 +309,8 @@ impl crate::ServerState {
                     binding.storage.secret_access_key = None;
                     binding.backup_keys.clear();
                     // Every server backs up with the snapshot the client pinned.
+                    // Only the backup target's keys and the backup keys need
+                    // to be current; expired app secrets don't block a backup.
                     let resolved = match crate::secret_snapshot::resolve(
                         &self.runtime.data_dir,
                         &app,
@@ -628,11 +638,11 @@ impl crate::ServerState {
     ) -> Result<HashMap<String, String>, String> {
         match digest {
             Some(digest) => {
-                Ok(
+                let resolved =
                     crate::secret_snapshot::resolve(&self.runtime.data_dir, app, Some(digest), &[])
-                        .await?
-                        .app,
-                )
+                        .await?;
+                resolved.refuse_expired()?;
+                Ok(resolved.app)
             }
             None => Ok(HashMap::new()),
         }

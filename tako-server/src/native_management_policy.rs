@@ -259,7 +259,9 @@ pub(crate) fn authorize_command(
                     validate_local_storages(context.data_dir, scope, storages)?;
                 }
                 // Database bindings need grants, which only full clients make.
-                if let Some(databases) = databases.as_ref().filter(|value| !value.is_empty())
+                // An empty set would remove every binding; see
+                // `keep_database_bindings`.
+                if let Some(databases) = databases.as_ref()
                     && !same_bindings(databases, provisioned_app(context, scope)?.databases)
                 {
                     return Err(DATABASES_DENIED);
@@ -478,6 +480,19 @@ fn validate_managed_directories(data_dir: &Path, relative: &Path) -> Result<(), 
     Ok(())
 }
 
+/// A deploy client never changes database bindings, so a deploy from one
+/// that sends an empty set keeps the environment's bindings instead of
+/// removing them. Call before [`authorize_command`]; a non-empty set that
+/// differs is still refused there.
+pub(crate) fn keep_database_bindings(permissions: &Permissions, command: &mut Command) {
+    if !permissions.is_full()
+        && let Command::Deploy { databases, .. } = command
+        && databases.as_ref().is_some_and(HashMap::is_empty)
+    {
+        *databases = None;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -660,6 +675,41 @@ mod tests {
         assert_eq!(f.authorize(&release), Err(DATABASES_DENIED));
         let unchanged = f.decode_command(json!({"command":"deploy","databases":null}));
         assert_eq!(f.authorize(&unchanged), Ok(()));
+    }
+
+    #[test]
+    fn an_empty_database_set_from_a_deploy_client_keeps_the_bindings() {
+        let mut f = Fixture::new();
+        f.databases.insert(
+            "main".into(),
+            DatabaseBinding {
+                name: "shop".into(),
+                server: "edge".into(),
+                peer_key: None,
+            },
+        );
+        let databases = |command: &Command| match command {
+            Command::Deploy { databases, .. } => databases.clone(),
+            _ => unreachable!(),
+        };
+        let mut empty = f.decode_command(json!({"command":"deploy","databases":{}}));
+        // Unchanged, the policy alone refuses it: it would drop the binding.
+        assert_eq!(f.authorize(&empty), Err(DATABASES_DENIED));
+        keep_database_bindings(&f.permissions, &mut empty);
+        assert_eq!(databases(&empty), None);
+        assert_eq!(f.authorize(&empty), Ok(()));
+
+        // A different, non-empty set is still refused.
+        let other = json!({"main": {"name": "shop", "server": "other"}});
+        let mut moved = f.decode_command(json!({"command":"deploy","databases":other}));
+        keep_database_bindings(&f.permissions, &mut moved);
+        assert!(databases(&moved).is_some());
+        assert_eq!(f.authorize(&moved), Err(DATABASES_DENIED));
+
+        // A full client's empty set still removes the bindings.
+        let mut full = f.decode_command(json!({"command":"deploy","databases":{}}));
+        keep_database_bindings(&Permissions::Full, &mut full);
+        assert_eq!(databases(&full), Some(HashMap::new()));
     }
 
     #[test]

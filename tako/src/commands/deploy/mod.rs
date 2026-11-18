@@ -248,21 +248,27 @@ async fn run_async(
 
     let source_root = source_bundle_root(&project_dir, preflight_runtime_adapter.id());
 
+    // Code generation and the lockfile check run project code. A client
+    // identity's keys stay off disk while they do.
     if !output::is_dry_run() && preflight_runtime_adapter.preset_group() == PresetGroup::Js {
-        js::write_generated_files_with_schemas(
-            &project_dir,
-            preflight_runtime_adapter,
-            &tako_config,
-            Some(&env),
-            false,
-        )?;
+        crate::network::identity::without_keys(|| {
+            js::write_generated_files_with_schemas(
+                &project_dir,
+                preflight_runtime_adapter,
+                &tako_config,
+                Some(&env),
+                false,
+            )
+        })??;
     }
 
     if !output::is_dry_run() && should_run_bun_lockfile_preflight(preflight_runtime_adapter) {
-        output::with_spinner_silent("Checking Bun lockfile", || {
-            let _t = output::timed("Bun lockfile check");
-            run_bun_lockfile_preflight(&source_root)
-        })
+        crate::network::identity::without_keys(|| {
+            output::with_spinner_silent("Checking Bun lockfile", || {
+                let _t = output::timed("Bun lockfile check");
+                run_bun_lockfile_preflight(&source_root)
+            })
+        })?
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
     }
 
@@ -495,7 +501,7 @@ async fn run_async(
         force,
         deploy_task_tree.clone(),
     ));
-    let mut build_handle = tokio::spawn(prepare_build_phase(
+    let build = prepare_build_phase(
         project_dir.clone(),
         source_root.clone(),
         eff_app_dir.clone(),
@@ -508,10 +514,42 @@ async fn run_async(
         build_groups.clone(),
         deploy_task_tree.clone(),
         description.map(str::to_owned),
-    ));
+    );
 
     let mut preflight_result: Option<Result<PreflightPhaseResult, String>> = None;
     let mut build_result: Option<BuildPhaseResult> = None;
+
+    // The build runs project code. A client identity signs the server checks
+    // first, then keeps its keys off disk until the build finishes.
+    let mut suspended_keys = None;
+    if crate::network::identity::is_active() {
+        let result = (&mut preflight_handle)
+            .await
+            .map_err(|e| format!("Server checks task failed: {}", e))
+            .and_then(|result| result);
+        match result {
+            Ok(preflight) => {
+                if deploy_task_tree.is_none() {
+                    output::success_with_elapsed(
+                        &format_preflight_complete_message(&server_names),
+                        preflight.elapsed,
+                    );
+                }
+                preflight_result = Some(Ok(preflight));
+            }
+            Err(error) => {
+                if let Some(task_tree) = &deploy_task_tree {
+                    task_tree.abort_incomplete("Aborted");
+                    task_tree.set_error_summary("Deploy failed".to_string());
+                    task_tree.finalize();
+                    return Err(output::silent_exit_error().into());
+                }
+                return Err(error.into());
+            }
+        }
+        suspended_keys = crate::network::identity::suspend_keys()?;
+    }
+    let mut build_handle = tokio::spawn(build);
 
     while preflight_result.is_none() || build_result.is_none() {
         tokio::select! {
@@ -571,6 +609,10 @@ async fn run_async(
                 }
             }
         }
+    }
+
+    if let Some(suspended_keys) = suspended_keys {
+        suspended_keys.resume()?;
     }
 
     preflight_result

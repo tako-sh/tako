@@ -51,6 +51,11 @@ pub(crate) fn encode(alias: &LocalNetwork) -> Result<Zeroizing<String>> {
 
 /// Store an identity in the current network state, like a joined device.
 pub(crate) fn store(value: &str) -> Result<LocalNetwork> {
+    store_keys_and_profile(value).map(|(alias, _)| alias)
+}
+
+/// [`store`], also returning the path of the stored key file.
+fn store_keys_and_profile(value: &str) -> Result<(LocalNetwork, std::path::PathBuf)> {
     let encoded = value
         .trim()
         .strip_prefix(PREFIX)
@@ -76,7 +81,7 @@ pub(crate) fn store(value: &str) -> Result<LocalNetwork> {
         Err(error) => return Err(error.into()),
     }
     // Saving checks that the profile and the keys belong to the same device.
-    super::save_profile(&contents.profile)
+    Ok((super::save_profile(&contents.profile)?, path))
 }
 
 /// While alive, this process keeps its network state in a private temporary
@@ -142,13 +147,127 @@ pub(crate) fn activate_from_env() -> Result<Option<TemporaryState>> {
         return Ok(None);
     }
     let state = TemporaryState::new()?;
-    store(&value).map_err(|error| format!("{ENV}: {error}"))?;
+    let (_, keys) = store_keys_and_profile(&value).map_err(|error| format!("{ENV}: {error}"))?;
+    *ACTIVE_KEYS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(keys);
     Ok(Some(state))
+}
+
+/// The key file of the identity [`activate_from_env`] stored for this process.
+static ACTIVE_KEYS: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+
+/// Whether this process acts as a client identity from `TAKO_CLIENT_IDENTITY`.
+pub(crate) fn is_active() -> bool {
+    ACTIVE_KEYS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .is_some()
+}
+
+/// Run `project_code` with the active identity's key file off disk, so code
+/// from the project, such as a build script, cannot copy the identity's keys
+/// while it runs. Without an identity, this only runs `project_code`.
+pub(crate) fn without_keys<T>(project_code: impl FnOnce() -> T) -> Result<T> {
+    let suspended = suspend_keys()?;
+    let value = project_code();
+    if let Some(suspended) = suspended {
+        suspended.resume()?;
+    }
+    Ok(value)
+}
+
+/// Take the active identity's key file off disk until the returned guard
+/// resumes or drops. `None` when no identity is active.
+pub(crate) fn suspend_keys() -> Result<Option<SuspendedKeys>> {
+    let path = ACTIVE_KEYS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    path.map(SuspendedKeys::take).transpose()
+}
+
+/// A key file taken off disk. [`SuspendedKeys::resume`] writes it back; so
+/// does dropping the guard on an early return.
+#[must_use = "resume the keys before signing requests again"]
+pub(crate) struct SuspendedKeys {
+    path: std::path::PathBuf,
+    keys: Option<Zeroizing<Vec<u8>>>,
+}
+
+impl SuspendedKeys {
+    fn take(path: std::path::PathBuf) -> Result<Self> {
+        let keys = Zeroizing::new(std::fs::read(&path)?);
+        std::fs::remove_file(&path)?;
+        Ok(Self {
+            path,
+            keys: Some(keys),
+        })
+    }
+
+    pub(crate) fn resume(mut self) -> Result<()> {
+        self.restore()
+    }
+
+    fn restore(&mut self) -> Result<()> {
+        match self.keys.take() {
+            Some(keys) => super::write_bytes(&self.path, &keys, false),
+            None => Ok(()),
+        }
+    }
+}
+
+impl Drop for SuspendedKeys {
+    fn drop(&mut self) {
+        if let Err(error) = self.restore() {
+            tracing::warn!("Could not restore the client identity's keys: {error}");
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn suspended_keys_are_off_disk_for_child_processes_until_resumed() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("network-keys").join("request.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "private keys").unwrap();
+        let absent_in_child = || {
+            std::process::Command::new("sh")
+                .args(["-c", "test ! -e \"$1\"", "sh"])
+                .arg(&path)
+                .status()
+                .unwrap()
+                .success()
+        };
+
+        let suspended = SuspendedKeys::take(path.clone()).unwrap();
+        assert!(absent_in_child());
+        suspended.resume().unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "private keys");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0, "restored keys stay private");
+        }
+
+        // An early return restores them too.
+        let failed = || -> Result<()> {
+            let _suspended = SuspendedKeys::take(path.clone())?;
+            assert!(absent_in_child());
+            Err("build failed".into())
+        };
+        assert!(failed().is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "private keys");
+
+        // Without an identity there is nothing to suspend.
+        assert!(!is_active());
+        assert_eq!(without_keys(|| 7).unwrap(), 7);
+    }
 
     #[test]
     fn identities_and_invitations_are_told_apart_by_prefix() {
