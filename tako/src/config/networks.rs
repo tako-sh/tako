@@ -92,8 +92,14 @@ impl LocalNetworks {
                 id: pointer.id,
                 device: pointer.device,
             };
+            let path = local.profile_path()?;
             let profile: crate::network::Profile =
-                crate::network::read_json(&local.profile_path()?).map_err(invalid)?;
+                crate::network::read_json(&path).map_err(|error| {
+                    invalid(format!(
+                        "Could not read network profile {}: {error}",
+                        path.display()
+                    ))
+                })?;
             if profile.snapshot().network.id.to_string() != local.id
                 || profile
                     .request()
