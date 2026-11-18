@@ -168,7 +168,7 @@ Run-addressed event names are 1–255 bytes without control characters. `WaitFor
 
 An inbox holds at most 1,000 entries and 8 MiB of payload JSON per run. A signal past either limit is rejected with `signal_inbox_full` and nothing is stored; delivery to a parked run needs no inbox room. Entries a run never consumes stay until the run is pruned with its history, so a reused run ID starts with an empty inbox. `GetWorkflowRun` lists the 100 oldest entries (name, receipt time, payload size) with the total count.
 
-A wait whose deadline has passed is timed out: its step is `null`. This holds even when a signal or the awaited run's outcome arrives after the deadline but before the run is claimed, so the result never depends on how soon a worker claims the run; a run-addressed signal that finds its wait timed out reports `duplicate`.
+A wait whose deadline has passed is timed out: its step is `null`. What counts is when the value arrived, never how soon the run registers its wait or is claimed. A signal or awaited outcome that arrives after the deadline leaves the wait timed out, including one buffered (or a target that finished) after the deadline but before `WaitForEvent`/`WaitForRun` registers the wait; such a late buffered signal stays in the inbox unconsumed. A run-addressed signal that finds its wait already timed out reports `duplicate`.
 
 A raw `WaitForEvent` whose `step_name` differs from its `event_name` saves the payload under `step_name`, so a later signal for the event is buffered for the next wait rather than reported as a duplicate. Step names starting with `__` are reserved for Tako's own checkpoints; SDK workers fail a run that uses one.
 

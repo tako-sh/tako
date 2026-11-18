@@ -45,6 +45,7 @@ both_stores!(
     an_expired_wait_saves_null,
     a_child_finishing_while_the_parent_parks_always_wakes_it,
     a_child_finishing_after_the_deadline_leaves_the_wait_timed_out,
+    a_child_that_finished_after_the_deadline_times_out_a_late_registered_wait,
 );
 
 const PARENT: &str = "parent";
@@ -293,4 +294,52 @@ fn a_child_finishing_after_the_deadline_leaves_the_wait_timed_out(open: Open) {
     db.complete(&child, &run.worker_id, &serde_json::json!("late"))
         .unwrap();
     assert_eq!(outcome(&db), serde_json::Value::Null);
+}
+
+/// The parent registers its wait after its deadline (a worker still
+/// finishing sibling steps): a child that finished in time gives its
+/// outcome, one that finished after the deadline leaves the wait timed out.
+fn a_child_that_finished_after_the_deadline_times_out_a_late_registered_wait(open: Open) {
+    let db = open();
+    let late = enqueue(&db, CHILD, "finished-late", None);
+    let run = claim(&db, CHILD).unwrap();
+    let deadline = now_ms() - 1_000;
+    db.complete(&late, &run.worker_id, &serde_json::json!("late"))
+        .unwrap();
+    let parent = enqueue(&db, PARENT, "registers-late", None);
+    let run = claim(&db, PARENT).unwrap();
+    assert!(
+        db.wait_for_run(
+            &parent,
+            &run.worker_id,
+            "outcome",
+            CHILD,
+            &late,
+            Some(deadline)
+        )
+        .unwrap()
+    );
+    assert_eq!(outcome(&db), serde_json::Value::Null);
+
+    let in_time = enqueue(&db, CHILD, "finished-in-time", None);
+    let run = claim(&db, CHILD).unwrap();
+    db.complete(&in_time, &run.worker_id, &serde_json::json!("ok"))
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let deadline = now_ms();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let parent = enqueue(&db, PARENT, "registers-late-2", None);
+    let run = claim(&db, PARENT).unwrap();
+    assert!(
+        db.wait_for_run(
+            &parent,
+            &run.worker_id,
+            "outcome",
+            CHILD,
+            &in_time,
+            Some(deadline)
+        )
+        .unwrap()
+    );
+    assert_eq!(outcome(&db)["result"], "ok");
 }

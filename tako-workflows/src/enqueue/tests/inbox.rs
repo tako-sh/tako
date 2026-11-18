@@ -53,6 +53,7 @@ both_stores!(
     a_signal_racing_a_wait_always_reaches_the_run,
     a_wait_whose_result_is_already_saved_never_parks,
     signals_after_a_wait_deadline_leave_it_timed_out,
+    a_signal_buffered_after_the_deadline_is_not_consumed,
 );
 
 /// A server from before run inboxes prunes the run row without its inbox
@@ -469,4 +470,38 @@ fn signals_after_a_wait_deadline_leave_it_timed_out(open: Open) {
     std::thread::sleep(std::time::Duration::from_millis(40));
     assert_eq!(db.signal("late-event", &payload("late")).unwrap(), 0);
     assert_eq!(claim(&db).step_state["late-event"], serde_json::Value::Null);
+}
+
+/// A signal buffered after a wait's deadline, before the run registers that
+/// wait (a worker still finishing sibling steps), leaves the wait timed out.
+/// One buffered before the deadline is consumed even when the run registers
+/// the wait late.
+fn a_signal_buffered_after_the_deadline_is_not_consumed(open: Open) {
+    let db = open();
+    let id = enqueue(&db, "slow-register");
+    let run = claim(&db);
+    let deadline = now_ms() - 1_000;
+    db.signal_run(&id, "approval", &payload("late")).unwrap();
+    assert!(
+        db.wait_for_event(&id, &run.worker_id, "approval", "approval", Some(deadline))
+            .unwrap()
+    );
+    assert_eq!(claim(&db).step_state["approval"], serde_json::Value::Null);
+    assert_eq!(
+        signals_total(&db, &id),
+        1,
+        "the late signal is kept, unconsumed"
+    );
+
+    let id = enqueue(&db, "slow-register-in-time");
+    let run = claim(&db);
+    db.signal_run(&id, "approval", &payload("on time")).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let deadline = now_ms();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    assert!(
+        db.wait_for_event(&id, &run.worker_id, "approval", "approval", Some(deadline))
+            .unwrap()
+    );
+    assert_eq!(claim(&db).step_state["approval"], payload("on time"));
 }

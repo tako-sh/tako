@@ -729,6 +729,13 @@ pub(crate) struct ScheduleRow {
 /// Event names starting with this are reserved for Tako's own waits.
 pub(crate) const RESERVED_EVENT_PREFIX: &str = "__";
 
+/// Whether something that arrived at `at` came after a wait's deadline. The
+/// outcome of a wait may not depend on how soon its run registers or is
+/// claimed, only on whether its value arrived in time.
+pub(crate) fn arrived_late(at: i64, timeout_at_ms: Option<i64>) -> bool {
+    timeout_at_ms.is_some_and(|deadline| at > deadline)
+}
+
 /// The event a run waiting on another run's outcome parks on. The reserved
 /// prefix keeps app signals from reaching it.
 pub(crate) fn run_event_name(id: &str) -> String {

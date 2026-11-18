@@ -498,14 +498,30 @@ impl PostgresRunsDb {
         // finds the waiter below; it can never fall between the two.
         let buffered = tx.query_opt(
             &format!(
-                "DELETE FROM {}.run_inbox WHERE app_id=$1 AND run_id=$2 AND event_name=$3
-                 RETURNING payload",
+                "SELECT payload, received_at FROM {}.run_inbox
+                 WHERE app_id=$1 AND run_id=$2 AND event_name=$3",
                 self.schema
             ),
             &[&self.app_id, &run_id, &event_name],
         )?;
+        if let Some(row) = &buffered
+            && super::enqueue::arrived_late(row.get(1), timeout_at_ms)
+        {
+            // The signal arrived after the wait's deadline: the wait timed
+            // out. The late signal stays in the inbox, unconsumed.
+            self.satisfy_wait(&mut tx, run_id, step_name, "null")?;
+            tx.commit()?;
+            return Ok(true);
+        }
         if let Some(row) = buffered {
             let payload: String = row.get(0);
+            tx.execute(
+                &format!(
+                    "DELETE FROM {}.run_inbox WHERE app_id=$1 AND run_id=$2 AND event_name=$3",
+                    self.schema
+                ),
+                &[&self.app_id, &run_id, &event_name],
+            )?;
             self.satisfy_wait(&mut tx, run_id, step_name, &payload)?;
             tx.commit()?;
             return Ok(true);
@@ -536,7 +552,7 @@ impl PostgresRunsDb {
         // deadlock with it.
         let target = tx.query_opt(
             &format!(
-                "SELECT name, status, result, last_error FROM {}.runs
+                "SELECT name, status, result, last_error, finished_at FROM {}.runs
                  WHERE app_id=$1 AND id=$2 FOR SHARE",
                 self.schema
             ),
@@ -548,9 +564,9 @@ impl PostgresRunsDb {
             tx.commit()?;
             return Ok(true);
         }
-        let outcome = match target {
+        let outcome = match &target {
             Some(row) if row.get::<_, String>(0) == target_name => {
-                let outcome = outcome_from(&row, 1)?;
+                let outcome = outcome_from(row, 1)?;
                 parse_status(&outcome.status)?
                     .is_terminal()
                     .then_some(outcome)
@@ -558,12 +574,15 @@ impl PostgresRunsDb {
             _ => Some(super::enqueue::missing_outcome()),
         };
         if let Some(outcome) = outcome {
-            self.satisfy_wait(
-                &mut tx,
-                run_id,
-                step_name,
-                &serde_json::to_string(&outcome)?,
-            )?;
+            let finished_at: Option<i64> = target.as_ref().and_then(|row| row.get(4));
+            // A target that finished after the wait's deadline leaves it timed out.
+            let result = match finished_at {
+                Some(finished_at) if super::enqueue::arrived_late(finished_at, timeout_at_ms) => {
+                    "null".to_string()
+                }
+                _ => serde_json::to_string(&outcome)?,
+            };
+            self.satisfy_wait(&mut tx, run_id, step_name, &result)?;
             tx.commit()?;
             return Ok(true);
         }

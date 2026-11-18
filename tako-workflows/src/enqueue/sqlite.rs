@@ -480,14 +480,23 @@ impl SqliteRunsDb {
         // A signal addressed to this run arrived before the wait. Consume it
         // as the step result here, under the same write lock, so a signal can
         // never land between "nothing buffered" and "parked".
-        let buffered: Option<String> = tx
+        let buffered: Option<(String, i64)> = tx
             .query_row(
-                "SELECT payload FROM run_inbox WHERE run_id = ?1 AND event_name = ?2",
+                "SELECT payload, received_at FROM run_inbox WHERE run_id = ?1 AND event_name = ?2",
                 (run_id, event_name),
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
-        if let Some(payload) = buffered {
+        if let Some((_, received_at)) = &buffered
+            && super::arrived_late(*received_at, timeout_at_ms)
+        {
+            // The signal arrived after the wait's deadline: the wait timed
+            // out. The late signal stays in the inbox, unconsumed.
+            satisfy_wait(&tx, run_id, step_name, "null")?;
+            tx.commit()?;
+            return Ok(true);
+        }
+        if let Some((payload, _)) = buffered {
             tx.execute(
                 "DELETE FROM run_inbox WHERE run_id = ?1 AND event_name = ?2",
                 (run_id, event_name),
@@ -532,7 +541,22 @@ impl SqliteRunsDb {
             _ => Some(super::missing_outcome()),
         };
         if let Some(outcome) = outcome {
-            satisfy_wait(&tx, run_id, step_name, &serde_json::to_string(&outcome)?)?;
+            let finished_at: Option<i64> = tx
+                .query_row(
+                    "SELECT finished_at FROM runs WHERE id = ?1",
+                    [target_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .flatten();
+            // A target that finished after the wait's deadline leaves it timed out.
+            let result = match finished_at {
+                Some(finished_at) if super::arrived_late(finished_at, timeout_at_ms) => {
+                    "null".to_string()
+                }
+                _ => serde_json::to_string(&outcome)?,
+            };
+            satisfy_wait(&tx, run_id, step_name, &result)?;
             tx.commit()?;
             return Ok(true);
         }
