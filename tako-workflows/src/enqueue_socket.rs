@@ -20,7 +20,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tako_core::{Command, ErrorCode, Response, SocketError};
+use tako_core::{
+    Command, ErrorCode, Response, SignalBroadcastResponse, SignalRunResponse, SignalRunStatus,
+    SocketError, WaitForEventResponse,
+};
 use tako_socket::serve_jsonl_connection;
 use tokio::net::UnixListener;
 use tokio::sync::oneshot;
@@ -400,6 +403,7 @@ fn command_app(cmd: &Command) -> Option<&str> {
         | Command::FailRun { app, .. }
         | Command::DeferRun { app, .. }
         | Command::WaitForEvent { app, .. }
+        | Command::WaitForRun { app, .. }
         | Command::Signal { app, .. }
         | Command::ChannelPublish { app, .. }
         | Command::ChannelClose { app, .. }
@@ -658,22 +662,67 @@ fn handle_command(
             timeout_at_ms,
             ..
         } => match db.wait_for_event(&id, &worker_id, &step_name, &event_name, timeout_at_ms) {
-            Ok(()) => {
+            Ok(delivered) => {
                 limiter.release_claim(&worker_id);
-                Response::ok(serde_json::json!({}))
+                if delivered {
+                    // A buffered signal satisfied the wait: the run is due now.
+                    (on_enqueue)();
+                }
+                Response::ok(WaitForEventResponse { delivered })
             }
             Err(e) => e.into_socket_error("wait_for_event").into(),
+        },
+        Command::WaitForRun {
+            id,
+            worker_id,
+            step_name,
+            target_name,
+            target_id,
+            timeout_at_ms,
+            ..
+        } => match db.wait_for_run(
+            &id,
+            &worker_id,
+            &step_name,
+            &target_name,
+            &target_id,
+            timeout_at_ms,
+        ) {
+            Ok(delivered) => {
+                limiter.release_claim(&worker_id);
+                if delivered {
+                    // The awaited run had already finished: this run is due now.
+                    (on_enqueue)();
+                }
+                Response::ok(WaitForEventResponse { delivered })
+            }
+            Err(e) => e.into_socket_error("wait_for_run").into(),
         },
         Command::Signal {
             event_name,
             payload,
+            run_id: Some(run_id),
+            ..
+        } => match db.signal_run(&run_id, &event_name, &payload) {
+            Ok(status) => {
+                if status == SignalRunStatus::Delivered {
+                    (on_enqueue)();
+                }
+                Response::ok(SignalRunResponse { status })
+            }
+            Err(e) => e.into_socket_error("signal").into(),
+        },
+        Command::Signal {
+            event_name,
+            payload,
+            run_id: None,
             ..
         } => match db.signal(&event_name, &payload) {
             Ok(woken) => {
                 if woken > 0 {
                     (on_enqueue)();
                 }
-                Response::ok(serde_json::json!({ "woken": woken }))
+                Response::ok(SignalBroadcastResponse { woken })
             }
             Err(e) => e.into_socket_error("signal").into(),
         },

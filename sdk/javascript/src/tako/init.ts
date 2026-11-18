@@ -29,5 +29,6 @@ export function initServerRuntime(): void {
     enqueue: (name, payload, opts) => workflowsEngine.enqueue(name, payload, opts),
     result: (name, id) => workflowsEngine.result(name, id),
     signal: (event, payload) => workflowsEngine.signal(event, payload),
+    signalRun: (runId, event, payload) => workflowsEngine.signalRun(runId, event, payload),
   });
 }

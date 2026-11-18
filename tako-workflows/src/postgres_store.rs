@@ -5,13 +5,13 @@ use tako_core::{EnqueueOpts, EnqueueRunResponse, RunPayload, ScheduleSpec};
 
 use super::blocking::ReleaseOffRuntime;
 use super::enqueue::operator::{
-    CancelledRun, OPERATOR_CANCEL_REASON, RunRecord, RunRow, StepRow, SummaryRow, WaitRow,
-    parse_status,
+    CancelledRun, OPERATOR_CANCEL_REASON, RunRecord, RunRow, SignalRow, StepRow, SummaryRow,
+    WaitRow, parse_status,
 };
 use super::enqueue::{
     Reclaimed, RunsDbError, ScheduleRow, WORKER_LOST_ERROR, clamp_lease_ms, now_ms,
 };
-use tako_core::WorkflowRunStatus;
+use tako_core::{SignalRunStatus, WORKFLOW_RUN_MAX_SIGNALS, WorkflowRunStatus};
 
 const DEFAULT_MAX_ATTEMPTS: u32 = 3;
 
@@ -106,6 +106,17 @@ impl PostgresRunsDb {
                 &now,
             ],
         )?;
+        if inserted == 1 {
+            // A server from before run inboxes prunes runs without their
+            // inbox rows. A new run must never inherit an earlier run's signals.
+            tx.execute(
+                &format!(
+                    "DELETE FROM {}.run_inbox WHERE app_id=$1 AND run_id=$2",
+                    self.schema
+                ),
+                &[&self.app_id, &id],
+            )?;
+        }
         if inserted == 0 {
             let existing = tx.query_one(
                 &format!(
@@ -312,7 +323,8 @@ impl PostgresRunsDb {
         worker_id: &str,
         result: &serde_json::Value,
     ) -> Result<(), RunsDbError> {
-        self.update_running(
+        self.finish_running(
+            id,
             "status='succeeded', result=$5, last_error=NULL, worker_id=NULL, lease_until=NULL, finished_at=$4",
             &[&self.app_id, &id, &worker_id, &self.now(), &serde_json::to_string(result)?],
         )
@@ -324,7 +336,8 @@ impl PostgresRunsDb {
         worker_id: &str,
         reason: Option<&str>,
     ) -> Result<(), RunsDbError> {
-        self.update_running(
+        self.finish_running(
+            id,
             "status='cancelled', last_error=$4, worker_id=NULL, lease_until=NULL, finished_at=$5",
             &[&self.app_id, &id, &worker_id, &reason, &self.now()],
         )
@@ -339,7 +352,8 @@ impl PostgresRunsDb {
         finalize: bool,
     ) -> Result<(), RunsDbError> {
         if finalize {
-            return self.update_running(
+            return self.finish_running(
+                id,
                 "status='dead', last_error=$4, worker_id=NULL, lease_until=NULL, finished_at=$5",
                 &[&self.app_id, &id, &worker_id, &error, &self.now()],
             );
@@ -376,7 +390,7 @@ impl PostgresRunsDb {
             tx.commit()?;
             return Ok(0);
         }
-        for table in ["steps", "event_waiters", "runs"] {
+        for table in ["steps", "event_waiters", "run_inbox", "runs"] {
             tx.execute(
                 &format!(
                     "DELETE FROM {}.{} WHERE app_id=$1 AND {} = ANY($2)",
@@ -406,13 +420,14 @@ impl PostgresRunsDb {
 
     pub(super) fn reclaim_expired(&self) -> Result<Reclaimed, RunsDbError> {
         let mut client = self.client()?;
+        let mut tx = client.transaction()?;
         // Return exactly the owners whose rows this statement reclaims.
         // Row locks prevent a heartbeat or another reclaimer from changing
         // ownership between selection and accounting.
         //
         // The lost worker spent the attempt that claim counted. A run with
         // none left ends here; requeueing it would repeat the loss forever.
-        let expired = client
+        let expired: Vec<(String, Option<String>, bool)> = tx
             .query(
                 &format!(
                     "WITH expired AS (
@@ -435,6 +450,12 @@ impl PostgresRunsDb {
             .into_iter()
             .map(|row| (row.get(0), row.get(1), row.get(2)))
             .collect();
+        for (id, _, exhausted) in &expired {
+            if *exhausted {
+                self.wake_run_waiters(&mut tx, id)?;
+            }
+        }
+        tx.commit()?;
         Ok(Reclaimed::from_rows(expired))
     }
 
@@ -462,40 +483,226 @@ impl PostgresRunsDb {
         step_name: &str,
         event_name: &str,
         timeout_at_ms: Option<i64>,
-    ) -> Result<(), RunsDbError> {
+    ) -> Result<bool, RunsDbError> {
         let mut client = self.client()?;
         let mut tx = client.transaction()?;
-        let run_at = timeout_at_ms.unwrap_or(i64::MAX);
-        let rows = tx.execute(
+        self.release_for_wait(&mut tx, run_id, worker_id, timeout_at_ms)?;
+        if self.step_saved(&mut tx, run_id, step_name)? {
+            self.requeue_now(&mut tx, run_id, step_name)?;
+            tx.commit()?;
+            return Ok(true);
+        }
+        // The UPDATE above holds the run's row lock, which `signal_run` takes
+        // before reading waiters. Read committed sees any inbox row a signal
+        // committed before this statement, so a signal either lands here or
+        // finds the waiter below; it can never fall between the two.
+        let buffered = tx.query_opt(
             &format!(
-                "UPDATE {}.runs
-                 SET status='pending', worker_id=NULL, lease_until=NULL, run_at=$4, attempts=attempts-1
-                 WHERE app_id=$1 AND id=$2 AND worker_id=$3 AND status='running'",
+                "SELECT payload, received_at FROM {}.run_inbox
+                 WHERE app_id=$1 AND run_id=$2 AND event_name=$3",
                 self.schema
             ),
-            &[&self.app_id, &run_id, &worker_id, &run_at],
+            &[&self.app_id, &run_id, &event_name],
         )?;
-        if rows == 0 {
-            return Err(RunsDbError::StaleWorker);
+        if let Some(row) = &buffered
+            && super::enqueue::arrived_late(row.get(1), timeout_at_ms)
+        {
+            // The signal arrived after the wait's deadline: the wait timed
+            // out. The late signal stays in the inbox, unconsumed.
+            self.satisfy_wait(&mut tx, run_id, step_name, "null")?;
+            tx.commit()?;
+            return Ok(true);
         }
+        if let Some(row) = buffered {
+            let payload: String = row.get(0);
+            tx.execute(
+                &format!(
+                    "DELETE FROM {}.run_inbox WHERE app_id=$1 AND run_id=$2 AND event_name=$3",
+                    self.schema
+                ),
+                &[&self.app_id, &run_id, &event_name],
+            )?;
+            self.satisfy_wait(&mut tx, run_id, step_name, &payload)?;
+            tx.commit()?;
+            return Ok(true);
+        }
+        self.park(&mut tx, run_id, step_name, event_name, timeout_at_ms)?;
+        tx.commit()?;
+        Ok(false)
+    }
+
+    /// See `RunsDb::wait_for_run`.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn wait_for_run(
+        &self,
+        run_id: &str,
+        worker_id: &str,
+        step_name: &str,
+        target_name: &str,
+        target_id: &str,
+        timeout_at_ms: Option<i64>,
+    ) -> Result<bool, RunsDbError> {
+        let mut client = self.client()?;
+        let mut tx = client.transaction()?;
+        // Lock the target before the waiting run. The transaction that
+        // finishes the target updates it first and wakes waiters after, so
+        // the two serialize on the target's row: either the waiter below is
+        // committed before it reads waiters, or this read sees it finished.
+        // Taking the rows in the same order (target, then waiter) cannot
+        // deadlock with it.
+        let target = tx.query_opt(
+            &format!(
+                "SELECT name, status, result, last_error, finished_at FROM {}.runs
+                 WHERE app_id=$1 AND id=$2 FOR SHARE",
+                self.schema
+            ),
+            &[&self.app_id, &target_id],
+        )?;
+        self.release_for_wait(&mut tx, run_id, worker_id, timeout_at_ms)?;
+        if self.step_saved(&mut tx, run_id, step_name)? {
+            self.requeue_now(&mut tx, run_id, step_name)?;
+            tx.commit()?;
+            return Ok(true);
+        }
+        let outcome = match &target {
+            Some(row) if row.get::<_, String>(0) == target_name => {
+                let outcome = outcome_from(row, 1)?;
+                parse_status(&outcome.status)?
+                    .is_terminal()
+                    .then_some(outcome)
+            }
+            _ => Some(super::enqueue::missing_outcome()),
+        };
+        if let Some(outcome) = outcome {
+            let finished_at: Option<i64> = target.as_ref().and_then(|row| row.get(4));
+            // A target that finished after the wait's deadline leaves it timed out.
+            let result = match finished_at {
+                Some(finished_at) if super::enqueue::arrived_late(finished_at, timeout_at_ms) => {
+                    "null".to_string()
+                }
+                _ => serde_json::to_string(&outcome)?,
+            };
+            self.satisfy_wait(&mut tx, run_id, step_name, &result)?;
+            tx.commit()?;
+            return Ok(true);
+        }
+        self.park(
+            &mut tx,
+            run_id,
+            step_name,
+            &super::enqueue::run_event_name(target_id),
+            timeout_at_ms,
+        )?;
+        tx.commit()?;
+        Ok(false)
+    }
+
+    /// See `RunsDb::signal_run`. The run's row lock orders this with
+    /// `wait_for_event`, claims and lifecycle writes.
+    pub(super) fn signal_run(
+        &self,
+        run_id: &str,
+        event_name: &str,
+        payload: &serde_json::Value,
+    ) -> Result<SignalRunStatus, RunsDbError> {
+        let payload_json = serde_json::to_string(payload)?;
+        let now = self.now();
+        let mut client = self.client()?;
+        let mut tx = client.transaction()?;
+        let Some(row) = tx.query_opt(
+            &format!(
+                "SELECT status FROM {}.runs WHERE app_id=$1 AND id=$2 FOR UPDATE",
+                self.schema
+            ),
+            &[&self.app_id, &run_id],
+        )?
+        else {
+            tx.commit()?;
+            return Ok(SignalRunStatus::Missing);
+        };
+        if parse_status(row.get(0))?.is_terminal() {
+            tx.commit()?;
+            return Ok(SignalRunStatus::Finished);
+        }
+        // A wait past its deadline has timed out, even before its run is
+        // claimed: it gets `null`, and this signal finds the name taken.
+        self.expire_waits(&mut tx, event_name, Some(run_id), now)?;
+
+        let waiters = tx.query(
+            &format!(
+                "DELETE FROM {}.event_waiters WHERE app_id=$1 AND run_id=$2 AND event_name=$3
+                 RETURNING step_name",
+                self.schema
+            ),
+            &[&self.app_id, &run_id, &event_name],
+        )?;
+        if !waiters.is_empty() {
+            for waiter in waiters {
+                let step_name: String = waiter.get(0);
+                tx.execute(
+                    &format!(
+                        "INSERT INTO {}.steps (app_id, run_id, name, result, completed_at)
+                         VALUES ($1, $2, $3, $4, $5)
+                         ON CONFLICT(app_id, run_id, name) DO NOTHING",
+                        self.schema
+                    ),
+                    &[&self.app_id, &run_id, &step_name, &payload_json, &now],
+                )?;
+            }
+            tx.execute(
+                &format!(
+                    "UPDATE {}.runs SET run_at=$3 WHERE app_id=$1 AND id=$2 AND status='pending'",
+                    self.schema
+                ),
+                &[&self.app_id, &run_id, &now],
+            )?;
+            tx.commit()?;
+            return Ok(SignalRunStatus::Delivered);
+        }
+
+        let held: bool = tx
+            .query_one(
+                &format!(
+                    "SELECT EXISTS(SELECT 1 FROM {schema}.steps
+                                   WHERE app_id=$1 AND run_id=$2 AND name=$3)
+                         OR EXISTS(SELECT 1 FROM {schema}.run_inbox
+                                   WHERE app_id=$1 AND run_id=$2 AND event_name=$3)",
+                    schema = self.schema
+                ),
+                &[&self.app_id, &run_id, &event_name],
+            )?
+            .get(0);
+        if held {
+            tx.commit()?;
+            return Ok(SignalRunStatus::Duplicate);
+        }
+        let usage = tx.query_one(
+            &format!(
+                "SELECT COUNT(*), COALESCE(SUM(payload_bytes), 0)::BIGINT FROM {}.run_inbox
+                 WHERE app_id=$1 AND run_id=$2",
+                self.schema
+            ),
+            &[&self.app_id, &run_id],
+        )?;
+        super::enqueue::check_inbox_room(run_id, usage.get(0), usage.get(1), payload_json.len())?;
         tx.execute(
             &format!(
-                "INSERT INTO {}.event_waiters (app_id, run_id, step_name, event_name, expires_at)
-                 VALUES ($1, $2, $3, $4, $5)
-                 ON CONFLICT(app_id, run_id, step_name) DO UPDATE
-                 SET event_name=excluded.event_name, expires_at=excluded.expires_at",
+                "INSERT INTO {}.run_inbox
+                 (app_id, run_id, event_name, payload, payload_bytes, received_at)
+                 VALUES ($1, $2, $3, $4, $5, $6)",
                 self.schema
             ),
             &[
                 &self.app_id,
                 &run_id,
-                &step_name,
                 &event_name,
-                &timeout_at_ms,
+                &payload_json,
+                &(payload_json.len() as i64),
+                &now,
             ],
         )?;
         tx.commit()?;
-        Ok(())
+        Ok(SignalRunStatus::Buffered)
     }
 
     pub(super) fn signal(
@@ -507,6 +714,7 @@ impl PostgresRunsDb {
         let now = self.now();
         let mut client = self.client()?;
         let mut tx = client.transaction()?;
+        self.expire_waits(&mut tx, event_name, None, now)?;
         let waiters = tx.query(
             &format!(
                 "SELECT run_id, step_name FROM {}.event_waiters
@@ -793,12 +1001,39 @@ impl PostgresRunsDb {
                 expires_at: row.get(2),
             })
             .collect();
+        let signals = tx
+            .query(
+                &format!(
+                    "SELECT event_name, received_at, payload_bytes FROM {}.run_inbox
+                     WHERE app_id=$1 AND run_id=$2 ORDER BY received_at, event_name LIMIT $3",
+                    self.schema
+                ),
+                &[&self.app_id, &id, &(WORKFLOW_RUN_MAX_SIGNALS as i64)],
+            )?
+            .into_iter()
+            .map(|row| SignalRow {
+                event_name: row.get(0),
+                received_at: row.get(1),
+                bytes: row.get(2),
+            })
+            .collect();
+        let signals_total: i64 = tx
+            .query_one(
+                &format!(
+                    "SELECT COUNT(*) FROM {}.run_inbox WHERE app_id=$1 AND run_id=$2",
+                    self.schema
+                ),
+                &[&self.app_id, &id],
+            )?
+            .get(0);
         tx.commit()?;
         Ok(Some(RunRecord {
             run,
             steps,
             steps_total: steps_total as u64,
             waits,
+            signals,
+            signals_total: signals_total as u64,
         }))
     }
 
@@ -855,6 +1090,7 @@ impl PostgresRunsDb {
             &[&self.app_id, &id, &OPERATOR_CANCEL_REASON, &self.now()],
         )?;
         self.delete_waiters(&mut tx, id)?;
+        self.wake_run_waiters(&mut tx, id)?;
         tx.commit()?;
         Ok(CancelledRun {
             previous_status: status,
@@ -894,6 +1130,227 @@ impl PostgresRunsDb {
         Ok(())
     }
 
+    /// See the SQLite store's helper of the same name.
+    fn release_for_wait(
+        &self,
+        tx: &mut postgres::Transaction<'_>,
+        run_id: &str,
+        worker_id: &str,
+        timeout_at_ms: Option<i64>,
+    ) -> Result<(), RunsDbError> {
+        let rows = tx.execute(
+            &format!(
+                "UPDATE {}.runs
+                 SET status='pending', worker_id=NULL, lease_until=NULL, run_at=$4, attempts=attempts-1
+                 WHERE app_id=$1 AND id=$2 AND worker_id=$3 AND status='running'",
+                self.schema
+            ),
+            &[
+                &self.app_id,
+                &run_id,
+                &worker_id,
+                &timeout_at_ms.unwrap_or(i64::MAX),
+            ],
+        )?;
+        if rows == 0 {
+            return Err(RunsDbError::StaleWorker);
+        }
+        Ok(())
+    }
+
+    fn step_saved(
+        &self,
+        tx: &mut postgres::Transaction<'_>,
+        run_id: &str,
+        step_name: &str,
+    ) -> Result<bool, RunsDbError> {
+        Ok(tx
+            .query_one(
+                &format!(
+                    "SELECT EXISTS(SELECT 1 FROM {}.steps WHERE app_id=$1 AND run_id=$2 AND name=$3)",
+                    self.schema
+                ),
+                &[&self.app_id, &run_id, &step_name],
+            )?
+            .get(0))
+    }
+
+    fn requeue_now(
+        &self,
+        tx: &mut postgres::Transaction<'_>,
+        run_id: &str,
+        step_name: &str,
+    ) -> Result<(), RunsDbError> {
+        tx.execute(
+            &format!(
+                "DELETE FROM {}.event_waiters WHERE app_id=$1 AND run_id=$2 AND step_name=$3",
+                self.schema
+            ),
+            &[&self.app_id, &run_id, &step_name],
+        )?;
+        tx.execute(
+            &format!(
+                "UPDATE {}.runs SET run_at=$3 WHERE app_id=$1 AND id=$2",
+                self.schema
+            ),
+            &[&self.app_id, &run_id, &self.now()],
+        )?;
+        Ok(())
+    }
+
+    fn satisfy_wait(
+        &self,
+        tx: &mut postgres::Transaction<'_>,
+        run_id: &str,
+        step_name: &str,
+        result: &str,
+    ) -> Result<(), RunsDbError> {
+        tx.execute(
+            &format!(
+                "INSERT INTO {}.steps (app_id, run_id, name, result, completed_at)
+                 VALUES ($1, $2, $3, $4, $5)
+                 ON CONFLICT(app_id, run_id, name) DO NOTHING",
+                self.schema
+            ),
+            &[&self.app_id, &run_id, &step_name, &result, &self.now()],
+        )?;
+        self.requeue_now(tx, run_id, step_name)
+    }
+
+    fn park(
+        &self,
+        tx: &mut postgres::Transaction<'_>,
+        run_id: &str,
+        step_name: &str,
+        event_name: &str,
+        timeout_at_ms: Option<i64>,
+    ) -> Result<(), RunsDbError> {
+        tx.execute(
+            &format!(
+                "INSERT INTO {}.event_waiters (app_id, run_id, step_name, event_name, expires_at)
+                 VALUES ($1, $2, $3, $4, $5)
+                 ON CONFLICT(app_id, run_id, step_name) DO UPDATE
+                 SET event_name=excluded.event_name, expires_at=excluded.expires_at",
+                self.schema
+            ),
+            &[
+                &self.app_id,
+                &run_id,
+                &step_name,
+                &event_name,
+                &timeout_at_ms,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Time out every wait on `event_name` (of `run_id` only, when given)
+    /// whose deadline has passed, as a claim would; see the SQLite store.
+    fn expire_waits(
+        &self,
+        tx: &mut postgres::Transaction<'_>,
+        event_name: &str,
+        run_id: Option<&str>,
+        now: i64,
+    ) -> Result<(), RunsDbError> {
+        tx.execute(
+            &format!(
+                "WITH expired AS (
+                    DELETE FROM {schema}.event_waiters
+                    WHERE app_id=$1 AND event_name=$2 AND ($3::TEXT IS NULL OR run_id=$3)
+                      AND expires_at IS NOT NULL AND expires_at <= $4
+                    RETURNING run_id, step_name
+                 )
+                 INSERT INTO {schema}.steps (app_id, run_id, name, result, completed_at)
+                 SELECT $1, run_id, step_name, 'null', $4 FROM expired
+                 ON CONFLICT(app_id, run_id, name) DO NOTHING",
+                schema = self.schema
+            ),
+            &[&self.app_id, &event_name, &run_id, &now],
+        )?;
+        Ok(())
+    }
+
+    /// Wake every run waiting on `id`'s outcome with it, inside the
+    /// transaction that finished `id` (which holds its row lock).
+    fn wake_run_waiters(
+        &self,
+        tx: &mut postgres::Transaction<'_>,
+        id: &str,
+    ) -> Result<(), RunsDbError> {
+        let now = self.now();
+        self.expire_waits(tx, &super::enqueue::run_event_name(id), None, now)?;
+        let waiters = tx.query(
+            &format!(
+                "DELETE FROM {}.event_waiters WHERE app_id=$1 AND event_name=$2
+                 RETURNING run_id, step_name",
+                self.schema
+            ),
+            &[&self.app_id, &super::enqueue::run_event_name(id)],
+        )?;
+        if waiters.is_empty() {
+            return Ok(());
+        }
+        let outcome = match tx.query_opt(
+            &format!(
+                "SELECT status, result, last_error FROM {}.runs WHERE app_id=$1 AND id=$2",
+                self.schema
+            ),
+            &[&self.app_id, &id],
+        )? {
+            Some(row) => outcome_from(&row, 0)?,
+            None => super::enqueue::missing_outcome(),
+        };
+        let outcome = serde_json::to_string(&outcome)?;
+        for waiter in waiters {
+            let run_id: String = waiter.get(0);
+            let step_name: String = waiter.get(1);
+            tx.execute(
+                &format!(
+                    "INSERT INTO {}.steps (app_id, run_id, name, result, completed_at)
+                     VALUES ($1, $2, $3, $4, $5)
+                     ON CONFLICT(app_id, run_id, name) DO NOTHING",
+                    self.schema
+                ),
+                &[&self.app_id, &run_id, &step_name, &outcome, &now],
+            )?;
+            tx.execute(
+                &format!(
+                    "UPDATE {}.runs SET run_at=$3 WHERE app_id=$1 AND id=$2 AND status='pending'",
+                    self.schema
+                ),
+                &[&self.app_id, &run_id, &now],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Like `update_running`, for a write that finishes the run: in one
+    /// transaction with waking the runs waiting on its outcome.
+    fn finish_running(
+        &self,
+        id: &str,
+        set_clause: &str,
+        params: &[&(dyn postgres::types::ToSql + Sync)],
+    ) -> Result<(), RunsDbError> {
+        let mut client = self.client()?;
+        let mut tx = client.transaction()?;
+        let rows = tx.execute(
+            &format!(
+                "UPDATE {}.runs SET {set_clause}
+                 WHERE app_id=$1 AND id=$2 AND worker_id=$3 AND status='running'",
+                self.schema
+            ),
+            params,
+        )?;
+        if rows == 0 {
+            return Err(RunsDbError::StaleWorker);
+        }
+        self.wake_run_waiters(&mut tx, id)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     fn update_running(
         &self,
         set_clause: &str,
@@ -913,6 +1370,22 @@ impl PostgresRunsDb {
         }
         Ok(())
     }
+}
+
+/// A `RunResult` from `status, result, last_error` columns starting at `first`.
+fn outcome_from(
+    row: &postgres::Row,
+    first: usize,
+) -> Result<crate::enqueue::RunResult, RunsDbError> {
+    Ok(crate::enqueue::RunResult {
+        status: row.get(first),
+        result: row
+            .get::<_, Option<String>>(first + 1)
+            .map(|value| serde_json::from_str(&value))
+            .transpose()?
+            .unwrap_or(serde_json::Value::Null),
+        error: row.get(first + 2),
+    })
 }
 
 fn summary_row(row: &postgres::Row) -> SummaryRow {
@@ -1012,7 +1485,19 @@ fn init_schema(client: &mut Client, schema: &str) -> Result<(), RunsDbError> {
            ON {schema}.event_waiters(app_id, event_name);
          CREATE INDEX IF NOT EXISTS idx_event_waiters_app_expiry
            ON {schema}.event_waiters(app_id, expires_at)
-           WHERE expires_at IS NOT NULL;"
+           WHERE expires_at IS NOT NULL;
+
+         -- Signals addressed to one run that arrived before it waited for
+         -- them; see the SQLite schema. Pruned with their run.
+         CREATE TABLE IF NOT EXISTS {schema}.run_inbox (
+             app_id TEXT NOT NULL,
+             run_id TEXT NOT NULL,
+             event_name TEXT NOT NULL,
+             payload TEXT NOT NULL,
+             payload_bytes BIGINT NOT NULL,
+             received_at BIGINT NOT NULL,
+             PRIMARY KEY(app_id, run_id, event_name)
+         );"
     ))?;
     tx.commit()?;
     Ok(())

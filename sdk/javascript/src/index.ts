@@ -157,6 +157,8 @@ export type { PresenceMember } from "./presence";
 export { defineWorkflow, signal } from "./workflows/define";
 export type {
   EnqueueOptions,
+  SignalOptions,
+  SignalRunStatus,
   WorkflowContext,
   WorkflowOpts,
   WorkflowStepContext,

@@ -14,6 +14,13 @@ Flow:
 4. `src/workflows/broadcast.ts` sleeps briefly then publishes to `demo`.
 5. Client receives both messages over the SSE stream without reconnecting.
 
+Run-addressed signals: `POST /approval` with `{ id, settleMs }` enqueues the
+`approval` workflow, which sleeps `settleMs` and then waits for `decision`.
+`POST /signal` with `{ runId, event, payload }` sent during the sleep must be
+`buffered` and later returned by the wait; a second one is a `duplicate`, and
+one after the run finished is `finished`. `POST /approval/result` reports the
+run's result.
+
 Used by both the CLI dev e2e suite (`e2e/cli/tests/dev.test.ts`) and the
 deploy/docker harness.
 

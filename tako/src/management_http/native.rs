@@ -216,6 +216,7 @@ pub(super) fn rpc_action(
         | Command::FailRun { .. }
         | Command::DeferRun { .. }
         | Command::WaitForEvent { .. }
+        | Command::WaitForRun { .. }
         | Command::NetworkCall { .. }
         | Command::ChannelPublish { .. }
         | Command::ChannelClose { .. } => {

@@ -245,7 +245,8 @@ fn cancel_fences_a_running_attempt_for_good() {
             db.fail("r1", &worker, "boom", Some(0), false),
             db.fail("r1", &worker, "boom", None, true),
             db.defer("r1", &worker, Some(0)),
-            db.wait_for_event("r1", &worker, "approval", "approved", None),
+            db.wait_for_event("r1", &worker, "approval", "approved", None)
+                .map(|_| ()),
             db.cancel("r1", &worker, Some("bail")),
         ];
         for result in stale {

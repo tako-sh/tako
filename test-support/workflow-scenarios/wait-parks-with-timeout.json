@@ -1,5 +1,5 @@
 {
-  "description": "Waiting for an event with a ten-minute timeout parks the run with a timeout ten minutes away.",
+  "description": "Waiting for an event with a ten-minute timeout saves the deadline on first reach, then parks the run with a timeout ten minutes away.",
   "drive": "run",
   "workflows": ["wait-timeout"],
   "steps": [
@@ -38,6 +38,27 @@
     },
     {
       "expect": {
+        "command": "save_step",
+        "app": "scenario-app",
+        "id": "run-1",
+        "worker_id": "claim-1",
+        "step_name": "__wait:approval",
+        "result": {
+          "timeoutAt": {
+            "$var": "timeout_at",
+            "is": {
+              "$ms_from_now": [599000, 600000]
+            }
+          }
+        }
+      },
+      "reply": {
+        "status": "ok",
+        "data": {}
+      }
+    },
+    {
+      "expect": {
         "command": "wait_for_event",
         "app": "scenario-app",
         "id": "run-1",
@@ -45,7 +66,7 @@
         "step_name": "approval",
         "event_name": "approval",
         "timeout_at_ms": {
-          "$ms_from_now": [599000, 600000]
+          "$var": "timeout_at"
         }
       },
       "reply": {

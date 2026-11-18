@@ -18,6 +18,8 @@ var (
 	ErrChannelParamsInvalid = internal.ErrChannelParamsInvalid
 	// ErrChannelClosed: the channel stream was closed and accepts no more messages.
 	ErrChannelClosed = internal.ErrChannelClosed
+	// ErrSignalInboxFull: a workflow run's signal inbox is full; the signal was not stored.
+	ErrSignalInboxFull = internal.ErrSignalInboxFull
 	// ErrUnavailable: the server is draining, overloaded, or its storage is unreachable; retry later.
 	ErrUnavailable = internal.ErrUnavailable
 )

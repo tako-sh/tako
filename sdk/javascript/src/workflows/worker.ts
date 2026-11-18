@@ -20,6 +20,7 @@ import {
   createStepAPI,
   DeferSignal,
   FailSignal,
+  loseOwnership,
   OwnershipLostSignal,
   type RunOwnership,
   WaitSignal,
@@ -28,7 +29,7 @@ import {
   type WorkflowStepContext,
 } from "./step";
 import type { Run, StepState } from "./types";
-import { withWorkflowExecution, withinWorkflowStep } from "./execution";
+import { trackWorkflowOperation, withWorkflowExecution, withinWorkflowStep } from "./execution";
 
 /** Delays between retries of a run's final write after a transient failure. */
 const LIFECYCLE_RETRY_DELAYS_MS = [100, 250, 500, 1000];
@@ -56,6 +57,12 @@ export interface WorkflowContext {
   readonly attempt: number;
   /** Logger scoped to this workflow run. */
   readonly logger: Logger;
+  /**
+   * Aborted when this attempt no longer owns the run: an operator cancelled
+   * it or its lease was reclaimed. Pass it to cancellable work; durable steps
+   * started after the loss stop at once.
+   */
+  readonly signal: AbortSignal;
   /**
    * Execute and memoize a durable step.
    *
@@ -314,7 +321,8 @@ export class Worker {
     }
 
     const stepState: StepState = { ...run.stepState };
-    const ownership: RunOwnership = { lost: false };
+    const ownership: RunOwnership = { lost: false, controller: new AbortController() };
+    const signal = ownership.controller!.signal;
     // Another owner or an operator now decides this run's fate. Write nothing.
     const stop = (): void => {
       runLog.warn("Workflow stopped: this worker no longer owns the run", {
@@ -353,6 +361,7 @@ export class Worker {
       stepName,
       attempt: run.attempts,
       logger: contextLog.child(`${run.name}:${stepName}`, { step: stepName }),
+      signal,
     });
     const steps = createStepAPI(
       this.client,
@@ -368,9 +377,14 @@ export class Worker {
       workflowName: run.name,
       attempt: run.attempts,
       logger: contextLog,
-      ...steps,
+      signal,
       run: (name, fn, opts) =>
-        steps.run(name, (step) => withinWorkflowStep(name, () => fn(step)), opts),
+        trackWorkflowOperation(() =>
+          steps.run(name, (step) => withinWorkflowStep(name, () => fn(step)), opts),
+        ),
+      sleep: (name, durationMs) => trackWorkflowOperation(() => steps.sleep(name, durationMs)),
+      waitFor: <T = unknown>(name: string, opts?: StepWaitOptions) =>
+        trackWorkflowOperation(() => steps.waitFor<T>(name, opts)),
       bail: (reason?: string): never => {
         throw new BailSignal(reason);
       },
@@ -384,7 +398,7 @@ export class Worker {
     if (this.heartbeatIntervalMs > 0) {
       heartbeatTimer = setInterval(() => {
         this.client.heartbeat(run.id, claimOwner, this.leaseMs).catch((err) => {
-          if (isStaleOwnerError(err)) ownership.lost = true;
+          if (isStaleOwnerError(err)) loseOwnership(ownership);
         });
       }, this.heartbeatIntervalMs);
     }
@@ -425,10 +439,29 @@ export class Worker {
         return;
       }
       if (err instanceof WaitSignal) {
-        const waited = await finish(() =>
-          this.client.waitForEvent(run.id, claimOwner, err.stepName, err.eventName, err.timeoutAt),
-        );
-        if (waited) {
+        let delivered = false;
+        const target = err.target;
+        const waited = await finish(async () => {
+          ({ delivered } = target
+            ? await this.client.waitForRun(
+                run.id,
+                claimOwner,
+                err.stepName,
+                target.name,
+                target.id,
+                err.timeoutAt,
+              )
+            : await this.client.waitForEvent(
+                run.id,
+                claimOwner,
+                err.stepName,
+                err.eventName,
+                err.timeoutAt,
+              ));
+        });
+        if (waited && delivered) {
+          runLog.debug("Workflow resuming with a buffered signal", { event: err.eventName });
+        } else if (waited) {
           runLog.debug("Workflow waiting", { event: err.eventName, timeoutAt: err.timeoutAt });
         }
         return;

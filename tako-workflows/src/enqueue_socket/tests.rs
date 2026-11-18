@@ -824,6 +824,7 @@ async fn on_enqueue_fires_for_signal_with_waiters_only() {
         app: "a".into(),
         event_name: "noop".into(),
         payload: serde_json::json!({}),
+        run_id: None,
     };
     write_json_line(&mut w, &cmd).await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -842,10 +843,132 @@ async fn on_enqueue_fires_for_signal_with_waiters_only() {
         app: "a".into(),
         event_name: "evt".into(),
         payload: serde_json::json!({"x": 1}),
+        run_id: None,
     };
     write_json_line(&mut w, &cmd).await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn run_addressed_signals_buffer_and_wake_through_the_socket() {
+    let tmp = tempfile::tempdir().unwrap();
+    let sock = tmp.path().join("internal.sock");
+    let db = Arc::new(RunsDb::open_in_memory().unwrap());
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = count.clone();
+    let on_enq: OnEnqueue = Arc::new(move || {
+        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    });
+    let db_for_lookup = db.clone();
+    let lookup: AppLookup = Arc::new(move |_app: &str| {
+        Some(AppHandlers {
+            db: db_for_lookup.clone(),
+            limiter: test_limiter(),
+            accepting_new_work: accepting_new_work(),
+            on_enqueue: on_enq.clone(),
+            health_check: Arc::new(|| Ok(())),
+            on_claimed: Arc::new(|| {}),
+        })
+    });
+    let handle = spawn(&sock, lookup, None, None, None).unwrap();
+    let send = |command: serde_json::Value| {
+        let sock = sock.clone();
+        async move {
+            let stream = UnixStream::connect(&sock).await.unwrap();
+            let (r, mut w) = stream.into_split();
+            write_json_line(&mut w, &command).await.unwrap();
+            let response: serde_json::Value = read_json_line(&mut BufReader::new(r))
+                .await
+                .unwrap()
+                .unwrap();
+            response
+        }
+    };
+    let fired = || count.load(std::sync::atomic::Ordering::SeqCst);
+    let id = db
+        .enqueue("w", &serde_json::json!({}), &EnqueueOpts::default())
+        .unwrap()
+        .id;
+    let signal = |event: &str| {
+        serde_json::json!({
+            "command": "signal", "app": "a", "event_name": event,
+            "payload": {"ok": true}, "run_id": id,
+        })
+    };
+
+    // Before the run waits: buffered, nothing to wake.
+    let reply = send(signal("approval")).await;
+    assert_eq!(reply["data"], serde_json::json!({"status": "buffered"}));
+    assert_eq!(fired(), 0);
+    let reply = send(signal("approval")).await;
+    assert_eq!(reply["data"]["status"], "duplicate");
+
+    // The wait consumes it and makes the run due, which wakes the dispatcher.
+    let owner = db
+        .claim("w1", &["w".into()], 30_000)
+        .unwrap()
+        .unwrap()
+        .worker_id;
+    let reply = send(serde_json::json!({
+        "command": "wait_for_event", "app": "a", "id": id, "worker_id": owner,
+        "step_name": "approval", "event_name": "approval", "timeout_at_ms": null,
+    }))
+    .await;
+    assert_eq!(reply["data"], serde_json::json!({"delivered": true}));
+    assert_eq!(fired(), 1);
+
+    // A run already waiting is woken directly.
+    let owner = db
+        .claim("w1", &["w".into()], 30_000)
+        .unwrap()
+        .unwrap()
+        .worker_id;
+    let reply = send(serde_json::json!({
+        "command": "wait_for_event", "app": "a", "id": id, "worker_id": owner,
+        "step_name": "shipped", "event_name": "shipped", "timeout_at_ms": null,
+    }))
+    .await;
+    assert_eq!(reply["data"], serde_json::json!({"delivered": false}));
+    let reply = send(signal("shipped")).await;
+    assert_eq!(reply["data"]["status"], "delivered");
+    assert_eq!(fired(), 2);
+
+    // A parent waiting on a run that already finished is due at once.
+    let child = db
+        .enqueue("kid", &serde_json::json!({}), &EnqueueOpts::default())
+        .unwrap()
+        .id;
+    let child_owner = db
+        .claim("w2", &["kid".into()], 30_000)
+        .unwrap()
+        .unwrap()
+        .worker_id;
+    db.complete(&child, &child_owner, &serde_json::json!(1))
+        .unwrap();
+    let owner = db
+        .claim("w1", &["w".into()], 30_000)
+        .unwrap()
+        .unwrap()
+        .worker_id;
+    let reply = send(serde_json::json!({
+        "command": "wait_for_run", "app": "a", "id": id, "worker_id": owner,
+        "step_name": "outcome", "target_name": "kid", "target_id": child, "timeout_at_ms": null,
+    }))
+    .await;
+    assert_eq!(reply["data"], serde_json::json!({"delivered": true}));
+    assert_eq!(fired(), 3);
+
+    // Reserved and malformed names are rejected with a code.
+    let reply = send(signal("__run:x")).await;
+    assert_eq!(reply["code"], "invalid_request");
+    let reply = send(serde_json::json!({
+        "command": "signal", "app": "a", "event_name": "x", "payload": 1, "run_id": "",
+    }))
+    .await;
+    assert_eq!(reply["code"], "invalid_request");
 
     handle.shutdown().await;
 }

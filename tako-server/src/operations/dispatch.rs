@@ -569,6 +569,7 @@ impl crate::ServerState {
             | Command::FailRun { .. }
             | Command::DeferRun { .. }
             | Command::WaitForEvent { .. }
+            | Command::WaitForRun { .. }
             | Command::Signal { .. }
             | Command::NetworkCall { .. }
         | Command::ChannelPublish { .. }

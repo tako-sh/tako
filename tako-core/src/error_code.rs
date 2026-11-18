@@ -20,6 +20,7 @@ impl ErrorCode {
             Self::InvalidRequest => "invalid_request",
             Self::RunIdConflict => "run_id_conflict",
             Self::RunNotOwned => "run_not_owned",
+            Self::SignalInboxFull => "signal_inbox_full",
             Self::Unavailable => "unavailable",
         }
     }

@@ -329,13 +329,64 @@ pub(super) fn show_lines(
                 .expires_at_ms
                 .map(|at| format!("until {}", clock.full(at)))
                 .unwrap_or_else(|| "with no timeout".to_string());
+            // Waits on another run's outcome park on the reserved `__run:<id>` event.
+            let target = match wait.event_name.strip_prefix("__run:") {
+                Some(run) => format!("run {}", printable(run)),
+                None => printable(&wait.event_name),
+            };
             lines.push(Line::Text(format!(
-                "{} waits for {} {until}",
-                wait.step_name, wait.event_name
+                "{} waits for {target} {until}",
+                printable(&wait.step_name)
+            )));
+        }
+    }
+
+    if run.signals_total > 0 {
+        lines.push(Line::Section("Buffered signals".to_string()));
+        let omitted = run.signals_total.saturating_sub(run.signals.len() as u64);
+        if omitted > 0 {
+            lines.push(Line::Muted(format!(
+                "{omitted} newer signal(s) omitted; showing the {} oldest of {}.",
+                run.signals.len(),
+                run.signals_total
+            )));
+        }
+        // Senders choose these names; never let one drive the terminal.
+        let names: Vec<String> = run
+            .signals
+            .iter()
+            .map(|signal| printable(&signal.event_name))
+            .collect();
+        let name_width = names
+            .iter()
+            .map(|name| name.width())
+            .max()
+            .unwrap_or_default();
+        for (signal, name) in run.signals.iter().zip(&names) {
+            lines.push(Line::Text(format!(
+                "{}{}  {}  {} bytes",
+                name,
+                " ".repeat(name_width.saturating_sub(name.width())),
+                clock.absolute(signal.received_at_ms),
+                signal.bytes
             )));
         }
     }
     lines
+}
+
+/// `text` with control characters (ANSI escapes, newlines) shown as escapes,
+/// so stored names cannot move the cursor or forge lines.
+fn printable(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_control() {
+                c.escape_default().collect()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
 }
 
 fn capped_lines(value: &CappedJson) -> Vec<Line> {
@@ -436,7 +487,7 @@ mod tests {
     use super::super::merge::tests::{detail, summary};
     use super::super::merge::{ListedRun, ServerError};
     use super::*;
-    use tako_core::{WorkflowRunStep, WorkflowRunWait};
+    use tako_core::{WorkflowRunSignal, WorkflowRunStep, WorkflowRunWait};
 
     // 2026-11-12 12:00:00 UTC
     const NOW_MS: i64 = 1_794_484_800_000;
@@ -675,11 +726,31 @@ mod tests {
             bytes: 40_000,
             preview: Some("{\"rows\":[1,2,3".into()),
         };
-        run.waits = vec![WorkflowRunWait {
-            step_name: "approval".into(),
-            event_name: "order.approved".into(),
-            expires_at_ms: None,
-        }];
+        run.waits = vec![
+            WorkflowRunWait {
+                step_name: "approval".into(),
+                event_name: "order.approved".into(),
+                expires_at_ms: None,
+            },
+            WorkflowRunWait {
+                step_name: "invoice:outcome".into(),
+                event_name: "__run:child:42".into(),
+                expires_at_ms: None,
+            },
+        ];
+        run.signals = vec![
+            WorkflowRunSignal {
+                event_name: "shipped".into(),
+                received_at_ms: NOW_MS - 2 * MINUTE,
+                bytes: 17,
+            },
+            WorkflowRunSignal {
+                event_name: "delivered\u{1b}[2J".into(),
+                received_at_ms: NOW_MS - MINUTE,
+                bytes: 4,
+            },
+        ];
+        run.signals_total = 3;
         let lines = show_lines(&heading(None), &run, &clock());
         assert_eq!(
             texts(&lines),
@@ -700,6 +771,11 @@ mod tests {
                 "~ No saved steps.",
                 "# Waits",
                 "approval waits for order.approved with no timeout",
+                "invoice:outcome waits for run child:42 with no timeout",
+                "# Buffered signals",
+                "~ 1 newer signal(s) omitted; showing the 2 oldest of 3.",
+                "shipped             2026-11-12 11:58:00  17 bytes",
+                "delivered\\u{1b}[2J  2026-11-12 11:59:00  4 bytes",
             ]
         );
     }
