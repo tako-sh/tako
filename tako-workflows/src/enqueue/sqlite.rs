@@ -570,6 +570,9 @@ impl SqliteRunsDb {
         if parse_status(&status)?.is_terminal() {
             return Ok(SignalRunStatus::Finished);
         }
+        // A wait past its deadline has timed out, even before its run is
+        // claimed: it gets `null`, and this signal finds the name taken.
+        expire_waits(&tx, event_name, Some(run_id), now)?;
 
         let waiters = {
             let mut stmt = tx.prepare_cached(
@@ -639,6 +642,7 @@ impl SqliteRunsDb {
         // Acquire the writer lock before reading waiters. A deferred transaction
         // cannot wait on a competing writer when upgrading an existing snapshot.
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        expire_waits(&tx, event_name, None, now)?;
         let waiters = {
             let mut stmt =
                 tx.prepare("SELECT run_id, step_name FROM event_waiters WHERE event_name = ?1")?;
@@ -1035,9 +1039,38 @@ fn outcome_of(
     .transpose()
 }
 
+/// Time out every wait on `event_name` (of `run_id` only, when given) whose
+/// deadline has passed: save `null` as its step, as a claim would. A wake
+/// that arrives after the deadline but before the run is claimed must not
+/// turn a timed-out wait into a delivered one; the outcome may not depend
+/// on how soon a worker claims the run. The run is already due (its
+/// `run_at` is the deadline).
+fn expire_waits(
+    conn: &Connection,
+    event_name: &str,
+    run_id: Option<&str>,
+    now: i64,
+) -> Result<(), RunsDbError> {
+    conn.execute(
+        "INSERT OR IGNORE INTO steps (run_id, name, result, completed_at)
+         SELECT run_id, step_name, 'null', ?3 FROM event_waiters
+         WHERE event_name = ?1 AND (?2 IS NULL OR run_id = ?2)
+           AND expires_at IS NOT NULL AND expires_at <= ?3",
+        (event_name, run_id, now),
+    )?;
+    conn.execute(
+        "DELETE FROM event_waiters
+         WHERE event_name = ?1 AND (?2 IS NULL OR run_id = ?2)
+           AND expires_at IS NOT NULL AND expires_at <= ?3",
+        (event_name, run_id, now),
+    )?;
+    Ok(())
+}
+
 /// Wake every run waiting on `id`'s outcome with it. Called inside the
 /// transaction that finished `id`, so a parent never misses its child.
 fn wake_run_waiters(conn: &Connection, id: &str) -> Result<(), RunsDbError> {
+    expire_waits(conn, &super::run_event_name(id), None, now_ms())?;
     let waiters = {
         let mut stmt = conn
             .prepare_cached("SELECT run_id, step_name FROM event_waiters WHERE event_name = ?1")?;

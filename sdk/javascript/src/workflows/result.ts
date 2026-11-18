@@ -126,6 +126,28 @@ function isTerminal(status: string): boolean {
  * parent until the server wakes it with the child's outcome. The server
  * saves the outcome under `outcomeKey`, or `null` when the wait times out.
  */
+/** `read(id)`, or `"expired"` if the deadline passes first. */
+async function readBefore(
+  read: ReadResult,
+  id: string,
+  deadline: number | null,
+): Promise<WorkflowResultState | null | "expired"> {
+  if (deadline === null) return read(id);
+  if (Date.now() >= deadline) return "expired";
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    read(id),
+    new Promise<"expired">((resolve) => {
+      timer = setTimeout(
+        () => resolve("expired"),
+        Math.min(2_147_483_647, Math.max(0, deadline - Date.now())),
+      );
+    }),
+  ]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
+}
+
 async function pushedOutcome(
   target: string,
   id: string,
@@ -138,7 +160,8 @@ async function pushedOutcome(
   if (saved.hit) {
     return (saved.value as Outcome | null) ?? expiredOutcome();
   }
-  const state = await read(id);
+  const state = await readBefore(read, id, deadline);
+  if (state === "expired") return context.checkpoint(outcomeKey, async () => expiredOutcome());
   if (!state) return context.checkpoint(outcomeKey, async () => missingOutcome());
   if (isTerminal(state.status))
     return context.checkpoint(outcomeKey, async (): Promise<Outcome> => state);

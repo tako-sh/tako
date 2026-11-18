@@ -381,7 +381,7 @@ func approveOrder(ctx context.Context, orderID, userID string) (uint64, error) {
 
 A broadcast reaches only runs that are already waiting. A run that has not reached its wait yet, because it is still running earlier steps, sleeping, or retrying, never sees it, and the woken count is `0`. When the sender may be faster than the workflow, such as a payment webhook that can arrive before the run starts waiting, address the run instead.
 
-A wait's timeout counts from the first time the run reached that wait, not from each resume. The SDKs save the deadline as a step named `__wait:<name>`.
+A wait's timeout counts from the first time the run reached that wait, not from each resume. The SDKs save the deadline as a step named `__wait:<name>`. Once the deadline passes, the wait has timed out, even if a signal arrives before a worker picks the run up again.
 
 ### Signal One Run
 

@@ -52,6 +52,7 @@ both_stores!(
     pruning_a_run_drops_its_inbox_before_its_id_is_reused,
     a_signal_racing_a_wait_always_reaches_the_run,
     a_wait_whose_result_is_already_saved_never_parks,
+    signals_after_a_wait_deadline_leave_it_timed_out,
 );
 
 /// A server from before run inboxes prunes the run row without its inbox
@@ -430,4 +431,42 @@ fn a_signal_racing_a_wait_always_reaches_the_run(open: Open) {
             .complete(&id, &run.worker_id, &serde_json::Value::Null)
             .unwrap();
     }
+}
+
+/// A signal that arrives after a wait's deadline, before its run is
+/// claimed, leaves the wait timed out (`null`), whether addressed to the
+/// run or broadcast.
+fn signals_after_a_wait_deadline_leave_it_timed_out(open: Open) {
+    let db = open();
+    let id = enqueue(&db, "late-run");
+    let run = claim(&db);
+    db.wait_for_event(
+        &id,
+        &run.worker_id,
+        "approval",
+        "approval",
+        Some(now_ms() + 20),
+    )
+    .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(40));
+    assert_eq!(
+        db.signal_run(&id, "approval", &payload("late")).unwrap(),
+        SignalRunStatus::Duplicate
+    );
+    assert_eq!(claim(&db).step_state["approval"], serde_json::Value::Null);
+    assert_eq!(signals_total(&db, &id), 0);
+
+    let id = enqueue(&db, "late-broadcast");
+    let run = claim(&db);
+    db.wait_for_event(
+        &id,
+        &run.worker_id,
+        "late-event",
+        "late-event",
+        Some(now_ms() + 20),
+    )
+    .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(40));
+    assert_eq!(db.signal("late-event", &payload("late")).unwrap(), 0);
+    assert_eq!(claim(&db).step_state["late-event"], serde_json::Value::Null);
 }

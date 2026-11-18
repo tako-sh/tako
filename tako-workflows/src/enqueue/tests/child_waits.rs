@@ -44,6 +44,7 @@ both_stores!(
     a_finished_missing_or_foreign_child_satisfies_the_wait_at_once,
     an_expired_wait_saves_null,
     a_child_finishing_while_the_parent_parks_always_wakes_it,
+    a_child_finishing_after_the_deadline_leaves_the_wait_timed_out,
 );
 
 const PARENT: &str = "parent";
@@ -269,4 +270,27 @@ fn a_child_finishing_while_the_parent_parks_always_wakes_it(open: Open) {
             .complete(&parent, &run.worker_id, &serde_json::Value::Null)
             .unwrap();
     }
+}
+
+/// A wait past its deadline times out even when the child finishes before
+/// the parent is claimed: the outcome may not depend on claim latency.
+fn a_child_finishing_after_the_deadline_leaves_the_wait_timed_out(open: Open) {
+    let db = open();
+    let child = enqueue(&db, CHILD, "late-child", None);
+    let parent = enqueue(&db, PARENT, "late-parent", None);
+    let run = claim(&db, PARENT).unwrap();
+    db.wait_for_run(
+        &parent,
+        &run.worker_id,
+        "outcome",
+        CHILD,
+        &child,
+        Some(now_ms() + 20),
+    )
+    .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(40));
+    let run = claim(&db, CHILD).unwrap();
+    db.complete(&child, &run.worker_id, &serde_json::json!("late"))
+        .unwrap();
+    assert_eq!(outcome(&db), serde_json::Value::Null);
 }

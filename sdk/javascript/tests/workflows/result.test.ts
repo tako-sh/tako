@@ -257,3 +257,20 @@ test("a polled child wait backs off from one second to a minute as it ages", asy
     Date.now = now;
   }
 });
+
+test("a pushed wait's first read is bounded by its deadline", async () => {
+  let release!: (value: null) => void;
+  const stalled = new Promise<null>((resolve) => {
+    release = resolve;
+  });
+  const context = execution();
+  try {
+    await expect(
+      context.run(() =>
+        waitForWorkflowResult("child", "child-1", () => stalled, { timeout: 5 }, "push"),
+      ),
+    ).rejects.toMatchObject({ status: "timeout" });
+  } finally {
+    release(null);
+  }
+});

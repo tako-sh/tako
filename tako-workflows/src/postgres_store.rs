@@ -605,6 +605,9 @@ impl PostgresRunsDb {
             tx.commit()?;
             return Ok(SignalRunStatus::Finished);
         }
+        // A wait past its deadline has timed out, even before its run is
+        // claimed: it gets `null`, and this signal finds the name taken.
+        self.expire_waits(&mut tx, event_name, Some(run_id), now)?;
 
         let waiters = tx.query(
             &format!(
@@ -692,6 +695,7 @@ impl PostgresRunsDb {
         let now = self.now();
         let mut client = self.client()?;
         let mut tx = client.transaction()?;
+        self.expire_waits(&mut tx, event_name, None, now)?;
         let waiters = tx.query(
             &format!(
                 "SELECT run_id, step_name FROM {}.event_waiters
@@ -1221,6 +1225,33 @@ impl PostgresRunsDb {
         Ok(())
     }
 
+    /// Time out every wait on `event_name` (of `run_id` only, when given)
+    /// whose deadline has passed, as a claim would; see the SQLite store.
+    fn expire_waits(
+        &self,
+        tx: &mut postgres::Transaction<'_>,
+        event_name: &str,
+        run_id: Option<&str>,
+        now: i64,
+    ) -> Result<(), RunsDbError> {
+        tx.execute(
+            &format!(
+                "WITH expired AS (
+                    DELETE FROM {schema}.event_waiters
+                    WHERE app_id=$1 AND event_name=$2 AND ($3::TEXT IS NULL OR run_id=$3)
+                      AND expires_at IS NOT NULL AND expires_at <= $4
+                    RETURNING run_id, step_name
+                 )
+                 INSERT INTO {schema}.steps (app_id, run_id, name, result, completed_at)
+                 SELECT $1, run_id, step_name, 'null', $4 FROM expired
+                 ON CONFLICT(app_id, run_id, name) DO NOTHING",
+                schema = self.schema
+            ),
+            &[&self.app_id, &event_name, &run_id, &now],
+        )?;
+        Ok(())
+    }
+
     /// Wake every run waiting on `id`'s outcome with it, inside the
     /// transaction that finished `id` (which holds its row lock).
     fn wake_run_waiters(
@@ -1228,6 +1259,8 @@ impl PostgresRunsDb {
         tx: &mut postgres::Transaction<'_>,
         id: &str,
     ) -> Result<(), RunsDbError> {
+        let now = self.now();
+        self.expire_waits(tx, &super::enqueue::run_event_name(id), None, now)?;
         let waiters = tx.query(
             &format!(
                 "DELETE FROM {}.event_waiters WHERE app_id=$1 AND event_name=$2
@@ -1250,7 +1283,6 @@ impl PostgresRunsDb {
             None => super::enqueue::missing_outcome(),
         };
         let outcome = serde_json::to_string(&outcome)?;
-        let now = self.now();
         for waiter in waiters {
             let run_id: String = waiter.get(0);
             let step_name: String = waiter.get(1);
