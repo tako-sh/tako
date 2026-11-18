@@ -965,18 +965,61 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
         );
     }
     assert_eq!(server.store.0.lock().unwrap().1.records.len(), count);
+    // A client that `second` invited goes with it under --include-invited.
+    let third = server.ok(
+        &client_home,
+        &client,
+        &["network", "client", "add", "third", "--network", "fleet"],
+        None,
+    );
+    let third_home = server.directory.path().join("third-home");
+    let third_project = server.project("third-checkout");
     server.ok(
-        &server.owner_home,
-        &owner,
-        &[
+        &third_home,
+        &third_project,
+        &["network", "join", "--invitation-stdin"],
+        Some(third["invitation"].as_str().unwrap()),
+    );
+    let revoke_with_invited = |extra: &[&str]| {
+        let mut args = vec![
             "network",
             "client",
             "revoke",
             "second",
+            "--include-invited",
             "--network",
             "fleet",
-        ],
-        None,
+        ];
+        args.extend_from_slice(extra);
+        server.run(&server.owner_home, &owner, &args, None)
+    };
+    let asked = revoke_with_invited(&[]);
+    assert!(!asked.status.success());
+    assert!(
+        stderr_str(&asked).contains("--yes"),
+        "{}",
+        stderr_str(&asked)
+    );
+    let revoked = revoke_with_invited(&["--yes"]);
+    assert!(revoked.status.success(), "{}", stderr_str(&revoked));
+    let revoked: serde_json::Value = serde_json::from_slice(&revoked.stdout).unwrap();
+    let names: Vec<_> = revoked["revoked"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["client"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["second", "third"]);
+    assert!(
+        !server
+            .run(
+                &third_home,
+                &third_project,
+                &["network", "sync", "fleet"],
+                None
+            )
+            .status
+            .success()
     );
     assert!(
         !server

@@ -39,12 +39,19 @@ pub enum ClientCommands {
         all: bool,
     },
     /// Revoke a client's active key. Clients it invited keep their access
+    /// unless --include-invited
     #[command(visible_aliases = ["rm", "remove"])]
     Revoke {
         /// Client name or device ID
         client: String,
         #[arg(long)]
         network: Option<String>,
+        /// Also revoke every client it invited, and the clients those invited
+        #[arg(long)]
+        include_invited: bool,
+        /// Revoke with --include-invited without asking
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }
 
@@ -142,6 +149,65 @@ fn held_keys<'r, 'a>(rows: &'r [ClientRow<'a>], name: &str) -> Vec<&'r ClientRow
                 )
         })
         .collect()
+}
+
+/// Every client key that `root` invited, directly or through the clients it
+/// invited, that still holds access. Servers a client added are not clients it
+/// invited.
+fn invited_subtree<'r, 'a>(
+    rows: &'r [ClientRow<'a>],
+    root: &tako_network::DeviceId,
+) -> Vec<&'r ClientRow<'a>> {
+    let mut visited = vec![root.clone()];
+    let mut frontier = vec![root.clone()];
+    let mut holding = Vec::new();
+    while let Some(parent) = frontier.pop() {
+        for row in rows
+            .iter()
+            .filter(|row| row.member.approved_by.as_ref() == Some(&parent))
+        {
+            if visited.contains(&row.member.device_id) {
+                continue;
+            }
+            visited.push(row.member.device_id.clone());
+            // A revoked or replaced key's invitees are still in the subtree.
+            frontier.push(row.member.device_id.clone());
+            if matches!(
+                row.status,
+                tako_network::MemberStatus::Active | tako_network::MemberStatus::Conflict
+            ) {
+                holding.push(row);
+            }
+        }
+    }
+    holding
+}
+
+/// Why revoking `targets` together must not start, if it must not.
+fn refuse_revoking_together(
+    rows: &[ClientRow<'_>],
+    targets: &[&ClientRow<'_>],
+    own: &tako_network::DeviceId,
+) -> Option<String> {
+    if let Some(row) = targets.iter().find(|row| &row.member.device_id == own) {
+        return Some(format!(
+            "This device is client {}, which would be revoked too. Revoke them from another full client.",
+            row.name
+        ));
+    }
+    let revoked = |row: &ClientRow<'_>| {
+        targets
+            .iter()
+            .any(|target| target.member.device_id == row.member.device_id)
+    };
+    let full_left = rows.iter().any(|row| {
+        row.status == tako_network::MemberStatus::Active
+            && row.member.permissions.is_full()
+            && !revoked(row)
+    });
+    (!full_left).then(|| {
+        "Revoking these clients would leave the network without a full client. Invite another full client first.".to_string()
+    })
 }
 
 fn own_device(profile: &Profile) -> Result<tako_network::DeviceId> {
@@ -249,7 +315,15 @@ pub(super) fn run(command: ClientCommands) -> Result<()> {
         ClientCommands::Revoke {
             client,
             network: value,
-        } => revoke(&client, value.as_deref()),
+            include_invited,
+            yes,
+        } => {
+            if include_invited {
+                revoke_with_invited(&client, value.as_deref(), yes)
+            } else {
+                revoke(&client, value.as_deref())
+            }
+        }
     }
 }
 
@@ -513,6 +587,93 @@ fn revoke(client: &str, value: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Revoke a client together with every client it invited.
+fn revoke_with_invited(client: &str, value: Option<&str>, yes: bool) -> Result<()> {
+    let alias = network::resolve_network(value)?;
+    let profile = if output::is_dry_run() {
+        network::load_profile(&alias)?
+    } else {
+        network::client::refresh(&alias)?
+    };
+    let now = network::now()?;
+    let rows = client_rows(profile.snapshot(), now)?;
+    let target = rows
+        .iter()
+        .find(|row| row.member.device_id.to_string() == client)
+        .or_else(|| {
+            rows.iter().find(|row| {
+                row.status == tako_network::MemberStatus::Active
+                    && row.name.eq_ignore_ascii_case(client)
+            })
+        })
+        .ok_or("No active client has this name or device ID")?;
+    let mut targets = vec![target];
+    targets.extend(invited_subtree(&rows, &target.member.device_id));
+    if let Some(reason) = refuse_revoking_together(&rows, &targets, &own_device(&profile)?) {
+        return Err(reason.into());
+    }
+    let listed = |targets: &[&ClientRow<'_>]| {
+        targets
+            .iter()
+            .map(|row| serde_json::json!({"client": row.name, "device": row.member.device_id}))
+            .collect::<Vec<_>>()
+    };
+    let name = target.name.clone();
+    let invited: Vec<String> = targets[1..].iter().map(|row| row.name.clone()).collect();
+    if output::is_dry_run() {
+        return finish(
+            "Would revoke the client and the clients it invited",
+            serde_json::json!({"dry_run": true, "network": alias.name, "client": name, "revoked": listed(&targets)}),
+        );
+    }
+    if !yes && !invited.is_empty() {
+        if !output::is_interactive() {
+            return Err(format!(
+                "{name} invited {}. Pass --yes to revoke them all.",
+                invited.join(", ")
+            )
+            .into());
+        }
+        let prompt = format!(
+            "Revoke {} and the clients it invited: {}? Their keys stop working.",
+            output::strong(&name),
+            invited.join(", ")
+        );
+        if !output::confirm(&prompt, false)? {
+            output::operation_cancelled();
+            return Ok(());
+        }
+    }
+    let mut revocations = Vec::new();
+    for row in &targets {
+        revocations.push(network::revocation::run(
+            &alias,
+            &row.member.device_id.to_string(),
+        )?);
+    }
+    if let Err(error) = network::state::pull(&alias, None) {
+        output::hint(&format!(
+            "Membership changed; refresh network state later with `tako network sync`: {error}"
+        ));
+    }
+    let message = if invited.is_empty() {
+        format!("Revoked {name}; it invited no clients")
+    } else {
+        format!(
+            "Revoked {name} and the clients it invited: {}",
+            invited.join(", ")
+        )
+    };
+    finish(
+        &message,
+        serde_json::json!({"network": alias.name, "client": name, "revoked": listed(&targets), "revocations": revocations, "enforcement": "pending"}),
+    )?;
+    output::hint(
+        "Servers enforce the revocations as they reach them. Unreachable servers remain pending.",
+    );
+    Ok(())
+}
+
 pub(super) fn join(from_stdin: bool) -> Result<()> {
     if output::is_dry_run() {
         return finish(
@@ -658,5 +819,81 @@ mod tests {
             .collect();
         assert_eq!(held, [("ci", Active), ("CI", Conflict)]);
         assert!(held_keys(&rows, "nobody").is_empty());
+    }
+
+    #[test]
+    fn including_invited_revokes_the_whole_subtree_but_never_the_last_full_client() {
+        use tako_network::MemberStatus::*;
+        let fixture = crate::network::tests::fixture();
+        let network = fixture.profile.snapshot().network.id.clone();
+        let template = fixture.profile.snapshot().members[0].clone();
+        let device = |name: &str| {
+            tako_network::LocalDeviceKeys::generate()
+                .unwrap()
+                .enrollment_request(
+                    Some(network.clone()),
+                    tako_network::DeviceKind::Laptop,
+                    name.parse().unwrap(),
+                )
+                .unwrap()
+                .device_id_for(&network)
+                .unwrap()
+        };
+        let ids: Vec<_> = ["owner", "alice", "bob", "carol", "dave", "erin"]
+            .iter()
+            .map(|name| device(name))
+            .collect();
+        let member = |index: usize, by: Option<usize>, full: bool| {
+            let mut member = template.clone();
+            member.device_id = ids[index].clone();
+            member.approved_by = by.map(|by| ids[by].clone());
+            member.permissions = if full {
+                tako_network::Permissions::Full
+            } else {
+                tako_network::Permissions::Deploy(["api/prod".parse().unwrap()].into())
+            };
+            member
+        };
+        // owner -> alice -> bob, alice -> carol (revoked) -> dave; erin is separate.
+        let members = [
+            member(0, None, true),
+            member(1, Some(0), true),
+            member(2, Some(1), false),
+            member(3, Some(1), true),
+            member(4, Some(3), false),
+            member(5, None, true),
+        ];
+        let statuses = [Active, Active, Active, Revoked, Active, Active];
+        let names = ["owner", "alice", "bob", "carol", "dave", "erin"];
+        let rows: Vec<_> = members
+            .iter()
+            .zip(statuses)
+            .zip(names)
+            .map(|((member, status), name)| ClientRow {
+                name: name.into(),
+                member,
+                status,
+                invited_by: "-".into(),
+            })
+            .collect();
+        let subtree: Vec<_> = invited_subtree(&rows, &ids[1])
+            .into_iter()
+            .map(|row| row.name.as_str())
+            .collect();
+        // Carol is already revoked, but the client she invited is still found.
+        assert_eq!(subtree, ["bob", "dave"]);
+        let with = |root: usize| {
+            let mut targets = vec![&rows[root]];
+            targets.extend(invited_subtree(&rows, &ids[root]));
+            targets
+        };
+        // Erin keeps the network administrable, and owner runs the command.
+        assert_eq!(refuse_revoking_together(&rows, &with(1), &ids[0]), None);
+        let own = refuse_revoking_together(&rows, &with(1), &ids[2]).unwrap();
+        assert!(own.contains("client bob"), "{own}");
+        let mut everyone = with(0);
+        everyone.push(&rows[5]);
+        let last = refuse_revoking_together(&rows, &everyone, &device("outsider")).unwrap();
+        assert!(last.contains("without a full client"), "{last}");
     }
 }

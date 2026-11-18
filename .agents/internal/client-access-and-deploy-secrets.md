@@ -191,7 +191,12 @@ check.
   (`tako/src/commands/network.rs:68`), which duplicates both.
 - Revoke and replace list the clients the revoked generation invited, in the
   prompt and in `--json`. They keep their access; the list is there so they can be
-  revoked too.
+  revoked too. `client revoke <name> --include-invited` revokes the client and
+  every client key in its invitation subtree (through `approved_by`, also through
+  already revoked keys; servers are not included), after one confirmation that
+  names them (`--yes` skips it). It checks the whole set first and refuses before
+  revoking anything when the set holds the running client or every active full
+  client.
 - `client list` shows active clients by default: name, access, invited-by, and
   the active generation's device ID and creation time. `--all` also shows
   revoked and expired clients and replaced key generations, each with a status

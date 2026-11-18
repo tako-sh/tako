@@ -162,7 +162,8 @@ or an SSH agent. Deploy clients (`--deploy app/env`) only release code: they rea
 no secrets or logs, and servers apply the environment's values from the network state at deploy.
 Full clients can decrypt app secrets, provider/storage credentials and backup keys. `network export` is public configuration, not secret-key export or
 a way to enroll another device. Revoking a client affects only that client, not
-the clients it invited. Inspect pending enforcement rather than assuming offline
+the clients it invited; `client revoke <name> --include-invited` also revokes
+every client it invited, directly or indirectly. Inspect pending enforcement rather than assuming offline
 peers have applied a revocation.
 
 WireGuard private traffic needs the advertised UDP endpoint; there is no hosted

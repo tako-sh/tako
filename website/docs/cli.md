@@ -230,7 +230,7 @@ Lists release/build history or rolls an environment back to a previous release. 
 tako network create <name>
 tako network client add <name> [--network <id-or-name>] [--deploy <app/env>]... [--expires-in <seconds>] [--identity] [--yes]
 tako network client list [--network <id-or-name>] [--all]
-tako network client revoke <name> [--network <id-or-name>]
+tako network client revoke <name> [--network <id-or-name>] [--include-invited] [--yes]
 tako network join [--invitation-stdin]
 tako network sync [network]
 tako network export [network] --output <file>
@@ -249,7 +249,7 @@ Commands that act on one network take it from an explicit `--network` or positio
 
 Invitations are single-use, expire after 3600 seconds by default (`client add --expires-in` accepts 60–86400), and are redeemed through their issuing server. `join` prompts for the invitation or a client identity, or reads either from stdin. `network sync` pulls published ciphertext without publishing worktree drafts. Network names are shared and currently immutable.
 
-Each device generates and retains its own keys. Without `--deploy`, a client gets full access, including the `tako` SSH shell and `connect`; repeat `--deploy` to restrict it to deploying exact app/environment scopes. Deploy clients cannot `connect` or `ssh`. `client add --identity` prints a client identity instead of an invitation: the new client's keys and network profile in one string, on stdout, for machines that keep no state, such as CI. Set it as `TAKO_CLIENT_IDENTITY` and every command acts as that client, keeping its keys in a private temporary directory rather than the Tako home; `join` with an identity stores it like a joined device. Anyone holding an identity is that client until `client revoke`, so prefer `--deploy` for identities; a full-access identity prints a warning. Export contains public network configuration, not private keys or app secrets.
+Each device generates and retains its own keys. Without `--deploy`, a client gets full access, including the `tako` SSH shell and `connect`; repeat `--deploy` to restrict it to deploying exact app/environment scopes. Deploy clients cannot `connect` or `ssh`. `client add --identity` prints a client identity instead of an invitation: the new client's keys and network profile in one string, on stdout, for machines that keep no state, such as CI. Set it as `TAKO_CLIENT_IDENTITY` and every command acts as that client, keeping its keys in a private temporary directory rather than the Tako home; `join` with an identity stores it like a joined device. Anyone holding an identity is that client until `client revoke`, so prefer `--deploy` for identities; a full-access identity prints a warning. `client revoke` revokes only that client and lists the clients it invited, which keep their access; `--include-invited` also revokes them and every client they invited, after a confirmation that names them all (`--yes` skips it). It refuses when that set includes the client running the command or would leave the network without a full client, before revoking any of them. Export contains public network configuration, not private keys or app secrets.
 
 `drain` and `resume` require full access and a unique member name or device ID. Drain defaults to 120 seconds and accepts `0..3600`; zero requests immediate force. Inspect the structured completion report, not only the drained intent. See [Native server maintenance](/operations/#native-server-maintenance).
 
