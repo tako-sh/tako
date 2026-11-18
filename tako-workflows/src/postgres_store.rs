@@ -5,13 +5,13 @@ use tako_core::{EnqueueOpts, EnqueueRunResponse, RunPayload, ScheduleSpec};
 
 use super::blocking::ReleaseOffRuntime;
 use super::enqueue::operator::{
-    CancelledRun, OPERATOR_CANCEL_REASON, RunRecord, RunRow, StepRow, SummaryRow, WaitRow,
-    parse_status,
+    CancelledRun, OPERATOR_CANCEL_REASON, RunRecord, RunRow, SignalRow, StepRow, SummaryRow,
+    WaitRow, parse_status,
 };
 use super::enqueue::{
     Reclaimed, RunsDbError, ScheduleRow, WORKER_LOST_ERROR, clamp_lease_ms, now_ms,
 };
-use tako_core::WorkflowRunStatus;
+use tako_core::{SignalRunStatus, WORKFLOW_RUN_MAX_SIGNALS, WorkflowRunStatus};
 
 const DEFAULT_MAX_ATTEMPTS: u32 = 3;
 
@@ -106,6 +106,17 @@ impl PostgresRunsDb {
                 &now,
             ],
         )?;
+        if inserted == 1 {
+            // A server from before run inboxes prunes runs without their
+            // inbox rows. A new run must never inherit an earlier run's signals.
+            tx.execute(
+                &format!(
+                    "DELETE FROM {}.run_inbox WHERE app_id=$1 AND run_id=$2",
+                    self.schema
+                ),
+                &[&self.app_id, &id],
+            )?;
+        }
         if inserted == 0 {
             let existing = tx.query_one(
                 &format!(
@@ -376,7 +387,7 @@ impl PostgresRunsDb {
             tx.commit()?;
             return Ok(0);
         }
-        for table in ["steps", "event_waiters", "runs"] {
+        for table in ["steps", "event_waiters", "run_inbox", "runs"] {
             tx.execute(
                 &format!(
                     "DELETE FROM {}.{} WHERE app_id=$1 AND {} = ANY($2)",
@@ -462,7 +473,7 @@ impl PostgresRunsDb {
         step_name: &str,
         event_name: &str,
         timeout_at_ms: Option<i64>,
-    ) -> Result<(), RunsDbError> {
+    ) -> Result<bool, RunsDbError> {
         let mut client = self.client()?;
         let mut tx = client.transaction()?;
         let run_at = timeout_at_ms.unwrap_or(i64::MAX);
@@ -477,6 +488,76 @@ impl PostgresRunsDb {
         )?;
         if rows == 0 {
             return Err(RunsDbError::StaleWorker);
+        }
+        // The step already has a saved result the worker did not see: never
+        // park a run on a wait that is already satisfied.
+        let saved: bool = tx
+            .query_one(
+                &format!(
+                    "SELECT EXISTS(SELECT 1 FROM {}.steps WHERE app_id=$1 AND run_id=$2 AND name=$3)",
+                    self.schema
+                ),
+                &[&self.app_id, &run_id, &step_name],
+            )?
+            .get(0);
+        if saved {
+            tx.execute(
+                &format!(
+                    "DELETE FROM {}.event_waiters WHERE app_id=$1 AND run_id=$2 AND step_name=$3",
+                    self.schema
+                ),
+                &[&self.app_id, &run_id, &step_name],
+            )?;
+            tx.execute(
+                &format!(
+                    "UPDATE {}.runs SET run_at=$3 WHERE app_id=$1 AND id=$2",
+                    self.schema
+                ),
+                &[&self.app_id, &run_id, &self.now()],
+            )?;
+            tx.commit()?;
+            return Ok(true);
+        }
+        // The UPDATE above holds the run's row lock, which `signal_run` takes
+        // before reading waiters. Read committed sees any inbox row a signal
+        // committed before this statement, so a signal either lands here or
+        // finds the waiter below; it can never fall between the two.
+        let buffered = tx.query_opt(
+            &format!(
+                "DELETE FROM {}.run_inbox WHERE app_id=$1 AND run_id=$2 AND event_name=$3
+                 RETURNING payload",
+                self.schema
+            ),
+            &[&self.app_id, &run_id, &event_name],
+        )?;
+        if let Some(row) = buffered {
+            let payload: String = row.get(0);
+            let now = self.now();
+            tx.execute(
+                &format!(
+                    "INSERT INTO {}.steps (app_id, run_id, name, result, completed_at)
+                     VALUES ($1, $2, $3, $4, $5)
+                     ON CONFLICT(app_id, run_id, name) DO NOTHING",
+                    self.schema
+                ),
+                &[&self.app_id, &run_id, &step_name, &payload, &now],
+            )?;
+            tx.execute(
+                &format!(
+                    "DELETE FROM {}.event_waiters WHERE app_id=$1 AND run_id=$2 AND step_name=$3",
+                    self.schema
+                ),
+                &[&self.app_id, &run_id, &step_name],
+            )?;
+            tx.execute(
+                &format!(
+                    "UPDATE {}.runs SET run_at=$3 WHERE app_id=$1 AND id=$2",
+                    self.schema
+                ),
+                &[&self.app_id, &run_id, &now],
+            )?;
+            tx.commit()?;
+            return Ok(true);
         }
         tx.execute(
             &format!(
@@ -495,7 +576,112 @@ impl PostgresRunsDb {
             ],
         )?;
         tx.commit()?;
-        Ok(())
+        Ok(false)
+    }
+
+    /// See `RunsDb::signal_run`. The run's row lock orders this with
+    /// `wait_for_event`, claims and lifecycle writes.
+    pub(super) fn signal_run(
+        &self,
+        run_id: &str,
+        event_name: &str,
+        payload: &serde_json::Value,
+    ) -> Result<SignalRunStatus, RunsDbError> {
+        let payload_json = serde_json::to_string(payload)?;
+        let now = self.now();
+        let mut client = self.client()?;
+        let mut tx = client.transaction()?;
+        let Some(row) = tx.query_opt(
+            &format!(
+                "SELECT status FROM {}.runs WHERE app_id=$1 AND id=$2 FOR UPDATE",
+                self.schema
+            ),
+            &[&self.app_id, &run_id],
+        )?
+        else {
+            tx.commit()?;
+            return Ok(SignalRunStatus::Missing);
+        };
+        if parse_status(row.get(0))?.is_terminal() {
+            tx.commit()?;
+            return Ok(SignalRunStatus::Finished);
+        }
+
+        let waiters = tx.query(
+            &format!(
+                "DELETE FROM {}.event_waiters WHERE app_id=$1 AND run_id=$2 AND event_name=$3
+                 RETURNING step_name",
+                self.schema
+            ),
+            &[&self.app_id, &run_id, &event_name],
+        )?;
+        if !waiters.is_empty() {
+            for waiter in waiters {
+                let step_name: String = waiter.get(0);
+                tx.execute(
+                    &format!(
+                        "INSERT INTO {}.steps (app_id, run_id, name, result, completed_at)
+                         VALUES ($1, $2, $3, $4, $5)
+                         ON CONFLICT(app_id, run_id, name) DO NOTHING",
+                        self.schema
+                    ),
+                    &[&self.app_id, &run_id, &step_name, &payload_json, &now],
+                )?;
+            }
+            tx.execute(
+                &format!(
+                    "UPDATE {}.runs SET run_at=$3 WHERE app_id=$1 AND id=$2 AND status='pending'",
+                    self.schema
+                ),
+                &[&self.app_id, &run_id, &now],
+            )?;
+            tx.commit()?;
+            return Ok(SignalRunStatus::Delivered);
+        }
+
+        let held: bool = tx
+            .query_one(
+                &format!(
+                    "SELECT EXISTS(SELECT 1 FROM {schema}.steps
+                                   WHERE app_id=$1 AND run_id=$2 AND name=$3)
+                         OR EXISTS(SELECT 1 FROM {schema}.run_inbox
+                                   WHERE app_id=$1 AND run_id=$2 AND event_name=$3)",
+                    schema = self.schema
+                ),
+                &[&self.app_id, &run_id, &event_name],
+            )?
+            .get(0);
+        if held {
+            tx.commit()?;
+            return Ok(SignalRunStatus::Duplicate);
+        }
+        let usage = tx.query_one(
+            &format!(
+                "SELECT COUNT(*), COALESCE(SUM(payload_bytes), 0)::BIGINT FROM {}.run_inbox
+                 WHERE app_id=$1 AND run_id=$2",
+                self.schema
+            ),
+            &[&self.app_id, &run_id],
+        )?;
+        super::enqueue::check_inbox_room(run_id, usage.get(0), usage.get(1), payload_json.len())?;
+        tx.execute(
+            &format!(
+                "INSERT INTO {}.run_inbox
+                 (app_id, run_id, event_name, payload, payload_bytes, received_at)
+                 VALUES ($1, $2, $3, $4, $5, $6)",
+                self.schema
+            ),
+            &[
+                &self.app_id,
+                &run_id,
+                &event_name,
+                &payload_json,
+                &(payload_json.len() as i64),
+                &now,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(SignalRunStatus::Buffered)
     }
 
     pub(super) fn signal(
@@ -793,12 +979,39 @@ impl PostgresRunsDb {
                 expires_at: row.get(2),
             })
             .collect();
+        let signals = tx
+            .query(
+                &format!(
+                    "SELECT event_name, received_at, payload_bytes FROM {}.run_inbox
+                     WHERE app_id=$1 AND run_id=$2 ORDER BY received_at, event_name LIMIT $3",
+                    self.schema
+                ),
+                &[&self.app_id, &id, &(WORKFLOW_RUN_MAX_SIGNALS as i64)],
+            )?
+            .into_iter()
+            .map(|row| SignalRow {
+                event_name: row.get(0),
+                received_at: row.get(1),
+                bytes: row.get(2),
+            })
+            .collect();
+        let signals_total: i64 = tx
+            .query_one(
+                &format!(
+                    "SELECT COUNT(*) FROM {}.run_inbox WHERE app_id=$1 AND run_id=$2",
+                    self.schema
+                ),
+                &[&self.app_id, &id],
+            )?
+            .get(0);
         tx.commit()?;
         Ok(Some(RunRecord {
             run,
             steps,
             steps_total: steps_total as u64,
             waits,
+            signals,
+            signals_total: signals_total as u64,
         }))
     }
 
@@ -1012,7 +1225,19 @@ fn init_schema(client: &mut Client, schema: &str) -> Result<(), RunsDbError> {
            ON {schema}.event_waiters(app_id, event_name);
          CREATE INDEX IF NOT EXISTS idx_event_waiters_app_expiry
            ON {schema}.event_waiters(app_id, expires_at)
-           WHERE expires_at IS NOT NULL;"
+           WHERE expires_at IS NOT NULL;
+
+         -- Signals addressed to one run that arrived before it waited for
+         -- them; see the SQLite schema. Pruned with their run.
+         CREATE TABLE IF NOT EXISTS {schema}.run_inbox (
+             app_id TEXT NOT NULL,
+             run_id TEXT NOT NULL,
+             event_name TEXT NOT NULL,
+             payload TEXT NOT NULL,
+             payload_bytes BIGINT NOT NULL,
+             received_at BIGINT NOT NULL,
+             PRIMARY KEY(app_id, run_id, event_name)
+         );"
     ))?;
     tx.commit()?;
     Ok(())

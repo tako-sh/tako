@@ -35,7 +35,6 @@ approver was live, unrevoked and validly approved at the approval's
 `created_at`. A device cannot revoke itself, and the last full client cannot be
 revoked.
 
-
 Tako has one active protocol version. The CLI, server, and every deploy artifact must declare that exact version; compatibility does not negotiate version ranges or capability sets. Deploy artifacts record it as `protocol_version` in `app.json`.
 
 Deploy artifacts may also record the Tako SDK the app is built against as `sdk` in `app.json`: `{ "language", "name", "version" }`, where `language` is `javascript`, `go`, or `rust`. The CLI reads it from the app's dependency files at deploy time: the installed or locked `tako.sh` package, the `tako.sh` requirement in `go.mod` (`(devel)` when a `replace` points at a local directory, or the replacement module and version), or the `tako` crate in `Cargo.lock`. It is omitted when no SDK is found, including prebuilt images, Compose projects, and containers with `container_options.sdk = false`. The server reports it in `list_releases` and never gates on it.
@@ -85,6 +84,7 @@ Every reply is `tako_core::Response`: `{"status":"ok","data":...}` or `{"status"
 | `channel_unknown`        | The publisher's loaded build, or the recipient app, does not define the channel.                                                                                   | `channel_publish`, `channel_close`; network `publish`                                                 |
 | `channel_params_invalid` | Params are not a flat object of at most 16 KiB, name a null or reserved param, or fail the params schema.                                                          | `channel_publish`, `channel_close`; network `publish`                                                 |
 | `channel_closed`         | The stream has a retained close marker.                                                                                                                            | `channel_publish`; network `publish`                                                                  |
+| `signal_inbox_full`      | A run-addressed signal would take the run's inbox past 1,000 entries or 8 MiB of payload. Nothing was stored.                                                      | `signal` with `run_id`                                                                                |
 | `unavailable`            | Draining, an unhealthy worker, network or publisher overload, an unreachable destination, the stream limit, or a busy or disconnected workflow store. Retry later. | `enqueue_run`, `network_call`, `channel_publish`, `channel_close`, workflow commands                  |
 
 SDKs decide lost ownership only from `run_not_owned` on a worker write, never from message text: other messages, such as the `run_id_conflict` one, echo caller-chosen values. A network recipient replies with the same shape; a rejection from its own internal socket keeps its code, not its message. JavaScript exposes the code as `TakoError.reason` (with `code: "TAKO_RPC_ERROR"`), Go as `*ServerError.Code` matched by sentinels such as `ErrRunNotOwned` with `errors.Is`, and Rust as `tako::ErrorCode` (`ErrorCode::of(&io::Error)` for network calls, `StoreError::Rejected(Option<ErrorCode>)` for Store invalidations).
@@ -148,6 +148,28 @@ workflow execution remains at least once.
 
 JavaScript `.run()` combines enqueue and result waiting. In a workflow, the SDK saves a child ID and call identity before enqueueing, repeats an uncertain enqueue with that ID, and checkpoints the terminal outcome. Pending children use ordinary `DeferRun`, releasing the parent's claim/concurrency slot without spending a retry. Result waits checkpoint their deadline across replay; a timeout does not cancel the child. Named `ctx.run` steps scope child-call order. IDs remain deduplicated only while child history is retained. Detached `.enqueue()` and direct handler `call()` do not gain automatic workflow checkpoints.
 
+## Workflow signals
+
+`WaitForEvent {app,id,worker_id,step_name,event_name,timeout_at_ms?}` parks the claimed run on an event and replies `{delivered}`. `Signal {app,event_name,payload,run_id?}` delivers a payload; event names starting with `__` are reserved for Tako and rejected with `invalid_request`.
+
+Without `run_id`, a signal is a broadcast: every run parked on `event_name` gets the payload as its step result and is due now. Nothing is kept for a run that is not parked yet. The reply is `{woken}`.
+
+With `run_id`, a signal goes to that run only and the reply is `{status}`:
+
+| `status`    | Meaning                                                                                                                  |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `delivered` | The run was parked on `event_name`; the payload became its step result and the run is due now.                           |
+| `buffered`  | The run is not parked on `event_name`; the payload is stored in the run's inbox.                                         |
+| `duplicate` | The run already holds a value for `event_name`, buffered or as a saved step. The first value wins; this one is not kept. |
+| `finished`  | The run has finished. Nothing is stored.                                                                                 |
+| `missing`   | No retained run has this ID. Nothing is stored.                                                                          |
+
+Run-addressed event names are 1–255 bytes without NUL. `WaitForEvent` consumes a buffered payload for its `event_name` in the same transaction that would park the run: the payload becomes the step result, the inbox entry is removed, the run is due now, and the reply is `{delivered: true}`. The worker loses its claim either way. The run's row lock (Postgres) or the write lock (SQLite) orders a signal with the wait, so a run-addressed signal is either delivered to a parked run or consumed by its next wait; it cannot fall between the two. Signals reach the inbox only after their transaction commits.
+
+An inbox holds at most 1,000 entries and 8 MiB of payload JSON per run. A signal past either limit is rejected with `signal_inbox_full` and nothing is stored; delivery to a parked run needs no inbox room. Entries a run never consumes stay until the run is pruned with its history, so a reused run ID starts with an empty inbox. `GetWorkflowRun` lists the 100 oldest entries (name, receipt time, payload size) with the total count.
+
+SDK workers save a wait's deadline as the step `__wait:<step_name>` (`{timeoutAt}` in Unix ms) before the first `WaitForEvent`, and reuse it on replay, so the timeout counts from the first time the run reached the wait.
+
 ## Workflow schedules
 
 A starting worker sends `RegisterSchedules {app,build?,schedules}` with the complete set from every worker group. The build is the worker's `TAKO_BUILD`. Each installed runtime accepts its own build's first successful registration. An empty set removes every schedule. An explicit deployment or rollback to a shared Postgres store allocates a revision. The server commits that revision with the local release and Postgres checks it atomically with schedule replacement, including after server recovery.
@@ -160,7 +182,7 @@ Operators inspect and repair runs with four management commands: `ListWorkflowRu
 
 Each server answers from the app's store as it sees it: its own SQLite file, or the Postgres store shared by every server of the app. Replies name the store (`sqlite` or `postgres`) so clients can tell one server's runs from a shared set. A stopped app's runs stay readable.
 
-List returns the newest runs first, 50 by default and at most 200. Get returns every run field, the 100 most recent saved steps, and the run's event waits. Replies must fit one 1 MiB JSONL frame, so the server caps stored text: the payload and result at 32 KiB, each step result at 2 KiB, and errors at 8 KiB (1 KiB in lists). Workflow, step and event names and claim owners are cut to 256 bytes. A reply serializes to at most 768 KiB: a list stops early and sets `has_more`, and a run drops its oldest steps. A capped JSON value carries `truncated: true`, its stored size, and a UTF-8-safe text preview instead of the value. A run parked until a signal reports no due time.
+List returns the newest runs first, 50 by default and at most 200. Get returns every run field, the 100 most recent saved steps, the run's event waits, and its oldest 100 buffered signals with `signals_total`. Replies must fit one 1 MiB JSONL frame, so the server caps stored text: the payload and result at 32 KiB, each step result at 2 KiB, and errors at 8 KiB (1 KiB in lists). Workflow, step and event names and claim owners are cut to 256 bytes. A reply serializes to at most 768 KiB: a list stops early and sets `has_more`, and a run drops its oldest steps; waits and buffered signals are never dropped. A capped JSON value carries `truncated: true`, its stored size, and a UTF-8-safe text preview instead of the value. A run parked until a signal reports no due time.
 
 Retry accepts only `dead` and `cancelled` runs. The run becomes `pending`, due now, with its attempts reset and its saved steps kept, so the handler resumes after its last checkpoint. Cancel accepts `pending` and `running` runs and removes their event waits. A running attempt loses its claim: its later heartbeats, checkpoints, and lifecycle writes are rejected with the same `run_not_owned` error as a reclaimed attempt's, and reclaim leaves the cancelled run alone. SDK workers treat that code on a worker write as lost ownership. They stop the attempt at its next checkpoint without failing, retrying, or completing the run; side effects already started are not undone.
 

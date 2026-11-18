@@ -808,15 +808,24 @@ The `ctx.run(name, fn, opts?)` callback receives a step context named `step`.
 
 `ctx.waitFor` options:
 
-- `timeout?: number` — ms until the step resolves to `null` (default: park indefinitely)
+- `timeout?: number` — ms until the step resolves to `null` (default: park indefinitely). It counts from the first time the run reached the wait; the SDK saves the deadline as step `__wait:<name>`.
 
 ### Signals
 
 ```typescript
-// Wake all waitFor("approval:order-abc") calls with a payload
 import { signal } from "tako.sh";
+
+// Broadcast: wake every run already waiting on waitFor("approval:order-abc").
+// Runs that have not reached the wait yet never see it. Returns the woken count.
 await signal("approval:order-abc", { approved: true });
+
+// One run: delivered if it waits, otherwise kept until its waitFor("payment").
+// Use when the sender can be faster than the workflow (webhooks).
+const status = await signal("payment", { paid: true }, { runId: `fulfill:${orderId}` });
+// "delivered" | "buffered" | "duplicate" | "finished" | "missing"
 ```
+
+Run-addressed signals are first-value-wins per event name (a step name holds one value). A run holds at most 1,000 unconsumed signals and 8 MiB of payload; past that `signal` throws `TakoError` with `reason: "signal_inbox_full"` and stores nothing. Event names starting with `__` are reserved. For "one of several outcomes", send one event whose payload says which; do not `Promise.race` durable waits.
 
 ### Run lifecycle
 

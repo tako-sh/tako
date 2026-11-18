@@ -20,7 +20,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tako_core::{Command, ErrorCode, Response, SocketError};
+use tako_core::{
+    Command, ErrorCode, Response, SignalBroadcastResponse, SignalRunResponse, SignalRunStatus,
+    SocketError, WaitForEventResponse,
+};
 use tako_socket::serve_jsonl_connection;
 use tokio::net::UnixListener;
 use tokio::sync::oneshot;
@@ -658,22 +661,41 @@ fn handle_command(
             timeout_at_ms,
             ..
         } => match db.wait_for_event(&id, &worker_id, &step_name, &event_name, timeout_at_ms) {
-            Ok(()) => {
+            Ok(delivered) => {
                 limiter.release_claim(&worker_id);
-                Response::ok(serde_json::json!({}))
+                if delivered {
+                    // A buffered signal satisfied the wait: the run is due now.
+                    (on_enqueue)();
+                }
+                Response::ok(WaitForEventResponse { delivered })
             }
             Err(e) => e.into_socket_error("wait_for_event").into(),
         },
         Command::Signal {
             event_name,
             payload,
+            run_id: Some(run_id),
+            ..
+        } => match db.signal_run(&run_id, &event_name, &payload) {
+            Ok(status) => {
+                if status == SignalRunStatus::Delivered {
+                    (on_enqueue)();
+                }
+                Response::ok(SignalRunResponse { status })
+            }
+            Err(e) => e.into_socket_error("signal").into(),
+        },
+        Command::Signal {
+            event_name,
+            payload,
+            run_id: None,
             ..
         } => match db.signal(&event_name, &payload) {
             Ok(woken) => {
                 if woken > 0 {
                     (on_enqueue)();
                 }
-                Response::ok(serde_json::json!({ "woken": woken }))
+                Response::ok(SignalBroadcastResponse { woken })
             }
             Err(e) => e.into_socket_error("signal").into(),
         },

@@ -72,6 +72,22 @@ CREATE INDEX IF NOT EXISTS idx_event_waiters_name
 CREATE INDEX IF NOT EXISTS idx_event_waiters_expiry
   ON event_waiters(expires_at)
   WHERE expires_at IS NOT NULL;
+
+-- Signals addressed to one run (`signal(name, payload, { runId })`) that
+-- arrived before the run waited for them. `wait_for_event` consumes a
+-- matching row as the step result in the same transaction that would park
+-- the run. One value per event name: the first signal wins.
+-- `payload_bytes` is the JSON text length, so the per-run budget is one
+-- primary-key range read.
+CREATE TABLE IF NOT EXISTS run_inbox (
+  run_id        TEXT NOT NULL,
+  event_name    TEXT NOT NULL,
+  payload       TEXT NOT NULL,
+  payload_bytes INTEGER NOT NULL,
+  received_at   INTEGER NOT NULL,
+  PRIMARY KEY (run_id, event_name),
+  FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
+);
 "#;
 
 pub(crate) fn init(conn: &rusqlite::Connection) -> rusqlite::Result<()> {

@@ -37,16 +37,42 @@ async function reuseError(call: Promise<unknown>): Promise<string> {
 
 test("an explicit zero wait timeout expires now; an omitted timeout waits indefinitely", async () => {
   const before = Date.now();
-  const immediate = await checkpointFixture()
-    .api.waitFor("now", { timeout: 0 })
+  const fixture = checkpointFixture({}, 0);
+  const immediate = await fixture.api
+    .waitFor("now", { timeout: 0 })
     .catch((error: unknown) => error);
   expect(immediate).toBeInstanceOf(WaitSignal);
   expect((immediate as WaitSignal).timeoutAt!.getTime()).toBeGreaterThanOrEqual(before);
   expect((immediate as WaitSignal).timeoutAt!.getTime()).toBeLessThanOrEqual(Date.now());
-  const indefinite = await checkpointFixture()
+  expect(fixture.persisted["__wait:now"]).toEqual({
+    timeoutAt: (immediate as WaitSignal).timeoutAt!.getTime(),
+  });
+  const indefinite = await checkpointFixture({}, 0)
     .api.waitFor("later")
     .catch((error: unknown) => error);
   expect((indefinite as WaitSignal).timeoutAt).toBeNull();
+});
+
+test("a wait deadline is saved once and reused by later executions", async () => {
+  const fixture = checkpointFixture({}, 0);
+  const first = await fixture.api
+    .waitFor("approval", { timeout: 60_000 })
+    .catch((error: unknown) => error);
+  await new Promise((r) => setTimeout(r, 5));
+  const again = await fixture
+    .execution()
+    .waitFor("approval", { timeout: 60_000 })
+    .catch((error: unknown) => error);
+  expect((again as WaitSignal).timeoutAt).toEqual((first as WaitSignal).timeoutAt);
+  expect(fixture.saves()).toBe(1);
+});
+
+test("a wait whose deadline cannot be saved does not park", async () => {
+  const fixture = checkpointFixture();
+  await expect(fixture.api.waitFor("approval", { timeout: 60_000 })).rejects.toThrow(
+    "checkpoint unavailable",
+  );
+  expect(fixture.state).not.toHaveProperty("__wait:approval");
 });
 
 test("retrying a failed checkpoint cannot return an unpersisted cached result", async () => {

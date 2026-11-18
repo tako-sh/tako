@@ -379,6 +379,54 @@ func approveOrder(ctx context.Context, orderID, userID string) (uint64, error) {
 
 `signal` wakes every run waiting on that event name and returns the number of runs woken. Like enqueue, it is server-only and throws `TakoError("TAKO_UNAVAILABLE")` without an installed Tako runtime. Waiting and resuming do not consume retry attempts. Completed steps before the wait remain checkpointed.
 
+A broadcast reaches only runs that are already waiting. A run that has not reached its wait yet, because it is still running earlier steps, sleeping, or retrying, never sees it, and the woken count is `0`. When the sender may be faster than the workflow, such as a payment webhook that can arrive before the run starts waiting, address the run instead.
+
+A wait's timeout counts from the first time the run reached that wait, not from each resume. The SDKs save the deadline as a step named `__wait:<name>`.
+
+### Signal One Run
+
+Pass the run ID to deliver to one run. A run already waiting on the event is woken with the payload. A run that has not reached its wait yet keeps the payload, and its `waitFor` returns it at once. The signal cannot be lost to a race between the sender and the workflow:
+
+<CodeGroup>
+
+```ts JavaScript
+import { signal } from "tako.sh";
+
+// The run was enqueued with { id: `fulfill:${orderId}` }.
+const status = await signal("payment", { paid: true, chargeId }, { runId: `fulfill:${orderId}` });
+```
+
+```go Go
+import (
+    "context"
+    workflow "github.com/tako-sh/tako/sdk/go"
+)
+
+// The run was enqueued with EnqueueOpts{ID: &runID}.
+func paymentReceived(ctx context.Context, orderID, chargeID string) (workflow.SignalRunStatus, error) {
+    return workflow.SignalRun(ctx, "fulfill:"+orderID, "payment",
+        map[string]any{"paid": true, "chargeId": chargeID})
+}
+```
+
+</CodeGroup>
+
+Inside the workflow, wait with the same name: `ctx.waitFor("payment")` or `ctx.Step.WaitFor("payment", &out, timeout)`. A stable enqueue ID lets the sender address the run without storing the generated ID.
+
+The result says what happened to the payload:
+
+| Status      | Meaning                                                                                          |
+| ----------- | ------------------------------------------------------------------------------------------------ |
+| `delivered` | The run was waiting and is woken with the payload.                                               |
+| `buffered`  | The run is not waiting yet. The payload is kept until its wait for that name.                    |
+| `duplicate` | The run already holds a value for that name, buffered or already received. The first value wins. |
+| `finished`  | The run has finished. Nothing is stored.                                                         |
+| `missing`   | No retained run has that ID. Nothing is stored.                                                  |
+
+Each run can hold 1,000 unconsumed signals and 8 MiB of their payloads. A signal past either limit is rejected rather than dropped: JavaScript throws a `TakoError` with `reason: "signal_inbox_full"`, and Go returns an error matching `workflow.ErrSignalInboxFull`. Run-addressed event names are 1–255 bytes. Names starting with `__` are reserved for Tako in both forms of `signal`.
+
+A step name holds one value, so a run receives each event name once. To wait for one of several outcomes, send one event with a payload that says which, such as `{ decision: "approved" }`, rather than racing waits with `Promise.race`, which the workflow cannot resume from. `tako workflows show <run-id>` lists a run's buffered signals.
+
 ## Finish, Bail, Fail, Or Retry
 
 | Handler outcome                   | Run result                                             |

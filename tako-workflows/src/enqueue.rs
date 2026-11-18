@@ -14,8 +14,10 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tako_core::{
-    EnqueueOpts, EnqueueRunResponse, RunPayload, ScheduleSpec, WORKFLOW_RUN_MAX_STEPS,
-    WorkflowRunDetail, WorkflowRunStatus, WorkflowRunSummary, WorkflowStoreKind,
+    EnqueueOpts, EnqueueRunResponse, RunPayload, ScheduleSpec, SignalRunStatus,
+    WORKFLOW_EVENT_NAME_MAX_BYTES, WORKFLOW_RUN_MAX_STEPS, WORKFLOW_SIGNAL_INBOX_MAX_BYTES,
+    WORKFLOW_SIGNAL_INBOX_MAX_ENTRIES, WorkflowRunDetail, WorkflowRunStatus, WorkflowRunSummary,
+    WorkflowStoreKind,
 };
 
 pub use operator::{CancelledRun, OPERATOR_CANCEL_REASON};
@@ -102,6 +104,12 @@ pub enum RunsDbError {
         id: String,
         status: WorkflowRunStatus,
     },
+    #[error(
+        "workflow run {id} already holds {WORKFLOW_SIGNAL_INBOX_MAX_ENTRIES} buffered signals or {WORKFLOW_SIGNAL_INBOX_MAX_BYTES} bytes of them; the signal was not stored"
+    )]
+    SignalInboxFull { id: String },
+    #[error("{0}")]
+    InvalidEventName(&'static str),
 }
 
 impl RunsDbError {
@@ -113,7 +121,8 @@ impl RunsDbError {
         match self {
             Self::StaleWorker => Some(ErrorCode::RunNotOwned),
             Self::IdConflict { .. } => Some(ErrorCode::RunIdConflict),
-            Self::InvalidId => Some(ErrorCode::InvalidRequest),
+            Self::InvalidId | Self::InvalidEventName(_) => Some(ErrorCode::InvalidRequest),
+            Self::SignalInboxFull { .. } => Some(ErrorCode::SignalInboxFull),
             Self::Sqlite(error) => matches!(
                 error.sqlite_error_code(),
                 Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
@@ -225,10 +234,8 @@ impl RunsDb {
         payload: &serde_json::Value,
         opts: &EnqueueOpts,
     ) -> Result<EnqueueRunResponse, RunsDbError> {
-        if let Some(id) = &opts.id
-            && (id.is_empty() || id.len() > 255 || id.contains('\0'))
-        {
-            return Err(RunsDbError::InvalidId);
+        if let Some(id) = &opts.id {
+            validate_run_id(id)?;
         }
         match &self.backend {
             RunsDbBackend::Sqlite(db) => db.enqueue(name, payload, opts),
@@ -439,6 +446,10 @@ impl RunsDb {
     /// Park a run waiting for a named event. Stores the waiter and defers
     /// the run. Wake happens via `signal` (or via run_at if a timeout was
     /// set and it elapses).
+    ///
+    /// When the run's inbox already holds a signal for `event_name`, it is
+    /// consumed as the step result instead, the run is due again at once,
+    /// and this returns `true`. Either way the caller no longer owns the run.
     pub fn wait_for_event(
         &self,
         run_id: &str,
@@ -446,7 +457,7 @@ impl RunsDb {
         step_name: &str,
         event_name: &str,
         timeout_at_ms: Option<i64>,
-    ) -> Result<(), RunsDbError> {
+    ) -> Result<bool, RunsDbError> {
         match &self.backend {
             RunsDbBackend::Sqlite(db) => {
                 db.wait_for_event(run_id, worker_id, step_name, event_name, timeout_at_ms)
@@ -466,9 +477,33 @@ impl RunsDb {
         event_name: &str,
         payload: &serde_json::Value,
     ) -> Result<u64, RunsDbError> {
+        if event_name.starts_with(RESERVED_EVENT_PREFIX) {
+            return Err(RunsDbError::InvalidEventName(RESERVED_EVENT_NAME));
+        }
         match &self.backend {
             RunsDbBackend::Sqlite(db) => db.signal(event_name, payload),
             RunsDbBackend::Postgres(db) => db.signal(event_name, payload),
+        }
+    }
+
+    /// Deliver an event payload to one run. A run waiting for `event_name`
+    /// is woken with it, like [`Self::signal`]. A run that has not reached
+    /// that wait yet keeps the payload in its inbox, and the wait consumes
+    /// it. The first value for a name wins; later ones are reported as
+    /// [`SignalRunStatus::Duplicate`] and not stored. An inbox over its
+    /// limits rejects the signal with [`RunsDbError::SignalInboxFull`]
+    /// rather than dropping anything.
+    pub fn signal_run(
+        &self,
+        run_id: &str,
+        event_name: &str,
+        payload: &serde_json::Value,
+    ) -> Result<SignalRunStatus, RunsDbError> {
+        validate_run_id(run_id)?;
+        validate_event_name(event_name)?;
+        match &self.backend {
+            RunsDbBackend::Sqlite(db) => db.signal_run(run_id, event_name, payload),
+            RunsDbBackend::Postgres(db) => db.signal_run(run_id, event_name, payload),
         }
     }
 
@@ -652,6 +687,50 @@ pub(crate) struct ScheduleRow {
     pub(crate) last_run_at: Option<i64>,
     /// The registering workflow's budget; `None` uses the server default.
     pub(crate) max_attempts: Option<u32>,
+}
+
+/// Event names starting with this are reserved for Tako's own waits.
+pub(crate) const RESERVED_EVENT_PREFIX: &str = "__";
+const RESERVED_EVENT_NAME: &str = "event names starting with `__` are reserved for Tako";
+
+fn validate_run_id(id: &str) -> Result<(), RunsDbError> {
+    if id.is_empty() || id.len() > 255 || id.contains('\0') {
+        return Err(RunsDbError::InvalidId);
+    }
+    Ok(())
+}
+
+/// Rules for event names a signal addresses to one run. Broadcast signals
+/// keep accepting any name a wait could use, except the reserved prefix.
+fn validate_event_name(name: &str) -> Result<(), RunsDbError> {
+    if name.is_empty() || name.len() > WORKFLOW_EVENT_NAME_MAX_BYTES || name.contains('\0') {
+        return Err(RunsDbError::InvalidEventName(
+            "event names must contain 1–255 bytes and no NUL characters",
+        ));
+    }
+    if name.starts_with(RESERVED_EVENT_PREFIX) {
+        return Err(RunsDbError::InvalidEventName(RESERVED_EVENT_NAME));
+    }
+    Ok(())
+}
+
+/// Rejects a signal that would take the run's inbox past either limit.
+/// Called inside the transaction that inserts it, after reading the
+/// inbox's current size under the run's write lock.
+pub(super) fn check_inbox_room(
+    run_id: &str,
+    entries: i64,
+    bytes: i64,
+    incoming_bytes: usize,
+) -> Result<(), RunsDbError> {
+    let entries = entries.max(0) as usize;
+    let bytes = (bytes.max(0) as usize).saturating_add(incoming_bytes);
+    if entries >= WORKFLOW_SIGNAL_INBOX_MAX_ENTRIES || bytes > WORKFLOW_SIGNAL_INBOX_MAX_BYTES {
+        return Err(RunsDbError::SignalInboxFull {
+            id: run_id.to_string(),
+        });
+    }
+    Ok(())
 }
 
 pub(crate) fn now_ms() -> i64 {

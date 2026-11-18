@@ -64,6 +64,18 @@ class Execution implements DurableWorkflowExecution {
   }
 }
 
+/**
+ * Keep a durable operation in the run's pending set until it settles. The
+ * worker finishes every pending operation before it parks, fails or
+ * completes the run, so a step still running when a sibling `ctx.waitFor`
+ * or `ctx.sleep` suspends the handler saves its result instead of losing it
+ * to the released lease and running again on resume.
+ */
+export function trackWorkflowOperation<T>(fn: () => Promise<T>): Promise<T> {
+  const context = storage.getStore();
+  return context ? context.track(fn) : fn();
+}
+
 /** Each named ctx.run has its own call sequence, so skipped cached steps don't shift later calls. */
 export function withinWorkflowStep<T>(name: string, fn: () => T): T {
   const context = storage.getStore();

@@ -163,6 +163,23 @@ export function createStepAPI(
     }
   }
 
+  // The timeout of a wait counts from the first time the run reached it, not
+  // from each replay. Without a saved deadline, every resume of the run
+  // before the wait completes (a sibling wait in Promise.all, a buffered
+  // signal for another name) would restart the clock.
+  async function waitDeadline(name: string, timeout: number | undefined): Promise<Date | null> {
+    if (timeout == null) return null;
+    const key = `__wait:${name}`;
+    const stored = stepState[key] as { timeoutAt: number } | undefined;
+    if (stored && Number.isFinite(stored.timeoutAt)) return new Date(stored.timeoutAt);
+    const timeoutAt = Date.now() + timeout;
+    // `timeout: Infinity` waits indefinitely, as an omitted timeout does.
+    if (!Number.isFinite(timeoutAt)) return null;
+    await save(key, { timeoutAt });
+    stepState[key] = { timeoutAt };
+    return new Date(timeoutAt);
+  }
+
   // Names used by run/sleep/waitFor in this execution of the handler. They
   // share one namespace in the steps table, so a second use would silently
   // return the first use's saved result instead of doing its own work.
@@ -272,8 +289,7 @@ export function createStepAPI(
         log.debug("Step cached", { step: name });
         return stepState[name] as T | null;
       }
-      const timeoutAt = opts?.timeout != null ? new Date(Date.now() + opts.timeout) : null;
-      throw new WaitSignal(name, name, timeoutAt);
+      throw new WaitSignal(name, name, await waitDeadline(name, opts?.timeout));
     },
   };
 

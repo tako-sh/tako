@@ -166,6 +166,7 @@ describe("workflow commands match the wire fixtures", () => {
       () => client.waitForEvent(RUN_ID, CLAIM, "approval", "order-approved", null),
     ],
     ["signal", () => client.signal("order-approved", { orderId: "42" })],
+    ["signal-run", () => client.signalRun(RUN_ID, "order-approved", { orderId: "42" })],
   ];
 
   for (const [name, send] of cases) {
@@ -173,6 +174,7 @@ describe("workflow commands match the wire fixtures", () => {
       // Replies the call can parse; the shapes are checked below.
       if (name.startsWith("enqueue_run")) socket.reply("replies/enqueue_run.json");
       if (name === "signal") socket.reply("replies/signal.json");
+      if (name === "signal-run") socket.reply("replies/signal-run.json");
       if (name === "claim_run" || name === "get_run_result") socket.reply("replies/ok-null.json");
       await send();
       expect(socket.take()).toEqual(fixture(`commands/${name}.json`));
@@ -314,6 +316,26 @@ describe("reply fixtures parse to the expected values", () => {
     expect(await client.signal("order-approved", null)).toBe(2);
   });
 
+  test("a run-addressed signal returns what happened to the payload", async () => {
+    socket.reply("replies/signal-run.json");
+    expect(await client.signalRun(RUN_ID, "order-approved", null)).toBe("buffered");
+    socket.reply("replies/ok-null.json");
+    const err = await client.signalRun(RUN_ID, "order-approved", null).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TakoError);
+    expect((err as TakoError).code).toBe("TAKO_PROTOCOL");
+  });
+
+  test("wait_for_event reports whether a buffered signal satisfied the wait", async () => {
+    socket.reply("replies/wait_for_event.json");
+    socket.reply("replies/wait_for_event-delivered.json");
+    socket.reply("replies/ok.json");
+    const wait = () => client.waitForEvent(RUN_ID, CLAIM, "approval", "order-approved", null);
+    expect(await wait()).toEqual({ delivered: false });
+    expect(await wait()).toEqual({ delivered: true });
+    // An older server replies with an empty object.
+    expect(await wait()).toEqual({ delivered: false });
+  });
+
   test("worker writes resolve on the ok reply", async () => {
     socket.reply("replies/ok.json");
     expect(await client.heartbeat(RUN_ID, CLAIM, 30_000)).toBeUndefined();
@@ -324,7 +346,7 @@ describe("reply fixtures parse to the expected values", () => {
     .sort();
 
   test("every error fixture is covered", () => {
-    expect(errorFixtures.length).toBeGreaterThanOrEqual(9);
+    expect(errorFixtures.length).toBeGreaterThanOrEqual(10);
   });
 
   for (const name of errorFixtures) {

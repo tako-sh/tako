@@ -299,10 +299,36 @@ func (s *StepAPI) waitFor(name string, out any, timeout time.Duration) error {
 	}
 	var timeoutAt *time.Time
 	if timeout > 0 {
-		t := time.Now().Add(timeout)
+		t, err := s.waitDeadline(name, timeout)
+		if err != nil {
+			return err
+		}
 		timeoutAt = &t
 	}
 	return &waitSignal{stepName: name, eventName: name, timeoutAt: timeoutAt}
+}
+
+// waitDeadline is when a wait times out, counted from the first time the run
+// reached it rather than from each replay. Without a saved deadline, every
+// resume before the wait completes would restart the clock.
+func (s *StepAPI) waitDeadline(name string, timeout time.Duration) (time.Time, error) {
+	key := "__wait:" + name
+	s.mu.Lock()
+	stored, ok := s.state[key]
+	s.mu.Unlock()
+	if ok {
+		var marker struct {
+			TimeoutAt *int64 `json:"timeoutAt"`
+		}
+		if err := assignCached(stored, &marker); err == nil && marker.TimeoutAt != nil {
+			return time.UnixMilli(*marker.TimeoutAt), nil
+		}
+	}
+	timeoutAt := time.Now().Add(timeout).UnixMilli()
+	if err := s.saveStep(key, map[string]any{"timeoutAt": timeoutAt}); err != nil {
+		return time.Time{}, err
+	}
+	return time.UnixMilli(timeoutAt), nil
 }
 
 func assignCached(cached, out any) error {

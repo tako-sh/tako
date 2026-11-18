@@ -16,6 +16,8 @@ pub enum Err {
     RunIdConflict,
     /// Internal socket: a worker write names a run this claim no longer owns (lease reclaimed, cancelled, or finished).
     RunNotOwned,
+    /// Internal socket: the run already holds the maximum number or total size of buffered signals; the signal was not stored.
+    SignalInboxFull,
     /// Internal socket: the server is draining, overloaded, or a backing store is unreachable; retry later.
     Unavailable,
 }
@@ -28,6 +30,7 @@ impl Err {
         Self::InvalidRequest,
         Self::RunIdConflict,
         Self::RunNotOwned,
+        Self::SignalInboxFull,
         Self::Unavailable,
     ];
 
@@ -39,6 +42,7 @@ impl Err {
             Self::InvalidRequest => "THDDYW",
             Self::RunIdConflict => "X9HMTE",
             Self::RunNotOwned => "P5UMN4",
+            Self::SignalInboxFull => "K7RW2Q",
             Self::Unavailable => "E4PNC9",
         }
     }
@@ -51,6 +55,7 @@ impl Err {
             "THDDYW" => Some(Self::InvalidRequest),
             "X9HMTE" => Some(Self::RunIdConflict),
             "P5UMN4" => Some(Self::RunNotOwned),
+            "K7RW2Q" => Some(Self::SignalInboxFull),
             "E4PNC9" => Some(Self::Unavailable),
             _ => None,
         }

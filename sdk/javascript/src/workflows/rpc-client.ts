@@ -19,7 +19,15 @@ import {
   callInternal,
 } from "../tako/socket";
 import type { EnqueueOptions } from "./engine";
-import type { Run, RunId, RunStatus, StepState } from "./types";
+import type { Run, RunId, RunStatus, SignalRunStatus, StepState } from "./types";
+
+const SIGNAL_RUN_STATUSES: ReadonlySet<string> = new Set<SignalRunStatus>([
+  "delivered",
+  "buffered",
+  "duplicate",
+  "finished",
+  "missing",
+]);
 import type { WorkflowResultState } from "./result";
 
 /** Result returned after enqueueing a workflow run. */
@@ -109,6 +117,22 @@ export class WorkflowsClient {
     });
     const d = data as { woken?: number } | null;
     return d?.woken ?? 0;
+  }
+
+  /** Deliver an event payload to one run, kept until its `ctx.waitFor` consumes it. */
+  async signalRun(runId: RunId, eventName: string, payload: unknown): Promise<SignalRunStatus> {
+    const data = await this.call({
+      command: "signal",
+      app: this.app,
+      event_name: eventName,
+      payload: payload ?? null,
+      run_id: runId,
+    });
+    const status = (data as { status?: unknown } | null)?.status;
+    if (typeof status !== "string" || !SIGNAL_RUN_STATUSES.has(status)) {
+      throw new TakoError("TAKO_PROTOCOL", "Invalid signal response.");
+    }
+    return status as SignalRunStatus;
   }
 
   // --- Worker-only: registration + run lifecycle ---
@@ -223,8 +247,8 @@ export class WorkflowsClient {
     stepName: string,
     eventName: string,
     timeoutAt: Date | null,
-  ): Promise<void> {
-    await this.workerWrite({
+  ): Promise<{ delivered: boolean }> {
+    const data = await this.workerWrite({
       command: "wait_for_event",
       app: this.app,
       id,
@@ -233,6 +257,8 @@ export class WorkflowsClient {
       event_name: eventName,
       timeout_at_ms: timeoutAt ? timeoutAt.getTime() : null,
     });
+    // A buffered signal satisfied the wait; the run is due again at once.
+    return { delivered: (data as { delivered?: unknown } | null)?.delivered === true };
   }
 
   // --- Internal ---

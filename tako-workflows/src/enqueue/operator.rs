@@ -4,7 +4,8 @@
 use tako_core::{
     CappedJson, WORKFLOW_LIST_ERROR_MAX_BYTES, WORKFLOW_NAME_MAX_BYTES, WORKFLOW_REPLY_MAX_BYTES,
     WORKFLOW_RUN_ERROR_MAX_BYTES, WORKFLOW_RUN_VALUE_MAX_BYTES, WORKFLOW_STEP_VALUE_MAX_BYTES,
-    WorkflowRunDetail, WorkflowRunStatus, WorkflowRunStep, WorkflowRunSummary, WorkflowRunWait,
+    WorkflowRunDetail, WorkflowRunSignal, WorkflowRunStatus, WorkflowRunStep, WorkflowRunSummary,
+    WorkflowRunWait,
 };
 
 use super::RunsDbError;
@@ -45,13 +46,22 @@ pub(crate) struct WaitRow {
     pub(crate) expires_at: Option<i64>,
 }
 
+pub(crate) struct SignalRow {
+    pub(crate) event_name: String,
+    pub(crate) received_at: i64,
+    pub(crate) bytes: i64,
+}
+
 /// A run with its most recent steps (newest first, as the backends read
-/// them), the number of steps stored, and its event waits.
+/// them), the number of steps stored, its event waits, and its oldest
+/// buffered signals with their count.
 pub(crate) struct RunRecord {
     pub(crate) run: RunRow,
     pub(crate) steps: Vec<StepRow>,
     pub(crate) steps_total: u64,
     pub(crate) waits: Vec<WaitRow>,
+    pub(crate) signals: Vec<SignalRow>,
+    pub(crate) signals_total: u64,
 }
 
 /// Outcome of an operator cancel.
@@ -168,6 +178,8 @@ impl RunRecord {
             steps,
             steps_total,
             waits,
+            signals,
+            signals_total,
         } = self;
         let summary = run.summary;
         let (last_error, last_error_truncated) =
@@ -209,11 +221,21 @@ impl RunRecord {
                     expires_at_ms: wait.expires_at,
                 })
                 .collect(),
+            signals: signals
+                .into_iter()
+                .map(|signal| WorkflowRunSignal {
+                    event_name: capped_name(&signal.event_name),
+                    received_at_ms: signal.received_at,
+                    bytes: signal.bytes.max(0) as u64,
+                })
+                .collect(),
+            signals_total,
         };
         // Everything but the steps fits the budget in the worst case: the
         // payload and result previews escape to at most 64 KiB each, the error
-        // to 48 KiB, and 100 waits with escape-heavy names to about 310 KiB.
-        // Keep the newest steps that fit the rest.
+        // to 48 KiB, 100 waits with escape-heavy names to about 310 KiB, and
+        // 100 buffered signals, names only, to about 160 KiB. Keep the newest
+        // steps that fit the rest.
         let mut size = serde_json::to_vec(&detail)?.len() + 256;
         let mut keep = 0;
         for step in steps.iter().rev() {
@@ -292,6 +314,14 @@ mod tests {
                     expires_at: None,
                 })
                 .collect(),
+            signals: (0..100)
+                .map(|index| SignalRow {
+                    event_name: "\u{1}".repeat(1024),
+                    received_at: index,
+                    bytes: i64::MAX,
+                })
+                .collect(),
+            signals_total: 1000,
         };
         let detail = record.into_detail().unwrap();
         let size = serde_json::to_vec(&detail).unwrap().len();
@@ -357,11 +387,26 @@ mod tests {
                     expires_at: Some(1),
                 })
                 .collect(),
+            signals: (0..100)
+                .map(|index| SignalRow {
+                    event_name: control(16 * 1024),
+                    received_at: i64::MAX - index,
+                    bytes: i64::MAX,
+                })
+                .collect(),
+            signals_total: u64::MAX,
         };
         let detail = record.into_detail().unwrap();
         let size = serde_json::to_vec(&detail).unwrap().len();
         assert!(size <= 768 * 1024, "{size}");
         assert_eq!(detail.waits.len(), 100, "waits are never dropped");
+        assert_eq!(detail.signals.len(), 100, "signals are never dropped");
+        assert!(
+            detail
+                .signals
+                .iter()
+                .all(|signal| signal.event_name.len() == 256)
+        );
         assert!(!detail.steps.is_empty());
         assert_eq!(detail.name.len(), 256);
         assert_eq!(detail.worker_id.unwrap().len(), 256);

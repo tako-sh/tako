@@ -1,6 +1,12 @@
 import { TakoError } from "../tako/error";
 import type { EnqueueOptions } from "./engine";
-import type { RunId, WorkflowOpts, WorkflowRuntimeOpts } from "./types";
+import type {
+  RunId,
+  SignalOptions,
+  SignalRunStatus,
+  WorkflowOpts,
+  WorkflowRuntimeOpts,
+} from "./types";
 import type { WorkflowHandler } from "./worker";
 import {
   runWorkflow,
@@ -53,6 +59,8 @@ export interface WorkflowRuntime {
   result(name: string, id: RunId): Promise<WorkflowResultState | null>;
   /** Wake workflow runs parked on an event. */
   signal(event: string, payload?: unknown): Promise<number>;
+  /** Deliver an event to one run, kept until it waits for it. */
+  signalRun(runId: RunId, event: string, payload?: unknown): Promise<SignalRunStatus>;
 }
 
 let runtime: WorkflowRuntime | null = null;
@@ -149,14 +157,48 @@ export function defineWorkflow<P = unknown, R = unknown>(
  * Call from any server-side context — an HTTP handler, a webhook receiver,
  * a cron tick, another workflow. Returns the number of waiters woken.
  *
+ * A broadcast reaches only runs that are already waiting: a run that has not
+ * reached its `ctx.waitFor` yet never sees it. To deliver to a run whatever
+ * point it has reached, pass `{ runId }`.
+ *
  * @example
  * ```ts
  * import { signal } from "tako.sh";
  * await signal(`approval:order-${orderId}`, { approved: true });
  * ```
  */
-export function signal(event: string, payload?: unknown): Promise<number> {
-  return requireRuntime().signal(event, payload);
+export function signal(event: string, payload?: unknown): Promise<number>;
+/**
+ * Deliver an event payload to one workflow run. A run waiting on
+ * `ctx.waitFor(event)` is woken with it. A run that has not reached that
+ * wait yet keeps the payload, and the wait returns it at once, so a webhook
+ * that arrives early is not lost. The first payload for an event name wins.
+ *
+ * Resolves to what happened: `"delivered"`, `"buffered"`, `"duplicate"`,
+ * `"finished"` or `"missing"`. Throws `TakoError` with reason
+ * `signal_inbox_full` when the run already holds 1,000 unconsumed signals or
+ * 8 MiB of them; the payload is not stored.
+ *
+ * @example
+ * ```ts
+ * import { signal } from "tako.sh";
+ * // The run was enqueued with { id: `fulfill:${orderId}` }.
+ * await signal("payment", { paid: true }, { runId: `fulfill:${orderId}` });
+ * ```
+ */
+export function signal(
+  event: string,
+  payload: unknown,
+  options: SignalOptions,
+): Promise<SignalRunStatus>;
+export function signal(
+  event: string,
+  payload?: unknown,
+  options?: SignalOptions,
+): Promise<number | SignalRunStatus> {
+  const runtime = requireRuntime();
+  if (options?.runId !== undefined) return runtime.signalRun(options.runId, event, payload);
+  return runtime.signal(event, payload);
 }
 
 /** Narrow `value` to a `WorkflowExport` produced by `defineWorkflow`. */

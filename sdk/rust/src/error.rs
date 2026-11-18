@@ -19,18 +19,21 @@ pub enum ErrorCode {
     ChannelParamsInvalid,
     /// The channel stream was closed and accepts no more messages.
     ChannelClosed,
+    /// A workflow run's signal inbox is full; the signal was not stored.
+    SignalInboxFull,
     /// The server is draining, overloaded, or its storage is unreachable; retry later.
     Unavailable,
 }
 
 impl ErrorCode {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::RunNotOwned,
         Self::RunIdConflict,
         Self::InvalidRequest,
         Self::ChannelUnknown,
         Self::ChannelParamsInvalid,
         Self::ChannelClosed,
+        Self::SignalInboxFull,
         Self::Unavailable,
     ];
 
@@ -43,6 +46,7 @@ impl ErrorCode {
             Self::ChannelUnknown => "channel_unknown",
             Self::ChannelParamsInvalid => "channel_params_invalid",
             Self::ChannelClosed => "channel_closed",
+            Self::SignalInboxFull => "signal_inbox_full",
             Self::Unavailable => "unavailable",
         }
     }

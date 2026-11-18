@@ -335,6 +335,33 @@ pub(super) fn show_lines(
             )));
         }
     }
+
+    if run.signals_total > 0 {
+        lines.push(Line::Section("Buffered signals".to_string()));
+        let omitted = run.signals_total.saturating_sub(run.signals.len() as u64);
+        if omitted > 0 {
+            lines.push(Line::Muted(format!(
+                "{omitted} newer signal(s) omitted; showing the {} oldest of {}.",
+                run.signals.len(),
+                run.signals_total
+            )));
+        }
+        let name_width = run
+            .signals
+            .iter()
+            .map(|signal| signal.event_name.width())
+            .max()
+            .unwrap_or_default();
+        for signal in &run.signals {
+            lines.push(Line::Text(format!(
+                "{}{}  {}  {} bytes",
+                signal.event_name,
+                " ".repeat(name_width.saturating_sub(signal.event_name.width())),
+                clock.absolute(signal.received_at_ms),
+                signal.bytes
+            )));
+        }
+    }
     lines
 }
 
@@ -436,7 +463,7 @@ mod tests {
     use super::super::merge::tests::{detail, summary};
     use super::super::merge::{ListedRun, ServerError};
     use super::*;
-    use tako_core::{WorkflowRunStep, WorkflowRunWait};
+    use tako_core::{WorkflowRunSignal, WorkflowRunStep, WorkflowRunWait};
 
     // 2026-11-12 12:00:00 UTC
     const NOW_MS: i64 = 1_794_484_800_000;
@@ -680,6 +707,19 @@ mod tests {
             event_name: "order.approved".into(),
             expires_at_ms: None,
         }];
+        run.signals = vec![
+            WorkflowRunSignal {
+                event_name: "shipped".into(),
+                received_at_ms: NOW_MS - 2 * MINUTE,
+                bytes: 17,
+            },
+            WorkflowRunSignal {
+                event_name: "delivered".into(),
+                received_at_ms: NOW_MS - MINUTE,
+                bytes: 4,
+            },
+        ];
+        run.signals_total = 3;
         let lines = show_lines(&heading(None), &run, &clock());
         assert_eq!(
             texts(&lines),
@@ -700,6 +740,10 @@ mod tests {
                 "~ No saved steps.",
                 "# Waits",
                 "approval waits for order.approved with no timeout",
+                "# Buffered signals",
+                "~ 1 newer signal(s) omitted; showing the 2 oldest of 3.",
+                "shipped    2026-11-12 11:58:00  17 bytes",
+                "delivered  2026-11-12 11:59:00  4 bytes",
             ]
         );
     }

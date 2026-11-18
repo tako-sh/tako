@@ -4,6 +4,7 @@ import {
   isWorkflowDefinition,
   isWorkflowExport,
   setWorkflowRuntime,
+  signal,
   WORKFLOW_SYMBOL,
 } from "../../src/workflows/define";
 
@@ -32,6 +33,7 @@ describe("defineWorkflow", () => {
         return "run-1";
       },
       signal: async () => 0,
+      signalRun: async () => "buffered",
       result: async () => ({ status: "succeeded", result: null, error: null }),
     });
     try {
@@ -39,6 +41,32 @@ describe("defineWorkflow", () => {
       await exp.enqueue({});
       await exp.enqueue({}, { retries: 0 });
       expect(calls).toEqual([{ retries: 4 }, { retries: 0 }]);
+    } finally {
+      setWorkflowRuntime(null);
+    }
+  });
+
+  test("signal broadcasts by default and addresses one run with runId", async () => {
+    const calls: unknown[] = [];
+    setWorkflowRuntime({
+      enqueue: async () => "run-1",
+      signal: async (event, payload) => {
+        calls.push(["broadcast", event, payload]);
+        return 3;
+      },
+      signalRun: async (runId, event, payload) => {
+        calls.push(["run", runId, event, payload]);
+        return "buffered";
+      },
+      result: async () => null,
+    });
+    try {
+      expect(await signal("approval", { ok: true })).toBe(3);
+      expect(await signal("approval", { ok: true }, { runId: "order-1" })).toBe("buffered");
+      expect(calls).toEqual([
+        ["broadcast", "approval", { ok: true }],
+        ["run", "order-1", "approval", { ok: true }],
+      ]);
     } finally {
       setWorkflowRuntime(null);
     }

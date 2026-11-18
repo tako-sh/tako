@@ -1,3 +1,5 @@
+import { signal, WorkflowResultError } from "tako.sh";
+import approval from "./src/workflows/approval";
 import broadcast from "./src/workflows/broadcast";
 import demo from "./src/channels/demo";
 import messages, { appendMessage } from "./src/stores/messages";
@@ -15,6 +17,33 @@ export default async function fetch(request: Request): Promise<Response> {
     const { message, id } = (await request.json()) as { message: string; id?: string };
     const runId = await broadcast.enqueue({ message }, id === undefined ? {} : { id });
     return Response.json({ ok: true, runId });
+  }
+
+  if (url.pathname === "/approval" && request.method === "POST") {
+    const { id, settleMs } = (await request.json()) as { id: string; settleMs: number };
+    const runId = await approval.enqueue({ settleMs }, { id });
+    return Response.json({ ok: true, runId });
+  }
+
+  if (url.pathname === "/approval/result" && request.method === "POST") {
+    const { id } = (await request.json()) as { id: string };
+    try {
+      const result = await approval.result(id, { timeout: "1s" });
+      return Response.json({ status: "succeeded", result });
+    } catch (error) {
+      if (error instanceof WorkflowResultError) return Response.json({ status: error.status });
+      throw error;
+    }
+  }
+
+  if (url.pathname === "/signal" && request.method === "POST") {
+    const { runId, event, payload } = (await request.json()) as {
+      runId: string;
+      event: string;
+      payload: unknown;
+    };
+    const status = await signal(event, payload, { runId });
+    return Response.json({ ok: true, status });
   }
 
   if (url.pathname === "/publish" && request.method === "POST") {

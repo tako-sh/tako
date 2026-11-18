@@ -7,12 +7,12 @@ use std::path::Path;
 use tako_core::{EnqueueOpts, EnqueueRunResponse, RunPayload, ScheduleSpec};
 
 use super::operator::{
-    CancelledRun, OPERATOR_CANCEL_REASON, RunRecord, RunRow, StepRow, SummaryRow, WaitRow,
-    parse_status,
+    CancelledRun, OPERATOR_CANCEL_REASON, RunRecord, RunRow, SignalRow, StepRow, SummaryRow,
+    WaitRow, parse_status,
 };
 use super::{RunsDbError, ScheduleRow, clamp_lease_ms, now_ms};
 use crate::schema;
-use tako_core::WorkflowRunStatus;
+use tako_core::{SignalRunStatus, WORKFLOW_RUN_MAX_SIGNALS, WorkflowRunStatus};
 
 const DEFAULT_MAX_ATTEMPTS: u32 = 3;
 
@@ -452,7 +452,7 @@ impl SqliteRunsDb {
         step_name: &str,
         event_name: &str,
         timeout_at_ms: Option<i64>,
-    ) -> Result<(), RunsDbError> {
+    ) -> Result<bool, RunsDbError> {
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         let rows = tx.execute(
@@ -464,13 +464,142 @@ impl SqliteRunsDb {
         if rows == 0 {
             return Err(RunsDbError::StaleWorker);
         }
+        // The step already has a saved result the worker did not see: never
+        // park a run on a wait that is already satisfied.
+        let saved: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM steps WHERE run_id = ?1 AND name = ?2)",
+            (run_id, step_name),
+            |row| row.get(0),
+        )?;
+        if saved {
+            tx.execute(
+                "DELETE FROM event_waiters WHERE run_id = ?1 AND step_name = ?2",
+                (run_id, step_name),
+            )?;
+            tx.execute(
+                "UPDATE runs SET run_at = ?1 WHERE id = ?2",
+                (now_ms(), run_id),
+            )?;
+            tx.commit()?;
+            return Ok(true);
+        }
+        // A signal addressed to this run arrived before the wait. Consume it
+        // as the step result here, under the same write lock, so a signal can
+        // never land between "nothing buffered" and "parked".
+        let buffered: Option<String> = tx
+            .query_row(
+                "SELECT payload FROM run_inbox WHERE run_id = ?1 AND event_name = ?2",
+                (run_id, event_name),
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(payload) = buffered {
+            let now = now_ms();
+            tx.execute(
+                "INSERT OR IGNORE INTO steps (run_id, name, result, completed_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                (run_id, step_name, payload.as_str(), now),
+            )?;
+            tx.execute(
+                "DELETE FROM run_inbox WHERE run_id = ?1 AND event_name = ?2",
+                (run_id, event_name),
+            )?;
+            tx.execute(
+                "DELETE FROM event_waiters WHERE run_id = ?1 AND step_name = ?2",
+                (run_id, step_name),
+            )?;
+            tx.execute("UPDATE runs SET run_at = ?1 WHERE id = ?2", (now, run_id))?;
+            tx.commit()?;
+            return Ok(true);
+        }
         tx.execute(
             "INSERT OR REPLACE INTO event_waiters (run_id, step_name, event_name, expires_at)
              VALUES (?1, ?2, ?3, ?4)",
             (run_id, step_name, event_name, timeout_at_ms),
         )?;
         tx.commit()?;
-        Ok(())
+        Ok(false)
+    }
+
+    /// Deliver `payload` to one run: wake it when it waits for `event_name`,
+    /// otherwise keep it in the run's inbox until it does.
+    pub(super) fn signal_run(
+        &self,
+        run_id: &str,
+        event_name: &str,
+        payload: &serde_json::Value,
+    ) -> Result<SignalRunStatus, RunsDbError> {
+        let payload_json = serde_json::to_string(payload)?;
+        let now = now_ms();
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let status: Option<String> = tx
+            .query_row("SELECT status FROM runs WHERE id = ?1", [run_id], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        let Some(status) = status else {
+            return Ok(SignalRunStatus::Missing);
+        };
+        if parse_status(&status)?.is_terminal() {
+            return Ok(SignalRunStatus::Finished);
+        }
+
+        let waiters = {
+            let mut stmt = tx.prepare_cached(
+                "SELECT step_name FROM event_waiters WHERE run_id = ?1 AND event_name = ?2",
+            )?;
+            let rows = stmt.query_map((run_id, event_name), |row| row.get::<_, String>(0))?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        if !waiters.is_empty() {
+            for step_name in &waiters {
+                tx.execute(
+                    "INSERT OR IGNORE INTO steps (run_id, name, result, completed_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    (run_id, step_name.as_str(), payload_json.as_str(), now),
+                )?;
+                tx.execute(
+                    "DELETE FROM event_waiters WHERE run_id = ?1 AND step_name = ?2",
+                    (run_id, step_name.as_str()),
+                )?;
+            }
+            tx.execute(
+                "UPDATE runs SET run_at = ?1 WHERE id = ?2 AND status = 'pending'",
+                (now, run_id),
+            )?;
+            tx.commit()?;
+            return Ok(SignalRunStatus::Delivered);
+        }
+
+        let held: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM steps WHERE run_id = ?1 AND name = ?2)
+                 OR EXISTS(SELECT 1 FROM run_inbox WHERE run_id = ?1 AND event_name = ?2)",
+            (run_id, event_name),
+            |row| row.get(0),
+        )?;
+        if held {
+            return Ok(SignalRunStatus::Duplicate);
+        }
+        let (entries, bytes): (i64, i64) = tx.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(payload_bytes), 0) FROM run_inbox WHERE run_id = ?1",
+            [run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        super::check_inbox_room(run_id, entries, bytes, payload_json.len())?;
+        tx.execute(
+            "INSERT INTO run_inbox (run_id, event_name, payload, payload_bytes, received_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            (
+                run_id,
+                event_name,
+                payload_json.as_str(),
+                payload_json.len() as i64,
+                now,
+            ),
+        )?;
+        tx.commit()?;
+        Ok(SignalRunStatus::Buffered)
     }
 
     pub(super) fn signal(
@@ -621,12 +750,33 @@ impl SqliteRunsDb {
             })?;
             rows.collect::<Result<Vec<_>, _>>()?
         };
+        let signals = {
+            let mut stmt = tx.prepare_cached(
+                "SELECT event_name, received_at, payload_bytes FROM run_inbox WHERE run_id = ?1
+                 ORDER BY received_at, event_name LIMIT ?2",
+            )?;
+            let rows = stmt.query_map((id, WORKFLOW_RUN_MAX_SIGNALS as i64), |row| {
+                Ok(SignalRow {
+                    event_name: row.get(0)?,
+                    received_at: row.get(1)?,
+                    bytes: row.get(2)?,
+                })
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        let signals_total: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM run_inbox WHERE run_id = ?1",
+            [id],
+            |row| row.get(0),
+        )?;
         tx.commit()?;
         Ok(Some(RunRecord {
             run,
             steps,
             steps_total: steps_total as u64,
             waits,
+            signals,
+            signals_total: signals_total as u64,
         }))
     }
 

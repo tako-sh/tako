@@ -686,6 +686,68 @@ describe("Worker", () => {
     expect(runs.b).toBe(2);
   });
 
+  test("a step still running when a sibling wait suspends the run saves before it parks", async () => {
+    let bodies = 0;
+    const handler: WorkflowHandler = async (_payload, ctx) => {
+      await Promise.all([
+        ctx.run("slow", async () => {
+          bodies += 1;
+          await new Promise((r) => setTimeout(r, 50));
+          return "done";
+        }),
+        ctx.waitFor("approval"),
+      ]);
+    };
+    const worker = new Worker({ client, workerId: "w1", registry: registry({ par: handler }) });
+    const id = mock.seed({ name: "par" });
+    await worker.processOnce();
+
+    const task = mock.find(id)!;
+    expect(task.status).toBe("pending");
+    expect(task.stepState).toEqual({ slow: "done" });
+    const commands = mock.commands.filter((c) => c === "save_step" || c === "wait_for_event");
+    expect(commands).toEqual(["save_step", "wait_for_event"]);
+
+    // Resuming after the signal reuses the saved step.
+    task.stepState = { ...task.stepState, approval: { ok: true } };
+    task.runAt = Date.now();
+    await worker.processOnce();
+    expect(mock.find(id)?.status).toBe("succeeded");
+    expect(bodies).toBe(1);
+  });
+
+  test("a wait timeout counts from the first time the run reached the wait", async () => {
+    const handler: WorkflowHandler = async (_payload, ctx) => {
+      await ctx.waitFor("approval", { timeout: 60_000 });
+    };
+    const worker = new Worker({ client, workerId: "w1", registry: registry({ wait: handler }) });
+    const id = mock.seed({ name: "wait" });
+    const before = Date.now();
+    await worker.processOnce();
+    const task = mock.find(id)!;
+    const deadline = task.runAt;
+    expect(deadline).toBeGreaterThanOrEqual(before + 60_000);
+    expect(task.stepState).toEqual({ "__wait:approval": { timeoutAt: deadline } });
+
+    // The run resumes before the signal (another wait completed, an
+    // operator retried it): the deadline must not move.
+    await new Promise((r) => setTimeout(r, 20));
+    task.runAt = Date.now();
+    await worker.processOnce();
+    expect(mock.find(id)?.runAt).toBe(deadline);
+  });
+
+  test("an infinite wait timeout parks without a deadline", async () => {
+    const handler: WorkflowHandler = async (_payload, ctx) => {
+      await ctx.waitFor("approval", { timeout: Infinity });
+    };
+    const worker = new Worker({ client, workerId: "w1", registry: registry({ wait: handler }) });
+    const id = mock.seed({ name: "wait" });
+    await worker.processOnce();
+    expect(mock.find(id)?.runAt).toBe(Number.MAX_SAFE_INTEGER);
+    expect(mock.find(id)?.stepState).toEqual({});
+  });
+
   test("a reused step name kills the run without spending its retries", async () => {
     const processed: string[] = [];
     const worker = new Worker({

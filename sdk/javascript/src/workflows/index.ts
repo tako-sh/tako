@@ -10,6 +10,8 @@ export type {
   RunId,
   RunSpec,
   RunStatus,
+  SignalOptions,
+  SignalRunStatus,
   WorkflowOpts,
   WorkflowRuntimeOpts,
 } from "./types";

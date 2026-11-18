@@ -209,11 +209,12 @@ func TestErrorRepliesFromWireFixturesMapToSentinels(t *testing.T) {
 		"error-channel_unknown.json":        ErrChannelUnknown,
 		"error-channel_params_invalid.json": ErrChannelParamsInvalid,
 		"error-channel_closed.json":         ErrChannelClosed,
+		"error-signal_inbox_full.json":      ErrSignalInboxFull,
 		"error-unavailable.json":            ErrUnavailable,
 	}
 	all := []error{
 		ErrRunNotOwned, ErrRunIDConflict, ErrInvalidRequest, ErrChannelUnknown,
-		ErrChannelParamsInvalid, ErrChannelClosed, ErrUnavailable,
+		ErrChannelParamsInvalid, ErrChannelClosed, ErrSignalInboxFull, ErrUnavailable,
 	}
 	entries, err := os.ReadDir(filepath.Join(wireFixtureDir, "replies"))
 	if err != nil {

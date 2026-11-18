@@ -312,6 +312,52 @@ describe.skipIf(SKIP)("tako dev fixtures", () => {
     }
   }, 120_000);
 
+  test("channels-workflows: a signal sent before the run waits is kept for the wait", async () => {
+    const { tempDir, pd, lf } = prepareFixture("channels-workflows");
+    const proc = startDev(pd, lf);
+    try {
+      const devUrl = await waitForApp(lf);
+      await waitForHttpOk(devUrl, lf);
+      const runId = `approval-${Date.now()}`;
+
+      const enqueued = await postJsonWhenReady(
+        devUrl,
+        "/approval",
+        { id: runId, settleMs: 5_000 },
+        lf,
+      );
+      expect(await enqueued.json()).toMatchObject({ ok: true, runId });
+      // The run is still sleeping: the signal must be buffered, not dropped.
+      const early = await postJson(devUrl, "/signal", {
+        runId,
+        event: "decision",
+        payload: { approved: true },
+      });
+      expect(await early.json()).toMatchObject({ ok: true, status: "buffered" });
+      const duplicate = await postJson(devUrl, "/signal", {
+        runId,
+        event: "decision",
+        payload: { approved: false },
+      });
+      expect(await duplicate.json()).toMatchObject({ status: "duplicate" });
+
+      let outcome: { status: string; result?: unknown } = { status: "timeout" };
+      const deadline = Date.now() + 60_000;
+      while (outcome.status === "timeout" && Date.now() < deadline) {
+        outcome = await (await postJson(devUrl, "/approval/result", { id: runId })).json();
+      }
+      expect(outcome, safeRead(lf)).toEqual({ status: "succeeded", result: { approved: true } });
+
+      const late = await postJson(devUrl, "/signal", { runId, event: "decision", payload: {} });
+      expect(await late.json()).toMatchObject({ status: "finished" });
+    } finally {
+      try {
+        process.kill(proc.pid, "SIGKILL");
+      } catch {}
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   test("channels-workflows: Store writes persist in the dev database binding", async () => {
     const { tempDir, pd, lf } = prepareFixture("channels-workflows");
     const proc = startDev(pd, lf);
