@@ -146,9 +146,11 @@ export function defineWorkflow<P = unknown, R = unknown>(
         (value, opts) => enqueue(value as P, opts),
         read,
         options,
+        // The child runs in this app's store, which wakes the parent when it finishes.
+        "push",
       ) as Promise<WorkflowOutput<R>>,
     result: (id, options) =>
-      waitForWorkflowResult(name, id, read, options) as Promise<WorkflowOutput<R>>,
+      waitForWorkflowResult(name, id, read, options, "push") as Promise<WorkflowOutput<R>>,
   };
 }
 

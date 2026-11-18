@@ -278,6 +278,18 @@ fn commands() -> Vec<Fixture> {
             },
         ),
         command(
+            "wait_for_run",
+            Command::WaitForRun {
+                app: APP.into(),
+                id: RUN_ID.into(),
+                worker_id: CLAIM.into(),
+                step_name: "__workflow:[\"\",0]:outcome".into(),
+                target_name: WORKFLOW.into(),
+                target_id: "child:run-2".into(),
+                timeout_at_ms: Some(AT_MS + 30_000),
+            },
+        ),
+        command(
             "signal",
             Command::Signal {
                 app: APP.into(),

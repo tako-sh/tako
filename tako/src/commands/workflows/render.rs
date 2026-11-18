@@ -329,9 +329,14 @@ pub(super) fn show_lines(
                 .expires_at_ms
                 .map(|at| format!("until {}", clock.full(at)))
                 .unwrap_or_else(|| "with no timeout".to_string());
+            // Waits on another run's outcome park on the reserved `__run:<id>` event.
+            let target = match wait.event_name.strip_prefix("__run:") {
+                Some(run) => format!("run {run}"),
+                None => wait.event_name.clone(),
+            };
             lines.push(Line::Text(format!(
-                "{} waits for {} {until}",
-                wait.step_name, wait.event_name
+                "{} waits for {target} {until}",
+                wait.step_name
             )));
         }
     }
@@ -702,11 +707,18 @@ mod tests {
             bytes: 40_000,
             preview: Some("{\"rows\":[1,2,3".into()),
         };
-        run.waits = vec![WorkflowRunWait {
-            step_name: "approval".into(),
-            event_name: "order.approved".into(),
-            expires_at_ms: None,
-        }];
+        run.waits = vec![
+            WorkflowRunWait {
+                step_name: "approval".into(),
+                event_name: "order.approved".into(),
+                expires_at_ms: None,
+            },
+            WorkflowRunWait {
+                step_name: "invoice:outcome".into(),
+                event_name: "__run:child:42".into(),
+                expires_at_ms: None,
+            },
+        ];
         run.signals = vec![
             WorkflowRunSignal {
                 event_name: "shipped".into(),
@@ -740,6 +752,7 @@ mod tests {
                 "~ No saved steps.",
                 "# Waits",
                 "approval waits for order.approved with no timeout",
+                "invoice:outcome waits for run child:42 with no timeout",
                 "# Buffered signals",
                 "~ 1 newer signal(s) omitted; showing the 2 oldest of 3.",
                 "shipped    2026-11-12 11:58:00  17 bytes",

@@ -573,6 +573,23 @@ pub enum Command {
         timeout_at_ms: Option<i64>,
     },
 
+    /// Worker: park the run until another run of the same app finishes, and
+    /// save that run's outcome (`RunResult` JSON) as the step result. When
+    /// the target has already finished, is missing, or belongs to another
+    /// workflow than `target_name`, the outcome is saved at once and the run
+    /// is due again immediately. A timeout saves `null`. Replies with
+    /// [`WaitForEventResponse`].
+    WaitForRun {
+        app: String,
+        id: String,
+        worker_id: String,
+        step_name: String,
+        target_name: String,
+        target_id: String,
+        #[serde(default)]
+        timeout_at_ms: Option<i64>,
+    },
+
     /// Anyone: deliver an event payload.
     ///
     /// Without `run_id`, wakes every parked waiter with matching

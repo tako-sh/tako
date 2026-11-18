@@ -165,6 +165,18 @@ describe("workflow commands match the wire fixtures", () => {
       "wait_for_event-no_timeout",
       () => client.waitForEvent(RUN_ID, CLAIM, "approval", "order-approved", null),
     ],
+    [
+      "wait_for_run",
+      () =>
+        client.waitForRun(
+          RUN_ID,
+          CLAIM,
+          `__workflow:${JSON.stringify(["", 0])}:outcome`,
+          "send-email",
+          "child:run-2",
+          new Date(AT_MS + 30_000),
+        ),
+    ],
     ["signal", () => client.signal("order-approved", { orderId: "42" })],
     ["signal-run", () => client.signalRun(RUN_ID, "order-approved", { orderId: "42" })],
   ];

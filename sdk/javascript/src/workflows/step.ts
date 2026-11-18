@@ -83,6 +83,12 @@ export interface WorkflowStepContext {
   readonly attempt: number;
   /** Logger scoped to this step. */
   readonly logger: Logger;
+  /**
+   * Aborted when this attempt no longer owns the run: an operator cancelled
+   * it or its lease was reclaimed. Pass it to `fetch` and other cancellable
+   * work so a step stops instead of finishing work nothing will record.
+   */
+  readonly signal: AbortSignal;
 }
 
 /** Sentinel: end the run cleanly as `cancelled`. */
@@ -100,12 +106,14 @@ export class DeferSignal {
   constructor(public wakeAt: Date | null) {}
 }
 
-/** Sentinel: park the run waiting for an event. */
+/** Sentinel: park the run waiting for an event, or for another run to finish. */
 export class WaitSignal {
   constructor(
     public stepName: string,
     public eventName: string,
     public timeoutAt: Date | null,
+    /** Set when the run waits for this run of this workflow to finish. */
+    public target: { name: string; id: string } | null = null,
   ) {}
 }
 
@@ -118,6 +126,29 @@ export class OwnershipLostSignal {}
 /** Ownership of the claimed run, shared by its step API and heartbeat. */
 export interface RunOwnership {
   lost: boolean;
+  /** Aborted once ownership is lost; its signal is exposed to handler code. */
+  controller?: AbortController;
+}
+
+/** Record that this attempt no longer owns the run and abort its signal. */
+export function loseOwnership(ownership: RunOwnership): void {
+  if (ownership.lost) return;
+  ownership.lost = true;
+  ownership.controller?.abort(new OwnershipLostSignal());
+}
+
+/** Resolve after `ms`, or as soon as `signal` aborts. */
+function pause(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }
 
 /** True for any control-flow sentinel — these must propagate untouched. */
@@ -156,7 +187,7 @@ export function createStepAPI(
       await client.saveStep(runId, workerId, name, value);
     } catch (err) {
       if (isStaleOwnerError(err)) {
-        ownership.lost = true;
+        loseOwnership(ownership);
         throw new OwnershipLostSignal();
       }
       throw err;
@@ -227,6 +258,8 @@ export function createStepAPI(
       const startedAt = Date.now();
       const context = createContext(name);
       for (let attempt = 1; attempt <= attempts; attempt++) {
+        // A run lost between attempts (or during the backoff) stops here.
+        ensureOwned();
         try {
           const result = await fn(context);
           await save(name, result ?? null);
@@ -238,13 +271,16 @@ export function createStepAPI(
           // handler talks to the worker — never retry, never wrap, just
           // propagate.
           if (isControlSignal(err)) throw err;
+          // The step failed because this attempt lost the run (often its
+          // aborted signal): stop, never retry or fail the run over it.
+          if (ownership.lost) throw new OwnershipLostSignal();
           lastErr = err;
           if (opts?.retry === false) {
             const e = err instanceof Error ? err : new Error(String(err));
             throw new FailSignal(e);
           }
           if (attempt < attempts) {
-            await new Promise((r) => setTimeout(r, expBackoffMs(attempt, base, max)));
+            await pause(expBackoffMs(attempt, base, max), ownership.controller?.signal);
           }
         }
       }

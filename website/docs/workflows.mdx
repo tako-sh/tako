@@ -220,7 +220,7 @@ if state != nil && state.Status == "succeeded" {
 
 `renderReport` is app-owned in both examples.
 
-Within another JavaScript workflow, `.run()` checkpoints the child identity and terminal outcome. It defers the parent while the child is pending, releasing the worker slot without consuming a retry. Parent replay reuses the same child and cached result. Give calls stable `step` names, or preserve their call order within each named `ctx.run` scope. Use a stable enqueue ID for detached `.enqueue()` calls that can repeat. Retain child history long enough for parent retries: pruning a run also frees its ID.
+Within another JavaScript workflow, `.run()` checkpoints the child identity and terminal outcome. While the child is pending, the parent is parked, releasing the worker slot without consuming a retry. For an imported `defineWorkflow` handle, Tako wakes the parent when the child finishes, so a parent waiting on a long child costs nothing meanwhile. A network handle (`workflow("app.name")`) checks again instead, backing off from one second to one minute. Parent replay reuses the same child and cached result. Give calls stable `step` names, or preserve their call order within each named `ctx.run` scope. Use a stable enqueue ID for detached `.enqueue()` calls that can repeat. Retain child history long enough for parent retries: pruning a run also frees its ID.
 
 See [Network Primitives](/network-primitives/#workflow-results) for typed examples, timeout/failure behavior, and Go/Rust result readers for JavaScript-owned workflows. Automatic durable child calls currently belong to the JavaScript SDK; the Go worker SDK has no `.run()` equivalent.
 
@@ -284,7 +284,7 @@ func callProviderStep(ctx *workflow.WorkflowContext, callProvider func() (any, e
 
 Step retries default to `0`. Set JavaScript's `retry: false` or Go's `StepRunOpts{NoRetry: true}` when an error from that step is permanent and should move the run directly to `dead`. Go's `out` argument (`nil` above) can be a pointer to receive the checkpointed result.
 
-The workflow context also provides `runId`, `workflowName`, `attempt`, and a workflow-scoped `logger`. Each step callback receives the same run metadata plus `stepName` and a step-scoped logger.
+The workflow context also provides `runId`, `workflowName`, `attempt`, a workflow-scoped `logger`, and a `signal` (`AbortSignal`). Each step callback receives the same run metadata plus `stepName`, a step-scoped logger, and the same `signal`. The signal aborts when this attempt no longer owns the run, because an operator cancelled it or its lease was reclaimed. Pass it to `fetch` and other cancellable work so a step stops instead of finishing work nothing will record. A step that fails after the loss is not retried, and the run is not failed over it. Go handlers get the same notice from `ctx.Done()`.
 
 ## Durable Sleep
 

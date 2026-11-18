@@ -936,6 +936,31 @@ async fn run_addressed_signals_buffer_and_wake_through_the_socket() {
     assert_eq!(reply["data"]["status"], "delivered");
     assert_eq!(fired(), 2);
 
+    // A parent waiting on a run that already finished is due at once.
+    let child = db
+        .enqueue("kid", &serde_json::json!({}), &EnqueueOpts::default())
+        .unwrap()
+        .id;
+    let child_owner = db
+        .claim("w2", &["kid".into()], 30_000)
+        .unwrap()
+        .unwrap()
+        .worker_id;
+    db.complete(&child, &child_owner, &serde_json::json!(1))
+        .unwrap();
+    let owner = db
+        .claim("w1", &["w".into()], 30_000)
+        .unwrap()
+        .unwrap()
+        .worker_id;
+    let reply = send(serde_json::json!({
+        "command": "wait_for_run", "app": "a", "id": id, "worker_id": owner,
+        "step_name": "outcome", "target_name": "kid", "target_id": child, "timeout_at_ms": null,
+    }))
+    .await;
+    assert_eq!(reply["data"], serde_json::json!({"delivered": true}));
+    assert_eq!(fired(), 3);
+
     // Reserved and malformed names are rejected with a code.
     let reply = send(signal("__run:x")).await;
     assert_eq!(reply["code"], "invalid_request");

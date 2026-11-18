@@ -403,6 +403,7 @@ fn command_app(cmd: &Command) -> Option<&str> {
         | Command::FailRun { app, .. }
         | Command::DeferRun { app, .. }
         | Command::WaitForEvent { app, .. }
+        | Command::WaitForRun { app, .. }
         | Command::Signal { app, .. }
         | Command::ChannelPublish { app, .. }
         | Command::ChannelClose { app, .. }
@@ -670,6 +671,32 @@ fn handle_command(
                 Response::ok(WaitForEventResponse { delivered })
             }
             Err(e) => e.into_socket_error("wait_for_event").into(),
+        },
+        Command::WaitForRun {
+            id,
+            worker_id,
+            step_name,
+            target_name,
+            target_id,
+            timeout_at_ms,
+            ..
+        } => match db.wait_for_run(
+            &id,
+            &worker_id,
+            &step_name,
+            &target_name,
+            &target_id,
+            timeout_at_ms,
+        ) {
+            Ok(delivered) => {
+                limiter.release_claim(&worker_id);
+                if delivered {
+                    // The awaited run had already finished: this run is due now.
+                    (on_enqueue)();
+                }
+                Response::ok(WaitForEventResponse { delivered })
+            }
+            Err(e) => e.into_socket_error("wait_for_run").into(),
         },
         Command::Signal {
             event_name,

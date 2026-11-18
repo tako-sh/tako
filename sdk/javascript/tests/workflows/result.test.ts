@@ -5,7 +5,7 @@ import {
   waitForWorkflowResult,
   WorkflowResultError,
 } from "../../src/workflows/result";
-import { DeferSignal } from "../../src/workflows/step";
+import { DeferSignal, WaitSignal } from "../../src/workflows/step";
 import type { WorkflowsClient } from "../../src/workflows/rpc-client";
 
 function execution() {
@@ -190,5 +190,70 @@ test("result deadlines survive deferral and also bound an in-flight read", async
     ).rejects.toMatchObject({ status: "timeout" });
   } finally {
     release(null);
+  }
+});
+
+test("a pushed wait parks on the child, reuses a finished child's outcome, and maps a saved null to a timeout", async () => {
+  const pending = { status: "pending" as const, result: null, error: null };
+  const finished = { status: "succeeded" as const, result: { ok: true }, error: null };
+  let state: typeof pending | typeof finished = pending;
+  const wait = () =>
+    waitForWorkflowResult(
+      "child",
+      "child-1",
+      async () => state,
+      { step: "s", timeout: "1m" },
+      "push",
+    );
+
+  const parked = execution();
+  const before = Date.now();
+  const signal = await parked.run(wait).catch((error: unknown) => error);
+  expect(signal).toBeInstanceOf(WaitSignal);
+  const wait1 = signal as WaitSignal;
+  expect(wait1.target).toEqual({ name: "child", id: "child-1" });
+  expect(wait1.eventName).toBe("__run:child-1");
+  expect(wait1.stepName).toBe(`__workflow:${JSON.stringify(["", "s"])}:outcome`);
+  expect(wait1.timeoutAt!.getTime()).toBeGreaterThanOrEqual(before + 60_000);
+
+  // The server saved the child's outcome when it finished.
+  parked.history[wait1.stepName] = finished;
+  expect(await parked.run(wait)).toEqual({ ok: true });
+
+  // A child that finished before the parent waited needs no park.
+  state = finished;
+  const quick = execution();
+  expect(await quick.run(wait)).toEqual({ ok: true });
+
+  // An expired wait saves null.
+  const expired = execution();
+  expired.history[wait1.stepName] = null;
+  await expect(expired.run(wait)).rejects.toMatchObject({ status: "timeout" });
+});
+
+test("a polled child wait backs off from one second to a minute as it ages", async () => {
+  const context = execution();
+  const now = Date.now;
+  let clock = now();
+  Date.now = () => clock;
+  const wait = () =>
+    waitForWorkflowResult("other.child", "child-1", async () => ({
+      status: "pending" as const,
+      result: null,
+      error: null,
+    }));
+  const nextPoll = async () => {
+    const signal = await context.run(wait).catch((error: unknown) => error);
+    expect(signal).toBeInstanceOf(DeferSignal);
+    return (signal as DeferSignal).wakeAt!.getTime() - clock;
+  };
+  try {
+    expect(await nextPoll()).toBe(1_000);
+    clock += 30_000;
+    expect(await nextPoll()).toBe(3_000);
+    clock += 3_600_000;
+    expect(await nextPoll()).toBe(60_000);
+  } finally {
+    Date.now = now;
   }
 });

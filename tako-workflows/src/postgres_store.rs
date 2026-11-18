@@ -323,7 +323,8 @@ impl PostgresRunsDb {
         worker_id: &str,
         result: &serde_json::Value,
     ) -> Result<(), RunsDbError> {
-        self.update_running(
+        self.finish_running(
+            id,
             "status='succeeded', result=$5, last_error=NULL, worker_id=NULL, lease_until=NULL, finished_at=$4",
             &[&self.app_id, &id, &worker_id, &self.now(), &serde_json::to_string(result)?],
         )
@@ -335,7 +336,8 @@ impl PostgresRunsDb {
         worker_id: &str,
         reason: Option<&str>,
     ) -> Result<(), RunsDbError> {
-        self.update_running(
+        self.finish_running(
+            id,
             "status='cancelled', last_error=$4, worker_id=NULL, lease_until=NULL, finished_at=$5",
             &[&self.app_id, &id, &worker_id, &reason, &self.now()],
         )
@@ -350,7 +352,8 @@ impl PostgresRunsDb {
         finalize: bool,
     ) -> Result<(), RunsDbError> {
         if finalize {
-            return self.update_running(
+            return self.finish_running(
+                id,
                 "status='dead', last_error=$4, worker_id=NULL, lease_until=NULL, finished_at=$5",
                 &[&self.app_id, &id, &worker_id, &error, &self.now()],
             );
@@ -417,13 +420,14 @@ impl PostgresRunsDb {
 
     pub(super) fn reclaim_expired(&self) -> Result<Reclaimed, RunsDbError> {
         let mut client = self.client()?;
+        let mut tx = client.transaction()?;
         // Return exactly the owners whose rows this statement reclaims.
         // Row locks prevent a heartbeat or another reclaimer from changing
         // ownership between selection and accounting.
         //
         // The lost worker spent the attempt that claim counted. A run with
         // none left ends here; requeueing it would repeat the loss forever.
-        let expired = client
+        let expired: Vec<(String, Option<String>, bool)> = tx
             .query(
                 &format!(
                     "WITH expired AS (
@@ -446,6 +450,12 @@ impl PostgresRunsDb {
             .into_iter()
             .map(|row| (row.get(0), row.get(1), row.get(2)))
             .collect();
+        for (id, _, exhausted) in &expired {
+            if *exhausted {
+                self.wake_run_waiters(&mut tx, id)?;
+            }
+        }
+        tx.commit()?;
         Ok(Reclaimed::from_rows(expired))
     }
 
@@ -476,45 +486,9 @@ impl PostgresRunsDb {
     ) -> Result<bool, RunsDbError> {
         let mut client = self.client()?;
         let mut tx = client.transaction()?;
-        let run_at = timeout_at_ms.unwrap_or(i64::MAX);
-        let rows = tx.execute(
-            &format!(
-                "UPDATE {}.runs
-                 SET status='pending', worker_id=NULL, lease_until=NULL, run_at=$4, attempts=attempts-1
-                 WHERE app_id=$1 AND id=$2 AND worker_id=$3 AND status='running'",
-                self.schema
-            ),
-            &[&self.app_id, &run_id, &worker_id, &run_at],
-        )?;
-        if rows == 0 {
-            return Err(RunsDbError::StaleWorker);
-        }
-        // The step already has a saved result the worker did not see: never
-        // park a run on a wait that is already satisfied.
-        let saved: bool = tx
-            .query_one(
-                &format!(
-                    "SELECT EXISTS(SELECT 1 FROM {}.steps WHERE app_id=$1 AND run_id=$2 AND name=$3)",
-                    self.schema
-                ),
-                &[&self.app_id, &run_id, &step_name],
-            )?
-            .get(0);
-        if saved {
-            tx.execute(
-                &format!(
-                    "DELETE FROM {}.event_waiters WHERE app_id=$1 AND run_id=$2 AND step_name=$3",
-                    self.schema
-                ),
-                &[&self.app_id, &run_id, &step_name],
-            )?;
-            tx.execute(
-                &format!(
-                    "UPDATE {}.runs SET run_at=$3 WHERE app_id=$1 AND id=$2",
-                    self.schema
-                ),
-                &[&self.app_id, &run_id, &self.now()],
-            )?;
+        self.release_for_wait(&mut tx, run_id, worker_id, timeout_at_ms)?;
+        if self.step_saved(&mut tx, run_id, step_name)? {
+            self.requeue_now(&mut tx, run_id, step_name)?;
             tx.commit()?;
             return Ok(true);
         }
@@ -532,48 +506,73 @@ impl PostgresRunsDb {
         )?;
         if let Some(row) = buffered {
             let payload: String = row.get(0);
-            let now = self.now();
-            tx.execute(
-                &format!(
-                    "INSERT INTO {}.steps (app_id, run_id, name, result, completed_at)
-                     VALUES ($1, $2, $3, $4, $5)
-                     ON CONFLICT(app_id, run_id, name) DO NOTHING",
-                    self.schema
-                ),
-                &[&self.app_id, &run_id, &step_name, &payload, &now],
-            )?;
-            tx.execute(
-                &format!(
-                    "DELETE FROM {}.event_waiters WHERE app_id=$1 AND run_id=$2 AND step_name=$3",
-                    self.schema
-                ),
-                &[&self.app_id, &run_id, &step_name],
-            )?;
-            tx.execute(
-                &format!(
-                    "UPDATE {}.runs SET run_at=$3 WHERE app_id=$1 AND id=$2",
-                    self.schema
-                ),
-                &[&self.app_id, &run_id, &now],
+            self.satisfy_wait(&mut tx, run_id, step_name, &payload)?;
+            tx.commit()?;
+            return Ok(true);
+        }
+        self.park(&mut tx, run_id, step_name, event_name, timeout_at_ms)?;
+        tx.commit()?;
+        Ok(false)
+    }
+
+    /// See `RunsDb::wait_for_run`.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn wait_for_run(
+        &self,
+        run_id: &str,
+        worker_id: &str,
+        step_name: &str,
+        target_name: &str,
+        target_id: &str,
+        timeout_at_ms: Option<i64>,
+    ) -> Result<bool, RunsDbError> {
+        let mut client = self.client()?;
+        let mut tx = client.transaction()?;
+        // Lock the target before the waiting run. The transaction that
+        // finishes the target updates it first and wakes waiters after, so
+        // the two serialize on the target's row: either the waiter below is
+        // committed before it reads waiters, or this read sees it finished.
+        // Taking the rows in the same order (target, then waiter) cannot
+        // deadlock with it.
+        let target = tx.query_opt(
+            &format!(
+                "SELECT name, status, result, last_error FROM {}.runs
+                 WHERE app_id=$1 AND id=$2 FOR SHARE",
+                self.schema
+            ),
+            &[&self.app_id, &target_id],
+        )?;
+        self.release_for_wait(&mut tx, run_id, worker_id, timeout_at_ms)?;
+        if self.step_saved(&mut tx, run_id, step_name)? {
+            self.requeue_now(&mut tx, run_id, step_name)?;
+            tx.commit()?;
+            return Ok(true);
+        }
+        let outcome = match target {
+            Some(row) if row.get::<_, String>(0) == target_name => {
+                let outcome = outcome_from(&row, 1)?;
+                parse_status(&outcome.status)?
+                    .is_terminal()
+                    .then_some(outcome)
+            }
+            _ => Some(super::enqueue::missing_outcome()),
+        };
+        if let Some(outcome) = outcome {
+            self.satisfy_wait(
+                &mut tx,
+                run_id,
+                step_name,
+                &serde_json::to_string(&outcome)?,
             )?;
             tx.commit()?;
             return Ok(true);
         }
-        tx.execute(
-            &format!(
-                "INSERT INTO {}.event_waiters (app_id, run_id, step_name, event_name, expires_at)
-                 VALUES ($1, $2, $3, $4, $5)
-                 ON CONFLICT(app_id, run_id, step_name) DO UPDATE
-                 SET event_name=excluded.event_name, expires_at=excluded.expires_at",
-                self.schema
-            ),
-            &[
-                &self.app_id,
-                &run_id,
-                &step_name,
-                &event_name,
-                &timeout_at_ms,
-            ],
+        self.park(
+            &mut tx,
+            run_id,
+            step_name,
+            &super::enqueue::run_event_name(target_id),
+            timeout_at_ms,
         )?;
         tx.commit()?;
         Ok(false)
@@ -1068,6 +1067,7 @@ impl PostgresRunsDb {
             &[&self.app_id, &id, &OPERATOR_CANCEL_REASON, &self.now()],
         )?;
         self.delete_waiters(&mut tx, id)?;
+        self.wake_run_waiters(&mut tx, id)?;
         tx.commit()?;
         Ok(CancelledRun {
             previous_status: status,
@@ -1107,6 +1107,199 @@ impl PostgresRunsDb {
         Ok(())
     }
 
+    /// See the SQLite store's helper of the same name.
+    fn release_for_wait(
+        &self,
+        tx: &mut postgres::Transaction<'_>,
+        run_id: &str,
+        worker_id: &str,
+        timeout_at_ms: Option<i64>,
+    ) -> Result<(), RunsDbError> {
+        let rows = tx.execute(
+            &format!(
+                "UPDATE {}.runs
+                 SET status='pending', worker_id=NULL, lease_until=NULL, run_at=$4, attempts=attempts-1
+                 WHERE app_id=$1 AND id=$2 AND worker_id=$3 AND status='running'",
+                self.schema
+            ),
+            &[
+                &self.app_id,
+                &run_id,
+                &worker_id,
+                &timeout_at_ms.unwrap_or(i64::MAX),
+            ],
+        )?;
+        if rows == 0 {
+            return Err(RunsDbError::StaleWorker);
+        }
+        Ok(())
+    }
+
+    fn step_saved(
+        &self,
+        tx: &mut postgres::Transaction<'_>,
+        run_id: &str,
+        step_name: &str,
+    ) -> Result<bool, RunsDbError> {
+        Ok(tx
+            .query_one(
+                &format!(
+                    "SELECT EXISTS(SELECT 1 FROM {}.steps WHERE app_id=$1 AND run_id=$2 AND name=$3)",
+                    self.schema
+                ),
+                &[&self.app_id, &run_id, &step_name],
+            )?
+            .get(0))
+    }
+
+    fn requeue_now(
+        &self,
+        tx: &mut postgres::Transaction<'_>,
+        run_id: &str,
+        step_name: &str,
+    ) -> Result<(), RunsDbError> {
+        tx.execute(
+            &format!(
+                "DELETE FROM {}.event_waiters WHERE app_id=$1 AND run_id=$2 AND step_name=$3",
+                self.schema
+            ),
+            &[&self.app_id, &run_id, &step_name],
+        )?;
+        tx.execute(
+            &format!(
+                "UPDATE {}.runs SET run_at=$3 WHERE app_id=$1 AND id=$2",
+                self.schema
+            ),
+            &[&self.app_id, &run_id, &self.now()],
+        )?;
+        Ok(())
+    }
+
+    fn satisfy_wait(
+        &self,
+        tx: &mut postgres::Transaction<'_>,
+        run_id: &str,
+        step_name: &str,
+        result: &str,
+    ) -> Result<(), RunsDbError> {
+        tx.execute(
+            &format!(
+                "INSERT INTO {}.steps (app_id, run_id, name, result, completed_at)
+                 VALUES ($1, $2, $3, $4, $5)
+                 ON CONFLICT(app_id, run_id, name) DO NOTHING",
+                self.schema
+            ),
+            &[&self.app_id, &run_id, &step_name, &result, &self.now()],
+        )?;
+        self.requeue_now(tx, run_id, step_name)
+    }
+
+    fn park(
+        &self,
+        tx: &mut postgres::Transaction<'_>,
+        run_id: &str,
+        step_name: &str,
+        event_name: &str,
+        timeout_at_ms: Option<i64>,
+    ) -> Result<(), RunsDbError> {
+        tx.execute(
+            &format!(
+                "INSERT INTO {}.event_waiters (app_id, run_id, step_name, event_name, expires_at)
+                 VALUES ($1, $2, $3, $4, $5)
+                 ON CONFLICT(app_id, run_id, step_name) DO UPDATE
+                 SET event_name=excluded.event_name, expires_at=excluded.expires_at",
+                self.schema
+            ),
+            &[
+                &self.app_id,
+                &run_id,
+                &step_name,
+                &event_name,
+                &timeout_at_ms,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Wake every run waiting on `id`'s outcome with it, inside the
+    /// transaction that finished `id` (which holds its row lock).
+    fn wake_run_waiters(
+        &self,
+        tx: &mut postgres::Transaction<'_>,
+        id: &str,
+    ) -> Result<(), RunsDbError> {
+        let waiters = tx.query(
+            &format!(
+                "DELETE FROM {}.event_waiters WHERE app_id=$1 AND event_name=$2
+                 RETURNING run_id, step_name",
+                self.schema
+            ),
+            &[&self.app_id, &super::enqueue::run_event_name(id)],
+        )?;
+        if waiters.is_empty() {
+            return Ok(());
+        }
+        let outcome = match tx.query_opt(
+            &format!(
+                "SELECT status, result, last_error FROM {}.runs WHERE app_id=$1 AND id=$2",
+                self.schema
+            ),
+            &[&self.app_id, &id],
+        )? {
+            Some(row) => outcome_from(&row, 0)?,
+            None => super::enqueue::missing_outcome(),
+        };
+        let outcome = serde_json::to_string(&outcome)?;
+        let now = self.now();
+        for waiter in waiters {
+            let run_id: String = waiter.get(0);
+            let step_name: String = waiter.get(1);
+            tx.execute(
+                &format!(
+                    "INSERT INTO {}.steps (app_id, run_id, name, result, completed_at)
+                     VALUES ($1, $2, $3, $4, $5)
+                     ON CONFLICT(app_id, run_id, name) DO NOTHING",
+                    self.schema
+                ),
+                &[&self.app_id, &run_id, &step_name, &outcome, &now],
+            )?;
+            tx.execute(
+                &format!(
+                    "UPDATE {}.runs SET run_at=$3 WHERE app_id=$1 AND id=$2 AND status='pending'",
+                    self.schema
+                ),
+                &[&self.app_id, &run_id, &now],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Like `update_running`, for a write that finishes the run: in one
+    /// transaction with waking the runs waiting on its outcome.
+    fn finish_running(
+        &self,
+        id: &str,
+        set_clause: &str,
+        params: &[&(dyn postgres::types::ToSql + Sync)],
+    ) -> Result<(), RunsDbError> {
+        let mut client = self.client()?;
+        let mut tx = client.transaction()?;
+        let rows = tx.execute(
+            &format!(
+                "UPDATE {}.runs SET {set_clause}
+                 WHERE app_id=$1 AND id=$2 AND worker_id=$3 AND status='running'",
+                self.schema
+            ),
+            params,
+        )?;
+        if rows == 0 {
+            return Err(RunsDbError::StaleWorker);
+        }
+        self.wake_run_waiters(&mut tx, id)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     fn update_running(
         &self,
         set_clause: &str,
@@ -1126,6 +1319,22 @@ impl PostgresRunsDb {
         }
         Ok(())
     }
+}
+
+/// A `RunResult` from `status, result, last_error` columns starting at `first`.
+fn outcome_from(
+    row: &postgres::Row,
+    first: usize,
+) -> Result<crate::enqueue::RunResult, RunsDbError> {
+    Ok(crate::enqueue::RunResult {
+        status: row.get(first),
+        result: row
+            .get::<_, Option<String>>(first + 1)
+            .map(|value| serde_json::from_str(&value))
+            .transpose()?
+            .unwrap_or(serde_json::Value::Null),
+        error: row.get(first + 2),
+    })
 }
 
 fn summary_row(row: &postgres::Row) -> SummaryRow {

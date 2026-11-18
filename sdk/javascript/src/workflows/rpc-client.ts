@@ -261,6 +261,32 @@ export class WorkflowsClient {
     return { delivered: (data as { delivered?: unknown } | null)?.delivered === true };
   }
 
+  /**
+   * Park the run until run `targetId` of workflow `targetName` finishes; the
+   * server saves its outcome as step `stepName`, or `null` at the timeout.
+   */
+  async waitForRun(
+    id: RunId,
+    workerId: string,
+    stepName: string,
+    targetName: string,
+    targetId: RunId,
+    timeoutAt: Date | null,
+  ): Promise<{ delivered: boolean }> {
+    const data = await this.workerWrite({
+      command: "wait_for_run",
+      app: this.app,
+      id,
+      worker_id: workerId,
+      step_name: stepName,
+      target_name: targetName,
+      target_id: targetId,
+      timeout_at_ms: timeoutAt ? timeoutAt.getTime() : null,
+    });
+    // The awaited run had already finished; the run is due again at once.
+    return { delivered: (data as { delivered?: unknown } | null)?.delivered === true };
+  }
+
   // --- Internal ---
 
   private call(cmd: unknown): Promise<unknown> {

@@ -468,6 +468,43 @@ impl RunsDb {
         }
     }
 
+    /// Park a run until `target_id`, a run of `target_name` in this store,
+    /// finishes; its outcome (as [`Self::result`] reports it) becomes the
+    /// step result. The transaction that finishes the target wakes every
+    /// run waiting on it. A target that already finished, is missing, or
+    /// belongs to another workflow satisfies the wait at once, and this
+    /// returns `true`; the run is then due immediately. An expired wait
+    /// saves `null`.
+    pub fn wait_for_run(
+        &self,
+        run_id: &str,
+        worker_id: &str,
+        step_name: &str,
+        target_name: &str,
+        target_id: &str,
+        timeout_at_ms: Option<i64>,
+    ) -> Result<bool, RunsDbError> {
+        validate_run_id(target_id)?;
+        match &self.backend {
+            RunsDbBackend::Sqlite(db) => db.wait_for_run(
+                run_id,
+                worker_id,
+                step_name,
+                target_name,
+                target_id,
+                timeout_at_ms,
+            ),
+            RunsDbBackend::Postgres(db) => db.wait_for_run(
+                run_id,
+                worker_id,
+                step_name,
+                target_name,
+                target_id,
+                timeout_at_ms,
+            ),
+        }
+    }
+
     /// Deliver an event payload. Wakes every parked waiter with matching
     /// `event_name`: the payload is stored as the waiter's step result,
     /// the waiter row is removed, and the run is set to pending. Returns
@@ -691,6 +728,22 @@ pub(crate) struct ScheduleRow {
 
 /// Event names starting with this are reserved for Tako's own waits.
 pub(crate) const RESERVED_EVENT_PREFIX: &str = "__";
+
+/// The event a run waiting on another run's outcome parks on. The reserved
+/// prefix keeps app signals from reaching it.
+pub(crate) fn run_event_name(id: &str) -> String {
+    format!("__run:{id}")
+}
+
+/// The outcome a wait sees for a run that is not retained, or that belongs
+/// to another workflow. It matches what the SDKs report for a missing run.
+pub(crate) fn missing_outcome() -> RunResult {
+    RunResult {
+        status: "missing".into(),
+        result: serde_json::Value::Null,
+        error: Some("Workflow run not found or no longer retained".into()),
+    }
+}
 const RESERVED_EVENT_NAME: &str = "event names starting with `__` are reserved for Tako";
 
 fn validate_run_id(id: &str) -> Result<(), RunsDbError> {

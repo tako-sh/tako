@@ -22,6 +22,7 @@ function checkpointFixture(state: StepState = {}, failSave = 1) {
       stepName,
       attempt: 1,
       logger,
+      signal: new AbortController().signal,
     }));
   return { api: execution(), execution, state, persisted, saves: () => saves };
 }

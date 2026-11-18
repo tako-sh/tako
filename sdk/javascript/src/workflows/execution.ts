@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { DeferSignal } from "./step";
+import { DeferSignal, WaitSignal } from "./step";
 import { setWorkflowExecutionResolver, type DurableWorkflowExecution } from "./result";
 import type { WorkflowsClient } from "./rpc-client";
 import type { StepState } from "./types";
@@ -37,8 +37,16 @@ class Execution implements DurableWorkflowExecution {
     this.state[key] = value;
     return value;
   }
+  saved(key: string): { hit: true; value: unknown } | { hit: false } {
+    return Object.prototype.hasOwnProperty.call(this.state, key)
+      ? { hit: true, value: this.state[key] }
+      : { hit: false };
+  }
   defer(wakeAt: Date): never {
     throw new DeferSignal(wakeAt);
+  }
+  waitForRun(stepKey: string, name: string, id: string, timeoutAt: Date | null): never {
+    throw new WaitSignal(stepKey, `__run:${id}`, timeoutAt, { name, id });
   }
   track<T>(fn: () => Promise<T>): Promise<T> {
     const promise = fn();

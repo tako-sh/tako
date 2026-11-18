@@ -63,6 +63,7 @@ pub(crate) fn classify(command: &Command) -> CommandClass<'_> {
         | Command::FailRun { .. }
         | Command::DeferRun { .. }
         | Command::WaitForEvent { .. }
+        | Command::WaitForRun { .. }
         | Command::NetworkCall { .. }
         | Command::ChannelPublish { .. }
         | Command::ChannelClose { .. } => CommandClass::InternalWorker,
@@ -339,6 +340,7 @@ pub(crate) fn authorize_command(
         | Command::FailRun { .. }
         | Command::DeferRun { .. }
         | Command::WaitForEvent { .. }
+        | Command::WaitForRun { .. }
         | Command::NetworkCall { .. }
         | Command::ChannelPublish { .. }
         | Command::ChannelClose { .. }
