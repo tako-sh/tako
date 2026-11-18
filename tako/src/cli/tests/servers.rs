@@ -139,33 +139,42 @@ fn servers_add_rejects_user_flag() {
 fn servers_remove_parses() {
     let cli = Cli::try_parse_from(["tako", "network", "server", "remove", "prod"]).unwrap();
     let Commands::Network(commands::network::NetworkCommands::Server(
-        server::ServerCommands::Remove { name, .. },
+        server::ServerCommands::Remove {
+            name,
+            uninstall,
+            yes,
+            ..
+        },
     )) = cli.command.expect("command")
     else {
         panic!("expected Servers::Remove");
     };
     assert_eq!(name.as_deref(), Some("prod"));
-}
+    assert!(!uninstall && !yes);
 
-#[test]
-fn servers_remove_aliases_parse() {
-    let cli = Cli::try_parse_from(["tako", "network", "server", "rm", "prod"]).unwrap();
+    let cli = Cli::try_parse_from([
+        "tako",
+        "network",
+        "server",
+        "rm",
+        "prod",
+        "--uninstall",
+        "-y",
+    ])
+    .unwrap();
     let Commands::Network(commands::network::NetworkCommands::Server(
-        server::ServerCommands::Remove { name, .. },
+        server::ServerCommands::Remove {
+            name,
+            uninstall,
+            yes,
+            ..
+        },
     )) = cli.command.expect("command")
     else {
         panic!("expected Servers::Remove");
     };
     assert_eq!(name.as_deref(), Some("prod"));
-
-    let cli = Cli::try_parse_from(["tako", "network", "server", "delete", "prod"]).unwrap();
-    let Commands::Network(commands::network::NetworkCommands::Server(
-        server::ServerCommands::Remove { name, .. },
-    )) = cli.command.expect("command")
-    else {
-        panic!("expected Servers::Remove");
-    };
-    assert_eq!(name.as_deref(), Some("prod"));
+    assert!(uninstall && yes);
 }
 
 #[test]
@@ -181,7 +190,26 @@ fn servers_remove_without_name_parses_for_selector() {
 }
 
 #[test]
-fn servers_help_shows_revoke_as_primary_command() {
+fn servers_revoke_is_membership_only_and_uninstall_is_gone() {
+    let cli = Cli::try_parse_from(["tako", "network", "server", "revoke", "prod"]).unwrap();
+    let Commands::Network(commands::network::NetworkCommands::Server(
+        server::ServerCommands::Revoke { name, .. },
+    )) = cli.command.expect("command")
+    else {
+        panic!("expected Servers::Revoke");
+    };
+    assert_eq!(name.as_deref(), Some("prod"));
+
+    for args in [
+        ["tako", "network", "server", "delete", "prod"],
+        ["tako", "network", "server", "uninstall", "prod"],
+    ] {
+        assert!(Cli::try_parse_from(args).is_err(), "{args:?}");
+    }
+}
+
+#[test]
+fn servers_help_lists_remove_with_its_alias_and_revoke_without_any() {
     let mut cmd = Cli::command();
     let servers = cmd
         .find_subcommand_mut("network")
@@ -191,21 +219,15 @@ fn servers_help_shows_revoke_as_primary_command() {
     let mut help = Vec::new();
     servers.write_help(&mut help).unwrap();
     let help = String::from_utf8(help).unwrap();
-    let remove_line = help
-        .lines()
-        .find(|line| line.contains("Revoke a server"))
-        .expect("expected revoke command in help");
+    let line = |command: &str| {
+        help.lines()
+            .find(|line| line.trim_start().starts_with(&format!("{command} ")))
+            .unwrap_or_else(|| panic!("expected {command} in help:\n{help}"))
+            .to_string()
+    };
 
-    assert!(
-        remove_line.trim_start().starts_with("revoke "),
-        "expected revoke to be primary command: {remove_line}"
-    );
-    assert!(
-        remove_line.contains("rm")
-            && remove_line.contains("remove")
-            && remove_line.contains("delete"),
-        "expected rm, remove and delete aliases: {remove_line}"
-    );
+    assert!(line("remove").contains("[alias: rm]"), "{}", line("remove"));
+    assert!(!line("revoke").contains("alias"), "{}", line("revoke"));
 }
 
 #[test]
@@ -298,13 +320,10 @@ fn servers_upgrade_parses_force() {
 #[test]
 fn server_maintenance_commands_accept_a_network() {
     for (args, expected) in [
+        (vec!["revoke", "edge", "--network", "staging"], "revoke"),
         (vec!["remove", "edge", "--network", "staging"], "remove"),
         (vec!["reload", "edge", "--network", "staging"], "reload"),
         (vec!["upgrade", "--network", "staging"], "upgrade"),
-        (
-            vec!["uninstall", "edge", "--network", "staging"],
-            "uninstall",
-        ),
     ] {
         let cli =
             Cli::try_parse_from(["tako", "network", "server"].into_iter().chain(args)).unwrap();
@@ -314,10 +333,10 @@ fn server_maintenance_commands_accept_a_network() {
             panic!("expected a server command");
         };
         let network = match command {
-            server::ServerCommands::Remove { network, .. }
+            server::ServerCommands::Revoke { network, .. }
+            | server::ServerCommands::Remove { network, .. }
             | server::ServerCommands::Reload { network, .. }
-            | server::ServerCommands::Upgrade { network, .. }
-            | server::ServerCommands::Uninstall { network, .. } => network,
+            | server::ServerCommands::Upgrade { network, .. } => network,
             _ => panic!("unexpected command for {expected}"),
         };
         assert_eq!(network.as_deref(), Some("staging"), "{expected}");

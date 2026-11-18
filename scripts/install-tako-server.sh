@@ -608,7 +608,7 @@ set -eu
 
 action="${1:-}"
 case "$action" in
-  reload|restart|upgrade-companions|rollback|cleanup-upgrade|implode)
+  reload|restart|upgrade-companions|rollback|cleanup-upgrade|reset|implode)
     [ "$#" -eq 1 ] || { echo "error: expected one maintenance action" >&2; exit 1; }
     ;;
   configure)
@@ -678,7 +678,10 @@ case "$action" in
     if command -v systemctl >/dev/null 2>&1; then systemctl daemon-reload; fi
     action=restart
     ;;
-  implode)
+  reset|implode)
+    # reset leaves the network and deletes every app, its data and the server's
+    # network identity, keeping the installed packages so the machine can be
+    # added to a network again; implode also removes Tako.
     {
       IFS= read -r tako_user
       IFS= read -r tako_home
@@ -696,6 +699,7 @@ case "$action" in
     case "$tako_home:$tako_socket" in
       *..*) echo "error: invalid install paths" >&2; exit 1 ;;
     esac
+    # Stopping the agent withdraws every peer and network SSH key first.
     if command -v systemctl >/dev/null 2>&1; then
       systemctl stop tako-server tako-server-standby
       systemctl disable tako-server tako-server-standby 2>/dev/null || true
@@ -703,12 +707,15 @@ case "$action" in
         systemctl disable --now tako-network-agent.service
       fi
     fi
-    rm -f /etc/systemd/system/tako-server.service /etc/systemd/system/tako-server-standby.service /etc/systemd/system/tako-network-agent.service
-    rm -rf /etc/systemd/system/tako-server.service.d
-    if command -v systemctl >/dev/null 2>&1; then systemctl daemon-reload; fi
+    if [ "$action" = implode ]; then
+      rm -f /etc/systemd/system/tako-server.service /etc/systemd/system/tako-server-standby.service /etc/systemd/system/tako-network-agent.service
+      rm -rf /etc/systemd/system/tako-server.service.d
+      if command -v systemctl >/dev/null 2>&1; then systemctl daemon-reload; fi
+    fi
     rm -rf -- "$tako_home"
     rm -f -- "$tako_socket"
     rmdir -- "$(dirname "$tako_socket")" 2>/dev/null || true
+    [ "$action" = implode ] || exit 0
     rm -f /usr/local/bin/tako-server /usr/local/bin/tako-server.prev /usr/local/bin/tako-provision-app /usr/local/bin/tako-server-service /usr/local/bin/tako-server-install-refresh
     rm -f /etc/sudoers.d/tako /etc/tako/isolation.conf
     rm -rf /usr/local/libexec/tako
@@ -732,7 +739,7 @@ EOF
   cat > /etc/sudoers.d/tako <<EOF
 # Managed by Tako install-server.
 # Fixed root-owned helpers validate their arguments; no arbitrary root shell.
-$TAKO_USER ALL=(root) NOPASSWD: /usr/local/bin/tako-provision-app *, $TAKO_SERVER_INSTALL_REFRESH_HELPER *, $TAKO_SERVER_SERVICE_HELPER reload, $TAKO_SERVER_SERVICE_HELPER restart, $TAKO_SERVER_SERVICE_HELPER upgrade-companions, $TAKO_SERVER_SERVICE_HELPER configure *, $TAKO_SERVER_SERVICE_HELPER rollback, $TAKO_SERVER_SERVICE_HELPER cleanup-upgrade, $TAKO_SERVER_SERVICE_HELPER implode
+$TAKO_USER ALL=(root) NOPASSWD: /usr/local/bin/tako-provision-app *, $TAKO_SERVER_INSTALL_REFRESH_HELPER *, $TAKO_SERVER_SERVICE_HELPER reload, $TAKO_SERVER_SERVICE_HELPER restart, $TAKO_SERVER_SERVICE_HELPER upgrade-companions, $TAKO_SERVER_SERVICE_HELPER configure *, $TAKO_SERVER_SERVICE_HELPER rollback, $TAKO_SERVER_SERVICE_HELPER cleanup-upgrade, $TAKO_SERVER_SERVICE_HELPER reset, $TAKO_SERVER_SERVICE_HELPER implode
 EOF
   chmod 0440 /etc/sudoers.d/tako
 

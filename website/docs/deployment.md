@@ -167,7 +167,7 @@ See [Routing and TLS](/routing/) for domain routes, certificate providers, wildc
 
 ## Server Maintenance
 
-See [Servers](/servers/#server-maintenance) for reloads, protocol-checked upgrades, recovery, and uninstall behavior.
+See [Servers](/servers/#server-maintenance) for reloads, protocol-checked upgrades, recovery, and server removal.
 
 ## Logs And Releases
 

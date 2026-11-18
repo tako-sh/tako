@@ -187,8 +187,16 @@ check.
 - `client revoke <name>`, with `rm` and `remove` as aliases, revokes the active
   generation. It also accepts a device ID, to target one generation such as a
   conflicting duplicate. Add `server revoke` beside `server drain` and
-  `server resume`. Remove the top-level `tako network revoke`
+  `server resume`, with no aliases. Remove the top-level `tako network revoke`
   (`tako/src/commands/network.rs:68`), which duplicates both.
+- `server remove <name> [--uninstall] [--yes]` (alias `rm`) replaces
+  `server uninstall`. Over administrator SSH it revokes the membership, then runs
+  `tako-server-service reset`, which stops the services (the agent withdraws its
+  peers and network SSH keys) and deletes the data directory: every app, release,
+  volume, database and backup, and the server's network identity. Tako stays
+  installed so `server add` can enroll the machine in any network.
+  `--uninstall` runs `implode` instead, which also removes the packages. The
+  network's last server needs `--yes`.
 - Revoke and replace list the clients the revoked generation invited, in the
   prompt and in `--json`. They keep their access; the list is there so they can be
   revoked too. `client revoke <name> --include-invited` revokes the client and

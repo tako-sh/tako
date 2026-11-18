@@ -212,7 +212,7 @@ On macOS, iCloud Keychain storage requires the signed `Tako.app` CLI. If Keychai
 
 ## Server Commands Fail
 
-Normal app operations use signed, pinned HTTPS with an enrolled device identity. SSH is used for setup, repair, reload, upgrade, and uninstall flows.
+Normal app operations use signed, pinned HTTPS with an enrolled device identity. SSH is used for setup, repair, reload, upgrade, and remove flows.
 
 If a server is unreachable:
 

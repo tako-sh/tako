@@ -404,7 +404,7 @@ pub(crate) fn supports_dry_run(path: &[&str]) -> bool {
             | [
                 "network",
                 "server",
-                "drain" | "resume" | "add" | "revoke" | "list" | "uninstall"
+                "drain" | "resume" | "add" | "revoke" | "remove" | "list"
             ]
             | ["network", "client", "add" | "revoke" | "list"]
             | ["secrets", "migrate" | "sync" | "clear"]

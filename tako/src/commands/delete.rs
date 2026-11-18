@@ -283,7 +283,7 @@ async fn discover_server_deployments(
     Ok(deployments)
 }
 
-fn parse_list_apps_response(response: Response) -> Result<Vec<String>, String> {
+pub(crate) fn parse_list_apps_response(response: Response) -> Result<Vec<String>, String> {
     match response {
         Response::Ok { data } => {
             let mut names = data

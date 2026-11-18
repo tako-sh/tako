@@ -40,34 +40,3 @@ fn uninstall_lists_targets_and_confirms() {
         "TAKO_HOME should still exist (confirmation was not given)"
     );
 }
-
-#[test]
-fn network_server_uninstall_requires_a_known_target_and_dry_run_preserves_membership() {
-    let fixture = super::native_management::Fixture::with_servers(&["edge"]);
-    let before = fs::read(&fixture.profile_path).unwrap();
-    let run = |args: &[&str]| {
-        run_tako_with_env(
-            args,
-            fixture.directory.path(),
-            &fixture.home,
-            &fixture.tako_home,
-        )
-    };
-    let missing = run(&["network", "server", "uninstall"]);
-    assert!(!missing.status.success());
-    assert!(stderr_str(&missing).contains("interactive"));
-    let unknown = run(&["network", "server", "uninstall", "ghost", "--yes"]);
-    assert!(!unknown.status.success());
-    assert!(stderr_str(&unknown).contains("not found"));
-    let dry = run(&[
-        "--dry-run",
-        "network",
-        "server",
-        "uninstall",
-        "fleet/edge",
-        "--yes",
-    ]);
-    assert!(dry.status.success(), "{}", stderr_str(&dry));
-    assert!(stderr_str(&dry).contains("Remove tako-server and all data on fleet/edge"));
-    assert_eq!(fs::read(&fixture.profile_path).unwrap(), before);
-}

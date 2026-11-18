@@ -1,11 +1,11 @@
 mod crud;
 mod native;
+mod remove;
 mod upgrade;
 mod wizard;
 
 pub use wizard::prompt_to_add_server;
 
-use crate::output;
 use clap::Subcommand;
 
 #[derive(Subcommand)]
@@ -59,8 +59,18 @@ pub enum ServerCommands {
         https_port: Option<u16>,
     },
 
-    /// Revoke a server's network membership. It keeps running until uninstalled
-    #[command(name = "revoke", visible_aliases = ["rm", "remove", "delete"])]
+    /// Revoke a server's network membership, keeping its apps and data
+    Revoke {
+        /// Server name or network/server selector (omit to choose interactively)
+        name: Option<String>,
+
+        /// Network of a bare server name (defaults to `tako network use` or the sole network)
+        #[arg(long)]
+        network: Option<String>,
+    },
+
+    /// Remove a server from its network and delete every app and its data there
+    #[command(visible_alias = "rm")]
     Remove {
         /// Server name or network/server selector (omit to choose interactively)
         name: Option<String>,
@@ -68,6 +78,14 @@ pub enum ServerCommands {
         /// Network of a bare server name (defaults to `tako network use` or the sole network)
         #[arg(long)]
         network: Option<String>,
+
+        /// Also uninstall tako-server and its service files
+        #[arg(long)]
+        uninstall: bool,
+
+        /// Skip confirmation prompts. Required to remove a network's last server
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
     },
 
     /// List all servers
@@ -100,20 +118,6 @@ pub enum ServerCommands {
         /// Attempt upgrade despite a protocol version mismatch
         #[arg(long)]
         force: bool,
-    },
-
-    /// Remove tako-server and all data from a server
-    Uninstall {
-        /// Server name or network/server selector (omit to choose interactively)
-        name: Option<String>,
-
-        /// Network of a bare server name (defaults to `tako network use` or the sole network)
-        #[arg(long)]
-        network: Option<String>,
-
-        /// Skip confirmation prompts
-        #[arg(short = 'y', long = "yes")]
-        yes: bool,
     },
 }
 
@@ -167,8 +171,21 @@ async fn run_async(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>
             .await?;
             Ok(())
         }
-        ServerCommands::Remove { name, network } => {
-            crud::remove_server(name.as_deref(), network.as_deref()).await
+        ServerCommands::Revoke { name, network } => {
+            crud::revoke_server(name.as_deref(), network.as_deref()).await
+        }
+        ServerCommands::Remove {
+            name,
+            network,
+            uninstall,
+            yes,
+        } => {
+            let removal = if uninstall {
+                remove::Removal::Uninstall
+            } else {
+                remove::Removal::Reset
+            };
+            remove::remove_server(name.as_deref(), network.as_deref(), removal, yes).await
         }
         ServerCommands::List => crud::list_servers().await,
         ServerCommands::Reload {
@@ -181,51 +198,7 @@ async fn run_async(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>
             network,
             force,
         } => upgrade::upgrade_servers(name.as_deref(), network.as_deref(), force).await,
-        ServerCommands::Uninstall { name, network, yes } => {
-            uninstall_server_cmd(name.as_deref(), network.as_deref(), yes).await
-        }
     }
-}
-
-async fn uninstall_server_cmd(
-    name: Option<&str>,
-    network: Option<&str>,
-    assume_yes: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let servers = crate::commands::helpers::load_management_servers(None, None).await?;
-
-    if servers.is_empty() {
-        output::error("No servers configured.");
-        return Ok(());
-    }
-
-    let networks = crate::config::LocalNetworks::load()?;
-    let server_name = match name {
-        Some(n) => {
-            crate::commands::helpers::resolve_server_selector(&networks, &servers, n, network)?
-        }
-        None => {
-            if !output::is_interactive() {
-                return Err(
-                    "No server name provided and selection requires an interactive terminal. Run 'tako network server uninstall <name>'."
-                        .into(),
-                );
-            }
-            let options: Vec<(String, String)> =
-                crate::commands::helpers::server_choices(&networks, &servers, network)?
-                    .into_iter()
-                    .map(|n| (n.clone(), n))
-                    .collect();
-            output::select("Select server to remove", None, options)?
-        }
-    };
-
-    let server = servers
-        .get(&server_name)
-        .ok_or_else(|| format!("Server '{}' not found.", server_name))?
-        .clone();
-
-    crate::commands::implode::implode_server(&server_name, &server, assume_yes).await
 }
 
 struct ParsedAddHost {

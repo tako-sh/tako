@@ -221,7 +221,7 @@ fn bare_server_names_resolve_in_the_selected_network() {
             &fixture.tako_home,
         )
     };
-    let bare = run(&["--ci", "--dry-run", "network", "server", "remove", "edge"]);
+    let bare = run(&["--ci", "--dry-run", "network", "server", "revoke", "edge"]);
     assert!(bare.status.success(), "{}", stderr_str(&bare));
     assert!(
         stderr_str(&bare).contains("fleet/edge"),
@@ -233,7 +233,7 @@ fn bare_server_names_resolve_in_the_selected_network() {
         "--dry-run",
         "network",
         "server",
-        "remove",
+        "revoke",
         "edge",
         "--network",
         "fleet",
@@ -244,7 +244,7 @@ fn bare_server_names_resolve_in_the_selected_network() {
         "--dry-run",
         "network",
         "server",
-        "remove",
+        "revoke",
         "edge",
         "--network",
         "missing",
@@ -276,11 +276,11 @@ fn servers_list_reads_enrolled_names_and_endpoints() {
 }
 
 #[test]
-fn server_remove_requires_selection_and_preserves_membership_when_cancelled() {
+fn server_revoke_requires_selection_and_preserves_membership_when_cancelled() {
     let fixture = super::native_management::Fixture::with_servers(&["edge"]);
     let before = fs::read(&fixture.profile_path).unwrap();
     let missing = run_tako_with_env(
-        &["network", "server", "remove"],
+        &["network", "server", "revoke"],
         fixture.directory.path(),
         &fixture.home,
         &fixture.tako_home,
@@ -288,12 +288,64 @@ fn server_remove_requires_selection_and_preserves_membership_when_cancelled() {
     assert!(!missing.status.success());
     assert!(stderr_str(&missing).contains("interactive"));
     let cancelled = run_tako_with_env(
-        &["network", "server", "remove", "fleet/edge"],
+        &["network", "server", "revoke", "fleet/edge"],
         fixture.directory.path(),
         &fixture.home,
         &fixture.tako_home,
     );
     assert!(cancelled.status.success(), "{}", stderr_str(&cancelled));
     assert!(stderr_str(&cancelled).contains("Operation cancelled"));
+    assert_eq!(fs::read(&fixture.profile_path).unwrap(), before);
+}
+
+#[test]
+fn server_remove_refuses_the_last_server_without_yes_and_dry_run_preserves_membership() {
+    let fixture = super::native_management::Fixture::with_servers(&["edge"]);
+    let before = fs::read(&fixture.profile_path).unwrap();
+    let run = |args: &[&str]| {
+        run_tako_with_env(
+            args,
+            fixture.directory.path(),
+            &fixture.home,
+            &fixture.tako_home,
+        )
+    };
+    let missing = run(&["network", "server", "remove"]);
+    assert!(!missing.status.success());
+    assert!(stderr_str(&missing).contains("interactive"));
+    let unknown = run(&["network", "server", "rm", "ghost", "--yes"]);
+    assert!(!unknown.status.success());
+    assert!(stderr_str(&unknown).contains("not found"));
+    let last = run(&["--dry-run", "network", "server", "remove", "fleet/edge"]);
+    assert!(!last.status.success());
+    let message = stderr_str(&last);
+    assert!(
+        message.contains("last server in network fleet") && message.contains("--yes"),
+        "{message}"
+    );
+    let dry = run(&[
+        "--dry-run",
+        "--json",
+        "network",
+        "server",
+        "remove",
+        "fleet/edge",
+        "--uninstall",
+        "--yes",
+    ]);
+    assert!(dry.status.success(), "{}", stderr_str(&dry));
+    let report: serde_json::Value = serde_json::from_slice(&dry.stdout).unwrap();
+    assert_eq!(report["dry_run"], true);
+    assert_eq!(report["network"], "fleet");
+    assert_eq!(report["server"], "fleet/edge");
+    assert_eq!(report["uninstalled"], true);
+    let preview = run(&["--dry-run", "network", "server", "remove", "edge", "--yes"]);
+    assert!(preview.status.success(), "{}", stderr_str(&preview));
+    assert!(
+        stderr_str(&preview).contains("Delete every app and its data on fleet/edge"),
+        "{}",
+        stderr_str(&preview)
+    );
+    assert!(!stderr_str(&preview).contains("Remove tako-server"));
     assert_eq!(fs::read(&fixture.profile_path).unwrap(), before);
 }

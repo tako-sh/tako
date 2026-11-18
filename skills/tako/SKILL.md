@@ -148,6 +148,12 @@ directory share drafts, and an environment already bound to another app/network
 cannot be silently reused. Use a separate worktree for a different target.
 For maintenance, copy the exact selector from `network server list --json`;
 colliding network or server names add stable IDs to that selector.
+`network server revoke` revokes only membership and keeps the server's apps and data.
+To retire a server or move it to another network, `network server remove <server>`
+revokes it, then deletes every app, its data and backups on it, and its network
+identity, keeping Tako installed for a later `server add`; `--uninstall` also
+removes Tako. It refuses the network's last server without `--yes`; confirm with
+the user before removing one.
 
 For legacy tracked secrets, `secrets migrate` requires the original local keys,
 retains an ignored recovery copy, and removes the tracked file. Commit that
