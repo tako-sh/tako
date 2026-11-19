@@ -1266,7 +1266,8 @@ services:
   api:
     image: docker.io/library/busybox:1.37
     expose: [9090]
-    x-tako: {}
+    # A private backend: no routes, so it declares `http: true`.
+    x-tako: {http: true}
     command: [httpd, -f, -p, '9090']
     deploy: {update_config: {monitor: 0s}}
 "#;
@@ -1324,7 +1325,8 @@ services:
   api:
     image: docker.io/library/busybox:1.37
     expose: [9090]
-    x-tako: {}
+    # A private backend: no routes, so it declares `http: true`.
+    x-tako: {http: true}
     command: [httpd, -f, -p, '9090']
     deploy: {update_config: {monitor: 0s}}
 "#;
