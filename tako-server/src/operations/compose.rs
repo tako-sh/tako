@@ -61,6 +61,43 @@ impl crate::ServerState {
         config
             .compose_replicas
             .retain(|service, _| replicas.contains_key(service));
+        // Prepare the release's workflow runtime and install it before its SDK
+        // containers start: workers register schedules only for the current
+        // build.
+        let release_path =
+            crate::release::app_release_root(&self.runtime.data_dir, &app_name, &config.version);
+        let sdk_workflows = !config.stopped
+            && config
+                .compose
+                .as_ref()
+                .is_some_and(|compose| compose.has_sdk_services());
+        let mut schedule_revision = None;
+        let mut workflows = None;
+        if sdk_workflows {
+            let prepared = self
+                .prepare_app_workflows(
+                    &app_name,
+                    &release_path,
+                    None,
+                    crate::server_state::WorkflowBindings {
+                        secrets: &config.secrets,
+                        storages: &config.storages,
+                        databases: &HashMap::new(),
+                        postgres_url: runtime_credentials.get("postgres_url"),
+                    },
+                    tako_workflows::manager::ScheduleActivation::Deploy,
+                )
+                .await;
+            match prepared {
+                Ok(prepared) => {
+                    schedule_revision = prepared.as_ref().and_then(|p| p.schedule_revision());
+                    workflows = Some(prepared);
+                }
+                Err(error) => {
+                    return Response::error(format!("Deploy failed to prepare workflows: {error}"));
+                }
+            }
+        }
         let updates: Vec<_> = rollout.changes().into_iter().map(|(service, order)| serde_json::json!({
             "service": service,
             "order": match order { tako_compose::UpdateOrder::StartFirst => "start-first", tako_compose::UpdateOrder::StopFirst => "stop-first" },
@@ -93,6 +130,10 @@ impl crate::ServerState {
             self.app_manager.spawner(),
             RollingUpdateConfig::default(),
         ));
+        if let Some(prepared) = workflows {
+            // From here on, a failure reinstalls the previous runtime.
+            self.install_app_workflows(&app_name, prepared);
+        }
         let result: Result<(), String> = async {
             rollout.apply().await?;
             for web in rollout.ingresses() {
@@ -116,7 +157,7 @@ impl crate::ServerState {
                     &runtime_credentials,
                     ssl.as_ref(),
                     backup.as_ref(),
-                    None,
+                    schedule_revision,
                 )
                 .map_err(|e| format!("Could not commit Compose deployment: {e}"))?;
             Ok(())
@@ -131,6 +172,33 @@ impl crate::ServerState {
                 app.remove_instance(&instance.id);
             }
             let mut recovery = rollout.rollback().await;
+            if sdk_workflows {
+                // Restore the previous release's runtime, which its workers
+                // and schedules belong to.
+                match &previous {
+                    Some((previous_config, _)) if !previous_config.stopped => {
+                        let previous_release = crate::release::app_release_root(
+                            &self.runtime.data_dir,
+                            &app_name,
+                            &previous_config.version,
+                        );
+                        let runtime_bin = crate::release::resolve_release_runtime_bin(
+                            &previous_release,
+                            &self.runtime.data_dir,
+                        )
+                        .await
+                        .ok()
+                        .flatten();
+                        self.sync_app_workflows(
+                            &app_name,
+                            &previous_release,
+                            runtime_bin.as_deref(),
+                        )
+                        .await;
+                    }
+                    _ => self.workflows.retire(&app_name),
+                }
+            }
             if let Some((previous_config, previous_state)) = previous {
                 app.update_config(previous_config.clone());
                 if recovery.is_ok() && previous_config.compose.is_some() {
@@ -235,14 +303,13 @@ impl crate::ServerState {
             app.clear_last_error();
         }
         crate::runtime_events::update_instance_count_metric(&app_name, &app);
-        let release_path =
-            crate::release::app_release_root(&self.runtime.data_dir, &app_name, &config.version);
         if config.stopped {
             self.cold_start.mark_failed(&app_name, "app_stopped");
             self.workflows
                 .stop(&app_name, std::time::Duration::from_secs(120))
                 .await;
-        } else {
+        } else if !sdk_workflows {
+            // SDK groups installed their runtime before the rollout.
             self.sync_app_workflows(&app_name, &release_path, None)
                 .await;
         }

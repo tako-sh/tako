@@ -1585,6 +1585,7 @@ mod tests {
             log_sink: None,
             isolation: None,
             lanes: Vec::new(),
+            external: false,
         };
         // A release whose worker ignores SIGTERM while it finishes a run.
         let stubborn = format!("trap '' TERM; touch {}; exec sleep 60", ready.display());

@@ -355,6 +355,7 @@ async fn ensure_workflow_runtime(
         databases,
         log_sink,
         isolation: None,
+        external: false,
     };
     if let Err(e) = workflows.ensure(&app, workflow_retention_ms, spec_fn).await {
         tracing::warn!(

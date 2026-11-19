@@ -68,13 +68,20 @@ services:
 
 /// Send one command through the group's socket from the host.
 async fn socket_command(path: &Path, app: &str) -> Value {
+    socket_send(
+        path,
+        serde_json::json!({
+            "command": "channel_publish", "app": app, "channel": "demo",
+            "payload": {"type": "m", "data": 1}
+        }),
+    )
+    .await
+}
+
+async fn socket_send(path: &Path, command: Value) -> Value {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
     let stream = tokio::net::UnixStream::connect(path).await.unwrap();
     let (read, mut write) = stream.into_split();
-    let command = serde_json::json!({
-        "command": "channel_publish", "app": app, "channel": "demo",
-        "payload": {"type": "m", "data": 1}
-    });
     write
         .write_all(format!("{command}\n").as_bytes())
         .await
@@ -269,6 +276,39 @@ async fn sdk_services_receive_the_group_runtime_through_restart_and_secret_rotat
         assert_eq!(mode(&socket_root.join(&runtime.project)), 0o711);
     }
 
+    // The group's workflow runtime exists before any worker claims: the
+    // queue accepts work, and only workers of the current build register.
+    let enqueued = socket_send(
+        &socket,
+        serde_json::json!({"command": "enqueue_run", "app": APP, "name": "send", "payload": {}}),
+    )
+    .await;
+    assert_eq!(enqueued["status"], "ok", "{enqueued}");
+    let register = |build: &str| {
+        serde_json::json!({"command": "register_schedules", "app": APP, "build": build,
+            "schedules": [{"name": "nightly", "cron": "0 0 0 * * *"}]})
+    };
+    assert_eq!(
+        socket_send(&socket, register("v0")).await["data"]["count"],
+        0
+    );
+    assert_eq!(
+        socket_send(&socket, register("v1")).await["data"]["count"],
+        1
+    );
+    let runs = server
+        .handle_command(Command::ListWorkflowRuns {
+            app: APP.into(),
+            status: None,
+            name: None,
+            limit: None,
+        })
+        .await;
+    let Response::Ok { data: listed } = runs else {
+        panic!("workflow runs of the group: {runs:?}")
+    };
+    assert_eq!(listed["runs"][0]["name"], "send", "{listed}");
+
     // A restarted server re-binds the socket and re-attaches the containers,
     // which keep matching the stored token.
     server.app_manager.shutdown_all().await;
@@ -282,6 +322,14 @@ async fn sdk_services_receive_the_group_runtime_through_restart_and_secret_rotat
     assert_eq!(app.get_instances()[0].internal_token(), token);
     assert_eq!(report(&restarted).await["socket"], "yes");
     assert_eq!(socket_command(&socket, APP).await["status"], "ok");
+    // External workers claim from the recovered runtime; nothing is spawned.
+    let claimed = socket_send(
+        &socket,
+        serde_json::json!({"command": "claim_run", "app": APP, "worker_id": "worker-1",
+            "names": ["send"], "lease_ms": 30000}),
+    )
+    .await;
+    assert_eq!(claimed["data"]["name"], "send", "{claimed}");
 
     // A secret rotation replaces only the SDK services and keeps the token.
     deploy(&restarted, dir.path(), "second").await;

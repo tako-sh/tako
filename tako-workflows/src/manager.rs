@@ -987,6 +987,7 @@ pub fn worker_spec_for_command(
         log_sink: None,
         isolation,
         lanes: Vec::new(),
+        external: false,
     }
 }
 
@@ -1012,7 +1013,83 @@ mod tests {
             log_sink: None,
             isolation: None,
             lanes: Vec::new(),
+            external: false,
         }
+    }
+
+    #[tokio::test]
+    async fn external_workers_use_a_pinned_socket_and_only_the_release_registers() {
+        use tako_socket::{read_json_line, write_json_line};
+        let tmp = tempfile::tempdir().unwrap();
+        let m = WorkflowManager::new(tmp.path());
+        let prepared = m
+            .prepare(
+                WorkflowStoreConfig::sqlite(tmp.path().join("workflows.sqlite")),
+                None,
+                WorkerSpec::external("shop/production", "v2"),
+                ScheduleActivation::Deploy,
+            )
+            .await
+            .unwrap();
+        prepared.supervisor.start().await.unwrap();
+        m.install("shop/production", prepared);
+        let socket = tmp.path().join("group").join("internal.sock");
+        m.start_pinned_socket("shop/production", &socket, 0o666)
+            .unwrap();
+        // Idempotent for the same path.
+        m.start_pinned_socket("shop/production", &socket, 0o666)
+            .unwrap();
+        let send = async |command: tako_core::Command| -> tako_core::Response {
+            let stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+            let (r, mut w) = stream.into_split();
+            let mut r = tokio::io::BufReader::new(r);
+            write_json_line(&mut w, &command).await.unwrap();
+            read_json_line(&mut r).await.unwrap().unwrap()
+        };
+        let register = |build: &str| tako_core::Command::RegisterSchedules {
+            app: "shop/production".into(),
+            build: Some(build.into()),
+            schedules: vec![tako_core::ScheduleSpec {
+                name: "nightly".into(),
+                cron: "0 0 * * *".into(),
+                max_attempts: None,
+            }],
+        };
+        // Enqueue works before any worker runs: nothing is spawned.
+        let enqueued = send(tako_core::Command::EnqueueRun {
+            app: "shop/production".into(),
+            name: "send".into(),
+            payload: serde_json::json!({}),
+            opts: Default::default(),
+        })
+        .await;
+        assert!(enqueued.is_ok(), "{enqueued:?}");
+        assert!(!m.supervisor_for("shop/production").unwrap().is_running());
+        // A worker of another build cannot replace the release's schedules.
+        assert_eq!(send(register("v1")).await.data().unwrap()["count"], 0);
+        assert_eq!(send(register("v2")).await.data().unwrap()["count"], 1);
+        let claimed = send(tako_core::Command::ClaimRun {
+            app: "shop/production".into(),
+            worker_id: "worker-default-1".into(),
+            names: vec!["send".into()],
+            lease_ms: 30_000,
+        })
+        .await;
+        assert_eq!(claimed.data().unwrap()["name"], "send");
+        let foreign = send(tako_core::Command::EnqueueRun {
+            app: "other/production".into(),
+            name: "send".into(),
+            payload: serde_json::json!({}),
+            opts: Default::default(),
+        })
+        .await;
+        assert!(foreign.error_message().unwrap().contains("app mismatch"));
+        assert_eq!(
+            m.stop_pinned_socket("shop/production").await.as_deref(),
+            Some(socket.as_path())
+        );
+        assert!(!socket.exists());
+        m.shutdown_all(Duration::from_secs(1)).await;
     }
 
     fn invalid_start_spec(cwd: PathBuf, _db: PathBuf) -> WorkerSpec {
@@ -1030,6 +1107,7 @@ mod tests {
             log_sink: None,
             isolation: None,
             lanes: Vec::new(),
+            external: false,
         }
     }
 
