@@ -14,7 +14,7 @@ export default async function fetch(request: Request): Promise<Response> {
   }
 
   if (url.pathname === "/secret" && request.method === "GET") {
-    const secret = tako.secrets.COMPOSE_SDK_SECRET;
+    const secret = tako.secrets.SDK_FIXTURE_SECRET;
     return Response.json({ has_secret: typeof secret === "string" && secret.length > 0 });
   }
 

@@ -335,7 +335,7 @@ fixture_has_secrets_for_env() {
 
 seed_fixture_secrets() {
   if [[ "$FIXTURE_REL" == "e2e/fixtures/compose/sdk" ]]; then
-    printf '%s' 'compose-sdk-secret' | HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" secrets set COMPOSE_SDK_SECRET --env production
+    printf '%s' 'compose-sdk-secret' | HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" secrets set SDK_FIXTURE_SECRET --env production
   fi
   if [[ "$FIXTURE_REL" == examples/go/* ]]; then
     for name in API_KEY DATABASE_URL EXAMPLE_SECRET; do
@@ -1042,7 +1042,7 @@ run_compose_sdk_checks() {
   worker_id=$(sdk_container_ids worker)
   redis_id=$(sdk_container_ids redis)
   nginx_id=$(sdk_container_ids nginx)
-  printf '%s' "rotated-$(date +%s%N)" | HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" secrets set COMPOSE_SDK_SECRET --env production
+  printf '%s' "rotated-$(date +%s%N)" | HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" secrets set SDK_FIXTURE_SECRET --env production
   HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" deploy --env production --yes
   [[ $(sdk_container_ids web) != "$web_id" ]]
   [[ $(sdk_container_ids worker) != "$worker_id" ]]
