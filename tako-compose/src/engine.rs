@@ -52,7 +52,26 @@ impl ComposeRuntime {
         let Some(port) = container.port else {
             return Ok(false);
         };
+        if let Some(sdk) = self.sdk_for(&container.service) {
+            return Ok(sdk_ready(port, &sdk.health_host, &sdk.token).await);
+        }
         Ok(http_ready(port).await)
+    }
+
+    /// The runtime of an `sdk: true` service, which answers Tako's SDK check.
+    fn sdk_for(&self, service: &str) -> Option<&crate::SdkRuntime> {
+        self.sdk.as_ref().filter(|_| self.config.is_sdk(service))
+    }
+
+    /// Why an HTTP app's container is not ready, for deploy and dev errors.
+    pub fn readiness_error(&self, service: &str) -> String {
+        if self.sdk_for(service).is_some() {
+            format!(
+                "service '{service}' is marked sdk: true but didn't answer Tako's SDK health check"
+            )
+        } else {
+            format!("Compose service '{service}' did not become ready")
+        }
     }
 
     pub async fn containers(&self) -> Result<Vec<ServiceContainer>, String> {
@@ -206,6 +225,46 @@ async fn http_ready(port: u16) -> bool {
                 && (b'1'..=b'5').contains(&prefix[9])
                 && prefix[10..].iter().all(u8::is_ascii_digit),
         )
+    })
+    .await
+    .is_ok_and(|result| result.unwrap_or(false))
+}
+
+/// SDK readiness: `GET /status` on the app's internal host with its token.
+/// The SDK answers with a success status that echoes the token, which a
+/// plain server on the same port cannot.
+async fn sdk_ready(port: u16, host: &str, token: &str) -> bool {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    const TOKEN_HEADER: &str = "x-tako-internal-token";
+    let request = format!(
+        "GET /status HTTP/1.1\r\nHost: {host}\r\n{TOKEN_HEADER}: {token}\r\nConnection: close\r\n\r\n"
+    );
+    tokio::time::timeout(Duration::from_secs(2), async {
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await?;
+        stream.write_all(request.as_bytes()).await?;
+        let mut response = Vec::new();
+        let mut chunk = [0u8; 1024];
+        while !response.windows(4).any(|w| w == b"\r\n\r\n") && response.len() < 8192 {
+            let read = stream.read(&mut chunk).await?;
+            if read == 0 {
+                break;
+            }
+            response.extend_from_slice(&chunk[..read]);
+        }
+        let response = String::from_utf8_lossy(&response);
+        let mut lines = response.split("\r\n");
+        let status = lines.next().unwrap_or_default();
+        let success = status
+            .split(' ')
+            .nth(1)
+            .is_some_and(|code| code.len() == 3 && code.starts_with('2'));
+        let echoed = lines
+            .take_while(|line| !line.is_empty())
+            .filter_map(|line| line.split_once(':'))
+            .any(|(name, value)| {
+                name.trim().eq_ignore_ascii_case(TOKEN_HEADER) && value.trim() == token
+            });
+        Ok::<_, std::io::Error>(status.starts_with("HTTP/1.") && success && echoed)
     })
     .await
     .is_ok_and(|result| result.unwrap_or(false))
@@ -367,6 +426,49 @@ mod tests {
                 stream.write_all(response).await.unwrap();
             });
             assert_eq!(http_ready(port).await, expected);
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn sdk_readiness_requires_success_and_the_echoed_token() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for (response, expected) in [
+            (
+                "HTTP/1.1 200 OK\r\nx-tako-internal-token: secret\r\nContent-Length: 0\r\n\r\n",
+                true,
+            ),
+            // A plain server that answers every request is not an SDK.
+            ("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n", false),
+            (
+                "HTTP/1.1 200 OK\r\nX-Tako-Internal-Token: other\r\n\r\n",
+                false,
+            ),
+            (
+                "HTTP/1.1 403 Forbidden\r\nx-tako-internal-token: secret\r\n\r\n",
+                false,
+            ),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0; 512];
+                let length = stream.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..length]).into_owned();
+                assert!(request.starts_with("GET /status HTTP/1.1\r\n"), "{request}");
+                assert!(request.contains("Host: shop.tako\r\n"), "{request}");
+                assert!(
+                    request.contains("x-tako-internal-token: secret\r\n"),
+                    "{request}"
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            });
+            assert_eq!(
+                sdk_ready(port, "shop.tako", "secret").await,
+                expected,
+                "{response}"
+            );
             server.await.unwrap();
         }
     }

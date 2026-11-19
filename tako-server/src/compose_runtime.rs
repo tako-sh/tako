@@ -30,6 +30,76 @@ use tako_compose::{render_override, validate_model};
 #[cfg(test)]
 use tako_core::compose::ComposeConfig;
 
+/// `{data_dir}/runtime/compose`. Only Tako can traverse it, so host users
+/// cannot reach the sockets below it.
+pub(crate) fn socket_root(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join("runtime").join("compose")
+}
+
+/// Create a group's socket directory. The root is 0700; the project
+/// directory is 0711, so a container of any user reaches the socket
+/// through its mount but cannot list the directory.
+pub(crate) fn prepare_socket_dir(
+    data_dir: &Path,
+    project: &str,
+) -> Result<std::path::PathBuf, String> {
+    use std::os::unix::fs::PermissionsExt;
+    let root = socket_root(data_dir);
+    let directory = root.join(project);
+    std::fs::create_dir_all(&directory)
+        .map_err(|e| format!("create Compose socket directory: {e}"))?;
+    for (path, mode) in [(&root, 0o700), (&directory, 0o711)] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+            .map_err(|e| format!("protect Compose socket directory: {e}"))?;
+    }
+    Ok(directory)
+}
+
+/// The Tako runtime of a group's `sdk: true` services: group identity and
+/// token, all group secrets, S3 storages only and no databases, which
+/// containers cannot reach.
+pub(crate) fn sdk_runtime(
+    config: &crate::instances::AppConfig,
+) -> Option<tako_compose::SdkRuntime> {
+    if !config.compose.as_ref()?.has_sdk_services() {
+        return None;
+    }
+    let token = config.compose_token.clone()?;
+    let socket_dir = config.compose_socket_dir.clone()?;
+    let data_dir = config
+        .env_vars
+        .get(crate::release::TAKO_APP_DATA_DIR_ENV)?
+        .into();
+    let storages: HashMap<_, _> = config
+        .storages
+        .iter()
+        .filter(|(_, binding)| binding.provider == tako_core::StorageProvider::S3)
+        .map(|(name, binding)| (name.clone(), binding.clone()))
+        .collect();
+    let envelope = tako_core::bootstrap::envelope_string(
+        &token,
+        tako_core::bootstrap::Bindings {
+            secrets: &config.secrets,
+            storages: &storages,
+            databases: &HashMap::new(),
+        },
+    );
+    Some(tako_compose::SdkRuntime {
+        app_name: config.deployment_id(),
+        token,
+        envelope,
+        build: config
+            .env_vars
+            .get("TAKO_BUILD")
+            .cloned()
+            .unwrap_or_else(|| config.version.clone()),
+        environment: config.environment.clone(),
+        socket_dir,
+        data_dir,
+        health_host: crate::instances::internal_app_host(&config.name),
+    })
+}
+
 pub(crate) fn for_config(config: &crate::instances::AppConfig) -> Result<ComposeRuntime, String> {
     let mut env = config.env_vars.clone();
     env.extend(config.secrets.clone());
@@ -55,9 +125,12 @@ pub(crate) fn for_config(config: &crate::instances::AppConfig) -> Result<Compose
         env,
     )
     .map(|runtime| {
-        let runtime = runtime
+        let mut runtime = runtime
             .with_replicas(config.compose_replicas.clone())
             .with_stopped(config.stopped, config.compose_stopped.clone());
+        if let Some(sdk) = sdk_runtime(config) {
+            runtime = runtime.with_sdk(sdk);
+        }
         match NATIVE_NETWORK.get() {
             Some(network) => runtime.with_native_network(network.clone()),
             None => runtime,

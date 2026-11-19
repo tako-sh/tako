@@ -36,6 +36,10 @@ impl crate::ServerState {
         // rollout fails, predecessor recovery must still skip dependencies the
         // operator stopped, even ones the new release removes. Only the
         // configuration committed below drops services that no longer exist.
+        // SDK containers need the group's token and socket before they start.
+        if let Err(error) = self.prepare_compose_sdk(&mut config) {
+            return Response::error(error);
+        }
         let runtime = match crate::compose_runtime::for_config(&config) {
             Ok(runtime) => runtime,
             Err(error) => return Response::error(error),
@@ -92,7 +96,7 @@ impl crate::ServerState {
         let result: Result<(), String> = async {
             rollout.apply().await?;
             for web in rollout.ingresses() {
-                let instance = app.allocate_instance();
+                let instance = app.allocate_compose_instance(&runtime, &web.service);
                 app.suppress_instance_routing(&instance.id);
                 instances.push(instance.clone());
                 self.app_manager
@@ -210,6 +214,11 @@ impl crate::ServerState {
         }
         if let Err(error) = rollout.finish().await {
             cleanup_errors.push(error);
+        }
+        if config.compose_socket_dir.is_none() {
+            // No SDK container of this release, or of its retired
+            // predecessors, still uses the group's socket.
+            self.retire_compose_socket(&app_name).await;
         }
         let cleanup_error = (!cleanup_errors.is_empty()).then(|| cleanup_errors.join("; "));
         app.set_state(if config.stopped {
@@ -331,6 +340,52 @@ impl crate::ServerState {
         }
     }
 
+    /// Give a group with `sdk: true` services its token and pinned internal
+    /// socket. The token is created by the first deploy with an SDK service
+    /// and committed with it; later deploys reuse it.
+    pub(crate) fn prepare_compose_sdk(&self, config: &mut AppConfig) -> Result<(), String> {
+        if !config
+            .compose
+            .as_ref()
+            .is_some_and(|compose| compose.has_sdk_services())
+        {
+            config.compose_socket_dir = None;
+            return Ok(());
+        }
+        let app = config.deployment_id();
+        if config.compose_token.is_none() {
+            let stored = self
+                .state_store
+                .get_compose_token(&app)
+                .map_err(|e| format!("Could not read the Compose SDK token: {e}"))?;
+            config.compose_token = Some(match stored {
+                Some(token) => token,
+                None => generate_compose_token()?,
+            });
+        }
+        let data = config
+            .env_vars
+            .get(crate::release::TAKO_APP_DATA_DIR_ENV)
+            .ok_or("Compose requires an app data directory")?;
+        let project = tako_compose::production_project(std::path::Path::new(data));
+        let directory =
+            crate::compose_runtime::prepare_socket_dir(&self.runtime.data_dir, &project)?;
+        self.workflows
+            .start_pinned_socket(&app, &directory.join(tako_compose::SDK_SOCKET_FILE), 0o666)
+            .map_err(|e| format!("Could not start the Compose internal socket: {e}"))?;
+        config.compose_socket_dir = Some(directory);
+        Ok(())
+    }
+
+    /// Stop a group's pinned socket and remove its directory.
+    pub(crate) async fn retire_compose_socket(&self, app: &str) {
+        if let Some(path) = self.workflows.stop_pinned_socket(app).await
+            && let Some(directory) = path.parent()
+        {
+            let _ = std::fs::remove_dir_all(directory);
+        }
+    }
+
     pub(super) async fn apply_compose_config(&self, config: AppConfig) -> Response {
         let app = config.deployment_id();
         let bindings = (|| -> Result<_, crate::state_store::StateStoreError> {
@@ -358,4 +413,13 @@ impl crate::ServerState {
         })
         .await
     }
+}
+
+/// One random 32-byte token per group. Stored rather than derived, so it can
+/// be rotated later.
+fn generate_compose_token() -> Result<String, String> {
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes)
+        .map_err(|e| format!("Could not generate the Compose SDK token: {e}"))?;
+    Ok(hex::encode(bytes))
 }

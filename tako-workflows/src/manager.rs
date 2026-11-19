@@ -26,7 +26,7 @@ use super::dispatcher::WorkDispatcher;
 use super::enqueue::{RunsDb, RunsDbError, WorkflowStoreConfig};
 use super::enqueue_socket::{
     AppHandlers, AppLookup, ChannelPublishFn, EnqueueSocketHandle, NetworkCallFn, OnEnqueue,
-    PeerAuthFn, spawn as spawn_internal_socket,
+    PeerAuthFn, SocketOptions, pinned_app_auth, spawn as spawn_internal_socket, spawn_with_options,
 };
 use super::in_flight::InFlightLimiter;
 use super::supervisor::{WorkerSpec, WorkerSupervisor};
@@ -109,6 +109,9 @@ pub struct WorkflowManager {
     data_dir: PathBuf,
     apps: Arc<RwLock<HashMap<String, AppWorkflow>>>,
     socket: parking_lot::Mutex<Option<EnqueueSocketHandle>>,
+    /// Per-app sockets that serve only their app, keyed by app, with the
+    /// symlink path each one owns.
+    pinned_sockets: parking_lot::Mutex<HashMap<String, (PathBuf, EnqueueSocketHandle)>>,
     postgres_url: parking_lot::Mutex<Option<PostgresUrlResolver>>,
     /// Server-side channel `publish` relay used by SDK channel handles.
     /// Snapshotted at `start_socket` time and passed into the socket's
@@ -275,6 +278,7 @@ impl WorkflowManager {
             data_dir: data_dir.into(),
             apps: Arc::new(RwLock::new(HashMap::new())),
             socket: parking_lot::Mutex::new(None),
+            pinned_sockets: parking_lot::Mutex::new(HashMap::new()),
             postgres_url: parking_lot::Mutex::new(None),
             channel_publish: parking_lot::Mutex::new(None),
             peer_auth: parking_lot::Mutex::new(None),
@@ -340,13 +344,74 @@ impl WorkflowManager {
         if guard.is_some() {
             return Ok(());
         }
+        let (lookup, publisher, route) = self.socket_handlers();
+        let peer_auth = self.peer_auth.lock().clone();
+        *guard = Some(spawn_internal_socket(
+            self.socket_path(),
+            lookup,
+            publisher,
+            peer_auth,
+            Some(route),
+        )?);
+        Ok(())
+    }
+
+    /// Bring up a socket that serves only `app`, whatever the caller's Unix
+    /// identity, at `symlink_path` with the given file mode. For processes
+    /// that cannot present a per-app identity, such as Compose containers,
+    /// which reach it through a mounted directory. Idempotent for the same
+    /// path; a new path replaces the app's previous socket. A successor
+    /// server process binds its own socket and swaps the shared symlink.
+    pub fn start_pinned_socket(
+        &self,
+        app: &str,
+        symlink_path: &Path,
+        mode: u32,
+    ) -> Result<(), WorkflowManagerError> {
+        let mut sockets = self.pinned_sockets.lock();
+        if sockets
+            .get(app)
+            .is_some_and(|(path, _)| path == symlink_path)
+        {
+            return Ok(());
+        }
+        let (lookup, publisher, route) = self.socket_handlers();
+        let handle = spawn_with_options(
+            symlink_path,
+            lookup,
+            publisher,
+            Some(pinned_app_auth(app)),
+            Some(route),
+            SocketOptions { mode: Some(mode) },
+        )?;
+        sockets.insert(app.to_string(), (symlink_path.to_path_buf(), handle));
+        Ok(())
+    }
+
+    /// Stop an app's pinned socket and remove its symlink. Returns the
+    /// symlink path it served.
+    pub async fn stop_pinned_socket(&self, app: &str) -> Option<PathBuf> {
+        let (path, handle) = self.pinned_sockets.lock().remove(app)?;
+        handle.shutdown().await;
+        let _ = std::fs::remove_file(&path);
+        Some(path)
+    }
+
+    pub fn pinned_socket_path(&self, app: &str) -> Option<PathBuf> {
+        self.pinned_sockets
+            .lock()
+            .get(app)
+            .map(|(path, _)| path.clone())
+    }
+
+    /// The command handlers every internal socket shares.
+    fn socket_handlers(&self) -> (AppLookup, Option<ChannelPublishFn>, NetworkCallFn) {
         let apps = self.apps.clone();
         let lookup: AppLookup = Arc::new(move |app: &str| {
             let apps = apps.read();
             apps.get(app).map(AppWorkflow::handlers)
         });
         let publisher = self.channel_publish.lock().clone();
-        let peer_auth = self.peer_auth.lock().clone();
         let network_call = self.network_call.clone();
         let route: NetworkCallFn = Arc::new(move |caller, target, invocation| {
             let route = network_call.read().clone();
@@ -358,14 +423,7 @@ impl WorkflowManager {
                 ),
             }
         });
-        *guard = Some(spawn_internal_socket(
-            self.socket_path(),
-            lookup,
-            publisher,
-            peer_auth,
-            Some(route),
-        )?);
-        Ok(())
+        (lookup, publisher, route)
     }
 
     /// Configure or reconfigure workflows for an app. Called on deploy.
@@ -845,6 +903,12 @@ impl WorkflowManager {
         }
         let socket = self.socket.lock().take();
         if let Some(handle) = socket {
+            handle.shutdown().await;
+        }
+        // Keep each pinned symlink: a successor may already serve it, and
+        // the next start re-binds it otherwise.
+        let pinned: Vec<_> = self.pinned_sockets.lock().drain().collect();
+        for (_, (_, handle)) in pinned {
             handle.shutdown().await;
         }
     }

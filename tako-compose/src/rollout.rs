@@ -177,7 +177,7 @@ impl Rollout {
                 let mut candidate = if let Some(container) = matched {
                     container.clone()
                 } else {
-                    let model = self.plan.container_model(service, slot, &self.runtime);
+                    let model = self.plan.container_model(service, slot, &self.runtime)?;
                     self.runtime
                         .create_container(model, &service.generation(slot))
                         .await?
@@ -202,7 +202,7 @@ impl Rollout {
                     }
                 }
                 if !(candidate.running() || (service.completed && candidate.completed())) {
-                    let model = self.plan.container_model(service, slot, &self.runtime);
+                    let model = self.plan.container_model(service, slot, &self.runtime)?;
                     self.runtime
                         .start_service(&model, &candidate.generation)
                         .await?;

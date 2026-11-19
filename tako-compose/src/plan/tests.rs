@@ -256,7 +256,7 @@ fn generation_model_preserves_restart_and_aliases_without_dependencies_or_builds
     let (_dir, runtime) = runtime();
     let plan = Plan::new(model(), &runtime).unwrap();
     let web = plan.services.iter().find(|s| s.name == "web").unwrap();
-    let generated = plan.container_model(web, 0, &runtime);
+    let generated = plan.container_model(web, 0, &runtime).unwrap();
     let service = &generated["services"][web.generation(0)];
     assert_eq!(generated["services"].as_object().unwrap().len(), 1);
     assert_eq!(service["restart"], "unless-stopped");
@@ -400,7 +400,7 @@ fn native_gateway_changes_generations_and_preserves_stack_dns_aliases() {
     let native = Plan::new(model(), &runtime).unwrap();
     for service in &native.services {
         assert_ne!(fingerprint(&ordinary, &service.name), service.fingerprint);
-        let container = native.container_model(service, 0, &runtime);
+        let container = native.container_model(service, 0, &runtime).unwrap();
         let definition = &container["services"][service.generation(0)];
         assert_eq!(definition["dns"], json!([network.gateway().to_string()]));
         assert_eq!(
@@ -419,4 +419,158 @@ fn native_gateway_changes_generations_and_preserves_stack_dns_aliases() {
     }
     let restarted = Plan::new(model(), &runtime).unwrap();
     assert_eq!(fingerprint(&native, "web"), fingerprint(&restarted, "web"));
+}
+
+fn sdk_runtime(dir: &std::path::Path, build: &str, secret: &str) -> crate::SdkRuntime {
+    crate::SdkRuntime {
+        app_name: "shop/production".into(),
+        token: "group-token".into(),
+        envelope: json!({"token": "group-token", "secrets": {"API_KEY": secret}, "storages": {}, "databases": {}})
+            .to_string(),
+        build: build.into(),
+        environment: "production".into(),
+        socket_dir: dir.join("socket"),
+        data_dir: dir.join("data"),
+        health_host: "shop.tako".into(),
+    }
+}
+
+fn sdk_group(dir: &std::path::Path) -> ComposeRuntime {
+    let config = tako_core::compose::ComposeConfig {
+        file: "compose.yaml".into(),
+        services: serde_json::from_value(json!({
+            "web": {"sdk": true, "envs": {"production": {"route": "web.localhost"}}},
+            "worker": {"sdk": true},
+            "nginx": {"envs": {"production": {"route": "nginx.localhost"}}}
+        }))
+        .unwrap(),
+    };
+    let mut runtime = ComposeRuntime::new(
+        dir.into(),
+        config,
+        HashMap::from([(
+            crate::TAKO_APP_DATA_DIR_ENV.into(),
+            dir.join("data").display().to_string(),
+        )]),
+    )
+    .unwrap();
+    runtime.ingress_ports.insert("web".into(), 3000);
+    runtime.ingress_ports.insert("nginx".into(), 80);
+    runtime
+}
+
+fn sdk_model() -> Value {
+    json!({
+        "services": {
+            "web": {"image":"sha256:web", "environment":{"APP":"web"}},
+            "worker": {"image":"sha256:web", "command":["bun","worker.mjs"]},
+            "nginx": {"image":"sha256:nginx"},
+            "redis": {"image":"sha256:redis"}
+        }
+    })
+}
+
+#[test]
+fn sdk_runtime_changes_only_sdk_fingerprints_with_build_and_envelope() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("compose.yaml"), "services: {}\n").unwrap();
+    let group = sdk_group(dir.path());
+    assert!(
+        Plan::new(sdk_model(), &group)
+            .err()
+            .unwrap()
+            .contains("Tako runtime")
+    );
+    let base = Plan::new(
+        sdk_model(),
+        &group
+            .clone()
+            .with_sdk(sdk_runtime(dir.path(), "v1", "first")),
+    )
+    .unwrap();
+    for changed in [
+        sdk_runtime(dir.path(), "v2", "first"),
+        sdk_runtime(dir.path(), "v1", "rotated"),
+    ] {
+        let plan = Plan::new(sdk_model(), &group.clone().with_sdk(changed)).unwrap();
+        for service in ["web", "worker"] {
+            assert_ne!(fingerprint(&plan, service), fingerprint(&base, service));
+        }
+        for service in ["nginx", "redis"] {
+            assert_eq!(fingerprint(&plan, service), fingerprint(&base, service));
+        }
+    }
+    // Plain services keep the identity they had before the SDK runtime existed.
+    let mut plain = group.clone();
+    plain.config.services.retain(|name, _| name == "nginx");
+    let without_sdk = Plan::new(sdk_model(), &plain).unwrap();
+    assert_eq!(
+        fingerprint(&without_sdk, "redis"),
+        fingerprint(&base, "redis")
+    );
+}
+
+#[test]
+fn sdk_services_receive_the_runtime_and_plain_services_only_the_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("compose.yaml"), "services: {}\n").unwrap();
+    std::fs::create_dir(dir.path().join("data")).unwrap();
+    let runtime = sdk_group(dir.path()).with_sdk(sdk_runtime(dir.path(), "v1", "first"));
+    // The envelope reaches Docker on stdin, never the Compose client.
+    assert!(
+        runtime
+            .env
+            .values()
+            .all(|value| !value.contains("group-token"))
+    );
+    let plan = Plan::new(sdk_model(), &runtime).unwrap();
+    let definition = |name: &str| {
+        let service = plan.services.iter().find(|s| s.name == name).unwrap();
+        let model = plan.container_model(service, 0, &runtime).unwrap();
+        model["services"][service.generation(0)].clone()
+    };
+    let web = definition("web");
+    let environment = &web["environment"];
+    assert_eq!(environment["APP"], "web");
+    assert_eq!(environment["TAKO_APP_NAME"], "shop/production");
+    assert_eq!(
+        environment["TAKO_INTERNAL_SOCKET"],
+        "/run/tako/internal.sock"
+    );
+    assert_eq!(environment["TAKO_DATA_DIR"], "/tako/data");
+    assert_eq!(environment["TAKO_BUILD"], "v1");
+    assert_eq!(environment["ENV"], "production");
+    assert_eq!(environment["HOST"], "0.0.0.0");
+    assert_eq!(environment["PORT"], "3000");
+    assert_eq!(environment["TAKO_COMPOSE_SERVICE"], "web");
+    let bootstrap: Value =
+        serde_json::from_str(environment["TAKO_BOOTSTRAP_DATA"].as_str().unwrap()).unwrap();
+    assert_eq!(bootstrap["token"], "group-token");
+    let mounts = web["volumes"].as_array().unwrap();
+    let mount = |target: &str| mounts.iter().find(|m| m["target"] == target).unwrap();
+    assert_eq!(mount("/run/tako")["read_only"], true);
+    assert_eq!(
+        mount("/run/tako")["source"],
+        json!(dir.path().join("socket"))
+    );
+    assert_eq!(
+        mount("/tako/data")["source"],
+        json!(dir.path().join("data"))
+    );
+    assert!(web["group_add"].as_array().is_some_and(|g| g.len() == 1));
+
+    // Workers have no HTTP contract.
+    let worker = definition("worker");
+    assert_eq!(worker["environment"]["TAKO_APP_NAME"], "shop/production");
+    assert!(worker["environment"].get("HOST").is_none());
+    assert!(worker["environment"].get("PORT").is_none());
+
+    let nginx = definition("nginx");
+    assert_eq!(
+        nginx["environment"],
+        json!({"TAKO_COMPOSE_SERVICE": "nginx"})
+    );
+    assert!(nginx.get("volumes").is_none());
+    let redis = definition("redis");
+    assert!(redis.get("environment").is_none());
 }

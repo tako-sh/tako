@@ -408,6 +408,28 @@ impl App {
         self.allocate_instance_for(&self.config.read().version)
     }
 
+    /// A Compose HTTP replica. SDK services answer with the group's token,
+    /// which stays valid when the server re-attaches running containers.
+    pub(crate) fn allocate_compose_instance(
+        &self,
+        runtime: &tako_compose::ComposeRuntime,
+        service: &str,
+    ) -> Arc<Instance> {
+        let token = runtime
+            .sdk()
+            .filter(|_| runtime.config.is_sdk(service))
+            .map(|sdk| sdk.token.clone());
+        let id = generate_instance_id();
+        let instance = Arc::new(Instance::new_inner_with_token(
+            id.clone(),
+            self.config.read().version.clone(),
+            self.log_handle.clone(),
+            token,
+        ));
+        self.instances.insert(id, instance.clone());
+        instance
+    }
+
     pub(super) fn allocate_instance_for(&self, version: &str) -> Arc<Instance> {
         let id = generate_instance_id();
         let instance = Arc::new(Instance::new_inner(

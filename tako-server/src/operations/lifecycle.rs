@@ -332,6 +332,11 @@ impl crate::ServerState {
             {
                 return Response::error(format!("Delete failed: {error}"));
             }
+            self.retire_compose_socket(app_name).await;
+            let project = tako_compose::production_project(&app_root.join("data/app"));
+            let _ = std::fs::remove_dir_all(
+                crate::compose_runtime::socket_root(&self.runtime.data_dir).join(project),
+            );
         }
         self.app_manager.remove_app(app_name);
         self.databases.remove_bindings(app_name);
