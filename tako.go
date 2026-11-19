@@ -245,6 +245,12 @@ func Uptime() time.Duration {
 //
 //	// Instead of this:
 //	db := tako.GetSecret("DATABASE_URL")
+//
+// In a Compose service that isn't marked sdk: true, GetSecret panics with an
+// error that names the missing x-tako setting.
 func GetSecret(name string) string {
+	if err := internal.ComposeSDKError(bootstrap != nil); err != nil {
+		panic(err)
+	}
 	return secrets.Get(name)
 }

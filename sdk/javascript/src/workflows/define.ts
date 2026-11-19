@@ -1,4 +1,5 @@
 import { TakoError } from "../tako/error";
+import { composeSdkHint } from "../tako/secrets";
 import type { EnqueueOptions } from "./engine";
 import type { RunId, WorkflowOpts, WorkflowRuntimeOpts } from "./types";
 import type { WorkflowHandler } from "./worker";
@@ -71,7 +72,8 @@ function requireRuntime(): WorkflowRuntime {
   if (!runtime) {
     throw new TakoError(
       "TAKO_UNAVAILABLE",
-      "Workflow runtime not installed. `.enqueue()` and `signal()` can only be called from server-side code.",
+      composeSdkHint() ??
+        "Workflow runtime not installed. `.enqueue()` and `signal()` can only be called from server-side code.",
     );
   }
   return runtime;

@@ -43,13 +43,19 @@ pub struct Client {
 
 impl Client {
     pub fn from_env() -> io::Result<Self> {
+        let unavailable = || {
+            io::Error::other(
+                crate::compose_sdk_hint()
+                    .unwrap_or_else(|| "network primitives require the Tako runtime".into()),
+            )
+        };
         let socket = std::env::var_os("TAKO_INTERNAL_SOCKET")
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| io::Error::other("network primitives require the Tako runtime"))?;
+            .ok_or_else(unavailable)?;
         let app = std::env::var("TAKO_APP_NAME")
             .ok()
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| io::Error::other("network primitives require the Tako runtime"))?;
+            .ok_or_else(unavailable)?;
         Ok(Self {
             socket: socket.into(),
             app,

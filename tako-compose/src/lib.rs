@@ -1361,6 +1361,123 @@ mod tests {
         assert!(services["redis"].get("environment").is_none());
     }
 
+    #[tokio::test]
+    #[ignore = "requires Docker Compose with shared host/container loopback and project paths"]
+    async fn development_sdk_services_start_with_the_runtime_and_pass_sdk_readiness() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path();
+        std::fs::write(
+            project.join("compose.yaml"),
+            "services:\n  web:\n    build: .\n    command: [sh, -c, 'exec nc -lk -p \"$$PORT\" -e /handler.sh']\n    x-tako: {sdk: true, http: true}\n  worker:\n    build: .\n    command: [sleep, '3600']\n    x-tako: {sdk: true}\n  plain:\n    build: .\n    command: [sleep, '3600']\n",
+        )
+        .unwrap();
+        std::fs::write(
+            project.join("Dockerfile"),
+            "FROM docker.io/library/busybox:1.37\nCOPY handler.sh /handler.sh\nRUN chmod 0755 /handler.sh\n",
+        )
+        .unwrap();
+        // Answers Tako's SDK check only with the token from the envelope.
+        std::fs::write(
+            project.join("handler.sh"),
+            r#"#!/bin/sh
+token=$(printf '%s' "$TAKO_BOOTSTRAP_DATA" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+auth=
+read -r method path version
+while IFS= read -r line; do
+  line=$(printf '%s' "$line" | tr -d '\r')
+  [ -z "$line" ] && break
+  case "$line" in
+    [Xx]-[Tt]ako-[Ii]nternal-[Tt]oken:*) auth=$(printf '%s' "${line#*:}" | tr -d ' ') ;;
+  esac
+done
+if [ -n "$token" ] && [ "$auth" = "$token" ]; then
+  printf 'HTTP/1.1 200 OK\r\nx-tako-internal-token: %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n' "$token"
+else
+  printf 'HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'
+fi
+"#,
+        )
+        .unwrap();
+        let data = project.join(".tako/data/app");
+        std::fs::create_dir_all(&data).unwrap();
+        let socket_dir = project.join("socket");
+        std::fs::create_dir_all(&socket_dir).unwrap();
+        let _listener =
+            std::os::unix::net::UnixListener::bind(socket_dir.join(SDK_SOCKET_FILE)).unwrap();
+        let config = load_config(project, "compose.yaml").unwrap();
+        let runtime = ComposeRuntime::development(
+            project.into(),
+            config,
+            HashMap::from([
+                (TAKO_APP_DATA_DIR_ENV.into(), data.display().to_string()),
+                ("API_KEY".into(), "top-secret".into()),
+            ]),
+            "sdk-development-test",
+        )
+        .unwrap()
+        .with_development_hosts("sdk.test".into(), None)
+        .with_sdk(SdkRuntime {
+            app_name: "sdk".into(),
+            token: "dev-token".into(),
+            envelope: json!({"token":"dev-token","secrets":{"API_KEY":"top-secret"},"storages":{},"databases":{}}).to_string(),
+            build: "dev".into(),
+            environment: "development".into(),
+            socket_dir: socket_dir.clone(),
+            data_dir: data.clone(),
+            health_host: "sdk.tako".into(),
+        });
+        struct Cleanup(ComposeRuntime);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = self
+                    .0
+                    .command(true)
+                    .into_std()
+                    .args(["down", "--volumes", "--remove-orphans"])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status();
+            }
+        }
+        let _cleanup = Cleanup(runtime.clone());
+        let _logs = runtime.start_development().await.unwrap();
+        let generated = std::fs::read_to_string(project.join(&runtime.override_file)).unwrap();
+        assert!(!generated.contains("top-secret"), "{generated}");
+        assert!(!generated.contains("dev-token"), "{generated}");
+        let containers = runtime.containers().await.unwrap();
+        let id = |service: &str| {
+            containers
+                .iter()
+                .find(|c| c.service == service)
+                .unwrap()
+                .id
+                .clone()
+        };
+        let exec = |id: String, script: &'static str| async move {
+            let output = tokio::process::Command::new("docker")
+                .args(["exec", &id, "sh", "-c", script])
+                .output()
+                .await
+                .unwrap();
+            (
+                output.status.success(),
+                String::from_utf8_lossy(&output.stdout).trim().to_string(),
+            )
+        };
+        let (ok, envelope) = exec(id("web"), "printenv TAKO_BOOTSTRAP_DATA").await;
+        assert!(ok && envelope.contains("top-secret"));
+        assert_eq!(
+            exec(
+                id("worker"),
+                "test -S /run/tako/internal.sock && printenv TAKO_APP_NAME"
+            )
+            .await,
+            (true, "sdk".into())
+        );
+        assert!(!exec(id("plain"), "printenv TAKO_BOOTSTRAP_DATA").await.0);
+        runtime.stop().await.unwrap();
+    }
+
     #[test]
     fn development_projects_separate_checkouts_variants_and_production() {
         let directory = tempfile::tempdir().unwrap();

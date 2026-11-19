@@ -43,6 +43,8 @@ interface BootstrapState {
 }
 
 const BOOTSTRAP_ENV = "TAKO_BOOTSTRAP_DATA";
+/** Set by Tako on every Compose service with `x-tako`. */
+const COMPOSE_SERVICE_ENV = "TAKO_COMPOSE_SERVICE";
 
 let bootstrap: BootstrapState = { token: null, secrets: {}, storages: {}, databases: {} };
 let injected = false;
@@ -113,6 +115,23 @@ function current(): BootstrapState {
   return bootstrap;
 }
 
+/**
+ * Tako gives every Compose `x-tako` service `TAKO_COMPOSE_SERVICE`, but the
+ * runtime (bootstrap, socket) only to `sdk: true` services. Returns why a
+ * runtime feature is unavailable in such a service, or `null` otherwise.
+ * Never throws, so plain services can still import the SDK for utilities.
+ */
+export function composeSdkHint(): string | null {
+  const env = typeof process !== "undefined" ? process.env : undefined;
+  const service = env?.[COMPOSE_SERVICE_ENV];
+  if (!service || current().token !== null) return null;
+  return (
+    `Tako: this Compose service ('${service}') isn't marked \`sdk: true\` in x-tako, ` +
+    `so it has no Tako runtime for secrets, channels or workflows. ` +
+    `Add \`sdk: true\` to services.${service}.x-tako in the Compose file.`
+  );
+}
+
 /** Returns the internal auth token, or `null` when running outside Tako. */
 export function getInternalToken(): string | null {
   return current().token;
@@ -140,7 +159,11 @@ export function loadSecrets<T = Record<string, string>>(): Readonly<T> {
       if (prop === "toString" || prop === "toJSON") return () => "[REDACTED]";
       if (prop === Symbol.for("nodejs.util.inspect.custom")) return () => "[REDACTED]";
       if (prop === Symbol.toPrimitive) return () => "[REDACTED]";
-      if (typeof prop === "string") return current().secrets[prop];
+      if (typeof prop === "string") {
+        const hint = prop === "then" ? null : composeSdkHint();
+        if (hint) throw new Error(hint);
+        return current().secrets[prop];
+      }
       return undefined;
     },
     ownKeys(): string[] {
