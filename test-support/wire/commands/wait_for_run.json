@@ -1,0 +1,10 @@
+{
+  "app": "demo",
+  "command": "wait_for_run",
+  "id": "run-1",
+  "step_name": "__workflow:[\"\",0]:outcome",
+  "target_id": "child:run-2",
+  "target_name": "send-email",
+  "timeout_at_ms": 1767225630000,
+  "worker_id": "claim-7"
+}

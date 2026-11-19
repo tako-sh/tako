@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { DeferSignal } from "./step";
+import { DeferSignal, WaitSignal } from "./step";
 import { setWorkflowExecutionResolver, type DurableWorkflowExecution } from "./result";
 import type { WorkflowsClient } from "./rpc-client";
 import type { StepState } from "./types";
@@ -37,8 +37,16 @@ class Execution implements DurableWorkflowExecution {
     this.state[key] = value;
     return value;
   }
+  saved(key: string): { hit: true; value: unknown } | { hit: false } {
+    return Object.prototype.hasOwnProperty.call(this.state, key)
+      ? { hit: true, value: this.state[key] }
+      : { hit: false };
+  }
   defer(wakeAt: Date): never {
     throw new DeferSignal(wakeAt);
+  }
+  waitForRun(stepKey: string, name: string, id: string, timeoutAt: Date | null): never {
+    throw new WaitSignal(stepKey, `__run:${id}`, timeoutAt, { name, id });
   }
   track<T>(fn: () => Promise<T>): Promise<T> {
     const promise = fn();
@@ -62,6 +70,18 @@ class Execution implements DurableWorkflowExecution {
       fn,
     );
   }
+}
+
+/**
+ * Keep a durable operation in the run's pending set until it settles. The
+ * worker finishes every pending operation before it parks, fails or
+ * completes the run, so a step still running when a sibling `ctx.waitFor`
+ * or `ctx.sleep` suspends the handler saves its result instead of losing it
+ * to the released lease and running again on resume.
+ */
+export function trackWorkflowOperation<T>(fn: () => Promise<T>): Promise<T> {
+  const context = storage.getStore();
+  return context ? context.track(fn) : fn();
 }
 
 /** Each named ctx.run has its own call sequence, so skipped cached steps don't shift later calls. */

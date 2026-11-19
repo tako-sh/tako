@@ -246,6 +246,10 @@ fn error_reply_fixtures_map_to_error_codes() {
             Some(ErrorCode::ChannelParamsInvalid),
         ),
         ("error-channel_closed.json", Some(ErrorCode::ChannelClosed)),
+        (
+            "error-signal_inbox_full.json",
+            Some(ErrorCode::SignalInboxFull),
+        ),
         ("error-unavailable.json", Some(ErrorCode::Unavailable)),
     ];
     let mut present: Vec<String> = std::fs::read_dir(wire_dir().join("replies"))

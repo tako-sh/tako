@@ -7,12 +7,12 @@ use std::path::Path;
 use tako_core::{EnqueueOpts, EnqueueRunResponse, RunPayload, ScheduleSpec};
 
 use super::operator::{
-    CancelledRun, OPERATOR_CANCEL_REASON, RunRecord, RunRow, StepRow, SummaryRow, WaitRow,
-    parse_status,
+    CancelledRun, OPERATOR_CANCEL_REASON, RunRecord, RunRow, SignalRow, StepRow, SummaryRow,
+    WaitRow, parse_status,
 };
 use super::{RunsDbError, ScheduleRow, clamp_lease_ms, now_ms};
 use crate::schema;
-use tako_core::WorkflowRunStatus;
+use tako_core::{SignalRunStatus, WORKFLOW_RUN_MAX_SIGNALS, WorkflowRunStatus};
 
 const DEFAULT_MAX_ATTEMPTS: u32 = 3;
 
@@ -294,8 +294,9 @@ impl SqliteRunsDb {
         worker_id: &str,
         result: &serde_json::Value,
     ) -> Result<(), RunsDbError> {
-        let conn = self.conn.lock();
-        let rows = conn.execute(
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let rows = tx.execute(
             "UPDATE runs SET status='succeeded', result=?4, last_error=NULL, worker_id=NULL, lease_until=NULL, finished_at=?1
              WHERE id = ?2 AND worker_id = ?3 AND status='running'",
             (now_ms(), id, worker_id, serde_json::to_string(result)?),
@@ -303,6 +304,8 @@ impl SqliteRunsDb {
         if rows == 0 {
             return Err(RunsDbError::StaleWorker);
         }
+        wake_run_waiters(&tx, id)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -312,8 +315,9 @@ impl SqliteRunsDb {
         worker_id: &str,
         reason: Option<&str>,
     ) -> Result<(), RunsDbError> {
-        let conn = self.conn.lock();
-        let rows = conn.execute(
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let rows = tx.execute(
             "UPDATE runs SET status='cancelled', last_error=?1, worker_id=NULL, lease_until=NULL,
                              finished_at=?2
              WHERE id = ?3 AND worker_id = ?4 AND status='running'",
@@ -322,6 +326,8 @@ impl SqliteRunsDb {
         if rows == 0 {
             return Err(RunsDbError::StaleWorker);
         }
+        wake_run_waiters(&tx, id)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -333,9 +339,10 @@ impl SqliteRunsDb {
         next_run_at_ms: Option<i64>,
         finalize: bool,
     ) -> Result<(), RunsDbError> {
-        let conn = self.conn.lock();
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
         let rows = if finalize {
-            conn.execute(
+            tx.execute(
                 "UPDATE runs SET status='dead', last_error=?1, worker_id=NULL, lease_until=NULL,
                                  finished_at=?2
                  WHERE id = ?3 AND worker_id = ?4 AND status='running'",
@@ -345,7 +352,7 @@ impl SqliteRunsDb {
             let next = next_run_at_ms.ok_or_else(|| {
                 RunsDbError::Storage("fail(finalize=false) requires next_run_at_ms".into())
             })?;
-            conn.execute(
+            tx.execute(
                 "UPDATE runs SET status='pending', last_error=?1, worker_id=NULL, lease_until=NULL, run_at=?2
                  WHERE id = ?3 AND worker_id = ?4 AND status='running'",
                 (error, next, id, worker_id),
@@ -354,6 +361,10 @@ impl SqliteRunsDb {
         if rows == 0 {
             return Err(RunsDbError::StaleWorker);
         }
+        if finalize {
+            wake_run_waiters(&tx, id)?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -428,6 +439,11 @@ impl SqliteRunsDb {
              WHERE status='running' AND lease_until IS NOT NULL AND lease_until < ?1",
             (now,),
         )?;
+        for (id, _, exhausted) in &expired {
+            if *exhausted {
+                wake_run_waiters(&tx, id)?;
+            }
+        }
         tx.commit()?;
         Ok(super::Reclaimed::from_rows(expired))
     }
@@ -452,25 +468,191 @@ impl SqliteRunsDb {
         step_name: &str,
         event_name: &str,
         timeout_at_ms: Option<i64>,
-    ) -> Result<(), RunsDbError> {
+    ) -> Result<bool, RunsDbError> {
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
-        let rows = tx.execute(
-            "UPDATE runs SET status='pending', worker_id=NULL, lease_until=NULL,
-                              run_at=?1, attempts=attempts-1
-             WHERE id = ?2 AND worker_id = ?3 AND status='running'",
-            (timeout_at_ms.unwrap_or(i64::MAX), run_id, worker_id),
-        )?;
-        if rows == 0 {
-            return Err(RunsDbError::StaleWorker);
+        release_for_wait(&tx, run_id, worker_id, timeout_at_ms)?;
+        if step_saved(&tx, run_id, step_name)? {
+            requeue_now(&tx, run_id, step_name)?;
+            tx.commit()?;
+            return Ok(true);
         }
-        tx.execute(
-            "INSERT OR REPLACE INTO event_waiters (run_id, step_name, event_name, expires_at)
-             VALUES (?1, ?2, ?3, ?4)",
-            (run_id, step_name, event_name, timeout_at_ms),
+        // A signal addressed to this run arrived before the wait. Consume it
+        // as the step result here, under the same write lock, so a signal can
+        // never land between "nothing buffered" and "parked".
+        let buffered: Option<(String, i64)> = tx
+            .query_row(
+                "SELECT payload, received_at FROM run_inbox WHERE run_id = ?1 AND event_name = ?2",
+                (run_id, event_name),
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if let Some((_, received_at)) = &buffered
+            && super::arrived_late(*received_at, timeout_at_ms)
+        {
+            // The signal arrived after the wait's deadline: the wait timed
+            // out. The late signal stays in the inbox, unconsumed.
+            satisfy_wait(&tx, run_id, step_name, "null")?;
+            tx.commit()?;
+            return Ok(true);
+        }
+        if let Some((payload, _)) = buffered {
+            tx.execute(
+                "DELETE FROM run_inbox WHERE run_id = ?1 AND event_name = ?2",
+                (run_id, event_name),
+            )?;
+            satisfy_wait(&tx, run_id, step_name, &payload)?;
+            tx.commit()?;
+            return Ok(true);
+        }
+        park(&tx, run_id, step_name, event_name, timeout_at_ms)?;
+        tx.commit()?;
+        Ok(false)
+    }
+
+    /// Park a run until `target_id` finishes and save its outcome as the
+    /// step result. A finished, missing, or other-workflow target satisfies
+    /// the wait at once. Returns true when the run is due again now.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn wait_for_run(
+        &self,
+        run_id: &str,
+        worker_id: &str,
+        step_name: &str,
+        target_name: &str,
+        target_id: &str,
+        timeout_at_ms: Option<i64>,
+    ) -> Result<bool, RunsDbError> {
+        let mut conn = self.conn.lock();
+        // The write lock orders this with the transaction that finishes the
+        // target, which wakes its waiters: a waiter parked here is either
+        // seen by it or sees its outcome.
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        release_for_wait(&tx, run_id, worker_id, timeout_at_ms)?;
+        if step_saved(&tx, run_id, step_name)? {
+            requeue_now(&tx, run_id, step_name)?;
+            tx.commit()?;
+            return Ok(true);
+        }
+        let outcome = match outcome_of(&tx, target_id)? {
+            Some((name, outcome)) if name == target_name => parse_status(&outcome.status)?
+                .is_terminal()
+                .then_some(outcome),
+            _ => Some(super::missing_outcome()),
+        };
+        if let Some(outcome) = outcome {
+            let finished_at: Option<i64> = tx
+                .query_row(
+                    "SELECT finished_at FROM runs WHERE id = ?1",
+                    [target_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .flatten();
+            // A target that finished after the wait's deadline leaves it timed out.
+            let result = match finished_at {
+                Some(finished_at) if super::arrived_late(finished_at, timeout_at_ms) => {
+                    "null".to_string()
+                }
+                _ => serde_json::to_string(&outcome)?,
+            };
+            satisfy_wait(&tx, run_id, step_name, &result)?;
+            tx.commit()?;
+            return Ok(true);
+        }
+        park(
+            &tx,
+            run_id,
+            step_name,
+            &super::run_event_name(target_id),
+            timeout_at_ms,
         )?;
         tx.commit()?;
-        Ok(())
+        Ok(false)
+    }
+
+    /// Deliver `payload` to one run: wake it when it waits for `event_name`,
+    /// otherwise keep it in the run's inbox until it does.
+    pub(super) fn signal_run(
+        &self,
+        run_id: &str,
+        event_name: &str,
+        payload: &serde_json::Value,
+    ) -> Result<SignalRunStatus, RunsDbError> {
+        let payload_json = serde_json::to_string(payload)?;
+        let now = now_ms();
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let status: Option<String> = tx
+            .query_row("SELECT status FROM runs WHERE id = ?1", [run_id], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        let Some(status) = status else {
+            return Ok(SignalRunStatus::Missing);
+        };
+        if parse_status(&status)?.is_terminal() {
+            return Ok(SignalRunStatus::Finished);
+        }
+        // A wait past its deadline has timed out, even before its run is
+        // claimed: it gets `null`, and this signal finds the name taken.
+        expire_waits(&tx, event_name, Some(run_id), now)?;
+
+        let waiters = {
+            let mut stmt = tx.prepare_cached(
+                "SELECT step_name FROM event_waiters WHERE run_id = ?1 AND event_name = ?2",
+            )?;
+            let rows = stmt.query_map((run_id, event_name), |row| row.get::<_, String>(0))?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        if !waiters.is_empty() {
+            for step_name in &waiters {
+                tx.execute(
+                    "INSERT OR IGNORE INTO steps (run_id, name, result, completed_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    (run_id, step_name.as_str(), payload_json.as_str(), now),
+                )?;
+                tx.execute(
+                    "DELETE FROM event_waiters WHERE run_id = ?1 AND step_name = ?2",
+                    (run_id, step_name.as_str()),
+                )?;
+            }
+            tx.execute(
+                "UPDATE runs SET run_at = ?1 WHERE id = ?2 AND status = 'pending'",
+                (now, run_id),
+            )?;
+            tx.commit()?;
+            return Ok(SignalRunStatus::Delivered);
+        }
+
+        let held: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM steps WHERE run_id = ?1 AND name = ?2)
+                 OR EXISTS(SELECT 1 FROM run_inbox WHERE run_id = ?1 AND event_name = ?2)",
+            (run_id, event_name),
+            |row| row.get(0),
+        )?;
+        if held {
+            return Ok(SignalRunStatus::Duplicate);
+        }
+        let (entries, bytes): (i64, i64) = tx.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(payload_bytes), 0) FROM run_inbox WHERE run_id = ?1",
+            [run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        super::check_inbox_room(run_id, entries, bytes, payload_json.len())?;
+        tx.execute(
+            "INSERT INTO run_inbox (run_id, event_name, payload, payload_bytes, received_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            (
+                run_id,
+                event_name,
+                payload_json.as_str(),
+                payload_json.len() as i64,
+                now,
+            ),
+        )?;
+        tx.commit()?;
+        Ok(SignalRunStatus::Buffered)
     }
 
     pub(super) fn signal(
@@ -484,6 +666,7 @@ impl SqliteRunsDb {
         // Acquire the writer lock before reading waiters. A deferred transaction
         // cannot wait on a competing writer when upgrading an existing snapshot.
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        expire_waits(&tx, event_name, None, now)?;
         let waiters = {
             let mut stmt =
                 tx.prepare("SELECT run_id, step_name FROM event_waiters WHERE event_name = ?1")?;
@@ -621,12 +804,33 @@ impl SqliteRunsDb {
             })?;
             rows.collect::<Result<Vec<_>, _>>()?
         };
+        let signals = {
+            let mut stmt = tx.prepare_cached(
+                "SELECT event_name, received_at, payload_bytes FROM run_inbox WHERE run_id = ?1
+                 ORDER BY received_at, event_name LIMIT ?2",
+            )?;
+            let rows = stmt.query_map((id, WORKFLOW_RUN_MAX_SIGNALS as i64), |row| {
+                Ok(SignalRow {
+                    event_name: row.get(0)?,
+                    received_at: row.get(1)?,
+                    bytes: row.get(2)?,
+                })
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        let signals_total: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM run_inbox WHERE run_id = ?1",
+            [id],
+            |row| row.get(0),
+        )?;
         tx.commit()?;
         Ok(Some(RunRecord {
             run,
             steps,
             steps_total: steps_total as u64,
             waits,
+            signals,
+            signals_total: signals_total as u64,
         }))
     }
 
@@ -674,6 +878,7 @@ impl SqliteRunsDb {
             (OPERATOR_CANCEL_REASON, now_ms(), id),
         )?;
         tx.execute("DELETE FROM event_waiters WHERE run_id = ?1", [id])?;
+        wake_run_waiters(&tx, id)?;
         tx.commit()?;
         Ok(CancelledRun {
             previous_status: status,
@@ -747,6 +952,180 @@ fn summary_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SummaryRow> {
         finished_at: row.get(7)?,
         last_error: row.get(8)?,
     })
+}
+
+/// Release the claim of a run that is about to wait on a step. The run
+/// returns to `pending`, due at the wait's timeout, and hands back the
+/// attempt its claim counted.
+fn release_for_wait(
+    conn: &Connection,
+    run_id: &str,
+    worker_id: &str,
+    timeout_at_ms: Option<i64>,
+) -> Result<(), RunsDbError> {
+    let rows = conn.execute(
+        "UPDATE runs SET status='pending', worker_id=NULL, lease_until=NULL,
+                          run_at=?1, attempts=attempts-1
+         WHERE id = ?2 AND worker_id = ?3 AND status='running'",
+        (timeout_at_ms.unwrap_or(i64::MAX), run_id, worker_id),
+    )?;
+    if rows == 0 {
+        return Err(RunsDbError::StaleWorker);
+    }
+    Ok(())
+}
+
+/// Whether the step already has a saved result. A wait whose result the
+/// worker did not see is never parked: the run is made due instead.
+fn step_saved(conn: &Connection, run_id: &str, step_name: &str) -> Result<bool, RunsDbError> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM steps WHERE run_id = ?1 AND name = ?2)",
+        (run_id, step_name),
+        |row| row.get(0),
+    )?)
+}
+
+/// Drop any wait for the step and make the run due now.
+fn requeue_now(conn: &Connection, run_id: &str, step_name: &str) -> Result<(), RunsDbError> {
+    conn.execute(
+        "DELETE FROM event_waiters WHERE run_id = ?1 AND step_name = ?2",
+        (run_id, step_name),
+    )?;
+    conn.execute(
+        "UPDATE runs SET run_at = ?1 WHERE id = ?2",
+        (now_ms(), run_id),
+    )?;
+    Ok(())
+}
+
+/// Save `result` (JSON text) as the step and make the run due now.
+fn satisfy_wait(
+    conn: &Connection,
+    run_id: &str,
+    step_name: &str,
+    result: &str,
+) -> Result<(), RunsDbError> {
+    conn.execute(
+        "INSERT OR IGNORE INTO steps (run_id, name, result, completed_at)
+         VALUES (?1, ?2, ?3, ?4)",
+        (run_id, step_name, result, now_ms()),
+    )?;
+    requeue_now(conn, run_id, step_name)
+}
+
+fn park(
+    conn: &Connection,
+    run_id: &str,
+    step_name: &str,
+    event_name: &str,
+    timeout_at_ms: Option<i64>,
+) -> Result<(), RunsDbError> {
+    conn.execute(
+        "INSERT OR REPLACE INTO event_waiters (run_id, step_name, event_name, expires_at)
+         VALUES (?1, ?2, ?3, ?4)",
+        (run_id, step_name, event_name, timeout_at_ms),
+    )?;
+    Ok(())
+}
+
+/// A run's workflow name and its outcome as `GetRunResult` reports it.
+fn outcome_of(
+    conn: &Connection,
+    id: &str,
+) -> Result<Option<(String, super::RunResult)>, RunsDbError> {
+    let row = conn
+        .query_row(
+            "SELECT name, status, result, last_error FROM runs WHERE id = ?1",
+            [id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    row.map(|(name, status, result, error)| {
+        Ok((
+            name,
+            super::RunResult {
+                status,
+                result: result
+                    .map(|value| serde_json::from_str(&value))
+                    .transpose()?
+                    .unwrap_or(serde_json::Value::Null),
+                error,
+            },
+        ))
+    })
+    .transpose()
+}
+
+/// Time out every wait on `event_name` (of `run_id` only, when given) whose
+/// deadline has passed: save `null` as its step, as a claim would. A wake
+/// that arrives after the deadline but before the run is claimed must not
+/// turn a timed-out wait into a delivered one; the outcome may not depend
+/// on how soon a worker claims the run. The run is already due (its
+/// `run_at` is the deadline).
+fn expire_waits(
+    conn: &Connection,
+    event_name: &str,
+    run_id: Option<&str>,
+    now: i64,
+) -> Result<(), RunsDbError> {
+    conn.execute(
+        "INSERT OR IGNORE INTO steps (run_id, name, result, completed_at)
+         SELECT run_id, step_name, 'null', ?3 FROM event_waiters
+         WHERE event_name = ?1 AND (?2 IS NULL OR run_id = ?2)
+           AND expires_at IS NOT NULL AND expires_at <= ?3",
+        (event_name, run_id, now),
+    )?;
+    conn.execute(
+        "DELETE FROM event_waiters
+         WHERE event_name = ?1 AND (?2 IS NULL OR run_id = ?2)
+           AND expires_at IS NOT NULL AND expires_at <= ?3",
+        (event_name, run_id, now),
+    )?;
+    Ok(())
+}
+
+/// Wake every run waiting on `id`'s outcome with it. Called inside the
+/// transaction that finished `id`, so a parent never misses its child.
+fn wake_run_waiters(conn: &Connection, id: &str) -> Result<(), RunsDbError> {
+    expire_waits(conn, &super::run_event_name(id), None, now_ms())?;
+    let waiters = {
+        let mut stmt = conn
+            .prepare_cached("SELECT run_id, step_name FROM event_waiters WHERE event_name = ?1")?;
+        let rows = stmt.query_map([super::run_event_name(id)], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    if waiters.is_empty() {
+        return Ok(());
+    }
+    let outcome = outcome_of(conn, id)?
+        .map(|(_, outcome)| outcome)
+        .unwrap_or_else(super::missing_outcome);
+    let outcome = serde_json::to_string(&outcome)?;
+    for (run_id, step_name) in &waiters {
+        conn.execute(
+            "INSERT OR IGNORE INTO steps (run_id, name, result, completed_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            (run_id, step_name, outcome.as_str(), now_ms()),
+        )?;
+        conn.execute(
+            "DELETE FROM event_waiters WHERE run_id = ?1 AND step_name = ?2",
+            (run_id, step_name),
+        )?;
+        conn.execute(
+            "UPDATE runs SET run_at = ?1 WHERE id = ?2 AND status = 'pending'",
+            (now_ms(), run_id),
+        )?;
+    }
+    Ok(())
 }
 
 fn run_status(

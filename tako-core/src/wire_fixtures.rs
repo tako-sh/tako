@@ -21,7 +21,8 @@ use crate::database::DatabaseConnection;
 use crate::network::NetworkRequest;
 use crate::{
     Command, EnqueueOpts, EnqueueRunResponse, ErrorCode, Response, RunPayload, RunResult,
-    ScheduleSpec, StorageBinding, StorageProvider,
+    ScheduleSpec, SignalBroadcastResponse, SignalRunResponse, SignalRunStatus, StorageBinding,
+    StorageProvider, WaitForEventResponse,
 };
 
 const FIXTURE_DIR: &str = "test-support/wire";
@@ -277,11 +278,33 @@ fn commands() -> Vec<Fixture> {
             },
         ),
         command(
+            "wait_for_run",
+            Command::WaitForRun {
+                app: APP.into(),
+                id: RUN_ID.into(),
+                worker_id: CLAIM.into(),
+                step_name: "__workflow:[\"\",0]:outcome".into(),
+                target_name: WORKFLOW.into(),
+                target_id: "child:run-2".into(),
+                timeout_at_ms: Some(AT_MS + 30_000),
+            },
+        ),
+        command(
             "signal",
             Command::Signal {
                 app: APP.into(),
                 event_name: "order-approved".into(),
                 payload: json!({"orderId": "42"}),
+                run_id: None,
+            },
+        ),
+        command(
+            "signal-run",
+            Command::Signal {
+                app: APP.into(),
+                event_name: "order-approved".into(),
+                payload: json!({"orderId": "42"}),
+                run_id: Some(RUN_ID.into()),
             },
         ),
         command(
@@ -413,8 +436,21 @@ fn replies() -> Vec<Fixture> {
                 error: Some("smtp timeout".into()),
             }),
         ),
-        // The workflow socket builds the signal reply with `json!`.
-        reply("signal", Response::ok(json!({"woken": 2}))),
+        reply("signal", Response::ok(SignalBroadcastResponse { woken: 2 })),
+        reply(
+            "signal-run",
+            Response::ok(SignalRunResponse {
+                status: SignalRunStatus::Buffered,
+            }),
+        ),
+        reply(
+            "wait_for_event",
+            Response::ok(WaitForEventResponse { delivered: false }),
+        ),
+        reply(
+            "wait_for_event-delivered",
+            Response::ok(WaitForEventResponse { delivered: true }),
+        ),
     ];
     for code in ErrorCode::ALL {
         replies.push(reply(

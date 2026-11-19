@@ -559,6 +559,10 @@ pub enum Command {
     },
 
     /// Worker: park a run waiting for a named event. Resumed by `Signal`.
+    /// When the run's inbox already holds a signal for `event_name`, it is
+    /// consumed as the step result in the same transaction and the run is
+    /// due again at once instead of parked. Replies with
+    /// [`WaitForEventResponse`].
     WaitForEvent {
         app: String,
         id: String,
@@ -569,13 +573,39 @@ pub enum Command {
         timeout_at_ms: Option<i64>,
     },
 
-    /// Anyone: deliver an event payload. Wakes every parked waiter with
-    /// matching `event_name`. The payload is materialized as the step
-    /// result for the waiter's `step_name`.
+    /// Worker: park the run until another run of the same app finishes, and
+    /// save that run's outcome (`RunResult` JSON) as the step result. When
+    /// the target has already finished, is missing, or belongs to another
+    /// workflow than `target_name`, the outcome is saved at once and the run
+    /// is due again immediately. A timeout saves `null`. Replies with
+    /// [`WaitForEventResponse`].
+    WaitForRun {
+        app: String,
+        id: String,
+        worker_id: String,
+        step_name: String,
+        target_name: String,
+        target_id: String,
+        #[serde(default)]
+        timeout_at_ms: Option<i64>,
+    },
+
+    /// Anyone: deliver an event payload.
+    ///
+    /// Without `run_id`, wakes every parked waiter with matching
+    /// `event_name`; the payload is materialized as the step result for the
+    /// waiter's `step_name`, and nothing is kept for runs that are not
+    /// waiting yet. Replies with [`SignalBroadcastResponse`].
+    ///
+    /// With `run_id`, delivers to that run only: a waiting run is woken, and
+    /// a run that has not reached its wait yet keeps the payload in its
+    /// inbox until it does. Replies with [`SignalRunResponse`].
     Signal {
         app: String,
         event_name: String,
         payload: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_id: Option<String>,
     },
 
     /// Server-side channel publish. Used by app/workflow code inside a
@@ -733,6 +763,58 @@ pub const WORKFLOW_NAME_MAX_BYTES: usize = 256;
 /// many bytes, inside the 1 MiB frame. A list stops early and sets
 /// `has_more`; a run drops its oldest steps.
 pub const WORKFLOW_REPLY_MAX_BYTES: usize = 768 * 1024;
+/// A run holds at most this many buffered signals: payloads delivered with
+/// `Signal { run_id }` before the run started waiting for them. A signal
+/// over the limit is rejected with `signal_inbox_full`, never dropped.
+pub const WORKFLOW_SIGNAL_INBOX_MAX_ENTRIES: usize = 1000;
+/// A run's buffered signal payloads total at most this many bytes of JSON
+/// text. A signal over the limit is rejected with `signal_inbox_full`.
+pub const WORKFLOW_SIGNAL_INBOX_MAX_BYTES: usize = 8 * 1024 * 1024;
+/// Event names are 1–255 bytes with no NUL. Names starting with `__` are
+/// reserved for Tako.
+pub const WORKFLOW_EVENT_NAME_MAX_BYTES: usize = 255;
+/// `GetWorkflowRun` lists at most this many buffered signals, oldest first.
+pub const WORKFLOW_RUN_MAX_SIGNALS: usize = 100;
+
+/// Reply to a broadcast `Signal` (one without `run_id`).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SignalBroadcastResponse {
+    /// Parked runs woken by this signal.
+    pub woken: u64,
+}
+
+/// What a `Signal` addressed to one run did with its payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SignalRunStatus {
+    /// The run was waiting for this event and was woken with the payload.
+    Delivered,
+    /// The run is not waiting for this event yet; the payload is stored in
+    /// its inbox and is consumed when the run waits for it.
+    Buffered,
+    /// The run already holds a value for this event name, either a buffered
+    /// signal or a completed wait. The first value wins; this one is not stored.
+    Duplicate,
+    /// The run has finished; the payload is not stored.
+    Finished,
+    /// No retained run has this ID; the payload is not stored.
+    Missing,
+}
+
+/// Reply to a `Signal` addressed to one run.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SignalRunResponse {
+    pub status: SignalRunStatus,
+}
+
+/// Reply to `WaitForEvent`.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WaitForEventResponse {
+    /// True when a buffered signal satisfied the wait at once: the run is
+    /// due again immediately instead of parked.
+    #[serde(default)]
+    pub delivered: bool,
+}
 
 /// Lifecycle status of a workflow run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -754,6 +836,12 @@ impl WorkflowRunStatus {
             Self::Cancelled => "cancelled",
             Self::Dead => "dead",
         }
+    }
+
+    /// True once the run has finished and will not run again unless an
+    /// operator retries it.
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Succeeded | Self::Cancelled | Self::Dead)
     }
 }
 
@@ -847,6 +935,16 @@ pub struct WorkflowRunWait {
     pub expires_at_ms: Option<i64>,
 }
 
+/// A signal delivered to a run before it waited for it, kept until a wait
+/// for `event_name` consumes it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkflowRunSignal {
+    pub event_name: String,
+    pub received_at_ms: i64,
+    /// Stored payload size in bytes of JSON text.
+    pub bytes: u64,
+}
+
 /// Every stored field of a run.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WorkflowRunDetail {
@@ -873,6 +971,12 @@ pub struct WorkflowRunDetail {
     /// Saved steps in the store; more than `steps.len()` when older ones were left out.
     pub steps_total: u64,
     pub waits: Vec<WorkflowRunWait>,
+    /// The oldest buffered signals not yet consumed by a wait.
+    #[serde(default)]
+    pub signals: Vec<WorkflowRunSignal>,
+    /// Buffered signals in the store; more than `signals.len()` when some were left out.
+    #[serde(default)]
+    pub signals_total: u64,
 }
 
 /// Response payload for `Command::GetWorkflowRun`. `run` is null when this

@@ -237,6 +237,8 @@ pub(super) mod tests {
             steps: Vec::new(),
             steps_total: 0,
             waits: Vec::new(),
+            signals: Vec::new(),
+            signals_total: 0,
         }
     }
 

@@ -198,6 +198,10 @@ func TestWorkflowCommandsMatchWireFixtures(t *testing.T) {
 			_, err := client.Signal(ctx, "order-approved", map[string]any{"orderId": "42"})
 			return err
 		}},
+		{"signal-run", "replies/signal-run.json", func() error {
+			_, err := client.SignalRun(ctx, wireRunID, "order-approved", map[string]any{"orderId": "42"})
+			return err
+		}},
 	}
 	for _, tc := range cases {
 		if tc.reply != "" {
@@ -271,6 +275,20 @@ func TestWorkflowRepliesParseFromWireFixtures(t *testing.T) {
 	if woken, err := client.Signal(ctx, "order-approved", nil); err != nil || woken != 2 {
 		t.Fatalf("signal parsed as %d, %v", woken, err)
 	}
+	socket.reply("replies/signal-run.json")
+	if status, err := client.SignalRun(ctx, wireRunID, "order-approved", nil); err != nil || status != SignalBuffered {
+		t.Fatalf("signal-run parsed as %q, %v", status, err)
+	}
+	socket.reply("replies/ok-null.json")
+	if status, err := client.SignalRun(ctx, wireRunID, "order-approved", nil); err == nil {
+		t.Fatalf("a reply without a status must fail, got %q", status)
+	}
+	for _, reply := range []string{"wait_for_event.json", "wait_for_event-delivered.json"} {
+		socket.reply("replies/" + reply)
+		if err := client.WaitForEvent(ctx, wireRunID, wireClaim, "approval", "order-approved", nil); err != nil {
+			t.Fatalf("%s: %v", reply, err)
+		}
+	}
 
 	socket.reply("replies/ok.json")
 	if err := client.Heartbeat(ctx, wireRunID, wireClaim, wireLeaseMs); err != nil {
@@ -288,11 +306,12 @@ func TestErrorRepliesFromWireFixturesMapToSentinels(t *testing.T) {
 		"error-channel_unknown.json":        ErrChannelUnknown,
 		"error-channel_params_invalid.json": ErrChannelParamsInvalid,
 		"error-channel_closed.json":         ErrChannelClosed,
+		"error-signal_inbox_full.json":      ErrSignalInboxFull,
 		"error-unavailable.json":            ErrUnavailable,
 	}
 	all := []error{
 		ErrRunNotOwned, ErrRunIDConflict, ErrInvalidRequest, ErrChannelUnknown,
-		ErrChannelParamsInvalid, ErrChannelClosed, ErrUnavailable,
+		ErrChannelParamsInvalid, ErrChannelClosed, ErrSignalInboxFull, ErrUnavailable,
 	}
 	entries, err := os.ReadDir(filepath.Join(wireFixtureDir, "replies"))
 	if err != nil {

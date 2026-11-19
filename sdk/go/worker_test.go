@@ -757,8 +757,8 @@ func TestServerErrorsMatchTheirSentinel(t *testing.T) {
 			}
 		}
 	}
-	if len(errorCodes) != 7 {
-		t.Fatalf("expected the 7 server codes, got %d", len(errorCodes))
+	if len(errorCodes) != 8 {
+		t.Fatalf("expected the 8 server codes, got %d", len(errorCodes))
 	}
 }
 

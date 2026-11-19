@@ -193,6 +193,31 @@ func TestReusedStepNameKillsTheRunWithoutSpendingRetries(t *testing.T) {
 	}
 }
 
+func TestReservedStepNameKillsTheRunWithoutRunningTheStep(t *testing.T) {
+	s := workerEnv(t)
+	ran := false
+	RegisterWorkflow("reserved", func(ctx *WorkflowContext, _ json.RawMessage) error {
+		return ctx.Step.Run("__wait:approval", nil, func() (any, error) {
+			ran = true
+			return nil, nil
+		})
+	})
+	id := s.seed("reserved", 5)
+	runUntil(t, func() bool { return s.status(id) != "pending" && s.status(id) != "running" })
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if task := s.tasks[id]; task.Status != "dead" || task.Attempts != 1 {
+		t.Fatalf("status = %s after %d attempts", task.Status, task.Attempts)
+	}
+	if !strings.Contains(s.errors[id], `step name "__wait:approval" starts with "__"`) {
+		t.Fatalf("stored error = %q", s.errors[id])
+	}
+	if ran {
+		t.Fatal("a reserved step name must not run its body")
+	}
+}
+
 func TestStepCheckpointFailureDoesNotCacheSuccess(t *testing.T) {
 	api, server := checkpointAPI(t, map[string]any{}, "charge")
 	calls := 0

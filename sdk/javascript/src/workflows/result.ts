@@ -35,9 +35,27 @@ export interface DurableWorkflowExecution {
   key(step?: string): string;
   newChildId(): string;
   checkpoint<T>(key: string, fn: () => Promise<T>): Promise<T>;
+  /** A saved checkpoint, if this run has one under `key`. */
+  saved(key: string): { hit: true; value: unknown } | { hit: false };
   track<T>(fn: () => Promise<T>): Promise<T>;
   defer(wakeAt: Date): never;
+  /** Park the run until run `id` of workflow `name` finishes; its outcome is saved under `stepKey`. */
+  waitForRun(stepKey: string, name: string, id: string, timeoutAt: Date | null): never;
 }
+
+/**
+ * How a waiting parent learns that its child finished. `push`: the server
+ * wakes the parked parent when the child finishes in the same store (a local
+ * `defineWorkflow` handle). `poll`: the parent checks again later, backing
+ * off from one second to a minute (a network handle, whose child may live in
+ * another app's store).
+ *
+ * @internal
+ */
+export type ChildWake = "push" | "poll";
+
+const POLL_MIN_MS = 1_000;
+const POLL_MAX_MS = 60_000;
 let execution: () => DurableWorkflowExecution | undefined = () => undefined;
 export function setWorkflowExecutionResolver(resolver: typeof execution): void {
   execution = resolver;
@@ -74,6 +92,86 @@ function callIdentity(value: unknown): string {
   return JSON.stringify(sort(JSON.parse(JSON.stringify(value))));
 }
 
+/** A child's outcome as a parent records it. */
+type Outcome = {
+  status: WorkflowResultState["status"] | "missing" | "timeout";
+  result: unknown;
+  error: string | null;
+};
+
+function expiredOutcome(): Outcome {
+  return {
+    status: "timeout" as const,
+    result: null,
+    error: "Timed out waiting for workflow result",
+  };
+}
+
+function missingOutcome(): Outcome {
+  return {
+    status: "missing" as const,
+    result: null,
+    error: "Workflow run not found or no longer retained",
+  };
+}
+
+function isTerminal(status: string): boolean {
+  return (
+    status === "succeeded" || status === "cancelled" || status === "dead" || status === "timeout"
+  );
+}
+
+/**
+ * Wait for a child in the parent's own store: read it once, and park the
+ * parent until the server wakes it with the child's outcome. The server
+ * saves the outcome under `outcomeKey`, or `null` when the wait times out.
+ */
+/** `read(id)`, or `"expired"` if the deadline passes first. */
+async function readBefore(
+  read: ReadResult,
+  id: string,
+  deadline: number | null,
+): Promise<WorkflowResultState | null | "expired"> {
+  if (deadline === null) return read(id);
+  if (Date.now() >= deadline) return "expired";
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    read(id),
+    new Promise<"expired">((resolve) => {
+      timer = setTimeout(
+        () => resolve("expired"),
+        Math.min(2_147_483_647, Math.max(0, deadline - Date.now())),
+      );
+    }),
+  ]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
+}
+
+async function pushedOutcome(
+  target: string,
+  id: string,
+  read: ReadResult,
+  deadline: number | null,
+  context: DurableWorkflowExecution,
+  outcomeKey: string,
+): Promise<Outcome> {
+  const saved = context.saved(outcomeKey);
+  if (saved.hit) {
+    return (saved.value as Outcome | null) ?? expiredOutcome();
+  }
+  const state = await readBefore(read, id, deadline);
+  if (state === "expired") return context.checkpoint(outcomeKey, async () => expiredOutcome());
+  if (!state) return context.checkpoint(outcomeKey, async () => missingOutcome());
+  if (isTerminal(state.status))
+    return context.checkpoint(outcomeKey, async (): Promise<Outcome> => state);
+  if (state.status !== "pending" && state.status !== "running")
+    throw new Error("Invalid workflow result response");
+  if (deadline !== null && Date.now() >= deadline)
+    return context.checkpoint(outcomeKey, async () => expiredOutcome());
+  return context.waitForRun(outcomeKey, target, id, deadline === null ? null : new Date(deadline));
+}
+
 async function awaitOutcome(
   target: string,
   id: string,
@@ -81,6 +179,7 @@ async function awaitOutcome(
   timeout: number | null,
   context?: DurableWorkflowExecution,
   key?: string,
+  wake: ChildWake = "poll",
 ): Promise<unknown> {
   const checkpoint = <T>(suffix: string, fn: () => Promise<T>) =>
     context ? context.checkpoint(`${key}:${suffix}`, fn) : fn();
@@ -92,12 +191,14 @@ async function awaitOutcome(
   const deadline = await checkpoint("deadline", async () =>
     timeout === null ? null : Date.now() + timeout,
   );
-  const outcome = await checkpoint("outcome", async () => {
-    const expired = {
-      status: "timeout" as const,
-      result: null,
-      error: "Timed out waiting for workflow result",
-    };
+  if (context && wake === "push") {
+    return settle(id, await pushedOutcome(target, id, read, deadline, context, `${key}:outcome`));
+  }
+  // Inside a workflow each poll replays the parent, so back off; a plain
+  // server-side wait polls every second.
+  const since = context ? await checkpoint("since", async () => Date.now()) : Date.now();
+  const outcome = await checkpoint("outcome", async (): Promise<Outcome> => {
+    const expired = expiredOutcome();
     for (;;) {
       if (deadline !== null && Date.now() >= deadline) return expired;
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -116,27 +217,24 @@ async function awaitOutcome(
       ).finally(() => {
         if (timer !== undefined) clearTimeout(timer);
       });
-      if (!state)
-        return {
-          status: "missing" as const,
-          result: null,
-          error: "Workflow run not found or no longer retained",
-        };
-      if (
-        state.status === "succeeded" ||
-        state.status === "cancelled" ||
-        state.status === "dead" ||
-        state.status === "timeout"
-      )
-        return state;
+      if (!state) return missingOutcome();
+      if (isTerminal(state.status)) return state;
       if (state.status !== "pending" && state.status !== "running")
         throw new Error("Invalid workflow result response");
       if (deadline !== null && Date.now() >= deadline) return expired;
-      const delay = deadline === null ? 1_000 : Math.min(1_000, Math.max(0, deadline - Date.now()));
+      const interval = context
+        ? Math.min(POLL_MAX_MS, Math.max(POLL_MIN_MS, Math.floor((Date.now() - since) / 10)))
+        : POLL_MIN_MS;
+      const delay =
+        deadline === null ? interval : Math.min(interval, Math.max(0, deadline - Date.now()));
       if (context) context.defer(new Date(Date.now() + delay));
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
   });
+  return settle(id, outcome);
+}
+
+function settle(id: string, outcome: Outcome): unknown {
   if (outcome.status === "succeeded") return outcome.result;
   if (outcome.status === "pending" || outcome.status === "running")
     throw new Error("Invalid terminal workflow result");
@@ -148,11 +246,12 @@ export async function waitForWorkflowResult(
   id: string,
   read: ReadResult,
   options: WorkflowResultOptions = {},
+  wake: ChildWake = "poll",
 ): Promise<unknown> {
   const timeout = timeoutMs(options);
   const context = execution();
   const key = context?.key(options.step);
-  const wait = () => awaitOutcome(target, id, read, timeout, context, key);
+  const wait = () => awaitOutcome(target, id, read, timeout, context, key, wake);
   return context ? context.track(wait) : wait();
 }
 
@@ -163,6 +262,7 @@ export async function runWorkflow(
   enqueue: Enqueue,
   read: ReadResult,
   options: WorkflowRunOptions = {},
+  wake: ChildWake = "poll",
 ): Promise<unknown> {
   const timeout = timeoutMs(options);
   const context = execution();
@@ -187,6 +287,6 @@ export async function runWorkflow(
     const id = await context.checkpoint(`${key}:enqueue`, () =>
       enqueue(payload, { ...options, id: saved.id }),
     );
-    return awaitOutcome(target, id, read, timeout, context, key);
+    return awaitOutcome(target, id, read, timeout, context, key, wake);
   });
 }

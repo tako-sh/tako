@@ -9,6 +9,7 @@ import type { Run } from "../../src/workflows/types";
 import type { RegisteredWorkflow, WorkflowHandler } from "../../src/workflows/worker";
 import { Worker } from "../../src/workflows/worker";
 import { workflow, setNetworkCaller } from "../../src/network";
+import { defineWorkflow, setWorkflowRuntime } from "../../src/workflows/define";
 
 class MockServer {
   server!: Server;
@@ -21,6 +22,30 @@ class MockServer {
   readonly failures = new Map<string, number>();
   /** A canned reply for the next call of a command. */
   readonly replies = new Map<string, unknown>();
+  /** Runs parked until another run finishes, as `wait_for_run` leaves them. */
+  private readonly runWaiters: { parent: string; step: string; child: string }[] = [];
+
+  /** What the server saves for a run waiting on `id`: its `get_run_result` outcome. */
+  private outcomeOf(id: string): unknown {
+    const task = this.find(id);
+    return task
+      ? { status: task.status, result: this.results.get(task.id) ?? null, error: task.lastError }
+      : { status: "missing", result: null, error: "Workflow run not found or no longer retained" };
+  }
+
+  /** The transaction that finishes a run wakes the runs waiting on it. */
+  private wakeWaiters(id: string): void {
+    for (const waiter of this.runWaiters.filter((w) => w.child === id)) {
+      const parent = this.find(waiter.parent)!;
+      parent.stepState = { ...parent.stepState, [waiter.step]: this.outcomeOf(id) };
+      parent.runAt = Date.now();
+    }
+    this.runWaiters.splice(
+      0,
+      this.runWaiters.length,
+      ...this.runWaiters.filter((w) => w.child !== id),
+    );
+  }
 
   async start(dir: string): Promise<void> {
     this.path = join(dir, "srv.sock");
@@ -168,6 +193,7 @@ class MockServer {
           task.status = "succeeded";
           this.results.set(task.id, cmd["result"]);
           task.workerId = null;
+          this.wakeWaiters(task.id);
         }
         return { status: "ok", data: {} };
       }
@@ -177,8 +203,27 @@ class MockServer {
           task.status = "cancelled";
           task.lastError = (cmd["reason"] as string) ?? null;
           task.workerId = null;
+          this.wakeWaiters(task.id);
         }
         return { status: "ok", data: {} };
+      }
+      case "wait_for_run": {
+        const task = this.find(cmd["id"] as string)!;
+        const step = cmd["step_name"] as string;
+        const child = this.find(cmd["target_id"] as string);
+        task.status = "pending";
+        task.workerId = null;
+        if (!child || ["succeeded", "cancelled", "dead"].includes(child.status)) {
+          task.stepState = {
+            ...task.stepState,
+            [step]: this.outcomeOf(cmd["target_id"] as string),
+          };
+          task.runAt = Date.now();
+          return { status: "ok", data: { delivered: true } };
+        }
+        task.runAt = (cmd["timeout_at_ms"] as number) ?? Number.MAX_SAFE_INTEGER;
+        this.runWaiters.push({ parent: task.id, step, child: child.id });
+        return { status: "ok", data: { delivered: false } };
       }
       case "defer_run": {
         const task = this.find(cmd["id"] as string);
@@ -204,6 +249,8 @@ class MockServer {
         if (task) {
           if (cmd["finalize"]) {
             task.status = "dead";
+            task.lastError = cmd["error"] as string;
+            this.wakeWaiters(task.id);
           } else {
             task.status = "pending";
             task.runAt = (cmd["next_run_at_ms"] as number) ?? Date.now();
@@ -310,6 +357,84 @@ describe("Worker", () => {
     expect(mock.find(parent)?.status).toBe("succeeded");
     expect(mock.results.get(parent)).toEqual({ amount: 7 });
     expect(childCalls).toBe(1);
+  });
+
+  test("a parent waiting on a local child parks until the child finishes, without polling", async () => {
+    setWorkflowRuntime({
+      enqueue: async (name, payload, options) =>
+        (await client.enqueue(name, payload, { id: options?.id })).id,
+      result: (name, id) => client.result(name, id),
+      signal: async () => 0,
+      signalRun: async () => "missing",
+    });
+    const child = defineWorkflow<{ amount: number }, { amount: number }>("child", {
+      handler: (payload) => payload,
+    });
+    let parentExecutions = 0;
+    const worker = new Worker({
+      client,
+      workerId: "w1",
+      registry: registry({
+        parent: async () => {
+          parentExecutions++;
+          return child.run({ amount: 7 });
+        },
+        child: child.definition.handler as WorkflowHandler,
+      }),
+    });
+    try {
+      const parent = mock.seed({ name: "parent" });
+      await worker.processOnce();
+      expect(mock.find(parent)?.status).toBe("pending");
+      expect(mock.find(parent)?.runAt).toBe(Number.MAX_SAFE_INTEGER);
+      expect(mock.commands).toContain("wait_for_run");
+      expect(mock.commands).not.toContain("defer_run");
+
+      // The child runs next; finishing it wakes the parent with its outcome.
+      await worker.processOnce();
+      await worker.processOnce();
+      expect(mock.find(parent)?.status).toBe("succeeded");
+      expect(mock.results.get(parent)).toEqual({ amount: 7 });
+      expect(parentExecutions).toBe(2);
+    } finally {
+      setWorkflowRuntime(null);
+    }
+  });
+
+  test("losing the run aborts the running step's signal, and the abort is not retried", async () => {
+    let bodies = 0;
+    let handlerSignal: AbortSignal | undefined;
+    const worker = new Worker({
+      client,
+      workerId: "w1",
+      heartbeatIntervalMs: 10,
+      registry: registry({
+        job: async (_payload, ctx) => {
+          handlerSignal = ctx.signal;
+          await ctx.run(
+            "call-provider",
+            (step) => {
+              bodies++;
+              // Long work that honors cancellation, like fetch(url, { signal }).
+              return new Promise((_resolve, reject) => {
+                step.signal.addEventListener("abort", () => reject(new Error("aborted")));
+              });
+            },
+            { retries: 3, backoff: { base: 1, max: 1 } },
+          );
+        },
+      }),
+    });
+
+    const id = mock.seed({ name: "job" });
+    const processing = worker.processOnce();
+    await new Promise((r) => setTimeout(r, 30));
+    mock.operatorCancel(id);
+    await processing;
+    expect(bodies).toBe(1);
+    expect(handlerSignal?.aborted).toBe(true);
+    expect(mock.find(id)?.status).toBe("cancelled");
+    expect(mock.commands).not.toContain("fail_run");
   });
 
   test("a run cancelled by an operator mid-step stops without retrying or failing", async () => {
@@ -684,6 +809,68 @@ describe("Worker", () => {
     expect(mock.find(id)?.status).toBe("succeeded");
     expect(runs.a).toBe(1);
     expect(runs.b).toBe(2);
+  });
+
+  test("a step still running when a sibling wait suspends the run saves before it parks", async () => {
+    let bodies = 0;
+    const handler: WorkflowHandler = async (_payload, ctx) => {
+      await Promise.all([
+        ctx.run("slow", async () => {
+          bodies += 1;
+          await new Promise((r) => setTimeout(r, 50));
+          return "done";
+        }),
+        ctx.waitFor("approval"),
+      ]);
+    };
+    const worker = new Worker({ client, workerId: "w1", registry: registry({ par: handler }) });
+    const id = mock.seed({ name: "par" });
+    await worker.processOnce();
+
+    const task = mock.find(id)!;
+    expect(task.status).toBe("pending");
+    expect(task.stepState).toEqual({ slow: "done" });
+    const commands = mock.commands.filter((c) => c === "save_step" || c === "wait_for_event");
+    expect(commands).toEqual(["save_step", "wait_for_event"]);
+
+    // Resuming after the signal reuses the saved step.
+    task.stepState = { ...task.stepState, approval: { ok: true } };
+    task.runAt = Date.now();
+    await worker.processOnce();
+    expect(mock.find(id)?.status).toBe("succeeded");
+    expect(bodies).toBe(1);
+  });
+
+  test("a wait timeout counts from the first time the run reached the wait", async () => {
+    const handler: WorkflowHandler = async (_payload, ctx) => {
+      await ctx.waitFor("approval", { timeout: 60_000 });
+    };
+    const worker = new Worker({ client, workerId: "w1", registry: registry({ wait: handler }) });
+    const id = mock.seed({ name: "wait" });
+    const before = Date.now();
+    await worker.processOnce();
+    const task = mock.find(id)!;
+    const deadline = task.runAt;
+    expect(deadline).toBeGreaterThanOrEqual(before + 60_000);
+    expect(task.stepState).toEqual({ "__wait:approval": { timeoutAt: deadline } });
+
+    // The run resumes before the signal (another wait completed, an
+    // operator retried it): the deadline must not move.
+    await new Promise((r) => setTimeout(r, 20));
+    task.runAt = Date.now();
+    await worker.processOnce();
+    expect(mock.find(id)?.runAt).toBe(deadline);
+  });
+
+  test("an infinite wait timeout parks without a deadline", async () => {
+    const handler: WorkflowHandler = async (_payload, ctx) => {
+      await ctx.waitFor("approval", { timeout: Infinity });
+    };
+    const worker = new Worker({ client, workerId: "w1", registry: registry({ wait: handler }) });
+    const id = mock.seed({ name: "wait" });
+    await worker.processOnce();
+    expect(mock.find(id)?.runAt).toBe(Number.MAX_SAFE_INTEGER);
+    expect(mock.find(id)?.stepState).toEqual({});
   });
 
   test("a reused step name kills the run without spending its retries", async () => {

@@ -497,6 +497,40 @@ JS
   cleanup_sse
 }
 
+# A signal addressed to a run that has not reached its wait yet must be kept
+# for that wait, never dropped.
+run_run_signal_checks() {
+  local server_host=$1
+  local route_host=$2
+  local run_id="approval-${server_host}-$(date +%s%N)"
+
+  echo "Running run-addressed signal checks for route: $route_host on $server_host"
+  post_route_json "$server_host" "$route_host" "/approval" "{\"id\":\"$run_id\",\"settleMs\":5000}" "Approval enqueue"
+  jq -e --arg id "$run_id" '.runId == $id' "$TMP_ROOT/post_body.tmp" >/dev/null
+  post_route_json "$server_host" "$route_host" "/signal" \
+    "{\"runId\":\"$run_id\",\"event\":\"decision\",\"payload\":{\"approved\":true}}" "Early run signal"
+  jq -e '.status == "buffered"' "$TMP_ROOT/post_body.tmp" >/dev/null
+  post_route_json "$server_host" "$route_host" "/signal" \
+    "{\"runId\":\"$run_id\",\"event\":\"decision\",\"payload\":{\"approved\":false}}" "Duplicate run signal"
+  jq -e '.status == "duplicate"' "$TMP_ROOT/post_body.tmp" >/dev/null
+
+  local status=""
+  for _ in $(seq 1 60); do
+    post_route_json "$server_host" "$route_host" "/approval/result" "{\"id\":\"$run_id\"}" "Approval result"
+    status=$(jq -r '.status' "$TMP_ROOT/post_body.tmp")
+    [[ "$status" != "timeout" ]] && break
+  done
+  if [[ "$status" != "succeeded" ]] || ! jq -e '.result.approved == true' "$TMP_ROOT/post_body.tmp" >/dev/null; then
+    echo "The buffered signal did not reach the run's wait:" >&2
+    cat "$TMP_ROOT/post_body.tmp" >&2
+    exit 1
+  fi
+
+  post_route_json "$server_host" "$route_host" "/signal" \
+    "{\"runId\":\"$run_id\",\"event\":\"decision\",\"payload\":{}}" "Late run signal"
+  jq -e '.status == "finished"' "$TMP_ROOT/post_body.tmp" >/dev/null
+}
+
 run_network_primitive_checks() {
   local server_host=$1
   local caller_dir="$TMP_ROOT/network-caller-${server_host}"
@@ -1343,6 +1377,7 @@ for entry in "${SERVERS[@]}"; do
   fi
   if [[ "$FIXTURE_REL" == "e2e/fixtures/javascript/channels-workflows" ]]; then
     run_channels_workflows_checks "$server" "$ROUTE_HOST"
+    run_run_signal_checks "$server" "$ROUTE_HOST"
     cp /workspace/e2e/shared-channels.ts "$PROJECT_DIR/check-shared-channels.ts"
     (cd "$PROJECT_DIR" && bun check-shared-channels.ts "$server" "$ROUTE_HOST")
     run_network_primitive_checks "$server"

@@ -18,6 +18,8 @@ var (
 	ErrChannelParamsInvalid = errors.New("tako: invalid channel params")
 	// ErrChannelClosed: the channel stream was closed and accepts no more messages.
 	ErrChannelClosed = errors.New("tako: channel stream is closed")
+	// ErrSignalInboxFull: a workflow run's signal inbox is full; the signal was not stored.
+	ErrSignalInboxFull = errors.New("tako: workflow run signal inbox is full")
 	// ErrUnavailable: the server is draining, overloaded, or its storage is unreachable; retry later.
 	ErrUnavailable = errors.New("tako: server unavailable")
 )
@@ -29,6 +31,7 @@ var errorCodes = map[string]error{
 	"channel_unknown":        ErrChannelUnknown,
 	"channel_params_invalid": ErrChannelParamsInvalid,
 	"channel_closed":         ErrChannelClosed,
+	"signal_inbox_full":      ErrSignalInboxFull,
 	"unavailable":            ErrUnavailable,
 }
 

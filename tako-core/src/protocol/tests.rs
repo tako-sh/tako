@@ -1182,10 +1182,17 @@ fn workflow_run_operator_responses_roundtrip() {
                 event_name: "approval".into(),
                 expires_at_ms: None,
             }],
+            signals: vec![WorkflowRunSignal {
+                event_name: "shipped".into(),
+                received_at_ms: 2,
+                bytes: 17,
+            }],
+            signals_total: 1,
         }),
     };
     let json = serde_json::to_value(&detail).unwrap();
     assert!(json["run"]["result"].get("preview").is_none());
+    assert_eq!(json["run"]["signals"][0]["event_name"], "shipped");
     assert_eq!(json["run"]["payload"]["preview"], "{\"a\":");
     assert_eq!(
         serde_json::from_value::<GetWorkflowRunResponse>(json).unwrap(),

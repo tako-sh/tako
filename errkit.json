@@ -66,6 +66,10 @@
         "description": "Internal socket: a worker write names a run this claim no longer owns (lease reclaimed, cancelled, or finished).",
         "code": "P5UMN4"
       },
+      "signal_inbox_full": {
+        "description": "Internal socket: the run already holds the maximum number or total size of buffered signals; the signal was not stored.",
+        "code": "K7RW2Q"
+      },
       "unavailable": {
         "description": "Internal socket: the server is draining, overloaded, or a backing store is unreachable; retry later.",
         "code": "E4PNC9"

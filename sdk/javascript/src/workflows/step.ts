@@ -83,6 +83,12 @@ export interface WorkflowStepContext {
   readonly attempt: number;
   /** Logger scoped to this step. */
   readonly logger: Logger;
+  /**
+   * Aborted when this attempt no longer owns the run: an operator cancelled
+   * it or its lease was reclaimed. Pass it to `fetch` and other cancellable
+   * work so a step stops instead of finishing work nothing will record.
+   */
+  readonly signal: AbortSignal;
 }
 
 /** Sentinel: end the run cleanly as `cancelled`. */
@@ -100,12 +106,14 @@ export class DeferSignal {
   constructor(public wakeAt: Date | null) {}
 }
 
-/** Sentinel: park the run waiting for an event. */
+/** Sentinel: park the run waiting for an event, or for another run to finish. */
 export class WaitSignal {
   constructor(
     public stepName: string,
     public eventName: string,
     public timeoutAt: Date | null,
+    /** Set when the run waits for this run of this workflow to finish. */
+    public target: { name: string; id: string } | null = null,
   ) {}
 }
 
@@ -118,6 +126,29 @@ export class OwnershipLostSignal {}
 /** Ownership of the claimed run, shared by its step API and heartbeat. */
 export interface RunOwnership {
   lost: boolean;
+  /** Aborted once ownership is lost; its signal is exposed to handler code. */
+  controller?: AbortController;
+}
+
+/** Record that this attempt no longer owns the run and abort its signal. */
+export function loseOwnership(ownership: RunOwnership): void {
+  if (ownership.lost) return;
+  ownership.lost = true;
+  ownership.controller?.abort(new OwnershipLostSignal());
+}
+
+/** Resolve after `ms`, or as soon as `signal` aborts. */
+function pause(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }
 
 /** True for any control-flow sentinel — these must propagate untouched. */
@@ -156,11 +187,28 @@ export function createStepAPI(
       await client.saveStep(runId, workerId, name, value);
     } catch (err) {
       if (isStaleOwnerError(err)) {
-        ownership.lost = true;
+        loseOwnership(ownership);
         throw new OwnershipLostSignal();
       }
       throw err;
     }
+  }
+
+  // The timeout of a wait counts from the first time the run reached it, not
+  // from each replay. Without a saved deadline, every resume of the run
+  // before the wait completes (a sibling wait in Promise.all, a buffered
+  // signal for another name) would restart the clock.
+  async function waitDeadline(name: string, timeout: number | undefined): Promise<Date | null> {
+    if (timeout == null) return null;
+    const key = `__wait:${name}`;
+    const stored = stepState[key] as { timeoutAt: number } | undefined;
+    if (stored && Number.isFinite(stored.timeoutAt)) return new Date(stored.timeoutAt);
+    const timeoutAt = Date.now() + timeout;
+    // `timeout: Infinity` waits indefinitely, as an omitted timeout does.
+    if (!Number.isFinite(timeoutAt)) return null;
+    await save(key, { timeoutAt });
+    stepState[key] = { timeoutAt };
+    return new Date(timeoutAt);
   }
 
   // Names used by run/sleep/waitFor in this execution of the handler. They
@@ -172,6 +220,16 @@ export function createStepAPI(
   // the run immediately. A step that throws releases its name: nothing was
   // saved, and the handler may catch the error and try the same step again.
   async function once<T>(name: string, step: () => Promise<T>): Promise<T> {
+    // Tako saves its own checkpoints (`__sleep:`, `__wait:`, `__workflow:`)
+    // in the same namespace; a step of the same name would read one back.
+    if (name.startsWith("__")) {
+      throw new FailSignal(
+        new Error(
+          `Step name ${JSON.stringify(name)} starts with "__", which is reserved for Tako. ` +
+            `Rename the step, for example ${JSON.stringify(name.replace(/^_+/, ""))}.`,
+        ),
+      );
+    }
     if (used.has(name)) {
       throw new FailSignal(
         new Error(
@@ -210,6 +268,8 @@ export function createStepAPI(
       const startedAt = Date.now();
       const context = createContext(name);
       for (let attempt = 1; attempt <= attempts; attempt++) {
+        // A run lost between attempts (or during the backoff) stops here.
+        ensureOwned();
         try {
           const result = await fn(context);
           await save(name, result ?? null);
@@ -221,13 +281,16 @@ export function createStepAPI(
           // handler talks to the worker — never retry, never wrap, just
           // propagate.
           if (isControlSignal(err)) throw err;
+          // The step failed because this attempt lost the run (often its
+          // aborted signal): stop, never retry or fail the run over it.
+          if (ownership.lost) throw new OwnershipLostSignal();
           lastErr = err;
           if (opts?.retry === false) {
             const e = err instanceof Error ? err : new Error(String(err));
             throw new FailSignal(e);
           }
           if (attempt < attempts) {
-            await new Promise((r) => setTimeout(r, expBackoffMs(attempt, base, max)));
+            await pause(expBackoffMs(attempt, base, max), ownership.controller?.signal);
           }
         }
       }
@@ -272,8 +335,7 @@ export function createStepAPI(
         log.debug("Step cached", { step: name });
         return stepState[name] as T | null;
       }
-      const timeoutAt = opts?.timeout != null ? new Date(Date.now() + opts.timeout) : null;
-      throw new WaitSignal(name, name, timeoutAt);
+      throw new WaitSignal(name, name, await waitDeadline(name, opts?.timeout));
     },
   };
 

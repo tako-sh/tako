@@ -22,7 +22,7 @@ import {
 import { WorkflowsClient, type ScheduleSpec } from "./rpc-client";
 import { composeSdkHint } from "../tako/secrets";
 import type { WorkflowRuntimeOpts } from "./types";
-import type { RunId } from "./types";
+import type { RunId, SignalRunStatus } from "./types";
 import { Worker, type RegisteredWorkflow, type WorkflowHandler } from "./worker";
 
 /** Options for `workflow.enqueue(payload, options)`. */
@@ -141,6 +141,11 @@ export class WorkflowEngine {
   /** Deliver an event payload to every parked waitFor matching `eventName`. */
   async signal(eventName: string, payload?: unknown): Promise<number> {
     return this.resolveClient().signal(eventName, payload ?? null);
+  }
+
+  /** Deliver an event payload to one run, kept until its waitFor consumes it. */
+  async signalRun(runId: RunId, eventName: string, payload?: unknown): Promise<SignalRunStatus> {
+    return this.resolveClient().signalRun(runId, eventName, payload ?? null);
   }
 
   private resolveClient(): WorkflowsClient {

@@ -310,7 +310,9 @@ func (c *Client) Defer(ctx context.Context, id, workerID string, wakeAt *time.Ti
 }
 
 // WaitForEvent parks the run on a named event. Resumes when a matching
-// Signal arrives or timeoutAt elapses. Guarded by `workerId`.
+// Signal arrives or timeoutAt elapses. Guarded by `workerId`. When the run
+// already holds a signal sent with SignalRun for eventName, the server uses
+// it as the step result and makes the run due at once instead of parking it.
 func (c *Client) WaitForEvent(
 	ctx context.Context, id, workerID, stepName, eventName string, timeoutAt *time.Time,
 ) error {
@@ -357,6 +359,64 @@ func Signal(ctx context.Context, eventName string, payload any) (uint64, error) 
 		return 0, err
 	}
 	return c.Signal(ctx, eventName, payload)
+}
+
+// SignalRunStatus is what a signal addressed to one run did with its payload.
+type SignalRunStatus string
+
+const (
+	// SignalDelivered: the run was waiting for the event and was woken with it.
+	SignalDelivered SignalRunStatus = "delivered"
+	// SignalBuffered: the run is not waiting for the event yet; the payload is
+	// kept and its WaitFor for that name returns it.
+	SignalBuffered SignalRunStatus = "buffered"
+	// SignalDuplicate: the run already holds a value for this name; the first one wins.
+	SignalDuplicate SignalRunStatus = "duplicate"
+	// SignalFinished: the run has finished; nothing was stored.
+	SignalFinished SignalRunStatus = "finished"
+	// SignalMissing: no retained run has this ID; nothing was stored.
+	SignalMissing SignalRunStatus = "missing"
+)
+
+// SignalRun delivers an event payload to one run. A run waiting on WaitFor
+// with eventName is woken with it. A run that has not reached that wait yet
+// keeps the payload, and the wait returns it at once, so a signal that
+// arrives early is not lost. The first payload for an event name wins.
+// A run whose inbox already holds 1,000 unconsumed signals or 8 MiB of them
+// rejects the signal with an error matching ErrSignalInboxFull.
+func (c *Client) SignalRun(
+	ctx context.Context, runID, eventName string, payload any,
+) (SignalRunStatus, error) {
+	data, err := c.call(ctx, map[string]any{
+		"command":    "signal",
+		"app":        c.app,
+		"event_name": eventName,
+		"payload":    payload,
+		"run_id":     runID,
+	})
+	if err != nil {
+		return "", err
+	}
+	var resp struct {
+		Status SignalRunStatus `json:"status"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return "", fmt.Errorf("tako: parse signal response: %w", err)
+	}
+	switch resp.Status {
+	case SignalDelivered, SignalBuffered, SignalDuplicate, SignalFinished, SignalMissing:
+		return resp.Status, nil
+	}
+	return "", fmt.Errorf("tako: unknown signal status %q", resp.Status)
+}
+
+// SignalRun is a top-level convenience that uses the client from env.
+func SignalRun(ctx context.Context, runID, eventName string, payload any) (SignalRunStatus, error) {
+	c, err := ClientFromEnv()
+	if err != nil {
+		return "", err
+	}
+	return c.SignalRun(ctx, runID, eventName, payload)
 }
 
 // Fail records a failure. When finalize is true the run becomes dead;

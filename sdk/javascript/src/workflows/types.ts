@@ -18,6 +18,28 @@ export type RunStatus = "pending" | "running" | "succeeded" | "cancelled" | "dea
 /** Persisted memoized step results for a workflow run. */
 export type StepState = Record<string, unknown>;
 
+/**
+ * What a signal addressed to one run did with its payload.
+ *
+ * - `delivered`: the run was waiting for the event and was woken with it.
+ * - `buffered`: the run is not waiting for it yet; the payload is kept and
+ *   the run's `ctx.waitFor` for that name returns it.
+ * - `duplicate`: the run already holds a value for this name; the first one wins.
+ * - `finished`: the run has finished; nothing was stored.
+ * - `missing`: no retained run has this ID; nothing was stored.
+ */
+export type SignalRunStatus = "delivered" | "buffered" | "duplicate" | "finished" | "missing";
+
+/** Options for `signal(event, payload, options)`. */
+export interface SignalOptions {
+  /**
+   * Deliver to this run only. A run that has not reached its `ctx.waitFor`
+   * yet keeps the payload until it does, so the signal cannot be lost to a
+   * race. Omit to wake every run currently waiting for the event.
+   */
+  runId: RunId;
+}
+
 /** Wire shape used to enqueue a workflow run. */
 export interface RunSpec {
   /**
