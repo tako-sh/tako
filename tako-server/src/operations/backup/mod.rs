@@ -1331,7 +1331,7 @@ mod tests {
             }});
             if paused_app {
                 services["web"] = serde_json::json!({
-                    "image":"docker.io/library/busybox:1.37", "expose":[8080], "x-tako":{},
+                    "image":"docker.io/library/busybox:1.37", "expose":[8080], "x-tako":{"http":true},
                     "command":["httpd","-f","-p","8080"]
                 });
                 config.compose_stopped.insert("web".into());
@@ -1545,7 +1545,7 @@ mod tests {
         // touching the data. Zero HTTP instances cannot hide that failure.
         app.config.write().compose = Some(
             serde_json::from_value(serde_json::json!({
-                "file":"missing.yml", "services":{"web":{}}
+                "file":"missing.yml", "services":{"web":{"http":true}}
             }))
             .unwrap(),
         );
@@ -1830,7 +1830,8 @@ mod tests {
                 matches!(cold_start, crate::proxy::BackendResolution::Unavailable),
                 "a request must not cold start a blocked app"
             );
-            for response in [state.scale_app(&fixture.app, Some(1), None, false).await] {
+            {
+                let response = state.scale_app(&fixture.app, Some(1), None, false).await;
                 assert!(
                     matches!(&response, Response::Error { message, .. } if names_dir(message)),
                     "an operator start must be refused with the same message"

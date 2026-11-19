@@ -414,7 +414,7 @@ mod tests {
         std::fs::write(dir.path().join("compose.yaml"), "services: {}\n").unwrap();
         let compose: tako_core::compose::ComposeConfig =
             serde_json::from_value(serde_json::json!({
-                "file":"compose.yaml", "services":{"web":{},"api":{}}
+                "file":"compose.yaml", "services":{"web":{"http":true},"api":{"http":true}}
             }))
             .unwrap();
         let runtime = tako_compose::ComposeRuntime::new(

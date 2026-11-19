@@ -59,9 +59,24 @@ pub(crate) fn service_configs(
         .collect()
 }
 
+/// The SDK's and standalone containers' default port, used by SDK HTTP apps
+/// that declare none.
+pub const SDK_DEFAULT_PORT: u16 = 3000;
+
 /// Prefer explicit Compose exposure; image metadata is only a fallback.
 /// Multiple TCP candidates must be disambiguated with a single `expose` entry.
 pub fn ingress_port(service: &str, definition: &Value, image_ports: &Value) -> Result<u16, String> {
+    http_port(service, definition, image_ports, false)
+}
+
+/// Like [`ingress_port`]; an SDK HTTP app without any candidate uses
+/// [`SDK_DEFAULT_PORT`], where Tako sets `PORT`.
+pub fn http_port(
+    service: &str,
+    definition: &Value,
+    image_ports: &Value,
+    sdk: bool,
+) -> Result<u16, String> {
     let mut ports = BTreeSet::new();
     let exposed = definition["expose"].as_array().filter(|v| !v.is_empty());
     if let Some(exposed) = exposed {
@@ -78,6 +93,9 @@ pub fn ingress_port(service: &str, definition: &Value, image_ports: &Value) -> R
         for port in exposed.keys() {
             add_port(&mut ports, &Value::String(port.clone()))?;
         }
+    }
+    if sdk && ports.is_empty() {
+        return Ok(SDK_DEFAULT_PORT);
     }
     if ports.len() != 1 {
         return Err(format!(
@@ -116,7 +134,8 @@ mod tests {
         let model = json!({"services": {
             "web": {"x-tako": {"envs": {"production": {"route": "example.com"}}}},
             "api": {"x-tako": {"envs": {"production": {"routes": ["api.example.com", "example.com/api/*"]}}}},
-            "private": {"x-tako": {}},
+            "private": {"x-tako": {"http": true}},
+            "worker": {"x-tako": {"sdk": true}},
             "redis": {"image": "redis"}
         }});
         let config = ComposeConfig {
@@ -130,18 +149,95 @@ mod tests {
                 .keys()
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
-            ["api", "private", "web"]
+            ["api", "private", "web", "worker"]
         );
         assert_eq!(
             config.routes("production"),
             ["api.example.com", "example.com/api/*", "example.com"]
         );
         assert!(config.default_service().unwrap_err().contains("--service"));
+        assert_eq!(
+            config.http_services().collect::<Vec<_>>(),
+            ["api", "private", "web"]
+        );
+        assert_eq!(
+            config.services["worker"].kind(),
+            tako_core::compose::ComposeServiceKind::Worker
+        );
+        assert!(config.has_sdk_services());
+    }
+
+    #[test]
+    fn classification_follows_routes_in_any_environment_http_and_sdk() {
+        use tako_core::compose::ComposeServiceKind::{Http, Worker};
+        let services = service_configs(&json!({"services": {
+            "dev_only": {"x-tako": {"envs": {"development": {"route": "web.app.test"}}}},
+            "private": {"x-tako": {"http": true}},
+            "sdk_web": {"x-tako": {"sdk": true, "envs": {"production": {"route": "example.com"}}}},
+            "worker": {"x-tako": {"sdk": true}},
+            "plain": {"image": "redis"}
+        }}))
+        .unwrap();
+        let config = ComposeConfig {
+            file: "compose.yaml".into(),
+            services,
+        };
+        config.validate().unwrap();
+        let kinds: Vec<_> = config
+            .services
+            .iter()
+            .map(|(name, service)| (name.as_str(), service.kind(), service.sdk))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("dev_only", Http, false),
+                ("private", Http, false),
+                ("sdk_web", Http, true),
+                ("worker", Worker, true),
+            ]
+        );
+        assert!(!config.services.contains_key("plain"));
+        // Workers never get a development hostname.
+        let dev = config.for_development("app.test", None);
+        assert!(dev.services["worker"].envs.is_empty());
+        assert_eq!(dev.routes("development").len(), 3);
+        // The only HTTP app is the default scale target, even beside workers.
+        let only_web = ComposeConfig {
+            file: "compose.yaml".into(),
+            services: service_configs(&json!({"services": {
+                "web": {"x-tako": {"sdk": true, "http": true}},
+                "worker": {"x-tako": {"sdk": true}}
+            }}))
+            .unwrap(),
+        };
+        assert_eq!(only_web.default_service().unwrap(), "web");
+        let workers_only = ComposeConfig {
+            file: "compose.yaml".into(),
+            services: service_configs(&json!({"services": {"worker": {"x-tako": {"sdk": true}}}}))
+                .unwrap(),
+        };
+        assert!(
+            workers_only
+                .default_service()
+                .unwrap_err()
+                .contains("no HTTP app")
+        );
     }
 
     #[test]
     fn ports_come_from_compose_or_image_metadata_without_tako_settings() {
         let image = json!({"80/tcp":{}, "443/tcp":{}});
+        // SDK HTTP apps default to the SDK port; declared ports still win.
+        assert_eq!(
+            http_port("web", &json!({}), &Value::Null, true).unwrap(),
+            3000
+        );
+        assert_eq!(
+            http_port("web", &json!({"expose":[8080]}), &Value::Null, true).unwrap(),
+            8080
+        );
+        assert!(http_port("web", &json!({}), &image, true).is_err());
         assert_eq!(
             ingress_port("web", &json!({"expose":[3000]}), &image).unwrap(),
             3000
@@ -228,20 +324,48 @@ mod tests {
     }
 
     #[test]
-    fn empty_extension_marks_a_default_app() {
-        let services = service_configs(&json!({"services": {
-            "worker": {"x-tako": null},
-            "redis": {"image": "redis"}
-        }}))
-        .unwrap();
-        assert_eq!(services.len(), 1);
-        assert_eq!(services["worker"], ComposeServiceConfig::default());
+    fn empty_extension_is_an_error_that_names_the_fix() {
+        for extension in [json!(null), json!({}), json!({"envs": {}})] {
+            let services = service_configs(&json!({"services": {
+                "private": {"x-tako": extension},
+                "redis": {"image": "redis"}
+            }}))
+            .unwrap();
+            assert_eq!(
+                services["private"].kind(),
+                tako_core::compose::ComposeServiceKind::Worker
+            );
+            let error = ComposeConfig {
+                file: "compose.yaml".into(),
+                services,
+            }
+            .validate()
+            .unwrap_err();
+            assert_eq!(
+                error,
+                "Compose service 'private': x-tako needs routes, `http: true` or `sdk: true`"
+            );
+        }
+        let services =
+            service_configs(&json!({"services": {"private": {"x-tako": {"http": true}}}})).unwrap();
+        assert_eq!(
+            services["private"],
+            ComposeServiceConfig {
+                http: true,
+                ..Default::default()
+            }
+        );
+        // `sdk` and `http` are omitted from manifests when false.
+        assert_eq!(
+            serde_json::to_value(&services["private"]).unwrap(),
+            json!({"envs": {}, "http": true})
+        );
     }
 
     #[test]
     fn yaml_anchors_work_and_outside_files_are_rejected() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("compose.yaml"), "x-defaults: &defaults\n  envs:\n    production:\n      source_ip: direct\nservices:\n  api:\n    x-tako:\n      <<: *defaults\n  redis:\n    image: redis\n").unwrap();
+        std::fs::write(dir.path().join("compose.yaml"), "x-defaults: &defaults\n  http: true\n  envs:\n    production:\n      source_ip: direct\nservices:\n  api:\n    x-tako:\n      <<: *defaults\n  redis:\n    image: redis\n").unwrap();
         let config = load_config(dir.path(), "compose.yaml").unwrap();
         assert_eq!(config.services.len(), 1);
         assert_eq!(

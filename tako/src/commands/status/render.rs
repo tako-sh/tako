@@ -3,6 +3,7 @@ use super::time::{format_deployed_at, format_duration_human};
 use super::{GlobalServerStatusResult, ServerStatusResult};
 use crate::config::ServerInventory;
 use crate::output;
+use tako_core::compose::ComposeServiceKind;
 use tako_core::{AppState, InstanceState, RecoveryStatus};
 
 #[derive(Clone, Copy)]
@@ -171,12 +172,27 @@ fn format_app_lines(apps: &[super::GlobalAppStatusResult]) -> Vec<String> {
         ));
         if let Some(status) = &app.status.app_status {
             for child in &status.applications {
+                let label = match (child.kind, child.sdk) {
+                    (ComposeServiceKind::Http, true) => "HTTP app, SDK",
+                    (ComposeServiceKind::Http, false) => "HTTP app",
+                    (ComposeServiceKind::Worker, _) => "SDK worker",
+                };
+                let count = match child.kind {
+                    ComposeServiceKind::Http => format!("{} instance(s)", child.instances.len()),
+                    ComposeServiceKind::Worker => format!(
+                        "{} container(s)",
+                        status
+                            .services
+                            .iter()
+                            .filter(|service| service.service == child.service)
+                            .count()
+                    ),
+                };
                 lines.push(format!(
-                    "{}{} (app)  {}  {} instance(s)",
+                    "{}{} ({label})  {}  {count}",
                     output::INDENT.repeat(3),
                     child.service,
                     child.state,
-                    child.instances.len()
                 ));
             }
             for service in status.services.iter().filter(|service| {

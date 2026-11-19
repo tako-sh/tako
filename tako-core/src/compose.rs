@@ -21,6 +21,42 @@ pub struct ComposeConfig {
 pub struct ComposeServiceConfig {
     #[serde(default)]
     pub envs: BTreeMap<String, ComposeServiceEnvironment>,
+    /// The service is an HTTP app even without routes (a private backend).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub http: bool,
+    /// The image runs a Tako SDK and receives the Tako runtime.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sdk: bool,
+}
+
+/// How Tako treats an `x-tako` service.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComposeServiceKind {
+    /// Routes in any environment, or `http: true`: an app with a backend pool.
+    Http,
+    /// `sdk: true` without routes or `http`: an SDK worker or job.
+    Worker,
+}
+
+impl ComposeServiceConfig {
+    /// Routes in any environment, including development, make a service an
+    /// HTTP app, as does `http: true`.
+    pub fn is_http(&self) -> bool {
+        self.http
+            || self
+                .envs
+                .values()
+                .any(|settings| !settings.routes().is_empty())
+    }
+
+    pub fn kind(&self) -> ComposeServiceKind {
+        if self.is_http() {
+            ComposeServiceKind::Http
+        } else {
+            ComposeServiceKind::Worker
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -61,6 +97,11 @@ impl ComposeConfig {
                     .all(|c| c.is_ascii_alphanumeric() || b"_.-".contains(&c))
             {
                 return Err("Invalid Compose service name".into());
+            }
+            if !config.is_http() && !config.sdk {
+                return Err(format!(
+                    "Compose service '{service}': x-tako needs routes, `http: true` or `sdk: true`"
+                ));
             }
             for (env, settings) in &config.envs {
                 if settings.route.is_some() && settings.routes.is_some() {
@@ -120,10 +161,39 @@ impl ComposeConfig {
         })
     }
 
-    /// Local apps get a stable hostname even without a public production route.
+    /// HTTP apps, which own a backend pool and readiness check.
+    pub fn http_services(&self) -> impl Iterator<Item = &str> {
+        self.services
+            .iter()
+            .filter(|(_, service)| service.is_http())
+            .map(|(name, _)| name.as_str())
+    }
+
+    pub fn is_http(&self, service: &str) -> bool {
+        self.services
+            .get(service)
+            .is_some_and(ComposeServiceConfig::is_http)
+    }
+
+    pub fn is_sdk(&self, service: &str) -> bool {
+        self.services
+            .get(service)
+            .is_some_and(|service| service.sdk)
+    }
+
+    /// Whether any service receives the Tako SDK runtime.
+    pub fn has_sdk_services(&self) -> bool {
+        self.services.values().any(|service| service.sdk)
+    }
+
+    /// Local HTTP apps get a stable hostname even without a public production
+    /// route. Workers never receive one.
     pub fn for_development(&self, default_host: &str, base_host: Option<&str>) -> Self {
         let mut config = self.clone();
         for (service, settings) in &mut config.services {
+            if !settings.is_http() {
+                continue;
+            }
             let development = settings.envs.entry("development".into()).or_default();
             let mut routes = development.routes();
             if routes.is_empty() {
@@ -143,15 +213,15 @@ impl ComposeConfig {
         config
     }
 
-    /// For a single tagged app, commands may omit --service. Never guess in a group.
+    /// For a single HTTP app, commands may omit --service. Never guess in a group.
     pub fn default_service(&self) -> Result<&str, String> {
-        let mut services = self.services.iter();
+        let mut services = self.http_services();
         let first = services
             .next()
-            .ok_or("Compose group has no Tako app; specify --service")?;
+            .ok_or("Compose group has no HTTP app; specify --service")?;
         if services.next().is_some() {
-            return Err("Compose group has multiple Tako apps; specify --service".into());
+            return Err("Compose group has multiple HTTP apps; specify --service".into());
         }
-        Ok(first.0)
+        Ok(first)
     }
 }

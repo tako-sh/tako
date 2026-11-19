@@ -84,14 +84,19 @@ fn compose_group_status_roundtrips_service_identities() {
         "kind": "application_group", "name": "shop/production", "version": "v1",
         "state": "running", "last_error": null, "instances": [], "builds": [],
         "applications": [
-            {"name": "shop/production/web", "service": "web", "state": "running", "routes": ["example.com"], "instances": []},
-            {"name": "shop/production/api", "service": "api", "state": "stopped", "routes": ["api.example.com"], "instances": []},
-            {"name": "shop/production/private", "service": "private", "state": "running", "routes": [], "instances": []}
+            {"name": "shop/production/web", "service": "web", "kind": "http", "sdk": true, "state": "running", "routes": ["example.com"], "instances": []},
+            {"name": "shop/production/api", "service": "api", "kind": "http", "sdk": false, "state": "stopped", "routes": ["api.example.com"], "instances": []},
+            {"name": "shop/production/private", "service": "private", "kind": "http", "sdk": false, "state": "running", "routes": [], "instances": []},
+            {"name": "shop/production/worker", "service": "worker", "kind": "worker", "sdk": true, "state": "running", "routes": [], "instances": []}
         ]
     });
     let status: AppStatus = serde_json::from_value(wire.clone()).unwrap();
     assert_eq!(status.kind, ApplicationKind::ApplicationGroup);
-    assert_eq!(status.applications.len(), 3);
+    assert_eq!(status.applications.len(), 4);
+    assert_eq!(
+        status.applications[3].kind,
+        crate::compose::ComposeServiceKind::Worker
+    );
     assert_eq!(serde_json::to_value(status).unwrap(), wire);
 }
 

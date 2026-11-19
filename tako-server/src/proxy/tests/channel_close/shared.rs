@@ -78,7 +78,7 @@ async fn compose_subscriptions_keep_the_handshake_service() {
             "file": "compose.yaml",
             "services": {
                 "api": {"envs": {"": {"route": "feed.example"}}},
-                "web": {}
+                "web": {"http": true}
             }
         }))
         .unwrap(),

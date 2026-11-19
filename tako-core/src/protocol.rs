@@ -1290,12 +1290,16 @@ pub enum ApplicationKind {
     ApplicationGroup,
 }
 
-/// An x-tako app within a Compose group. Identity and replicas are service-scoped;
+/// An x-tako service within a Compose group. Identity and replicas are service-scoped;
 /// releases, networks, volumes and lifecycle transactions belong to the group.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComposeApplicationStatus {
     pub name: String,
     pub service: String,
+    /// `http` for apps with a backend pool, `worker` for SDK workers and jobs.
+    pub kind: crate::compose::ComposeServiceKind,
+    /// Whether the service receives the Tako SDK runtime (`x-tako.sdk`).
+    pub sdk: bool,
     pub state: AppState,
     pub routes: Vec<String>,
     pub instances: Vec<InstanceStatus>,

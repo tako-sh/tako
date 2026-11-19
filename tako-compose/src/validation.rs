@@ -64,6 +64,70 @@ pub(crate) fn validate_source(
     Ok(())
 }
 
+/// Variables Tako owns in every `sdk: true` service.
+pub(crate) const SDK_RESERVED_ENV: &[&str] = &[
+    "TAKO_APP_NAME",
+    "TAKO_INTERNAL_SOCKET",
+    "TAKO_BOOTSTRAP_DATA",
+    "TAKO_DATA_DIR",
+    "TAKO_BUILD",
+    "TAKO_COMPOSE_SERVICE",
+];
+/// Paths Tako mounts into every `sdk: true` service.
+pub(crate) const SDK_MOUNTS: &[&str] = &[crate::SDK_SOCKET_MOUNT, crate::SDK_DATA_MOUNT];
+
+/// Tako owns the runtime contract of `x-tako` services: a service cannot set
+/// it itself or mount over it.
+pub(crate) fn validate_tako_services(
+    model: &Value,
+    config: &tako_core::compose::ComposeConfig,
+) -> Result<(), String> {
+    for (name, settings) in &config.services {
+        let Some(service) = model["services"].get(name) else {
+            continue;
+        };
+        let environment = service["environment"].as_object();
+        let defines = |key: &str| environment.is_some_and(|env| env.contains_key(key));
+        if defines("TAKO_COMPOSE_SERVICE") {
+            return Err(format!(
+                "Compose service '{name}': TAKO_COMPOSE_SERVICE is set by Tako"
+            ));
+        }
+        if !settings.sdk {
+            continue;
+        }
+        for key in SDK_RESERVED_ENV {
+            if defines(key) {
+                return Err(format!(
+                    "Compose service '{name}' is marked sdk: true; Tako sets {key}, so remove it from its environment"
+                ));
+            }
+        }
+        if settings.is_http() {
+            for key in ["HOST", "PORT"] {
+                if defines(key) {
+                    return Err(format!(
+                        "Compose service '{name}' is an SDK HTTP app; Tako sets {key}, so remove it from its environment"
+                    ));
+                }
+            }
+        }
+        for volume in service["volumes"].as_array().into_iter().flatten() {
+            let Some(target) = volume["target"].as_str() else {
+                continue;
+            };
+            for mount in SDK_MOUNTS {
+                if Path::new(target).starts_with(mount) || Path::new(mount).starts_with(target) {
+                    return Err(format!(
+                        "Compose service '{name}' is marked sdk: true; its volumes must not overlap the managed {mount} mount"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_service(name: &str, service: &Value) -> Result<(), String> {
     // An allowlist also fails closed when Compose introduces a new host-facing
     // feature (providers, lifecycle hooks, API socket injection, devices, etc.).
@@ -403,6 +467,61 @@ fn checked_path(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn sdk_services_cannot_set_or_mount_over_the_runtime_contract() {
+        let config = tako_core::compose::ComposeConfig {
+            file: "compose.yaml".into(),
+            services: serde_json::from_value(json!({
+                "web": {"sdk": true, "http": true},
+                "worker": {"sdk": true},
+                "grafana": {"http": true}
+            }))
+            .unwrap(),
+        };
+        let check = |service: &str, definition: Value| {
+            validate_tako_services(&json!({"services": {service: definition}}), &config)
+        };
+        for key in SDK_RESERVED_ENV {
+            for service in ["web", "worker"] {
+                let error = check(service, json!({"environment": {*key: "x"}})).unwrap_err();
+                assert!(error.contains(key), "{error}");
+            }
+        }
+        for key in ["HOST", "PORT"] {
+            assert!(check("web", json!({"environment": {key: "1"}})).is_err());
+            // Workers and plain apps own their HOST and PORT.
+            check("worker", json!({"environment": {key: "1"}})).unwrap();
+            check("grafana", json!({"environment": {key: "1"}})).unwrap();
+        }
+        // Plain apps keep their environment, apart from the service marker.
+        check("grafana", json!({"environment": {"TAKO_APP_NAME": "x"}})).unwrap();
+        assert!(
+            check(
+                "grafana",
+                json!({"environment": {"TAKO_COMPOSE_SERVICE": "x"}})
+            )
+            .is_err()
+        );
+        for target in ["/run/tako", "/run", "/tako/data/cache", "/tako"] {
+            let error = check(
+                "worker",
+                json!({"volumes": [{"type": "volume", "source": "data", "target": target}]}),
+            )
+            .unwrap_err();
+            assert!(error.contains("managed"), "{target}: {error}");
+            check(
+                "grafana",
+                json!({"volumes": [{"type": "volume", "source": "data", "target": target}]}),
+            )
+            .unwrap();
+        }
+        check(
+            "web",
+            json!({"environment": {"APP": "1"}, "volumes": [{"type": "volume", "source": "data", "target": "/data"}]}),
+        )
+        .unwrap();
+    }
 
     #[test]
     fn production_rejects_host_privileges_and_cross_app_resources() {

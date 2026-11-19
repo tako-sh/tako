@@ -10,9 +10,13 @@ use tokio::process::{Child, Command};
 const TAKO_APP_DATA_DIR_ENV: &str = "TAKO_DATA_DIR";
 const TAKO_SHARED_DATA_DIR_ENV: &str = "TAKO_SHARED_DATA_DIR";
 const SHARED_DATA_MOUNT: &str = "/tako/shared-data";
+/// The group's internal socket directory inside `sdk: true` services.
+pub const SDK_SOCKET_MOUNT: &str = "/run/tako";
+/// The group's app data directory inside `sdk: true` services.
+pub const SDK_DATA_MOUNT: &str = "/tako/data";
 mod config;
 mod engine;
-pub use config::{ingress_port, load_config};
+pub use config::{SDK_DEFAULT_PORT, http_port, ingress_port, load_config};
 mod native_network;
 pub use native_network::NativeNetwork;
 mod plan;
@@ -413,6 +417,7 @@ impl ComposeRuntime {
         if !self.development {
             validation::validate_resources(&model, false, Some(&self.env))?;
         }
+        validation::validate_tako_services(&model, &self.config)?;
         if self.env.contains_key(TAKO_SHARED_DATA_DIR_ENV) {
             for service in model["services"]
                 .as_object()
@@ -433,8 +438,9 @@ impl ComposeRuntime {
         Ok(model)
     }
 
+    /// HTTP apps own a backend pool. SDK workers, plain services and jobs do not.
     pub fn is_ingress(&self, service: &str) -> bool {
-        self.config.services.contains_key(service)
+        self.config.is_http(service)
     }
 
     pub fn ingress_count(&self, replicas: &BTreeMap<String, u32>) -> u32 {
@@ -628,7 +634,10 @@ impl ComposeRuntime {
                     serde_json::from_slice(&output).map_err(|_| "Invalid image port metadata")?;
                 ports.insert(
                     service.clone(),
-                    (0, ingress_port(service, definition, &exposed)?),
+                    (
+                        0,
+                        http_port(service, definition, &exposed, self.config.is_sdk(service))?,
+                    ),
                 );
             }
             images.insert(service.clone(), image);
