@@ -12,6 +12,7 @@ impl Spawner {
             .await
             .map_err(InstanceError::HealthCheckFailed)?;
         config.min_instances = runtime.ingress_count(&rollout.replicas());
+        app.set_compose_desired_replicas(rollout.replicas());
         app.update_config(config.clone());
         let old = app.get_instances();
         let mut attached = Vec::new();

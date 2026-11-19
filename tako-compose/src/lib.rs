@@ -252,6 +252,14 @@ impl ComposeRuntime {
         self
     }
 
+    /// Drop the Tako runtime, for a reloaded group with no `sdk: true`
+    /// services left.
+    pub fn without_sdk(mut self) -> Self {
+        self.env.remove(DEV_BOOTSTRAP_ENV);
+        self.sdk = None;
+        self
+    }
+
     pub fn sdk(&self) -> Option<&SdkRuntime> {
         self.sdk.as_ref()
     }
@@ -1359,6 +1367,46 @@ mod tests {
                 .is_none()
         );
         assert!(services["redis"].get("environment").is_none());
+    }
+
+    #[test]
+    fn a_reload_without_sdk_services_drops_the_runtime_and_its_envelope() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("compose.yaml"),
+            "services:\n  web:\n    image: web\n    x-tako: {sdk: true, http: true}\n",
+        )
+        .unwrap();
+        let config = load_config(directory.path(), "compose.yaml").unwrap();
+        let runtime = ComposeRuntime::development(
+            directory.path().into(),
+            config,
+            HashMap::new(),
+            "sdk-reload-test",
+        )
+        .unwrap()
+        .with_sdk(SdkRuntime {
+            app_name: "shop".into(),
+            token: "dev-token".into(),
+            envelope: json!({"token":"dev-token","secrets":{"API_KEY":"top-secret"}}).to_string(),
+            build: "dev".into(),
+            environment: "development".into(),
+            socket_dir: directory.path().join("socket"),
+            data_dir: directory.path().join(".tako/data/app"),
+            health_host: "shop.tako".into(),
+        });
+        // The Compose file drops sdk: true; the reload clones the old runtime.
+        std::fs::write(
+            directory.path().join("compose.yaml"),
+            "services:\n  web:\n    image: web\n    x-tako: {http: true}\n",
+        )
+        .unwrap();
+        let reloaded = runtime.reload_development().unwrap();
+        assert!(!reloaded.config.has_sdk_services());
+        assert!(reloaded.sdk().is_some(), "a reload alone keeps the binding");
+        let reloaded = reloaded.without_sdk();
+        assert!(reloaded.sdk().is_none());
+        assert!(!reloaded.env.contains_key(DEV_BOOTSTRAP_ENV));
     }
 
     #[tokio::test]

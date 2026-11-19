@@ -122,6 +122,7 @@ impl crate::ServerState {
         let old_instances = app.get_instances();
         app.set_state(AppState::Deploying);
         app.update_config(config.clone());
+        app.set_compose_desired_replicas(replicas.clone());
         // App::update_config supplies the default health Host header. Use that
         // normalized config for readiness as the ordinary spawner does.
         let config = app.config.read().clone();

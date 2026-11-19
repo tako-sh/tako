@@ -587,6 +587,15 @@ pub(super) async fn restart_app(state: &Arc<Mutex<State>>, config_path: String) 
             .apps
             .get(&config_path)
             .and_then(|app| app.compose.clone());
+        // The reload removed the last sdk: true service; nothing mounts the
+        // group's pinned socket any more.
+        if let Some(workflows) = workflows.as_ref()
+            && compose
+                .as_ref()
+                .is_some_and(|runtime| runtime.sdk().is_none())
+        {
+            workflows.stop_pinned_socket(&app_name).await;
+        }
         if !crate::compose::ensure_workflows(
             workflows.as_ref(),
             compose.as_ref(),

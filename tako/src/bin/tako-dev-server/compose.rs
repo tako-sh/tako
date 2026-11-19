@@ -73,7 +73,9 @@ pub(crate) fn with_sdk(
     sdk: DevelopmentSdk<'_>,
 ) -> Result<tako_compose::ComposeRuntime, String> {
     if !runtime.config.has_sdk_services() {
-        return Ok(runtime);
+        // A reload clones the previous runtime, which may still carry the
+        // SDK binding of services the Compose file no longer marks.
+        return Ok(runtime.without_sdk());
     }
     let workflows = state.lock().unwrap().workflows.clone().ok_or(
         "Compose sdk: true services need the dev server's internal socket, which did not start",

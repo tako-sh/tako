@@ -65,19 +65,11 @@ impl crate::ServerState {
                                         && i.state() == tako_core::InstanceState::Healthy
                                 })
                             }
-                            tako_core::compose::ComposeServiceKind::Worker => {
-                                let mut containers =
-                                    services.iter().filter(|s| &s.service == service);
-                                // A worker scaled to zero runs as desired.
-                                let scaled_to_zero =
-                                    config.compose_replicas.get(service) == Some(&0);
-                                (containers.clone().next().is_some() || scaled_to_zero)
-                                    && containers.all(|s| {
-                                        (s.state == "running"
-                                            && (s.health.is_empty() || s.health == "healthy"))
-                                            || (s.state == "exited" && s.exit_code == 0)
-                                    })
-                            }
+                            tako_core::compose::ComposeServiceKind::Worker => worker_running(
+                                services.iter().filter(|s| &s.service == service),
+                                app.compose_desired_replicas(service)
+                                    .or_else(|| config.compose_replicas.get(service).copied()),
+                            ),
                         };
                         tako_core::ComposeApplicationStatus {
                             name: format!("{}/{}", app.name(), service),
@@ -162,5 +154,54 @@ impl crate::ServerState {
             })
             .collect();
         Response::ok(serde_json::json!({ "routes": routes }))
+    }
+}
+
+/// A worker has no backend pool: it runs when every container is running and
+/// healthy, or finished successfully. A worker with no containers runs as
+/// desired only when the rollout planned zero replicas for it.
+fn worker_running<'a>(
+    mut containers: impl Iterator<Item = &'a tako_core::ComposeServiceStatus> + Clone,
+    desired_replicas: Option<u32>,
+) -> bool {
+    (containers.clone().next().is_some() || desired_replicas == Some(0))
+        && containers.all(|s| {
+            (s.state == "running" && (s.health.is_empty() || s.health == "healthy"))
+                || (s.state == "exited" && s.exit_code == 0)
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::worker_running;
+    use tako_core::ComposeServiceStatus;
+
+    fn container(state: &str, health: &str, exit_code: i64) -> ComposeServiceStatus {
+        ComposeServiceStatus {
+            service: "worker".into(),
+            state: state.into(),
+            health: health.into(),
+            exit_code,
+        }
+    }
+
+    #[test]
+    fn a_worker_planned_with_zero_replicas_runs_without_containers() {
+        assert!(worker_running(std::iter::empty(), Some(0)));
+        assert!(!worker_running(std::iter::empty(), Some(2)));
+        assert!(!worker_running(std::iter::empty(), None));
+    }
+
+    #[test]
+    fn a_worker_runs_only_while_every_container_is_healthy_or_completed() {
+        let healthy = [container("running", "", 0), container("exited", "", 0)];
+        assert!(worker_running(healthy.iter(), Some(2)));
+        let failed = [
+            container("running", "healthy", 0),
+            container("exited", "", 1),
+        ];
+        assert!(!worker_running(failed.iter(), Some(2)));
+        let starting = [container("running", "starting", 0)];
+        assert!(!worker_running(starting.iter(), Some(1)));
     }
 }

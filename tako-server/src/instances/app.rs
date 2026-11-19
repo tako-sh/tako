@@ -50,6 +50,10 @@ pub struct App {
     pub(super) log_handle: AppLogHandle,
     pub(super) compose_logs:
         parking_lot::Mutex<Option<(std::collections::BTreeSet<String>, tokio::process::Child)>>,
+    /// Replicas per Compose service in the last planned rollout: the Compose
+    /// default or the operator override. Status reads it, so a worker the
+    /// Compose file declares with zero replicas runs as desired.
+    compose_desired_replicas: RwLock<std::collections::BTreeMap<String, u32>>,
 }
 
 /// Events for instance lifecycle
@@ -82,7 +86,19 @@ impl App {
             instance_tx,
             log_handle,
             compose_logs: parking_lot::Mutex::new(None),
+            compose_desired_replicas: RwLock::new(std::collections::BTreeMap::new()),
         }
+    }
+
+    pub(crate) fn set_compose_desired_replicas(
+        &self,
+        replicas: std::collections::BTreeMap<String, u32>,
+    ) {
+        *self.compose_desired_replicas.write() = replicas;
+    }
+
+    pub(crate) fn compose_desired_replicas(&self, service: &str) -> Option<u32> {
+        self.compose_desired_replicas.read().get(service).copied()
     }
 
     pub fn name(&self) -> String {
