@@ -128,18 +128,28 @@ pub(crate) fn load_local_with_config(
                 .values
                 .targets
                 .insert(env.clone(), (scope.clone(), network.clone()));
-            if state.environments.contains_key(env) {
-                bind(&mut state, env, &scope, &network)?;
+            if state
+                .environments
+                .get(env)
+                .is_some_and(|entry| entry.network == network && entry.scope == scope)
+            {
                 continue;
             }
+            // Unbound, or bound to another network or app: start from the
+            // target's cache. A binding elsewhere gives way only when nothing
+            // in it is unpublished.
             let networks = match &mut saved_networks {
                 Some(networks) => &*networks,
                 empty => &*empty.insert(LocalNetworks::load()?),
             };
-            let Some(alias) = networks.networks.get(&id) else {
-                continue;
+            let cached = match networks.networks.get(&id) {
+                Some(alias) => read_cache(alias)?.map(|cache| (alias, cache)),
+                None => None,
             };
-            let Some(cache) = read_cache(alias)? else {
+            let Some((alias, cache)) = cached else {
+                if state.environments.contains_key(env) {
+                    bind(&mut state, env, &scope, &network)?;
+                }
                 continue;
             };
             let profile = super::load_profile(alias)?;
@@ -339,8 +349,11 @@ fn merge_remote(
     profile: &Profile,
     cache: &SharedSnapshot,
 ) -> Result<()> {
+    // Bind first: moving to another network drops the old network's copies,
+    // and rows read before that would come back as drafts for the new one.
+    bind(state, env, scope, &cache.network)?;
     let current = local::rows(state.values.environments.get(env))?;
-    let dirty = unpublished(bind(state, env, scope, &cache.network)?, &current);
+    let dirty = unpublished(&state.environments[env], &current);
     let keys = LocalDeviceKeys::load(&super::keys_path(&profile.request().request_id)?)?;
     let device = profile.request().device_id_for(&cache.network)?;
     let permissions = profile.snapshot().permissions(&device, super::now()?)?;

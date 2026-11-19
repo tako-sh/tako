@@ -265,9 +265,9 @@ mod tests {
     }
 
     fn project(envs: Vec<EnvResources>, records: Result<(), String>) -> ProjectResources {
-        let config = TakoToml::parse(&format!(
-            "name = \"shop\"\n[envs.production]\nroute = \"*.shop.example.com\"\n[envs.staging]\nroute = \"staging.shop.example.com\"\n"
-        ))
+        let config = TakoToml::parse(
+            "name = \"shop\"\n[envs.production]\nroute = \"*.shop.example.com\"\n[envs.staging]\nroute = \"staging.shop.example.com\"\n",
+        )
         .unwrap();
         let mut secrets = SecretsStore::default();
         secrets.ensure_env_key_id("production").unwrap();

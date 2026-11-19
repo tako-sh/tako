@@ -97,7 +97,7 @@ fn choose(
     purpose: Purpose,
     flag: Option<&str>,
 ) -> Result<LocalNetwork, String> {
-    let mut file = ProjectFile::load(project_dir).map_err(|error| error.to_string())?;
+    let file = ProjectFile::load(project_dir).map_err(|error| error.to_string())?;
     let networks = LocalNetworks::load().map_err(|error| error.to_string())?;
     let recorded = file.network(env).map(str::to_string);
     let local = match (flag, recorded.as_deref()) {
@@ -150,8 +150,8 @@ fn choose(
         },
     };
     if purpose != Purpose::Use && !output::is_dry_run() {
-        file.set_network(env, &local.id);
-        file.save(project_dir).map_err(|error| error.to_string())?;
+        ProjectFile::record_network(project_dir, env, &local.id)
+            .map_err(|error| error.to_string())?;
         output::hint(&format!(
             "Recorded {env} on network {} in .tako/project.json. Commit it so everyone uses the same network for {env}.",
             local.alias

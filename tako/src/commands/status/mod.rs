@@ -70,12 +70,17 @@ pub async fn run(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let networks = choose_networks(json)?;
     let mut servers = super::helpers::load_management_servers(networks.clone()).await?;
+    // A server added here joins the network status shows, if it picked one.
+    let picked = match networks.as_deref() {
+        Some([only]) => Some(only.id.clone()),
+        _ => None,
+    };
 
     if !json
         && servers.is_empty()
         && server::prompt_to_add_server(
             "No servers configured yet. Add one now to see deployment status.",
-            None,
+            picked.as_deref(),
         )
         .await?
         .is_some()

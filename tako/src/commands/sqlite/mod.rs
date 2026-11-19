@@ -199,7 +199,7 @@ fn project_network(
     requested: Option<&str>,
 ) -> Result<crate::config::LocalNetwork, Box<dyn std::error::Error>> {
     if let Some(requested) = requested {
-        return Ok(crate::network::find_network(requested)?);
+        return crate::network::find_network(requested);
     }
     let file = crate::config::ProjectFile::load(project_dir)?;
     let networks: BTreeSet<&str> = config

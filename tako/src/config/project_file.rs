@@ -75,6 +75,27 @@ impl ProjectFile {
             .network = Some(id.to_string());
     }
 
+    /// Record `env`'s network. Commands in the same checkout can record
+    /// different environments at once, so the read, change, and write happen
+    /// under a lock and none of them drops another's entry.
+    pub fn record_network(project_dir: &Path, env: &str, id: &str) -> Result<()> {
+        let directory = project_dir.join(".tako");
+        fs::create_dir_all(&directory)
+            .map_err(|error| ConfigError::FileWrite(directory.clone(), error))?;
+        let lock_path = directory.join("project.lock");
+        let lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .map_err(|error| ConfigError::FileWrite(lock_path.clone(), error))?;
+        lock.lock()
+            .map_err(|error| ConfigError::FileWrite(lock_path, error))?;
+        let mut file = Self::load(project_dir)?;
+        file.set_network(env, id);
+        file.save(project_dir)
+    }
+
     /// Write the file and make sure Git can track it while the rest of
     /// `.tako/` stays ignored.
     pub fn save(&self, project_dir: &Path) -> Result<()> {
@@ -86,7 +107,8 @@ impl ProjectFile {
             .map_err(|error| ConfigError::FileWrite(directory.join(".gitignore"), error))?;
         let mut bytes = serde_json::to_vec_pretty(self)?;
         bytes.push(b'\n');
-        let temporary = path.with_extension("json.tmp");
+        let temporary =
+            path.with_file_name(format!(".{PROJECT_FILE_NAME}.{}.tmp", std::process::id()));
         fs::write(&temporary, &bytes)
             .and_then(|()| fs::rename(&temporary, &path))
             .map_err(|error| ConfigError::FileWrite(path.clone(), error))?;
@@ -220,6 +242,24 @@ mod tests {
             fs::read_to_string(directory.path().join(".tako/.gitignore")).unwrap(),
             STATE_GITIGNORE
         );
+    }
+
+    #[test]
+    fn concurrent_records_keep_every_environment() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let envs: Vec<String> = (0..16).map(|n| format!("env{n}")).collect();
+        std::thread::scope(|scope| {
+            for env in &envs {
+                let project = directory.path();
+                scope.spawn(move || {
+                    ProjectFile::record_network(project, env, &"a".repeat(32)).unwrap()
+                });
+            }
+        });
+        let file = ProjectFile::load(directory.path()).unwrap();
+        for env in &envs {
+            assert!(file.network(env).is_some(), "{env} was dropped");
+        }
     }
 
     #[test]

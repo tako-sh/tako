@@ -227,6 +227,42 @@ fn selected_environment_cache_and_type_generation_leave_other_environments_untou
 }
 
 #[test]
+fn a_clean_checkout_follows_its_environment_to_another_network() {
+    let home = TestHome::new();
+    let fixtures = [fixture(), fixture()];
+    let locals = fixtures.each_ref().map(|fixture| {
+        super::super::store_keys(&fixture.profile.request().request_id, &fixture.keys).unwrap();
+        super::super::save_profile(&fixture.profile).unwrap()
+    });
+    for ((fixture, local), value) in fixtures.iter().zip(&locals).zip(["from-a", "from-b"]) {
+        let mut cache = SharedSnapshot::empty(fixture.profile.snapshot().network.id.clone());
+        cache
+            .records
+            .push(published(&fixture.profile, "TOKEN", Some(value), 1));
+        cache_merge(local, &cache, &fixture.profile).unwrap();
+    }
+    let project = home.directory.path().join("checkout");
+    std::fs::create_dir_all(&project).unwrap();
+    let config =
+        TakoToml::parse("name='demo'\n[envs.production]\nroute='demo.example.test'\n").unwrap();
+    record(&project, &[("production", &locals[0].id)]);
+    let values = SecretsStore::load_for_environment(&project, &config, "production").unwrap();
+    assert_eq!(decrypted(&values, "TOKEN"), "from-a");
+
+    // Every value is published, so the checkout takes the new network's
+    // values instead of carrying the old ones over as drafts.
+    record(&project, &[("production", &locals[1].id)]);
+    let values = SecretsStore::load_for_environment(&project, &config, "production").unwrap();
+    assert_eq!(decrypted(&values, "TOKEN"), "from-b");
+    let state = read_workspace(&project).unwrap();
+    let entry = &state.environments["production"];
+    assert_eq!(entry.network.to_string(), locals[1].id);
+    let current = local::rows(state.values.environments.get("production")).unwrap();
+    assert!(unpublished(entry, &current).is_empty());
+    assert!(entry.pending.is_empty());
+}
+
+#[test]
 fn two_worktrees_share_published_values_but_keep_drafts_and_deletions_separate() {
     let home = TestHome::new();
     let fixture = fixture();
