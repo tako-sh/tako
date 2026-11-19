@@ -17,15 +17,13 @@ pub(crate) struct Home {
     pub name: String,
 }
 
-/// The network ID of an environment.
-pub(crate) fn env_network<'a>(config: &'a TakoToml, env: &str) -> Result<&'a str, String> {
-    config
-        .envs
-        .get(env)
-        .and_then(|env| env.network.as_deref())
+/// The network ID of an environment, as this command resolved it.
+pub(crate) fn env_network(env: &str) -> Result<String, String> {
+    crate::commands::env_network::resolved(env)
+        .map(|network| network.id)
         .ok_or_else(|| {
             format!(
-                "Environment '{env}' has no network. Databases are hosted on native network servers; set [envs.{env}].network in tako.toml."
+                "Environment '{env}' has no network. Databases are hosted on native network servers; deploy it to a network first."
             )
         })
 }
@@ -73,15 +71,12 @@ pub(crate) fn env_records(
         .envs
         .get(env)
         .is_some_and(|env| !env.databases.is_empty());
-    let Some(network) = config.envs.get(env).and_then(|env| env.network.as_deref()) else {
+    let Some(alias) = crate::commands::env_network::resolved(env) else {
         if binds {
-            env_network(config, env)?;
+            env_network(env)?;
         }
         return Ok(Vec::new());
     };
-    let alias = crate::config::LocalNetworks::load()?
-        .select(Some(network))?
-        .clone();
     tokio::task::block_in_place(|| crate::network::databases::list(&alias))
 }
 
@@ -108,7 +103,7 @@ pub(crate) fn plan_bindings(
     if env_config.databases.is_empty() {
         return Ok(HashMap::new());
     }
-    let network = env_network(config, env)?;
+    let network = env_network(env)?;
     let mut planned = HashMap::new();
     for (binding, database_name) in &env_config.databases {
         let record = records
@@ -119,7 +114,7 @@ pub(crate) fn plan_bindings(
                     "Database '{database_name}', bound as '{binding}' in {env}, does not exist in this network. Create it with `tako sqlite create {database_name}`, or run `tako sqlite list` to see the network's databases."
                 )
             })?;
-        let home = resolve_home(servers, network, &record.server, env)
+        let home = resolve_home(servers, &network, &record.server, env)
             .map_err(|error| format!("The server of database '{database_name}': {error}"))?;
         planned.insert(
             binding.clone(),

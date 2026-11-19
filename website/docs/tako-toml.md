@@ -3,7 +3,7 @@ title: "tako.toml Reference"
 description: "Look up Tako project configuration for identity, runtimes, builds, routes, variables, storage, databases, backups, images, workflows, and deployment targets."
 ---
 
-`tako.toml` describes one app: identity, runtime, build, routes, variables, storage and database bindings, backups, SSL provider, source-IP policy, workflows, and target servers. App secrets, storage credentials, and provider credentials are encrypted in ignored `.tako/state.local.json` and encrypted network state, not stored in this file.
+`tako.toml` describes one app: identity, runtime, build, routes, variables, storage and database bindings, backups, SSL provider, source-IP policy, workflows, and target servers. App secrets, storage credentials, and provider credentials are encrypted in ignored `.tako/state.local.json` and encrypted network state, not stored in this file. The network each environment deploys to is recorded in the tracked `.tako/project.json`.
 
 App-scoped commands use `./tako.toml` by default. `-c path/to/config` selects another config file and treats that file's parent directory as the app directory.
 
@@ -86,13 +86,14 @@ Each environment can use either `route` or `routes`, not both. Non-development d
 
 Routes support exact hosts, wildcard hosts, host-plus-path routes, and wildcard-plus-path routes. Path-only routes are invalid.
 
-Environment tables accept route declarations, `network`, `servers`, `storages`, `databases`, `backup`, `source_ip`, `ssl`, `idle_timeout`, and `release`. Put environment variables in `[vars]` or `[vars.<env>]`, not in `[envs.<env>]`.
+Environment tables accept route declarations, `servers`, `storages`, `databases`, `backup`, `source_ip`, `ssl`, `idle_timeout`, and `release`. Put environment variables in `[vars]` or `[vars.<env>]`, not in `[envs.<env>]`.
 
-`network` identifies a native network by its stable 32-character hexadecimal ID. Within that network, `servers` selects deployment hosts by enrolled name or server device ID. Omit `servers` to target every trusted server member. A supplied list must be nonempty, and every entry must identify exactly one trusted server. Native management uses pinned HTTPS. See [Native networks](/networks/).
+An environment's network is not set in `tako.toml`. Tako records it in `.tako/project.json`, which you commit; see [Choose an environment's network](/networks/#choose-an-environments-network). A `tako.toml` that still sets `[envs.<env>].network` fails to parse with a message pointing at `.tako/project.json`; remove the line, and the next deploy records the network.
+
+Within the environment's network, `servers` selects deployment hosts by enrolled name or server device ID. Omit `servers` to target every trusted server in the network. A supplied list must be nonempty, and every entry must identify exactly one trusted server. Native management uses pinned HTTPS. See [Native networks](/networks/).
 
 ```toml
 [envs.production]
-network = "0123456789abcdef0123456789abcdef"
 servers = ["edge-a", "edge-b"]
 route = "app.example.com"
 ```
@@ -191,7 +192,6 @@ Top-level storage resources store non-secret metadata. S3 resources require `buc
 
 ```toml
 [envs.production]
-network = "0123456789abcdef0123456789abcdef"
 databases = { main = "main" }
 
 [envs.development]
@@ -202,7 +202,7 @@ databases = { main = "main" }
 backup = "private_backups"
 ```
 
-`[envs.<env>].databases` maps app-facing binding names, read as `tako.databases.<binding>`, to database names. A database's name identifies it within the network, whose records hold its server; outside `development`, the environment needs `network`, and a deploy fails when the network has no database with a bound name. Development bindings need nothing else: `tako dev` and `tako run` serve them from `.tako/data/databases/<database-name>.sqlite`. Without `[envs.development].databases`, development binds every name used by any environment.
+`[envs.<env>].databases` maps app-facing binding names, read as `tako.databases.<binding>`, to database names. A database's name identifies it within the environment's network, whose records hold its server; a deploy fails when the network has no database with a bound name. Development bindings need nothing else: `tako dev` and `tako run` serve them from `.tako/data/databases/<database-name>.sqlite`. Without `[envs.development].databases`, development binds every name used by any environment.
 
 `[databases.<name>]` is optional and has one field:
 
@@ -261,7 +261,7 @@ Production supervises one scale-to-zero lane per JavaScript worker group, select
 
 The parser accepts `run` in named worker groups. It accepts `workers` and `concurrency` in `[workflows]`, `[workflows.<group>]`, `[servers.<server>.workflows]`, and `[servers.<server>.workflows.<group>]`. Parsed count/concurrency precedence is defaults (`workers = 0`, `concurrency = 10`), app base, app group, server base, then server group. These parsed counts and overrides do not yet control production supervision; do not rely on them to tune running workers. `run` must be a non-empty array of non-empty strings. Group and server names follow the app-name rules.
 
-In multi-server environments, JS workflows require `postgres_url` unless every workflow opts into local per-server execution. Go workflow deployments require `postgres_url` for multi-server environments. Native networks support bounded channel replication, presence leases, and invalidation fanout separately from workflow storage. Durable channel replay, presence, and store notifications can use SQLite across servers without `postgres_url`; ephemeral channels use memory-only delivery. Configured Postgres credentials remain in use and must be valid. See [Channels](/channels/#deploy-replay-storage) and [Workflows](/workflows/) for their separate storage requirements.
+In multi-server environments, JS workflows require `postgres_url` unless every workflow opts into local per-server execution. Go workflow deployments require `postgres_url` for multi-server environments. Every deploy targets a network, whose servers replicate bounded channel replay, presence leases, and invalidation fanout separately from workflow storage, so durable channel replay, presence, and store notifications use SQLite across servers without `postgres_url`; ephemeral channels use memory-only delivery. Configured Postgres credentials remain in use and must be valid. See [Channels](/channels/#deploy-replay-storage) and [Workflows](/workflows/) for their separate storage requirements.
 
 ## Complete Example
 
@@ -285,7 +285,6 @@ API_URL = "https://staging-api.example.com"
 [envs.production]
 route = "app.example.com"
 servers = ["la", "nyc"]
-network = "0123456789abcdef0123456789abcdef"
 storages = { uploads = "prod_uploads" }
 databases = { main = "main" }
 backup = { storage = "private_backups" }

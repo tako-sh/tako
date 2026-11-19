@@ -7,13 +7,14 @@ Tako is a local CLI plus a server runtime. The CLI owns project config, local de
 
 ## Main Pieces
 
-| Piece         | Role                                                                                                                                                      |
-| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `tako`        | Local CLI for init, dev, deploy, logs, releases, scale, delete, servers, secrets, credentials, storage, backups, and generated files.                     |
-| `tako-server` | Remote runtime with a Pingora proxy, TLS, app supervision, state storage, backups, logs, metrics, and management APIs.                                    |
-| SDKs          | Runtime helpers for JavaScript/TypeScript (`tako.sh`), Go (`tako.sh`), and Rust (`tako`).                                                                 |
-| `tako.toml`   | App identity, runtime, routes, environments, builds, storage bindings, backups, SSL, source-IP policy, workflows, and server targets.                     |
-| Presets       | Framework defaults for entrypoints, asset roots, and dev commands. Built-ins currently include Vite, TanStack Start, and Next.js for JavaScript runtimes. |
+| Piece                | Role                                                                                                                                                      |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tako`               | Local CLI for init, dev, deploy, logs, releases, scale, delete, servers, secrets, credentials, storage, backups, and generated files.                     |
+| `tako-server`        | Remote runtime with a Pingora proxy, TLS, app supervision, state storage, backups, logs, metrics, and management APIs.                                    |
+| SDKs                 | Runtime helpers for JavaScript/TypeScript (`tako.sh`), Go (`tako.sh`), and Rust (`tako`).                                                                 |
+| `tako.toml`          | App identity, runtime, routes, environments, builds, storage bindings, backups, SSL, source-IP policy, workflows, and server targets.                     |
+| `.tako/project.json` | The network each environment deploys to, by ID. Tako writes it; commit it to Git.                                                                         |
+| Presets              | Framework defaults for entrypoints, asset roots, and dev commands. Built-ins currently include Vite, TanStack Start, and Next.js for JavaScript runtimes. |
 
 ## Local Development
 

@@ -164,13 +164,32 @@ pub(crate) fn load_profile(network: &LocalNetwork) -> Result<Profile> {
     Ok(profile)
 }
 
+/// Save a profile under the alias this machine already uses for its network,
+/// or, for a new network, under a free alias derived from its name.
 pub(crate) fn save_profile(profile: &Profile) -> Result<LocalNetwork> {
+    save_profile_as(profile, None)
+}
+
+/// Save a profile, naming its network `alias` on this machine.
+pub(crate) fn save_profile_as(profile: &Profile, alias: Option<&str>) -> Result<LocalNetwork> {
     let mut profile = profile.clone();
     profile.normalize_trusted_servers()?;
     let keys = LocalDeviceKeys::load(&keys_path(&profile.request().request_id)?)?;
     profile.validate_for_storage(&keys)?;
     let name = profile.snapshot().network.name.as_str();
+    let id = profile.snapshot().network.id.to_string();
+    let alias = match alias {
+        Some(alias) => alias.to_string(),
+        None => {
+            let networks = LocalNetworks::load()?;
+            match networks.networks.get(&id) {
+                Some(existing) => existing.alias.clone(),
+                None => networks.free_alias(name),
+            }
+        }
+    };
     let alias = LocalNetwork {
+        alias,
         name: name.into(),
         id: profile.snapshot().network.id.to_string(),
         device: profile
@@ -564,10 +583,77 @@ pub(crate) fn server_members(
         .collect())
 }
 
-/// Select a network for commands that act on one: an explicit name or ID,
-/// then the network chosen with `tako network use`, then the sole network.
+static NETWORK_FLAG: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+/// The network picked interactively in this process, so one command asks once.
+static PICKED: std::sync::Mutex<Option<LocalNetwork>> = std::sync::Mutex::new(None);
+
+/// Record the global `--network` value for this process.
+pub(crate) fn set_network_flag(value: Option<String>) {
+    let _ = NETWORK_FLAG.set(value);
+}
+
+/// The alias or ID passed with the global `--network`, if any.
+pub(crate) fn network_flag() -> Option<&'static str> {
+    NETWORK_FLAG.get().and_then(|value| value.as_deref())
+}
+
+/// Select a network for commands that act on one: the network the command
+/// names, then `--network`, then the only network on this machine. There is
+/// no default network: with several and none named, an interactive terminal
+/// asks and anything else fails.
 pub(crate) fn resolve_network(value: Option<&str>) -> Result<LocalNetwork> {
-    Ok(LocalNetworks::load()?.select(value)?.clone())
+    let networks = LocalNetworks::load()?;
+    if let (Some(value), Some(flag)) = (value, network_flag())
+        && networks.find(value).map(|local| &local.id) != networks.find(flag).map(|local| &local.id)
+    {
+        return Err(format!("'{value}' and --network {flag} name different networks").into());
+    }
+    if let Some(value) = value.or(network_flag()) {
+        return Ok(networks.select(Some(value))?.clone());
+    }
+    if networks.networks.len() < 2 {
+        return Ok(networks.select(None)?.clone());
+    }
+    if let Some(picked) = PICKED.lock().unwrap().clone()
+        && networks.networks.contains_key(&picked.id)
+    {
+        return Ok(picked);
+    }
+    if !crate::output::is_interactive() {
+        return Err(networks.select(None).unwrap_err().into());
+    }
+    let picked = pick_network(&networks, "Network")?;
+    *PICKED.lock().unwrap() = Some(picked.clone());
+    Ok(picked)
+}
+
+/// The network with this alias or ID, ignoring `--network`.
+pub(crate) fn find_network(alias_or_id: &str) -> Result<LocalNetwork> {
+    Ok(LocalNetworks::load()?.select(Some(alias_or_id))?.clone())
+}
+
+/// Ask which of this machine's networks to use.
+pub(crate) fn pick_network(networks: &LocalNetworks, title: &str) -> Result<LocalNetwork> {
+    let mut options: Vec<_> = networks
+        .networks
+        .values()
+        .map(|local| (network_label(local), local.clone()))
+        .collect();
+    options.sort_by(|a, b| a.1.alias.cmp(&b.1.alias));
+    Ok(crate::output::select(
+        title,
+        Some("This machine has several networks. Pass --network to skip this question."),
+        options,
+    )?)
+}
+
+/// A network's alias, with its shared name when the two differ.
+pub(crate) fn network_label(local: &LocalNetwork) -> String {
+    if local.alias == local.name {
+        local.alias.clone()
+    } else {
+        format!("{} ({})", local.alias, local.name)
+    }
 }
 
 #[cfg(test)]

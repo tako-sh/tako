@@ -62,6 +62,10 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "PASSPHRASE")]
     pub ssh_passphrase: Option<String>,
 
+    /// Network to act on, by this machine's alias or its ID
+    #[arg(long = "network", global = true, value_name = "NETWORK")]
+    pub network_flag: Option<String>,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
@@ -169,8 +173,6 @@ pub enum Commands {
     /// SSH to an approved server using this machine's network identity
     Ssh {
         server: String,
-        #[arg(long)]
-        network: Option<String>,
         #[arg(last = true)]
         command: Vec<String>,
     },
@@ -420,7 +422,7 @@ pub(crate) fn supports_dry_run(path: &[&str]) -> bool {
             | "ssh"]
             | [
                 "network",
-                "sync" | "join" | "create" | "status" | "export" | "list"
+                "sync" | "join" | "create" | "status" | "export" | "list" | "rename"
             ]
             | [
                 "network",
@@ -456,6 +458,7 @@ pub(crate) fn is_read_only(path: &[&str]) -> bool {
 impl Cli {
     pub fn run(self, matches: &clap::ArgMatches) -> Result<(), Box<dyn std::error::Error>> {
         crate::ssh::set_key_passphrase(self.ssh_passphrase.clone());
+        crate::network::set_network_flag(self.network_flag.clone());
         let json = self.json;
 
         if self.version {
@@ -562,11 +565,7 @@ impl Cli {
             Commands::Network(cmd) => commands::network::run(cmd),
             Commands::Connect { network } => commands::network::connect(network.as_deref()),
             Commands::Disconnect { network } => commands::network::disconnect(network.as_deref()),
-            Commands::Ssh {
-                server,
-                network,
-                command,
-            } => commands::network::ssh(&server, network.as_deref(), &command),
+            Commands::Ssh { server, command } => commands::network::ssh(&server, None, &command),
             Commands::Secrets(cmd) => {
                 let emit_generic = json
                     && !matches!(

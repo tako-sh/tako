@@ -231,6 +231,7 @@ mod tests {
     fn only_one_transport_per_server_and_device() {
         let _home = crate::network::tests::TestHome::new();
         let alias = LocalNetwork {
+            alias: "test".into(),
             name: "test".into(),
             id: "11".repeat(16),
             device: "22".repeat(32),
@@ -250,6 +251,7 @@ mod tests {
     fn multiplex_and_connect_exclusion() {
         assert_ne!(unsafe { libc::geteuid() }, 0);
         let alias = LocalNetwork {
+            alias: "test".into(),
             name: "test".into(),
             id: "11".repeat(16),
             device: "22".repeat(32),

@@ -25,7 +25,7 @@ From an existing app directory, initialize the project:
 tako init
 ```
 
-`tako init` detects the runtime and preset, writes `tako.toml`, installs the SDK for JavaScript and Go projects, and updates `.gitignore` for the encrypted secrets file. It asks for an app name and production route, offers SSL credential setup for wildcard routes, and offers coding-agent setup. For Rust, use the [Rust SDK skill](https://tako.sh/.well-known/agent-skills/tako-sdk-rust/SKILL.md). Follow [Framework Integration](/framework-guides/) if your framework needs an adapter.
+`tako init` detects the runtime and preset, writes `tako.toml`, installs the SDK for JavaScript and Go projects, and updates `.gitignore` so `.tako/` stays local except the tracked `.tako/project.json`. It asks for an app name and production route, offers SSL credential setup for wildcard routes, and offers coding-agent setup. For Rust, use the [Rust SDK skill](https://tako.sh/.well-known/agent-skills/tako-sdk-rust/SKILL.md). Follow [Framework Integration](/framework-guides/) if your framework needs an adapter.
 
 Start local HTTPS development in a terminal:
 
@@ -46,7 +46,7 @@ Create a native network and enroll a supported Linux server:
 ```bash
 tako network create production
 tako network server add admin@203.0.113.10 --network production --name edge-a --wireguard-endpoint 203.0.113.10:51820
-tako network list --json
+tako network list
 ```
 
 Replace the example IP with your server's reachable IP. Bootstrap uses administrator SSH; subsequent management uses pinned HTTPS with this device's keys. Allow HTTPS and the configured WireGuard UDP port on the server. No external network account or workstation TUN interface is required for deployment. See [Native networks](/networks/) for firewall requirements, device enrollment, and scoped sandbox access.
@@ -57,13 +57,9 @@ For an existing external VPN setup, follow the [native re-enrollment steps](/ser
 
 Run the following commands from your app directory.
 
-The app already has a `tako.toml` from local setup. Check its production route and network or server selection, and set the app's required [Secrets](/secrets/) and [Storage](/storage/) bindings before deploying.
+The app already has a `tako.toml` from local setup. Check its production route and optional `servers` selection, and set the app's required [Secrets](/secrets/) and [Storage](/storage/) bindings before deploying.
 
-```bash
-tako network list --json
-```
-
-Run `tako agents` anytime to set up or refresh agent support; see [Coding agents](/agents/). Set `[envs.production].network` to the stable ID from `network list`. See [Deployment](/deployment/#configure-an-environment).
+Run `tako agents` anytime to set up or refresh agent support; see [Coding agents](/agents/).
 
 `tako dev` uses `{app}.test` by default. Add `[envs.development]` only when you want custom local routes.
 
@@ -71,6 +67,9 @@ Deploy:
 
 ```bash
 tako deploy --env production
+git add .tako/project.json
 ```
+
+The first deploy uses this machine's only network, or asks which one, and records it for `production` in `.tako/project.json`. Commit that file so every clone deploys to the same network. See [Deployment](/deployment/#configure-an-environment).
 
 Inspect `tako status --json`, request the deployed hostname, and check finite app logs. See [Deployment](/deployment/) for build and rollout behavior and [Operations](/operations/) for status, logs, scaling, and rollback.

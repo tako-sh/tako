@@ -4,7 +4,7 @@ use crate::config::{EncryptedBackupKey, EncryptedSecretValue, EncryptedStorageCr
 const NETWORK: &str = "0123456789abcdef0123456789abcdef";
 
 fn config() -> TakoToml {
-    TakoToml::parse(&format!(
+    TakoToml::parse(
         r#"
 name = "shop"
 
@@ -14,12 +14,11 @@ endpoint = "https://s3.example.com"
 region = "auto"
 
 [envs.production]
-network = "{NETWORK}"
 route = "*.shop.example.com"
-storages = {{ uploads = "media", cache = "local" }}
-databases = {{ main = "orders" }}
-"#
-    ))
+storages = { uploads = "media", cache = "local" }
+databases = { main = "orders" }
+"#,
+    )
     .unwrap()
 }
 

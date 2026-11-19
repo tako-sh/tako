@@ -212,10 +212,10 @@ async fn grant(
     prep: &Preparation<'_>,
     bound: &BTreeMap<String, &PlannedBinding>,
 ) -> Result<Prepared, Box<dyn std::error::Error>> {
-    let network = crate::commands::sqlite::target::env_network(prep.config, prep.env)?;
+    let network = crate::commands::sqlite::target::env_network(prep.env)?;
     let mut homes: BTreeMap<String, (Home, BTreeSet<String>)> = BTreeMap::new();
     for record in prep.records {
-        let Ok(home) = resolve_home(prep.servers, network, &record.server, prep.env) else {
+        let Ok(home) = resolve_home(prep.servers, &network, &record.server, prep.env) else {
             continue;
         };
         homes

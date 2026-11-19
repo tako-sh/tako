@@ -117,11 +117,11 @@ pub(crate) fn load(
     let mut databases = BTreeMap::new();
     let mut envs = Vec::new();
     for name in environment_names(&config, &secrets) {
-        let network_id = config.envs.get(&name).and_then(|env| env.network.clone());
+        let network_id = super::env_network::current_id(&context.project_dir, &name)?;
         let alias = network_id.as_deref().and_then(|id| {
             aliases
                 .as_ref()
-                .and_then(|aliases| aliases.select(Some(id)).ok())
+                .and_then(|aliases| aliases.networks.get(id))
                 .cloned()
         });
         let access = match network_id.as_deref() {
@@ -132,7 +132,19 @@ pub(crate) fn load(
                 Err(_) => Access::Unknown,
             },
         };
-        let servers = super::helpers::resolve_servers_for_env(&config, inventory, &name);
+        let servers = match network_id.as_deref() {
+            Some(id) => super::helpers::resolve_network_servers(
+                inventory,
+                id,
+                &config
+                    .envs
+                    .get(&name)
+                    .map(|env| env.servers.clone())
+                    .unwrap_or_default(),
+                &name,
+            ),
+            None => Err(format!("Environment '{name}' has no network yet")),
+        };
         if let (Some(id), Some(alias)) = (network_id.as_ref(), alias.as_ref())
             && !databases.contains_key(id)
         {
@@ -149,7 +161,7 @@ pub(crate) fn load(
             &secrets,
             access,
             servers,
-            alias.map(|alias| alias.name).or(network_id.clone()),
+            alias.map(|alias| alias.alias).or(network_id.clone()),
             network_id,
             homes.map(|records| server_names(records, inventory)),
         ));

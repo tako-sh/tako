@@ -339,11 +339,30 @@ fn workflow_tools_follow_cli_definitions_with_read_and_write_annotations() {
         annotations("tako_workflows_cancel").destructive_hint,
         Some(true)
     );
-    assert_eq!(annotations("tako_network_use").read_only_hint, Some(false));
     assert_eq!(
-        annotations("tako_network_use").destructive_hint,
+        annotations("tako_network_rename").read_only_hint,
         Some(false)
     );
+    assert_eq!(
+        annotations("tako_network_rename").destructive_hint,
+        Some(false)
+    );
+    // The global --network flag is a `network` input, except where a command
+    // takes the network positionally.
+    let deploy = &catalog["tako_deploy"];
+    assert_eq!(
+        deploy
+            .arguments(
+                &serde_json::json!({"network": "acme"})
+                    .as_object()
+                    .unwrap()
+                    .clone()
+            )
+            .unwrap(),
+        ["deploy", "--network=acme"]
+    );
+    let connect = &catalog["tako_connect"].tool.input_schema["properties"];
+    assert!(connect.get("network").is_some() && connect.get("network_flag").is_none());
     let clear = &catalog["tako_secrets_clear"];
     assert_eq!(
         annotations("tako_secrets_clear").destructive_hint,

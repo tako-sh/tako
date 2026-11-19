@@ -1,0 +1,7 @@
+{
+  "environments": {
+    "production": {
+      "network": "91a7313ec552de6956b4044cd8671e11"
+    }
+  }
+}

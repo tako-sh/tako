@@ -32,15 +32,13 @@ fn servers_add_accepts_native_endpoint_with_automatic_network_selection() {
     .unwrap();
     let Commands::Network(commands::network::NetworkCommands::Server(
         server::ServerCommands::Add {
-            network,
-            wireguard_endpoint,
-            ..
+            wireguard_endpoint, ..
         },
     )) = cli.command.unwrap()
     else {
         panic!("expected add")
     };
-    assert!(network.is_none());
+    assert!(cli.network_flag.is_none());
     assert_eq!(wireguard_endpoint.unwrap().port(), 51820);
 }
 
@@ -318,38 +316,61 @@ fn servers_upgrade_parses_force() {
 }
 
 #[test]
-fn server_maintenance_commands_accept_a_network() {
-    for (args, expected) in [
-        (vec!["revoke", "edge", "--network", "staging"], "revoke"),
-        (vec!["remove", "edge", "--network", "staging"], "remove"),
-        (vec!["reload", "edge", "--network", "staging"], "reload"),
-        (vec!["upgrade", "--network", "staging"], "upgrade"),
+fn every_command_accepts_a_network() {
+    for args in [
+        vec![
+            "network",
+            "server",
+            "revoke",
+            "edge",
+            "--network",
+            "staging",
+        ],
+        vec![
+            "network",
+            "server",
+            "remove",
+            "edge",
+            "--network",
+            "staging",
+        ],
+        vec![
+            "network",
+            "server",
+            "reload",
+            "edge",
+            "--network",
+            "staging",
+        ],
+        vec!["network", "server", "upgrade", "--network", "staging"],
+        vec!["network", "client", "add", "ci", "--network", "staging"],
+        vec!["--network", "staging", "deploy", "--env", "production"],
+        vec![
+            "secrets",
+            "set",
+            "KEY",
+            "--env",
+            "production",
+            "--network",
+            "staging",
+        ],
+        vec!["ssh", "edge", "--network", "staging"],
+        vec!["sqlite", "list", "--network", "staging"],
     ] {
-        let cli =
-            Cli::try_parse_from(["tako", "network", "server"].into_iter().chain(args)).unwrap();
-        let Commands::Network(commands::network::NetworkCommands::Server(command)) =
-            cli.command.expect("command")
-        else {
-            panic!("expected a server command");
-        };
-        let network = match command {
-            server::ServerCommands::Revoke { network, .. }
-            | server::ServerCommands::Remove { network, .. }
-            | server::ServerCommands::Reload { network, .. }
-            | server::ServerCommands::Upgrade { network, .. } => network,
-            _ => panic!("unexpected command for {expected}"),
-        };
-        assert_eq!(network.as_deref(), Some("staging"), "{expected}");
+        let cli = Cli::try_parse_from(std::iter::once("tako").chain(args.iter().copied()))
+            .unwrap_or_else(|error| panic!("{args:?}: {error}"));
+        assert_eq!(cli.network_flag.as_deref(), Some("staging"), "{args:?}");
     }
 }
 
 #[test]
-fn network_use_parses() {
-    let cli = Cli::try_parse_from(["tako", "network", "use", "staging"]).unwrap();
-    let Commands::Network(commands::network::NetworkCommands::Use { network }) =
+fn network_rename_parses_and_use_is_gone() {
+    let cli = Cli::try_parse_from(["tako", "network", "rename", "work", "acme"]).unwrap();
+    let Commands::Network(commands::network::NetworkCommands::Rename { network, alias }) =
         cli.command.expect("command")
     else {
-        panic!("expected Network::Use");
+        panic!("expected Network::Rename");
     };
-    assert_eq!(network, "staging");
+    assert_eq!((network.as_str(), alias.as_str()), ("work", "acme"));
+    assert!(Cli::try_parse_from(["tako", "network", "use", "staging"]).is_err());
 }

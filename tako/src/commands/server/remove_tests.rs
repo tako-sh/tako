@@ -11,6 +11,7 @@ fn native_server() -> ServerEntry {
     ServerEntry {
         native: Some(NativeTarget {
             network: crate::config::LocalNetwork {
+                alias: "fleet".into(),
                 name: "fleet".into(),
                 id: fixture.profile.snapshot().network.id.to_string(),
                 device: fixture.profile.snapshot().network.initial_admin.to_string(),

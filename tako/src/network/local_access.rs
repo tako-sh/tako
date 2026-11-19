@@ -266,6 +266,7 @@ mod tests {
     fn openssh_reads_the_approved_alias_without_leaking_settings_to_other_hosts() {
         let fixture = crate::network::tests::fixture();
         let alias = LocalNetwork {
+            alias: "test".into(),
             name: "test".into(),
             id: fixture.profile.snapshot().network.id.to_string(),
             device: "11".repeat(32),

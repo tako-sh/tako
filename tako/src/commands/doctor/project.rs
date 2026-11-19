@@ -37,7 +37,7 @@ pub(super) struct ProjectReport {
 /// a project there is nothing to check.
 pub(super) async fn gather(config: Option<&std::path::Path>) -> Option<ProjectReport> {
     let context = crate::commands::project_context::resolve_optional(config).ok()??;
-    let inventory = crate::commands::helpers::load_management_servers(None, None)
+    let inventory = crate::commands::helpers::load_management_servers(None)
         .await
         .unwrap_or_default();
     let project =
@@ -265,9 +265,9 @@ mod tests {
     }
 
     fn project(envs: Vec<EnvResources>, records: Result<(), String>) -> ProjectResources {
-        let config = TakoToml::parse(&format!(
-            "name = \"shop\"\n[envs.production]\nnetwork = \"{NETWORK}\"\nroute = \"*.shop.example.com\"\n[envs.staging]\nnetwork = \"{NETWORK}\"\nroute = \"staging.shop.example.com\"\n"
-        ))
+        let config = TakoToml::parse(
+            "name = \"shop\"\n[envs.production]\nroute = \"*.shop.example.com\"\n[envs.staging]\nroute = \"staging.shop.example.com\"\n",
+        )
         .unwrap();
         let mut secrets = SecretsStore::default();
         secrets.ensure_env_key_id("production").unwrap();
