@@ -48,9 +48,14 @@ async fn run_async(
         .map(|context| context.config_path.as_path());
 
     let target = super::app_target::resolve(project_tako.as_ref(), config_path, app, env, server)?;
-    let servers =
-        super::helpers::load_management_servers(project_tako.as_ref(), target.env_name.as_deref())
-            .await?;
+    let servers = super::env_network::servers_for_target(
+        project_context
+            .as_ref()
+            .map(|context| context.project_dir.as_path()),
+        project_tako.as_ref(),
+        target.env_name.as_deref(),
+    )
+    .await?;
     let server_names = super::app_target::server_names(
         project_tako.as_ref(),
         &servers,

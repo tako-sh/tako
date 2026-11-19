@@ -109,7 +109,12 @@ async fn run_async(
         | BackupCommands::Download { env, .. }
         | BackupCommands::Restore { env, .. } => env.as_deref().unwrap_or("production"),
     };
-    let servers = super::helpers::load_management_servers(Some(&tako_config), Some(env)).await?;
+    let servers = if tako_config.envs.contains_key(env) {
+        super::env_network::servers(&context.project_dir, env, super::env_network::Purpose::Use)
+            .await?
+    } else {
+        crate::config::ServerInventory::default()
+    };
 
     match cmd {
         BackupCommands::Now { env, server } => {
@@ -121,34 +126,32 @@ async fn run_async(
                 &servers,
             )?;
             let mut published = Vec::new();
-            let backup = if output::is_dry_run()
-                || !super::helpers::can_configure_bindings(&tako_config, &target.env)?
-            {
-                None
-            } else {
-                let mut secrets = context.load_secrets_for_environment(Some(&target.env))?;
-                // A new backup key must reach the network: the servers fill
-                // the backup target's keys from published state.
-                if crate::commands::storage::ensure_backup_keys_for_env(
-                    &context.project_dir,
-                    &target.env,
-                    &tako_config,
-                    &mut secrets,
-                )? {
-                    published = tokio::task::block_in_place(|| {
-                        crate::network::secrets::sync_environment(
-                            &context.project_dir,
-                            &tako_config,
-                            &app_name,
-                            &target.env,
-                            true,
-                            false,
-                        )
-                    })?
-                    .published;
-                }
-                crate::commands::storage::plain_backup_binding(&target.env, &tako_config)?
-            };
+            let backup =
+                if output::is_dry_run() || !super::helpers::can_configure_bindings(&target.env)? {
+                    None
+                } else {
+                    let mut secrets = context.load_secrets_for_environment(Some(&target.env))?;
+                    // A new backup key must reach the network: the servers fill
+                    // the backup target's keys from published state.
+                    if crate::commands::storage::ensure_backup_keys_for_env(
+                        &context.project_dir,
+                        &target.env,
+                        &tako_config,
+                        &mut secrets,
+                    )? {
+                        published = tokio::task::block_in_place(|| {
+                            crate::network::secrets::sync_environment(
+                                &context.project_dir,
+                                &app_name,
+                                &target.env,
+                                true,
+                                false,
+                            )
+                        })?
+                        .published;
+                    }
+                    crate::commands::storage::plain_backup_binding(&target.env, &tako_config)?
+                };
             backup_now(&target, &servers, backup, published).await
         }
         BackupCommands::List { env, server } => {

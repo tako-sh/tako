@@ -80,15 +80,14 @@ fn test_env_servers_reject_invalid_server_name() {
     let toml = r#"
 [envs.production]
 route = "api.example.com"
-servers = ["INVALID_NAME"]
+servers = ["not a server"]
 "#;
     assert!(TakoToml::parse(toml).is_err());
 }
 
 #[test]
 fn native_placement_rejects_an_explicit_empty_list_or_invalid_selector() {
-    let network = "a".repeat(32);
-    let base = format!("[envs.production]\nroute = 'shop.example.com'\nnetwork = '{network}'");
+    let base = "[envs.production]\nroute = 'shop.example.com'";
     assert!(
         TakoToml::parse(&format!("{base}\nservers = []"))
             .unwrap_err()
@@ -97,4 +96,15 @@ fn native_placement_rejects_an_explicit_empty_list_or_invalid_selector() {
     );
     assert!(TakoToml::parse(&format!("{base}\nservers = ['other/edge']")).is_err());
     assert!(TakoToml::parse(&format!("{base}\nservers = ['01.Web_a']")).is_ok());
+}
+
+#[test]
+fn an_environment_network_in_tako_toml_points_to_the_project_record() {
+    let error = TakoToml::parse(&format!(
+        "[envs.production]\nroute = 'shop.example.com'\nnetwork = '{}'",
+        "a".repeat(32)
+    ))
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains(".tako/project.json"), "{error}");
 }

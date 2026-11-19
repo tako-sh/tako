@@ -206,7 +206,7 @@ tako secrets key import --env production
 
 Use `--passphrase --env production` if the original key came from a passphrase. Import validates existing ciphertext before installing the key and does not need to decrypt the shared cache first. Keep the legacy file or local drafts while recovering; generating a replacement key does not decrypt them. Once the original key is available, migrate a tracked file with `tako secrets migrate`, then publish with `tako secrets sync --env production`.
 
-If Tako reports that local drafts are bound to another app or network, confirm the selected `--config` file and its environment's network ID. Files in the same directory share `.tako/` state. Use a separate worktree or directory for a different target while preserving the original drafts. See [alternate configurations](/secrets/#use-an-alternate-configuration).
+If Tako reports unpublished secrets for another network or app, this checkout has drafts for the environment's previous network or for another app. Confirm the selected `--config` file and the network recorded in `.tako/project.json`. Publish the drafts with `tako secrets sync --env <env> --network <old>`, or remove them; published drafts follow the environment on their own. Files in the same directory share `.tako/` state. See [Move an environment to another network](/secrets/#move-an-environment-to-another-network) and [alternate configurations](/secrets/#use-an-alternate-configuration).
 
 On macOS, iCloud Keychain storage requires the signed `Tako.app` CLI. If Keychain entitlement is unavailable, reinstall Tako with the official installer.
 
@@ -224,4 +224,6 @@ Use `tako network server add admin@host --network <network>` to install and enro
 
 Check network membership (`tako network status <network> --json`), HTTPS reachability, device permissions, and SSH recovery access before choosing a repair action. Reload requires a reachable host and is not a diagnostic probe; follow [Servers](/servers/) for maintenance.
 
-If a network or server name is ambiguous, inspect `tako network list --json` and `tako network server list --json`. Select the network by its stable ID or copy the full maintenance selector shown for the server. Do not rename or revoke a device merely to resolve a local name collision.
+If a command says this machine has several networks, pass `--network` with one of the aliases it lists, or run it in a terminal to choose. Inspect `tako network list --json` for aliases and IDs and `tako network server list --json` for full `<alias>/<server>` maintenance selectors. Two networks with the same shared name get different aliases; change one with `tako network rename <alias> <new-alias>`, which affects only this machine. Do not revoke a device to resolve a name collision.
+
+If a command says an environment uses a network this machine hasn't joined, the network is recorded in `.tako/project.json`. Join it with `tako network join`, or pass `--network` to use another network for that run. If `tako.toml` fails to parse because it sets `[envs.<env>].network`, remove the line; the next `tako deploy --env <env>` records the network in `.tako/project.json`.

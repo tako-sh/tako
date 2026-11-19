@@ -13,26 +13,16 @@ pub enum ServerCommands {
     /// Stop new application traffic and drain a server, keeping management available
     Drain {
         device: String,
-        #[arg(long)]
-        network: Option<String>,
         #[arg(long, default_value_t = 120, value_name = "SECONDS", value_parser = clap::value_parser!(u64).range(0..=3600))]
         timeout: u64,
     },
     /// Resume persisted applications on a drained server
-    Resume {
-        device: String,
-        #[arg(long)]
-        network: Option<String>,
-    },
+    Resume { device: String },
 
     /// Add a new server
     Add {
         /// Server host. Use admin-user@host to install or repair with that SSH user.
         host: Option<String>,
-
-        /// Network name or stable ID (defaults to `tako network use` or the sole network).
-        #[arg(long)]
-        network: Option<String>,
 
         /// Public WireGuard endpoint (defaults to the server's IP on UDP 51820).
         #[arg(long)]
@@ -63,10 +53,6 @@ pub enum ServerCommands {
     Revoke {
         /// Server name or network/server selector (omit to choose interactively)
         name: Option<String>,
-
-        /// Network of a bare server name (defaults to `tako network use` or the sole network)
-        #[arg(long)]
-        network: Option<String>,
     },
 
     /// Remove a server from its network and delete every app and its data there
@@ -74,10 +60,6 @@ pub enum ServerCommands {
     Remove {
         /// Server name or network/server selector (omit to choose interactively)
         name: Option<String>,
-
-        /// Network of a bare server name (defaults to `tako network use` or the sole network)
-        #[arg(long)]
-        network: Option<String>,
 
         /// Also uninstall tako-server and its service files
         #[arg(long)]
@@ -97,10 +79,6 @@ pub enum ServerCommands {
         /// Server name or network/server selector
         name: String,
 
-        /// Network of a bare server name (defaults to `tako network use` or the sole network)
-        #[arg(long)]
-        network: Option<String>,
-
         /// Force a full service restart with brief downtime
         #[arg(long)]
         force: bool,
@@ -110,10 +88,6 @@ pub enum ServerCommands {
     Upgrade {
         /// Server name or network/server selector (omit to upgrade every server in the network)
         name: Option<String>,
-
-        /// Network to upgrade (defaults to `tako network use` or the sole network)
-        #[arg(long)]
-        network: Option<String>,
 
         /// Attempt upgrade despite a protocol version mismatch
         #[arg(long)]
@@ -128,29 +102,24 @@ pub fn run(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>> {
 
 async fn run_async(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
-        ServerCommands::Drain {
-            device,
-            network,
-            timeout,
-        } => tokio::task::block_in_place(|| {
+        ServerCommands::Drain { device, timeout } => tokio::task::block_in_place(|| {
             super::network::manage_server(
                 &device,
-                network.as_deref(),
+                crate::network::network_flag(),
                 tako_core::Command::DrainServer {
                     timeout_seconds: timeout,
                 },
             )
         }),
-        ServerCommands::Resume { device, network } => tokio::task::block_in_place(|| {
+        ServerCommands::Resume { device } => tokio::task::block_in_place(|| {
             super::network::manage_server(
                 &device,
-                network.as_deref(),
+                crate::network::network_flag(),
                 tako_core::Command::ResumeServer,
             )
         }),
         ServerCommands::Add {
             host,
-            network,
             wireguard_endpoint,
             name,
             port,
@@ -161,7 +130,7 @@ async fn run_async(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>
             let public_ports = wizard::public_ports_from_cli(http_port, https_port)?;
             wizard::add(
                 host.as_deref(),
-                network.as_deref(),
+                crate::network::network_flag(),
                 name.as_deref(),
                 port,
                 ssh_key.as_deref(),
@@ -171,12 +140,11 @@ async fn run_async(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>
             .await?;
             Ok(())
         }
-        ServerCommands::Revoke { name, network } => {
-            crud::revoke_server(name.as_deref(), network.as_deref()).await
+        ServerCommands::Revoke { name } => {
+            crud::revoke_server(name.as_deref(), crate::network::network_flag()).await
         }
         ServerCommands::Remove {
             name,
-            network,
             uninstall,
             yes,
         } => {
@@ -185,19 +153,21 @@ async fn run_async(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>
             } else {
                 remove::Removal::Reset
             };
-            remove::remove_server(name.as_deref(), network.as_deref(), removal, yes).await
+            remove::remove_server(
+                name.as_deref(),
+                crate::network::network_flag(),
+                removal,
+                yes,
+            )
+            .await
         }
         ServerCommands::List => crud::list_servers().await,
-        ServerCommands::Reload {
-            name,
-            network,
-            force,
-        } => crud::restart_server(&name, network.as_deref(), force).await,
-        ServerCommands::Upgrade {
-            name,
-            network,
-            force,
-        } => upgrade::upgrade_servers(name.as_deref(), network.as_deref(), force).await,
+        ServerCommands::Reload { name, force } => {
+            crud::restart_server(&name, crate::network::network_flag(), force).await
+        }
+        ServerCommands::Upgrade { name, force } => {
+            upgrade::upgrade_servers(name.as_deref(), crate::network::network_flag(), force).await
+        }
     }
 }
 

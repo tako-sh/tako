@@ -191,9 +191,6 @@ impl TakoToml {
 
         // Validate each environment
         for (env_name, env_config) in &self.envs {
-            if let Some(network) = &env_config.network {
-                crate::config::validate_network_id(network)?;
-            }
             let is_development = env_name == "development";
 
             // Cannot have both route and routes
@@ -241,16 +238,12 @@ impl TakoToml {
                 )));
             }
             for server_name in &env_config.servers {
-                if env_config.network.is_some() {
-                    if server_name.parse::<tako_network::DeviceName>().is_err()
-                        && server_name.parse::<tako_network::DeviceId>().is_err()
-                    {
-                        return Err(ConfigError::Validation(format!(
-                            "Invalid server selector '{server_name}' in [envs.{env_name}].servers. Use an enrolled server name or device ID."
-                        )));
-                    }
-                } else {
-                    validate_server_name(server_name)?;
+                if server_name.parse::<tako_network::DeviceName>().is_err()
+                    && server_name.parse::<tako_network::DeviceId>().is_err()
+                {
+                    return Err(ConfigError::Validation(format!(
+                        "Invalid server selector '{server_name}' in [envs.{env_name}].servers. Use an enrolled server name or device ID."
+                    )));
                 }
             }
             for (binding_name, resource_name) in &env_config.storages {

@@ -12,8 +12,10 @@ fn cached_inventory_preserves_same_named_networks_and_skips_inactive_unselected_
     });
     let inventory = ServerInventory::load(None).unwrap();
     assert_eq!(inventory.servers.len(), 2);
+    // Same-named networks get distinct aliases, which name their servers.
+    assert_ne!(locals[0].alias, locals[1].alias);
     for local in &locals {
-        let name = format!("test/{}/server", local.id);
+        let name = format!("{}/server", local.alias);
         assert!(inventory.contains(&name));
         assert!(
             ServerInventory::load(Some(&local.id))

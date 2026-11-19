@@ -202,11 +202,6 @@
           "minimum": 1,
           "type": "integer"
         },
-        "network": {
-          "description": "Native network, identified by its stable 32-character hexadecimal ID\n(see `tako network list`). Local aliases are not portable project configuration.",
-          "pattern": "^[0-9a-f]{32}$",
-          "type": "string"
-        },
         "release": {
           "description": "Per-environment release command override. An empty string explicitly\nclears the top-level `release` command for this environment.",
           "type": "string"
@@ -223,7 +218,7 @@
           "type": "array"
         },
         "servers": {
-          "description": "Deployment targets. In a native network these are enrolled names or device IDs.",
+          "description": "Deployment targets: enrolled server names or device IDs in the\nenvironment's network. Omit to target every server in it.",
           "items": {
             "type": "string"
           },

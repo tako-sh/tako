@@ -42,8 +42,7 @@ Set up a deployment host:
 ```bash
 tako network create production
 tako network server add ubuntu@203.0.113.10 --network production --name edge
-tako network list --json
-# Set [envs.production].network in tako.toml to the stable network ID.
+tako network list
 # Custom public ports:
 tako network server add ubuntu@203.0.113.10 --network production --http-port 8080 --https-port 8443
 ```
@@ -60,6 +59,7 @@ tako credentials set ssl.cloudflare --env production --expires-on "in 90 days"
 # Set ssl = "cloudflare" in tako.toml, then store a token with Zone / SSL and Certificates / Edit:
 tako credentials set ssl.cloudflare --env production --expires-on "in 90 days"
 tako deploy
+# The first deploy records the network in .tako/project.json; commit it.
 ```
 
 ## Quick links

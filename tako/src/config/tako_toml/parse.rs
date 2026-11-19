@@ -173,11 +173,13 @@ impl TakoToml {
                         "[envs.{env_name}].backup no longer lists SQLite files. Create a hosted database with `tako sqlite create`, load the file with `tako sqlite import`, and bind it in [envs.{env_name}].databases. Hosted databases are snapshotted to the storage set in [databases.<name>].backup."
                     )));
                 }
+                if env_value.get("network").is_some() {
+                    return Err(ConfigError::Validation(format!(
+                        "[envs.{env_name}].network moved out of tako.toml: Tako records each environment's network in .tako/project.json. Remove the line; the next `tako deploy --env {env_name}` uses this machine's only network, or asks which one, and records it."
+                    )));
+                }
                 let env_config: EnvConfig = toml::from_str(&toml::to_string(env_value)?)?;
-                if env_config.network.is_some()
-                    && env_value.get("servers").is_some()
-                    && env_config.servers.is_empty()
-                {
+                if env_value.get("servers").is_some() && env_config.servers.is_empty() {
                     return Err(ConfigError::Validation(format!(
                         "[envs.{env_name}].servers is empty. List at least one server or omit the field to target the whole network."
                     )));

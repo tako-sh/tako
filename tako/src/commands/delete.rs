@@ -58,8 +58,14 @@ async fn run_async(
         None
     };
 
-    let servers =
-        super::helpers::load_management_servers(project_tako.as_ref(), requested_env).await?;
+    let servers = super::env_network::servers_for_target(
+        project_context
+            .as_ref()
+            .map(|context| context.project_dir.as_path()),
+        project_tako.as_ref(),
+        requested_env,
+    )
+    .await?;
 
     validate_confirmation_mode(assume_yes, interactive)
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;

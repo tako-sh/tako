@@ -9,7 +9,10 @@ use connection::{parse_detected_arch, parse_detected_libc};
 pub use ports::ServerPublicPorts;
 pub(super) use ports::public_ports_from_cli;
 
-pub async fn prompt_to_add_server(reason: &str) -> Result<Option<()>, Box<dyn std::error::Error>> {
+pub async fn prompt_to_add_server(
+    reason: &str,
+    network: Option<&str>,
+) -> Result<Option<()>, Box<dyn std::error::Error>> {
     if !output::is_interactive() {
         return Ok(None);
     }
@@ -18,7 +21,9 @@ pub async fn prompt_to_add_server(reason: &str) -> Result<Option<()>, Box<dyn st
         output::operation_cancelled();
         return Ok(None);
     }
-    add(None, None, None, 22, None, None, None).await.map(Some)
+    add(None, network, None, 22, None, None, None)
+        .await
+        .map(Some)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -52,7 +57,7 @@ pub(super) async fn add(
     super::native::add(
         &parsed.host,
         parsed.admin_user.as_deref().unwrap_or("root"),
-        &alias.name,
+        &alias.id,
         name,
         port,
         key,

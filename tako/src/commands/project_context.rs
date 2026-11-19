@@ -19,6 +19,13 @@ impl ProjectContext {
         let config = crate::config::TakoToml::load_from_file(&self.config_path)?;
         match env {
             Some(env) => {
+                // `--network` applies to this read; it records nothing.
+                crate::commands::env_network::resolve_if_known(
+                    &self.project_dir,
+                    env,
+                    crate::commands::env_network::Purpose::Use,
+                )
+                .map_err(crate::config::ConfigError::Validation)?;
                 crate::config::SecretsStore::load_for_environment(&self.project_dir, &config, env)
             }
             None => crate::config::SecretsStore::load_with_config(&self.project_dir, &config),

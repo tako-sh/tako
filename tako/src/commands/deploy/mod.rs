@@ -110,7 +110,6 @@ struct BuildPhaseResult {
 
 struct ValidationResult {
     tako_config: TakoToml,
-    servers: ServerInventory,
     secrets: SecretsStore,
     env: String,
     warnings: Vec<String>,
@@ -172,22 +171,23 @@ async fn run_async(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let context = project_context::resolve_existing(config_path)?;
     let project_dir = context.project_dir;
+    // Choosing the network can ask, so it happens before any spinner.
+    let env = resolve_deploy_environment(
+        requested_env,
+        &TakoToml::load_from_file(&context.config_path)?,
+    )?;
+    let network =
+        super::env_network::resolve(&project_dir, &env, super::env_network::Purpose::Deploy)?;
     let validation = output::with_spinner_silent(
         "Validating configuration",
         || -> Result<ValidationResult, String> {
             let _t = output::timed("Configuration validation");
             let tako_config =
                 TakoToml::load_from_file(&context.config_path).map_err(|e| e.to_string())?;
-            let env = resolve_deploy_environment(requested_env, &tako_config)?;
-            let network = tako_config
-                .envs
-                .get(&env)
-                .and_then(|env| env.network.as_deref());
-            let servers = ServerInventory::load(network).map_err(|e| e.to_string())?;
+            let servers = ServerInventory::load(Some(&network.id)).map_err(|e| e.to_string())?;
             // Deploy clients never read local secrets or keys: servers resolve
             // values from the network at deploy.
-            let full = super::helpers::can_configure_bindings(&tako_config, &env)
-                .map_err(|e| e.to_string())?;
+            let full = super::helpers::can_configure_bindings(&env).map_err(|e| e.to_string())?;
             let secrets = if full {
                 SecretsStore::load_for_environment(&project_dir, &tako_config, &env)
                     .map_err(|e| e.to_string())?
@@ -206,9 +206,8 @@ async fn run_async(
 
             Ok(ValidationResult {
                 tako_config,
-                servers,
                 secrets,
-                env,
+                env: env.clone(),
                 warnings,
             })
         },
@@ -217,18 +216,11 @@ async fn run_async(
 
     let ValidationResult {
         tako_config,
-        mut servers,
         mut secrets,
         env,
         warnings,
     } = validation;
-    if tako_config
-        .envs
-        .get(&env)
-        .is_some_and(|env| env.network.is_some())
-    {
-        servers = super::helpers::load_management_servers(Some(&tako_config), Some(&env)).await?;
-    }
+    let mut servers = super::helpers::load_management_servers(Some(vec![network.clone()])).await?;
 
     let eff_app_dir = project_dir.clone();
 
@@ -299,17 +291,10 @@ async fn run_async(
                 .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?,
         )
     };
-    let configure_bindings = super::helpers::can_configure_bindings(&tako_config, &env)?;
+    let configure_bindings = super::helpers::can_configure_bindings(&env)?;
     if configure_bindings && !output::is_dry_run() {
         secrets = tokio::task::block_in_place(|| {
-            crate::network::secrets::sync_environment(
-                &project_dir,
-                &tako_config,
-                &app_name,
-                &env,
-                false,
-                false,
-            )
+            crate::network::secrets::sync_environment(&project_dir, &app_name, &env, false, false)
         })?;
     }
     if configure_bindings {
@@ -340,14 +325,9 @@ async fn run_async(
         resolve_deploy_server_names(&tako_config, &servers, &env)
             .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?
     } else {
-        resolve_deploy_server_names_with_setup(
-            &tako_config,
-            &mut servers,
-            &env,
-            &context.config_path,
-        )
-        .await
-        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?
+        resolve_deploy_server_names_with_setup(&tako_config, &mut servers, &env)
+            .await
+            .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?
     };
 
     for server_name in &server_names {
@@ -456,14 +436,7 @@ async fn run_async(
     // full clients last published.
     if configure_bindings {
         secrets = tokio::task::block_in_place(|| {
-            crate::network::secrets::sync_environment(
-                &project_dir,
-                &tako_config,
-                &app_name,
-                &env,
-                true,
-                false,
-            )
+            crate::network::secrets::sync_environment(&project_dir, &app_name, &env, true, false)
         })?;
         let final_validation = config::validate_release_secret_snapshot(
             &project_dir,

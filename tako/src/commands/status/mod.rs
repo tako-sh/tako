@@ -68,21 +68,50 @@ pub async fn run(
     json: bool,
     config: Option<&std::path::Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut servers = super::helpers::load_management_servers(None, None).await?;
+    let networks = choose_networks(json)?;
+    let mut servers = super::helpers::load_management_servers(networks.clone()).await?;
 
     if !json
         && servers.is_empty()
         && server::prompt_to_add_server(
             "No servers configured yet. Add one now to see deployment status.",
+            None,
         )
         .await?
         .is_some()
     {
-        servers = crate::commands::helpers::load_management_servers(None, None).await?;
+        servers = crate::commands::helpers::load_management_servers(networks).await?;
     }
 
     let project = load_project(config, &servers);
     run_global_status(&servers, project.as_ref(), json).await
+}
+
+/// The networks to show. With several and no `--network`, an interactive
+/// terminal asks, offering every network; otherwise status shows them all.
+fn choose_networks(
+    json: bool,
+) -> Result<Option<Vec<crate::config::LocalNetwork>>, Box<dyn std::error::Error>> {
+    if json || crate::network::network_flag().is_some() || !output::is_interactive() {
+        return Ok(None);
+    }
+    let networks = crate::config::LocalNetworks::load()?;
+    if networks.networks.len() < 2 {
+        return Ok(None);
+    }
+    let mut options = vec![("All networks".to_string(), None)];
+    let mut listed: Vec<_> = networks.networks.values().cloned().collect();
+    listed.sort_by(|a, b| a.alias.cmp(&b.alias));
+    options.extend(
+        listed
+            .into_iter()
+            .map(|local| (crate::network::network_label(&local), Some(vec![local]))),
+    );
+    Ok(output::select(
+        "Network",
+        Some("This machine has several networks. Pass --network to skip this question."),
+        options,
+    )?)
 }
 
 /// The resources of the project in or named by `config`, when there is one.

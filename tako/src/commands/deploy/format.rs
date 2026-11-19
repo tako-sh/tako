@@ -246,15 +246,6 @@ pub(super) fn format_deploy_step_failure(step: &str, error: &str) -> String {
     format!("{step} failed: {error}")
 }
 
-pub(super) fn format_server_mapping_option(name: &str, entry: &ServerEntry) -> String {
-    match entry.description.as_deref().map(str::trim) {
-        Some(description) if !description.is_empty() => {
-            format!("{name} ({description})  tako@{}:{}", entry.host, entry.port)
-        }
-        _ => format!("{name}  tako@{}:{}", entry.host, entry.port),
-    }
-}
-
 pub(super) fn format_environment_not_found_error(env: &str, available: &[String]) -> String {
     let available_text = if available.is_empty() {
         "(none)".to_string()
@@ -265,17 +256,6 @@ pub(super) fn format_environment_not_found_error(env: &str, available: &[String]
         "Environment '{}' not found. Available: {}",
         env, available_text
     )
-}
-
-pub(super) fn format_no_servers_for_env_error(env: &str) -> String {
-    format!(
-        "No servers configured for environment '{}'. Add `servers = [\"<name>\"]` under [envs.{}] in tako.toml.",
-        env, env
-    )
-}
-
-pub(super) fn format_no_global_servers_error() -> String {
-    "No servers have been added. Run 'tako network server add <host>' first, then add the server under [envs.production].servers in tako.toml.".to_string()
 }
 
 pub(super) fn format_server_not_found_error(server_name: &str) -> String {

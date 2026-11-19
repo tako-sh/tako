@@ -98,16 +98,6 @@ pub fn validate_tako_toml(config: &TakoToml) -> ValidationResult {
                         .to_string(),
                 );
             }
-        } else if servers.is_empty()
-            && config
-                .envs
-                .get(env_name)
-                .is_none_or(|env| env.network.is_none())
-        {
-            result.warn(format!(
-                "Environment '{}' has no servers configured",
-                env_name
-            ));
         }
     }
 
@@ -202,39 +192,6 @@ pub fn validate_server_inventory(config: &ServerInventory) -> ValidationResult {
     result
 }
 
-/// Validate that tako.toml server references exist in global server inventory.
-/// If `deploy_env` is set, only validates servers in that environment.
-pub fn validate_server_references(
-    tako_config: &TakoToml,
-    servers_config: &ServerInventory,
-    deploy_env: Option<&str>,
-) -> ValidationResult {
-    let mut result = ValidationResult::new();
-
-    for (env_name, env_config) in &tako_config.envs {
-        if let Some(env) = deploy_env
-            && env_name != env
-        {
-            continue;
-        }
-        // Native placement is validated against trusted membership during target resolution.
-        if env_config.network.is_some() {
-            continue;
-        }
-        for server_name in &env_config.servers {
-            if !servers_config.contains(server_name) {
-                result.error(format!(
-                    "Server '{}' is configured in tako.toml but not found in enrolled network membership. Set this environment's network ID in tako.toml. \
-                      Run 'tako network server add --name {} <host>' to add it.",
-                    server_name, server_name
-                ));
-            }
-        }
-    }
-
-    result
-}
-
 /// Full configuration validation
 pub fn validate_full_config(
     tako_config: &TakoToml,
@@ -245,11 +202,9 @@ pub fn validate_full_config(
 
     result.merge(validate_tako_toml(tako_config));
     result.merge(validate_server_inventory(servers_config));
-    result.merge(validate_server_references(
-        tako_config,
-        servers_config,
-        deploy_env,
-    ));
+    // Placement is checked against the network's trusted membership when the
+    // deploy resolves its targets.
+    let _ = deploy_env;
 
     result
 }
@@ -257,7 +212,7 @@ pub fn validate_full_config(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{EnvConfig, ServerEntry, ServerInventory, TakoToml};
+    use crate::config::{EnvConfig, TakoToml};
 
     fn env_with_databases(bindings: &[(&str, &str)]) -> EnvConfig {
         EnvConfig {
@@ -521,46 +476,5 @@ mod tests {
 
         let result = validate_tako_toml(&tako_config);
         assert!(result.errors.iter().all(|error| !error.contains("shared")));
-    }
-
-    #[test]
-    fn validate_server_references_skips_servers_for_other_envs() {
-        let mut tako_config = TakoToml::default();
-        tako_config.envs.insert(
-            "production".to_string(),
-            EnvConfig {
-                route: Some("prod.example.com".to_string()),
-                servers: vec!["prod-server".to_string()],
-                ..Default::default()
-            },
-        );
-        tako_config.envs.insert(
-            "staging".to_string(),
-            EnvConfig {
-                route: Some("staging.example.com".to_string()),
-                servers: vec!["staging-server".to_string()],
-                ..Default::default()
-            },
-        );
-
-        // Only prod-server is in global config
-        let mut servers_config = ServerInventory::default();
-        servers_config.servers.insert(
-            "prod-server".to_string(),
-            ServerEntry {
-                host: "prod.example.com".to_string(),
-                port: 22,
-                description: None,
-                ..Default::default()
-            },
-        );
-
-        // Deploying to production: staging-server missing from global config is not an error
-        let result = validate_server_references(&tako_config, &servers_config, Some("production"));
-        assert!(result.errors.is_empty());
-
-        // Without env filter: staging-server missing is an error
-        let result = validate_server_references(&tako_config, &servers_config, None);
-        assert!(result.errors.iter().any(|e| e.contains("staging-server")));
     }
 }

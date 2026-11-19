@@ -1,14 +1,14 @@
 use crate::config::{ServerInventory, TakoToml};
 use crate::output;
 
-pub(super) fn can_configure_bindings(
-    config: &TakoToml,
-    env: &str,
-) -> Result<bool, Box<dyn std::error::Error>> {
-    let Some(id) = config.envs.get(env).and_then(|env| env.network.as_deref()) else {
+/// Whether this device may configure the environment's bindings and secrets:
+/// any device for an environment without a network, such as development, and
+/// a full client of the environment's network otherwise.
+pub(super) fn can_configure_bindings(env: &str) -> Result<bool, Box<dyn std::error::Error>> {
+    let Some(network) = super::env_network::resolved(env) else {
         return Ok(true);
     };
-    is_full_client(id)
+    is_full_client(&network.id)
 }
 
 /// Whether this device has full access to `network`.
@@ -20,7 +20,7 @@ pub(super) fn is_full_client(network: &str) -> Result<bool, Box<dyn std::error::
 pub(super) fn network_permissions(
     network: &str,
 ) -> Result<tako_network::Permissions, Box<dyn std::error::Error>> {
-    let alias = crate::network::resolve_network(Some(network))?;
+    let alias = crate::network::find_network(network)?;
     let profile = crate::network::load_profile(&alias)?;
     let device = profile
         .request()
@@ -43,10 +43,25 @@ pub fn resolve_servers_for_env(
     servers: &ServerInventory,
     env: &str,
 ) -> Result<Vec<String>, String> {
-    if let Some(config) = tako_config.envs.get(env)
-        && let Some(network) = &config.network
-    {
-        return resolve_network_servers(servers, network, &config.servers, env);
+    let network = super::env_network::resolved(env).map(|network| network.id);
+    resolve_servers_in(tako_config, servers, env, network.as_deref())
+}
+
+/// [`resolve_servers_for_env`] in an explicit network: the environment's
+/// `servers` selectors, or every trusted server, within `network`.
+pub(crate) fn resolve_servers_in(
+    tako_config: &TakoToml,
+    servers: &ServerInventory,
+    env: &str,
+    network: Option<&str>,
+) -> Result<Vec<String>, String> {
+    if let Some(network) = network {
+        let selectors = tako_config
+            .envs
+            .get(env)
+            .map(|config| config.servers.clone())
+            .unwrap_or_default();
+        return resolve_network_servers(servers, network, &selectors, env);
     }
     let mapped: Vec<String> = tako_config
         .get_servers_for_env(env)
@@ -151,9 +166,9 @@ pub fn validate_server_names(names: &[String], servers: &ServerInventory) -> Res
     Ok(())
 }
 
-/// Resolve a server maintenance selector. A `network/server` selector names
-/// its own network; a bare server name uses `--network`, then the network
-/// chosen with `tako network use`, then the sole network.
+/// Resolve a server maintenance selector. An `alias/server` selector names
+/// its own network; a bare server name uses `--network`, then the only
+/// network on this machine.
 pub(crate) fn resolve_server_selector(
     networks: &crate::config::LocalNetworks,
     servers: &ServerInventory,
@@ -179,7 +194,7 @@ pub(crate) fn resolve_server_selector(
         };
     }
     let (local, names) = network_servers(networks, servers, network)?;
-    let qualified = format!("{}/{name}", networks.server_namespace(&local));
+    let qualified = format!("{}/{name}", local.alias);
     if names.contains(&qualified) {
         return Ok(qualified);
     }
@@ -192,12 +207,12 @@ pub(crate) fn resolve_server_selector(
     if shared.is_empty() {
         Err(format!(
             "Server '{name}' not found in network {}.",
-            local.name
+            local.alias
         ))
     } else {
         Err(format!(
             "Several servers in network {} are named '{name}'. Use one of: {}.",
-            local.name,
+            local.alias,
             shared.join(", ")
         ))
     }
@@ -222,14 +237,14 @@ pub(crate) fn network_servers(
     Ok((local.clone(), names))
 }
 
-/// Server selectors for an interactive choice: the servers of the selected
-/// network, or every server when several networks exist and none is chosen.
+/// Server selectors for an interactive choice: the servers of the named
+/// network, or every server when several networks exist and none is named.
 pub(crate) fn server_choices(
     networks: &crate::config::LocalNetworks,
     servers: &ServerInventory,
     network: Option<&str>,
 ) -> Result<Vec<String>, String> {
-    if network.is_none() && !networks.has_choice() && networks.networks.len() > 1 {
+    if network.is_none() && networks.networks.len() > 1 {
         // Each selector names its network, so picking one is explicit.
         let mut names: Vec<String> = servers.names().into_iter().map(str::to_string).collect();
         names.sort_unstable();
@@ -237,7 +252,7 @@ pub(crate) fn server_choices(
     }
     let (local, names) = network_servers(networks, servers, network)?;
     if names.is_empty() {
-        return Err(format!("No servers in network {}.", local.name));
+        return Err(format!("No servers in network {}.", local.alias));
     }
     Ok(names)
 }
@@ -260,7 +275,7 @@ mod tests {
         let fixture = crate::network::tests::fixture();
         crate::network::store_keys(&fixture.profile.request().request_id, &fixture.keys).unwrap();
         let alias = crate::network::save_profile(&fixture.profile).unwrap();
-        let entries = native_server_entries(&alias, &fixture.profile, &alias.name).unwrap();
+        let entries = native_server_entries(&alias, &fixture.profile, &alias.alias).unwrap();
         assert!(entries[0].1.key_path.is_none());
         let tako_network::MemberKind::Server(info) =
             &crate::network::server_members(&fixture.profile).unwrap()[&fixture.server].kind
@@ -280,7 +295,7 @@ mod tests {
         // Refreshing public membership must not erase workstation-local SSH choices.
         crate::network::save_profile(&fixture.profile).unwrap();
         let refreshed = crate::network::load_profile(&alias).unwrap();
-        let entries = native_server_entries(&alias, &refreshed, &alias.name).unwrap();
+        let entries = native_server_entries(&alias, &refreshed, &alias.alias).unwrap();
         let config = crate::ssh::SshConfig::from_entry(&entries[0].1);
         let expected = std::env::current_dir().unwrap().join(relative);
         assert_eq!(config.key_path.as_ref(), Some(&expected));
@@ -301,13 +316,13 @@ mod tests {
         crate::network::server_access::save(&alias, &fixture.server, "new-ssh.private", None)
             .unwrap();
         assert_eq!(
-            native_server_entries(&alias, &refreshed, &alias.name).unwrap()[0]
+            native_server_entries(&alias, &refreshed, &alias.alias).unwrap()[0]
                 .1
                 .host,
             "new-ssh.private"
         );
         assert!(
-            native_server_entries(&alias, &refreshed, &alias.name).unwrap()[0]
+            native_server_entries(&alias, &refreshed, &alias.alias).unwrap()[0]
                 .1
                 .key_path
                 .is_none()
@@ -366,7 +381,7 @@ mod tests {
         let fixture = crate::network::tests::fixture();
         crate::network::store_keys(&fixture.profile.request().request_id, &fixture.keys).unwrap();
         let alias = crate::network::save_profile(&fixture.profile).unwrap();
-        let entries = native_server_entries(&alias, &fixture.profile, &alias.name).unwrap();
+        let entries = native_server_entries(&alias, &fixture.profile, &alias.alias).unwrap();
         let public_host = entries[0].1.host.clone();
         crate::network::write_json(
             &alias
@@ -377,7 +392,7 @@ mod tests {
             false,
         )
         .unwrap();
-        let entries = native_server_entries(&alias, &fixture.profile, &alias.name).unwrap();
+        let entries = native_server_entries(&alias, &fixture.profile, &alias.alias).unwrap();
         let config = crate::ssh::SshConfig::from_entry(&entries[0].1);
         assert_eq!(config.host, public_host);
         assert_eq!(
@@ -404,6 +419,7 @@ mod tests {
         ServerEntry {
             native: Some(crate::management_http::NativeTarget {
                 network: crate::config::LocalNetwork {
+                    alias: "fleet".into(),
                     name: "fleet".into(),
                     id: network_id.into(),
                     device: "1".repeat(64),
@@ -417,22 +433,19 @@ mod tests {
     }
 
     #[test]
-    fn maintenance_selectors_follow_explicit_then_chosen_then_sole_network() {
+    fn maintenance_selectors_follow_explicit_then_sole_network() {
         let (fleet, other, empty) = ("a".repeat(32), "b".repeat(32), "c".repeat(32));
         let local = |id: &str, name: &str| crate::config::LocalNetwork {
+            alias: name.into(),
             name: name.into(),
             id: id.into(),
             device: "1".repeat(64),
         };
-        let networks = |selected: Option<&str>| {
-            crate::config::LocalNetworks::with_choice(
-                [
-                    local(&fleet, "fleet"),
-                    local(&other, "other"),
-                    local(&empty, "empty"),
-                ],
-                selected,
-            )
+        let networks = |members: &[(&String, &str)]| crate::config::LocalNetworks {
+            networks: members
+                .iter()
+                .map(|(id, name)| ((*id).clone(), local(id, name)))
+                .collect(),
         };
         let mut servers = ServerInventory::default();
         for (selector, network, name, device) in [
@@ -446,45 +459,40 @@ mod tests {
                 .insert(selector, native_entry(network, name, &device.repeat(64)));
         }
 
-        // Several networks and no choice: bare names need a network, while
+        // Several networks and none named: bare names need a network, while
         // the picker lists every selector because each names its network.
-        let unchosen = networks(None);
+        let several = networks(&[(&fleet, "fleet"), (&other, "other"), (&empty, "empty")]);
         assert!(
-            resolve_server_selector(&unchosen, &servers, "edge", None)
+            resolve_server_selector(&several, &servers, "edge", None)
                 .unwrap_err()
-                .contains("tako network use")
+                .contains("--network")
         );
-        assert_eq!(server_choices(&unchosen, &servers, None).unwrap().len(), 4);
-        assert!(network_servers(&unchosen, &servers, None).is_err());
+        assert_eq!(server_choices(&several, &servers, None).unwrap().len(), 4);
+        assert!(network_servers(&several, &servers, None).is_err());
         assert_eq!(
-            resolve_server_selector(&unchosen, &servers, "edge", Some("other")).unwrap(),
+            resolve_server_selector(&several, &servers, "edge", Some("other")).unwrap(),
             "other/edge"
         );
+        assert_eq!(
+            resolve_server_selector(&several, &servers, "fleet/edge", None).unwrap(),
+            "fleet/edge"
+        );
+        assert!(resolve_server_selector(&several, &servers, "fleet/edge", Some("other")).is_err());
 
-        let chosen = networks(Some(&other));
+        let only = networks(&[(&other, "other")]);
         assert_eq!(
-            resolve_server_selector(&chosen, &servers, "edge", None).unwrap(),
+            resolve_server_selector(&only, &servers, "edge", None).unwrap(),
             "other/edge"
         );
-        // Arguments always override the chosen network.
-        assert_eq!(
-            resolve_server_selector(&chosen, &servers, "edge", Some("fleet")).unwrap(),
-            "fleet/edge"
-        );
-        assert_eq!(
-            resolve_server_selector(&chosen, &servers, "fleet/edge", None).unwrap(),
-            "fleet/edge"
-        );
-        assert!(resolve_server_selector(&chosen, &servers, "fleet/edge", Some("other")).is_err());
-        let shared = resolve_server_selector(&chosen, &servers, "api", None).unwrap_err();
+        let shared = resolve_server_selector(&only, &servers, "api", None).unwrap_err();
         assert!(shared.contains("Several servers"), "{shared}");
         assert!(shared.contains(&format!("other/api/{}", "4".repeat(64))));
-        let (network, names) = network_servers(&chosen, &servers, None).unwrap();
-        assert_eq!(network.name, "other");
+        let (network, names) = network_servers(&only, &servers, None).unwrap();
+        assert_eq!(network.alias, "other");
         assert_eq!(names.len(), 3);
-        assert_eq!(server_choices(&chosen, &servers, None).unwrap(), names);
+        assert_eq!(server_choices(&only, &servers, None).unwrap(), names);
 
-        let quiet = networks(Some(&empty));
+        let quiet = networks(&[(&empty, "empty")]);
         assert!(
             network_servers(&quiet, &servers, None)
                 .unwrap()
@@ -496,24 +504,15 @@ mod tests {
                 .unwrap_err()
                 .contains("No servers in network empty")
         );
-
-        // A stale choice is reported rather than widening the picker.
-        let stale = networks(Some(&"d".repeat(32)));
-        assert!(server_choices(&stale, &servers, None).is_err());
-        assert!(resolve_server_selector(&stale, &servers, "edge", None).is_err());
     }
 
     #[test]
     fn network_selection_uses_stable_id_and_never_falls_back_to_legacy() {
         let id = "a".repeat(32);
         let mut project = TakoToml::default();
-        project.envs.insert(
-            "production".into(),
-            EnvConfig {
-                network: Some(id.clone()),
-                ..Default::default()
-            },
-        );
+        project
+            .envs
+            .insert("production".into(), EnvConfig::default());
         let mut servers = one_server_config();
         servers.servers.insert(
             "fleet/node".into(),
@@ -524,12 +523,12 @@ mod tests {
             native_entry(&"b".repeat(32), "node", &"3".repeat(64)),
         );
         assert_eq!(
-            resolve_servers_for_env(&project, &servers, "production").unwrap(),
+            resolve_servers_in(&project, &servers, "production", Some(&id)).unwrap(),
             vec!["fleet/node"]
         );
         servers.servers.remove("fleet/node");
         assert!(
-            resolve_servers_for_env(&project, &servers, "production")
+            resolve_servers_in(&project, &servers, "production", Some(&id))
                 .unwrap_err()
                 .contains("no trusted servers")
         );
@@ -551,11 +550,10 @@ mod tests {
         );
 
         let resolve = |list: &str| {
-            let config = TakoToml::parse(&format!(
-                "[envs.production]\nroute = 'example.com'\nnetwork = '{id}'\n{list}"
-            ))
-            .unwrap();
-            resolve_servers_for_env(&config, &servers, "production")
+            let config =
+                TakoToml::parse(&format!("[envs.production]\nroute = 'example.com'\n{list}"))
+                    .unwrap();
+            resolve_servers_in(&config, &servers, "production", Some(&id))
         };
         assert_eq!(resolve("").unwrap().len(), 3);
         assert_eq!(
@@ -664,40 +662,31 @@ mod tests {
     }
 }
 
+/// Servers of `networks`, or of every network on this machine (only the
+/// `--network` one when given) for listing. Listing tolerates a network it
+/// cannot refresh; named networks do not.
 pub(crate) async fn load_management_servers(
-    project: Option<&TakoToml>,
-    env: Option<&str>,
+    networks: Option<Vec<crate::config::LocalNetwork>>,
 ) -> Result<ServerInventory, String> {
     let mut servers = ServerInventory::default();
     let aliases = crate::config::LocalNetworks::load().map_err(|error| error.to_string())?;
-    let selected = if let Some(project) = project {
-        let ids: std::collections::BTreeSet<_> = project
-            .envs
-            .iter()
-            .filter(|(name, _)| env.is_none_or(|env| env == name.as_str()))
-            .filter_map(|(_, config)| config.network.as_deref())
-            .collect();
-        ids.into_iter()
-            .map(|id| aliases.select(Some(id)).cloned())
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| error.to_string())?
-    } else {
-        aliases.networks.values().cloned().collect()
+    let (selected, targeted) = match (networks, crate::network::network_flag()) {
+        (Some(networks), _) => (networks, true),
+        (None, Some(flag)) => (
+            vec![
+                aliases
+                    .select(Some(flag))
+                    .map_err(|error| error.to_string())?
+                    .clone(),
+            ],
+            true,
+        ),
+        (None, None) => (aliases.networks.values().cloned().collect(), false),
     };
-    if env.is_some_and(|env| {
-        project
-            .and_then(|project| project.envs.get(env))
-            .is_some_and(|env| env.network.is_some())
-    }) {
-        servers = ServerInventory::default();
-    }
     let refresh = !output::is_dry_run();
-    // Without a project every configured network is only listed, so one
-    // unreachable network must not fail the whole command.
-    let targeted = project.is_some();
     for alias in selected {
-        let network = alias.name.clone();
-        let namespace = aliases.server_namespace(&alias);
+        let network = alias.alias.clone();
+        let namespace = alias.alias.clone();
         let entries = tokio::task::spawn_blocking(move || {
             let profile = match if refresh {
                 crate::network::client::refresh(&alias)
@@ -712,7 +701,7 @@ pub(crate) async fn load_management_servers(
                     Ok(profile) => {
                         warn_network(&format!(
                             "Network {}: using saved membership ({error})",
-                            alias.name
+                            alias.alias
                         ));
                         profile
                     }

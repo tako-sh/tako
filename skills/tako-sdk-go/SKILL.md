@@ -209,7 +209,7 @@ func registerChatPresence() {
 
 A React frontend uses `usePresence` from `tako.sh/react` with the same public name, params, and authorization token. The Go SDK registers backend policies; it does not create a browser or native WebSocket client. `tako.PresenceSnapshot` and `tako.PresenceMember` expose the wire shapes for consumers that manage their own connections. Member metadata is `json.RawMessage` and must be validated before use.
 
-Every browser tab has its own server-assigned connection ID. The verified `Subject` identifies the user across tabs; deduplicate subjects when counting people. Presence metadata and membership are ephemeral, have no durable replay, and are scoped to the deployed app/environment. Shared Postgres carries membership across production servers. Local development uses in-memory state and runs the same auth callbacks as production, so private-room rejection and trusted identities can be verified with `tako dev`.
+Every browser tab has its own server-assigned connection ID. The verified `Subject` identifies the user across tabs; deduplicate subjects when counting people. Presence metadata and membership are ephemeral, have no durable replay, and are scoped to the deployed app/environment. A network's servers exchange presence leases without Postgres; a configured `postgres_url` credential remains in use. Local development uses in-memory state and runs the same auth callbacks as production, so private-room rejection and trusted identities can be verified with `tako dev`.
 
 ## Stores
 
@@ -264,8 +264,8 @@ Invalidation carries no snapshot data and affects only exact params (nil means
 writers must explicitly invalidate; no SQL dependency tracking is performed.
 Invalidation failure does not undo or retry the committed database write. Use
 an application outbox for durable commit-and-notify. Params are limited to 16 KiB
-and read responses to 1 MiB. Multi-server Go apps must explicitly configure shared
-`postgres_url`; JS directory detection does not find inline Go registrations.
+and read responses to 1 MiB. Invalidations reach every server of the network
+without `postgres_url`; a configured Postgres backend remains in use.
 See https://tako.sh/docs/stores/ and verify isolation, reconnects, and cache expiry.
 
 ## Internal Protocol

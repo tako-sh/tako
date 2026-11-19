@@ -365,96 +365,6 @@ export default defineWorkflow("daily", { local: true, handler: async () => {} })
 }
 
 #[test]
-fn runtime_state_storage_validation_rejects_multi_server_channels_without_postgres_url() {
-    let temp = TempDir::new().unwrap();
-    write_channel(&temp, "chat.ts", r#"export default defineChannel("chat");"#);
-    let config = multi_server_js_config();
-    let secrets = SecretsStore::default();
-
-    let result = config::validate_runtime_state_storage_for_deploy(
-        temp.path(),
-        &config,
-        &secrets,
-        "production",
-        2,
-    );
-
-    assert!(result.has_errors());
-    assert!(result.errors[0].contains("Channels"), "{:?}", result.errors);
-    assert!(
-        result.errors[0].contains("postgres_url"),
-        "{:?}",
-        result.errors
-    );
-}
-
-#[test]
-fn runtime_state_storage_validation_requires_postgres_for_multi_server_presence() {
-    let temp = TempDir::new().unwrap();
-    fs::create_dir_all(temp.path().join("src/presence")).unwrap();
-    fs::write(
-        temp.path().join("src/presence/lobby.ts"),
-        r#"export default definePresence("lobby");"#,
-    )
-    .unwrap();
-    let result = config::validate_runtime_state_storage_for_deploy(
-        temp.path(),
-        &multi_server_js_config(),
-        &SecretsStore::default(),
-        "production",
-        2,
-    );
-    assert!(result.has_errors());
-    assert!(result.errors[0].contains("postgres_url"));
-}
-
-#[test]
-fn runtime_state_storage_validation_requires_postgres_for_multi_server_stores() {
-    let temp = TempDir::new().unwrap();
-    fs::create_dir_all(temp.path().join("app/stores")).unwrap();
-    fs::write(
-        temp.path().join("app/stores/messages.ts"),
-        r#"export default defineStore("messages", { load: async () => [] });"#,
-    )
-    .unwrap();
-    let mut tako_config = multi_server_js_config();
-    tako_config.app_root = Some("app".to_string());
-    let result = config::validate_runtime_state_storage_for_deploy(
-        temp.path(),
-        &tako_config,
-        &SecretsStore::default(),
-        "production",
-        2,
-    );
-    assert!(result.has_errors());
-    assert!(result.errors[0].contains("stores"));
-    assert!(result.errors[0].contains("postgres_url"));
-}
-
-#[cfg(unix)]
-#[test]
-fn runtime_state_storage_validation_rejects_unreadable_channels_dir() {
-    let temp = TempDir::new().unwrap();
-    let channels_dir = temp.path().join("src/channels");
-    fs::create_dir_all(&channels_dir).unwrap();
-    fs::set_permissions(&channels_dir, fs::Permissions::from_mode(0o000)).unwrap();
-    let config = multi_server_js_config();
-    let secrets = SecretsStore::default();
-
-    let result = config::validate_runtime_state_storage_for_deploy(
-        temp.path(),
-        &config,
-        &secrets,
-        "production",
-        2,
-    );
-
-    fs::set_permissions(&channels_dir, fs::Permissions::from_mode(0o755)).unwrap();
-    assert!(result.has_errors());
-    assert!(result.errors[0].contains("Channels"), "{:?}", result.errors);
-}
-
-#[test]
 fn runtime_state_storage_validation_allows_multi_server_channels_with_postgres_url() {
     let temp = TempDir::new().unwrap();
     write_channel(&temp, "chat.ts", r#"export default defineChannel("chat");"#);
@@ -512,35 +422,10 @@ fn workflow_storage_validation_rejects_multi_server_go_worker_without_postgres_u
     );
 }
 
-#[test]
-fn runtime_state_storage_validation_channels_override_all_local_workflows() {
-    let temp = TempDir::new().unwrap();
-    write_workflow(
-        &temp,
-        "daily.ts",
-        r#"export default defineWorkflow("daily", { local: true, handler: async () => {} });"#,
-    );
-    write_channel(&temp, "chat.ts", r#"export default defineChannel("chat");"#);
-    let config = multi_server_js_config();
-    let secrets = SecretsStore::default();
-
-    let result = config::validate_runtime_state_storage_for_deploy(
-        temp.path(),
-        &config,
-        &secrets,
-        "production",
-        2,
-    );
-
-    assert!(result.has_errors());
-    assert!(result.errors[0].contains("Channels"), "{:?}", result.errors);
-}
-
 fn native_multi_server_js_config() -> TakoToml {
     let mut config = multi_server_js_config();
     let production = config.envs.get_mut("production").unwrap();
     production.servers.clear();
-    production.network = Some("0123456789abcdef0123456789abcdef".into());
     config
 }
 
@@ -606,30 +491,6 @@ fn runtime_state_storage_validation_native_channels_allow_intentionally_local_wo
         2,
     );
     assert!(!result.has_errors(), "{:?}", result.errors);
-}
-
-#[test]
-fn runtime_state_storage_validation_uses_only_the_selected_environment_network() {
-    let temp = TempDir::new().unwrap();
-    write_channel(&temp, "chat.ts", "export default defineChannel(\"chat\");");
-    let mut config = native_multi_server_js_config();
-    config.envs.insert(
-        "staging".into(),
-        EnvConfig {
-            servers: vec!["sfo".into(), "iad".into()],
-            ..Default::default()
-        },
-    );
-    for (server_count, expected_errors) in [(1, false), (2, true)] {
-        let result = config::validate_runtime_state_storage_for_deploy(
-            temp.path(),
-            &config,
-            &SecretsStore::default(),
-            "staging",
-            server_count,
-        );
-        assert_eq!(result.has_errors(), expected_errors, "{:?}", result.errors);
-    }
 }
 
 #[test]

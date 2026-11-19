@@ -9,7 +9,6 @@ use crate::output;
 
 use super::format::{
     format_bun_lockfile_preflight_error, format_environment_not_found_error,
-    format_no_global_servers_error, format_no_servers_for_env_error, format_server_mapping_option,
     format_server_target_metadata_error,
 };
 
@@ -106,107 +105,43 @@ pub(super) fn resolve_deploy_server_names(
     Ok(names)
 }
 
+/// Deploy targets, offering to add a server when the environment's network
+/// has none yet.
 pub(super) async fn resolve_deploy_server_names_with_setup(
     tako_config: &TakoToml,
     servers: &mut ServerInventory,
     env: &str,
-    config_path: &Path,
 ) -> Result<Vec<String>, String> {
-    match resolve_deploy_server_names(tako_config, servers, env) {
-        Ok(names) => Ok(names),
-        Err(original_error) => {
-            if env != "production"
-                || tako_config
-                    .envs
-                    .get(env)
-                    .is_some_and(|env| env.network.is_some())
-            {
-                return Err(original_error);
-            }
-
-            if servers.is_empty() {
-                let added = server::prompt_to_add_server(
-                    "No servers have been added. Deployment needs at least one production server.",
-                )
-                .await
-                .map_err(|e| format!("Failed to run server setup: {}", e))?;
-
-                if added.is_none() {
-                    return Err(original_error);
-                }
-
-                *servers = crate::commands::helpers::load_management_servers(None, None).await?;
-            }
-
-            if servers.is_empty() {
-                return Err(format_no_global_servers_error());
-            }
-
-            let selected_server = if servers.len() == 1 {
-                servers.names()[0].to_string()
-            } else {
-                select_production_server_for_mapping(servers)?
-            };
-
-            if let Some(target) = servers
-                .get(&selected_server)
-                .and_then(|entry| entry.native.as_ref())
-            {
-                return Err(format!(
-                    "Set `network = \"{}\"` and `servers = [\"{}\"]` under [envs.{env}] in tako.toml to deploy to this server.",
-                    target.network.id, target.server_id
-                ));
-            }
-
-            persist_server_env_mapping(config_path, &selected_server, env)?;
-            output::info(&format!(
-                "Mapped server {} to {} in tako.toml",
-                output::strong(&selected_server),
-                output::strong(env)
-            ));
-            Ok(vec![selected_server])
-        }
+    let original_error = match resolve_deploy_server_names(tako_config, servers, env) {
+        Ok(names) => return Ok(names),
+        Err(error) => error,
+    };
+    let Some(network) = crate::commands::env_network::resolved(env) else {
+        return Err(original_error);
+    };
+    let empty = !servers.servers.values().any(|entry| {
+        entry
+            .native
+            .as_ref()
+            .is_some_and(|target| target.network.id == network.id)
+    });
+    if !empty {
+        return Err(original_error);
     }
-}
-
-pub(super) fn select_production_server_for_mapping(
-    servers: &ServerInventory,
-) -> Result<String, String> {
-    if !output::is_interactive() {
-        return Err(format_no_servers_for_env_error("production"));
-    }
-
-    let mut names: Vec<&str> = servers.names();
-    names.sort_unstable();
-
-    let options = names
-        .into_iter()
-        .filter_map(|name| {
-            servers
-                .get(name)
-                .map(|entry| (format_server_mapping_option(name, entry), name.to_string()))
-        })
-        .collect::<Vec<_>>();
-
-    output::select(
-        "Select server for production deploy",
-        Some("No servers are configured for production. We will save your selection to tako.toml."),
-        options,
+    let added = server::prompt_to_add_server(
+        &format!(
+            "Network {} has no servers yet. Deploying {env} needs at least one.",
+            network.alias
+        ),
+        Some(&network.id),
     )
-    .map_err(|e| format!("Failed to read selection: {}", e))
-}
-
-pub(super) fn persist_server_env_mapping(
-    config_path: &Path,
-    server_name: &str,
-    env: &str,
-) -> Result<(), String> {
-    TakoToml::upsert_server_env_in_file(config_path, server_name, env).map_err(|e| {
-        format!(
-            "Failed to update tako.toml with [envs.{env}].servers including '{}': {}",
-            server_name, e
-        )
-    })
+    .await
+    .map_err(|e| format!("Failed to run server setup: {}", e))?;
+    if added.is_none() {
+        return Err(original_error);
+    }
+    *servers = crate::commands::helpers::load_management_servers(Some(vec![network])).await?;
+    resolve_deploy_server_names(tako_config, servers, env)
 }
 
 pub(super) async fn refresh_native_build_targets(

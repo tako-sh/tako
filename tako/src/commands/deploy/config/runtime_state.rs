@@ -18,19 +18,14 @@ pub(in crate::commands::deploy) fn validate_runtime_state_storage_for_deploy(
         return result;
     }
 
-    let native_network = tako_config
-        .envs
-        .get(env)
-        .is_some_and(|selected| selected.network.is_some());
-    let channels_require_postgres = has_channels && !native_network;
-    let requires_postgres = server_count > 1
-        && (workflow_storage == WorkflowStorageIntent::RequiresRemote || channels_require_postgres);
+    // Every deploy targets a network, whose servers replicate channels,
+    // presence, and stores without Postgres. Only workflows can require it.
+    let requires_postgres =
+        server_count > 1 && workflow_storage == WorkflowStorageIntent::RequiresRemote;
     let postgres_credential = secrets.get_credential(env, POSTGRES_CREDENTIAL_NAME);
     if requires_postgres && postgres_credential.is_none() {
         result.error(format!(
-            "{} in environment '{env}' target {server_count} servers. {}",
-            runtime_state_subject(workflow_storage, channels_require_postgres),
-            missing_postgres_storage_action(workflow_storage, channels_require_postgres, env)
+            "Workflows in environment '{env}' target {server_count} servers. Mark every workflow with `local: true` for per-server local storage, or run `tako credentials set {POSTGRES_CREDENTIAL_NAME} --env {env}` for remote workflow storage."
         ));
         return result;
     }
@@ -66,39 +61,6 @@ pub(in crate::commands::deploy) fn validate_runtime_state_storage_for_deploy(
     }
 
     result
-}
-
-fn runtime_state_subject(
-    workflow_storage: WorkflowStorageIntent,
-    has_channels: bool,
-) -> &'static str {
-    match (
-        workflow_storage != WorkflowStorageIntent::NoWorkflows,
-        has_channels,
-    ) {
-        (true, true) => "Channels, presence, stores, and workflows",
-        (true, false) => "Workflows",
-        (false, true) => "Channels, presence, and stores",
-        (false, false) => "Runtime state",
-    }
-}
-
-fn missing_postgres_storage_action(
-    workflow_storage: WorkflowStorageIntent,
-    has_channels: bool,
-    env: &str,
-) -> String {
-    match (workflow_storage, has_channels) {
-        (_, true) => format!(
-            "Run `tako credentials set {POSTGRES_CREDENTIAL_NAME} --env {env}` for shared channel, presence, store, and workflow storage."
-        ),
-        (WorkflowStorageIntent::RequiresRemote, false) => format!(
-            "Mark every workflow with `local: true` for per-server local storage, or run `tako credentials set {POSTGRES_CREDENTIAL_NAME} --env {env}` for remote workflow storage."
-        ),
-        _ => format!(
-            "Run `tako credentials set {POSTGRES_CREDENTIAL_NAME} --env {env}` for remote runtime state storage."
-        ),
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

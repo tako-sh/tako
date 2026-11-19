@@ -187,17 +187,30 @@ pub(super) async fn sync_secrets(
     let environments = match target_env {
         Some(env) if config.envs.contains_key(env) => vec![env.to_owned()],
         Some(_) => return Err("Environment is not configured in tako.toml".into()),
-        None => config
-            .envs
-            .iter()
-            .filter(|(_, spec)| spec.network.is_some())
-            .map(|(env, _)| env.clone())
-            .collect(),
+        // Without --env, sync the environments that have a network.
+        None => {
+            let file = crate::config::ProjectFile::load(&context.project_dir)?;
+            config
+                .envs
+                .keys()
+                .filter(|env| file.network(env).is_some())
+                .cloned()
+                .collect()
+        }
     };
     if environments.is_empty() {
-        return Err("No environment is bound to a network in tako.toml".into());
+        return Err(
+            "No environment has a network yet. Deploy one, or pass --env to choose its network."
+                .into(),
+        );
     }
     for env in environments {
+        // An environment named here gets a network now if it has none.
+        crate::commands::env_network::resolve(
+            &context.project_dir,
+            &env,
+            crate::commands::env_network::Purpose::Record,
+        )?;
         if output::is_dry_run() {
             output::dry_run_skip(&format!("Publish secret drafts for {env}"));
             continue;
@@ -205,7 +218,6 @@ pub(super) async fn sync_secrets(
         tokio::task::block_in_place(|| {
             crate::network::secrets::sync_environment(
                 &context.project_dir,
-                &config,
                 &app,
                 &env,
                 true,

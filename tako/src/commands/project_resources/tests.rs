@@ -14,7 +14,6 @@ endpoint = "https://s3.example.com"
 region = "auto"
 
 [envs.production]
-network = "{NETWORK}"
 route = "*.shop.example.com"
 storages = {{ uploads = "media", cache = "local" }}
 databases = {{ main = "orders" }}

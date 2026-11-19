@@ -27,7 +27,7 @@ pub(super) async fn revoke_server(
     name: Option<&str>,
     network: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let servers = crate::commands::helpers::load_management_servers(None, None).await?;
+    let servers = crate::commands::helpers::load_management_servers(None).await?;
 
     if servers.is_empty() {
         output::error("No servers configured.");
@@ -154,7 +154,7 @@ fn revoke_entry(
 }
 
 pub(super) async fn list_servers() -> Result<(), Box<dyn std::error::Error>> {
-    let servers = crate::commands::helpers::load_management_servers(None, None).await?;
+    let servers = crate::commands::helpers::load_management_servers(None).await?;
 
     if servers.is_empty() {
         if output::is_json() {
@@ -209,7 +209,7 @@ pub(super) async fn list_servers() -> Result<(), Box<dyn std::error::Error>> {
                 serde_json::json!({
                     "name": name,
                     "host": entry.host,
-                    "network": entry.native.as_ref().map(|target| &target.network.name),
+                    "network": entry.native.as_ref().map(|target| &target.network.alias),
                     "port": entry.port,
                     "http_port": entry.http_port,
                     "https_port": entry.https_port,
@@ -273,7 +273,7 @@ pub(super) async fn restart_server(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::ssh::{SshClient, SshConfig};
 
-    let servers = crate::commands::helpers::load_management_servers(None, None).await?;
+    let servers = crate::commands::helpers::load_management_servers(None).await?;
 
     let networks = crate::config::LocalNetworks::load()?;
     let name =

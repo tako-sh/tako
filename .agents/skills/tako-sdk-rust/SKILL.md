@@ -121,8 +121,8 @@ partition membership; verified subjects identify users, while each tab has its
 own connection ID. Metadata is untrusted client JSON. The proxy and React hook
 manage leases, disconnect cleanup, and reconnects. Every authorized member of a
 scope sees its roster; permissions are checked again when the configured maximum
-connection lifetime expires. Configure the shared `postgres_url` credential for
-multiple servers; native registration is not detected by the JS deploy preflight.
+connection lifetime expires. A network's servers exchange presence leases
+without Postgres; a configured `postgres_url` credential remains in use.
 
 Local Presence connections run the same auth callbacks as production and use
 in-memory state, so private-room rejection and trusted identities can be
@@ -186,8 +186,8 @@ Invalidate only after commit, using the exact params; `{}` is not a wildcard.
 External writers must invalidate explicitly; Tako does not inspect database
 dependencies. Publication errors do not roll back or retry the database write;
 use an app outbox for durable commit-and-notify. Params are capped at 16 KiB and
-read responses at 1 MiB. Multi-server native apps must explicitly configure shared
-`postgres_url`; JS directory detection does not find Rust registrations. See
+read responses at 1 MiB. Invalidations reach every server of the network without
+`postgres_url`; a configured Postgres backend remains in use. See
 https://tako.sh/docs/stores/ for the frontend lifecycle and verify scope isolation,
 reconnection, and offline expiry.
 

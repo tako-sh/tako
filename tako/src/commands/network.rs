@@ -29,9 +29,18 @@ pub enum NetworkCommands {
         /// protected prompt
         #[arg(long)]
         invitation_stdin: bool,
+        /// This machine's name for the network (asked when omitted)
+        #[arg(long)]
+        alias: Option<String>,
     },
     /// Create a private network with this machine as its first full client
-    Create { name: String },
+    Create {
+        /// The network's shared name
+        name: String,
+        /// This machine's name for the network (defaults to its name)
+        #[arg(long)]
+        alias: Option<String>,
+    },
     /// Refresh and inspect network membership
     Status { network: Option<String> },
     /// Export public network configuration without private keys or app secrets
@@ -40,13 +49,15 @@ pub enum NetworkCommands {
         #[arg(long, value_name = "FILE")]
         output: PathBuf,
     },
-    /// List this machine's networks and stable IDs
+    /// List this machine's networks with their aliases and stable IDs
     #[command(visible_alias = "ls")]
     List,
-    /// Use this network when a command does not name one
-    Use {
-        /// Network name or stable ID
+    /// Change this machine's alias for a network
+    Rename {
+        /// Current alias or stable ID
         network: String,
+        /// New alias
+        alias: String,
     },
 }
 
@@ -59,20 +70,29 @@ pub fn run(command: NetworkCommands) -> Result<()> {
             }
             finish(
                 "Synchronized network state",
-                serde_json::json!({"network":alias.name,"dry_run":output::is_dry_run()}),
+                serde_json::json!({"network":alias.alias,"dry_run":output::is_dry_run()}),
             )
         }
         NetworkCommands::Server(command) => super::server::run(command),
         NetworkCommands::Client(command) => client::run(command),
-        NetworkCommands::Join { invitation_stdin } => client::join(invitation_stdin),
-        NetworkCommands::Create { name } => create(&name),
+        NetworkCommands::Join {
+            invitation_stdin,
+            alias,
+        } => client::join(invitation_stdin, alias.as_deref()),
+        NetworkCommands::Create { name, alias } => create(&name, alias.as_deref()),
         NetworkCommands::Export { network, output } => export(network.as_deref(), &output),
         NetworkCommands::List => list(),
-        NetworkCommands::Use { network } => {
-            let alias = LocalNetworks::use_network(&network)?;
+        NetworkCommands::Rename { network, alias } => {
+            if output::is_dry_run() {
+                return finish(
+                    "Would rename the network on this machine",
+                    serde_json::json!({"dry_run": true, "network": network, "alias": alias}),
+                );
+            }
+            let renamed = LocalNetworks::rename(&network, &alias)?;
             finish(
-                &format!("Using network {}", alias.name),
-                serde_json::to_value(&alias)?,
+                &format!("Renamed network {network} to {}", renamed.alias),
+                serde_json::to_value(&renamed)?,
             )
         }
         NetworkCommands::Status { network } => status(network.as_deref()),
@@ -125,7 +145,7 @@ pub(super) fn manage_server(
     if output::is_dry_run() {
         return finish(
             "Would update server drain state",
-            serde_json::json!({"dry_run": true, "network": alias.name, "device": id, "command": command}),
+            serde_json::json!({"dry_run": true, "network": alias.alias, "device": id, "command": command}),
         );
     }
     let target = ManagementTarget::Native(NativeTarget {
@@ -159,26 +179,20 @@ pub(super) fn manage_server(
     }
     if output::is_json() {
         output::json_result(
-            serde_json::json!({"network": alias.name, "device": id, "result": result}),
+            serde_json::json!({"network": alias.alias, "device": id, "result": result}),
         )?;
     }
     Ok(())
 }
 
-fn create(name: &str) -> Result<()> {
+fn create(name: &str, alias: Option<&str>) -> Result<()> {
     crate::config::validate_network_name(name)?;
-    let aliases = LocalNetworks::load()?;
-    if aliases
-        .networks
-        .values()
-        .any(|network| network.name == name)
-    {
-        return Err(format!("Network '{name}' already exists").into());
-    }
+    let networks = LocalNetworks::load()?;
+    let alias = choose_alias(&networks, name, alias, "create")?;
     if output::is_dry_run() {
         return finish(
             "Would create a network and local device keys",
-            serde_json::json!({"dry_run": true, "name": name}),
+            serde_json::json!({"dry_run": true, "name": name, "alias": alias}),
         );
     }
     let id = NetworkId::random()?;
@@ -211,15 +225,58 @@ fn create(name: &str) -> Result<()> {
         },
     )?);
     network::store_keys(&request.request_id, &keys)?;
-    let alias = network::save_profile(&Profile::Created { request, snapshot })?;
+    let local = network::save_profile_as(&Profile::Created { request, snapshot }, Some(&alias))?;
     finish(
-        &format!("Created network {name}"),
-        serde_json::to_value(&alias)?,
+        &format!("Created network {}", network::network_label(&local)),
+        serde_json::to_value(&local)?,
     )?;
     output::hint(&format!(
-        "Add a server with `tako network server add <admin@host> --network {name}`."
+        "Add a server with `tako network server add <admin@host> --network {}`.",
+        local.alias
     ));
     Ok(())
+}
+
+/// This machine's alias for a network named `name` that it is about to
+/// create or join. An explicit alias must be free. Otherwise a join asks,
+/// suggesting the name or a numbered variant, and a create uses the name when
+/// it is free. Without a terminal, a taken name fails instead of quietly
+/// becoming `name-2`, so a script's next `--network name` cannot reach the
+/// older network.
+pub(super) fn choose_alias(
+    networks: &LocalNetworks,
+    name: &str,
+    alias: Option<&str>,
+    action: &str,
+) -> Result<String> {
+    let free = |alias: &str| -> Result<()> {
+        crate::config::validate_network_alias(alias)?;
+        match networks.find(alias) {
+            Some(other) => Err(format!(
+                "Alias '{alias}' already names network {} on this machine. Pass --alias with another name.",
+                other.id
+            )
+            .into()),
+            None => Ok(()),
+        }
+    };
+    if let Some(alias) = alias {
+        free(alias)?;
+        return Ok(alias.to_string());
+    }
+    let suggested = networks.free_alias(name);
+    if action == "create" && suggested == name {
+        return Ok(suggested);
+    }
+    if !output::is_interactive() {
+        free(name)?;
+        return Ok(name.to_string());
+    }
+    let alias = output::TextField::new("Alias for this network")
+        .with_hint("Commands on this machine name the network by its alias.")
+        .with_default(&suggested)
+        .prompt_validated(|value| free(value.trim()).map_err(|error| error.to_string()))?;
+    Ok(alias.trim().to_string())
 }
 
 fn export(value: Option<&str>, destination: &Path) -> Result<()> {
@@ -244,28 +301,15 @@ fn export(value: Option<&str>, destination: &Path) -> Result<()> {
 
 fn list() -> Result<()> {
     let networks = LocalNetworks::load()?;
-    // The network commands use when they do not name one, if any.
-    let default = networks.select(None).ok().map(|network| network.id.clone());
+    let mut listed: Vec<_> = networks.networks.values().collect();
+    listed.sort_by(|a, b| a.alias.cmp(&b.alias));
     if output::is_json() {
-        let listed: Vec<_> = networks
-            .networks
-            .values()
-            .map(|network| {
-                let mut value = serde_json::to_value(network)?;
-                value["default"] = serde_json::json!(default.as_ref() == Some(&network.id));
-                Ok(value)
-            })
-            .collect::<Result<_>>()?;
         return output::json_result(serde_json::json!({ "networks": listed }));
     }
-    for network in networks.networks.values() {
-        if default.as_ref() == Some(&network.id) {
-            output::info(&format!("{} (default)", network.name));
-            tracing::info!("{} (default)", network.name);
-        } else {
-            output::info(&network.name);
-            tracing::info!("{}", network.name);
-        }
+    for network in listed {
+        let line = network::network_label(network);
+        output::info(&line);
+        tracing::info!("{line}");
     }
     if networks.networks.is_empty() {
         output::hint("No networks configured. Run `tako network create <name>`.");
@@ -305,7 +349,7 @@ pub fn connect(value: Option<&str>) -> Result<()> {
         require_full_client(&profile)?;
         return finish(
             "Would connect to the network",
-            serde_json::json!({"dry_run": true, "network": alias.name}),
+            serde_json::json!({"dry_run": true, "network": alias.alias}),
         );
     }
     let profile = network::client::refresh(&alias)?;
@@ -329,7 +373,7 @@ pub fn connect(value: Option<&str>) -> Result<()> {
             restore_all(&others[..=index]);
             return Err(error);
         }
-        output::muted(&format!("Disconnected from {}", other.name));
+        output::muted(&format!("Disconnected from {}", other.alias));
     }
     if let Err(error) = network::wireguard::connect(&alias, &profile) {
         restore_all(&others);
@@ -344,7 +388,7 @@ pub fn connect(value: Option<&str>) -> Result<()> {
             network::wireguard::unreachable_servers(&profile, HANDSHAKE_WAIT)
         })
     };
-    output::success(&format!("Connected to {}", alias.name));
+    output::success(&format!("Connected to {}", alias.alias));
     let (unreachable, check_error) = match unreachable {
         Ok(servers) => (servers, None),
         Err(error) => {
@@ -375,7 +419,7 @@ pub fn connect(value: Option<&str>) -> Result<()> {
         // Without a completed check, report reachability as unknown rather
         // than an empty list that would read as "every server answered".
         output::json_result(serde_json::json!({
-            "network": alias.name,
+            "network": alias.alias,
             "connected": true,
             "reachability_checked": check_error.is_none(),
             "reachability_error": check_error,
@@ -399,6 +443,7 @@ pub fn disconnect(value: Option<&str>) -> Result<()> {
     } else {
         Some(switch_lock()?)
     };
+    let value = value.or(network::network_flag());
     let targets = match value {
         Some(_) => {
             let alias = network::resolve_network(value)?;
@@ -409,7 +454,7 @@ pub fn disconnect(value: Option<&str>) -> Result<()> {
     };
     let names: Vec<_> = targets
         .iter()
-        .map(|(alias, _)| alias.name.clone())
+        .map(|(alias, _)| alias.alias.clone())
         .collect();
     if output::is_dry_run() {
         return finish(
@@ -425,7 +470,7 @@ pub fn disconnect(value: Option<&str>) -> Result<()> {
     }
     for (alias, profile) in &targets {
         teardown(alias, profile)?;
-        output::success(&format!("Disconnected from {}", alias.name));
+        output::success(&format!("Disconnected from {}", alias.alias));
     }
     if output::is_json() {
         output::json_result(serde_json::json!({"networks": names, "connected": false}))?;
@@ -442,9 +487,9 @@ fn teardown(alias: &crate::config::LocalNetwork, profile: &Profile) -> Result<()
 fn restore_all(networks: &[(crate::config::LocalNetwork, Profile)]) {
     for (alias, profile) in networks {
         match restore(alias, profile) {
-            Ok(()) => output::muted(&format!("Reconnected to {}", alias.name)),
+            Ok(()) => output::muted(&format!("Reconnected to {}", alias.alias)),
             Err(error) => {
-                output::warning(&format!("Could not reconnect to {}: {error}", alias.name))
+                output::warning(&format!("Could not reconnect to {}: {error}", alias.alias))
             }
         }
     }
@@ -476,7 +521,7 @@ fn connected_networks() -> Result<Vec<(crate::config::LocalNetwork, Profile)>> {
             Err(error) if network::wireguard::has_saved_connection(&alias)? => {
                 return Err(format!(
                     "Network {} is connected, but its profile cannot be verified: {error}",
-                    alias.name
+                    alias.alias
                 )
                 .into());
             }
@@ -537,7 +582,7 @@ pub fn ssh(server: &str, value: Option<&str>, remote_command: &[String]) -> Resu
     if output::is_dry_run() {
         return finish(
             "Would connect using the approved SSH identity",
-            serde_json::json!({"dry_run": true, "network": alias.name, "server": id.to_string(), "user": user.as_str()}),
+            serde_json::json!({"dry_run": true, "network": alias.alias, "server": id.to_string(), "user": user.as_str()}),
         );
     }
     let keys = LocalDeviceKeys::load(&network::keys_path(&profile.request().request_id)?)?;
@@ -657,7 +702,7 @@ fn status(value: Option<&str>) -> Result<()> {
             serde_json::json!({"network": alias, "members": members, "revocations": profile.snapshot().revocations}),
         );
     }
-    output::success(&format!("Network {}", alias.name));
+    output::success(&format!("Network {}", network::network_label(&alias)));
     for (id, member) in members {
         let role = if matches!(member.kind, MemberKind::Server(_)) {
             "server"
