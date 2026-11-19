@@ -334,6 +334,9 @@ fixture_has_secrets_for_env() {
 }
 
 seed_fixture_secrets() {
+  if [[ "$FIXTURE_REL" == "e2e/fixtures/compose/sdk" ]]; then
+    printf '%s' 'compose-sdk-secret' | HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" secrets set COMPOSE_SDK_SECRET --env production
+  fi
   if [[ "$FIXTURE_REL" == examples/go/* ]]; then
     for name in API_KEY DATABASE_URL EXAMPLE_SECRET; do
       printf '%s' 'tako-example-secret' | HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" secrets set "$name" --env production
@@ -922,6 +925,107 @@ run_compose_lifecycle_checks() {
   compose_assert_response 'Hello from Bun!'
 }
 
+run_compose_sdk_checks() {
+  local server_host=$1 route_host=$2 first_release=$3
+  local body="$TMP_ROOT/compose-sdk-body.json" headers="$TMP_ROOT/compose-sdk-headers"
+  local web_id worker_id redis_id nginx_id marker status
+  echo "Checking Compose SDK services on $server_host"
+  sdk_container_ids() {
+    ssh_exec "$server_host" "docker ps --no-trunc --filter label=sh.tako.compose.service=$1 --format '{{.ID}}'" | sort
+  }
+  sdk_get() {
+    status=$(fetch_route_path "$server_host" "$route_host" "$1" "$headers" "$body" || true)
+    if [[ "$status" != 200 ]]; then
+      echo "Compose SDK request $1 failed: HTTP $status" >&2
+      cat "$body" >&2 || true
+      return 1
+    fi
+  }
+  sdk_assert_data() {
+    sdk_get /data
+    if ! jq -e --arg marker "$marker" '.value == $marker' "$body" >/dev/null; then
+      echo "tako.dataDir did not keep its contents:" >&2
+      cat "$body" >&2
+      return 1
+    fi
+  }
+  sdk_wait_for_ticks() {
+    local ticks
+    for _ in $(seq 1 60); do
+      sdk_get /ticks
+      ticks=$(jq -r '.ticks' "$body")
+      if [[ -n "$ticks" ]]; then
+        return 0
+      fi
+      sleep 0.5
+    done
+    echo "The worker's cron schedule never fired" >&2
+    return 1
+  }
+
+  # The plain routed service keeps working beside the SDK services.
+  status=$(fetch_route_path "$server_host" "nginx.$route_host" / "$headers" "$body" || true)
+  if [[ "$status" != 200 ]]; then
+    echo "Plain Compose service nginx did not answer: HTTP $status" >&2
+    return 1
+  fi
+  # Channels belong to SDK services; a plain service's route says so.
+  status=$(fetch_route_path "$server_host" "nginx.$route_host" /_tako/channels/sse/demo "$headers" "$body" || true)
+  if [[ "$status" != 404 ]] || ! grep -Fq "sdk: true" "$body"; then
+    echo "Channel request on a plain service did not explain sdk: true (HTTP $status)" >&2
+    cat "$body" >&2 || true
+    return 1
+  fi
+  sdk_get /
+  jq -e --arg app "$APP_NAME/production" '.app == $app' "$body" >/dev/null
+
+  # Workflows enqueued by web run in the worker, which publishes to a channel
+  # that a subscriber receives through the web route.
+  run_channels_workflows_checks "$server_host" "$route_host"
+  sdk_wait_for_ticks
+
+  marker="data-$(date +%s%N)"
+  post_route_json "$server_host" "$route_host" /data "{\"value\":\"$marker\"}" "Data directory write"
+  sdk_assert_data
+
+  # A deploy replaces SDK services and keeps the data directory.
+  echo "// redeploy $(date +%s%N)" >> "$PROJECT_DIR/index.ts"
+  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" deploy --env production --yes
+  sdk_assert_data
+  run_channels_workflows_checks "$server_host" "$route_host"
+
+  # A server restart re-binds the group socket and re-attaches containers.
+  web_id=$(sdk_container_ids web)
+  ssh_exec "$server_host" 'pkill -KILL -x tako-server'
+  start_tako_server "$server_host"
+  [[ $(sdk_container_ids web) == "$web_id" ]]
+  run_universal_http_checks "$server_host" "$route_host" /opt/tako
+  sdk_assert_data
+  run_channels_workflows_checks "$server_host" "$route_host"
+
+  # A secret rotation replaces web and worker, but not redis or nginx.
+  web_id=$(sdk_container_ids web)
+  worker_id=$(sdk_container_ids worker)
+  redis_id=$(sdk_container_ids redis)
+  nginx_id=$(sdk_container_ids nginx)
+  printf '%s' "rotated-$(date +%s%N)" | HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" secrets set COMPOSE_SDK_SECRET --env production
+  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" deploy --env production --yes
+  [[ $(sdk_container_ids web) != "$web_id" ]]
+  [[ $(sdk_container_ids worker) != "$worker_id" ]]
+  [[ $(sdk_container_ids redis) == "$redis_id" ]]
+  [[ $(sdk_container_ids nginx) == "$nginx_id" ]]
+  run_secret_checks "$server_host" "$route_host"
+  run_channels_workflows_checks "$server_host" "$route_host"
+
+  # Rollback restores the first release, its runtime, and the same data.
+  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" releases rollback "$first_release" --env production --yes
+  [[ "$(basename "$(resolve_current_release_link "$server_host")")" == "$first_release" ]]
+  sdk_get /
+  jq -e --arg build "$first_release" '.build == $build' "$body" >/dev/null
+  sdk_assert_data
+  run_channels_workflows_checks "$server_host" "$route_host"
+}
+
 run_universal_http_checks() {
   local server_host=$1
   local route_host=$2
@@ -1248,6 +1352,9 @@ for entry in "${SERVERS[@]}"; do
   run_cli_post_deploy_checks "$server" "$APP_NAME" "$ROUTE_HOST" "$CURRENT_VERSION"
   if [[ "$FIXTURE_REL" == "examples/compose/bun-redis" ]]; then
     run_compose_lifecycle_checks "$server" "$ROUTE_HOST" "$CURRENT_VERSION"
+  fi
+  if [[ "$FIXTURE_REL" == "e2e/fixtures/compose/sdk" ]]; then
+    run_compose_sdk_checks "$server" "$ROUTE_HOST" "$CURRENT_VERSION"
   fi
 
   echo "=== $server passed ==="

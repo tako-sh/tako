@@ -32,7 +32,9 @@ checks exercise the same configuration the application deploys with.
    writing SDK code. Read `framework-guides` and its matching framework topic
    before changing an adapter. For image releases, read `docker`, `dockerfile`,
    and `docker-workflows`; HTTP containers get app data as a mount and have no
-   internal socket.
+   internal socket. For Compose stacks, read `docker-compose`: only services
+   marked `x-tako: { sdk: true }` receive the SDK runtime (secrets, channels,
+   workflows, data dir); workflow workers are always-on Compose services.
 5. Without MCP, use `tako <command> --help` for exact flags and `--json` for
    structured results. Full docs: https://tako.sh/llms.txt.
 

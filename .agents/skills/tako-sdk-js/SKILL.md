@@ -238,6 +238,7 @@ await db.batch([{ sql: "INSERT INTO events (kind) VALUES (?)", args: ["signup"] 
 - Use a write transaction (`db.transaction("write")`) for read-modify-write logic. Idle transactions roll back after 10 seconds; statements stop after 30 seconds.
 - `ATTACH`, `VACUUM INTO`, `load_extension`, and `PRAGMA` writes other than connection settings, `user_version`, `application_id`, and `auto_vacuum` are refused. Tako manages WAL and `synchronous`; `foreign_keys` is on.
 - Container and Compose releases cannot bind databases yet.
+- In Docker Compose, a service gets secrets, channels, workflows and `tako.dataDir` only with `x-tako: { sdk: true }`; without it those calls throw an error that names the setting. Run a Compose workflow worker as its own service with `bun node_modules/tako.sh/dist/entrypoints/bun-worker.mjs` (or the Node worker).
 
 ## Vite Plugin
 
