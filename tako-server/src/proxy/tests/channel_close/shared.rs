@@ -77,7 +77,7 @@ async fn compose_subscriptions_keep_the_handshake_service() {
         serde_json::from_value(json!({
             "file": "compose.yaml",
             "services": {
-                "api": {"envs": {"": {"route": "feed.example"}}},
+                "api": {"sdk": true, "envs": {"": {"route": "feed.example"}}},
                 "web": {"http": true}
             }
         }))
@@ -109,6 +109,47 @@ async fn compose_subscriptions_keep_the_handshake_service() {
         assert_eq!(
             control(&mut client).await,
             json!({"type":"subscribed", "id":id})
+        );
+    }
+}
+
+#[tokio::test]
+async fn channel_routes_of_plain_compose_services_explain_sdk_true() {
+    let temp = TempDir::new().unwrap();
+    let proxy = proxy_for_feed(temp.path(), feed_app().await);
+    let app = proxy.lb.app_manager().get_app("feed-app").unwrap();
+    let mut config = app.config.read().clone();
+    config.compose = Some(
+        serde_json::from_value(json!({
+            "file": "compose.yaml",
+            "services": {"nginx": {"envs": {"": {"route": "feed.example"}}}}
+        }))
+        .unwrap(),
+    );
+    app.update_config(config.clone());
+    proxy
+        .routes
+        .write()
+        .set_config_routes(&config, vec!["feed.example".into()]);
+    let addr = serve(proxy).await;
+    for path in ["/_tako/channels/sse/feed?id=1", "/_tako/stores/cart"] {
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        client
+            .write_all(
+                format!("GET {path} HTTP/1.1\r\nHost: feed.example\r\nConnection: close\r\n\r\n")
+                    .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let mut response = String::new();
+        tokio::time::timeout(Duration::from_secs(2), client.read_to_string(&mut response))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(response.starts_with("HTTP/1.1 404"), "{path}: {response}");
+        assert!(
+            response.contains("Compose service 'nginx' isn't marked sdk: true in x-tako"),
+            "{path}: {response}"
         );
     }
 }
