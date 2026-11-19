@@ -1276,9 +1276,12 @@ let source = readFileSync(path, "utf8");
 const config = Bun.TOML.parse(source);
 const keys = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
   "SSL_CERT_FILE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "BUN_CONFIG_MAX_HTTP_REQUESTS"];
+// Compose reserves proxy and CA names for its own client, so a Compose
+// fixture receives them prefixed and passes them to its build explicitly.
+const name = key => (config.compose ? `E2E_${key}` : key);
 const entries = keys
-  .filter(key => process.env[key] && config.vars?.production?.[key] === undefined)
-  .map(key => `${key} = ${JSON.stringify(process.env[key])}`).join("\n");
+  .filter(key => process.env[key] && config.vars?.production?.[name(key)] === undefined)
+  .map(key => `${name(key)} = ${JSON.stringify(process.env[key])}`).join("\n");
 if (entries) {
   const section = /^\[vars\.production\][^\n]*$/m;
   source = section.test(source)
