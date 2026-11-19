@@ -52,6 +52,14 @@ impl TakoToml {
                     }
                 }
             }
+            if compose.has_sdk_services() {
+                validate_compose_sdk_workflows(&config.workflows)?;
+                for server in config.servers.per_server.values() {
+                    if let Some(workflows) = &server.workflows {
+                        validate_compose_sdk_workflows(workflows)?;
+                    }
+                }
+            }
         }
         Ok(config)
     }
@@ -637,4 +645,21 @@ fn parse_string_array(raw: &toml::Value, key: &str) -> Result<Option<Vec<String>
         out.push(s.to_string());
     }
     Ok(Some(out))
+}
+
+/// Compose SDK workflow workers are always-on Compose services. Tako never
+/// spawns them, so worker commands, counts and concurrency do not apply.
+fn validate_compose_sdk_workflows(workflows: &WorkflowsConfig) -> Result<()> {
+    let configures_workers = |worker: &WorkflowWorkerConfig| {
+        worker.run.is_some() || worker.workers.is_some() || worker.concurrency.is_some()
+    };
+    if configures_workers(&workflows.base)
+        || !workflows.groups.is_empty()
+        || workflows.groups.values().any(configures_workers)
+    {
+        return Err(ConfigError::Validation(
+            "Compose groups with sdk: true services run workflow workers as Compose services; remove [workflows] run, workers, concurrency and worker groups (set TAKO_WORKFLOW_WORKER and TAKO_WORKER_CONCURRENCY in the worker's Compose environment)".into(),
+        ));
+    }
+    Ok(())
 }

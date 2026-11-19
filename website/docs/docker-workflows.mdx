@@ -3,6 +3,8 @@ title: Container Workflows
 description: "Run a Tako workflow worker from the same image as a container app, configure its explicit command, and understand the v0 socket and process limits."
 ---
 
+This page covers standalone container releases. In a Docker Compose group, workers are Compose services marked `sdk: true`; see [Compose workflows](/docker-compose/#channels-and-workflows).
+
 A container release can run a separate workflow process from the same image. The worker has its own entrypoint and receives the internal socket it needs to talk to Tako's workflow engine. The HTTP container does not receive that socket in v0. Both receive the app data directory, mounted at `container_options.data_dir` (`/tako/data` by default) with `TAKO_DATA_DIR` set to that path.
 
 ## Configure one worker command

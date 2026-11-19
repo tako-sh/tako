@@ -27,6 +27,11 @@ pub struct AppConfig {
     pub stopped: bool,
     /// Individually stopped Compose apps; replica overrides remain intact.
     pub compose_stopped: BTreeSet<String>,
+    /// The Compose group's SDK token, loaded from encrypted server state.
+    pub compose_token: Option<String>,
+    /// Host directory of the Compose group's pinned internal socket, while
+    /// the group has `sdk: true` services.
+    pub compose_socket_dir: Option<PathBuf>,
     /// Non-secret environment variables (read from app.json in release dir)
     pub env_vars: HashMap<String, String>,
     /// Secret environment variables (loaded from encrypted server state)
@@ -93,6 +98,8 @@ impl Default for AppConfig {
             compose_replicas: BTreeMap::new(),
             stopped: false,
             compose_stopped: BTreeSet::new(),
+            compose_token: None,
+            compose_socket_dir: None,
             env_vars: HashMap::new(),
             secrets: HashMap::new(),
             storages: HashMap::new(),

@@ -96,6 +96,28 @@ pub type ChannelPublishFn =
 /// enqueue, claim, or publish as another.
 pub type PeerAuthFn = Arc<dyn Fn(&str, u32) -> Result<(), String> + Send + Sync>;
 
+/// Authorize only `app`, whatever the caller's uid. For sockets mounted into
+/// one app's containers, whose processes have no per-app Unix identity.
+pub fn pinned_app_auth(app: impl Into<String>) -> PeerAuthFn {
+    let pinned = app.into();
+    Arc::new(move |app: &str, _uid| {
+        if app == pinned {
+            Ok(())
+        } else {
+            Err(format!("internal socket app mismatch for {app}"))
+        }
+    })
+}
+
+/// How [`spawn_with_options`] exposes the bound socket file.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SocketOptions {
+    /// Mode of the bound socket. `None` keeps the shared socket's 0660 with
+    /// the `tako-app` group; a pinned socket mounted into containers of any
+    /// user uses 0666 behind a directory only Tako can list.
+    pub mode: Option<u32>,
+}
+
 /// Routes a validated destination after the socket has authenticated the caller.
 pub type NetworkCallFn =
     Arc<dyn Fn(&str, &str, tako_core::network::NetworkInvocation) -> Response + Send + Sync>;
@@ -145,6 +167,25 @@ pub fn spawn(
     peer_auth: Option<PeerAuthFn>,
     network_call: Option<NetworkCallFn>,
 ) -> std::io::Result<EnqueueSocketHandle> {
+    spawn_with_options(
+        symlink_path,
+        lookup,
+        channel_publish,
+        peer_auth,
+        network_call,
+        SocketOptions::default(),
+    )
+}
+
+/// [`spawn`] with explicit socket file options.
+pub fn spawn_with_options(
+    symlink_path: impl AsRef<Path>,
+    lookup: AppLookup,
+    channel_publish: Option<ChannelPublishFn>,
+    peer_auth: Option<PeerAuthFn>,
+    network_call: Option<NetworkCallFn>,
+    options: SocketOptions,
+) -> std::io::Result<EnqueueSocketHandle> {
     let symlink_path = symlink_path.as_ref().to_path_buf();
     let dir = symlink_path
         .parent()
@@ -169,12 +210,22 @@ pub fn spawn(
 
     let std_listener = std::os::unix::net::UnixListener::bind(&actual_path)?;
     std_listener.set_nonblocking(true)?;
-    configure_socket_permissions(&actual_path)?;
+    match options.mode {
+        Some(mode) => {
+            std::fs::set_permissions(&actual_path, std::fs::Permissions::from_mode(mode))?
+        }
+        None => configure_socket_permissions(&actual_path)?,
+    }
 
-    // Atomically swap symlink: write temp, rename over target.
+    // Atomically swap symlink: write temp, rename over target. The target is
+    // relative so the link also resolves where its directory is mounted at
+    // another path, such as /run/tako inside a container.
     let temp_link = symlink_path.with_extension("tmp");
     let _ = std::fs::remove_file(&temp_link);
-    std::os::unix::fs::symlink(&actual_path, &temp_link)?;
+    let target = actual_path
+        .file_name()
+        .expect("pid-specific socket path has a file name");
+    std::os::unix::fs::symlink(target, &temp_link)?;
     std::fs::rename(&temp_link, &symlink_path)?;
 
     tracing::info!(

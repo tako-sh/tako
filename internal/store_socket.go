@@ -16,6 +16,9 @@ import (
 func publishStoreInvalidation(ctx context.Context, name string, params json.RawMessage) error {
 	socketPath, app := os.Getenv("TAKO_INTERNAL_SOCKET"), os.Getenv("TAKO_APP_NAME")
 	if socketPath == "" || app == "" {
+		if err := ComposeSDKError(false); err != nil {
+			return err
+		}
 		return errors.New("tako: store invalidation requires TAKO_INTERNAL_SOCKET and TAKO_APP_NAME")
 	}
 	command := struct {

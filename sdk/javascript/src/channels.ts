@@ -18,6 +18,7 @@ import {
 import { getChannelsConfig } from "./channels/configure";
 import { SseReader } from "./channels/sse-reader";
 import { openSharedChannel } from "./channels/shared";
+import { composeSdkHint } from "./tako/secrets";
 import { channelParamQuery, channelStreamParams, type ChannelParamValue } from "./channels/params";
 
 export type { SseRecoveryReason, ChannelSubscribeOptions } from "./types";
@@ -310,7 +311,8 @@ export class Channel {
     }
 
     throw new Error(
-      "Channel.publish requires the Tako server runtime. Browser clients should use connect().send() for WebSocket channels.",
+      composeSdkHint() ??
+        "Channel.publish requires the Tako server runtime. Browser clients should use connect().send() for WebSocket channels.",
     );
   }
 
@@ -340,7 +342,8 @@ export class Channel {
     }
 
     throw new Error(
-      "Channel.close requires the Tako server runtime. Browser clients cannot close channel streams.",
+      composeSdkHint() ??
+        "Channel.close requires the Tako server runtime. Browser clients cannot close channel streams.",
     );
   }
 

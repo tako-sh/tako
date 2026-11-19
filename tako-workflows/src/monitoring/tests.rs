@@ -140,6 +140,7 @@ async fn scrape_exports_claims_without_database_io_and_removes_stopped_apps() {
                 log_sink: None,
                 isolation: None,
                 lanes: Vec::new(),
+                external: false,
             })
             .await
             .unwrap();

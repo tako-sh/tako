@@ -161,7 +161,7 @@ async fn deleting_a_compose_child_preserves_the_group_and_files() {
         environment: "production".into(),
         compose: Some(
             serde_json::from_value(
-                serde_json::json!({"file":"compose.yaml", "services":{"api":{}}}),
+                serde_json::json!({"file":"compose.yaml", "services":{"api":{"http":true}}}),
             )
             .unwrap(),
         ),

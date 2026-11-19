@@ -125,7 +125,7 @@ func enqueueOrder(ctx context.Context, orderID string) (string, error) {
 
 </CodeGroup>
 
-You can enqueue from a request handler, another workflow, or a script running with Tako's server runtime. Go producers also need the Tako internal socket, and container HTTP processes do not receive it in v0; see [Container Workflows](/docker-workflows/). Browser code cannot enqueue directly and throws `TakoError("TAKO_UNAVAILABLE")` if it reaches `.enqueue()`.
+You can enqueue from a request handler, another workflow, or a script running with Tako's server runtime. Go producers also need the Tako internal socket, and container HTTP processes do not receive it in v0; see [Container Workflows](/docker-workflows/). In a Docker Compose group, every `sdk: true` service can enqueue; see [Compose workflows](/docker-compose/#channels-and-workflows). Browser code cannot enqueue directly and throws `TakoError("TAKO_UNAVAILABLE")` if it reaches `.enqueue()`.
 
 Set options for a delayed run with a stable ID and seven total attempts:
 
@@ -456,6 +456,8 @@ When a workflow runtime starts, Tako launches one worker to register schedules, 
 Production starts one scale-to-zero lane per JavaScript worker group; Go and container workers use a single lane. Workflows with `worker: "email"` run in a process that only claims that group. The config parser also accepts worker counts, concurrency, and per-server overrides; those values are not applied yet.
 
 JavaScript and Go workers honor the runtime-provided lane concurrency (currently 500). Go workers stop claiming on cancellation and wait for active handlers to finish, continuing their lease heartbeats while draining. Concurrency is a worker setting; `defineWorkflow` does not expose per-workflow concurrency or handler timeouts.
+
+Docker Compose groups are the exception: their workers are always-on Compose services that Tako never spawns or scales to zero. See [Compose workflows](/docker-compose/#channels-and-workflows).
 
 The workflow process runs separately from HTTP instances. Heavy workflow dependencies do not have to occupy every request-serving process, while the worker still receives the app's runtime variables, secrets, storage bindings, and structured logs.
 

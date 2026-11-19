@@ -311,7 +311,7 @@ fn compose_restart_reloads_tagged_apps_and_variant_routes() {
     let file = project.path().join("compose.yaml");
     std::fs::write(
         &file,
-        "services:\n  web:\n    image: busybox\n    x-tako: {}\n",
+        "services:\n  web:\n    image: busybox\n    x-tako: {http: true}\n",
     )
     .unwrap();
     let runtime = tako_compose::ComposeRuntime::development(
@@ -336,12 +336,17 @@ services:
           route: api.shop.test
   new:
     image: busybox
-    x-tako: {}
+    x-tako: {http: true}
+  worker:
+    image: busybox
+    x-tako: {sdk: true}
 "#,
     )
     .unwrap();
     let refreshed = runtime.reload_development().unwrap();
     assert!(!refreshed.config.services.contains_key("web"));
+    // Workers are x-tako services without a development hostname.
+    assert!(refreshed.config.services.contains_key("worker"));
     assert_eq!(
         refreshed.config.routes("development"),
         ["api.feature.shop.test", "new.feature.shop.test"]

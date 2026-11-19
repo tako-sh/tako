@@ -50,6 +50,10 @@ pub struct App {
     pub(super) log_handle: AppLogHandle,
     pub(super) compose_logs:
         parking_lot::Mutex<Option<(std::collections::BTreeSet<String>, tokio::process::Child)>>,
+    /// Replicas per Compose service in the last planned rollout: the Compose
+    /// default or the operator override. Status reads it, so a worker the
+    /// Compose file declares with zero replicas runs as desired.
+    compose_desired_replicas: RwLock<std::collections::BTreeMap<String, u32>>,
 }
 
 /// Events for instance lifecycle
@@ -82,7 +86,19 @@ impl App {
             instance_tx,
             log_handle,
             compose_logs: parking_lot::Mutex::new(None),
+            compose_desired_replicas: RwLock::new(std::collections::BTreeMap::new()),
         }
+    }
+
+    pub(crate) fn set_compose_desired_replicas(
+        &self,
+        replicas: std::collections::BTreeMap<String, u32>,
+    ) {
+        *self.compose_desired_replicas.write() = replicas;
+    }
+
+    pub(crate) fn compose_desired_replicas(&self, service: &str) -> Option<u32> {
+        self.compose_desired_replicas.read().get(service).copied()
     }
 
     pub fn name(&self) -> String {
@@ -406,6 +422,28 @@ impl App {
     /// Allocate a new instance (doesn't start it yet)
     pub fn allocate_instance(&self) -> Arc<Instance> {
         self.allocate_instance_for(&self.config.read().version)
+    }
+
+    /// A Compose HTTP replica. SDK services answer with the group's token,
+    /// which stays valid when the server re-attaches running containers.
+    pub(crate) fn allocate_compose_instance(
+        &self,
+        runtime: &tako_compose::ComposeRuntime,
+        service: &str,
+    ) -> Arc<Instance> {
+        let token = runtime
+            .sdk()
+            .filter(|_| runtime.config.is_sdk(service))
+            .map(|sdk| sdk.token.clone());
+        let id = generate_instance_id();
+        let instance = Arc::new(Instance::new_inner_with_token(
+            id.clone(),
+            self.config.read().version.clone(),
+            self.log_handle.clone(),
+            token,
+        ));
+        self.instances.insert(id, instance.clone());
+        instance
     }
 
     pub(super) fn allocate_instance_for(&self, version: &str) -> Arc<Instance> {

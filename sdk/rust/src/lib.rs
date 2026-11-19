@@ -142,10 +142,37 @@ pub fn bootstrap() -> Result<&'static Bootstrap, BootstrapError> {
     }
 }
 
+/// The secret `name`, or `None` when it is not configured.
+///
+/// # Panics
+///
+/// In a Compose service that isn't marked `sdk: true` in `x-tako`, with a
+/// message that names the missing setting.
 pub fn secret(name: &str) -> Option<String> {
+    if let Some(hint) = compose_sdk_hint() {
+        panic!("{hint}");
+    }
     bootstrap()
         .ok()
         .and_then(|bootstrap| bootstrap.secret(name).map(str::to_string))
+}
+
+/// Set by Tako on every Compose service with `x-tako`.
+pub const COMPOSE_SERVICE_ENV: &str = "TAKO_COMPOSE_SERVICE";
+
+/// Why the Tako runtime is unavailable in a Compose service that isn't
+/// marked `sdk: true`: Tako marks every `x-tako` service but gives the
+/// runtime only to SDK ones. `None` outside Compose and in SDK services.
+pub fn compose_sdk_hint() -> Option<String> {
+    let service = std::env::var(COMPOSE_SERVICE_ENV)
+        .ok()
+        .filter(|service| !service.is_empty())?;
+    if internal_token().is_some() {
+        return None;
+    }
+    Some(format!(
+        "this Compose service ('{service}') isn't marked `sdk: true` in x-tako, so it has no Tako runtime for secrets, channels or workflows; add `sdk: true` to services.{service}.x-tako in the Compose file"
+    ))
 }
 
 /// The database bound to this app as `name`.
@@ -483,6 +510,39 @@ pub mod axum {
 mod tests {
     use super::*;
     use std::sync::{Mutex, OnceLock};
+
+    #[test]
+    fn compose_services_without_sdk_explain_the_missing_marker_on_first_use() {
+        #[cfg(unix)]
+        if !in_subprocess(
+            "tests::compose_services_without_sdk_explain_the_missing_marker_on_first_use",
+        ) {
+            return;
+        }
+        let _guard = env_lock().lock().unwrap();
+        unsafe {
+            std::env::remove_var(BOOTSTRAP_DATA_ENV);
+            std::env::remove_var("TAKO_INTERNAL_SOCKET");
+            std::env::remove_var("TAKO_APP_NAME");
+            std::env::set_var(COMPOSE_SERVICE_ENV, "web");
+        }
+        let hint = compose_sdk_hint().unwrap();
+        assert!(
+            hint.contains("isn't marked `sdk: true` in x-tako"),
+            "{hint}"
+        );
+        assert!(hint.contains("services.web.x-tako"), "{hint}");
+        let error = crate::network::Client::from_env().unwrap_err();
+        assert_eq!(error.to_string(), hint);
+        assert_eq!(crate::StoreError::RuntimeUnavailable.to_string(), hint);
+        let panic = std::panic::catch_unwind(|| secret("API_KEY")).unwrap_err();
+        assert_eq!(panic.downcast_ref::<String>(), Some(&hint));
+        unsafe {
+            std::env::remove_var(COMPOSE_SERVICE_ENV);
+        }
+        assert_eq!(compose_sdk_hint(), None);
+        assert_eq!(secret("API_KEY"), None);
+    }
 
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();

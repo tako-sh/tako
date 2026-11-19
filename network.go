@@ -10,6 +10,8 @@ import (
 	"net"
 	"os"
 	"time"
+
+	"tako.sh/internal"
 )
 
 // NetworkEnqueueOptions overrides the recipient workflow's defaults.
@@ -107,6 +109,9 @@ func Publish(ctx context.Context, address string, params any, messageType string
 func callNetwork(ctx context.Context, address string, request any) (data json.RawMessage, err error) {
 	socket, app := os.Getenv("TAKO_INTERNAL_SOCKET"), os.Getenv("TAKO_APP_NAME")
 	if socket == "" || app == "" {
+		if err := internal.ComposeSDKError(false); err != nil {
+			return nil, err
+		}
 		return nil, errors.New("tako: network primitives require the Tako runtime")
 	}
 	body, err := json.Marshal(map[string]any{"command": "network_call", "app": app, "address": address, "request": request})

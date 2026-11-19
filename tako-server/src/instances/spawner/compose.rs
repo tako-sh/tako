@@ -12,6 +12,7 @@ impl Spawner {
             .await
             .map_err(InstanceError::HealthCheckFailed)?;
         config.min_instances = runtime.ingress_count(&rollout.replicas());
+        app.set_compose_desired_replicas(rollout.replicas());
         app.update_config(config.clone());
         let old = app.get_instances();
         let mut attached = Vec::new();
@@ -39,7 +40,7 @@ impl Spawner {
                 if adopted {
                     continue;
                 }
-                let instance = app.allocate_instance();
+                let instance = app.allocate_compose_instance(&runtime, &web.service);
                 attached.push(instance.clone());
                 self.attach_compose(app, instance, &runtime, web).await?;
             }
@@ -93,7 +94,9 @@ impl Spawner {
             InstanceError::HealthCheckFailed("Compose HTTP ingress has no loopback port".into())
         })?;
         instance.set_compose(runtime.clone(), web.id.clone(), web.service.clone());
-        instance.set_sdk_health(false);
+        // SDK services answer Tako's authenticated /status check with the
+        // group token; plain services an ordinary HTTP probe.
+        instance.set_sdk_health(runtime.sdk().is_some() && runtime.config.is_sdk(&web.service));
         app.set_instance_state(&instance, InstanceState::Starting);
         let child = runtime
             .logs(std::slice::from_ref(web))
@@ -124,6 +127,9 @@ impl Spawner {
                 app.set_instance_state(&instance, InstanceState::Unhealthy);
                 Err(InstanceError::HealthCheckFailed(match result {
                     Ok(Err(error)) => error.to_string(),
+                    _ if runtime.sdk().is_some() && runtime.config.is_sdk(&web.service) => {
+                        runtime.readiness_error(&web.service)
+                    }
                     _ => "Compose HTTP service did not become healthy before the startup deadline"
                         .into(),
                 }))

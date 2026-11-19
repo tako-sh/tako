@@ -3,7 +3,7 @@ title: Docker Compose
 description: "Deploy an existing Compose stack to one VPS with persistent named volumes, Tako HTTPS, service logs, status, and application rollback."
 ---
 
-A Compose project is an **application group**. Each service with an `x-tako` mapping is a Tako app with its own routes, replicas, readiness and backend pool. Services without `x-tako`, such as databases and workers, remain ordinary Docker services. The group owns deployment, rollback, shared networks and volumes. A Tako SDK is optional.
+A Compose project is an **application group**. Compose support exists to package an existing stack and give it Tako's HTTPS, routing, rolling deploys, rollback, logs and status; new applications should run natively. Each service with an `x-tako` mapping is a Tako app: an HTTP app with its own routes, replicas, readiness and backend pool, or an SDK worker. Services without `x-tako`, such as databases and caches, remain ordinary Docker services. The group owns deployment, rollback, shared networks and volumes. A Tako SDK is optional; services that run one opt in with `sdk: true` (see [Use the Tako SDK](#use-the-tako-sdk-in-compose-services)).
 
 ## Configure a stack
 
@@ -44,11 +44,19 @@ volumes:
 
 The web and API images must declare their listening port with `EXPOSE`, or the services must declare it with standard Compose `expose` or `ports`. Tako selects a single TCP port from `expose`, then `ports` targets, then image metadata. It never guesses between multiple candidates: use one `expose` entry to select the HTTP port. Host publications are replaced with private loopback ports. There is no `x-tako.port` or Tako health-path setting.
 
-Readiness uses the container's Docker health check when present, plus an HTTP check on the app's private port. Tako sends `HEAD /` with `Host: localhost` and accepts any valid HTTP status, including 404 or 405. This verifies that the app responds behind Docker's port proxy without requiring a health endpoint. Define stricter application readiness with standard Compose `healthcheck` and dependency ordering with `depends_on`.
+Readiness uses the container's Docker health check when present, plus an HTTP check on the app's private port. For a plain HTTP app, Tako sends `HEAD /` with `Host: localhost` and accepts any valid HTTP status, including 404 or 405; an SDK HTTP app answers Tako's authenticated SDK check instead. This verifies that the app responds behind Docker's port proxy without requiring a health endpoint. Define stricter application readiness with standard Compose `healthcheck` and dependency ordering with `depends_on`.
 
-`x-tako.envs.<environment>` accepts `route` or `routes` and optional `source_ip`, which inherits the group setting when omitted. Routes use the same host/path syntax as native apps, must be literal, and cannot be assigned to two apps in the same group. Unknown `x-tako` fields fail validation. An empty `x-tako: {}` still opts a service into being a Tako app; without public routes it has only a private backend. Removing the mapping returns it to ordinary Compose management.
+`x-tako` accepts `envs`, `http` and `sdk`. `x-tako.envs.<environment>` accepts `route` or `routes` and optional `source_ip`, which inherits the group setting when omitted. Routes use the same host/path syntax as native apps, must be literal, and cannot be assigned to two apps in the same group. Unknown `x-tako` fields fail validation. Removing the mapping returns a service to ordinary Compose management.
 
-Group settings in `tako.toml` include identity, environment/server selection, variables and secrets, certificate provider/credentials, storage bindings and backups. Compose remains authoritative for builds, commands, container environment, health checks, resource limits and replica defaults. SDK bootstrap and native scale-to-zero are not enabled by adding `x-tako`.
+| `x-tako` contains                                                    | Kind                                                      |
+| -------------------------------------------------------------------- | --------------------------------------------------------- |
+| Routes in any environment (including `development`), or `http: true` | HTTP app                                                  |
+| `sdk: true`, without routes or `http`                                | SDK worker or job                                         |
+| Nothing (`x-tako: {}` or a bare `x-tako:`)                           | Validation error: add routes, `http: true` or `sdk: true` |
+
+`http: true` makes an HTTP app without routes: a private backend. Workers have no backend pool, readiness port or development hostname; their containers report their state. An SDK HTTP app with no declared port uses 3000.
+
+Group settings in `tako.toml` include identity, environment/server selection, variables and secrets, certificate provider/credentials, storage bindings and backups. Compose remains authoritative for builds, commands, container environment, health checks, resource limits and replica defaults. The SDK runtime requires `sdk: true`; native scale-to-zero is unavailable for Compose.
 
 A complete runnable [web/API/Redis example](https://github.com/tako-sh/tako/tree/master/examples/compose/web-api-redis) includes the frontend, API, Dockerfile, local routes and persistence verification.
 
@@ -106,6 +114,85 @@ does not follow redirects or read the body, and exits 1 with a short error on
 failure. Docker controls retries and intervals. For an ad hoc check, run
 `npx tako.sh healthcheck <url>`.
 
+## Use the Tako SDK in Compose services
+
+Compose is a compatibility path: it packages an existing stack and gives it Tako's HTTPS, routing, rolling deploys, rollback, logs and status. New applications should run natively. Within that scope, a Compose service whose image runs a Tako SDK can use the same app-level features as a standalone [container](/dockerfile/): secrets, S3 storage, `tako.dataDir`, channels and workflows. Mark it with `sdk: true`:
+
+```yaml compose.yaml
+services:
+  web: # SDK HTTP app
+    build: .
+    x-tako:
+      sdk: true
+      envs:
+        production:
+          route: example.com
+  worker: # SDK workflow worker
+    build: .
+    command: [bun, node_modules/tako.sh/dist/entrypoints/bun-worker.mjs]
+    x-tako:
+      sdk: true
+  grafana: # plain HTTP app, nothing injected
+    image: grafana/grafana:11
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD}
+    x-tako:
+      envs:
+        production:
+          route: grafana.example.com
+  redis: # ordinary Docker service
+    image: redis:7-alpine
+```
+
+Compose stays in charge of images, commands, environment, replicas and health checks. Tako adds its runtime only to services with `sdk: true`:
+
+| Variable or mount      | Value                                                                                                        |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `TAKO_APP_NAME`        | The group's deployment ID (`<name>/<env>`); in `tako dev`, the dev app name                                  |
+| `TAKO_INTERNAL_SOCKET` | `/run/tako/internal.sock`. The group's socket directory is mounted read-only at `/run/tako`.                 |
+| `TAKO_BOOTSTRAP_DATA`  | The group's token, all group secrets and S3 storage bindings. No databases.                                  |
+| `TAKO_DATA_DIR`        | `/tako/data`. The group's app data directory is mounted read-write, and its group is added to the container. |
+| `TAKO_BUILD`, `ENV`    | Release version and environment                                                                              |
+| `HOST`, `PORT`         | HTTP apps only: `0.0.0.0` and the selected port                                                              |
+
+Every `x-tako` service, plain ones included, also gets `TAKO_COMPOSE_SERVICE=<service>`. When a service without `sdk: true` uses secrets, channels or workflows, the JavaScript, Go and Rust SDKs fail on first use with an error that names the missing setting. Importing the SDK for utilities still works. `NODE_ENV` is not set; Compose and the image decide it.
+
+A group is one Tako app. All its SDK services share one app name, token, secret set, channel store, workflow queue and data directory. An SDK HTTP app with no declared port uses 3000, the SDK default. Its readiness check is the SDK's authenticated `GET /status` on `Host: <app>.tako`, plus any Docker health check. A service that doesn't answer fails the deploy with `service 'web' is marked sdk: true but didn't answer Tako's SDK health check`.
+
+A deploy fails when an `sdk: true` service sets `TAKO_APP_NAME`, `TAKO_INTERNAL_SOCKET`, `TAKO_BOOTSTRAP_DATA`, `TAKO_DATA_DIR`, `TAKO_BUILD` or `TAKO_COMPOSE_SERVICE` in its own environment, when an SDK HTTP app sets `HOST` or `PORT`, or when a volume targets `/run/tako` or `/tako/data`.
+
+SDK services are replaced on every deploy and every secret change, which keeps `TAKO_BUILD` the same across the group and re-runs SDK jobs on each deploy. Plain services are replaced only when they change.
+
+### Channels and workflows
+
+Publish and close channels from any SDK service. Subscribers connect through the route of an SDK HTTP app, which authorizes them; a `/_tako/channels` request on a plain service's route returns 404 with an explanation. Presence and stores build on channels and follow the same rule.
+
+Workflow workers are always-on Compose services running the SDK worker entrypoint: the JavaScript Bun or Node worker, or a Go program that calls `RunWorker`. Tako never spawns workers for a Compose group, so `[workflows]` `run`, `workers`, `concurrency` and worker groups are rejected; `[workflows].retention` is still honored. Scale workers with `deploy.replicas` or `tako scale --service worker`, and set `TAKO_WORKFLOW_WORKER` and `TAKO_WORKER_CONCURRENCY` in their Compose `environment`. Any SDK service can enqueue, even before a worker runs; the queue is durable.
+
+Tako installs the new release's workflow runtime before it starts the release's SDK containers, and stops old workers before their replacements start. The first worker of the current build registers the group's schedules; registrations from other builds are ignored. After a server restart, stored schedules stay current. A group's workflows come from one codebase: with two different codebases, the first registration wins. `tako workflows` commands work against the group.
+
+### Limits
+
+- Hosted Tako databases (`tako.databases`) are unavailable, as for standalone containers: containers have no loopback route to them.
+- Local storage bindings are rejected in groups with SDK services; use S3 storage.
+- No scale-to-zero or cold starts, and one server per group.
+- In `tako dev`, SDK services reach the dev server through a mounted Unix socket. This works with Docker Engine on Linux; Docker Desktop on macOS and Windows may not forward host Unix sockets into its VM.
+- Inbound network calls from other apps into a Compose group are unavailable. SDK services can call other apps.
+- Backups do not include Docker named volumes.
+- `tako.d.ts` is generated for the project, not per service.
+- The bootstrap envelope is visible to processes in that container and through `docker inspect`, like other values a Compose file assigns. It is never written to disk by Tako, and production never puts it in the Compose client's environment.
+
+### Migrate an empty `x-tako`
+
+A bare `x-tako: {}` or `x-tako:` is now an error. For a private backend without routes, add `http: true`:
+
+```yaml
+services:
+  internal-api:
+    x-tako:
+      http: true
+```
+
 ## Networking and persistence
 
 Tako replaces Compose port publications. Only Tako apps are published, with an assigned loopback port per replica; Tako handles public HTTPS and routes. Databases, caches, and workers communicate through Compose networks and service names.
@@ -125,6 +212,8 @@ Tako prepares and pins all images before changing running containers. It compare
 | Tako app without writable persistent volumes | Start replacement, verify readiness, switch traffic, drain old container |
 | Tako app with writable persistent volumes    | Stop old container before starting its replacement                       |
 | Workers and other services                   | Stop old container before starting its replacement                       |
+
+SDK services are replaced on every deploy and every secret change; other services only when they change.
 
 Override the order for a service using standard Compose settings:
 
@@ -148,7 +237,7 @@ Start-first updates protect traffic through Tako's HTTP ingress. Updates to data
 ## Scale individual services
 
 ```bash
-# With exactly one Tako app, --service can be omitted.
+# With exactly one HTTP app, --service can be omitted.
 tako scale 5 --env production
 
 # Scale a named service without duplicating its dependencies.
@@ -159,7 +248,7 @@ tako scale 3 --service worker --env production
 tako scale --service api --reset --env production
 ```
 
-With multiple tagged apps, `tako scale` requires `--service`; Tako never chooses an arbitrary app. `deploy.replicas` supplies each service's default (one when omitted). A successful `tako scale` stores an override for that app, environment, server, and service. Overrides survive deployments, release rollbacks, secret rotation, and server restarts. Changing `deploy.replicas` takes effect for services without an override; use `--reset` to follow the current release's default again. A failed scale restores the previous count and leaves the previous override intact. Removing a service in a successful deployment removes its override; deleting the app clears all overrides.
+With multiple HTTP apps, `tako scale` requires `--service`; Tako never chooses an arbitrary app. SDK workers are always scaled with `--service`. `deploy.replicas` supplies each service's default (one when omitted). A successful `tako scale` stores an override for that app, environment, server, and service. Overrides survive deployments, release rollbacks, secret rotation, and server restarts. Changing `deploy.replicas` takes effect for services without an override; use `--reset` to follow the current release's default again. A failed scale restores the previous count and leaves the previous override intact. Removing a service in a successful deployment removes its override; deleting the app clears all overrides.
 
 Scaling or resetting a stopped app or group changes the count used on its next start. It does not resume the app.
 
@@ -167,7 +256,7 @@ Every HTTP replica has an independent health check and routing entry. Tako balan
 
 Production Compose deployments target one server. Each Tako app has a configured count of 1–128 replicas; ordinary Docker services support 0–128, and required dependencies must have at least one configured replica. An explicitly stopped app or group runs zero replicas without changing those counts. Compose uses these explicit per-service counts, including on a standby server, rather than the native process CPU-based maximum. HTTP scale-to-zero and automatic cold starts are unsupported for Compose.
 
-`tako status --json` identifies the deployment as `kind: "application_group"`. Its `applications` list contains each tagged app's identity (`<group>/<environment>/<service>`), state, routes and instances; `services` reports Docker containers, and `replica_overrides` records overrides. Stopped apps remain in `applications` with `state: "stopped"` and no instances. Human output labels each service as an app or Docker service. Log prefixes include the service name and generation.
+`tako status --json` identifies the deployment as `kind: "application_group"`. Its `applications` list contains each tagged service's identity (`<group>/<environment>/<service>`), `kind` (`http` or `worker`), `sdk`, state, routes and instances; `services` reports Docker containers, and `replica_overrides` records overrides. Stopped apps remain in `applications` with `state: "stopped"` and no instances. Human output labels each service as an HTTP app, SDK HTTP app, SDK worker or Docker service. Log prefixes include the service name and generation.
 
 Production rejects writable bind mounts, outside build contexts, `container_name`, `network_mode`, profiles, links, `volumes_from`, shared service namespaces, Compose lifecycle hooks, optional dependencies, and `depends_on.restart`. `update_config` supports `order` and `monitor`; `rollback_config` is unsupported. These restrictions keep replacement and recovery behavior explicit.
 
@@ -199,7 +288,7 @@ Deployment, rollback, and deletion belong to the group. `tako delete --service a
 
 Request the deployed hostname, write a record or upload through the app, deploy again, and confirm that the data remains. Also test a service failure and restore a backup into a separate environment.
 
-Run `tako dev` from the app directory. Tako builds and starts the whole group and waits for Docker health and app HTTP checks. Each app gets `<service>.<group>.test` (or `<service>.<group>.tako.test`), including apps without public production routes. Override these names with `x-tako.envs.development.route` or `routes`; development variants keep their own hostnames. Docker Engine and Compose must be available locally; Docker Desktop and the current Docker context are supported. Development runs one replica of each tagged app on its own assigned local port, regardless of production `deploy.replicas` or server-side overrides; other services retain their Compose counts.
+Run `tako dev` from the app directory. Tako builds and starts the whole group and waits for Docker health and app HTTP checks. Each HTTP app gets `<service>.<group>.test` (or `<service>.<group>.tako.test`), including apps without public production routes. `sdk: true` services receive the same runtime as in production, with the dev app name and token and a socket under the dev data directory mounted with Docker on Linux; the generated override file references secrets through variables and contains none. Override these names with `x-tako.envs.development.route` or `routes`; development variants keep their own hostnames. Docker Engine and Compose must be available locally; Docker Desktop and the current Docker context are supported. Development runs one replica of each tagged app on its own assigned local port, regardless of production `deploy.replicas` or server-side overrides; other services retain their Compose counts.
 
 Press `r` in the dev session or run `tako dev --restart` after changing the image or Compose configuration. Restart reloads tagged apps and their routes, including development variant hostnames. For live source updates, use a project-local bind mount and a watch command in your Compose service. Development permits writable bind mounts inside the project; production requires read-only binds. Published ports are replaced with private ingress in both modes.
 

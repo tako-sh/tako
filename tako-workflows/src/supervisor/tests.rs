@@ -27,7 +27,21 @@ fn sleep_spec(cwd: PathBuf, workers: u32, sleep_secs: &str) -> WorkerSpec {
         log_sink: None,
         isolation: None,
         lanes: Vec::new(),
+        external: false,
     }
+}
+
+#[tokio::test]
+async fn external_workers_are_never_spawned_and_stay_healthy_until_drained() {
+    let sup = WorkerSupervisor::new(WorkerSpec::external("shop/production", "v1"));
+    sup.start().await.unwrap();
+    sup.wake().unwrap();
+    sup.bootstrap_schedules().unwrap();
+    assert!(!sup.is_running());
+    assert_eq!(sup.remaining_children(), 0);
+    assert_eq!(sup.check_startup_health(), Ok(()));
+    sup.begin_drain();
+    assert!(sup.check_startup_health().is_err());
 }
 
 #[test]
@@ -126,6 +140,7 @@ async fn shutdown_reaps_children_that_ignore_sigterm() {
         log_sink: None,
         isolation: None,
         lanes: Vec::new(),
+        external: false,
     };
     let sup = WorkerSupervisor::new(spec);
     sup.start().await.unwrap();
@@ -165,6 +180,7 @@ fn failing_spec(cwd: PathBuf) -> WorkerSpec {
         log_sink: None,
         isolation: None,
         lanes: Vec::new(),
+        external: false,
     }
 }
 
@@ -230,6 +246,7 @@ async fn clean_idle_exit_does_not_mark_unhealthy() {
         log_sink: None,
         isolation: None,
         lanes: Vec::new(),
+        external: false,
     };
     let sup = WorkerSupervisor::new(spec);
     sup.wake().unwrap();
@@ -254,6 +271,7 @@ async fn background_reaper_collects_clean_idle_exit_without_poll() {
         log_sink: None,
         isolation: None,
         lanes: Vec::new(),
+        external: false,
     };
     let sup = WorkerSupervisor::new(spec);
     sup.wake().unwrap();
@@ -284,6 +302,7 @@ async fn wake_accepts_clean_exit_when_worker_closes_bootstrap_pipe() {
         log_sink: None,
         isolation: None,
         lanes: Vec::new(),
+        external: false,
     };
     let sup = WorkerSupervisor::new(spec);
 
@@ -398,6 +417,7 @@ async fn effective_env_sets_concurrency_and_idle_timeout() {
         log_sink: None,
         isolation: None,
         lanes: Vec::new(),
+        external: false,
     };
     let env = spec.effective_env(&spec.resolved_lanes()[0]);
     assert_eq!(

@@ -94,6 +94,13 @@ impl SqliteStateStore {
                     .transpose()?,
             ),
         ];
+        // A group keeps its token across releases, including ones without SDK
+        // services, so containers it started never stop matching.
+        let compose_token = config
+            .compose_token
+            .as_ref()
+            .map(|token| encryption::encrypt_blob(&self.encryption_key, token.as_bytes()))
+            .transpose()?;
         let app = config.deployment_id();
         let mut conn = self.lock_conn()?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -115,6 +122,9 @@ impl SqliteStateStore {
                 }
             }
         }
+        if let Some(bytes) = compose_token {
+            tx.execute("INSERT INTO app_compose_tokens (app, encrypted_data) VALUES (?1, ?2) ON CONFLICT(app) DO UPDATE SET encrypted_data = excluded.encrypted_data;", (&app, bytes))?;
+        }
         tx.execute("DELETE FROM app_compose_pending WHERE app = ?1;", [&app])?;
         tx.commit()?;
         Ok(())
@@ -124,6 +134,52 @@ impl SqliteStateStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compose_token_commits_encrypted_survives_restarts_and_is_deleted_with_the_app() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let store = SqliteStateStore::new(path.clone(), [7; 32]);
+        store.init().unwrap();
+        let mut config = AppConfig {
+            name: "app".into(),
+            environment: "production".into(),
+            version: "v1".into(),
+            compose_token: Some("group-token-value".into()),
+            ..Default::default()
+        };
+        let commit = |store: &SqliteStateStore, config: &AppConfig| {
+            store
+                .commit_deployment(config, &[], &HashMap::new(), None, None, None)
+                .unwrap()
+        };
+        commit(&store, &config);
+        let raw: Vec<u8> = store
+            .lock_conn()
+            .unwrap()
+            .query_row(
+                "SELECT encrypted_data FROM app_compose_tokens WHERE app = 'app/production'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!raw.windows(17).any(|w| w == b"group-token-value"));
+        // A release without SDK services keeps the group's token.
+        config.compose_token = None;
+        config.version = "v2".into();
+        commit(&store, &config);
+        let reopened = SqliteStateStore::new(path, [7; 32]);
+        reopened.init().unwrap();
+        assert_eq!(
+            reopened
+                .get_compose_token("app/production")
+                .unwrap()
+                .as_deref(),
+            Some("group-token-value")
+        );
+        reopened.delete_app("app", "production").unwrap();
+        assert_eq!(reopened.get_compose_token("app/production").unwrap(), None);
+    }
 
     #[test]
     fn release_routes_credentials_and_pending_marker_commit_atomically() {

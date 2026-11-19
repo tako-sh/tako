@@ -363,6 +363,75 @@ fn app_socket_gid_is_unchanged_when_tako_app_is_missing() {
 }
 
 #[tokio::test]
+async fn pinned_socket_serves_only_its_app_through_a_moved_directory_and_a_rebind() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let host = tmp.path().join("host");
+    std::fs::create_dir(&host).unwrap();
+    let db_group = Arc::new(RunsDb::open_in_memory().unwrap());
+    let db_other = Arc::new(RunsDb::open_in_memory().unwrap());
+    let lookup = lookup_for(std::collections::HashMap::from([
+        ("shop/production".to_string(), db_group.clone()),
+        ("other/production".to_string(), db_other.clone()),
+    ]));
+    let spawn_pinned = |dir: &Path| {
+        spawn_with_options(
+            dir.join("internal.sock"),
+            lookup.clone(),
+            None,
+            Some(pinned_app_auth("shop/production")),
+            None,
+            SocketOptions { mode: Some(0o666) },
+        )
+        .unwrap()
+    };
+    let enqueue = async |path: &Path, app: &str| -> Response {
+        let stream = UnixStream::connect(path).await.unwrap();
+        let (r, mut w) = stream.into_split();
+        let mut r = BufReader::new(r);
+        let cmd = Command::EnqueueRun {
+            app: app.into(),
+            name: "w".into(),
+            payload: serde_json::json!({}),
+            opts: EnqueueOpts::default(),
+        };
+        write_json_line(&mut w, &cmd).await.unwrap();
+        read_json_line(&mut r).await.unwrap().unwrap()
+    };
+
+    let handle = spawn_pinned(&host);
+    let link = host.join("internal.sock");
+    // The link is relative, so it resolves wherever the directory appears.
+    let target = std::fs::read_link(&link).unwrap();
+    assert!(target.is_relative(), "{}", target.display());
+    let actual = host.join(&target);
+    assert_eq!(
+        std::fs::metadata(&actual).unwrap().permissions().mode() & 0o777,
+        0o666
+    );
+    // A container sees the directory at another path, like /run/tako.
+    let mounted = tmp.path().join("mounted");
+    std::fs::rename(&host, &mounted).unwrap();
+    let socket = mounted.join("internal.sock");
+    assert!(enqueue(&socket, "shop/production").await.is_ok());
+    let rejected = enqueue(&socket, "other/production").await;
+    assert_eq!(
+        rejected.error_message(),
+        Some("internal socket app mismatch for other/production")
+    );
+    assert_eq!(db_group.pending_count().unwrap(), 1);
+    assert_eq!(db_other.pending_count().unwrap(), 0);
+    handle.shutdown().await;
+
+    // The next server process re-binds the same mounted directory.
+    let handle = spawn_pinned(&mounted);
+    assert!(enqueue(&socket, "shop/production").await.is_ok());
+    assert_eq!(db_group.pending_count().unwrap(), 2);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn enqueue_routes_by_app() {
     let tmp = tempfile::tempdir().unwrap();
     let sock = tmp.path().join("internal.sock");
