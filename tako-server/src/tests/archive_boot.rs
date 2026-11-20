@@ -55,11 +55,13 @@ async fn release_upload_lifecycle_extracts_and_finalizes_release() {
     };
     let initial_plan: tako_core::ReleaseUploadPlan = serde_json::from_value(data).unwrap();
     assert!(initial_plan.upload_required);
+    assert!(initial_plan.preparation_required);
 
     let stored_plan = state
         .store_uploaded_release_artifact("my-app/production", "v1", &archive_path)
         .unwrap();
     assert!(stored_plan.upload_required);
+    assert!(stored_plan.preparation_required);
     assert!(Path::new(&stored_plan.path).join("app.json").is_file());
     let retained = temp
         .path()
@@ -87,6 +89,7 @@ async fn release_upload_lifecycle_extracts_and_finalizes_release() {
     };
     let cached_plan: tako_core::ReleaseUploadPlan = serde_json::from_value(data).unwrap();
     assert!(!cached_plan.upload_required);
+    assert!(cached_plan.preparation_required);
 
     let response = state
         .handle_command(Command::FinalizeRelease {
@@ -99,6 +102,21 @@ async fn release_upload_lifecycle_extracts_and_finalizes_release() {
     assert_eq!(
         std::fs::read_link(temp.path().join("apps/my-app/production/current")).unwrap(),
         Path::new(&stored_plan.path)
+    );
+
+    let Response::Ok { data } = state
+        .prepare_release_upload("my-app/production", "v1")
+        .await
+    else {
+        panic!("expected prepared release reuse");
+    };
+    let prepared: tako_core::ReleaseUploadPlan = serde_json::from_value(data).unwrap();
+    assert!(!prepared.upload_required && !prepared.preparation_required);
+    assert!(
+        state
+            .finalize_release("my-app/production", "v1")
+            .await
+            .is_ok()
     );
 
     // Server-side installs must disappear with the retired working directory,
@@ -157,6 +175,7 @@ async fn release_upload_lifecycle_extracts_and_finalizes_release() {
     };
     let restored: tako_core::ReleaseUploadPlan = serde_json::from_value(data).unwrap();
     assert!(!restored.upload_required);
+    assert!(restored.preparation_required);
     assert!(Path::new(&restored.path).join("app.json").is_file());
     assert!(!Path::new(&restored.path).join("node_modules").exists());
     // A candidate staged between RPCs must survive periodic cleanup.
@@ -169,6 +188,237 @@ async fn release_upload_lifecycle_extracts_and_finalizes_release() {
         std::fs::read(&retained).unwrap(),
         std::fs::read(&archive_path).unwrap()
     );
+}
+
+#[tokio::test]
+async fn failed_rollback_preserves_preexisting_dependencies_and_preparation_state() {
+    let temp = TempDir::new().unwrap();
+    let state = ServerState::new(
+        temp.path().to_path_buf(),
+        Arc::new(CertManager::new(CertManagerConfig {
+            cert_dir: temp.path().join("certs"),
+            ..Default::default()
+        })),
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let app = "my-app/production";
+    let upload = temp.path().join("upload.tar.zst");
+    write_test_release_archive(&upload);
+    let old = state
+        .store_uploaded_release_artifact(app, "v1", &upload)
+        .unwrap();
+    assert!(state.finalize_release(app, "v1").await.is_ok());
+    let dependency = Path::new(&old.path).join("node_modules/prepared");
+    std::fs::create_dir_all(dependency.parent().unwrap()).unwrap();
+    std::fs::write(&dependency, "installed before rollback").unwrap();
+    state.app_manager.register_app(AppConfig {
+        name: "my-app".into(),
+        environment: "production".into(),
+        version: "v2".into(),
+        ..Default::default()
+    });
+    let pending = temp
+        .path()
+        .join("apps/my-app/production/archives/v1/pending");
+    for was_pending in [false, true] {
+        if was_pending {
+            std::fs::write(&pending, []).unwrap();
+        }
+        // Route validation fails after restoration, before preparation or activation.
+        let Response::Error { message, .. } = state.rollback_app(app, "v1").await else {
+            panic!("rollback without routes must fail");
+        };
+        assert!(message.contains("no routes"), "{message}");
+        assert_eq!(
+            std::fs::read_to_string(&dependency).unwrap(),
+            "installed before rollback"
+        );
+        assert_eq!(pending.exists(), was_pending);
+    }
+}
+
+#[tokio::test]
+async fn release_finalization_succeeds_when_compaction_fails_and_cleanup_retries() {
+    let temp = TempDir::new().unwrap();
+    let state = ServerState::new(
+        temp.path().to_path_buf(),
+        Arc::new(CertManager::new(CertManagerConfig {
+            cert_dir: temp.path().join("certs"),
+            ..Default::default()
+        })),
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let app = "my-app/production";
+    let root = temp.path().join("apps/my-app/production");
+    let upload = temp.path().join("upload.tar.zst");
+    write_test_release_archive(&upload);
+    let old = state
+        .store_uploaded_release_artifact(app, "v1", &upload)
+        .unwrap();
+    assert!(state.finalize_release(app, "v1").await.is_ok());
+    let current = state
+        .store_uploaded_release_artifact(app, "v2", &upload)
+        .unwrap();
+    // A malformed private Compose directory prevents removal, even as root.
+    std::fs::write(root.join("compose"), "not a directory").unwrap();
+    assert!(state.finalize_release(app, "v2").await.is_ok());
+    assert_eq!(
+        std::fs::read_link(root.join("current")).unwrap(),
+        Path::new(&current.path)
+    );
+    assert!(!root.join("archives/v2/pending").exists());
+    assert!(Path::new(&old.path).is_dir());
+    state.app_manager.register_app(AppConfig {
+        name: "my-app".into(),
+        environment: "production".into(),
+        version: "v2".into(),
+        ..Default::default()
+    });
+    std::fs::remove_file(root.join("compose")).unwrap();
+    {
+        let _operator = state.management_lock.lock().await;
+        tokio::time::timeout(Duration::from_millis(100), state.compact_app_releases(app))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            Path::new(&old.path).is_dir(),
+            "housekeeping must yield to operators"
+        );
+    }
+    state.compact_app_releases(app).await.unwrap();
+    assert!(!Path::new(&old.path).exists());
+    assert!(root.join("archives/v1/release.tar.zst").is_file());
+}
+
+#[test]
+fn archive_restoration_queues_on_the_blocking_pool_for_upload_and_rollback() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(1)
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let temp = TempDir::new().unwrap();
+        let state = ServerState::new(
+            temp.path().to_path_buf(),
+            Arc::new(CertManager::new(CertManagerConfig {
+                cert_dir: temp.path().join("certs"),
+                ..Default::default()
+            })),
+            None,
+            empty_challenge_tokens(),
+        )
+        .unwrap();
+        let app = "my-app/production";
+        let upload = temp.path().join("upload.tar.zst");
+        write_test_release_archive(&upload);
+        let old = state
+            .store_uploaded_release_artifact(app, "v1", &upload)
+            .unwrap();
+        state.app_manager.register_app(AppConfig {
+            name: "my-app".into(),
+            environment: "production".into(),
+            version: "v2".into(),
+            ..Default::default()
+        });
+        for rollback in [false, true] {
+            std::fs::remove_dir_all(&old.path).unwrap();
+            let (release_worker, wait) = std::sync::mpsc::channel();
+            let blocker = tokio::task::spawn_blocking(move || wait.recv().unwrap());
+            let restore = async {
+                if rollback {
+                    state.rollback_app(app, "v1").await
+                } else {
+                    state.prepare_release_upload(app, "v1").await
+                }
+            };
+            tokio::pin!(restore);
+            let queued = tokio::time::timeout(Duration::from_millis(20), &mut restore)
+                .await
+                .is_err();
+            let still_absent = !Path::new(&old.path).exists();
+            release_worker.send(()).unwrap();
+            blocker.await.unwrap();
+            assert!(
+                queued && still_absent,
+                "extraction must wait for the blocking pool while Tokio remains responsive"
+            );
+            let response = restore.await;
+            assert_eq!(response.is_ok(), !rollback);
+        }
+    });
+}
+
+#[tokio::test]
+async fn release_compaction_bounds_slow_docker_inspection_for_waiting_operators() {
+    const CHILD: &str = "TAKO_TEST_SLOW_COMPACTION_DOCKER";
+    let temp = TempDir::new().unwrap();
+    if std::env::var_os(CHILD).is_none() {
+        use std::os::unix::fs::PermissionsExt;
+        let docker = temp.path().join("docker");
+        std::fs::write(&docker, "#!/bin/sh\nexec /bin/sleep 30\n").unwrap();
+        std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Isolate PATH from the other parallel tests.
+        let output = StdCommand::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::archive_boot::release_compaction_bounds_slow_docker_inspection_for_waiting_operators", "--nocapture"])
+            .env(CHILD, "1")
+            .env("PATH", std::env::join_paths(
+                std::iter::once(temp.path().to_path_buf())
+                    .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()))
+            ).unwrap())
+            .output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let state = ServerState::new(
+        temp.path().to_path_buf(),
+        Arc::new(CertManager::new(CertManagerConfig {
+            cert_dir: temp.path().join("certs"),
+            ..Default::default()
+        })),
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let app = "my-app/production";
+    let release = crate::release::app_release_root(temp.path(), app, "v1");
+    std::fs::create_dir_all(&release).unwrap();
+    std::fs::write(release.join("compose.yaml"), "services: {}\n").unwrap();
+    state.app_manager.register_app(AppConfig {
+        name: "my-app".into(),
+        environment: "production".into(),
+        version: "v1".into(),
+        path: release,
+        compose: Some(tako_core::compose::ComposeConfig {
+            file: "compose.yaml".into(),
+            services: Default::default(),
+        }),
+        env_vars: HashMap::from([(
+            crate::release::TAKO_APP_DATA_DIR_ENV.into(),
+            temp.path()
+                .join("apps/my-app/production/data/app")
+                .to_string_lossy()
+                .into_owned(),
+        )]),
+        ..Default::default()
+    });
+    let waiting_operator = async {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let _guard = tokio::time::timeout(Duration::from_secs(2), state.management_lock.lock())
+            .await
+            .expect("housekeeping must release the mutation lock promptly");
+    };
+    let (cleanup, ()) = tokio::join!(state.compact_app_releases(app), waiting_operator);
+    assert!(cleanup.unwrap_err().contains("inspection timed out"));
 }
 
 #[tokio::test]

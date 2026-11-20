@@ -17,7 +17,19 @@ struct ReleasePaths {
 
 impl crate::ServerState {
     pub(crate) async fn prepare_release_upload(&self, app: &str, version: &str) -> Response {
-        match self.prepare_release_upload_inner(app, version) {
+        let paths = match self.release_paths(app, version) {
+            Ok(paths) => paths,
+            Err(error) => return Response::error(error),
+        };
+        let active = self
+            .app_manager
+            .get_app(app)
+            .is_some_and(|app| app.version() == version);
+        let result =
+            tokio::task::spawn_blocking(move || prepare_release_upload_inner(paths, active))
+                .await
+                .unwrap_or_else(|error| Err(format!("release restoration worker failed: {error}")));
+        match result {
             Ok(plan) => Response::ok(plan),
             Err(error) => Response::error(error),
         }
@@ -114,8 +126,16 @@ impl crate::ServerState {
         })?;
 
         if paths.archive_root.is_dir() {
-            self.restore_release_artifact(app, version)?;
-            return Ok(release_upload_plan(&paths.release_path, false));
+            let active = self
+                .app_manager
+                .get_app(app)
+                .is_some_and(|app| app.version() == version);
+            let (_, preparation_required) = restore_release_artifact(&paths, active)?;
+            return Ok(release_upload_plan(
+                &paths.release_path,
+                false,
+                preparation_required,
+            ));
         }
 
         let extracted = tempfile::Builder::new()
@@ -155,86 +175,45 @@ impl crate::ServerState {
 
         extract_result?;
 
-        Ok(release_upload_plan(&paths.release_path, true))
+        Ok(release_upload_plan(&paths.release_path, true, true))
     }
 
-    fn prepare_release_upload_inner(
-        &self,
-        app: &str,
-        version: &str,
-    ) -> Result<tako_core::ReleaseUploadPlan, String> {
-        let paths = self.release_paths(app, version)?;
-        std::fs::create_dir_all(&paths.releases_root)
-            .map_err(|e| format!("create releases dir {}: {e}", paths.releases_root.display()))?;
-        std::fs::create_dir_all(&paths.shared_logs).map_err(|e| {
-            format!(
-                "create shared logs dir {}: {e}",
-                paths.shared_logs.display()
-            )
-        })?;
-
-        if paths.archive_root.is_dir() {
-            self.restore_release_artifact(app, version)?;
-        }
-        Ok(release_upload_plan(
-            &paths.release_path,
-            !paths.release_path.is_dir(),
-        ))
-    }
-
-    pub(crate) fn restore_release_artifact(
+    pub(crate) async fn restore_release_artifact(
         &self,
         app: &str,
         version: &str,
     ) -> Result<(PathBuf, bool), String> {
         let paths = self.release_paths(app, version)?;
-        let pending = paths.archive_root.join("pending").exists();
-        if paths.archive_root.is_dir() {
-            std::fs::write(paths.archive_root.join("pending"), [])
-                .map_err(|e| format!("mark release preparation: {e}"))?;
-        }
-        if paths.release_path.is_dir() {
-            let needs_preparation = pending
-                && !self
-                    .app_manager
-                    .get_app(app)
-                    .is_some_and(|current| current.version() == version);
-            return Ok((paths.release_path, needs_preparation));
-        }
-        let archive = paths.archive_root.join("release.tar.zst");
-        if !archive.is_file() {
-            return Err(format!("Release '{version}' not found for app '{app}'"));
-        }
-        std::fs::create_dir_all(&paths.releases_root).map_err(|e| e.to_string())?;
-        std::fs::create_dir_all(&paths.shared_logs).map_err(|e| e.to_string())?;
-        let staged = tempfile::Builder::new()
-            .prefix(".extract-")
-            .tempdir_in(&paths.releases_root)
-            .map_err(|e| e.to_string())?;
-        crate::extract_zstd_archive(&archive, staged.path())?;
-        replace_logs_with_shared_link(staged.path(), &paths.shared_logs)?;
-        std::fs::rename(staged.path(), &paths.release_path)
-            .map_err(|e| format!("restore release directory: {e}"))?;
-        Ok((paths.release_path, true))
+        let active = self
+            .app_manager
+            .get_app(app)
+            .is_some_and(|app| app.version() == version);
+        tokio::task::spawn_blocking(move || restore_release_artifact(&paths, active))
+            .await
+            .map_err(|error| format!("release restoration worker failed: {error}"))?
     }
 
     pub(super) async fn discard_restored_release(
         &self,
         app: &str,
         version: &str,
+        release_preexisted: bool,
+        pending_preexisted: bool,
     ) -> Result<(), String> {
         let paths = self.release_paths(app, version)?;
         if !paths.archive_root.join("release.tar.zst").is_file() {
             return Ok(());
         }
-        let protected = self.release_references(app).await?;
-        if !protected
-            .iter()
-            .any(|used| used.starts_with(&paths.release_path))
-        {
-            remove_release(&paths.release_path)?;
+        if !release_preexisted {
+            let protected = self.release_references(app).await?;
+            if !protected
+                .iter()
+                .any(|used| used.starts_with(&paths.release_path))
+            {
+                remove_release(&paths.release_path)?;
+            }
         }
-        if paths.archive_root.join("pending").exists() {
+        if !pending_preexisted && paths.archive_root.join("pending").exists() {
             std::fs::remove_file(paths.archive_root.join("pending")).map_err(|e| e.to_string())?;
         }
         Ok(())
@@ -293,11 +272,19 @@ impl crate::ServerState {
                 .map_err(|e| format!("finalize release archive: {e}"))?;
         }
         prune_old_releases(&paths.releases_root, &paths.release_path, &protected);
-        compact_releases(&paths.releases_root, &paths.release_path, &protected)?;
+        if let Err(error) = compact_releases(&paths.releases_root, &paths.release_path, &protected)
+        {
+            tracing::warn!(app, %error, "Could not compact inactive releases; periodic cleanup will retry");
+        }
         Ok(())
     }
 
     pub(crate) async fn compact_app_releases(&self, app_name: &str) -> Result<(), String> {
+        // Housekeeping yields to operators and bounds the entire Docker inspection,
+        // rather than allowing a separate timeout for every container.
+        let Ok(_management) = self.management_lock.try_lock() else {
+            return Ok(());
+        };
         let lock = self.get_deploy_lock(app_name).await;
         let Ok(_guard) = lock.try_lock() else {
             return Ok(());
@@ -306,7 +293,12 @@ impl crate::ServerState {
             return Ok(());
         };
         let paths = self.release_paths(app_name, &app.version())?;
-        let protected = self.release_references(app_name).await?;
+        let protected =
+            tokio::time::timeout(Duration::from_secs(1), self.release_references(app_name))
+                .await
+                .map_err(|_| {
+                    "Release reference inspection timed out; deferring compaction".to_string()
+                })??;
         compact_releases(&paths.releases_root, &paths.release_path, &protected)
     }
 
@@ -357,10 +349,65 @@ impl crate::ServerState {
     }
 }
 
-fn release_upload_plan(release_path: &Path, upload_required: bool) -> tako_core::ReleaseUploadPlan {
+fn prepare_release_upload_inner(
+    paths: ReleasePaths,
+    active: bool,
+) -> Result<tako_core::ReleaseUploadPlan, String> {
+    std::fs::create_dir_all(&paths.releases_root)
+        .map_err(|e| format!("create releases dir {}: {e}", paths.releases_root.display()))?;
+    std::fs::create_dir_all(&paths.shared_logs).map_err(|e| {
+        format!(
+            "create shared logs dir {}: {e}",
+            paths.shared_logs.display()
+        )
+    })?;
+    if paths.archive_root.is_dir() {
+        let (_, preparation_required) = restore_release_artifact(&paths, active)?;
+        return Ok(release_upload_plan(
+            &paths.release_path,
+            false,
+            preparation_required,
+        ));
+    }
+    let missing = !paths.release_path.is_dir();
+    Ok(release_upload_plan(&paths.release_path, missing, missing))
+}
+
+fn restore_release_artifact(paths: &ReleasePaths, active: bool) -> Result<(PathBuf, bool), String> {
+    let pending = paths.archive_root.join("pending").exists();
+    if paths.archive_root.is_dir() {
+        std::fs::write(paths.archive_root.join("pending"), [])
+            .map_err(|e| format!("mark release preparation: {e}"))?;
+    }
+    if paths.release_path.is_dir() {
+        return Ok((paths.release_path.clone(), pending && !active));
+    }
+    let archive = paths.archive_root.join("release.tar.zst");
+    if !archive.is_file() {
+        return Err(format!("Release archive {} not found", archive.display()));
+    }
+    std::fs::create_dir_all(&paths.releases_root).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&paths.shared_logs).map_err(|e| e.to_string())?;
+    let staged = tempfile::Builder::new()
+        .prefix(".extract-")
+        .tempdir_in(&paths.releases_root)
+        .map_err(|e| e.to_string())?;
+    crate::extract_zstd_archive(&archive, staged.path())?;
+    replace_logs_with_shared_link(staged.path(), &paths.shared_logs)?;
+    std::fs::rename(staged.path(), &paths.release_path)
+        .map_err(|e| format!("restore release directory: {e}"))?;
+    Ok((paths.release_path.clone(), true))
+}
+
+fn release_upload_plan(
+    release_path: &Path,
+    upload_required: bool,
+    preparation_required: bool,
+) -> tako_core::ReleaseUploadPlan {
     tako_core::ReleaseUploadPlan {
         path: release_path.to_string_lossy().to_string(),
         upload_required,
+        preparation_required,
     }
 }
 

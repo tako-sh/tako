@@ -976,6 +976,13 @@ run_archive_rollback_checks() {
   ssh_exec "$server_host" "find '$root/releases/$first_release' -type d -name node_modules -print -quit" | grep -q node_modules
   [[ "$(ssh_exec "$server_host" "sha256sum '$archive'")" == "$original_hash" ]]
   run_universal_http_checks "$server_host" "$route_host" "$root/releases/$first_release"
+
+  # Reusing the now-compacted second release must prepare dependencies without reuploading.
+  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" deploy --env production --yes
+  [[ "$(basename "$(resolve_current_release_link "$server_host")")" == "$second_release" ]]
+  ssh_exec "$server_host" "find '$root/releases/$second_release' -type d -name node_modules -print -quit" | grep -q node_modules
+  run_universal_http_checks "$server_host" "$route_host" "$root/releases/$second_release"
+  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" releases rollback "$first_release" --env production --yes
   mv "$TMP_ROOT/archive-original-index.ts" "$PROJECT_DIR/index.ts"
 }
 

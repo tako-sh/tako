@@ -359,6 +359,17 @@ impl crate::ServerState {
         if let Some(response) = self.refuse_unresolved_restore(app_name) {
             return response;
         }
+        let release_preexisted =
+            app_release_root(&self.runtime.data_dir, app_name, version).is_dir();
+        let pending_preexisted = self
+            .runtime
+            .data_dir
+            .join("apps")
+            .join(app_name)
+            .join("archives")
+            .join(version)
+            .join("pending")
+            .exists();
         let response = self.rollback_app_locked(app_name, version, caller).await;
         if !response.is_ok()
             && !self
@@ -367,7 +378,10 @@ impl crate::ServerState {
                 .is_some_and(|app| app.version() == version)
         {
             // Keep the immutable archive when preparation or readiness fails.
-            if let Err(error) = self.discard_restored_release(app_name, version).await {
+            if let Err(error) = self
+                .discard_restored_release(app_name, version, release_preexisted, pending_preexisted)
+                .await
+            {
                 tracing::warn!(app = app_name, version, %error, "Could not clean up failed rollback");
             }
         }
@@ -386,7 +400,7 @@ impl crate::ServerState {
         };
 
         let (target_path, needs_preparation) =
-            match self.restore_release_artifact(app_name, version) {
+            match self.restore_release_artifact(app_name, version).await {
                 Ok(restored) => restored,
                 Err(error) => return Response::error(error),
             };

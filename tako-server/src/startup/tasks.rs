@@ -90,7 +90,6 @@ pub(super) fn spawn_instance_reconcile(rt: &Runtime, state: Arc<ServerState>) {
             ticks.tick().await;
             // Preparation spans several RPCs; its persistent pending marker pins
             // staged releases between commands and across server restarts.
-            let _guard = cleanup_state.management_lock.lock().await;
             for app in cleanup_state.app_manager.list_apps() {
                 if let Err(error) = cleanup_state.compact_app_releases(&app).await {
                     tracing::warn!(%app, %error, "Could not clean up inactive release files");
