@@ -222,7 +222,9 @@ async fn register_updated_app(
         }
     };
     let databases = crate::local_databases::dev_files(&ctx.project_dir, cfg, &ctx.environment);
-    apply_dev_migrations(ctx, cfg).await;
+    if !apply_dev_migrations(ctx, cfg).await {
+        return;
+    }
     let project_dir_display = ctx.project_dir.to_string_lossy();
     let namespace = match crate::commands::dev::resolve_app_name_from_config_path(&ctx.config_path)
     {
@@ -272,7 +274,7 @@ async fn register_updated_app(
 }
 
 /// Applies pending development migrations and logs what happened.
-async fn apply_dev_migrations(ctx: &ConfigReloadLoop, cfg: &crate::config::TakoToml) {
+async fn apply_dev_migrations(ctx: &ConfigReloadLoop, cfg: &crate::config::TakoToml) -> bool {
     match crate::local_databases::migrate_environment(&ctx.project_dir, cfg, &ctx.environment) {
         Ok(migrated) => {
             for warning in migrated.warnings {
@@ -281,6 +283,7 @@ async fn apply_dev_migrations(ctx: &ConfigReloadLoop, cfg: &crate::config::TakoT
             for line in migrated.applied {
                 let _ = ctx.log_tx.send(ScopedLog::info("tako", line)).await;
             }
+            true
         }
         Err(error) => {
             let _ = ctx
@@ -290,6 +293,7 @@ async fn apply_dev_migrations(ctx: &ConfigReloadLoop, cfg: &crate::config::TakoT
                     format!("Migrations failed: {error}"),
                 ))
                 .await;
+            false
         }
     }
 }

@@ -266,6 +266,7 @@ export default async function fetch(request: Request) {
       await cli(["secrets", "set", "TEST_VALUE", "--env", "development"], "dev-secret");
       await cli(["secrets", "set", "TEST_VALUE", "--env", "test-e2e"], "test-secret");
       await cli(["secrets", "set", "ENV", "--env", "test-e2e"], "production");
+      await cli(["secrets", "set", "TAKO_DATA_DIR", "--env", "test-e2e"], "not-the-runtime-dir");
       const dev = await cli(["dev", "--background"]);
       const test = await cli(["dev", "--env", "test-e2e", "--background"]);
       expect(test.url).not.toBe(dev.url);
@@ -286,6 +287,7 @@ export default async function fetch(request: Request) {
         count: 0,
       });
       expect(isolated.dataDir).not.toBe(normal.dataDir);
+      expect(isolated.dataDir).toEndWith("/.tako/data/envs/test-e2e/app");
       const listed = await cli(["dev", "list", "--env", "test-e2e"]);
       expect(listed.apps.filter((app: { name: string }) => app.name === test.app)).toHaveLength(1);
       expect(listed.apps.every((app: { env: string }) => app.env === "test-e2e")).toBe(true);

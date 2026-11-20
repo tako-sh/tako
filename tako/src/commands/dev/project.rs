@@ -303,7 +303,23 @@ pub(super) fn inject_dev_secrets(
     environment: &str,
 ) -> Result<std::collections::HashMap<String, String>, Box<dyn std::error::Error>> {
     let secrets = load_dev_secrets(project_dir, config, environment)?;
-    env.extend(secrets.clone());
+    // Secrets with runtime-owned names remain available through SDK bindings.
+    env.extend(
+        secrets
+            .iter()
+            .filter(|(name, _)| {
+                !matches!(
+                    name.as_str(),
+                    "ENV"
+                        | "TAKO_DATA_DIR"
+                        | "TAKO_SHARED_DATA_DIR"
+                        | "TAKO_BUILD"
+                        | "TAKO_APP_ROOT"
+                        | "TAKO_DEV_ALLOWED_HOSTS"
+                )
+            })
+            .map(|(name, value)| (name.clone(), value.clone())),
+    );
     env.insert("ENV".into(), environment.into());
     Ok(secrets)
 }

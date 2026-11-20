@@ -89,8 +89,10 @@ pub(super) async fn register_app(
             let canonical_config = Path::new(&config_file)
                 .canonicalize()
                 .map_err(|e| e.to_string())?;
-            let mut compose_env = env.clone();
-            compose_env.extend(secrets.clone());
+            // The CLI's resolved process environment includes secrets, with runtime-owned
+            // names protected. Merge other SDK-only secrets without replacing those values.
+            let mut compose_env = secrets.clone();
+            compose_env.extend(env.clone());
             compose_env.insert("ENV".into(), environment.clone());
             let identity = if environment == "development" {
                 format!(
