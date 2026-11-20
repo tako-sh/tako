@@ -1,6 +1,24 @@
 use super::*;
 
 #[test]
+fn dev_environment_selects_start_stop_and_list() {
+    for arguments in [
+        vec!["tako", "dev", "--env", "test-e2e", "--background"],
+        vec!["tako", "dev", "--env", "test-e2e", "--restart"],
+        vec!["tako", "dev", "stop", "--env", "test-e2e"],
+        vec!["tako", "dev", "--env", "test-e2e", "stop", "--all"],
+        vec!["tako", "dev", "list", "--env", "test-e2e"],
+        vec!["tako", "dev", "--env", "test-e2e", "bun", "run", "dev"],
+    ] {
+        let cli = Cli::try_parse_from(arguments).unwrap();
+        let Commands::Dev { args, .. } = cli.command.unwrap() else {
+            panic!("expected dev");
+        };
+        assert_eq!(args.env.as_deref(), Some("test-e2e"));
+    }
+}
+
+#[test]
 fn dev_rejects_port_flag() {
     let res = Cli::try_parse_from(["tako", "dev", "--port", "47831"]);
     match res {

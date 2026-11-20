@@ -452,9 +452,18 @@ fn test_secret_key_import_passphrase_initializes_environment_key() {
 fn test_secret_sync_requires_network_even_without_local_secrets() {
     let temp = TempDir::new().unwrap();
     write_secret_test_tako_toml(temp.path());
-    let output = run_tako(&["secrets", "sync", "--env", "production"], temp.path());
+    let output = run_tako_with_env(
+        &["secrets", "sync", "--env", "production"],
+        temp.path(),
+        temp.path(),
+        &temp.path().join("tako-home"),
+    );
     assert!(!output.status.success());
-    assert!(stderr_str(&output).contains("network ID in tako.toml"));
+    assert!(
+        stderr_str(&output).contains("No network on this machine"),
+        "{}",
+        stderr_str(&output)
+    );
 }
 
 #[test]

@@ -1,6 +1,6 @@
 use tokio::net::UnixStream;
 
-use super::connection::{LineClient, socket_path};
+use super::connection::{LineClient, check_protocol, socket_path};
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -12,9 +12,11 @@ pub struct ListedApp {
     pub pid: Option<u32>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
 #[allow(dead_code)]
 pub struct RegisteredAppInfo {
+    pub config_file: String,
+    pub environment: String,
     pub config_path: String,
     pub project_dir: String,
     pub app_name: String,
@@ -29,6 +31,9 @@ pub struct RegisteredAppInfo {
 }
 
 pub struct RegisterAppRequest<'a> {
+    pub app_namespace: &'a str,
+    pub config_file: &'a str,
+    pub environment: &'a str,
     pub compose_default_host: Option<&'a str>,
     pub compose_base_host: Option<&'a str>,
     pub compose: Option<&'a tako_core::compose::ComposeConfig>,
@@ -86,49 +91,16 @@ pub async fn list_registered_apps() -> Result<Vec<RegisteredAppInfo>, Box<dyn st
     let sock = socket_path()?;
     let stream = UnixStream::connect(&sock).await?;
     let mut c = LineClient::new(stream);
+    check_protocol(&mut c).await?;
     c.send_line(r#"{"type":"ListRegisteredApps"}"#).await?;
     let line = c.read_line().await?;
     let v: serde_json::Value = serde_json::from_str(&line)?;
     if v.get("type").and_then(|t| t.as_str()) != Some("RegisteredApps") {
         return Err(format!("unexpected response: {}", line).into());
     }
-    let apps = v
-        .get("apps")
-        .and_then(|a| a.as_array())
-        .cloned()
-        .unwrap_or_default();
-    Ok(apps
-        .into_iter()
-        .filter_map(|a| {
-            let hosts = json_string_array(&a, "hosts");
-            Some(RegisteredAppInfo {
-                config_path: a.get("config_path")?.as_str()?.to_string(),
-                project_dir: a.get("project_dir")?.as_str()?.to_string(),
-                app_name: a.get("app_name")?.as_str()?.to_string(),
-                variant: a
-                    .get("variant")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string()),
-                hosts,
-                upstream_port: a.get("upstream_port")?.as_u64()? as u16,
-                status: a
-                    .get("status")
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("stopped")
-                    .to_string(),
-                pid: a.get("pid").and_then(|p| p.as_u64()).map(|p| p as u32),
-                client_pid: a
-                    .get("client_pid")
-                    .and_then(|p| p.as_u64())
-                    .map(|p| p as u32),
-                tunnel_url: a
-                    .get("tunnel_url")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string),
-                tunnel_expires_at: a.get("tunnel_expires_at").and_then(|v| v.as_u64()),
-            })
-        })
-        .collect())
+    Ok(serde_json::from_value(
+        v.get("apps").cloned().ok_or("Missing daemon app list")?,
+    )?)
 }
 
 pub async fn registered_tunnel_enabled(
@@ -149,6 +121,9 @@ pub async fn register_app(
     let mut c = LineClient::new(stream);
     let mut req = serde_json::json!({
         "type": "RegisterApp",
+        "app_namespace": args.app_namespace,
+        "config_file": args.config_file,
+        "environment": args.environment,
         "compose": args.compose,
         "compose_default_host": args.compose_default_host,
         "compose_base_host": args.compose_base_host,

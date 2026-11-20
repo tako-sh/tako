@@ -88,6 +88,9 @@ fn insert_test_app(state: &Arc<Mutex<State>>, project_dir: &str, name: &str) {
     s.apps.insert(
         config_path.clone(),
         state::RuntimeApp {
+            app_namespace: name.into(),
+            config_file: config_path.to_string(),
+            environment: "development".into(),
             compose: None,
             project_dir: project_dir.to_string(),
             name: name.to_string(),
@@ -123,6 +126,9 @@ fn runtime_app_with_env(
     env: std::collections::HashMap<String, String>,
 ) -> state::RuntimeApp {
     state::RuntimeApp {
+        app_namespace: name.into(),
+        config_file: "/tmp/tako.toml".into(),
+        environment: "development".into(),
         compose: None,
         project_dir: "/tmp/proj".to_string(),
         name: name.to_string(),
@@ -160,53 +166,125 @@ async fn network_calls_route_to_registered_apps_with_authenticated_internal_http
     use tokio::io::AsyncReadExt;
     let (state, tmp) = test_state();
     insert_test_app(&state, "/tmp/network-mail", "mail");
+    insert_test_app(&state, "/tmp/network-mail-test", "mail-test-e2e");
+    insert_test_app(&state, "/tmp/network-web", "web-test-e2e");
+    insert_test_app(&state, "/tmp/network-web-dev", "web");
+    insert_test_app(&state, "/tmp/network-mail-checkout", "mail-checkout");
+    {
+        let mut state = state.lock().unwrap();
+        let mail = state
+            .apps
+            .get_mut("/tmp/network-mail-test/tako.toml")
+            .unwrap();
+        mail.app_namespace = "mail".into();
+        mail.environment = "test-e2e".into();
+        state
+            .apps
+            .get_mut("/tmp/network-web/tako.toml")
+            .unwrap()
+            .environment = "test-e2e".into();
+        state
+            .apps
+            .get_mut("/tmp/network-mail-checkout/tako.toml")
+            .unwrap()
+            .app_namespace = "mail".into();
+    }
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    state
-        .lock()
-        .unwrap()
-        .routes
-        .activate_with_port("reg:/tmp/network-mail/tako.toml", port);
+    for key in [
+        "/tmp/network-mail-test/tako.toml",
+        "/tmp/network-mail/tako.toml",
+        "/tmp/network-mail-checkout/tako.toml",
+    ] {
+        state
+            .lock()
+            .unwrap()
+            .routes
+            .activate_with_port(&format!("reg:{key}"), port);
+    }
     let backend = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.unwrap();
-        let mut stream = tokio::io::BufReader::new(stream);
-        let mut headers = String::new();
-        let mut length = 0;
-        loop {
-            let mut line = String::new();
-            stream.read_line(&mut line).await.unwrap();
-            if line == "\r\n" {
-                break;
+        for host in ["mail-test-e2e", "mail-test-e2e", "mail", "mail-checkout"] {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = tokio::io::BufReader::new(stream);
+            let mut headers = String::new();
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                stream.read_line(&mut line).await.unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length: ") {
+                    length = value.trim().parse::<usize>().unwrap();
+                }
+                headers.push_str(&line.to_ascii_lowercase());
             }
-            if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length: ") {
-                length = value.trim().parse::<usize>().unwrap();
-            }
-            headers.push_str(&line.to_ascii_lowercase());
+            assert!(headers.starts_with("post /network http/1.1\r\n"));
+            assert!(
+                headers.contains(&format!("host: {host}.tako\r\n")),
+                "{headers}"
+            );
+            assert!(headers.contains("x-tako-internal-token: dev-token\r\n"));
+            let mut body = vec![0; length];
+            stream.read_exact(&mut body).await.unwrap();
+            let invocation: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(invocation["name"], "send-email");
+            assert_eq!(invocation["request"]["payload"]["to"], "a@example.com");
+            let body = r#"{"status":"ok","data":{"id":"remote-run","deduplicated":false}}"#;
+            stream.get_mut().write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nX-Tako-Internal-Token: dev-token\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
         }
-        assert!(headers.starts_with("post /network http/1.1\r\n"));
-        assert!(headers.contains("host: mail.tako\r\n"));
-        assert!(headers.contains("x-tako-internal-token: dev-token\r\n"));
-        let mut body = vec![0; length];
-        stream.read_exact(&mut body).await.unwrap();
-        let invocation: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(invocation["name"], "send-email");
-        assert_eq!(invocation["request"]["payload"]["to"], "a@example.com");
-        let body = r#"{"status":"ok","data":{"id":"remote-run","deduplicated":false}}"#;
-        stream.get_mut().write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nX-Tako-Internal-Token: dev-token\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
     });
     let workflows = tako_workflows::WorkflowManager::new(tmp.path());
     crate::network::install(&state, &workflows);
     workflows.start_socket().unwrap();
+    for (caller, address) in [
+        ("web-test-e2e", "mail.send-email"),
+        ("mail-test-e2e", "send-email"),
+        ("web", "mail.send-email"),
+        ("web", "mail-checkout.send-email"),
+    ] {
+        let mut socket = tokio::net::UnixStream::connect(workflows.socket_path())
+            .await
+            .unwrap();
+        tako_socket::write_json_line(
+            &mut socket,
+            &tako_core::Command::NetworkCall {
+                app: caller.into(),
+                address: address.into(),
+                request: tako_core::network::NetworkRequest::Enqueue {
+                    payload: serde_json::json!({"to":"a@example.com"}),
+                    opts: Default::default(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+        let response: tako_core::Response = tokio::time::timeout(
+            Duration::from_secs(5),
+            tako_socket::read_json_line(&mut BufReader::new(socket)),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+        assert_eq!(response.data().unwrap()["id"], "remote-run");
+    }
+    backend.await.unwrap();
+    state
+        .lock()
+        .unwrap()
+        .apps
+        .remove("/tmp/network-mail-test/tako.toml");
     let mut socket = tokio::net::UnixStream::connect(workflows.socket_path())
         .await
         .unwrap();
     tako_socket::write_json_line(
         &mut socket,
         &tako_core::Command::NetworkCall {
-            app: "web".into(),
+            app: "web-test-e2e".into(),
             address: "mail.send-email".into(),
             request: tako_core::network::NetworkRequest::Enqueue {
-                payload: serde_json::json!({"to":"a@example.com"}),
+                payload: serde_json::json!({}),
                 opts: Default::default(),
             },
         },
@@ -214,13 +292,15 @@ async fn network_calls_route_to_registered_apps_with_authenticated_internal_http
     .await
     .unwrap();
     let response: tako_core::Response = tokio::time::timeout(
-        Duration::from_secs(5),
+        Duration::from_secs(2),
         tako_socket::read_json_line(&mut BufReader::new(socket)),
     )
     .await
     .unwrap()
     .unwrap()
     .unwrap();
-    assert_eq!(response.data().unwrap()["id"], "remote-run");
-    backend.await.unwrap();
+    assert!(
+        response.data().is_none(),
+        "must not fall back to development"
+    );
 }

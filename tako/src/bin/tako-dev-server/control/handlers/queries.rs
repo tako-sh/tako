@@ -13,6 +13,8 @@ pub(super) fn list_registered_apps(state: &Arc<Mutex<State>>) -> Response {
         .map(|(config_path, a)| {
             let (tunnel_url, tunnel_expires_at) = tunnel_info(a);
             protocol::RegisteredAppInfo {
+                config_file: a.config_file.clone(),
+                environment: a.environment.clone(),
                 config_path: config_path.clone(),
                 project_dir: a.project_dir.clone(),
                 app_name: a.name.clone(),
@@ -62,6 +64,7 @@ pub(super) fn info(state: &Arc<Mutex<State>>) -> Response {
     let s = state.lock().unwrap();
     Response::Info {
         info: protocol::DevInfo {
+            protocol_version: tako_core::PROTOCOL_VERSION,
             listen: s.listen_addr.clone(),
             port: advertised_https_port(&s),
             advertised_ip: s.advertised_ip.clone(),

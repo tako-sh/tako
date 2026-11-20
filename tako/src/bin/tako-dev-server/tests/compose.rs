@@ -1,6 +1,70 @@
 use super::*;
 
 #[tokio::test]
+async fn compose_environment_secret_cannot_override_selected_routes_or_reload() {
+    let (state, project) = test_state();
+    // Inspect registration without launching containers.
+    state.lock().unwrap().shutdown_tx.send_replace(true);
+    let config_file = project.path().join("tako.toml");
+    std::fs::write(&config_file, "").unwrap();
+    std::fs::write(
+        project.path().join("compose.yaml"),
+        r#"
+services:
+  web:
+    image: busybox
+    x-tako:
+      envs:
+        development:
+          route: web.test
+        test-e2e:
+          route: e2e.test
+        production:
+          route: production.test
+"#,
+    )
+    .unwrap();
+    let config = tako_compose::load_config(project.path(), "compose.yaml").unwrap();
+    let key = format!("test-e2e:{}", config_file.display());
+    let register = serde_json::json!({
+        "type": "RegisterApp", "config_path": key, "config_file": config_file,
+        "environment": "test-e2e", "app_namespace": "web", "app_name": "web-test-e2e",
+        "project_dir": project.path(), "hosts": ["e2e.test"], "command": [],
+        "env": {"ENV": "test-e2e"}, "secrets": {"ENV": "production"}, "compose": config
+    });
+    let (server, client) = tokio::net::UnixStream::pair().unwrap();
+    let handle = tokio::spawn(handle_client(server, state.clone()));
+    let (read, mut write) = client.into_split();
+    write
+        .write_all(format!("{register}\n").as_bytes())
+        .await
+        .unwrap();
+    let mut lines = BufReader::new(read).lines();
+    let response: Response =
+        serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+    assert!(
+        matches!(response, Response::AppRegistered { .. }),
+        "{response:?}"
+    );
+    drop(write);
+    drop(lines);
+    handle.await.unwrap().unwrap();
+
+    let runtime = state.lock().unwrap().apps[&key].compose.clone().unwrap();
+    for runtime in [runtime.clone(), runtime.reload_development().unwrap()] {
+        assert_eq!(runtime.local_environment(), "test-e2e");
+        assert_eq!(
+            runtime.config.routes(runtime.local_environment()),
+            ["e2e.test"]
+        );
+    }
+    assert_eq!(
+        state.lock().unwrap().apps[&key].secrets["ENV"],
+        "production"
+    );
+}
+
+#[tokio::test]
 async fn queued_compose_start_is_rejected_during_shutdown() {
     let (shutdown_tx, _shutdown_rx) = watch::channel(true);
     let state = Arc::new(Mutex::new(State::new(
@@ -92,6 +156,7 @@ async fn compose_apps_route_independently_and_keep_redis_data_across_restart() {
         "127.0.0.1".into(),
     )));
     let register = serde_json::json!({"type":"RegisterApp", "config_path":key,
+        "config_file":key, "environment":"development", "app_namespace":"compose-example",
         "project_dir":project.path(), "app_name":"compose-example", "hosts":["shop.test", "api.shop.test"],
         "command":[], "env":{}, "compose":config});
 

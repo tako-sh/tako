@@ -119,7 +119,8 @@ Inspect status before retrying a mutation.
 
 `tako_dev` uses `tako dev --background --json` to start development and return a
 ready record while the dev daemon owns the app process. Use `tako_dev_list` and `tako_dev_stop` to inspect
-or stop it. `tako_dev_logs` returns up to 100 recent local log entries by default
+or stop it. Pass `env` to start, stop, list, or read logs for a custom local
+environment such as `test-e2e`. `tako_dev_logs` defaults to `development` and returns up to 100 recent local log entries by default
 (`limit` supports 1–500). Pass its `next_after` as `after` to fetch new entries;
 `truncated` signals an incomplete history. It reads at most 1 MiB over two seconds
 and closes after 200 ms without new entries. Use `tako_logs` for production log

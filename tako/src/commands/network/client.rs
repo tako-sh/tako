@@ -635,7 +635,8 @@ fn revoke_with_invited(client: &str, yes: bool) -> Result<()> {
         }
     }
     let mut revocations = Vec::new();
-    for row in &targets {
+    // Revoking an inviter can invalidate a descendant approved within the same clock tick.
+    for row in targets.iter().rev() {
         revocations.push(network::revocation::run(
             &alias,
             &row.member.device_id.to_string(),

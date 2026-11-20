@@ -16,6 +16,7 @@ fn open_creates_db_and_schema() {
         columns,
         vec![
             "config_path".to_string(),
+            "config_file".to_string(),
             "project_dir".to_string(),
             "name".to_string(),
             "variant".to_string(),
@@ -27,10 +28,84 @@ fn open_creates_db_and_schema() {
 }
 
 #[test]
+fn environment_registrations_survive_cleanup_and_stop_independently() {
+    let (tmp, store) = temp_store();
+    let file = tmp.path().join("app.toml");
+    std::fs::write(&file, "").unwrap();
+    let file = file.to_str().unwrap();
+    let test_key = format!("test-e2e:{file}");
+    store
+        .register(file, file, tmp.path().to_str().unwrap(), "app", None)
+        .unwrap();
+    store
+        .register(
+            &test_key,
+            file,
+            tmp.path().to_str().unwrap(),
+            "app-test-e2e",
+            None,
+        )
+        .unwrap();
+    assert!(store.cleanup_stale().unwrap().is_empty());
+    assert_eq!(store.list().unwrap().len(), 2);
+    store.unregister(&test_key).unwrap();
+    assert!(store.get(file).unwrap().is_some());
+}
+
+#[test]
+fn adding_config_file_preserves_registrations_for_orphan_cleanup() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db_path = tmp.path().join("dev-server.sqlite");
+    let config = tmp.path().join("preview.toml");
+    let config = config.to_str().unwrap();
+    let project = tmp.path().to_str().unwrap();
+    let conn = tako_sqlite::open_local(&db_path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE apps (config_path TEXT PRIMARY KEY, project_dir TEXT NOT NULL,
+         name TEXT NOT NULL, variant TEXT, is_enabled INTEGER NOT NULL DEFAULT 1,
+         created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0);",
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO apps VALUES (?1, ?2, 'app', 'preview', 0, 123, 456)",
+        (config, project),
+    )
+    .unwrap();
+    drop(conn);
+    let mut child = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    write_pid_file(project, config, child.id());
+    let store = DevStateStore::open(&db_path).unwrap();
+    let apps = store.list().unwrap();
+    for app in &apps {
+        kill_orphaned_process(&app.project_dir, &app.config_path);
+    }
+    if apps.is_empty() {
+        child.kill().unwrap();
+    }
+    assert!(!child.wait().unwrap().success());
+    assert_eq!(apps.len(), 1);
+    assert_eq!(apps[0].config_file, config);
+    assert_eq!(apps[0].config_path, config);
+    assert_eq!(apps[0].variant.as_deref(), Some("preview"));
+    assert!(!apps[0].is_enabled);
+    assert_eq!((apps[0].created_at, apps[0].updated_at), (123, 456));
+    assert!(read_pid_file(project, config).is_none());
+    drop(store);
+    assert_eq!(
+        DevStateStore::open(db_path).unwrap().list().unwrap().len(),
+        1
+    );
+}
+
+#[test]
 fn register_and_get() {
     let (_tmp, store) = temp_store();
     store
         .register(
+            "/home/user/my-app/tako.toml",
             "/home/user/my-app/tako.toml",
             "/home/user/my-app",
             "my-app",
@@ -54,6 +129,7 @@ fn register_with_variant() {
     store
         .register(
             "/home/user/my-app/tako.toml",
+            "/home/user/my-app/tako.toml",
             "/home/user/my-app",
             "my-app",
             Some("staging"),
@@ -69,12 +145,24 @@ fn register_with_variant() {
 fn register_upserts_name_and_updates_timestamp() {
     let (_tmp, store) = temp_store();
     store
-        .register("/proj/tako.toml", "/proj", "old-name", None)
+        .register(
+            "/proj/tako.toml",
+            "/proj/tako.toml",
+            "/proj",
+            "old-name",
+            None,
+        )
         .unwrap();
     let first = store.get("/proj/tako.toml").unwrap().unwrap();
 
     store
-        .register("/proj/tako.toml", "/proj", "new-name", None)
+        .register(
+            "/proj/tako.toml",
+            "/proj/tako.toml",
+            "/proj",
+            "new-name",
+            None,
+        )
         .unwrap();
     let second = store.get("/proj/tako.toml").unwrap().unwrap();
 
@@ -87,7 +175,7 @@ fn register_upserts_name_and_updates_timestamp() {
 fn set_enabled_toggle() {
     let (_tmp, store) = temp_store();
     store
-        .register("/proj/tako.toml", "/proj", "app", None)
+        .register("/proj/tako.toml", "/proj/tako.toml", "/proj", "app", None)
         .unwrap();
 
     assert!(store.set_enabled("/proj/tako.toml", false).unwrap());
@@ -103,7 +191,7 @@ fn set_enabled_toggle() {
 fn unregister_app() {
     let (_tmp, store) = temp_store();
     store
-        .register("/proj/tako.toml", "/proj", "app", None)
+        .register("/proj/tako.toml", "/proj/tako.toml", "/proj", "app", None)
         .unwrap();
 
     assert!(store.unregister("/proj/tako.toml").unwrap());
@@ -124,6 +212,7 @@ fn cleanup_stale_removes_apps_without_tako_toml() {
     store
         .register(
             real_config.to_str().unwrap(),
+            real_config.to_str().unwrap(),
             real_proj.to_str().unwrap(),
             "real",
             None,
@@ -131,6 +220,7 @@ fn cleanup_stale_removes_apps_without_tako_toml() {
         .unwrap();
     store
         .register(
+            "/nonexistent/proj/preview.toml",
             "/nonexistent/proj/preview.toml",
             "/nonexistent/proj",
             "stale",

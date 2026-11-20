@@ -37,6 +37,7 @@ describe("init wizard interaction", () => {
 
     const term = spawnInit();
     await term.waitForText("Application name", { timeout: 5000 });
+    await term.waitForText("my-cool-app", { timeout: 5000 });
 
     const screen = term.screenText();
     expect(screen).toContain("my-cool-app");

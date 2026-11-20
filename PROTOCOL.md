@@ -51,6 +51,8 @@ Before the controlled reload, the CLI writes a one-shot upgrade-owner marker und
 
 ## Executable owners
 
+The local development daemon reports `protocol_version` in its `Info` response. The CLI requires the current version before startup or registration listing; missing or mismatched versions require restarting the daemon. Registration rows are parsed strictly, so malformed entries cannot silently become an empty app list.
+
 | Contract                                            | Owner                                                                                              |
 | --------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | Protocol version, commands, responses, and payloads | [`tako-core/src/protocol.rs`](tako-core/src/protocol.rs)                                           |

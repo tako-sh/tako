@@ -57,7 +57,7 @@ fn repo_local_dev_server_build_not_needed_when_daemon_is_newer() {
 fn repo_local_dev_server_build_uses_tako_package_binary() {
     assert_eq!(
         repo_local_dev_server_build_args(),
-        ["build", "-p", "tako", "--bin", "tako-dev-server"]
+        ["build", "-p", "tako-cli", "--bin", "tako-dev-server"]
     );
 }
 
@@ -245,4 +245,39 @@ async fn line_client_read_line_errors_when_peer_closes_without_response() {
             .contains(DEV_SERVER_CONNECTION_CLOSED_MESSAGE),
         "unexpected error: {err}"
     );
+}
+
+#[tokio::test]
+async fn daemon_protocol_check_rejects_missing_or_mismatched_versions() {
+    for version in [
+        None,
+        Some(tako_core::PROTOCOL_VERSION + 1),
+        Some(tako_core::PROTOCOL_VERSION),
+    ] {
+        let (client, server) = UnixStream::pair().unwrap();
+        let server = tokio::spawn(async move {
+            let mut server = LineClient::new(server);
+            assert_eq!(
+                server.read_line().await.unwrap().trim(),
+                r#"{"type":"Info"}"#
+            );
+            let mut response = serde_json::json!({"type": "Info", "info": {}});
+            if let Some(version) = version {
+                response["info"]["protocol_version"] = serde_json::json!(version);
+            }
+            server.send_line(&response.to_string()).await.unwrap();
+        });
+        let result = super::connection::check_protocol(&mut LineClient::new(client)).await;
+        assert_eq!(result.is_ok(), version == Some(tako_core::PROTOCOL_VERSION));
+        server.await.unwrap();
+    }
+}
+
+#[test]
+fn malformed_registration_is_an_error_not_an_omitted_app() {
+    let app = serde_json::json!({
+        "config_path": "/app/tako.toml", "project_dir": "/app", "app_name": "app",
+        "upstream_port": 1234, "hosts": ["app.test"], "status": "running"
+    });
+    assert!(serde_json::from_value::<super::apps::RegisteredAppInfo>(app).is_err());
 }

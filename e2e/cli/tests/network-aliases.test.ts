@@ -71,7 +71,8 @@ describe("network aliases", () => {
     );
     const result = await run(["--ci", "--dry-run", "deploy"], options());
     expect(result.exitCode).not.toBe(0);
-    expect(result.screen).toContain("hasn't joined");
-    expect(result.screen).toContain("0123456789abcdef0123456789abcdef");
+    const message = result.screen.replaceAll("\n", "");
+    expect(message).toContain("hasn't joined");
+    expect(message).toContain("0123456789abcdef0123456789abcdef");
   });
 });

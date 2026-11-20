@@ -30,17 +30,34 @@ pub async fn stop(
     name: Option<String>,
     all: bool,
     config_path: Option<&Path>,
+    environment: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let apps = crate::dev_server_client::list_registered_apps().await?;
+    if let Some(environment) = environment {
+        crate::config::validate_environment_name(environment)?;
+    }
+    let apps: Vec<_> = crate::dev_server_client::list_registered_apps()
+        .await?
+        .into_iter()
+        .filter(|app| environment.is_none_or(|env| app.environment == env))
+        .collect();
 
     if all {
         if apps.is_empty() {
             crate::output::muted("No registered dev apps.");
             return Ok(());
         }
+        let mut failures = Vec::new();
         for app in &apps {
-            let _ = crate::dev_server_client::unregister_app(&app.config_path).await;
-            crate::output::success(&format!("Stopped {}", crate::output::strong(&app.app_name)));
+            match crate::dev_server_client::unregister_app(&app.config_path).await {
+                Ok(()) => crate::output::success(&format!(
+                    "Stopped {}",
+                    crate::output::strong(&app.app_name)
+                )),
+                Err(error) => failures.push(format!("{}: {error}", app.app_name)),
+            }
+        }
+        if !failures.is_empty() {
+            return Err(format!("Failed to stop dev apps: {}", failures.join("; ")).into());
         }
         return Ok(());
     }
@@ -49,24 +66,31 @@ pub async fn stop(
         Some(n) => n,
         None => {
             let context = crate::commands::project_context::resolve(config_path)?;
-            let config_key = context.config_key();
+            let config_key = super::shared::dev_config_key(
+                &context.config_path,
+                environment.unwrap_or("development"),
+            );
             if let Some(app) = apps.iter().find(|a| a.config_path == config_key) {
-                let _ = crate::dev_server_client::unregister_app(&app.config_path).await;
+                crate::dev_server_client::unregister_app(&app.config_path).await?;
                 crate::output::success(&format!(
                     "Stopped {}",
                     crate::output::strong(&app.app_name)
                 ));
                 return Ok(());
             }
-            resolve_app_name_from_config_path(&context.config_path)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?
+            return Err(format!(
+                "No registered dev app for {} in '{}'",
+                context.config_path.display(),
+                environment.unwrap_or("development")
+            )
+            .into());
         }
     };
 
     let app = apps.iter().find(|a| a.app_name == target_name);
     match app {
         Some(a) => {
-            let _ = crate::dev_server_client::unregister_app(&a.config_path).await;
+            crate::dev_server_client::unregister_app(&a.config_path).await?;
             crate::output::success(&format!("Stopped {}", crate::output::strong(&a.app_name)));
         }
         None => {
@@ -76,17 +100,32 @@ pub async fn stop(
     Ok(())
 }
 
-pub async fn ls() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn ls(environment: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(environment) = environment {
+        crate::config::validate_environment_name(environment)?;
+    }
     let apps = match crate::dev_server_client::list_registered_apps().await {
         Ok(apps) => apps,
-        Err(_) => {
+        Err(error)
+            if error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+                matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                )
+            }) =>
+        {
             if crate::output::is_json() {
                 return crate::output::json_result(super::json::list_record(&[]));
             }
             crate::output::muted("No dev server running.");
             return Ok(());
         }
+        Err(error) => return Err(error),
     };
+    let apps: Vec<_> = apps
+        .into_iter()
+        .filter(|app| environment.is_none_or(|env| app.environment == env))
+        .collect();
 
     if crate::output::is_json() {
         return crate::output::json_result(super::json::list_record(&apps));
@@ -98,8 +137,8 @@ pub async fn ls() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     crate::output::stream_line(&format!(
-        "{:<20} {:<10} {:<30} {:<30} CONFIG",
-        "NAME", "STATUS", "URL", "TUNNEL"
+        "{:<20} {:<16} {:<10} {:<30} {:<30} CONFIG",
+        "NAME", "ENV", "STATUS", "URL", "TUNNEL"
     ));
     for app in &apps {
         let url = if let Some(host) = app.hosts.first() {
@@ -109,30 +148,30 @@ pub async fn ls() -> Result<(), Box<dyn std::error::Error>> {
         };
         let tunnel = app.tunnel_url.as_deref().unwrap_or("-");
         crate::output::stream_line(&format!(
-            "{:<20} {:<10} {:<30} {:<30} {}",
-            app.app_name, app.status, url, tunnel, app.config_path
+            "{:<20} {:<16} {:<10} {:<30} {:<30} {}",
+            app.app_name, app.environment, app.status, url, tunnel, app.config_file
         ));
     }
     Ok(())
 }
 
 pub async fn run(
-    public_port: u16,
     variant: Option<String>,
     tunnel: bool,
     restart: bool,
     command_override: Option<Vec<String>>,
     config_path: Option<&Path>,
     background: bool,
+    environment: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let session = match prepare(
-        public_port,
         variant,
         tunnel,
         restart,
         command_override,
         config_path,
         background,
+        environment,
     )
     .await?
     {
@@ -146,6 +185,7 @@ pub async fn run(
         project_dir,
         app_name,
         variant,
+        environment,
         runtime_name,
         domain,
         base_domain,
@@ -187,13 +227,10 @@ pub async fn run(
 
     let reg_hosts = hosts_state.lock().await.clone();
     let env_snapshot = env_state.lock().await.clone();
-    let storages = load_dev_storages(&project_dir, &cfg).unwrap_or_else(|error| {
-        tracing::warn!("Failed to load development storages: {error}");
-        std::collections::HashMap::new()
-    });
-    let databases = crate::local_databases::dev_files(&project_dir, &cfg);
+    let storages = load_dev_storages(&project_dir, &cfg, &environment)?;
+    let databases = crate::local_databases::dev_files(&project_dir, &cfg, &environment);
     // Migrations run before the app starts, so it sees the current schema.
-    let migrated = crate::local_databases::migrate_development(&project_dir, &cfg)
+    let migrated = crate::local_databases::migrate_environment(&project_dir, &cfg, &environment)
         .map_err(|error| format!("Migrations failed: {error}"))?;
     for warning in migrated.warnings {
         let _ = log_tx.send(ScopedLog::warn("tako", warning)).await;
@@ -204,10 +241,13 @@ pub async fn run(
     let project_dir_display = project_dir.to_string_lossy();
     let reg_url =
         crate::dev_server_client::register_app(crate::dev_server_client::RegisterAppRequest {
+            app_namespace: &resolve_app_name_from_config_path(&config_path)?,
             compose: cfg.compose.as_ref(),
             compose_default_host: Some(&domain),
             compose_base_host: base_domain.as_deref(),
             config_path: &config_key,
+            config_file: &config_path.to_string_lossy(),
+            environment: &environment,
             project_dir: &project_dir_display,
             app_name: &app_name,
             variant: variant.as_deref(),
@@ -228,7 +268,7 @@ pub async fn run(
             crate::dev_server_client::toggle_tunnel(&config_key, true).await?;
         }
         let url = preferred_public_url(&primary_host, &reg_url, public_port, public_url_port);
-        let hosts = compute_display_routes(&cfg, &domain, base_domain.as_deref());
+        let hosts = compute_display_routes(&cfg, &domain, base_domain.as_deref(), &environment);
         emit_background_ready(&app_name, &url, &hosts);
         return Ok(());
     }
@@ -263,7 +303,7 @@ pub async fn run(
 
     if interactive {
         let public_port_for_output = public_url_port;
-        let hosts = compute_display_routes(&cfg, &domain, base_domain.as_deref());
+        let hosts = compute_display_routes(&cfg, &domain, base_domain.as_deref(), &environment);
         let app_name_for_output = app_name.clone();
         let adapter_name_for_output = runtime_name.clone();
         let control_tx_for_output = control_tx.clone();
@@ -290,7 +330,7 @@ pub async fn run(
     let verbose = crate::output::is_verbose();
     let url = preferred_public_url(&primary_host, &reg_url, public_port, public_url_port);
     if crate::output::is_json() {
-        let hosts = compute_display_routes(&cfg, &domain, base_domain.as_deref());
+        let hosts = compute_display_routes(&cfg, &domain, base_domain.as_deref(), &environment);
         json::emit(json::ready_record(&app_name, &url, &hosts));
     } else if !interactive {
         for line in dev_startup_lines(
@@ -344,6 +384,7 @@ pub async fn run(
             config_key: config_key.clone(),
             app_name: app_name.clone(),
             variant: variant.clone(),
+            environment: environment.clone(),
             domain: domain.clone(),
             base_domain: base_domain.clone(),
             env_state: env_state.clone(),
@@ -408,12 +449,13 @@ pub async fn run(
 fn load_dev_storages(
     project_dir: &std::path::Path,
     config: &crate::config::TakoToml,
+    environment: &str,
 ) -> Result<std::collections::HashMap<String, tako_core::StorageBinding>, Box<dyn std::error::Error>>
 {
     let secrets =
-        crate::config::SecretsStore::load_for_environment(project_dir, config, "development")?;
+        crate::config::SecretsStore::load_for_environment(project_dir, config, environment)?;
     crate::commands::storage::decrypt_storage_bindings(
-        "development",
+        environment,
         config,
         &secrets,
         Some(project_dir),

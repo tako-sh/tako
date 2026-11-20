@@ -23,7 +23,7 @@ route = "demo.example.com"
 }
 
 #[test]
-fn workflows_json_failure_without_servers_is_a_structured_error() {
+fn workflows_json_failure_without_a_network_is_a_structured_error() {
     let (temp, home, tako_home) = project();
     for args in [
         &["--json", "workflows", "list", "--env", "production"][..],
@@ -61,7 +61,7 @@ fn workflows_json_failure_without_servers_is_a_structured_error() {
             value["error"]["message"]
                 .as_str()
                 .unwrap()
-                .contains("No servers have been added"),
+                .contains("No network on this machine"),
             "{args:?}: {value}"
         );
     }
@@ -106,9 +106,12 @@ fn workflows_reject_unknown_environments_and_servers() {
         stderr_str(&output)
     );
 
-    let output = run_tako_with_env(
+    let server = super::shared_state::ApiServer::new();
+    let project = server.project("workflow-server-selection");
+    let output = server.run(
+        &server.owner_home,
+        &project,
         &[
-            "--ci",
             "workflows",
             "show",
             "run_1",
@@ -117,9 +120,7 @@ fn workflows_reject_unknown_environments_and_servers() {
             "--server",
             "missing",
         ],
-        temp.path(),
-        &home,
-        &tako_home,
+        None,
     );
     assert!(!output.status.success());
     assert!(

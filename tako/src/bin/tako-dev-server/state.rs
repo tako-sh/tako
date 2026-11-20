@@ -14,6 +14,7 @@ const PID_FILE_DIR: &str = ".tako/pids";
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone)]
 pub struct RegisteredApp {
+    pub config_file: String,
     pub config_path: String,
     pub project_dir: String,
     pub name: String,
@@ -128,6 +129,9 @@ impl LogBuffer {
 /// Runtime app state (in-memory only, lost on server restart).
 #[derive(Debug, Clone)]
 pub struct RuntimeApp {
+    pub app_namespace: String,
+    pub config_file: String,
+    pub environment: String,
     pub compose: Option<tako_compose::ComposeRuntime>,
     pub project_dir: String,
     pub name: String,
@@ -243,6 +247,7 @@ impl DevStateStore {
     pub fn register(
         &self,
         config_path: &str,
+        config_file: &str,
         project_dir: &str,
         name: &str,
         variant: Option<&str>,
@@ -250,14 +255,15 @@ impl DevStateStore {
         let now = unix_now() as i64;
         self.conn
             .execute(
-                "INSERT INTO apps (config_path, project_dir, name, variant, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+                "INSERT INTO apps (config_path, project_dir, name, variant, created_at, updated_at, config_file)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6)
              ON CONFLICT(config_path) DO UPDATE SET
                 project_dir = excluded.project_dir,
                 name = excluded.name,
                 variant = excluded.variant,
+                config_file = excluded.config_file,
                 updated_at = excluded.updated_at;",
-                (config_path, project_dir, name, variant, now),
+                (config_path, project_dir, name, variant, now, config_file),
             )
             .map_err(|e| format!("register: {e}"))?;
         Ok(())
@@ -274,7 +280,7 @@ impl DevStateStore {
     #[cfg(test)]
     pub fn get(&self, config_path: &str) -> Result<Option<RegisteredApp>, String> {
         match self.conn.query_row(
-            "SELECT config_path, project_dir, name, variant, is_enabled, created_at, updated_at
+            "SELECT config_path, project_dir, name, variant, is_enabled, created_at, updated_at, config_file
                      FROM apps WHERE config_path = ?1;",
             (config_path,),
             |row| Ok(row_to_registered_app(row)),
@@ -289,7 +295,7 @@ impl DevStateStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT config_path, project_dir, name, variant, is_enabled, created_at, updated_at
+                "SELECT config_path, project_dir, name, variant, is_enabled, created_at, updated_at, config_file
                      FROM apps ORDER BY name, config_path;",
             )
             .map_err(|e| format!("list: {e}"))?;
@@ -320,7 +326,7 @@ impl DevStateStore {
         let apps = self.list()?;
         let mut removed = Vec::new();
         for app in apps {
-            if !Path::new(&app.config_path).exists() {
+            if !Path::new(&app.config_file).exists() {
                 self.unregister(&app.config_path)?;
                 removed.push(app.config_path);
             }
@@ -332,6 +338,7 @@ impl DevStateStore {
 fn row_to_registered_app(row: &rusqlite::Row) -> Result<RegisteredApp, String> {
     let field = |i: usize| move |e| format!("read app column {i}: {e}");
     Ok(RegisteredApp {
+        config_file: row.get::<_, String>(7).map_err(field(7))?,
         config_path: row.get::<_, String>(0).map_err(field(0))?,
         project_dir: row.get::<_, String>(1).map_err(field(1))?,
         name: row.get::<_, String>(2).map_err(field(2))?,
@@ -348,8 +355,36 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
         return create_apps_table(conn);
     }
 
-    // v0: no migrations — drop and recreate if schema doesn't match.
+    // Preserve registration identities so startup can reap children left by an older daemon.
+    if !columns.iter().any(|column| column == "config_file")
+        && [
+            "config_path",
+            "project_dir",
+            "name",
+            "variant",
+            "is_enabled",
+            "created_at",
+            "updated_at",
+        ]
+        .iter()
+        .all(|column| columns.iter().any(|c| c == column))
+    {
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| format!("migrate apps: {e}"))?;
+        tx.execute_batch(
+            "ALTER TABLE apps ADD COLUMN config_file TEXT NOT NULL DEFAULT '';
+             UPDATE apps SET config_file = config_path;",
+        )
+        .map_err(|e| format!("migrate apps config_file: {e}"))?;
+        return tx
+            .commit()
+            .map_err(|e| format!("commit apps migration: {e}"));
+    }
+
+    // v0: recreate other mismatched schemas.
     let expected = [
+        "config_file",
         "config_path",
         "project_dir",
         "name",
@@ -371,6 +406,7 @@ fn create_apps_table(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS apps (
             config_path TEXT PRIMARY KEY,
+            config_file TEXT NOT NULL,
             project_dir TEXT NOT NULL,
             name TEXT NOT NULL,
             variant TEXT,

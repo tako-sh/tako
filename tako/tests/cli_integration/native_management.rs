@@ -144,7 +144,8 @@ impl Fixture {
         fs::create_dir_all(profile_path.parent().unwrap()).unwrap();
         fs::write(
             tako_home.join("networks/identities.json"),
-            serde_json::to_vec(&serde_json::json!([{"id":network,"device":own}])).unwrap(),
+            serde_json::to_vec(&serde_json::json!([{"id":network,"device":own,"alias":"fleet"}]))
+                .unwrap(),
         )
         .unwrap();
         fs::write(tako_home.join("config.toml"), "").unwrap();
@@ -181,10 +182,11 @@ impl Fixture {
         let index_path = self.tako_home.join("networks/identities.json");
         let mut index: Vec<serde_json::Value> =
             serde_json::from_slice(&fs::read(&index_path).unwrap()).unwrap();
-        let other_index: Vec<serde_json::Value> = serde_json::from_slice(
+        let mut other_index: Vec<serde_json::Value> = serde_json::from_slice(
             &fs::read(other.tako_home.join("networks/identities.json")).unwrap(),
         )
         .unwrap();
+        other_index[0]["alias"] = "fleet-2".into();
         index.extend(other_index);
         fs::write(index_path, serde_json::to_vec(&index).unwrap()).unwrap();
     }
@@ -209,8 +211,8 @@ fn same_named_networks_keep_distinct_servers_and_lifecycle_selectors() {
     let status = first.status();
     let servers = status["servers"].as_array().unwrap();
     assert_eq!(servers.len(), 2);
-    for fixture in [&first, &second] {
-        let expected = format!("fleet/{}/edge", fixture.profile.snapshot.network.id);
+    for (fixture, alias) in [(&first, "fleet"), (&second, "fleet-2")] {
+        let expected = format!("{alias}/edge");
         assert!(servers.iter().any(|server| server["name"] == expected));
         // Project selection uses the network ID and the same unique selector.
         fs::write(first.directory.path().join("tako.toml"), format!(
@@ -241,7 +243,7 @@ fn same_named_networks_keep_distinct_servers_and_lifecycle_selectors() {
             "network",
             "server",
             "remove",
-            "fleet/edge",
+            "edge",
             "--yes",
         ],
         first.directory.path(),
@@ -250,7 +252,7 @@ fn same_named_networks_keep_distinct_servers_and_lifecycle_selectors() {
     );
     assert!(!ambiguous.status.success());
     assert!(
-        stderr_str(&ambiguous).contains("not found"),
+        stderr_str(&ambiguous).contains("Pass --network"),
         "{}",
         stderr_str(&ambiguous)
     );

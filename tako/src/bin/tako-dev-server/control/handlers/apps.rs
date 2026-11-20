@@ -19,6 +19,9 @@ use crate::{advertised_https_port, app_short_host, default_hosts};
 use super::super::state::State;
 
 pub(super) struct RegisterAppArgs {
+    pub(super) app_namespace: String,
+    pub(super) config_file: String,
+    pub(super) environment: String,
     pub(super) compose_default_host: Option<String>,
     pub(super) compose_base_host: Option<String>,
     pub(super) compose: Option<tako_core::compose::ComposeConfig>,
@@ -41,9 +44,37 @@ pub(super) struct RegisterAppArgs {
 
 /// What workflow workers of a dev app receive in their bootstrap envelope.
 struct WorkerBindings {
+    env: HashMap<String, String>,
     storages: HashMap<String, tako_core::StorageBinding>,
     secrets: HashMap<String, String>,
     databases: HashMap<String, tako_core::DatabaseConnection>,
+}
+
+// Call after locking the registration key. A rename claims both names until the old
+// workflow runtime has stopped; ordering also handles simultaneous renames.
+async fn lock_runtime_names(
+    state: &Arc<Mutex<State>>,
+    config_path: &str,
+    new_name: Option<&str>,
+) -> Vec<tokio::sync::OwnedMutexGuard<()>> {
+    let old_name = state
+        .lock()
+        .unwrap()
+        .apps
+        .get(config_path)
+        .map(|app| app.name.clone());
+    let mut names: Vec<_> = old_name.as_deref().into_iter().chain(new_name).collect();
+    names.sort_unstable();
+    names.dedup();
+    let mut guards = Vec::new();
+    for name in names {
+        guards.push(
+            crate::compose::runtime_name_lock(state, name)
+                .lock_owned()
+                .await,
+        );
+    }
+    guards
 }
 
 pub(super) async fn register_app(
@@ -51,6 +82,9 @@ pub(super) async fn register_app(
     args: RegisterAppArgs,
 ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
     let RegisterAppArgs {
+        app_namespace,
+        config_file,
+        environment,
         compose,
         compose_default_host,
         compose_base_host,
@@ -74,37 +108,60 @@ pub(super) async fn register_app(
     cancel_app_startup(&state, &config_path);
     let lock = crate::compose::app_lock(&state, &config_path);
     let _guard = lock.lock().await;
+    let app_name = sanitize_app_name(&app_name);
+    // Clients disambiguate names from a snapshot. Serialize claims across config keys
+    // so simultaneous starts cannot share a workflow/internal-call identity.
+    let _name_guards = lock_runtime_names(&state, &config_path, Some(&app_name)).await;
+    if state
+        .lock()
+        .unwrap()
+        .apps
+        .iter()
+        .any(|(key, app)| key != &config_path && app.name == app_name)
+    {
+        return Ok(Response::Error {
+            message: format!(
+                "Dev app name '{app_name}' is already registered. Retry `tako dev` to select an available name."
+            ),
+        });
+    }
     let compose = compose
         .map(|config| {
             let directory = Path::new(&project_dir)
                 .canonicalize()
                 .map_err(|e| e.to_string())?;
-            let canonical_config = Path::new(&config_path)
+            let canonical_config = Path::new(&config_file)
                 .canonicalize()
                 .map_err(|e| e.to_string())?;
-            let mut environment = env.clone();
-            environment.extend(secrets.clone());
-            tako_compose::ComposeRuntime::development(
-                directory,
-                config,
-                environment,
-                &format!(
+            // The CLI's resolved process environment includes secrets, with runtime-owned
+            // names protected. Merge other SDK-only secrets without replacing those values.
+            let mut compose_env = secrets.clone();
+            compose_env.extend(env.clone());
+            compose_env.insert("ENV".into(), environment.clone());
+            let identity = if environment == "development" {
+                format!(
                     "{}:{}",
                     canonical_config.display(),
                     variant.as_deref().unwrap_or_default()
-                ),
-            )
-            .map(|runtime| {
-                runtime.with_development_hosts(
-                    compose_default_host.unwrap_or_else(|| app_short_host(&app_name)),
-                    compose_base_host,
                 )
-            })
+            } else {
+                format!(
+                    "{}:{environment}:{}",
+                    canonical_config.display(),
+                    variant.as_deref().unwrap_or_default()
+                )
+            };
+            tako_compose::ComposeRuntime::development(directory, config, compose_env, &identity)
+                .map(|runtime| {
+                    runtime.with_development_hosts(
+                        compose_default_host.unwrap_or_else(|| app_short_host(&app_name)),
+                        compose_base_host,
+                    )
+                })
         })
         .transpose()?;
     crate::compose::stop(&state, &config_path).await?;
 
-    let app_name = sanitize_app_name(&app_name);
     let route_id = format!("reg:{}", config_path);
 
     let existing_bootstrap = {
@@ -140,6 +197,11 @@ pub(super) async fn register_app(
     let app_storages = storages.clone();
     let app_secrets = secrets.clone();
     let app_databases = databases.clone();
+    let app_env = env.clone();
+    let data_dir = env
+        .get("TAKO_DATA_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(&project_dir).join(".tako/data/app"));
 
     {
         let s = state.lock().unwrap();
@@ -175,7 +237,13 @@ pub(super) async fn register_app(
         };
 
         if let Some(db) = &s.db {
-            let _ = db.register(&config_path, &project_dir, &app_name, variant.as_deref());
+            let _ = db.register(
+                &config_path,
+                &config_file,
+                &project_dir,
+                &app_name,
+                variant.as_deref(),
+            );
         }
 
         let log_buffer = s
@@ -202,6 +270,9 @@ pub(super) async fn register_app(
         s.apps.insert(
             config_path.clone(),
             RuntimeApp {
+                app_namespace,
+                config_file: config_file.clone(),
+                environment,
                 compose,
                 project_dir: project_dir.clone(),
                 name: app_name.clone(),
@@ -241,17 +312,19 @@ pub(super) async fn register_app(
                 bindings: app_storages.clone(),
                 root: {
                     use sha2::{Digest, Sha256};
-                    let config = Path::new(&config_path)
+                    let config = Path::new(&config_file)
                         .strip_prefix(Path::new(&project_dir))
-                        .unwrap_or_else(|_| Path::new(&config_path));
+                        .unwrap_or_else(|_| Path::new(&config_file));
                     let identity =
                         format!("{}\n{}", config.display(), variant.as_deref().unwrap_or(""));
-                    Path::new(&project_dir)
-                        .join(".tako/data/tako/storages")
+                    data_dir
+                        .parent()
+                        .unwrap_or(&data_dir)
+                        .join("tako/storages")
                         .join(hex::encode(Sha256::digest(identity.as_bytes())))
                         .join("objects")
                 },
-                legacy_root: Path::new(&project_dir).join(".tako/data/app"),
+                legacy_root: data_dir,
             },
         );
         if let Some(ref mut mdns) = s.mdns {
@@ -304,6 +377,7 @@ pub(super) async fn register_app(
             workflow_retention_ms,
             worker_app_root.as_deref(),
             WorkerBindings {
+                env: app_env,
                 storages: app_storages,
                 secrets: app_secrets,
                 databases: app_databases,
@@ -341,6 +415,7 @@ async fn ensure_workflow_runtime(
     log_buffer: Option<state::LogBuffer>,
 ) {
     let WorkerBindings {
+        env,
         storages,
         secrets,
         databases,
@@ -375,7 +450,7 @@ async fn ensure_workflow_runtime(
     });
     let spec_app = app.clone();
     let spec_fn = move |_db_path: PathBuf| tako_workflows::WorkerSpec {
-        env: build_worker_env(&spec_app, &cwd, &socket, app_root.as_deref()),
+        env: build_worker_env(&spec_app, &env, &socket, app_root.as_deref()),
         app: spec_app.clone(),
         workers: 0,
         concurrency: 500,
@@ -403,6 +478,7 @@ pub(super) async fn unregister_app(state: &Arc<Mutex<State>>, config_path: Strin
     cancel_app_startup(state, &config_path);
     let lock = crate::compose::app_lock(state, &config_path);
     let _guard = lock.lock().await;
+    let _name_guards = lock_runtime_names(state, &config_path, None).await;
     // Retire the routes before stopping their containers.
     state
         .lock()
@@ -546,6 +622,7 @@ pub(super) async fn restart_app(state: &Arc<Mutex<State>>, config_path: String) 
                 app.workflow_retention_ms,
                 app.env.get("TAKO_APP_ROOT").cloned(),
                 WorkerBindings {
+                    env: app.env.clone(),
                     storages: app.storages.clone(),
                     secrets: app.secrets.clone(),
                     databases: app.databases.clone(),
@@ -726,11 +803,11 @@ fn generate_dev_secret() -> Result<String, getrandom::Error> {
 
 pub(super) fn build_worker_env(
     app: &str,
-    project_dir: &Path,
+    app_env: &HashMap<String, String>,
     internal_socket: &Path,
     app_root: Option<&str>,
 ) -> HashMap<String, String> {
-    let mut env = HashMap::new();
+    let mut env = app_env.clone();
     env.insert(
         tako_core::instance_env::TAKO_APP_NAME_ENV.into(),
         app.to_string(),
@@ -738,15 +815,6 @@ pub(super) fn build_worker_env(
     env.insert(
         tako_core::instance_env::TAKO_INTERNAL_SOCKET_ENV.into(),
         internal_socket.to_string_lossy().to_string(),
-    );
-    env.insert(
-        "TAKO_DATA_DIR".into(),
-        project_dir
-            .join(".tako")
-            .join("data")
-            .join("app")
-            .to_string_lossy()
-            .to_string(),
     );
     if let Ok(shared) = tako::paths::shared_data_dir() {
         env.insert("TAKO_SHARED_DATA_DIR".into(), shared.display().to_string());

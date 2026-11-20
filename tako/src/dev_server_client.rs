@@ -12,6 +12,7 @@ pub use apps::{
 pub use commands::{info, stop_server, toggle_lan, toggle_tunnel};
 #[allow(unused_imports)]
 pub(crate) use connection::LineClient;
+pub(crate) use connection::{DAEMON_UPGRADE_HINT, current_protocol};
 pub use daemon::ensure_running;
 pub use events::{
     DevServerEvent, LogStreamEntry, TunnelCloseReason, subscribe_events, subscribe_logs,

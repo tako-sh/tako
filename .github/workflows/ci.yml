@@ -163,6 +163,7 @@ jobs:
           TAKO_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:${{ job.services.postgres.ports['5432'] }}/postgres
         run: |
           cargo test --workspace --locked --lib --bins
+          cargo test -p tako-cli --locked --test cli_integration -- --test-threads=1
           cargo test -p tako-network --locked --test '*'
           cargo test -p tako-server --locked --test backup_snapshot --test backup_live_wal --test backup_standby
           cargo test -p tako-database --locked

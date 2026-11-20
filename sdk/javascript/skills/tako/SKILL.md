@@ -43,6 +43,11 @@ checks exercise the same configuration the application deploys with.
 - Inspect running apps with `tako_dev_list` / `tako dev list --json` first.
 - Start local development through `tako_dev` / `tako dev --background --json`. The MCP tool
   returns after readiness and leaves the app running under the dev daemon.
+- For isolated local tests, configure an environment such as `test-e2e` in the main
+  config and pass `env` / `--env` to dev start, restart, stop, and list.
+  Pass the same `env` to `tako_dev_logs` for local logs.
+  It selects that environment's variables, secrets, routes, and bindings, with
+  separate local data and daemon registration. Read `development` for details.
 - Open the returned Tako URL (usually `https://<app>.test`). Use the configured
   route for browser checks. Raw framework ports bypass Tako's routing and TLS.
 - Verify the behavior the user changed: exercise the browser or HTTP request,

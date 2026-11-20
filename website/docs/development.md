@@ -18,6 +18,8 @@ https://<app>.test/
 
 The CLI is a client for a persistent `tako-dev-server` daemon. It starts the daemon when needed, registers the selected config file, streams logs, and attaches to existing sessions. `tako dev --json` skips the logo and TUI and writes JSONL to stdout: a ready object with the app URL, then log and event records.
 
+After upgrading Tako, an older daemon may still be running. The CLI checks its protocol before starting or listing apps and reports a mismatch rather than an empty app list. Run `tako dev --restart` to replace an incompatible daemon. This stops its other local apps; run `tako dev` in each project you want to start again.
+
 For an agent, inspect existing apps with `tako dev list --json`, then use `tako dev --background --json` or the `tako_dev` MCP tool. These return after readiness instead of holding the tool call open. Verify through the returned HTTPS URL; raw framework ports bypass Tako. See [Background development for agents](#background-development-for-agents) for restart and finite-log behavior.
 
 ## What `tako dev` Does
@@ -34,6 +36,8 @@ For an agent, inspect existing apps with `tako dev list --json`, then use `tako 
 For [network primitives](/network-primitives/), run both apps under this daemon and use `app.primitive` addresses. List producer schemas under root-level `schemas`. Changes to local schema files or definitions in `network-handlers/`, `channels/`, and `workflows/` refresh JavaScript network types. Generated declaration changes do not restart the app. Remote sources stay pinned until `tako gen --update-schemas`; rerun `tako gen` after changing types imported from elsewhere in the project. Generate native Go/Rust files explicitly before building those apps.
 
 Tako does not watch arbitrary source files for restart. Framework dev servers and runtimes own hot reload.
+
+Generated JavaScript storage and database declarations include binding names across the selected config's environments. Secret declarations include names from the environments loaded by the command, including its selected environment and local drafts. Declaring a name does not bind it at runtime: the selected environment still determines the values and resources available to the app.
 
 Local startup has no readiness deadline, so native builds such as `cargo run` can finish compiling. Every 30 seconds, Tako logs an informational “App has not started after 30s; still waiting…” message with the total elapsed time (30s, 60s, 90s, and so on). The app becomes ready when it signals its bound port; an exited process or a closed or invalid readiness pipe is a startup failure. Stop, restart, and config reload can interrupt the wait. This does not change deployment or Compose health-check timeouts.
 
@@ -117,6 +121,47 @@ LAN mode rewrites managed `.test` and `.tako.test` routes to `.local` aliases an
 
 Tunnel mode creates a temporary public HTTPS URL through the Tako tunnel service. URLs are stable for the same app and Tako Identity and stay enabled until you turn tunnel mode off or unregister the app. If the tunnel connection drops, Tako keeps the URL reserved and reconnects automatically.
 
+## Local environments
+
+`tako dev` uses `development` by default. Select a configured environment to run
+tests alongside your normal app from the same config:
+
+```toml
+[vars.test-e2e]
+TEST_MODE = "1"
+
+[envs.test-e2e]
+route = "myapp-test-e2e.test"
+databases = { main = "myapp-tests" }
+storages = { uploads = "local" }
+```
+
+```bash
+tako dev --env test-e2e --background --json
+tako dev list --env test-e2e --json
+tako dev --env test-e2e --restart --background --json
+tako dev stop --env test-e2e
+```
+
+The selected environment supplies routes, variables, secrets, storage bindings,
+and database bindings; `ENV` and `tako.env` reflect it. Shared `[vars]` still apply.
+Custom local environments bind only their own databases. Their local database
+files and app data live under `.tako/data/envs/<env>/` (names longer than 255 bytes use `~` followed by their SHA-256 digest); ordinary development keeps
+`.tako/data/`. The database files are local even if that environment also deploys
+to a server. External storage bindings still use their configured provider.
+
+Each config/environment pair has its own daemon registration, logs, process, and
+restart/stop lifecycle. A custom environment's default hostname is
+`<app>-<env>.test`; explicit routes should be distinct across running environments.
+Network primitive calls select the destination in the caller's environment.
+Compose uses the selected service `x-tako.envs.<env>` routes and an isolated local
+Compose project.
+
+`--env` works with `stop` and `list` before or after the subcommand. Without it,
+`list` and `stop --all` include every local environment; plain `stop` selects
+`development` for the current config. `stop --all --env test-e2e` stops only that
+environment. MCP tools accept `env`, including `tako_dev_logs`.
+
 ## Variants
 
 ```bash
@@ -124,7 +169,8 @@ tako dev --variant staging
 tako dev --var staging
 ```
 
-Variants run a DNS variant of the app, such as `myapp-staging.test`.
+Variants run a DNS variant of the selected local environment, such as
+`myapp-staging.test` or `myapp-test-e2e-staging.test`.
 
 ## Restart
 
@@ -182,19 +228,19 @@ Tunnel mode supports concurrent HTTP requests, streaming responses including SSE
 
 Development processes receive:
 
-| Name            | Value                                                     |
-| --------------- | --------------------------------------------------------- |
-| `ENV`           | `development`                                             |
-| `NODE_ENV`      | `development` for JS runtimes                             |
-| `BUN_ENV`       | `development` for Bun                                     |
-| `PORT`          | `0`; SDK binds an OS-assigned port and reports it to Tako |
-| `HOST`          | `127.0.0.1`                                               |
-| `TAKO_BUILD`    | `dev`                                                     |
+| Name                   | Value                                                                    |
+| ---------------------- | ------------------------------------------------------------------------ |
+| `ENV`                  | Selected environment; defaults to `development`                          |
+| `NODE_ENV`             | `development` for JS runtimes                                            |
+| `BUN_ENV`              | `development` for Bun                                                    |
+| `PORT`                 | `0`; SDK binds an OS-assigned port and reports it to Tako                |
+| `HOST`                 | `127.0.0.1`                                                              |
+| `TAKO_BUILD`           | `dev`                                                                    |
 | `TAKO_SHARED_DATA_DIR` | Persistent directory shared by projects using the same local `TAKO_HOME` |
-| `TAKO_DATA_DIR` | Persistent app-owned dev data dir                         |
-| `TAKO_APP_ROOT` | JS app root, default `src`                                |
+| `TAKO_DATA_DIR`        | Persistent app-owned dev data dir                                        |
+| `TAKO_APP_ROOT`        | JS app root, default `src`                                               |
 
-User variables come from `[vars]` plus `[vars.development]`.
+User variables come from `[vars]` plus `[vars.<selected-environment>]`.
 
 The fd-3 bootstrap envelope is present even with no secrets or storages. It carries the internal auth token, `secrets`, `storages`, and `databases`.
 
@@ -217,6 +263,10 @@ Secrets are not raw process env vars.
 ## Databases In Dev
 
 `tako dev` serves each development database binding from `.tako/data/databases/<database-name>.sqlite` over the same protocol as production, on a loopback port of the dev daemon. Bind names in `[envs.development].databases`, or let development use every name the other environments bind. The file is created on first use, and the project's [migrations](/databases/#migrations) are applied before the app starts and on each reload. `tako run` serves the same files, after applying migrations, for one-off scripts. See [Databases](/databases/#develop-locally).
+
+With `tako dev --env <env>`, a custom environment binds only
+`[envs.<env>].databases` and stores files at
+`.tako/data/envs/<env>/databases/<database-name>.sqlite`.
 
 ## Secrets And Storage In Dev
 

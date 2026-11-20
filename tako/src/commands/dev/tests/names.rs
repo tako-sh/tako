@@ -53,6 +53,60 @@ fn no_existing_apps_returns_candidate_unchanged() {
 }
 
 #[test]
+fn generated_environment_and_variant_names_fit_dns_labels() {
+    for app in [
+        "a".repeat(55),
+        "a".repeat(63),
+        format!("{}-b", "a".repeat(53)),
+    ] {
+        let base = bounded_dev_name(&format!("{app}-test-e2e"));
+        let other = bounded_dev_name(&format!("{app}-test-alt"));
+        assert_ne!(base, other);
+        assert_eq!(base, bounded_dev_name(&format!("{app}-test-e2e")));
+        let variant = disambiguate_app_name(&format!("{base}-feature"), "/a/tako.toml", &[]);
+        let existing = vec![(variant.clone(), "/a/tako.toml".into())];
+        let checkout = disambiguate_app_name(&format!("{base}-feature"), "/b/tako.toml", &existing);
+        assert_ne!(variant, checkout);
+        for name in [base, other, variant, checkout] {
+            assert!(name.len() <= 63, "{name}");
+            assert_eq!(sanitize_name_segment(&name), name);
+            crate::validation::validate_dev_route(&LocalCA::app_short_domain(&name), &name)
+                .unwrap();
+        }
+    }
+    let longest_app = "a".repeat(63);
+    assert_eq!(bounded_dev_name(&longest_app), longest_app);
+}
+
+#[test]
+fn trailing_environment_hyphens_produce_distinct_valid_hosts() {
+    let mut names = std::collections::HashSet::new();
+    for environment in ["test", "test-", "test--", "-", "--", "-test"] {
+        crate::config::validate_environment_name(environment).unwrap();
+        let candidate = format!("myapp-{environment}");
+        let name = bounded_dev_name(&candidate);
+        assert!(names.insert(name.clone()), "{environment}");
+        assert_eq!(bounded_dev_name(&name), name);
+        let host = LocalCA::app_short_domain(&name);
+        crate::validation::validate_dev_route(&host, &name).unwrap();
+        assert_eq!(
+            compute_dev_hosts(&name, &TakoToml::default(), &host, None, environment).unwrap(),
+            vec![host]
+        );
+    }
+    assert!(
+        compute_dev_hosts(
+            "myapp-test-",
+            &TakoToml::default(),
+            "myapp-test-.test",
+            None,
+            "test-",
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn same_project_dir_is_not_a_conflict() {
     let existing = vec![("my-app".into(), "/proj/tako.toml".into())];
     let result = disambiguate_app_name("my-app", "/proj/tako.toml", &existing);

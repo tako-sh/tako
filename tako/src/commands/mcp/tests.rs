@@ -242,6 +242,32 @@ async fn subprocess_receives_secret_stdin_without_command_interpolation() {
 }
 
 #[test]
+fn dev_tools_expose_environment_selection() {
+    let catalog = catalog::catalog();
+    for (tool, command) in [
+        ("tako_dev", vec!["dev"]),
+        ("tako_dev_stop", vec!["dev", "stop"]),
+        ("tako_dev_list", vec!["dev", "list"]),
+    ] {
+        let arguments = serde_json::json!({"env": "test-e2e"})
+            .as_object()
+            .unwrap()
+            .clone();
+        let actual = catalog[tool].arguments(&arguments).unwrap();
+        assert!(actual.starts_with(&command.iter().map(|s| s.to_string()).collect::<Vec<_>>()));
+        assert!(
+            actual.iter().any(|arg| arg == "--env=test-e2e"),
+            "{actual:?}"
+        );
+    }
+    assert!(
+        local_logs::tool().input_schema["properties"]
+            .get("env")
+            .is_some()
+    );
+}
+
+#[test]
 fn dev_start_is_finite_and_dry_run_is_exposed_only_where_supported() {
     let catalog = catalog::catalog();
     assert_eq!(

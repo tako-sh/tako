@@ -2,7 +2,7 @@
 use crate::support::*;
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
-use std::net::{TcpListener, UdpSocket};
+use std::net::TcpListener;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -107,9 +107,22 @@ impl ApiServer {
         protected_directory(directory.path());
         let listener = TcpListener::bind(("0.0.0.0", 0)).unwrap();
         listener.set_nonblocking(true).unwrap();
-        let route = UdpSocket::bind("0.0.0.0:0").unwrap();
-        route.connect("192.0.2.1:80").unwrap();
-        let ip = route.local_addr().unwrap().ip();
+        // A default route can select a VPN address that cannot reach this local listener.
+        let ip = nix::ifaddrs::getifaddrs()
+            .unwrap()
+            .find_map(|interface| {
+                use nix::net::if_::InterfaceFlags;
+                if !interface.flags.contains(InterfaceFlags::IFF_UP)
+                    || interface
+                        .flags
+                        .intersects(InterfaceFlags::IFF_LOOPBACK | InterfaceFlags::IFF_POINTOPOINT)
+                {
+                    return None;
+                }
+                Some(interface.address?.as_sockaddr_in()?.ip())
+            })
+            .expect("a non-loopback IPv4 interface for pinned HTTPS tests")
+            .into();
         let network = NetworkId::random().unwrap();
         let owner = LocalDeviceKeys::generate().unwrap();
         let request = owner
@@ -585,10 +598,28 @@ fn deploy_and_secret_commands_materialize_the_selected_config() {
         let secrets = &state["values"]["production"]["app"];
         assert!(secrets.get("ALTERNATE_ONLY").is_some());
         assert!(secrets.get("DEFAULT_ONLY").is_none());
-        // Actual bindings remain protected when a different config is selected later.
+        // Unpublished drafts stay protected when a different config is selected later.
+        server.ok(
+            &server.owner_home,
+            &project,
+            &[
+                "--config",
+                "alternate.toml",
+                "secrets",
+                "set",
+                "UNPUBLISHED",
+                "--env",
+                "production",
+            ],
+            Some("local-draft"),
+        );
         let wrong = server.run(&server.owner_home, &project, &["secrets", "list"], None);
         assert!(!wrong.status.success());
-        assert!(stderr_str(&wrong).contains("bound to another app or network"));
+        assert!(
+            stderr_str(&wrong).contains("unpublished production secrets for app alternate"),
+            "{}",
+            stderr_str(&wrong)
+        );
         server.ok(
             &server.owner_home,
             &project,
@@ -1055,6 +1086,15 @@ fn invitations_and_worktree_secret_publication_use_real_cli_and_pinned_https() {
         .map(|row| row["client"].as_str().unwrap())
         .collect();
     assert_eq!(names, ["second", "third"]);
+    // Revoke descendants first, even when their approval and revocation share a clock tick.
+    assert_eq!(
+        revoked["revocations"][0]["target"],
+        revoked["revoked"][1]["device"]
+    );
+    assert_eq!(
+        revoked["revocations"][1]["target"],
+        revoked["revoked"][0]["device"]
+    );
     assert!(
         !server
             .run(
@@ -1418,7 +1458,7 @@ fn clearing_requires_an_environment_bound_to_a_network() {
     );
     assert!(!result.status.success());
     assert!(
-        stderr_str(&result).contains("has no network in tako.toml"),
+        stderr_str(&result).contains("has no network yet"),
         "{}",
         stderr_str(&result)
     );

@@ -39,17 +39,53 @@ pub(crate) fn development_bindings(config: &TakoToml) -> BTreeMap<String, String
     bindings
 }
 
+/// Custom local environments bind only their own databases, never a fallback.
+pub(crate) fn environment_bindings(
+    config: &TakoToml,
+    environment: &str,
+) -> BTreeMap<String, String> {
+    if environment == "development" {
+        return development_bindings(config);
+    }
+    config
+        .envs
+        .get(environment)
+        .map(|env| env.databases.clone().into_iter().collect())
+        .unwrap_or_default()
+}
+
+pub(crate) fn data_root(project_dir: &Path, environment: &str) -> PathBuf {
+    let root = project_dir.join(".tako").join("data");
+    if environment == "development" {
+        root
+    } else if environment.len() > 255 {
+        // '~' cannot occur in an environment name, so the hashed and literal namespaces are disjoint.
+        root.join("envs").join(format!(
+            "~{}",
+            hex::encode(Sha256::digest(environment.as_bytes()))
+        ))
+    } else {
+        root.join("envs").join(environment)
+    }
+}
+
 /// Binding name → absolute path of its local file, for the dev daemon.
-pub(crate) fn dev_files(project_dir: &Path, config: &TakoToml) -> BTreeMap<String, String> {
+pub(crate) fn dev_files(
+    project_dir: &Path,
+    config: &TakoToml,
+    environment: &str,
+) -> BTreeMap<String, String> {
     let project_dir = project_dir
         .canonicalize()
         .unwrap_or_else(|_| project_dir.to_path_buf());
-    development_bindings(config)
+    environment_bindings(config, environment)
         .into_iter()
         .map(|(binding, database)| {
             (
                 binding,
-                database_path(&project_dir, &database).display().to_string(),
+                environment_database_path(&project_dir, &database, environment)
+                    .display()
+                    .to_string(),
             )
         })
         .collect()
@@ -73,6 +109,14 @@ pub(crate) fn migrate_development(
     development_migrations(project_dir, config, false, None)
 }
 
+pub(crate) fn migrate_environment(
+    project_dir: &Path,
+    config: &TakoToml,
+    environment: &str,
+) -> Result<DevMigrations, String> {
+    environment_migrations(project_dir, config, environment, false, None)
+}
+
 /// Applies the pending migrations of each local database, or only of
 /// `database` when given, or lists them when `dry_run` is set.
 pub(crate) fn development_migrations(
@@ -81,12 +125,22 @@ pub(crate) fn development_migrations(
     dry_run: bool,
     database: Option<&str>,
 ) -> Result<DevMigrations, String> {
+    environment_migrations(project_dir, config, "development", dry_run, database)
+}
+
+fn environment_migrations(
+    project_dir: &Path,
+    config: &TakoToml,
+    environment: &str,
+    dry_run: bool,
+    database: Option<&str>,
+) -> Result<DevMigrations, String> {
     let project_dir = project_dir
         .canonicalize()
         .unwrap_or_else(|_| project_dir.to_path_buf());
     let owner = config.name.as_deref().unwrap_or("app");
     let mut result = DevMigrations::default();
-    let bindings = development_bindings(config);
+    let bindings = environment_bindings(config, environment);
     let selected = crate::database_migrations::by_database(
         &project_dir,
         config,
@@ -97,7 +151,7 @@ pub(crate) fn development_migrations(
     )?;
     for (database, selected) in selected {
         let (binding, migrations) = (selected.binding, selected.migrations);
-        let path = database_path(&project_dir, &database);
+        let path = environment_database_path(&project_dir, &database, environment);
         let report = tako_database::migrate::migrate_file(&path, owner, &migrations, dry_run)
             .map_err(|error| format!("Database `{binding}`: {error}"))?;
         result.warnings.extend(
@@ -124,9 +178,11 @@ pub(crate) fn development_migrations(
 }
 
 pub(crate) fn database_path(project_dir: &Path, database: &str) -> PathBuf {
-    project_dir
-        .join(".tako")
-        .join("data")
+    environment_database_path(project_dir, database, "development")
+}
+
+fn environment_database_path(project_dir: &Path, database: &str, environment: &str) -> PathBuf {
+    data_root(project_dir, environment)
         .join("databases")
         .join(format!("{database}.sqlite"))
 }
@@ -272,6 +328,74 @@ databases = { main = "shop-staging", events = "events" }
             development_bindings(&config(&explicit)),
             BTreeMap::from([("main".to_string(), "local".to_string())])
         );
+    }
+
+    #[test]
+    fn custom_environment_migrates_isolated_files_without_fallback_bindings() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().canonicalize().unwrap();
+        let cfg = config(
+            r#"
+name = "shop"
+[envs.development]
+databases = { main = "shared-name", dev_only = "dev-only" }
+[envs.test-e2e]
+route = "shop-test-e2e.test"
+databases = { main = "shared-name" }
+[envs.empty]
+route = "empty.test"
+"#,
+        );
+        std::fs::create_dir_all(project.join("migrations/main")).unwrap();
+        std::fs::write(
+            project.join("migrations/main/001_items.sql"),
+            "CREATE TABLE items (value TEXT);",
+        )
+        .unwrap();
+        migrate_environment(&project, &cfg, "development").unwrap();
+        let dev_file = &dev_files(&project, &cfg, "development")["main"];
+        let dev = tako_sqlite::open_local(dev_file).unwrap();
+        dev.execute("INSERT INTO items VALUES ('keep')", [])
+            .unwrap();
+        migrate_environment(&project, &cfg, "test-e2e").unwrap();
+        let test_files = dev_files(&project, &cfg, "test-e2e");
+        assert_eq!(test_files.len(), 1);
+        assert_ne!(&test_files["main"], dev_file);
+        let test = tako_sqlite::open_local(&test_files["main"]).unwrap();
+        assert_eq!(
+            test.query_row("SELECT count(*) FROM items", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            dev.query_row("SELECT value FROM items", [], |row| row.get::<_, String>(0))
+                .unwrap(),
+            "keep"
+        );
+        assert!(dev_files(&project, &cfg, "empty").is_empty());
+    }
+
+    #[test]
+    fn long_environment_components_are_stable_distinct_and_creatable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let boundary = "a".repeat(255);
+        let literal = data_root(tmp.path(), &boundary);
+        assert_eq!(literal.file_name().unwrap(), boundary.as_str());
+        let long = format!("{boundary}b");
+        let hashed = data_root(tmp.path(), &long);
+        assert_eq!(hashed, data_root(tmp.path(), &long));
+        assert_ne!(hashed, data_root(tmp.path(), &format!("{boundary}c")));
+        assert!(
+            hashed
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with('~')
+        );
+        for path in [literal, hashed] {
+            std::fs::create_dir_all(path.join("app")).unwrap();
+        }
     }
 
     #[test]

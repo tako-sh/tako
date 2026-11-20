@@ -8,7 +8,6 @@ use crate::commands::{
 };
 use clap::CommandFactory;
 
-const DEV_PUBLIC_PORT: u16 = 47831;
 const VERSION_BASE: &str = env!("CARGO_PKG_VERSION");
 const VERSION_BUILD_SHA: Option<&str> = option_env!("TAKO_BUILD_SHA");
 
@@ -75,6 +74,10 @@ mod tests;
 
 #[derive(clap::Args, Debug)]
 pub struct DevArgs {
+    /// Environment to run locally (defaults to development)
+    #[arg(long, global = true)]
+    pub env: Option<String>,
+
     /// Run a variant of the app (e.g. --variant foo → myapp-foo.test)
     #[arg(long, visible_alias = "var")]
     pub variant: Option<String>,
@@ -145,7 +148,6 @@ pub enum Commands {
     },
 
     /// Start development server
-    #[command(args_conflicts_with_subcommands = true)]
     Dev {
         #[command(subcommand)]
         command: Option<DevSubcommands>,
@@ -526,34 +528,39 @@ impl Cli {
                 match command {
                     None => {
                         rt.block_on(commands::dev::run(
-                            DEV_PUBLIC_PORT,
                             args.variant,
                             args.tunnel,
                             args.restart,
                             None,
                             self.config.as_deref(),
                             args.background,
+                            args.env.as_deref().unwrap_or("development"),
                         ))?;
                         Ok(())
                     }
                     Some(DevSubcommands::Run(cmd)) => {
                         rt.block_on(commands::dev::run(
-                            DEV_PUBLIC_PORT,
                             args.variant,
                             args.tunnel,
                             args.restart,
                             Some(cmd),
                             self.config.as_deref(),
                             args.background,
+                            args.env.as_deref().unwrap_or("development"),
                         ))?;
                         Ok(())
                     }
                     Some(DevSubcommands::Stop { name, all }) => {
-                        rt.block_on(commands::dev::stop(name, all, self.config.as_deref()))?;
+                        rt.block_on(commands::dev::stop(
+                            name,
+                            all,
+                            self.config.as_deref(),
+                            args.env.as_deref(),
+                        ))?;
                         json_success(json, "dev")
                     }
                     Some(DevSubcommands::List) => {
-                        rt.block_on(commands::dev::ls())?;
+                        rt.block_on(commands::dev::ls(args.env.as_deref()))?;
                         Ok(())
                     }
                 }

@@ -6,11 +6,22 @@ use std::sync::{Arc, Mutex};
 use crate::control::State;
 
 pub(crate) fn app_lock(state: &Arc<Mutex<State>>, key: &str) -> Arc<tokio::sync::Mutex<()>> {
+    lifecycle_lock(state, format!("registration:{key}"))
+}
+
+pub(crate) fn runtime_name_lock(
+    state: &Arc<Mutex<State>>,
+    name: &str,
+) -> Arc<tokio::sync::Mutex<()>> {
+    lifecycle_lock(state, format!("runtime-name:{name}"))
+}
+
+fn lifecycle_lock(state: &Arc<Mutex<State>>, key: String) -> Arc<tokio::sync::Mutex<()>> {
     state
         .lock()
         .unwrap()
         .app_locks
-        .entry(key.into())
+        .entry(key)
         .or_default()
         .clone()
 }

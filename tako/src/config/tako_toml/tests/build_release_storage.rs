@@ -540,7 +540,7 @@ fn compose_loads_service_routes_and_local_app_defaults() {
     let compose = config.compose.unwrap();
     assert_eq!(compose.services.len(), 3);
     assert!(!compose.services.contains_key("redis"));
-    let dev = compose.for_development("shop-preview.tako", Some("shop.tako"));
+    let dev = compose.for_local_environment("development", "shop-preview.tako", Some("shop.tako"));
     assert_eq!(
         dev.routes("development"),
         [

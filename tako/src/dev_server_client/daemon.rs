@@ -3,7 +3,7 @@ use std::time::{Duration, SystemTime};
 
 use tokio::net::UnixStream;
 
-use super::connection::{LineClient, ping, socket_path};
+use super::connection::{LineClient, check_protocol, socket_path};
 
 // Keep this above the daemon-side proxy bind wait window (~12s) so we can
 // report daemon exit/log details instead of a generic connect timeout.
@@ -19,7 +19,7 @@ pub async fn ensure_running(
 
     if let Ok(stream) = UnixStream::connect(&sock).await {
         let mut c = LineClient::new(stream);
-        ping(&mut c).await?;
+        check_protocol(&mut c).await?;
         return Ok(());
     }
 
@@ -37,7 +37,7 @@ pub async fn ensure_running(
         tokio::time::sleep(Duration::from_millis(DEV_SERVER_STARTUP_WAIT_INTERVAL_MS)).await;
         if let Ok(stream) = UnixStream::connect(&sock).await {
             let mut c = LineClient::new(stream);
-            ping(&mut c).await?;
+            check_protocol(&mut c).await?;
             return Ok(());
         }
         if let Some(status) = child.try_wait()? {
@@ -195,5 +195,5 @@ fn maybe_build_repo_local_dev_server(root: &Path) -> std::io::Result<()> {
 }
 
 pub(super) fn repo_local_dev_server_build_args() -> [&'static str; 5] {
-    ["build", "-p", "tako", "--bin", "tako-dev-server"]
+    ["build", "-p", "tako-cli", "--bin", "tako-dev-server"]
 }

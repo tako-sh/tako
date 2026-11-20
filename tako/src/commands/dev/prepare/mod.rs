@@ -19,6 +19,7 @@ pub(super) struct DevSession {
     pub project_dir: PathBuf,
     pub app_name: String,
     pub variant: Option<String>,
+    pub environment: String,
     pub runtime_name: String,
     pub domain: String,
     pub base_domain: Option<String>,
@@ -48,19 +49,21 @@ pub(super) fn attach_dev_ui(stdin_tty: bool, stdout_tty: bool) -> bool {
 }
 
 pub(super) async fn prepare(
-    public_port: u16,
     variant: Option<String>,
     tunnel: bool,
     restart: bool,
     command_override: Option<Vec<String>>,
     config_path: Option<&Path>,
     background: bool,
+    environment: &str,
 ) -> Result<PrepareOutcome, Box<dyn std::error::Error>> {
+    let public_port = 47831;
     let context = crate::commands::project_context::resolve_existing(config_path)?;
-    let config_key = context.config_key();
+    let config_key = super::shared::dev_config_key(&context.config_path, environment);
     let project_dir = context.project_dir.clone();
     let config_path = context.config_path.clone();
     let cfg = load_dev_tako_toml(&config_path)?;
+    super::shared::validate_dev_environment(&cfg, environment)?;
     for warning in cfg.ignored_reserved_var_warnings() {
         crate::output::warning(&format!("Validation: {}", warning));
     }
@@ -106,7 +109,7 @@ pub(super) async fn prepare(
             &project_dir,
             runtime_adapter,
             &cfg,
-            Some("development"),
+            Some(environment),
             false,
         )
         .map_err(|error| error.to_string())?;
@@ -116,6 +119,12 @@ pub(super) async fn prepare(
 
     let base_name = resolve_app_name_from_config_path(&config_path)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?;
+    let base_name = if environment == "development" {
+        base_name
+    } else {
+        format!("{base_name}-{environment}")
+    };
+    let base_name = bounded_dev_name(&base_name);
     let app_name = if let Some(ref v) = variant {
         format!("{base_name}-{v}")
     } else {
@@ -168,6 +177,12 @@ pub(super) async fn prepare(
 
     // Check if a dev server is already running and needs a restart.
     let existing_info = crate::dev_server_client::info().await.ok();
+    let protocol_mismatch = existing_info
+        .as_ref()
+        .is_some_and(|info| !crate::dev_server_client::current_protocol(info));
+    if protocol_mismatch && !restart {
+        return Err(crate::dev_server_client::DAEMON_UPGRADE_HINT.into());
+    }
     let existing_listen = existing_info.as_ref().and_then(|v| {
         v.get("info")
             .and_then(|i| i.get("listen"))
@@ -188,14 +203,20 @@ pub(super) async fn prepare(
         .unwrap_or(false);
     let restart_for_ca = ca_changed && existing_info.is_some();
 
-    if restart_for_listen || restart_for_dns || restart_for_ca {
+    if protocol_mismatch || restart_for_listen || restart_for_dns || restart_for_ca {
         warn_restart_stops_apps(&config_key).await;
         crate::dev_server_client::stop_server().await?;
         wait_for_dev_server_stopped(&listen_addr).await;
     }
 
-    let dev_hosts = compute_dev_hosts(&app_name, &cfg, &domain, base_domain.as_deref())
-        .map_err(|e| format!("invalid development routes: {}", e))?;
+    let dev_hosts = compute_dev_hosts(
+        &app_name,
+        &cfg,
+        &domain,
+        base_domain.as_deref(),
+        environment,
+    )
+    .map_err(|e| format!("invalid development routes: {}", e))?;
     let primary_host = dev_hosts
         .iter()
         .map(|h| h.split('/').next().unwrap_or(h))
@@ -203,24 +224,14 @@ pub(super) async fn prepare(
         .map(|h| h.to_string())
         .unwrap_or_else(|| domain.clone());
 
-    let mut env = compute_dev_env(&cfg);
+    let mut env = compute_dev_env(&cfg, environment);
     if runtime_adapter.preset_group() == PresetGroup::Js {
         env.insert("TAKO_APP_ROOT".to_string(), cfg.js_app_root().to_string());
     }
     inject_dev_allowed_hosts(&dev_hosts, &mut env);
-    inject_dev_data_dir(&project_dir, &mut env).map_err(|e| e.to_string())?;
-    let secrets = inject_dev_secrets(&project_dir, &cfg, &mut env).map_err(|e| e.to_string())?;
-
-    if runtime_adapter.preset_group() == PresetGroup::Js {
-        crate::build::js::write_generated_files_with_schemas(
-            &project_dir,
-            runtime_adapter,
-            &cfg,
-            Some("development"),
-            false,
-        )
-        .map_err(|error| error.to_string())?;
-    }
+    inject_dev_data_dir(&project_dir, &mut env, environment).map_err(|e| e.to_string())?;
+    let secrets =
+        inject_dev_secrets(&project_dir, &cfg, &mut env, environment).map_err(|e| e.to_string())?;
 
     let (cmd, readiness_failure_hint, worker_command) = if cfg.compose.is_some() {
         (Vec::new(), None, None)
@@ -332,7 +343,7 @@ pub(super) async fn prepare(
             if tunnel && existing.tunnel_url.is_none() {
                 crate::dev_server_client::toggle_tunnel(&config_key, true).await?;
             }
-            let hosts = compute_display_routes(&cfg, &domain, base_domain.as_deref());
+            let hosts = compute_display_routes(&cfg, &domain, base_domain.as_deref(), environment);
             super::runner::emit_background_ready(&app_name, &url, &hosts);
             return Ok(PrepareOutcome::AlreadyConnected);
         }
@@ -345,7 +356,8 @@ pub(super) async fn prepare(
             tunnel_enabled: existing.tunnel_url.is_some(),
             tunnel_url: existing.tunnel_url.clone(),
         };
-        let display_hosts = compute_display_routes(&cfg, &domain, base_domain.as_deref());
+        let display_hosts =
+            compute_display_routes(&cfg, &domain, base_domain.as_deref(), environment);
         run_connected_dev_client(&app_name, interactive, tunnel, session, display_hosts).await?;
         return Ok(PrepareOutcome::AlreadyConnected);
     }
@@ -356,6 +368,7 @@ pub(super) async fn prepare(
         project_dir,
         app_name,
         variant,
+        environment: environment.to_string(),
         runtime_name,
         domain,
         base_domain,

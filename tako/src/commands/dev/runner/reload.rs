@@ -15,6 +15,7 @@ pub(super) struct ConfigReloadLoop {
     pub config_key: String,
     pub app_name: String,
     pub variant: Option<String>,
+    pub environment: String,
     pub domain: String,
     pub base_domain: Option<String>,
     pub env_state: Arc<Mutex<HashMap<String, String>>>,
@@ -56,6 +57,12 @@ pub(super) fn spawn_config_reload_loop(
                     continue;
                 }
             };
+            if let Err(error) =
+                super::super::shared::validate_dev_environment(&cfg, &ctx.environment)
+            {
+                let _ = ctx.log_tx.send(ScopedLog::error("tako", error)).await;
+                continue;
+            }
             let adapter = cfg
                 .runtime
                 .as_deref()
@@ -75,7 +82,7 @@ pub(super) fn spawn_config_reload_loop(
                         &ctx.project_dir,
                         adapter,
                         &cfg,
-                        Some("development"),
+                        Some(&ctx.environment),
                         false,
                     )
                 {
@@ -102,6 +109,7 @@ pub(super) fn spawn_config_reload_loop(
                 &cfg,
                 &ctx.domain,
                 ctx.base_domain.as_deref(),
+                &ctx.environment,
             ) {
                 Ok(hosts) => hosts,
                 Err(msg) => {
@@ -116,12 +124,13 @@ pub(super) fn spawn_config_reload_loop(
                 }
             };
 
-            let mut new_env = compute_dev_env(&cfg);
+            let mut new_env = compute_dev_env(&cfg, &ctx.environment);
             if cfg.compose.is_none() && adapter.preset_group() == crate::build::PresetGroup::Js {
                 new_env.insert("TAKO_APP_ROOT".to_string(), cfg.js_app_root().to_string());
             }
             inject_dev_allowed_hosts(&new_hosts, &mut new_env);
-            if let Err(msg) = inject_dev_data_dir(&ctx.project_dir, &mut new_env) {
+            if let Err(msg) = inject_dev_data_dir(&ctx.project_dir, &mut new_env, &ctx.environment)
+            {
                 let _ = ctx
                     .log_tx
                     .send(ScopedLog::error(
@@ -132,21 +141,22 @@ pub(super) fn spawn_config_reload_loop(
                 continue;
             }
 
-            let new_secrets = match inject_dev_secrets(&ctx.project_dir, &cfg, &mut new_env)
-                .map_err(|e| e.to_string())
-            {
-                Ok(secrets) => secrets,
-                Err(msg) => {
-                    let _ = ctx
-                        .log_tx
-                        .send(ScopedLog::warn(
-                            "tako",
-                            format!("Failed to reload secrets: {}", msg),
-                        ))
-                        .await;
-                    HashMap::new()
-                }
-            };
+            let new_secrets =
+                match inject_dev_secrets(&ctx.project_dir, &cfg, &mut new_env, &ctx.environment)
+                    .map_err(|e| e.to_string())
+                {
+                    Ok(secrets) => secrets,
+                    Err(msg) => {
+                        let _ = ctx
+                            .log_tx
+                            .send(ScopedLog::warn(
+                                "tako",
+                                format!("Failed to reload secrets: {}", msg),
+                            ))
+                            .await;
+                        continue;
+                    }
+                };
 
             if cfg.compose.is_none()
                 && adapter.preset_group() == crate::build::PresetGroup::Js
@@ -154,7 +164,7 @@ pub(super) fn spawn_config_reload_loop(
                     &ctx.project_dir,
                     adapter,
                     &cfg,
-                    Some("development"),
+                    Some(&ctx.environment),
                     false,
                 )
             {
@@ -196,7 +206,8 @@ async fn register_updated_app(
     new_env: &HashMap<String, String>,
     new_secrets: &HashMap<String, String>,
 ) {
-    let storages = match super::load_dev_storages(&ctx.project_dir, cfg).map_err(|e| e.to_string())
+    let storages = match super::load_dev_storages(&ctx.project_dir, cfg, &ctx.environment)
+        .map_err(|e| e.to_string())
     {
         Ok(storages) => storages,
         Err(msg) => {
@@ -207,18 +218,34 @@ async fn register_updated_app(
                     format!("Failed to reload storages: {msg}"),
                 ))
                 .await;
-            HashMap::new()
+            return;
         }
     };
-    let databases = crate::local_databases::dev_files(&ctx.project_dir, cfg);
-    apply_dev_migrations(ctx, cfg).await;
+    let databases = crate::local_databases::dev_files(&ctx.project_dir, cfg, &ctx.environment);
+    if !apply_dev_migrations(ctx, cfg).await {
+        return;
+    }
     let project_dir_display = ctx.project_dir.to_string_lossy();
+    let namespace = match crate::commands::dev::resolve_app_name_from_config_path(&ctx.config_path)
+    {
+        Ok(name) => name,
+        Err(error) => {
+            let _ = ctx
+                .log_tx
+                .send(ScopedLog::error("tako", error.to_string()))
+                .await;
+            return;
+        }
+    };
     let reg_result =
         crate::dev_server_client::register_app(crate::dev_server_client::RegisterAppRequest {
+            app_namespace: &namespace,
             compose: cfg.compose.as_ref(),
             compose_default_host: Some(&ctx.domain),
             compose_base_host: ctx.base_domain.as_deref(),
             config_path: &ctx.config_key,
+            config_file: &ctx.config_path.to_string_lossy(),
+            environment: &ctx.environment,
             project_dir: &project_dir_display,
             app_name: &ctx.app_name,
             variant: ctx.variant.as_deref(),
@@ -247,8 +274,8 @@ async fn register_updated_app(
 }
 
 /// Applies pending development migrations and logs what happened.
-async fn apply_dev_migrations(ctx: &ConfigReloadLoop, cfg: &crate::config::TakoToml) {
-    match crate::local_databases::migrate_development(&ctx.project_dir, cfg) {
+async fn apply_dev_migrations(ctx: &ConfigReloadLoop, cfg: &crate::config::TakoToml) -> bool {
+    match crate::local_databases::migrate_environment(&ctx.project_dir, cfg, &ctx.environment) {
         Ok(migrated) => {
             for warning in migrated.warnings {
                 let _ = ctx.log_tx.send(ScopedLog::warn("tako", warning)).await;
@@ -256,6 +283,7 @@ async fn apply_dev_migrations(ctx: &ConfigReloadLoop, cfg: &crate::config::TakoT
             for line in migrated.applied {
                 let _ = ctx.log_tx.send(ScopedLog::info("tako", line)).await;
             }
+            true
         }
         Err(error) => {
             let _ = ctx
@@ -265,6 +293,7 @@ async fn apply_dev_migrations(ctx: &ConfigReloadLoop, cfg: &crate::config::TakoT
                     format!("Migrations failed: {error}"),
                 ))
                 .await;
+            false
         }
     }
 }

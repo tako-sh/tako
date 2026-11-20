@@ -188,13 +188,18 @@ impl ComposeConfig {
 
     /// Local HTTP apps get a stable hostname even without a public production
     /// route. Workers never receive one.
-    pub fn for_development(&self, default_host: &str, base_host: Option<&str>) -> Self {
+    pub fn for_local_environment(
+        &self,
+        environment: &str,
+        default_host: &str,
+        base_host: Option<&str>,
+    ) -> Self {
         let mut config = self.clone();
         for (service, settings) in &mut config.services {
             if !settings.is_http() {
                 continue;
             }
-            let development = settings.envs.entry("development".into()).or_default();
+            let development = settings.envs.entry(environment.into()).or_default();
             let mut routes = development.routes();
             if routes.is_empty() {
                 routes.push(format!(

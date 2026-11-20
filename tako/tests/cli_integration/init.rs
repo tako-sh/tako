@@ -161,6 +161,8 @@ fn test_init_existing_config_in_non_interactive_mode_reports_cancellation() {
 
 #[test]
 fn test_init_with_bun_detection() {
+    use std::os::unix::fs::PermissionsExt;
+
     let temp = TempDir::new().unwrap();
     let project_dir = temp.path().to_path_buf();
 
@@ -177,19 +179,39 @@ fn test_init_with_bun_detection() {
     )
     .unwrap();
 
-    let output = run_tako(&["init"], &project_dir);
-
-    assert!(
-        output.status.success(),
-        "tako init failed: {}",
-        stderr_str(&output)
-    );
-    let content = fs::read_to_string(project_dir.join("tako.toml")).unwrap();
-    assert!(
-        content.contains("runtime = \"bun@"),
-        "expected pinned bun runtime in tako.toml: {}",
-        content
-    );
+    // Do not depend on a Bun installation in the Rust CI job or on the developer's PATH.
+    let bin = temp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    for installed in [false, true] {
+        if installed {
+            let bun = bin.join("bun");
+            fs::write(
+                &bun,
+                "#!/bin/sh\n[ \"$1\" = --version ] || exit 1\nprintf '1.2.3\\n'\n",
+            )
+            .unwrap();
+            fs::set_permissions(&bun, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let output =
+            run_tako_with_extra_env(&["init"], &project_dir, &[("PATH", bin.to_str().unwrap())]);
+        assert!(
+            output.status.success(),
+            "tako init failed: {}",
+            stderr_str(&output)
+        );
+        let config = project_dir.join("tako.toml");
+        let content = fs::read_to_string(&config).unwrap();
+        let expected = if installed {
+            "runtime = \"bun@1.2.3\""
+        } else {
+            "runtime = \"bun\""
+        };
+        assert!(
+            content.contains(expected),
+            "expected {expected} in tako.toml: {content}"
+        );
+        fs::remove_file(config).unwrap();
+    }
 }
 
 #[test]

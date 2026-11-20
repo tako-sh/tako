@@ -58,6 +58,10 @@ pub enum Request {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RegisterAppRequest {
+    pub app_namespace: String,
+    /// Source config file; config_path is the environment-scoped registration key.
+    pub config_file: String,
+    pub environment: String,
     #[serde(default)]
     pub compose_default_host: Option<String>,
     #[serde(default)]
@@ -261,6 +265,8 @@ pub enum TunnelCloseReason {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RegisteredAppInfo {
+    pub config_file: String,
+    pub environment: String,
     pub config_path: String,
     pub project_dir: String,
     pub app_name: String,
@@ -294,6 +300,7 @@ pub struct AppInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DevInfo {
+    pub protocol_version: u32,
     /// Where the daemon proxy is currently listening.
     pub listen: String,
     pub port: u16,
@@ -376,6 +383,7 @@ mod tests {
 
         let resp = Response::Info {
             info: DevInfo {
+                protocol_version: tako_core::PROTOCOL_VERSION,
                 listen: "127.0.0.1:8443".to_string(),
                 port: 8443,
                 advertised_ip: "127.0.0.1".to_string(),
@@ -393,6 +401,9 @@ mod tests {
     #[test]
     fn serde_roundtrip_register_app() {
         let req = Request::RegisterApp(Box::new(RegisterAppRequest {
+            app_namespace: "my-app".into(),
+            config_file: "/home/user/proj/tako.toml".into(),
+            environment: "development".into(),
             compose: None,
             compose_default_host: None,
             compose_base_host: None,
@@ -492,6 +503,8 @@ mod tests {
 
         let resp = Response::RegisteredApps {
             apps: vec![RegisteredAppInfo {
+                config_file: "/proj/tako.toml".into(),
+                environment: "development".into(),
                 config_path: "/proj/tako.toml".to_string(),
                 project_dir: "/proj".to_string(),
                 app_name: "app".to_string(),

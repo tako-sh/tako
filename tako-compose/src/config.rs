@@ -171,7 +171,10 @@ mod tests {
     fn classification_follows_routes_in_any_environment_http_and_sdk() {
         use tako_core::compose::ComposeServiceKind::{Http, Worker};
         let services = service_configs(&json!({"services": {
-            "dev_only": {"x-tako": {"envs": {"development": {"route": "web.app.test"}}}},
+            "dev_only": {"x-tako": {"envs": {
+                "development": {"route": "web.app.test"},
+                "test-e2e": {"route": "web-tests.app.test"}
+            }}},
             "private": {"x-tako": {"http": true}},
             "sdk_web": {"x-tako": {"sdk": true, "envs": {"production": {"route": "example.com"}}}},
             "worker": {"x-tako": {"sdk": true}},
@@ -199,9 +202,20 @@ mod tests {
         );
         assert!(!config.services.contains_key("plain"));
         // Workers never get a development hostname.
-        let dev = config.for_development("app.test", None);
+        let dev = config.for_local_environment("development", "app.test", None);
         assert!(dev.services["worker"].envs.is_empty());
         assert_eq!(dev.routes("development").len(), 3);
+        let test = config.for_local_environment("test-e2e", "app-test-e2e.test", None);
+        assert_eq!(
+            test.routes("test-e2e"),
+            [
+                "web-tests.app.test",
+                "private.app-test-e2e.test",
+                "sdk-web.app-test-e2e.test",
+            ]
+        );
+        assert_eq!(test.routes("development"), ["web.app.test"]);
+        assert!(test.services["worker"].envs.is_empty());
         // The only HTTP app is the default scale target, even beside workers.
         let only_web = ComposeConfig {
             file: "compose.yaml".into(),

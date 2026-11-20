@@ -163,6 +163,13 @@ pub(crate) struct FakeDevServer {
 
 impl FakeDevServer {
     pub(crate) fn start(tako_home: &Path) -> Option<Self> {
+        Self::start_with_handler(tako_home, |_| None)
+    }
+
+    pub(crate) fn start_with_handler(
+        tako_home: &Path,
+        mut handler: impl FnMut(&serde_json::Value) -> Option<serde_json::Value> + Send + 'static,
+    ) -> Option<Self> {
         fs::create_dir_all(tako_home).unwrap();
         let sock_path = tako_home.join("dev-server.sock");
         let _ = fs::remove_file(&sock_path);
@@ -204,7 +211,7 @@ impl FakeDevServer {
                         }
                     };
                     let typ = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                    let resp = match typ {
+                    let resp = handler(&v).unwrap_or_else(|| match typ {
                         "Ping" => serde_json::json!({ "type": "Pong" }),
                         "ListApps" => serde_json::json!({
                             "type": "Apps",
@@ -216,6 +223,7 @@ impl FakeDevServer {
                         "Info" => serde_json::json!({
                                 "type": "Info",
                                 "info": {
+                                "protocol_version": tako_core::PROTOCOL_VERSION,
                                 "listen": "127.0.0.1:8443",
                                 "port": 8443,
                                 "advertised_ip": "127.0.0.1",
@@ -255,7 +263,7 @@ impl FakeDevServer {
                             serde_json::json!({ "type": "Stopping" })
                         }
                         _ => serde_json::json!({ "type": "Error", "message": "unknown request" }),
-                    };
+                    });
                     let _ = writeln!(writer, "{}", resp);
                     line.clear();
                     if typ == "StopServer" {
