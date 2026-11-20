@@ -48,6 +48,8 @@ pub(super) async fn fake_app(
                 };
                 let body = data.to_string();
                 let mut header = ResponseHeader::build(status, None).unwrap();
+                // This fixture serves exactly one request per socket.
+                header.insert_header("Connection", "close").unwrap();
                 header.insert_header("Content-Length", body.len()).unwrap();
                 header
                     .insert_header("Content-Type", "application/json")
