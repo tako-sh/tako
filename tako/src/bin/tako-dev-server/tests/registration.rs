@@ -1,6 +1,36 @@
 use super::*;
 
 #[tokio::test]
+async fn stale_name_choices_cannot_register_two_callers_under_one_runtime_identity() {
+    let (state, tmp) = test_state();
+    let (a, b) = tokio::net::UnixStream::pair().unwrap();
+    let handler = tokio::spawn(handle_client(a, state.clone()));
+    let (r, mut w) = b.into_split();
+    let mut responses = BufReader::new(r).lines();
+    for (environment, key) in [("development", "/app.toml"), ("test", "test:/app.toml")] {
+        let request = serde_json::json!({
+            "type":"RegisterApp", "environment":environment, "config_path":key, "config_file":"/app.toml",
+            "app_name":"same", "app_namespace":"same", "project_dir":tmp.path(), "command":["true"],
+            "hosts":["same.test"], "env":{}
+        });
+        w.write_all(format!("{request}\n").as_bytes())
+            .await
+            .unwrap();
+        let response: Response =
+            serde_json::from_str(&responses.next_line().await.unwrap().unwrap()).unwrap();
+        match environment {
+            "development" => assert!(matches!(response, Response::AppRegistered { .. })),
+            _ => assert!(
+                matches!(response, Response::Error { message } if message.contains("already registered"))
+            ),
+        }
+    }
+    assert_eq!(state.lock().unwrap().apps.len(), 1);
+    drop(w);
+    handler.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn register_app_roundtrip() {
     let (a, b) = tokio::net::UnixStream::pair().unwrap();
     let (shutdown_tx, _shutdown_rx) = watch::channel(false);

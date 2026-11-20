@@ -50,6 +50,33 @@ struct WorkerBindings {
     databases: HashMap<String, tako_core::DatabaseConnection>,
 }
 
+// Call after locking the registration key. A rename claims both names until the old
+// workflow runtime has stopped; ordering also handles simultaneous renames.
+async fn lock_runtime_names(
+    state: &Arc<Mutex<State>>,
+    config_path: &str,
+    new_name: Option<&str>,
+) -> Vec<tokio::sync::OwnedMutexGuard<()>> {
+    let old_name = state
+        .lock()
+        .unwrap()
+        .apps
+        .get(config_path)
+        .map(|app| app.name.clone());
+    let mut names: Vec<_> = old_name.as_deref().into_iter().chain(new_name).collect();
+    names.sort_unstable();
+    names.dedup();
+    let mut guards = Vec::new();
+    for name in names {
+        guards.push(
+            crate::compose::runtime_name_lock(state, name)
+                .lock_owned()
+                .await,
+        );
+    }
+    guards
+}
+
 pub(super) async fn register_app(
     state: Arc<Mutex<State>>,
     args: RegisterAppArgs,
@@ -81,6 +108,23 @@ pub(super) async fn register_app(
     cancel_app_startup(&state, &config_path);
     let lock = crate::compose::app_lock(&state, &config_path);
     let _guard = lock.lock().await;
+    let app_name = sanitize_app_name(&app_name);
+    // Clients disambiguate names from a snapshot. Serialize claims across config keys
+    // so simultaneous starts cannot share a workflow/internal-call identity.
+    let _name_guards = lock_runtime_names(&state, &config_path, Some(&app_name)).await;
+    if state
+        .lock()
+        .unwrap()
+        .apps
+        .iter()
+        .any(|(key, app)| key != &config_path && app.name == app_name)
+    {
+        return Ok(Response::Error {
+            message: format!(
+                "Dev app name '{app_name}' is already registered. Retry `tako dev` to select an available name."
+            ),
+        });
+    }
     let compose = compose
         .map(|config| {
             let directory = Path::new(&project_dir)
@@ -118,7 +162,6 @@ pub(super) async fn register_app(
         .transpose()?;
     crate::compose::stop(&state, &config_path).await?;
 
-    let app_name = sanitize_app_name(&app_name);
     let route_id = format!("reg:{}", config_path);
 
     let existing_bootstrap = {
@@ -435,6 +478,7 @@ pub(super) async fn unregister_app(state: &Arc<Mutex<State>>, config_path: Strin
     cancel_app_startup(state, &config_path);
     let lock = crate::compose::app_lock(state, &config_path);
     let _guard = lock.lock().await;
+    let _name_guards = lock_runtime_names(state, &config_path, None).await;
     // Retire the routes before stopping their containers.
     state
         .lock()
