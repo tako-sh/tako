@@ -226,6 +226,82 @@ async fn release_upload_lifecycle_extracts_and_finalizes_release() {
 }
 
 #[tokio::test]
+async fn periodic_cleanup_expires_archives_without_another_deployment() {
+    let temp = TempDir::new().unwrap();
+    let state = ServerState::new(
+        temp.path().into(),
+        Arc::new(CertManager::new(CertManagerConfig {
+            cert_dir: temp.path().join("certs"),
+            ..Default::default()
+        })),
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let app_name = "my-app/production";
+    let root = temp.path().join("apps").join(app_name);
+    let upload = temp.path().join("upload.tar.zst");
+    write_test_release_archive(&upload);
+    let expired = filetime::FileTime::from_system_time(
+        std::time::SystemTime::now() - Duration::from_secs(31 * 24 * 60 * 60),
+    );
+    for version in [
+        "current",
+        "archived",
+        "abandoned",
+        "pending",
+        "referenced",
+        "fresh",
+    ] {
+        state
+            .store_uploaded_release_artifact(app_name, version, &upload)
+            .unwrap();
+        let archive = root.join("archives").join(version);
+        if version != "fresh" {
+            filetime::set_file_mtime(archive.join("release.tar.zst"), expired).unwrap();
+        }
+        match version {
+            "abandoned" => filetime::set_file_mtime(archive.join("pending"), expired).unwrap(),
+            "pending" => {}
+            _ => std::fs::remove_file(archive.join("pending")).unwrap(),
+        }
+    }
+    std::fs::remove_dir_all(root.join("releases/archived")).unwrap();
+    let app = state.app_manager.register_app(AppConfig {
+        name: "my-app".into(),
+        environment: "production".into(),
+        version: "referenced".into(),
+        ..Default::default()
+    });
+    let draining = app.allocate_instance();
+    app.config.write().version = "current".into();
+
+    state.compact_app_releases(app_name).await.unwrap();
+
+    for version in ["archived", "abandoned"] {
+        assert!(!root.join("archives").join(version).exists(), "{version}");
+        assert!(!root.join("releases").join(version).exists(), "{version}");
+    }
+    for version in ["current", "pending", "referenced", "fresh"] {
+        assert_eq!(
+            std::fs::read(root.join("archives").join(version).join("release.tar.zst")).unwrap(),
+            std::fs::read(&upload).unwrap(),
+            "{version}",
+        );
+        assert_eq!(
+            root.join("releases").join(version).is_dir(),
+            version != "fresh",
+            "{version}",
+        );
+    }
+    assert!(root.join("archives/pending/pending").is_file());
+    app.remove_instance(&draining.id);
+    state.compact_app_releases(app_name).await.unwrap();
+    assert!(!root.join("archives/referenced").exists());
+    assert!(!root.join("releases/referenced").exists());
+}
+
+#[tokio::test]
 async fn interrupted_release_deletion_restores_from_the_unchanged_archive() {
     use std::os::unix::fs::PermissionsExt;
     let temp = TempDir::new().unwrap();

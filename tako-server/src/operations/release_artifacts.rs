@@ -335,6 +335,7 @@ impl crate::ServerState {
                 })??;
         tokio::task::spawn_blocking(move || {
             let _guards = (lease, management, guard);
+            prune_old_releases(&paths.releases_root, &paths.release_path, &protected);
             compact_releases(&paths.releases_root, &paths.release_path, &protected)
         })
         .await
