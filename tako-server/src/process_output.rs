@@ -71,8 +71,13 @@ pub(crate) async fn during_preparation<F: std::future::Future>(
     flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     operation: F,
 ) -> F::Output {
-    tako_compose::with_command_cancellation(flag.clone(), DRAIN_REQUESTED.scope(flag, operation))
-        .await
+    // Preparation futures are large; moving them through nested task-local scopes
+    // can exhaust a worker's stack in debug builds.
+    tako_compose::with_command_cancellation(
+        flag.clone(),
+        DRAIN_REQUESTED.scope(flag, Box::pin(operation)),
+    )
+    .await
 }
 
 pub(crate) const PREPARATION_TIMEOUT: Duration = Duration::from_secs(600);

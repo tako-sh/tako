@@ -27,6 +27,41 @@ fn extract_zstd_archive_unpacks_files() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn release_preparation_rpc_fits_on_a_default_worker_stack() {
+    let temp = crate::isolation::fixture::TestDataDir::new().unwrap();
+    let state = ServerState::new(
+        temp.path().to_path_buf(),
+        Arc::new(CertManager::new(CertManagerConfig {
+            cert_dir: temp.path().join("certs"),
+            ..Default::default()
+        })),
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let release = temp.path().join("apps/my-app/production/releases/v1");
+    std::fs::create_dir_all(&release).unwrap();
+    std::fs::write(
+        release.join("app.json"),
+        r#"{"protocol_version":0,"runtime":"","main":"","start":["./app"],"idle_timeout":300}"#,
+    )
+    .unwrap();
+    let response = tokio::spawn(async move {
+        state
+            .handle_command(Command::PrepareRelease {
+                app: "my-app/production".into(),
+                path: release.to_string_lossy().into_owned(),
+                secrets_digest: None,
+                force: false,
+            })
+            .await
+    })
+    .await
+    .unwrap();
+    assert!(response.is_ok(), "{response:?}");
+}
+
 #[tokio::test]
 async fn release_upload_lifecycle_extracts_and_finalizes_release() {
     let temp = TempDir::new().unwrap();
