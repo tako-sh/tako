@@ -287,14 +287,14 @@ async fn prepare_uploaded_release(
     client: &mut ManagementClient,
     server_name: &str,
     release_dir: &str,
-    release_preexisted: bool,
+    preparation_required: bool,
     use_spinner: bool,
     task_tree: Option<&DeployTaskTreeController>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let result = if let Some(task_tree) = task_tree {
         run_task_tree_deploy_step(task_tree, server_name, "preparing", async {
             prepare_deploy_metadata(config, client, release_dir).await?;
-            if !release_preexisted {
+            if preparation_required {
                 prepare_release(config, client, release_dir).await?;
             }
             Ok::<_, management_http::ManagementError>(())
@@ -303,7 +303,7 @@ async fn prepare_uploaded_release(
     } else {
         run_deploy_step("Preparing…", "Prepared", use_spinner, async {
             prepare_deploy_metadata(config, client, release_dir).await?;
-            if !release_preexisted {
+            if preparation_required {
                 prepare_release(config, client, release_dir).await?;
             }
             Ok::<_, management_http::ManagementError>(())
@@ -524,7 +524,7 @@ pub(super) async fn deploy_to_server(
     let upload_plan = prepare_release_upload_plan(&mut client, config)
         .await
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
-    let release_preexisted = !upload_plan.upload_required;
+    let release_preexisted = !upload_plan.upload_required && !upload_plan.preparation_required;
     let release_dir = upload_plan.path.clone();
     let mut release_start_attempted = false;
 
@@ -547,7 +547,7 @@ pub(super) async fn deploy_to_server(
             &mut client,
             server_name,
             &release_dir,
-            release_preexisted,
+            uploaded_plan.preparation_required,
             use_spinner,
             task_tree.as_ref(),
         )

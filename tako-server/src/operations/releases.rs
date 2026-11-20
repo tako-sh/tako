@@ -295,7 +295,7 @@ impl crate::ServerState {
         let current_version = current_release_version(&app_root);
 
         let mut releases = Vec::new();
-        let entries = match std::fs::read_dir(&releases_root) {
+        let entries = match super::release_artifacts::release_entries(&releases_root) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Response::ok(ListReleasesResponse {
@@ -312,21 +312,14 @@ impl crate::ServerState {
             }
         };
 
-        for entry in entries.flatten() {
-            let release_root = entry.path();
-            if !release_root.is_dir() {
-                continue;
-            }
-
-            let Some(version) = entry.file_name().to_str().map(|value| value.to_string()) else {
-                continue;
-            };
-
+        for (version, release_root) in entries {
             let manifest_path = release_root.join("app.json");
             let metadata = read_release_manifest_metadata(&manifest_path);
             releases.push(ReleaseInfo {
                 current: current_version.as_deref() == Some(version.as_str()),
-                deployed_at_unix_secs: directory_modified_unix_secs(&release_root),
+                deployed_at_unix_secs: directory_modified_unix_secs(
+                    &release_root.join("release.tar.zst"),
+                ),
                 version,
                 commit_message: metadata.commit_message,
                 description: metadata.description,
@@ -358,20 +351,59 @@ impl crate::ServerState {
         version: &str,
         caller: super::Caller,
     ) -> Response {
+        let lock = self.get_deploy_lock(app_name).await;
+        let _guard = match self.lock_deploy_for_operator(app_name, &lock).await {
+            Ok(guard) => guard,
+            Err(error) => return Response::error(error),
+        };
+        if let Some(response) = self.refuse_unresolved_restore(app_name) {
+            return response;
+        }
+        let release_preexisted =
+            app_release_root(&self.runtime.data_dir, app_name, version).is_dir();
+        let pending_preexisted = self
+            .runtime
+            .data_dir
+            .join("apps")
+            .join(app_name)
+            .join("archives")
+            .join(version)
+            .join("pending")
+            .exists();
+        let response = self.rollback_app_locked(app_name, version, caller).await;
+        if !response.is_ok()
+            && !self
+                .app_manager
+                .get_app(app_name)
+                .is_some_and(|app| app.version() == version)
+        {
+            // Keep the immutable archive when preparation or readiness fails.
+            if let Err(error) = self
+                .discard_restored_release(app_name, version, release_preexisted, pending_preexisted)
+                .await
+            {
+                tracing::warn!(app = app_name, version, %error, "Could not clean up failed rollback");
+            }
+        }
+        response
+    }
+
+    async fn rollback_app_locked(
+        &self,
+        app_name: &str,
+        version: &str,
+        caller: super::Caller,
+    ) -> Response {
         let environment = match self.app_manager.get_app(app_name) {
             Some(app) => app.config.read().environment.clone(),
             None => return Response::error(format!("App not found: {}", app_name)),
         };
 
-        let app_root = self.runtime.data_dir.join("apps").join(app_name);
-        let target_path = app_root.join("releases").join(version);
-
-        if !target_path.is_dir() {
-            return Response::error(format!(
-                "Release '{}' not found for app '{}'",
-                version, app_name
-            ));
-        }
+        let (target_path, needs_preparation) =
+            match self.restore_release_artifact(app_name, version).await {
+                Ok(restored) => restored,
+                Err(error) => return Response::error(error),
+            };
 
         let target = match load_release_manifest(&target_path) {
             Ok(manifest) => manifest,
@@ -418,8 +450,20 @@ impl crate::ServerState {
             });
 
         let target_path = target_path.to_string_lossy();
+        if needs_preparation {
+            let secrets = match self.state_store.get_secrets(app_name) {
+                Ok(secrets) => secrets,
+                Err(error) => return Response::error(format!("Failed to read secrets: {error}")),
+            };
+            let prepared = self
+                .prepare_release(app_name, &target_path, secrets, false)
+                .await;
+            if !prepared.is_ok() {
+                return prepared;
+            }
+        }
         let response = self
-            .deploy_app(super::deploy::DeployRequest {
+            .deploy_app_locked(super::deploy::DeployRequest {
                 app_name,
                 version,
                 path: &target_path,
@@ -437,7 +481,7 @@ impl crate::ServerState {
         if matches!(response, Response::Ok { .. }) {
             // Rollback runs directly through this RPC rather than the CLI's
             // deploy pipeline, which normally finalizes the release marker.
-            if let Err(error) = self.finalize_release_inner(app_name, version).await {
+            if let Err(error) = self.finalize_release_locked(app_name, version).await {
                 return Response::error(format!(
                     "Rollback activated '{version}', but release finalization failed: {error}"
                 ));

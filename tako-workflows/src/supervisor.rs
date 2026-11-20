@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 #[cfg(unix)]
 use std::os::fd::{AsRawFd, RawFd};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
@@ -181,6 +181,10 @@ struct State {
 }
 
 impl WorkerSupervisor {
+    pub(crate) fn working_directory(&self) -> &Path {
+        &self.spec.cwd
+    }
+
     pub(crate) fn begin_drain(&self) {
         let mut state = self.state.lock();
         if state.shutting_down {

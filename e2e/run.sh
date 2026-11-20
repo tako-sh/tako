@@ -4,7 +4,7 @@ set -euo pipefail
 FIXTURE=${1:-e2e/fixtures/javascript/tanstack-start}
 REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 COMPOSE_FILE="$REPO_ROOT/e2e/docker/compose.yml"
-PROJECT_NAME="tako-e2e"
+PROJECT_NAME="${E2E_PROJECT_NAME:-tako-e2e}"
 E2E_BIN_DIR="${E2E_BIN_DIR:-$REPO_ROOT/.e2e-bin}"
 E2E_BIN_STAMP_FILE="$E2E_BIN_DIR/.build-stamp"
 GLIBC_BUILDER_IMAGE="tako-e2e-builder-glibc"
@@ -146,8 +146,8 @@ if [[ "$E2E_USE_PREBUILT" == 1 ]]; then
   for binary in tako tako-dev-server tako-server; do
     test -x "$E2E_BIN_DIR/glibc/$binary"
   done
-  for image in tako-e2e-server-ubuntu tako-e2e-server-alma tako-e2e-runner; do
-    docker image inspect "$image" >/dev/null
+  for service in server-ubuntu server-alma runner; do
+    docker image inspect "$PROJECT_NAME-$service" >/dev/null
   done
 else
   "${COMPOSE[@]}" build server-ubuntu server-alma runner

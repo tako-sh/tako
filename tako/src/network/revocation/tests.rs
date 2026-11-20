@@ -331,6 +331,8 @@ fn new_attempt_uses_a_surviving_issuer_and_keeps_what_the_target_approved() {
     let child = add_server(&mut fixture, &target, "child");
     let owner = fixture.profile.snapshot().network.initial_admin.clone();
     let survivor = add_server(&mut fixture, &owner, "survivor");
+    // Revocation must be later than approval; equal timestamps deny approval.
+    let revoked_at = network::now().unwrap() + 1;
     let alias = saved(&fixture);
     let projected = project(&alias, &target.to_string()).unwrap();
     assert_eq!(projected.target, target);
@@ -364,10 +366,7 @@ fn new_attempt_uses_a_surviving_issuer_and_keeps_what_the_target_approved() {
     .unwrap();
     assert_eq!(sent.len(), 2);
     let profile = network::load_profile(&alias).unwrap();
-    let effective = profile
-        .snapshot()
-        .effective_members(network::now().unwrap())
-        .unwrap();
+    let effective = profile.snapshot().effective_members(revoked_at).unwrap();
     assert!(!effective.contains_key(&target));
     assert!(
         effective.contains_key(&child),

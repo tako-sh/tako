@@ -290,17 +290,26 @@ async fn log_descriptor_matches_scope_and_reads_existing_format() {
     );
 }
 
+fn release_archive() -> Vec<u8> {
+    let mut tar = tar::Builder::new(Vec::new());
+    for (path, contents) in [
+        ("hello.txt", "hello"),
+        ("app.json", r#"{"protocol_version":0,"idle_timeout":300}"#),
+    ] {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(contents.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar.append_data(&mut header, path, contents.as_bytes())
+            .unwrap();
+    }
+    zstd::stream::encode_all(&tar.into_inner().unwrap()[..], 0).unwrap()
+}
+
 #[tokio::test]
 async fn upload_verifies_digest_and_confines_extraction() {
     let (dir, state) = state();
-    let mut tar = tar::Builder::new(Vec::new());
-    let mut header = tar::Header::new_gnu();
-    header.set_size(5);
-    header.set_mode(0o644);
-    header.set_cksum();
-    tar.append_data(&mut header, "hello.txt", &b"hello"[..])
-        .unwrap();
-    let archive = zstd::stream::encode_all(&tar.into_inner().unwrap()[..], 0).unwrap();
+    let archive = release_archive();
     for bad_digest in [true, false] {
         let digest = if bad_digest {
             "00".repeat(32)
@@ -346,6 +355,14 @@ async fn upload_verifies_digest_and_confines_extraction() {
         )
         .unwrap(),
         b"hello"
+    );
+    assert_eq!(
+        std::fs::read(
+            dir.path()
+                .join("apps/demo/production/archives/v1/release.tar.zst")
+        )
+        .unwrap(),
+        archive
     );
     assert_eq!(
         std::fs::read_dir(dir.path().join("tmp/uploads"))

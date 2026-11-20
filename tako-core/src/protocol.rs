@@ -64,6 +64,7 @@ pub fn logs_request_auth_body(
 pub struct ReleaseUploadPlan {
     pub path: String,
     pub upload_required: bool,
+    pub preparation_required: bool,
 }
 
 pub fn deployment_app_id(app_name: &str, env_name: &str) -> String {

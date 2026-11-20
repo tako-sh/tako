@@ -87,6 +87,17 @@ server.serve_forever()
         )
         .unwrap();
         write_release_manifest(&path, "go", "app.py", &["python3", "{main}"], None, 300);
+        retain_test_release(&path);
+        std::fs::write(
+            temp.path()
+                .join("apps")
+                .join(app_id)
+                .join("archives")
+                .join(version)
+                .join("pending"),
+            [],
+        )
+        .unwrap();
     }
 
     // Abort at the last binding write, after SQLite has updated the app, its
@@ -846,8 +857,14 @@ async fn list_releases_reports_the_sdk_recorded_in_each_manifest() {
             })),
         ),
     ] {
-        let release = crate::release::app_release_root(temp.path(), app_id, version);
+        let release = temp
+            .path()
+            .join("apps")
+            .join(app_id)
+            .join("archives")
+            .join(version);
         std::fs::create_dir_all(&release).unwrap();
+        std::fs::write(release.join("release.tar.zst"), b"original").unwrap();
         write_release_manifest(&release, "bun", "index.ts", &[], None, 300);
         if let Some(sdk) = sdk {
             let path = release.join("app.json");
@@ -903,6 +920,7 @@ async fn deploy_clients_cannot_add_a_route_overlapping_another_app_environment()
     let release = crate::release::app_release_root(temp.path(), app_id, "v1");
     std::fs::create_dir_all(&release).unwrap();
     write_release_manifest(&release, "node", "index.js", &["true"], None, 300);
+    retain_test_release(&release);
     let config = AppConfig {
         name: "shop".into(),
         environment: "staging".into(),

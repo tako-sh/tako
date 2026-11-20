@@ -217,6 +217,7 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         },
     );
     crate::operations::recover_interrupted_restores(&data_dir, recovery_mode);
+    crate::operations::sweep_release_staging_dirs(&data_dir, recovery_mode);
     if recovery_mode != crate::operations::RecoveryMode::Standby {
         // A backup or restore that still runs, in another server process,
         // holds the lock in its work directory.
@@ -350,7 +351,7 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         http_port: args.http_port,
         https_port: args.https_port,
         enable_https: true,
-        dev_mode: cfg!(debug_assertions),
+        dev_mode: false,
         cert_dir,
         redirect_http_to_https: true,
         response_cache: None,
