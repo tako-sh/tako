@@ -187,7 +187,7 @@ fn postgres_store_open_migrates_unversioned_incomplete_schema() {
         return;
     };
     let schema = format!("channel_migration_{}", std::process::id());
-    let store = ChannelStore::open_postgres_with_schema(&url, &schema, "app").unwrap();
+    let store = ChannelStore::open_postgres_without_maintenance(&url, &schema, "app");
     let first = store
         .append(
             "events",
@@ -206,7 +206,7 @@ fn postgres_store_open_migrates_unversioned_incomplete_schema() {
          DROP INDEX {schema}.idx_channel_messages_app_id;"
         ))
         .unwrap();
-    let reopened = ChannelStore::open_postgres_with_schema(&url, &schema, "app").unwrap();
+    let reopened = ChannelStore::open_postgres_without_maintenance(&url, &schema, "app");
     let second = reopened
         .append(
             "events",

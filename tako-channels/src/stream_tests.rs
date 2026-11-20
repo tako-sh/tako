@@ -756,8 +756,9 @@ fn postgres_stream_counter_stays_exact_across_creation_release_and_concurrency()
         return;
     };
     let schema = format!("channel_counter_{}", std::process::id());
-    let store = ChannelStore::open_postgres_with_schema(&url, &schema, "app").unwrap();
-    let other_app = ChannelStore::open_postgres_with_schema(&url, &schema, "other").unwrap();
+    // This test drives pruning and rolls the schema back; background writers would race its DDL.
+    let store = ChannelStore::open_postgres_without_maintenance(&url, &schema, "app");
+    let other_app = ChannelStore::open_postgres_without_maintenance(&url, &schema, "other");
     let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
     // The cap check reads the counter; it must always equal the rows.
     let mut check = |expected: i64| {
@@ -785,7 +786,9 @@ fn postgres_stream_counter_stays_exact_across_creation_release_and_concurrency()
     check(3);
 
     // Two connections, as two servers, start streams at the same time.
-    let second = Arc::new(ChannelStore::open_postgres_with_schema(&url, &schema, "app").unwrap());
+    let second = Arc::new(ChannelStore::open_postgres_without_maintenance(
+        &url, &schema, "app",
+    ));
     let first = Arc::new(store);
     let barrier = Arc::new(std::sync::Barrier::new(2));
     let workers: Vec<_> = [(first.clone(), "x"), (second.clone(), "y")]
@@ -834,7 +837,7 @@ fn postgres_stream_counter_stays_exact_across_creation_release_and_concurrency()
              WHERE version = (SELECT MAX(version) FROM {schema}.channel_schema_migrations);"
         ))
         .unwrap();
-    let migrated = ChannelStore::open_postgres_with_schema(&url, &schema, "app").unwrap();
+    let migrated = ChannelStore::open_postgres_without_maintenance(&url, &schema, "app");
     check(1);
     migrated
         .sync_channel(room("after").key(), &lifecycle)
