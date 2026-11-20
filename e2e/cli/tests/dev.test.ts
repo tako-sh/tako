@@ -212,6 +212,8 @@ GREETING = "test"
 [envs.development]
 databases = { main = "same-name" }
 [envs.test-e2e]
+# An external-only route keeps the generated local default enabled.
+route = "test-e2e.example.com"
 databases = { main = "same-name" }
 `,
     );
@@ -267,6 +269,7 @@ export default async function fetch(request: Request) {
       const dev = await cli(["dev", "--background"]);
       const test = await cli(["dev", "--env", "test-e2e", "--background"]);
       expect(test.url).not.toBe(dev.url);
+      expect(new URL(test.url).hostname.endsWith(".test")).toBe(true);
       const normal = await snapshot(dev.url, "POST");
       const isolated = await snapshot(test.url);
       expect(normal).toMatchObject({
