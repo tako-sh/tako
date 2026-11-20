@@ -104,9 +104,16 @@ tako dev --var preview
 tako dev --tunnel
 tako dev --restart
 tako dev --background --json
+tako dev --env test-e2e --background --json
 ```
 
 Starts or attaches to a local dev session behind trusted HTTPS and real hostnames. `--variant foo` uses a variant hostname such as `myapp-foo.test`; `--restart` restarts the process with the current config instead of attaching. It starts the dev daemon, prepares DNS/proxy/CA setup, generates files, injects secrets and storage through fd 3, waits for fd-4 readiness, and registers routes.
+
+`--env` defaults to `development`. A custom environment must be configured in
+`[envs.<env>]`, `[vars.<env>]`, or Compose service `x-tako.envs.<env>`.
+It selects variables, secrets, routes, storage,
+and local database bindings, with independent registration and local data.
+See [Local environments](/development/#local-environments).
 
 Pass a command after `tako dev` to override the configured dev command for that run:
 
@@ -139,9 +146,14 @@ tako dev stop [name]
 tako dev stop --all
 tako dev list
 tako dev ls
+tako dev stop --env test-e2e
+tako dev list --env test-e2e --json
 ```
 
-`stop` without a name stops the app for the selected config file. `--all` stops all registered dev apps. `list` shows currently registered dev apps and any active tunnel URLs.
+`stop` without a name stops the selected config/environment (`development` by default).
+`--all` stops all registered dev apps; adding `--env` filters them. `list` shows
+all environments unless filtered with `--env`, including each environment, config,
+and active tunnel URL. JSON app records include `env` and `config`.
 
 `--background` exits after registration and readiness while the dev daemon keeps
 the app running. Combine it with `--json` for one ready object, then inspect
