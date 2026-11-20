@@ -99,12 +99,23 @@ fn native_placement_rejects_an_explicit_empty_list_or_invalid_selector() {
 }
 
 #[test]
-fn an_environment_network_in_tako_toml_points_to_the_project_record() {
-    let error = TakoToml::parse(&format!(
+fn an_environment_network_is_a_stable_id() {
+    let config = TakoToml::parse(&format!(
         "[envs.production]\nroute = 'shop.example.com'\nnetwork = '{}'",
         "a".repeat(32)
     ))
-    .unwrap_err()
-    .to_string();
-    assert!(error.contains(".tako/project.json"), "{error}");
+    .unwrap();
+    assert_eq!(
+        config.envs["production"].network.as_deref(),
+        Some("a".repeat(32).as_str())
+    );
+    for network in ["fleet", "", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "123"] {
+        assert!(
+            TakoToml::parse(&format!(
+                "[envs.production]\nroute = 'shop.example.com'\nnetwork = '{network}'"
+            ))
+            .is_err(),
+            "{network}"
+        );
+    }
 }

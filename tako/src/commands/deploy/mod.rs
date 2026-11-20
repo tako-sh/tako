@@ -176,8 +176,11 @@ async fn run_async(
         requested_env,
         &TakoToml::load_from_file(&context.config_path)?,
     )?;
-    let network =
-        super::env_network::resolve(&project_dir, &env, super::env_network::Purpose::Deploy)?;
+    let network = super::env_network::resolve(
+        &context.config_path,
+        &env,
+        super::env_network::Purpose::Deploy,
+    )?;
     let validation = output::with_spinner_silent(
         "Validating configuration",
         || -> Result<ValidationResult, String> {

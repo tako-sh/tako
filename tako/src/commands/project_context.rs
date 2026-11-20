@@ -21,7 +21,7 @@ impl ProjectContext {
             Some(env) => {
                 // `--network` applies to this read; it records nothing.
                 crate::commands::env_network::resolve_if_known(
-                    &self.project_dir,
+                    &self.config_path,
                     env,
                     crate::commands::env_network::Purpose::Use,
                 )

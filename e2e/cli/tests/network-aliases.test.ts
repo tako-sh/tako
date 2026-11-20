@@ -27,7 +27,10 @@ describe("network aliases", () => {
     const taken = await run(["--ci", "network", "create", "fleet"], options());
     expect(taken.exitCode).not.toBe(0);
     expect(taken.screen).toContain("--alias");
-    const second = await run(["--ci", "network", "create", "fleet", "--alias", "fleet-eu"], options());
+    const second = await run(
+      ["--ci", "network", "create", "fleet", "--alias", "fleet-eu"],
+      options(),
+    );
     expect(second.exitCode).toBe(0);
     expect(await aliases()).toEqual(["fleet", "fleet-eu"]);
 
@@ -45,7 +48,10 @@ describe("network aliases", () => {
 
   test("a project environment without a record needs --network when several networks exist", async () => {
     for (const alias of ["fleet", "fleet-eu"]) {
-      const created = await run(["--ci", "network", "create", "fleet", "--alias", alias], options());
+      const created = await run(
+        ["--ci", "network", "create", "fleet", "--alias", alias],
+        options(),
+      );
       expect(created.exitCode).toBe(0);
     }
     await writeFile(
@@ -58,13 +64,14 @@ describe("network aliases", () => {
     expect(result.screen).toContain("fleet, fleet-eu");
   });
 
-  test("tako.toml no longer accepts an environment network", async () => {
+  test("tako.toml selects the configured network and reports missing membership", async () => {
     await writeFile(
       join(tempDir, "tako.toml"),
       'name = "shop"\n[envs.production]\nroute = "shop.example.com"\nnetwork = "0123456789abcdef0123456789abcdef"\n',
     );
     const result = await run(["--ci", "--dry-run", "deploy"], options());
     expect(result.exitCode).not.toBe(0);
-    expect(result.screen).toContain(".tako/project.json");
+    expect(result.screen).toContain("hasn't joined");
+    expect(result.screen).toContain("0123456789abcdef0123456789abcdef");
   });
 });

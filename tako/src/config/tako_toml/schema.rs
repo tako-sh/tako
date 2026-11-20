@@ -166,6 +166,11 @@ pub struct BuildStage {
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct EnvConfig {
+    /// Native network's stable 32-character hexadecimal ID. Local aliases
+    /// belong to this machine and are never stored in project configuration.
+    #[cfg_attr(test, schemars(regex(pattern = r"^[0-9a-f]{32}$")))]
+    pub network: Option<String>,
+
     /// Route: an exact host, wildcard host, or either with a path, such as
     /// `app.example.com`, `*.example.com`, or `example.com/api/*`.
     /// Mutually exclusive with `routes`.

@@ -191,6 +191,14 @@ impl TakoToml {
 
         // Validate each environment
         for (env_name, env_config) in &self.envs {
+            if let Some(network) = &env_config.network {
+                crate::config::validate_network_id(network)?;
+                if env_name == "development" {
+                    return Err(ConfigError::Validation(
+                        "[envs.development].network is not supported: development runs locally with `tako dev`".into(),
+                    ));
+                }
+            }
             let is_development = env_name == "development";
 
             // Cannot have both route and routes

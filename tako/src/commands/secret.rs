@@ -479,7 +479,7 @@ fn record_env_network(
     env: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     crate::commands::env_network::resolve_if_known(
-        &context.project_dir,
+        &context.config_path,
         env,
         crate::commands::env_network::Purpose::Record,
     )?;

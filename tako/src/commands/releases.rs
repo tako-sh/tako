@@ -62,7 +62,7 @@ async fn run_async(
         ReleaseCommands::List { env } => {
             let env = resolve_env_name(env.as_deref(), &tako_config)?;
             let servers = super::env_network::servers(
-                &context.project_dir,
+                &context.config_path,
                 &env,
                 super::env_network::Purpose::Use,
             )
@@ -73,7 +73,7 @@ async fn run_async(
         ReleaseCommands::Rollback { release, env, yes } => {
             let env = resolve_env_name(env.as_deref(), &tako_config)?;
             let servers = super::env_network::servers(
-                &context.project_dir,
+                &context.config_path,
                 &env,
                 super::env_network::Purpose::Use,
             )
