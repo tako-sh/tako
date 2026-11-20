@@ -11,6 +11,7 @@ struct ReleasePaths {
     app_root: PathBuf,
     release_path: PathBuf,
     releases_root: PathBuf,
+    archive_root: PathBuf,
     shared_logs: PathBuf,
 }
 
@@ -32,7 +33,7 @@ impl crate::ServerState {
         {
             return Response::error("Cannot remove the active release");
         }
-        let protected = match self.compose_release_references(app).await {
+        let protected = match self.release_references(app).await {
             Ok(paths) => paths,
             Err(error) => return Response::error(error),
         };
@@ -43,7 +44,7 @@ impl crate::ServerState {
                     .any(|used| used.starts_with(&paths.release_path))
                 {
                     return Response::error(
-                        "Cannot remove release files referenced by Compose containers",
+                        "Cannot remove release files referenced by running instances, workers, or Compose containers",
                     );
                 }
                 if let Err(error) = remove_release(&paths.release_path) {
@@ -51,6 +52,22 @@ impl crate::ServerState {
                         "Failed to remove release {}: {error}",
                         paths.release_path.display()
                     ));
+                }
+                // A failed redeploy must not destroy an earlier successful release.
+                let historical = match self.state_store.release_routing(app, version) {
+                    Ok(value) => value.is_some(),
+                    Err(error) => {
+                        return Response::error(format!("Failed to read release history: {error}"));
+                    }
+                };
+                if !historical && paths.archive_root.exists() {
+                    if let Err(error) = std::fs::remove_dir_all(&paths.archive_root) {
+                        return Response::error(format!(
+                            "Failed to remove release archive: {error}"
+                        ));
+                    }
+                } else {
+                    let _ = std::fs::remove_file(paths.archive_root.join("pending"));
                 }
                 Response::ok(serde_json::json!({ "status": "removed" }))
             }
@@ -96,36 +113,46 @@ impl crate::ServerState {
             )
         })?;
 
-        if paths.release_path.is_dir() {
+        if paths.archive_root.is_dir() {
+            self.restore_release_artifact(app, version)?;
             return Ok(release_upload_plan(&paths.release_path, false));
         }
 
-        let temp_release_path = paths.release_path.with_file_name(format!(
-            "{}.uploading-{}",
-            version,
-            nanoid::nanoid!(8)
-        ));
-        if temp_release_path.exists() {
-            std::fs::remove_dir_all(&temp_release_path).map_err(|e| {
-                format!(
-                    "remove stale upload dir {}: {e}",
-                    temp_release_path.display()
-                )
-            })?;
-        }
+        let extracted = tempfile::Builder::new()
+            .prefix(".extract-")
+            .tempdir_in(&paths.releases_root)
+            .map_err(|e| e.to_string())?;
+        let temp_release_path = extracted.path();
 
         let extract_result = (|| {
-            crate::extract_zstd_archive(archive_path, &temp_release_path)?;
-            replace_logs_with_shared_link(&temp_release_path, &paths.shared_logs)?;
-            std::fs::rename(&temp_release_path, &paths.release_path).map_err(|e| {
-                format!("activate release dir {}: {e}", paths.release_path.display())
-            })?;
+            crate::extract_zstd_archive(archive_path, temp_release_path)?;
+            // Publish the original bytes and listing metadata together. Installed
+            // dependencies and runtime-generated files never enter this archive.
+            let archives_root = paths.archive_root.parent().ok_or("Invalid archive path")?;
+            std::fs::create_dir_all(archives_root).map_err(|e| e.to_string())?;
+            let staged = tempfile::Builder::new()
+                .prefix(".upload-")
+                .tempdir_in(archives_root)
+                .map_err(|e| e.to_string())?;
+            std::fs::copy(archive_path, staged.path().join("release.tar.zst"))
+                .map_err(|e| format!("retain uploaded archive: {e}"))?;
+            std::fs::copy(
+                temp_release_path.join("app.json"),
+                staged.path().join("app.json"),
+            )
+            .map_err(|e| format!("retain release metadata: {e}"))?;
+            std::fs::write(staged.path().join("pending"), []).map_err(|e| e.to_string())?;
+            replace_logs_with_shared_link(temp_release_path, &paths.shared_logs)?;
+            std::fs::rename(staged.path(), &paths.archive_root)
+                .map_err(|e| format!("publish release archive: {e}"))?;
+            if !paths.release_path.is_dir() {
+                std::fs::rename(temp_release_path, &paths.release_path).map_err(|e| {
+                    format!("activate release dir {}: {e}", paths.release_path.display())
+                })?;
+            }
             Ok::<(), String>(())
         })();
 
-        if extract_result.is_err() {
-            let _ = std::fs::remove_dir_all(&temp_release_path);
-        }
         extract_result?;
 
         Ok(release_upload_plan(&paths.release_path, true))
@@ -146,10 +173,71 @@ impl crate::ServerState {
             )
         })?;
 
+        if paths.archive_root.is_dir() {
+            self.restore_release_artifact(app, version)?;
+        }
         Ok(release_upload_plan(
             &paths.release_path,
             !paths.release_path.is_dir(),
         ))
+    }
+
+    pub(crate) fn restore_release_artifact(
+        &self,
+        app: &str,
+        version: &str,
+    ) -> Result<(PathBuf, bool), String> {
+        let paths = self.release_paths(app, version)?;
+        let pending = paths.archive_root.join("pending").exists();
+        if paths.archive_root.is_dir() {
+            std::fs::write(paths.archive_root.join("pending"), [])
+                .map_err(|e| format!("mark release preparation: {e}"))?;
+        }
+        if paths.release_path.is_dir() {
+            let needs_preparation = pending
+                && !self
+                    .app_manager
+                    .get_app(app)
+                    .is_some_and(|current| current.version() == version);
+            return Ok((paths.release_path, needs_preparation));
+        }
+        let archive = paths.archive_root.join("release.tar.zst");
+        if !archive.is_file() {
+            return Err(format!("Release '{version}' not found for app '{app}'"));
+        }
+        std::fs::create_dir_all(&paths.releases_root).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&paths.shared_logs).map_err(|e| e.to_string())?;
+        let staged = tempfile::Builder::new()
+            .prefix(".extract-")
+            .tempdir_in(&paths.releases_root)
+            .map_err(|e| e.to_string())?;
+        crate::extract_zstd_archive(&archive, staged.path())?;
+        replace_logs_with_shared_link(staged.path(), &paths.shared_logs)?;
+        std::fs::rename(staged.path(), &paths.release_path)
+            .map_err(|e| format!("restore release directory: {e}"))?;
+        Ok((paths.release_path, true))
+    }
+
+    pub(super) async fn discard_restored_release(
+        &self,
+        app: &str,
+        version: &str,
+    ) -> Result<(), String> {
+        let paths = self.release_paths(app, version)?;
+        if !paths.archive_root.join("release.tar.zst").is_file() {
+            return Ok(());
+        }
+        let protected = self.release_references(app).await?;
+        if !protected
+            .iter()
+            .any(|used| used.starts_with(&paths.release_path))
+        {
+            remove_release(&paths.release_path)?;
+        }
+        if paths.archive_root.join("pending").exists() {
+            std::fs::remove_file(paths.archive_root.join("pending")).map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 
     pub(crate) async fn finalize_release_inner(
@@ -164,7 +252,15 @@ impl crate::ServerState {
                 return Err("Cannot finalize a release that is not active".into());
             }
         }
-        let protected = self.compose_release_references(app).await?;
+        self.finalize_release_locked(app, version).await
+    }
+
+    pub(super) async fn finalize_release_locked(
+        &self,
+        app: &str,
+        version: &str,
+    ) -> Result<(), String> {
+        let protected = self.release_references(app).await?;
         let paths = self.release_paths(app, version)?;
         if !paths.release_path.is_dir() {
             return Err(format!(
@@ -185,11 +281,36 @@ impl crate::ServerState {
 
         std::fs::rename(&temp_link, &current_link)
             .map_err(|e| format!("update current symlink {}: {e}", current_link.display()))?;
+        if paths.archive_root.is_dir() {
+            std::fs::remove_file(paths.archive_root.join("pending"))
+                .or_else(|e| {
+                    if e.kind() == std::io::ErrorKind::NotFound {
+                        Ok(())
+                    } else {
+                        Err(e)
+                    }
+                })
+                .map_err(|e| format!("finalize release archive: {e}"))?;
+        }
         prune_old_releases(&paths.releases_root, &paths.release_path, &protected);
+        compact_releases(&paths.releases_root, &paths.release_path, &protected)?;
         Ok(())
     }
 
-    async fn compose_release_references(
+    pub(crate) async fn compact_app_releases(&self, app_name: &str) -> Result<(), String> {
+        let lock = self.get_deploy_lock(app_name).await;
+        let Ok(_guard) = lock.try_lock() else {
+            return Ok(());
+        };
+        let Some(app) = self.app_manager.get_app(app_name) else {
+            return Ok(());
+        };
+        let paths = self.release_paths(app_name, &app.version())?;
+        let protected = self.release_references(app_name).await?;
+        compact_releases(&paths.releases_root, &paths.release_path, &protected)
+    }
+
+    async fn release_references(
         &self,
         app: &str,
     ) -> Result<std::collections::BTreeSet<PathBuf>, String> {
@@ -197,16 +318,25 @@ impl crate::ServerState {
             return Ok(Default::default());
         };
         let config = app.config.read().clone();
-        if config.compose.is_none() {
-            return Ok(Default::default());
+        let mut paths = self.workflows.release_paths(&app.name());
+        for instance in app.get_instances() {
+            paths.insert(app_release_root(
+                &self.runtime.data_dir,
+                &app.name(),
+                instance.build_version(),
+            ));
         }
-        let runtime = crate::compose_runtime::for_config(&config)?;
-        Ok(runtime
-            .containers()
-            .await?
-            .into_iter()
-            .filter_map(|container| container.release)
-            .collect())
+        if config.compose.is_some() {
+            let runtime = crate::compose_runtime::for_config(&config)?;
+            paths.extend(
+                runtime
+                    .containers()
+                    .await?
+                    .into_iter()
+                    .filter_map(|container| container.release),
+            );
+        }
+        Ok(paths)
     }
 
     fn release_paths(&self, app: &str, version: &str) -> Result<ReleasePaths, String> {
@@ -215,11 +345,13 @@ impl crate::ServerState {
         let app_root = app_root(&self.runtime_config().data_dir, app);
         let releases_root = app_root.join("releases");
         let release_path = app_release_root(&self.runtime_config().data_dir, app, version);
+        let archive_root = app_root.join("archives").join(version);
         let shared_logs = app_root.join("shared").join("logs");
         Ok(ReleasePaths {
             app_root,
             release_path,
             releases_root,
+            archive_root,
             shared_logs,
         })
     }
@@ -252,25 +384,82 @@ fn replace_logs_with_shared_link(release_path: &Path, shared_logs: &Path) -> Res
     Ok(())
 }
 
+pub(super) fn release_entries(
+    releases_root: &Path,
+) -> Result<std::collections::BTreeMap<String, PathBuf>, std::io::Error> {
+    let mut releases = std::collections::BTreeMap::new();
+    for root in [
+        releases_root.to_path_buf(),
+        releases_root.with_file_name("archives"),
+    ] {
+        let entries = match std::fs::read_dir(&root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        for entry in entries {
+            let entry = entry?;
+            let Some(version) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if !entry.file_type()?.is_dir()
+                || version.starts_with(".upload-")
+                || version.starts_with(".extract-")
+                || validate_release_version(&version).is_err()
+            {
+                continue;
+            }
+            releases.insert(version, entry.path());
+        }
+    }
+    Ok(releases)
+}
+
+fn compact_releases(
+    releases_root: &Path,
+    active_release: &Path,
+    protected: &std::collections::BTreeSet<PathBuf>,
+) -> Result<(), String> {
+    for (version, metadata_root) in release_entries(releases_root).map_err(|e| e.to_string())? {
+        let path = releases_root.join(version);
+        if path == active_release
+            || metadata_root == path
+            || !path.is_dir()
+            || protected.iter().any(|used| used.starts_with(&path))
+            || metadata_root.join("pending").exists()
+            || !metadata_root.join("release.tar.zst").is_file()
+        {
+            continue;
+        }
+        remove_release(&path)?;
+    }
+    Ok(())
+}
+
 fn prune_old_releases(
     releases_root: &Path,
     active_release: &Path,
     protected: &std::collections::BTreeSet<PathBuf>,
 ) {
-    let Ok(entries) = std::fs::read_dir(releases_root) else {
+    let Ok(entries) = release_entries(releases_root) else {
         return;
     };
     let now = SystemTime::now();
     let mut retained = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
+    for (version, metadata_root) in entries {
+        let path = releases_root.join(version);
         if path == active_release
-            || !path.is_dir()
             || protected.iter().any(|used| used.starts_with(&path))
+            || std::fs::metadata(metadata_root.join("pending"))
+                .and_then(|metadata| metadata.modified())
+                .is_ok_and(|modified| {
+                    now.duration_since(modified)
+                        .map_or(true, |age| age <= OLD_RELEASE_RETENTION)
+                })
         {
             continue;
         }
-        let Ok(metadata) = entry.metadata() else {
+        let Ok(metadata) = std::fs::metadata(release_timestamp_path(&metadata_root)) else {
             continue;
         };
         let Ok(modified) = metadata.modified() else {
@@ -280,7 +469,7 @@ fn prune_old_releases(
             .duration_since(modified)
             .is_ok_and(|age| age > OLD_RELEASE_RETENTION)
         {
-            let _ = remove_release(&path);
+            let _ = remove_retained_release(&path);
         } else {
             retained.push((path, modified));
         }
@@ -296,8 +485,36 @@ fn prune_old_releases(
         MAX_RELEASE_RETENTION_COUNT
     };
     for (path, _) in retained.into_iter().skip(non_active_limit) {
-        let _ = remove_release(&path);
+        let _ = remove_retained_release(&path);
     }
+}
+
+pub(super) fn release_timestamp_path(metadata_root: &Path) -> PathBuf {
+    let archive = metadata_root.join("release.tar.zst");
+    if metadata_root
+        .parent()
+        .and_then(Path::file_name)
+        .is_some_and(|name| name == "archives")
+        && archive.is_file()
+    {
+        archive
+    } else {
+        metadata_root.to_path_buf()
+    }
+}
+
+fn remove_retained_release(path: &Path) -> Result<(), String> {
+    remove_release(path)?;
+    let archive = path
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("Invalid release path")?
+        .join("archives")
+        .join(path.file_name().ok_or("Invalid release version")?);
+    if archive.exists() {
+        std::fs::remove_dir_all(archive).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 fn remove_release(path: &Path) -> Result<(), String> {
@@ -352,6 +569,72 @@ mod tests {
             .filter_map(Result::ok)
             .filter(|entry| entry.path().is_dir())
             .count()
+    }
+
+    #[test]
+    fn archive_retention_counts_each_release_once_and_removes_expired_archives() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("releases");
+        let archives = temp.path().join("archives");
+        let now = SystemTime::now();
+        let active = create_release(&root, "active", now);
+        for index in 0..55 {
+            let version = format!("r{index:03}");
+            let archive_root = create_release(&archives, &version, now);
+            let archive = archive_root.join("release.tar.zst");
+            std::fs::write(&archive, b"original").unwrap();
+            filetime::set_file_mtime(
+                &archive,
+                FileTime::from_system_time(now - Duration::from_secs(index)),
+            )
+            .unwrap();
+            if index % 2 == 0 {
+                create_release(&root, &version, now);
+            }
+        }
+        let expired = create_release(&archives, "expired", now);
+        std::fs::write(expired.join("release.tar.zst"), b"expired").unwrap();
+        filetime::set_file_mtime(
+            expired.join("release.tar.zst"),
+            FileTime::from_system_time(now - OLD_RELEASE_RETENTION * 2),
+        )
+        .unwrap();
+        prune_old_releases(&root, &active, &Default::default());
+        assert_eq!(
+            release_entries(&root).unwrap().len(),
+            MAX_RELEASE_RETENTION_COUNT
+        );
+        assert!(!expired.exists());
+        assert!(archives.join("r048/release.tar.zst").is_file());
+        assert!(!archives.join("r049").exists());
+        assert!(!root.join("r050").exists());
+    }
+
+    #[test]
+    fn compaction_waits_for_release_references_and_keeps_original_archives() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("releases");
+        let active = create_release(&root, "active", SystemTime::now());
+        let old = create_release(&root, "old", SystemTime::now());
+        let legacy = create_release(&root, "legacy", SystemTime::now());
+        std::fs::write(
+            legacy.join("release.tar.zst"),
+            b"app-owned file, not a retained upload",
+        )
+        .unwrap();
+        let archive_root = create_release(&temp.path().join("archives"), "old", SystemTime::now());
+        std::fs::write(archive_root.join("release.tar.zst"), b"original").unwrap();
+        let protected = std::collections::BTreeSet::from([old.join("app")]);
+        compact_releases(&root, &active, &protected).unwrap();
+        assert!(old.is_dir());
+        compact_releases(&root, &active, &Default::default()).unwrap();
+        assert!(!old.exists());
+        assert!(active.is_dir());
+        assert!(legacy.is_dir());
+        assert_eq!(
+            std::fs::read(archive_root.join("release.tar.zst")).unwrap(),
+            b"original"
+        );
     }
 
     #[test]

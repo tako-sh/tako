@@ -61,6 +61,13 @@ async fn release_upload_lifecycle_extracts_and_finalizes_release() {
         .unwrap();
     assert!(stored_plan.upload_required);
     assert!(Path::new(&stored_plan.path).join("app.json").is_file());
+    let retained = temp
+        .path()
+        .join("apps/my-app/production/archives/v1/release.tar.zst");
+    assert_eq!(
+        std::fs::read(&retained).unwrap(),
+        std::fs::read(&archive_path).unwrap()
+    );
     #[cfg(unix)]
     assert!(
         std::fs::symlink_metadata(Path::new(&stored_plan.path).join("logs"))
@@ -92,6 +99,207 @@ async fn release_upload_lifecycle_extracts_and_finalizes_release() {
     assert_eq!(
         std::fs::read_link(temp.path().join("apps/my-app/production/current")).unwrap(),
         Path::new(&stored_plan.path)
+    );
+
+    // Server-side installs must disappear with the retired working directory,
+    // and must never be folded into the retained upload.
+    std::fs::create_dir_all(Path::new(&stored_plan.path).join("node_modules/large")).unwrap();
+    std::fs::write(
+        Path::new(&stored_plan.path).join("node_modules/large/index.js"),
+        "installed",
+    )
+    .unwrap();
+    let second = state
+        .store_uploaded_release_artifact("my-app/production", "v2", &archive_path)
+        .unwrap();
+    assert!(
+        state
+            .finalize_release("my-app/production", "v2")
+            .await
+            .is_ok()
+    );
+    assert!(!Path::new(&stored_plan.path).exists());
+    assert!(Path::new(&second.path).is_dir());
+    assert_eq!(
+        std::fs::read(&retained).unwrap(),
+        std::fs::read(&archive_path).unwrap()
+    );
+
+    state.app_manager.register_app(AppConfig {
+        name: "my-app".into(),
+        environment: "production".into(),
+        version: "v2".into(),
+        ..Default::default()
+    });
+    let Response::Ok { data } = state.list_releases("my-app/production").await else {
+        panic!("expected release history");
+    };
+    let history: tako_core::ListReleasesResponse = serde_json::from_value(data).unwrap();
+    assert_eq!(history.releases.len(), 2);
+    assert!(
+        history
+            .releases
+            .iter()
+            .any(|r| r.version == "v1" && !r.current)
+    );
+    assert!(
+        history
+            .releases
+            .iter()
+            .any(|r| r.version == "v2" && r.current)
+    );
+
+    let Response::Ok { data } = state
+        .prepare_release_upload("my-app/production", "v1")
+        .await
+    else {
+        panic!("expected archive reuse");
+    };
+    let restored: tako_core::ReleaseUploadPlan = serde_json::from_value(data).unwrap();
+    assert!(!restored.upload_required);
+    assert!(Path::new(&restored.path).join("app.json").is_file());
+    assert!(!Path::new(&restored.path).join("node_modules").exists());
+    // A candidate staged between RPCs must survive periodic cleanup.
+    state
+        .compact_app_releases("my-app/production")
+        .await
+        .unwrap();
+    assert!(Path::new(&restored.path).is_dir());
+    assert_eq!(
+        std::fs::read(&retained).unwrap(),
+        std::fs::read(&archive_path).unwrap()
+    );
+}
+
+#[tokio::test]
+async fn corrupt_archived_rollback_preserves_current_release_and_original_archive() {
+    let temp = TempDir::new().unwrap();
+    let state = ServerState::new(
+        temp.path().to_path_buf(),
+        Arc::new(CertManager::new(CertManagerConfig {
+            cert_dir: temp.path().join("certs"),
+            ..Default::default()
+        })),
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let source = temp.path().join("upload.tar.zst");
+    write_test_release_archive(&source);
+    let old = state
+        .store_uploaded_release_artifact("my-app/production", "v1", &source)
+        .unwrap();
+    assert!(
+        state
+            .finalize_release("my-app/production", "v1")
+            .await
+            .is_ok()
+    );
+    let current = state
+        .store_uploaded_release_artifact("my-app/production", "v2", &source)
+        .unwrap();
+    assert!(
+        state
+            .finalize_release("my-app/production", "v2")
+            .await
+            .is_ok()
+    );
+    state.app_manager.register_app(AppConfig {
+        name: "my-app".into(),
+        environment: "production".into(),
+        version: "v2".into(),
+        ..Default::default()
+    });
+    let archive = temp
+        .path()
+        .join("apps/my-app/production/archives/v1/release.tar.zst");
+    std::fs::write(&archive, b"broken archive").unwrap();
+    let response = state.rollback_app("my-app/production", "v1").await;
+    assert!(!response.is_ok(), "{response:?}");
+    assert_eq!(
+        state
+            .app_manager
+            .get_app("my-app/production")
+            .unwrap()
+            .version(),
+        "v2"
+    );
+    assert!(Path::new(&current.path).is_dir());
+    assert!(!Path::new(&old.path).exists());
+    assert_eq!(std::fs::read(&archive).unwrap(), b"broken archive");
+    assert!(!archive.parent().unwrap().join("pending").exists());
+    assert_eq!(
+        std::fs::read_dir(temp.path().join("apps/my-app/production/releases"))
+            .unwrap()
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn archived_rollback_install_failure_keeps_current_release_and_history() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = crate::isolation::fixture::TestDataDir::new().unwrap();
+    let state = ServerState::new(
+        temp.path().to_path_buf(),
+        Arc::new(CertManager::new(CertManagerConfig {
+            cert_dir: temp.path().join("certs"),
+            ..Default::default()
+        })),
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let app_id = "my-app/production";
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("app.json"), r#"{"protocol_version":0,"runtime":"bun","runtime_version":"1.0.0","main":"index.ts","idle_timeout":300}"#).unwrap();
+    let upload = temp.path().join("upload.tar.zst");
+    let encoder =
+        zstd::stream::write::Encoder::new(std::fs::File::create(&upload).unwrap(), 3).unwrap();
+    let mut archive = tar::Builder::new(encoder);
+    archive.append_dir_all(".", &source).unwrap();
+    archive.into_inner().unwrap().finish().unwrap();
+    let old = state
+        .store_uploaded_release_artifact(app_id, "v1", &upload)
+        .unwrap();
+    assert!(state.finalize_release(app_id, "v1").await.is_ok());
+    let current = state
+        .store_uploaded_release_artifact(app_id, "v2", &upload)
+        .unwrap();
+    assert!(state.finalize_release(app_id, "v2").await.is_ok());
+    state.app_manager.register_app(AppConfig {
+        name: "my-app".into(),
+        environment: "production".into(),
+        version: "v2".into(),
+        ..Default::default()
+    });
+    state
+        .routes
+        .write()
+        .set_app_routes(app_id.into(), vec!["my-app.localhost".into()]);
+    let runtime = temp.path().join("runtimes/bun/1.0.0/bun");
+    std::fs::create_dir_all(runtime.parent().unwrap()).unwrap();
+    std::fs::write(
+        &runtime,
+        "#!/bin/sh\necho 'dependency unavailable' >&2\nexit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let Response::Error { message, .. } = state.rollback_app(app_id, "v1").await else {
+        panic!("rollback must fail when production install fails");
+    };
+    assert!(message.contains("dependency unavailable"), "{message}");
+    assert_eq!(state.app_manager.get_app(app_id).unwrap().version(), "v2");
+    assert!(Path::new(&current.path).is_dir());
+    assert!(!Path::new(&old.path).exists());
+    let retained = temp
+        .path()
+        .join("apps/my-app/production/archives/v1/release.tar.zst");
+    assert_eq!(
+        std::fs::read(retained).unwrap(),
+        std::fs::read(upload).unwrap()
     );
 }
 

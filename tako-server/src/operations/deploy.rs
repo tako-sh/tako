@@ -32,6 +32,15 @@ pub(crate) struct DeployRequest<'a> {
 
 impl crate::ServerState {
     pub(crate) async fn deploy_app(&self, request: DeployRequest<'_>) -> Response {
+        let lock = self.get_deploy_lock(request.app_name).await;
+        let _guard = match self.lock_deploy_for_operator(request.app_name, &lock).await {
+            Ok(guard) => guard,
+            Err(message) => return Response::error(message),
+        };
+        self.deploy_app_locked(request).await
+    }
+
+    pub(super) async fn deploy_app_locked(&self, request: DeployRequest<'_>) -> Response {
         let DeployRequest {
             app_name,
             version,
@@ -78,14 +87,6 @@ impl crate::ServerState {
             Err(msg) => return Response::error(msg),
         };
 
-        let lock = self.get_deploy_lock(app_name).await;
-        let _guard = match self.lock_deploy_for_operator(app_name, &lock).await {
-            Ok(guard) => guard,
-            Err(message) => {
-                tracing::warn!(app = app_name, %message, "Deploy rejected");
-                return Response::error(message);
-            }
-        };
         if let Some(response) = self.refuse_unresolved_restore(app_name) {
             return response;
         }

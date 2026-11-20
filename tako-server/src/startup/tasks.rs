@@ -82,6 +82,22 @@ pub(super) fn spawn_health_monitoring(rt: &Runtime, state: Arc<ServerState>) {
 /// Health events are edge-triggered and handled by one serial consumer. This
 /// periodic pass repairs whatever they left behind, one task per app.
 pub(super) fn spawn_instance_reconcile(rt: &Runtime, state: Arc<ServerState>) {
+    let cleanup_state = state.clone();
+    rt.spawn(async move {
+        let mut ticks = tokio::time::interval(Duration::from_secs(60));
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticks.tick().await;
+            // Preparation spans several RPCs; its persistent pending marker pins
+            // staged releases between commands and across server restarts.
+            let _guard = cleanup_state.management_lock.lock().await;
+            for app in cleanup_state.app_manager.list_apps() {
+                if let Err(error) = cleanup_state.compact_app_releases(&app).await {
+                    tracing::warn!(%app, %error, "Could not clean up inactive release files");
+                }
+            }
+        }
+    });
     rt.spawn(async move {
         let mut ticks = tokio::time::interval(crate::runtime_events::INSTANCE_RECONCILE_INTERVAL);
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);

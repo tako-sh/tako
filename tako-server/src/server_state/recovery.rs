@@ -162,6 +162,12 @@ impl ServerState {
             if config.stopped && config.compose.is_none() {
                 app.set_state(AppState::Stopped);
                 self.cold_start.mark_failed(&app_name, "app_stopped");
+                if let Err(error) = self
+                    .finalize_release_inner(&app_name, &config.version)
+                    .await
+                {
+                    tracing::warn!(app = %app_name, %error, "Could not finalize restored release");
+                }
                 continue;
             }
             if !config.stopped
@@ -183,16 +189,13 @@ impl ServerState {
                         } else {
                             AppState::Running
                         });
+                        if let Err(error) = self
+                            .finalize_release_inner(&app_name, &config.version)
+                            .await
+                        {
+                            tracing::warn!(app = %app_name, %error, "Could not finalize restored release");
+                        }
                         if config.compose.is_some() {
-                            // The process or deploy client can disappear after
-                            // the database commit but before CLI finalization.
-                            // Repair the derived current link from that commit.
-                            if let Err(error) = self
-                                .finalize_release_inner(&app_name, &config.version)
-                                .await
-                            {
-                                tracing::warn!(app = %app_name, %error, "Could not finalize restored Compose release");
-                            }
                             self.state_store.clear_compose_deployment(&app_name)?;
                         }
                         tracing::info!(app = %app_name, "Restored and started app");
@@ -207,6 +210,12 @@ impl ServerState {
             } else {
                 app.set_state(AppState::Idle);
                 self.cold_start.reset(&app_name);
+                if let Err(error) = self
+                    .finalize_release_inner(&app_name, &config.version)
+                    .await
+                {
+                    tracing::warn!(app = %app_name, %error, "Could not finalize restored release");
+                }
                 tracing::info!(app = %app_name, "Restored on-demand app in idle state");
             }
         }

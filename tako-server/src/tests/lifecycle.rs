@@ -388,6 +388,17 @@ async fn rollback_keeps_the_provisioned_backup_binding() {
         None,
         300,
     );
+    let archive_path = temp.path().join("original.tar.zst");
+    let encoder =
+        zstd::stream::write::Encoder::new(std::fs::File::create(&archive_path).unwrap(), 3)
+            .unwrap();
+    let mut archive = tar::Builder::new(encoder);
+    archive.append_dir_all(".", &release).unwrap();
+    archive.into_inner().unwrap().finish().unwrap();
+    state
+        .store_uploaded_release_artifact(app_id, "v1", &archive_path)
+        .unwrap();
+    std::fs::remove_dir_all(&release).unwrap();
     state.app_manager.register_app(AppConfig {
         name: "my-app".into(),
         environment: "production".into(),
@@ -411,7 +422,16 @@ async fn rollback_keeps_the_provisioned_backup_binding() {
             version: "v1".into(),
         })
         .await;
-    assert!(response.is_ok(), "rollback should succeed");
+    assert!(response.is_ok(), "rollback should succeed: {response:?}");
+    assert!(release.join("app.json").is_file());
+    assert_eq!(
+        std::fs::read(
+            temp.path()
+                .join("apps/my-app/production/archives/v1/release.tar.zst")
+        )
+        .unwrap(),
+        std::fs::read(&archive_path).unwrap(),
+    );
     assert!(
         state.state_store.get_backup(app_id).unwrap() == Some(backup),
         "rollback should preserve the provisioned backup binding"
