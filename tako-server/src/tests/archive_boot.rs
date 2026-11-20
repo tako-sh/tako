@@ -226,6 +226,191 @@ async fn release_upload_lifecycle_extracts_and_finalizes_release() {
 }
 
 #[tokio::test]
+async fn interrupted_release_deletion_restores_from_the_unchanged_archive() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = TempDir::new().unwrap();
+    let state = ServerState::new(
+        temp.path().into(),
+        Arc::new(CertManager::new(CertManagerConfig {
+            cert_dir: temp.path().join("certs"),
+            ..Default::default()
+        })),
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let app = "my-app/production";
+    let upload = temp.path().join("upload.tar.zst");
+    write_test_release_archive(&upload);
+    let plan = state
+        .store_uploaded_release_artifact(app, "v1", &upload)
+        .unwrap();
+    assert!(state.finalize_release(app, "v1").await.is_ok());
+    let root = temp.path().join("apps").join(app);
+    // Simulate a process dying after the atomic rename and partway through deletion.
+    let removed = root.join("releases/.remove-interrupted");
+    std::fs::create_dir(&removed).unwrap();
+    std::fs::rename(&plan.path, removed.join("tree")).unwrap();
+    std::fs::remove_file(removed.join("tree/app.json")).unwrap();
+    let private_inputs = root.join("compose/old-preparation");
+    std::fs::create_dir_all(&private_inputs).unwrap();
+    for path in [root.join("compose"), private_inputs.clone()] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    std::fs::write(
+        private_inputs.join("release.json"),
+        serde_json::to_vec(&plan.path).unwrap(),
+    )
+    .unwrap();
+    let Response::Ok { data } = state.prepare_release_upload(app, "v1").await else {
+        panic!("expected archived release restoration");
+    };
+    let restored: tako_core::ReleaseUploadPlan = serde_json::from_value(data).unwrap();
+    assert!(!restored.upload_required && restored.preparation_required);
+    assert!(Path::new(&restored.path).join("app.json").is_file());
+    assert!(!private_inputs.exists());
+    assert_eq!(
+        std::fs::read(root.join("archives/v1/release.tar.zst")).unwrap(),
+        std::fs::read(upload).unwrap(),
+    );
+    state.app_manager.register_app(AppConfig {
+        name: "my-app".into(),
+        environment: "production".into(),
+        version: "v1".into(),
+        ..Default::default()
+    });
+    state.compact_app_releases(app).await.unwrap();
+    assert!(!removed.exists());
+    assert!(Path::new(&restored.path).join("app.json").is_file());
+}
+
+#[tokio::test]
+async fn standby_recovery_and_compaction_preserve_the_primarys_releases() {
+    let temp = crate::isolation::fixture::TestDataDir::new().unwrap();
+    let certs = Arc::new(CertManager::new(CertManagerConfig {
+        cert_dir: temp.path().join("certs"),
+        ..Default::default()
+    }));
+    let primary = ServerState::new(
+        temp.path().into(),
+        certs.clone(),
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let app = "my-app/production";
+    let root = temp.path().join("apps").join(app);
+    for version in ["v1", "v2"] {
+        let release = root.join("releases").join(version);
+        std::fs::create_dir_all(&release).unwrap();
+        write_release_manifest(&release, "", "", &["./app"], None, 300);
+        retain_test_release(&release);
+    }
+    assert!(primary.finalize_release(app, "v1").await.is_ok());
+    // Recreate the second release after v1's initial compaction.
+    let release = root.join("releases/v2");
+    std::fs::create_dir_all(&release).unwrap();
+    write_release_manifest(&release, "", "", &["./app"], None, 300);
+    std::fs::write(root.join("archives/v2/pending"), []).unwrap();
+    let config = AppConfig {
+        name: "my-app".into(),
+        environment: "production".into(),
+        version: "v2".into(),
+        path: release,
+        stopped: true,
+        ..Default::default()
+    };
+    primary
+        .state_store
+        .upsert_app(&config, &["my-app.localhost".into()])
+        .unwrap();
+    primary.app_manager.register_app(config);
+    let mut runtime = ServerRuntimeConfig::for_defaults(temp.path().into());
+    runtime.standby = true;
+    let standby = ServerState::new_with_runtime(
+        temp.path().into(),
+        certs,
+        None,
+        empty_challenge_tokens(),
+        runtime,
+    )
+    .unwrap();
+    standby.restore_from_state_store().await.unwrap();
+    assert!(standby.app_manager.get_app(app).is_some());
+    standby.compact_app_releases(app).await.unwrap();
+    primary.compact_app_releases(app).await.unwrap();
+    assert!(root.join("releases/v1/app.json").is_file());
+    assert_eq!(
+        std::fs::read_link(root.join("current")).unwrap(),
+        root.join("releases/v1")
+    );
+    assert!(root.join("archives/v2/pending").is_file());
+    drop(standby);
+    assert!(primary.finalize_release(app, "v2").await.is_ok());
+    assert!(!root.join("releases/v1").exists());
+}
+
+#[test]
+fn release_finalization_and_compaction_use_the_blocking_pool() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(1)
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let temp = TempDir::new().unwrap();
+        let state = ServerState::new(
+            temp.path().into(),
+            Arc::new(CertManager::new(CertManagerConfig {
+                cert_dir: temp.path().join("certs"),
+                ..Default::default()
+            })),
+            None,
+            empty_challenge_tokens(),
+        )
+        .unwrap();
+        let app = "my-app/production";
+        let upload = temp.path().join("upload.tar.zst");
+        write_test_release_archive(&upload);
+        state
+            .store_uploaded_release_artifact(app, "v2", &upload)
+            .unwrap();
+        state.app_manager.register_app(AppConfig {
+            name: "my-app".into(),
+            environment: "production".into(),
+            version: "v2".into(),
+            ..Default::default()
+        });
+        let old = temp.path().join("apps").join(app).join("releases/v1");
+        for periodic in [false, true] {
+            std::fs::create_dir_all(old.join("node_modules")).unwrap();
+            let (release_worker, wait) = std::sync::mpsc::channel();
+            let blocker = tokio::task::spawn_blocking(move || wait.recv().unwrap());
+            let cleanup = async {
+                if periodic {
+                    state.compact_app_releases(app).await
+                } else {
+                    state.finalize_release_inner(app, "v2").await
+                }
+            };
+            tokio::pin!(cleanup);
+            let queued = tokio::time::timeout(Duration::from_millis(20), &mut cleanup)
+                .await
+                .is_err();
+            let still_present = old.is_dir();
+            release_worker.send(()).unwrap();
+            blocker.await.unwrap();
+            assert!(
+                queued && still_present,
+                "recursive deletion must wait for the blocking pool"
+            );
+            cleanup.await.unwrap();
+            assert!(!old.exists());
+        }
+    });
+}
+
+#[tokio::test]
 async fn directory_only_releases_are_not_history_or_rollback_targets() {
     let temp = TempDir::new().unwrap();
     let state = ServerState::new(
@@ -350,7 +535,7 @@ async fn release_finalization_succeeds_when_compaction_fails_and_cleanup_retries
     let current = state
         .store_uploaded_release_artifact(app, "v2", &upload)
         .unwrap();
-    // A malformed private Compose directory prevents removal, even as root.
+    // A malformed private Compose directory interrupts cleanup after the rename.
     std::fs::write(root.join("compose"), "not a directory").unwrap();
     assert!(state.finalize_release(app, "v2").await.is_ok());
     assert_eq!(
@@ -358,7 +543,18 @@ async fn release_finalization_succeeds_when_compaction_fails_and_cleanup_retries
         Path::new(&current.path)
     );
     assert!(!root.join("archives/v2/pending").exists());
-    assert!(Path::new(&old.path).is_dir());
+    assert!(!Path::new(&old.path).exists());
+    let removed = std::fs::read_dir(root.join("releases"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .as_encoded_bytes()
+                .starts_with(b".remove-")
+        })
+        .unwrap();
+    assert!(removed.join("tree/app.json").is_file());
     state.app_manager.register_app(AppConfig {
         name: "my-app".into(),
         environment: "production".into(),
@@ -372,12 +568,10 @@ async fn release_finalization_succeeds_when_compaction_fails_and_cleanup_retries
             .await
             .unwrap()
             .unwrap();
-        assert!(
-            Path::new(&old.path).is_dir(),
-            "housekeeping must yield to operators"
-        );
+        assert!(removed.is_dir(), "housekeeping must yield to operators");
     }
     state.compact_app_releases(app).await.unwrap();
+    assert!(!removed.exists());
     assert!(!Path::new(&old.path).exists());
     assert!(root.join("archives/v1/release.tar.zst").is_file());
 }

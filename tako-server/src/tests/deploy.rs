@@ -920,6 +920,7 @@ async fn deploy_clients_cannot_add_a_route_overlapping_another_app_environment()
     let release = crate::release::app_release_root(temp.path(), app_id, "v1");
     std::fs::create_dir_all(&release).unwrap();
     write_release_manifest(&release, "node", "index.js", &["true"], None, 300);
+    retain_test_release(&release);
     let config = AppConfig {
         name: "shop".into(),
         environment: "staging".into(),

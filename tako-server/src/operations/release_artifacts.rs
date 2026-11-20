@@ -59,7 +59,12 @@ impl crate::ServerState {
                         "Cannot remove release files referenced by running instances, workers, or Compose containers",
                     );
                 }
-                if let Err(error) = remove_release(&paths.release_path) {
+                let release_path = paths.release_path.clone();
+                if let Err(error) =
+                    tokio::task::spawn_blocking(move || remove_release(&release_path))
+                        .await
+                        .unwrap_or_else(|error| Err(error.to_string()))
+                {
                     return Response::error(format!(
                         "Failed to remove release {}: {error}",
                         paths.release_path.display()
@@ -73,7 +78,11 @@ impl crate::ServerState {
                     }
                 };
                 if !historical && paths.archive_root.exists() {
-                    if let Err(error) = std::fs::remove_dir_all(&paths.archive_root) {
+                    if let Err(error) =
+                        tokio::task::spawn_blocking(move || remove_directory(&paths.archive_root))
+                            .await
+                            .unwrap_or_else(|error| Err(error.to_string()))
+                    {
                         return Response::error(format!(
                             "Failed to remove release archive: {error}"
                         ));
@@ -214,7 +223,10 @@ impl crate::ServerState {
                 .iter()
                 .any(|used| used.starts_with(&paths.release_path))
             {
-                remove_release(&paths.release_path)?;
+                let release_path = paths.release_path.clone();
+                tokio::task::spawn_blocking(move || remove_release(&release_path))
+                    .await
+                    .map_err(|error| error.to_string())??;
             }
         }
         if !pending_preexisted && paths.archive_root.join("pending").exists() {
@@ -243,7 +255,10 @@ impl crate::ServerState {
         app: &str,
         version: &str,
     ) -> Result<(), String> {
-        let protected = self.release_references(app).await?;
+        // A standby's local view cannot finalize or collect the primary's releases.
+        if self.runtime.standby {
+            return Ok(());
+        }
         let paths = self.release_paths(app, version)?;
         if !paths.release_path.is_dir() {
             return Err(format!(
@@ -270,22 +285,37 @@ impl crate::ServerState {
         if let Err(error) = clear_pending_marker(&paths.archive_root) {
             tracing::warn!(app, %error, "Could not clear release preparation marker; periodic cleanup will retry");
         }
-        prune_old_releases(&paths.releases_root, &paths.release_path, &protected);
-        if let Err(error) = compact_releases(&paths.releases_root, &paths.release_path, &protected)
-        {
+        let cleanup = async {
+            let Some(lease) = self.release_cleanup_lease().await? else {
+                return Ok(());
+            };
+            let protected = self.release_references(app).await?;
+            tokio::task::spawn_blocking(move || {
+                let _lease = lease;
+                prune_old_releases(&paths.releases_root, &paths.release_path, &protected);
+                compact_releases(&paths.releases_root, &paths.release_path, &protected)
+            })
+            .await
+            .map_err(|error| error.to_string())?
+        }
+        .await;
+        if let Err(error) = cleanup {
             tracing::warn!(app, %error, "Could not compact inactive releases; periodic cleanup will retry");
         }
         Ok(())
     }
 
     pub(crate) async fn compact_app_releases(&self, app_name: &str) -> Result<(), String> {
+        let Some(lease) = self.release_cleanup_lease().await? else {
+            return Ok(());
+        };
         // Housekeeping yields to operators and bounds the entire Docker inspection,
         // rather than allowing a separate timeout for every container.
-        let Ok(_management) = self.management_lock.try_lock() else {
+        let Ok(management) = self.management_lock.clone().try_lock_owned() else {
             return Ok(());
         };
         let lock = self.get_deploy_lock(app_name).await;
-        let Ok(_guard) = lock.try_lock() else {
+        let Ok(guard) = lock.try_lock_owned() else {
             return Ok(());
         };
         let Some(app) = self.app_manager.get_app(app_name) else {
@@ -303,7 +333,26 @@ impl crate::ServerState {
                 .map_err(|_| {
                     "Release reference inspection timed out; deferring compaction".to_string()
                 })??;
-        compact_releases(&paths.releases_root, &paths.release_path, &protected)
+        tokio::task::spawn_blocking(move || {
+            let _guards = (lease, management, guard);
+            compact_releases(&paths.releases_root, &paths.release_path, &protected)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+
+    async fn release_cleanup_lease(
+        &self,
+    ) -> Result<Option<crate::state_store::DrainLease>, String> {
+        if self.runtime.standby
+            || self.is_draining()
+            || *self.server_mode.read().await != tako_core::UpgradeMode::Normal
+        {
+            return Ok(None);
+        }
+        // A companion may still serve an older release unknown to this process.
+        crate::state_store::DrainLease::try_standby_in(&self.runtime.data_dir, true)
+            .map_err(|error| error.to_string())
     }
 
     async fn release_references(
@@ -394,12 +443,16 @@ pub(crate) fn sweep_release_staging_dirs(data_dir: &Path, mode: super::RecoveryM
     // Interrupted first deployments may have no durable app record yet.
     for app in directories(&data_dir.join("apps")).into_iter().flatten() {
         for environment in directories(&app).into_iter().flatten() {
-            for (subdir, prefix) in [("releases", ".extract-"), ("archives", ".upload-")] {
+            for (subdir, prefixes) in [
+                ("releases", [".extract-", ".remove-"]),
+                ("archives", [".upload-", ".remove-"]),
+            ] {
                 for path in directories(&environment.join(subdir)).into_iter().flatten() {
-                    if path
-                        .file_name()
-                        .is_some_and(|name| name.as_encoded_bytes().starts_with(prefix.as_bytes()))
-                        && let Err(error) = std::fs::remove_dir_all(&path)
+                    if path.file_name().is_some_and(|name| {
+                        prefixes
+                            .iter()
+                            .any(|prefix| name.as_encoded_bytes().starts_with(prefix.as_bytes()))
+                    }) && let Err(error) = std::fs::remove_dir_all(&path)
                     {
                         tracing::warn!(path = %path.display(), %error, "Could not remove abandoned release staging directory");
                     }
@@ -443,6 +496,11 @@ fn restore_release_artifact(paths: &ReleasePaths, active: bool) -> Result<(PathB
     if paths.release_path.is_dir() {
         return Ok((paths.release_path.clone(), pending && !active));
     }
+    // Interrupted compaction may have left private Compose inputs behind.
+    tako_compose::remove_release_preparations(
+        &paths.release_path,
+        &paths.app_root.join("data/app"),
+    )?;
     std::fs::create_dir_all(&paths.releases_root).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&paths.shared_logs).map_err(|e| e.to_string())?;
     let staged = tempfile::Builder::new()
@@ -530,6 +588,11 @@ fn compact_releases(
         let Some(version) = version.to_str() else {
             continue;
         };
+        if version.starts_with(".remove-") && entry.file_type().map_err(|e| e.to_string())?.is_dir()
+        {
+            std::fs::remove_dir_all(entry.path()).map_err(|e| e.to_string())?;
+            continue;
+        }
         if version.starts_with(".extract-")
             || version.starts_with(".upload-")
             || validate_release_version(version).is_err()
@@ -612,7 +675,7 @@ fn remove_retained_release(path: &Path) -> Result<(), String> {
         .join("archives")
         .join(path.file_name().ok_or("Invalid release version")?);
     if archive.exists() {
-        std::fs::remove_dir_all(archive).map_err(|e| e.to_string())?;
+        remove_directory(&archive)?;
     }
     Ok(())
 }
@@ -622,11 +685,33 @@ fn remove_release(path: &Path) -> Result<(), String> {
         .parent()
         .and_then(Path::parent)
         .ok_or("Invalid release path")?;
+    let removed = path
+        .exists()
+        .then(|| stage_directory_removal(path))
+        .transpose()?
+        .map(tempfile::TempDir::keep);
     tako_compose::remove_release_preparations(path, &app_root.join("data/app"))?;
-    if path.exists() {
-        std::fs::remove_dir_all(path).map_err(|e| e.to_string())?;
+    if let Some(removed) = removed {
+        std::fs::remove_dir_all(removed).map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+fn remove_directory(path: &Path) -> Result<(), String> {
+    stage_directory_removal(path)?
+        .close()
+        .map_err(|error| error.to_string())
+}
+
+fn stage_directory_removal(path: &Path) -> Result<tempfile::TempDir, String> {
+    let parent = path.parent().ok_or("Invalid release directory")?;
+    let removed = tempfile::Builder::new()
+        .prefix(".remove-")
+        .tempdir_in(parent)
+        .map_err(|error| error.to_string())?;
+    // Never expose a partially deleted tree at a reusable release/archive path.
+    std::fs::rename(path, removed.path().join("tree")).map_err(|error| error.to_string())?;
+    Ok(removed)
 }
 
 #[cfg(unix)]
@@ -753,6 +838,8 @@ mod tests {
         let staged = [
             app.join("releases/.extract-interrupted"),
             app.join("archives/.upload-interrupted"),
+            app.join("releases/.remove-interrupted"),
+            app.join("archives/.remove-interrupted"),
         ];
         let retained = [
             app.join("releases/v1"),

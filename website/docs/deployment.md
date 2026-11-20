@@ -144,7 +144,9 @@ Draining an old instance waits up to 30 seconds for its in-flight requests to fi
 
 Each server retains the original uploaded archive byte-for-byte, alongside release metadata. The active release also has an extracted working directory with installed dependencies. Deployment and rollback temporarily keep both the current and candidate working directories.
 
-After finalize, inactive working directories are removed once no HTTP instances, draining workflow workers, or Compose containers reference them. Deferred cleanup runs every minute. A candidate being prepared stays extracted until it is finalized or cleaned up. Dependency-manager caches and container images have separate lifecycles.
+After finalize, inactive working directories are removed once no HTTP instances, draining workflow workers, or Compose containers reference them. Deferred cleanup runs every minute and waits while a standby or server upgrade may still use an older release. A candidate being prepared stays extracted until it is finalized or cleaned up. Dependency-manager caches and container images have separate lifecycles.
+
+Cleanup moves a directory out of the reusable release path before deleting its contents, so an interruption cannot leave a partially deleted release that a later rollback reuses. Cold-start recovery sweeps abandoned extraction, upload, and deletion staging directories.
 
 Non-active releases older than 30 days or beyond 50 total releases are pruned, including their archives. Referenced releases and pending candidates are protected; an abandoned preparation becomes eligible for pruning after 30 days. Release history and rollback require a retained original archive. Directory-only releases are unsupported, and their inactive working directories are eligible for cleanup.
 
