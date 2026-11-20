@@ -3,7 +3,7 @@ title: "tako.toml Reference"
 description: "Look up Tako project configuration for identity, runtimes, builds, routes, variables, storage, databases, backups, images, workflows, and deployment targets."
 ---
 
-`tako.toml` describes one app: identity, runtime, build, routes, variables, storage and database bindings, backups, SSL provider, source-IP policy, workflows, and target servers. App secrets, storage credentials, and provider credentials are encrypted in ignored `.tako/state.local.json` and encrypted network state, not stored in this file. The network each environment deploys to is recorded in the tracked `.tako/project.json`.
+`tako.toml` describes one app: identity, runtime, build, routes, variables, storage and database bindings, backups, SSL provider, source-IP policy, workflows, networks, and target servers. App secrets, storage credentials, and provider credentials are encrypted in ignored `.tako/state.local.json` and encrypted network state, not stored in this file.
 
 App-scoped commands use `./tako.toml` by default. `-c path/to/config` selects another config file and treats that file's parent directory as the app directory.
 
@@ -86,9 +86,9 @@ Each environment can use either `route` or `routes`, not both. Non-development d
 
 Routes support exact hosts, wildcard hosts, host-plus-path routes, and wildcard-plus-path routes. Path-only routes are invalid.
 
-Environment tables accept route declarations, `servers`, `storages`, `databases`, `backup`, `source_ip`, `ssl`, `idle_timeout`, and `release`. Put environment variables in `[vars]` or `[vars.<env>]`, not in `[envs.<env>]`.
+Environment tables accept route declarations, `network`, `servers`, `storages`, `databases`, `backup`, `source_ip`, `ssl`, `idle_timeout`, and `release`. Put environment variables in `[vars]` or `[vars.<env>]`, not in `[envs.<env>]`.
 
-An environment's network is not set in `tako.toml`. Tako records it in `.tako/project.json`, which you commit; see [Choose an environment's network](/networks/#choose-an-environments-network). A `tako.toml` that still sets `[envs.<env>].network` fails to parse with a message pointing at `.tako/project.json`; remove the line, and the next deploy records the network.
+`[envs.<env>].network` is the stable 32-character lowercase hexadecimal network ID from `tako network list --json`. Local aliases are not accepted in the config. Set it explicitly or let the first deploy record its chosen network, then commit the config. `development` runs locally and cannot set `network`. See [Choose an environment's network](/networks/#choose-an-environments-network).
 
 Within the environment's network, `servers` selects deployment hosts by enrolled name or server device ID. Omit `servers` to target every trusted server in the network. A supplied list must be nonempty, and every entry must identify exactly one trusted server. Native management uses pinned HTTPS. See [Native networks](/networks/).
 

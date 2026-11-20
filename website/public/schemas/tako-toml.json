@@ -202,6 +202,11 @@
           "minimum": 1,
           "type": "integer"
         },
+        "network": {
+          "description": "Native network's stable 32-character hexadecimal ID. Local aliases\nbelong to this machine and are never stored in project configuration.",
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
         "release": {
           "description": "Per-environment release command override. An empty string explicitly\nclears the top-level `release` command for this environment.",
           "type": "string"

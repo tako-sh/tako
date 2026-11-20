@@ -25,7 +25,7 @@ pub fn run(
             server,
         )?;
         let servers = super::env_network::servers_for_target(
-            context.as_ref().map(|c| c.project_dir.as_path()),
+            context.as_ref().map(|c| c.config_path.as_path()),
             config.as_ref(),
             target.env_name.as_deref(),
         )

@@ -194,19 +194,17 @@ pub fn run(args: SqliteArgs, config_path: Option<&Path>) -> Result<(), Box<dyn s
 /// The network a project's databases live in: `requested`, else the one its
 /// environments record, else this machine's only network or the one picked.
 fn project_network(
-    project_dir: &Path,
     config: &TakoToml,
     requested: Option<&str>,
 ) -> Result<crate::config::LocalNetwork, Box<dyn std::error::Error>> {
     if let Some(requested) = requested {
         return crate::network::find_network(requested);
     }
-    let file = crate::config::ProjectFile::load(project_dir)?;
     let networks: BTreeSet<&str> = config
         .envs
-        .keys()
-        .filter(|name| name.as_str() != "development")
-        .filter_map(|env| file.network(env))
+        .iter()
+        .filter(|(name, _)| name.as_str() != "development")
+        .filter_map(|(_, spec)| spec.network.as_deref())
         .collect();
     match networks.len() {
         0 => Ok(crate::network::resolve_network(None)?),
@@ -269,7 +267,7 @@ impl Context {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let project = project_context::resolve_existing(config_path)?;
         let config = TakoToml::load_from_file(&project.config_path)?;
-        let network = project_network(&project.project_dir, &config, network)?;
+        let network = project_network(&config, network)?;
         let servers =
             crate::commands::helpers::load_management_servers(Some(vec![network.clone()])).await?;
         Ok(Self {
@@ -1935,21 +1933,20 @@ mod tests {
     }
 
     #[test]
-    fn the_network_comes_from_the_project_record() {
+    fn the_network_comes_from_the_selected_config() {
         let _home = crate::network::tests::TestHome::new();
-        let project = tempfile::TempDir::new().unwrap();
-        let config = TakoToml::parse(
+        let mut config = TakoToml::parse(
             "name = \"shop\"\n[envs.production]\nroute = \"a.example.com\"\n[envs.staging]\nroute = \"b.example.com\"\n",
         )
         .unwrap();
         // Nothing recorded and no network on this machine.
-        let error = project_network(project.path(), &config, None).unwrap_err();
+        let error = project_network(&config, None).unwrap_err();
         assert!(error.to_string().contains("No network"), "{error}");
-        let mut file = crate::config::ProjectFile::default();
-        file.set_network("production", "0123456789abcdef0123456789abcdef");
-        file.set_network("staging", "fedcba9876543210fedcba9876543210");
-        file.save(project.path()).unwrap();
-        let error = project_network(project.path(), &config, None).unwrap_err();
+        config.envs.get_mut("production").unwrap().network =
+            Some("0123456789abcdef0123456789abcdef".into());
+        config.envs.get_mut("staging").unwrap().network =
+            Some("fedcba9876543210fedcba9876543210".into());
+        let error = project_network(&config, None).unwrap_err();
         assert!(error.to_string().contains("--network"), "{error}");
     }
 

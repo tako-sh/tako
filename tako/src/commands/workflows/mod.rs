@@ -140,7 +140,7 @@ async fn run_async(
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?;
     let tako_config = TakoToml::load_from_file(&context.config_path)?;
     let servers = super::env_network::servers_for_target(
-        Some(&context.project_dir),
+        Some(&context.config_path),
         Some(&tako_config),
         Some(env.unwrap_or("production")),
     )

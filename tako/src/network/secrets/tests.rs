@@ -3,6 +3,25 @@ use crate::network::state::cache_merge;
 use crate::network::tests::{TestHome, fixture};
 use tako_network::shared::{SharedRecord, SharedStore};
 
+#[test]
+fn concurrent_first_writes_initialize_ignored_state() {
+    let home = TestHome::new();
+    let project = home.directory.path().join("checkout");
+    let ready = std::sync::Barrier::new(8);
+    std::thread::scope(|scope| {
+        for _ in 0..8 {
+            scope.spawn(|| {
+                ready.wait();
+                let _lock = lock(&project).unwrap();
+                assert_eq!(
+                    std::fs::read_to_string(project.join(".tako/.gitignore")).unwrap(),
+                    "*\n"
+                );
+            });
+        }
+    });
+}
+
 fn published(profile: &Profile, name: &str, value: Option<&str>, revision: u64) -> SharedRecord {
     let mutation = RecordMutation {
         observed_revision: 0,
@@ -37,15 +56,6 @@ fn published(profile: &Profile, name: &str, value: Option<&str>, revision: u64) 
     )
     .unwrap()
 }
-/// Record environment networks the way commands do, in `.tako/project.json`.
-fn record(project: &Path, networks: &[(&str, &str)]) {
-    let mut file = crate::config::ProjectFile::default();
-    for (env, id) in networks {
-        file.set_network(env, id);
-    }
-    file.save(project).unwrap();
-}
-
 fn decrypted(values: &SecretsStore, name: &str) -> String {
     let key = crate::crypto::KeyStore::for_key_id(values.get_key_id("production").unwrap())
         .unwrap()
@@ -60,26 +70,16 @@ fn first_uncached_edit_binds_only_its_environment_and_rechecks_the_target_on_sav
     let project = home.directory.path().join("checkout");
     std::fs::create_dir_all(&project).unwrap();
     let network = NetworkId::random().unwrap();
-    let config = |app: &str| {
+    let config = |app: &str, network: &NetworkId| {
         TakoToml::parse(&format!(
             "name='{app}'\n\
-             [envs.production]\nroute='prod.example.test'\n\
-             [envs.staging]\nroute='staging.example.test'\n"
+             [envs.production]\nroute='prod.example.test'\nnetwork='{network}'\n\
+             [envs.staging]\nroute='staging.example.test'\nnetwork='{network}'\n"
         ))
         .unwrap()
     };
-    let both = |network: &NetworkId| {
-        record(
-            &project,
-            &[
-                ("production", &network.to_string()),
-                ("staging", &network.to_string()),
-            ],
-        )
-    };
-    both(&network);
-    let original = config("first");
-    let alternate = config("second");
+    let original = config("first", &network);
+    let alternate = config("second", &network);
     let mut values = SecretsStore::load_with_config(&project, &original).unwrap();
     assert!(read_workspace(&project).unwrap().environments.is_empty());
     values.ensure_env_key_id("production").unwrap();
@@ -106,19 +106,14 @@ fn first_uncached_edit_binds_only_its_environment_and_rechecks_the_target_on_sav
     assert!(!unpublished_elsewhere(&project, "production", &network.to_string()).unwrap());
     assert!(!unpublished_elsewhere(&project, "staging", &other).unwrap());
     // Unpublished drafts keep the checkout bound to their app and network.
-    for (changed, target) in [
-        (&alternate, network.clone()),
-        (&original, NetworkId::random().unwrap()),
-    ] {
-        both(&target);
+    for changed in [alternate, config("first", &NetworkId::random().unwrap())] {
         let error =
-            SecretsStore::load_for_environment(&project, changed, "production").unwrap_err();
+            SecretsStore::load_for_environment(&project, &changed, "production").unwrap_err();
         assert!(
             error.to_string().contains("unpublished production secrets"),
             "{error}"
         );
     }
-    both(&network);
 
     // Another command can bind an empty environment to another app. Nothing
     // there is unpublished, so the edit starts the environment over instead.
@@ -179,14 +174,11 @@ fn selected_environment_cache_and_type_generation_leave_other_environments_untou
     super::super::write_json(&locals[1].profile_path().unwrap(), &stale.profile, true).unwrap();
     let project = home.directory.path().join("checkout");
     std::fs::create_dir_all(&project).unwrap();
-    let config = TakoToml::parse(
-        "name='demo'\n[envs.production]\nroute='demo.example.test'\n[envs.staging]\nroute='staging.example.test'\n",
-    )
+    let config = TakoToml::parse(&format!(
+        "name='demo'\n[envs.production]\nroute='demo.example.test'\nnetwork='{}'\n[envs.staging]\nroute='staging.example.test'\nnetwork='{}'\n",
+        locals[0].id, locals[1].id,
+    ))
     .unwrap();
-    record(
-        &project,
-        &[("production", &locals[0].id), ("staging", &locals[1].id)],
-    );
     let values = SecretsStore::load_for_environment(&project, &config, "production").unwrap();
     assert!(decrypted(&values, "TOKEN") == "published");
     assert!(
@@ -243,15 +235,15 @@ fn a_clean_checkout_follows_its_environment_to_another_network() {
     }
     let project = home.directory.path().join("checkout");
     std::fs::create_dir_all(&project).unwrap();
-    let config =
+    let mut config =
         TakoToml::parse("name='demo'\n[envs.production]\nroute='demo.example.test'\n").unwrap();
-    record(&project, &[("production", &locals[0].id)]);
+    config.envs.get_mut("production").unwrap().network = Some(locals[0].id.clone());
     let values = SecretsStore::load_for_environment(&project, &config, "production").unwrap();
     assert_eq!(decrypted(&values, "TOKEN"), "from-a");
 
     // Every value is published, so the checkout takes the new network's
     // values instead of carrying the old ones over as drafts.
-    record(&project, &[("production", &locals[1].id)]);
+    config.envs.get_mut("production").unwrap().network = Some(locals[1].id.clone());
     let values = SecretsStore::load_for_environment(&project, &config, "production").unwrap();
     assert_eq!(decrypted(&values, "TOKEN"), "from-b");
     let state = read_workspace(&project).unwrap();
@@ -285,7 +277,7 @@ fn two_worktrees_share_published_values_but_keep_drafts_and_deletions_separate()
             "name = 'demo'\n[envs.production]\nroute = 'example.test'\n",
         )
         .unwrap();
-        record(project, &[("production", &alias.id)]);
+        TakoToml::record_network(&project.join("tako.toml"), "production", &alias.id).unwrap();
     }
     let older = cache.clone();
     let mut first = load_local(&a).unwrap();
@@ -399,7 +391,7 @@ fn local_writes_reject_stale_editors_and_never_persist_plaintext() {
     );
     assert_eq!(
         std::fs::read_to_string(project.join(".tako/.gitignore")).unwrap(),
-        "*\n!project.json\n"
+        "*\n"
     );
 }
 
@@ -601,8 +593,8 @@ fn last_changes_name_the_publishing_device_and_mark_unpublished_drafts() {
     std::fs::create_dir_all(&project).unwrap();
     let toml = "name = 'demo'\n[envs.production]\nroute = 'example.test'\n".to_string();
     std::fs::write(project.join("tako.toml"), &toml).unwrap();
-    record(&project, &[("production", &alias.id)]);
-    let config = TakoToml::parse(&toml).unwrap();
+    TakoToml::record_network(&project.join("tako.toml"), "production", &alias.id).unwrap();
+    let config = TakoToml::load_from_dir(&project).unwrap();
 
     let mut values = load_local(&project).unwrap();
     let key = crate::crypto::KeyStore::for_key_id(values.get_key_id("production").unwrap())

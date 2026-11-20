@@ -15,14 +15,14 @@ Use [Native networks](/networks/) to create a network and enroll a host.
 
 ## Configure An Environment
 
-An environment in `tako.toml` needs routes; its network is not part of the file:
+An environment in `tako.toml` needs routes and can specify its network:
 
 ```toml
 [envs.production]
 route = "app.example.com"
 ```
 
-The first `tako deploy --env production` uses this machine's only network, or asks which one in an interactive terminal, and records the network's ID in `.tako/project.json`. Commit that file so every clone and CI run deploys the environment to the same network. Later deploys use the recorded network; pass `--network <alias-or-id>` to move the environment to another one, and confirm in a terminal. A move doesn't copy secrets; see [Move an environment to another network](/secrets/#move-an-environment-to-another-network). Without a terminal, a machine with several networks and no record fails and asks for `--network`. See [Choose an environment's network](/networks/#choose-an-environments-network).
+Set `[envs.production].network` to the stable ID from `tako network list --json`, or let the first `tako deploy --env production` choose and record it in `tako.toml`. Without a configured ID, deploy uses this machine's only network or asks which one in an interactive terminal. Commit the config so every clone and CI run deploys the environment to the same network. Later deploys use the configured network; pass `--network <alias-or-id>` to move the environment to another one, and confirm in a terminal. A move doesn't copy secrets; see [Move an environment to another network](/secrets/#move-an-environment-to-another-network). Without a terminal, a machine with several networks and no configured ID fails and asks for `--network`. See [Choose an environment's network](/networks/#choose-an-environments-network).
 
 The CLI resolves current trusted server members and uses per-device signed HTTPS. No local WireGuard interface or SSH agent is needed. A deploy client sends no secrets and needs no local keys; servers apply the environment's values from the network state. A route already claimed by another app or environment is rejected. See [sandbox enrollment](/networks/#enroll-another-laptop-or-sandbox).
 
@@ -35,7 +35,7 @@ tako deploy --env production
 tako deploy --env staging
 ```
 
-Use `tako --config release.toml deploy --env production` for an alternate config. Its parent directory supplies the project root, `.tako/project.json`, and local secret drafts. Deploy loads cached secrets and resolves server inventory only for the selected environment and network; an expired membership in an unrelated staging network does not block a production deploy. Unpublished drafts cannot silently move to another app or network when you change configs. See [alternate configurations](/secrets/#use-an-alternate-configuration).
+Use `tako --config release.toml deploy --env production` for an alternate config. That file supplies and records environment networks; its parent directory supplies the project root and local secret drafts. Deploy loads cached secrets and resolves server inventory only for the selected environment and network; an expired membership in an unrelated staging network does not block a production deploy. Unpublished drafts cannot silently move to another app or network when you change configs. See [alternate configurations](/secrets/#use-an-alternate-configuration).
 
 When `--env` is omitted, deploy targets `production`. In an interactive terminal, an implicit production deploy asks for confirmation — but only if `tako.toml` declares more than one deployable environment (`development` doesn't count). With a single environment, there's nothing the deploy could have implicitly missed, so it proceeds without asking. Passing `--env production`, `--yes`, or `-y` also skips the prompt by making the target explicit.
 
@@ -74,7 +74,7 @@ jobs:
           TAKO_CLIENT_IDENTITY: ${{ secrets.TAKO_CLIENT_IDENTITY }}
 ```
 
-With `TAKO_CLIENT_IDENTITY` set, the command acts as that client and keeps its keys in a private temporary directory, never in the Tako home. The identity holds one network, so the deploy needs no `--network`. When `.tako/project.json` records a network for the environment, it must be the identity's network. A deploy client only releases code: it reads no secrets or logs, and the servers apply the values full clients published. If the identity leaks, `tako network client revoke github-ci` stops it. Running `tako network client add github-ci --deploy shop/production --identity --yes` replaces it, revoking the old key first. See [Networks](/networks/#enroll-another-laptop-or-sandbox).
+With `TAKO_CLIENT_IDENTITY` set, the command acts as that client and keeps its keys in a private temporary directory, never in the Tako home. The identity holds one network, so the deploy needs no `--network`. When `tako.toml` configures a network for the environment, it must be the identity's network. A deploy client only releases code: it reads no secrets or logs, and the servers apply the values full clients published. If the identity leaks, `tako network client revoke github-ci` stops it. Running `tako network client add github-ci --deploy shop/production --identity --yes` replaces it, revoking the old key first. See [Networks](/networks/#enroll-another-laptop-or-sandbox).
 
 ## Build And Artifact Rules
 

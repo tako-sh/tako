@@ -59,7 +59,7 @@ tako credentials set ssl.cloudflare --env production --expires-on "in 90 days"
 # Set ssl = "cloudflare" in tako.toml, then store a token with Zone / SSL and Certificates / Edit:
 tako credentials set ssl.cloudflare --env production --expires-on "in 90 days"
 tako deploy
-# The first deploy records the network in .tako/project.json; commit it.
+# The first deploy records the network in tako.toml; commit it.
 ```
 
 ## Quick links

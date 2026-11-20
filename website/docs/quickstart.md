@@ -25,7 +25,7 @@ From an existing app directory, initialize the project:
 tako init
 ```
 
-`tako init` detects the runtime and preset, writes `tako.toml`, installs the SDK for JavaScript and Go projects, and updates `.gitignore` so `.tako/` stays local except the tracked `.tako/project.json`. It asks for an app name and production route, offers SSL credential setup for wildcard routes, and offers coding-agent setup. For Rust, use the [Rust SDK skill](https://tako.sh/.well-known/agent-skills/tako-sdk-rust/SKILL.md). Follow [Framework Integration](/framework-guides/) if your framework needs an adapter.
+`tako init` detects the runtime and preset, writes `tako.toml`, installs the SDK for JavaScript and Go projects, and updates `.gitignore` so `.tako/` stays local. It asks for an app name and production route, offers SSL credential setup for wildcard routes, and offers coding-agent setup. For Rust, use the [Rust SDK skill](https://tako.sh/.well-known/agent-skills/tako-sdk-rust/SKILL.md). Follow [Framework Integration](/framework-guides/) if your framework needs an adapter.
 
 Start local HTTPS development in a terminal:
 
@@ -67,9 +67,9 @@ Deploy:
 
 ```bash
 tako deploy --env production
-git add .tako/project.json
+git add tako.toml
 ```
 
-The first deploy uses this machine's only network, or asks which one, and records it for `production` in `.tako/project.json`. Commit that file so every clone deploys to the same network. See [Deployment](/deployment/#configure-an-environment).
+The first deploy uses `[envs.production].network` when configured; otherwise it uses this machine's only network, or asks which one, and records its ID in `tako.toml`. Commit that file so every clone deploys to the same network. See [Deployment](/deployment/#configure-an-environment).
 
 Inspect `tako status --json`, request the deployed hostname, and check finite app logs. See [Deployment](/deployment/) for build and rollout behavior and [Operations](/operations/) for status, logs, scaling, and rollback.

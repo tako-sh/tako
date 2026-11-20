@@ -199,19 +199,11 @@ bind_fixture_target() {
   # owns placement; enrolled membership supplies the selected server.
   bun -e '
     const fs = require("node:fs");
-    const path = require("node:path");
     const file = process.argv[1];
     let source = fs.readFileSync(file, "utf8");
-    source = source.replace(/^servers\s*=.*$/gm, "");
-    source = source.replace(/^\[envs\.production\]$/m, `[envs.production]\nservers = ["${process.argv[3]}"]`);
+    source = source.replace(/^(servers|network)\s*=.*$/gm, "");
+    source = source.replace(/^\[envs\.production\]$/m, `[envs.production]\nnetwork = "${process.argv[2]}"\nservers = ["${process.argv[3]}"]`);
     fs.writeFileSync(file, source);
-    // The project records its environment network the way a deploy does.
-    const state = path.join(path.dirname(file), ".tako");
-    fs.mkdirSync(state, { recursive: true });
-    fs.writeFileSync(
-      path.join(state, "project.json"),
-      JSON.stringify({ environments: { production: { network: process.argv[2] } } }, null, 2) + "\n",
-    );
   ' "$config" "$NETWORK_ID" "$server"
 }
 
@@ -1175,9 +1167,7 @@ run_admin_recovery_checks() {
   local source="$TMP_ROOT/recovery-source"
   local host invitation client_home project
   mkdir -p "$source"
-  printf 'name = "admin-recovery"\n[envs.production]\nroute = "recovery.example.test"\n' > "$source/tako.toml"
-  mkdir -p "$source/.tako"
-  printf '{"environments":{"production":{"network":"%s"}}}\n' "$NETWORK_ID" > "$source/.tako/project.json"
+  printf 'name = "admin-recovery"\n[envs.production]\nroute = "recovery.example.test"\nnetwork = "%s"\n' "$NETWORK_ID" > "$source/tako.toml"
   printf '%s' 'recovery-fixture-value' | HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" \
     "$TAKO_BIN" --ci --config "$source/tako.toml" secrets set RECOVERY_TOKEN --env production
   HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$source/tako.toml" secrets sync --env production
@@ -1194,9 +1184,6 @@ run_admin_recovery_checks() {
     mkdir -p "$client_home" "$project"
     chmod 0700 "$client_home"
     cp "$source/tako.toml" "$project/tako.toml"
-    # A clone brings the tracked project record along.
-    mkdir -p "$project/.tako"
-    cp "$source/.tako/project.json" "$project/.tako/project.json"
     printf '%s' "$invitation" | HOME="$client_home" TAKO_HOME="$client_home/tako" \
       "$TAKO_BIN" --ci network join --invitation-stdin
     unset invitation

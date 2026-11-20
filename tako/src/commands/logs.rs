@@ -54,7 +54,7 @@ async fn run_async(
     let env = super::helpers::resolve_env_silent(requested_env);
     let network = if tako_config.envs.contains_key(env.as_str()) {
         Some(super::env_network::resolve(
-            &context.project_dir,
+            &context.config_path,
             &env,
             super::env_network::Purpose::Use,
         )?)

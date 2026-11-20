@@ -9,7 +9,7 @@ pub(super) async fn clear_secrets(
 ) -> Result<(), Box<dyn std::error::Error>> {
     crate::config::validate_environment_name(env)?;
     if crate::commands::env_network::resolve_if_known(
-        &context.project_dir,
+        &context.config_path,
         env,
         crate::commands::env_network::Purpose::Use,
     )?

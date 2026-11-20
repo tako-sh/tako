@@ -110,7 +110,7 @@ async fn run_async(
         | BackupCommands::Restore { env, .. } => env.as_deref().unwrap_or("production"),
     };
     let servers = if tako_config.envs.contains_key(env) {
-        super::env_network::servers(&context.project_dir, env, super::env_network::Purpose::Use)
+        super::env_network::servers(&context.config_path, env, super::env_network::Purpose::Use)
             .await?
     } else {
         crate::config::ServerInventory::default()

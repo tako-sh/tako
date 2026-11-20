@@ -42,12 +42,7 @@ async function setupProject(
   if (serverNames.length > 0) {
     const network = networkFixture(takoHome, serverEntries);
     takoToml += `servers = [${serverNames.map((n) => `"${n}"`).join(", ")}]\n`;
-    // Record the environment's network the way a deploy does.
-    await mkdir(join(tempDir, ".tako"), { recursive: true });
-    await writeFile(
-      join(tempDir, ".tako", "project.json"),
-      JSON.stringify({ environments: { [envName]: { network } } }),
-    );
+    takoToml += `network = "${network}"\n`;
   }
   await writeFile(join(tempDir, "tako.toml"), takoToml);
 }
@@ -68,10 +63,13 @@ describe("application lifecycle", () => {
   for (const action of ["start", "stop"]) {
     test(`${action} previews the selected Compose app without contacting its server`, async () => {
       await setupProject({ servers: { prod: { host: "10.0.0.1" } } });
-      const { term, exitCode } = await run(["--dry-run", action, "--service", "api", "--env", "production"], {
-        cwd: tempDir,
-        env: { HOME: tempDir, TAKO_HOME: takoHome },
-      });
+      const { term, exitCode } = await run(
+        ["--dry-run", action, "--service", "api", "--env", "production"],
+        {
+          cwd: tempDir,
+          env: { HOME: tempDir, TAKO_HOME: takoHome },
+        },
+      );
       expect(exitCode).toBe(0);
       expect(term.fullText()).toContain("dry-run-app/production / api");
       expect(term.fullText()).toContain("prod");
