@@ -79,6 +79,34 @@ fn generated_environment_and_variant_names_fit_dns_labels() {
 }
 
 #[test]
+fn trailing_environment_hyphens_produce_distinct_valid_hosts() {
+    let mut names = std::collections::HashSet::new();
+    for environment in ["test", "test-", "test--", "-", "--", "-test"] {
+        crate::config::validate_environment_name(environment).unwrap();
+        let candidate = format!("myapp-{environment}");
+        let name = bounded_dev_name(&candidate);
+        assert!(names.insert(name.clone()), "{environment}");
+        assert_eq!(bounded_dev_name(&name), name);
+        let host = LocalCA::app_short_domain(&name);
+        crate::validation::validate_dev_route(&host, &name).unwrap();
+        assert_eq!(
+            compute_dev_hosts(&name, &TakoToml::default(), &host, None, environment).unwrap(),
+            vec![host]
+        );
+    }
+    assert!(
+        compute_dev_hosts(
+            "myapp-test-",
+            &TakoToml::default(),
+            "myapp-test-.test",
+            None,
+            "test-",
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn same_project_dir_is_not_a_conflict() {
     let existing = vec![("my-app".into(), "/proj/tako.toml".into())];
     let result = disambiguate_app_name("my-app", "/proj/tako.toml", &existing);

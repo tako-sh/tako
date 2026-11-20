@@ -65,7 +65,7 @@ pub(super) fn short_path_hash(s: &str) -> String {
 }
 
 pub(super) fn bounded_dev_name(name: &str) -> String {
-    if name.len() <= 63 {
+    if name.len() <= 63 && !name.ends_with('-') {
         return name.to_string();
     }
     use sha2::{Digest, Sha256};
@@ -125,6 +125,7 @@ pub(super) fn compute_dev_hosts(
     base_domain: Option<&str>,
     environment: &str,
 ) -> Result<Vec<String>, String> {
+    validate_dev_route(default_host, app_name).map_err(|e| e.to_string())?;
     if let Some(compose) = &cfg.compose {
         let config = compose.for_local_environment(environment, default_host, base_domain);
         config.validate()?;
