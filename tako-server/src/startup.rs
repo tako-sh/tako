@@ -350,7 +350,7 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         http_port: args.http_port,
         https_port: args.https_port,
         enable_https: true,
-        dev_mode: cfg!(debug_assertions),
+        dev_mode: false,
         cert_dir,
         redirect_http_to_https: true,
         response_cache: None,
