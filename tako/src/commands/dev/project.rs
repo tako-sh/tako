@@ -14,14 +14,15 @@ pub(super) fn compute_display_routes(
     cfg: &TakoToml,
     default_host: &str,
     base_domain: Option<&str>,
+    environment: &str,
 ) -> Vec<String> {
     if let Some(compose) = &cfg.compose {
         return compose
-            .for_development(default_host, base_domain)
-            .routes("development");
+            .for_local_environment(environment, default_host, base_domain)
+            .routes(environment);
     }
     let configured: Vec<String> = cfg
-        .get_routes("development")
+        .get_routes(environment)
         .unwrap_or_default()
         .into_iter()
         .map(|route| match base_domain {
@@ -110,17 +111,18 @@ pub(super) fn compute_dev_hosts(
     cfg: &TakoToml,
     default_host: &str,
     base_domain: Option<&str>,
+    environment: &str,
 ) -> Result<Vec<String>, String> {
     if let Some(compose) = &cfg.compose {
-        let config = compose.for_development(default_host, base_domain);
+        let config = compose.for_local_environment(environment, default_host, base_domain);
         config.validate()?;
-        let routes = config.routes("development");
+        let routes = config.routes(environment);
         for route in &routes {
             validate_dev_route(route, app_name).map_err(|e| e.to_string())?;
         }
         return Ok(routes);
     }
-    let routes = match cfg.get_routes("development") {
+    let routes = match cfg.get_routes(environment) {
         Some(routes) if !routes.is_empty() => routes,
         _ => return Ok(vec![default_host.to_string()]),
     };
@@ -170,9 +172,12 @@ pub(super) fn route_hostname_matches(route_pattern: &str, request_host: &str) ->
     false
 }
 
-pub(super) fn compute_dev_env(cfg: &TakoToml) -> std::collections::HashMap<String, String> {
-    let mut env = cfg.get_merged_vars("development");
-    env.insert("ENV".to_string(), "development".to_string());
+pub(super) fn compute_dev_env(
+    cfg: &TakoToml,
+    environment: &str,
+) -> std::collections::HashMap<String, String> {
+    let mut env = cfg.get_merged_vars(environment);
+    env.insert("ENV".to_string(), environment.to_string());
     env.insert("TAKO_BUILD".to_string(), "dev".to_string());
     env
 }
@@ -214,12 +219,15 @@ fn allowed_host_from_route(route: &str) -> Option<String> {
     Some(host.to_string())
 }
 
-pub(super) fn dev_runtime_data_root(project_dir: &Path) -> PathBuf {
-    project_dir.join(".tako").join("data")
+pub(super) fn dev_runtime_data_root(project_dir: &Path, environment: &str) -> PathBuf {
+    crate::local_databases::data_root(project_dir, environment)
 }
 
-pub(super) fn ensure_dev_runtime_data_dirs(project_dir: &Path) -> Result<PathBuf, String> {
-    let data_root = dev_runtime_data_root(project_dir);
+pub(super) fn ensure_dev_runtime_data_dirs(
+    project_dir: &Path,
+    environment: &str,
+) -> Result<PathBuf, String> {
+    let data_root = dev_runtime_data_root(project_dir, environment);
     let app_data_dir = data_root.join("app");
     let tako_data_dir = data_root.join("tako");
     std::fs::create_dir_all(&app_data_dir)
@@ -232,8 +240,9 @@ pub(super) fn ensure_dev_runtime_data_dirs(project_dir: &Path) -> Result<PathBuf
 pub(super) fn inject_dev_data_dir(
     project_dir: &Path,
     env: &mut std::collections::HashMap<String, String>,
+    environment: &str,
 ) -> Result<(), String> {
-    let app_data_dir = ensure_dev_runtime_data_dirs(project_dir)?;
+    let app_data_dir = ensure_dev_runtime_data_dirs(project_dir, environment)?;
     let shared = crate::paths::shared_data_dir().map_err(|e| e.to_string())?;
     env.insert("TAKO_SHARED_DATA_DIR".into(), shared.display().to_string());
     env.insert(
@@ -248,16 +257,17 @@ pub(super) fn inject_dev_data_dir(
 pub(super) fn load_dev_secrets(
     project_dir: &Path,
     config: &TakoToml,
+    environment: &str,
 ) -> Result<std::collections::HashMap<String, String>, Box<dyn std::error::Error>> {
     let secrets =
-        crate::config::SecretsStore::load_for_environment(project_dir, config, "development")?;
+        crate::config::SecretsStore::load_for_environment(project_dir, config, environment)?;
 
-    let encrypted = match secrets.get_env("development") {
+    let encrypted = match secrets.get_env(environment) {
         Some(map) if !map.is_empty() => map,
         _ => return Ok(std::collections::HashMap::new()),
     };
 
-    let key = crate::commands::secret::load_secret_key("development", &secrets, Some(project_dir))?;
+    let key = crate::commands::secret::load_secret_key(environment, &secrets, Some(project_dir))?;
     let mut decrypted = std::collections::HashMap::new();
     for (name, encrypted_value) in encrypted {
         match crate::crypto::decrypt(&encrypted_value.value, &key) {
@@ -265,7 +275,7 @@ pub(super) fn load_dev_secrets(
                 decrypted.insert(name.clone(), value);
             }
             Err(e) => {
-                tracing::warn!("Failed to decrypt development secret {}: {}", name, e);
+                return Err(format!("Failed to decrypt {environment} secret {name}: {e}").into());
             }
         }
     }
@@ -277,8 +287,9 @@ pub(super) fn inject_dev_secrets(
     project_dir: &Path,
     config: &TakoToml,
     env: &mut std::collections::HashMap<String, String>,
+    environment: &str,
 ) -> Result<std::collections::HashMap<String, String>, Box<dyn std::error::Error>> {
-    let secrets = load_dev_secrets(project_dir, config)?;
+    let secrets = load_dev_secrets(project_dir, config, environment)?;
     env.extend(secrets.clone());
     Ok(secrets)
 }

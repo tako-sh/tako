@@ -3,7 +3,17 @@
  * Skipped unless TAKO_DEV_E2E=1 is set.
  */
 import { describe, test, expect } from "bun:test";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, cpSync, symlinkSync } from "fs";
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  cpSync,
+  symlinkSync,
+  writeFileSync,
+  renameSync,
+} from "fs";
 import { join, resolve } from "path";
 import { tmpdir } from "os";
 
@@ -198,6 +208,114 @@ async function waitForAppPid(lf: string, timeoutMs = 30_000): Promise<number> {
 }
 
 describe.skipIf(SKIP)("tako dev fixtures", () => {
+  test("custom environments coexist and restart/stop independently", async () => {
+    const { tempDir, pd } = prepareFixture("bun");
+    // Exercise explicit config selection without a default tako.toml.
+    renameSync(join(pd, "tako.toml"), join(pd, "app.toml"));
+    writeFileSync(
+      join(pd, "app.toml"),
+      `
+name = "dev-env-e2e"
+runtime = "bun"
+[vars.development]
+GREETING = "development"
+[vars.test-e2e]
+GREETING = "test"
+[envs.development]
+databases = { main = "same-name" }
+[envs.test-e2e]
+route = "dev-env-e2e-tests.test"
+databases = { main = "same-name" }
+`,
+    );
+    mkdirSync(join(pd, "migrations"), { recursive: true });
+    writeFileSync(join(pd, "migrations/001_items.sql"), "CREATE TABLE items (value TEXT);");
+    writeFileSync(
+      join(pd, "index.ts"),
+      `
+import { tako } from "tako.sh";
+import { createClient } from "@libsql/client";
+export default async function fetch(request: Request) {
+  const db = createClient(tako.databases.main);
+  try {
+    if (request.method === "POST") await db.execute("INSERT INTO items VALUES ('item')");
+    const result = await db.execute("SELECT count(*) AS count FROM items");
+    return Response.json({ env: tako.env, greeting: process.env.GREETING,
+      secret: tako.secrets.TEST_VALUE, dataDir: process.env.TAKO_DATA_DIR,
+      count: Number(result.rows[0].count), pid: process.pid });
+  } finally { db.close(); }
+}
+`,
+    );
+    async function cli(args: string[], stdin?: string) {
+      const proc = Bun.spawn([TAKO_BIN, "-c", "app.toml", ...args, "--json"], {
+        cwd: pd,
+        env: { ...process.env, NO_COLOR: "1" },
+        stdin: stdin === undefined ? "ignore" : new Blob([stdin]),
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
+      expect(code, `${stdout}\n${stderr}`).toBe(0);
+      return JSON.parse(stdout);
+    }
+    async function snapshot(url: string, method = "GET") {
+      const response = await fetch(url, {
+        method,
+        // @ts-ignore - Bun extension: local dev CA.
+        tls: { rejectUnauthorized: false },
+      });
+      expect(response.status).toBe(200);
+      return response.json();
+    }
+    try {
+      await cli(["secrets", "set", "TEST_VALUE", "--env", "development"], "dev-secret");
+      await cli(["secrets", "set", "TEST_VALUE", "--env", "test-e2e"], "test-secret");
+      const dev = await cli(["dev", "--background"]);
+      const test = await cli(["dev", "--env", "test-e2e", "--background"]);
+      expect(test.url).not.toBe(dev.url);
+      const normal = await snapshot(dev.url, "POST");
+      const isolated = await snapshot(test.url);
+      expect(normal).toMatchObject({
+        env: "development",
+        greeting: "development",
+        secret: "dev-secret",
+        count: 1,
+      });
+      expect(isolated).toMatchObject({
+        env: "test-e2e",
+        greeting: "test",
+        secret: "test-secret",
+        count: 0,
+      });
+      expect(isolated.dataDir).not.toBe(normal.dataDir);
+      const listed = await cli(["dev", "list", "--env", "test-e2e"]);
+      expect(listed.apps.filter((app: { name: string }) => app.name === test.app)).toHaveLength(1);
+      expect(listed.apps.every((app: { env: string }) => app.env === "test-e2e")).toBe(true);
+      await snapshot(test.url, "POST");
+      await cli(["dev", "--env", "test-e2e", "--restart", "--background"]);
+      expect(await snapshot(dev.url)).toMatchObject({ pid: normal.pid, count: 1 });
+      expect(await snapshot(test.url)).toMatchObject({ count: 1, env: "test-e2e" });
+      expect((await snapshot(test.url)).pid).not.toBe(isolated.pid);
+      await cli(["dev", "stop", "--env", "test-e2e"]);
+      expect(await snapshot(dev.url)).toMatchObject({ pid: normal.pid, count: 1 });
+      expect(
+        (await cli(["dev", "list", "--env", "test-e2e"])).apps.some(
+          (app: { name: string }) => app.name === test.app,
+        ),
+      ).toBe(false);
+    } finally {
+      for (const env of ["test-e2e", "development"]) {
+        await cli(["dev", "stop", "--env", env]).catch(() => {});
+      }
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   for (const runtime of ["bun", "node"]) {
     test(`${runtime}: starts and serves HTTP`, async () => {
       const { tempDir, pd, lf } = prepareFixture(runtime);

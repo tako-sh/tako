@@ -23,6 +23,8 @@ async fn register_app_roundtrip() {
 
     let req = serde_json::json!({
         "type": "RegisterApp",
+        "app_namespace": "my-app", "environment": "development",
+        "config_file": "/tmp/test-proj/tako.toml",
         "config_path": "/tmp/test-proj/tako.toml",
         "project_dir": "/tmp/test-proj",
         "app_name": "my-app",
@@ -102,6 +104,7 @@ async fn register_app_starts_workflow_engine_when_worker_command_provided() {
     let config_path = proj.path().join("tako.toml").to_string_lossy().to_string();
     let req = serde_json::json!({
         "type": "RegisterApp",
+        "app_namespace": "wf-app", "environment": "development", "config_file": config_path,
         "config_path": config_path,
         "project_dir": proj.path().to_string_lossy(),
         "app_name": "wf-app",
@@ -180,6 +183,7 @@ async fn restart_app_reconfigures_workflow_runtime_when_worker_command_registere
     let config_path = proj.path().join("tako.toml").to_string_lossy().to_string();
     let req = serde_json::json!({
         "type": "RegisterApp",
+        "app_namespace": "wf-app", "environment": "development", "config_file": config_path,
         "config_path": config_path,
         "project_dir": proj.path().to_string_lossy(),
         "app_name": "wf-app",
@@ -256,6 +260,7 @@ async fn register_app_without_worker_command_stops_existing_workflow_runtime() {
 
     let req = serde_json::json!({
         "type": "RegisterApp",
+        "app_namespace": "wf-app", "environment": "development", "config_file": config_path,
         "config_path": config_path,
         "project_dir": proj.path().to_string_lossy(),
         "app_name": "wf-app",
@@ -273,6 +278,7 @@ async fn register_app_without_worker_command_stops_existing_workflow_runtime() {
 
     let req = serde_json::json!({
         "type": "RegisterApp",
+        "app_namespace": "wf-app", "environment": "development", "config_file": config_path,
         "config_path": config_path,
         "project_dir": proj.path().to_string_lossy(),
         "app_name": "wf-app",
@@ -333,6 +339,7 @@ async fn register_app_with_new_name_stops_previous_workflow_runtime() {
     for app_name in ["old-wf-app", "new-wf-app"] {
         let req = serde_json::json!({
             "type": "RegisterApp",
+            "app_namespace": app_name, "environment": "development", "config_file": config_path,
             "config_path": config_path,
             "project_dir": proj.path().to_string_lossy(),
             "app_name": app_name,
@@ -396,6 +403,7 @@ async fn unregister_app_stops_workflow_runtime() {
 
     let req = serde_json::json!({
         "type": "RegisterApp",
+        "app_namespace": "wf-app", "environment": "development", "config_file": config_path,
         "config_path": config_path,
         "project_dir": proj.path().to_string_lossy(),
         "app_name": "wf-app",
@@ -457,6 +465,7 @@ async fn register_app_skips_workflow_engine_when_no_workflows_dir() {
     let config_path = proj.path().join("tako.toml").to_string_lossy().to_string();
     let req = serde_json::json!({
         "type": "RegisterApp",
+        "app_namespace": "plain-app", "environment": "development", "config_file": config_path,
         "config_path": config_path,
         "project_dir": proj.path().to_string_lossy(),
         "app_name": "plain-app",
@@ -542,6 +551,7 @@ async fn register_app_with_variant_roundtrip() {
 
     let req = serde_json::json!({
         "type": "RegisterApp",
+        "app_namespace": "my-app", "environment": "development", "config_file": "/proj/my-app/preview.toml",
         "config_path": "/proj/my-app/preview.toml",
         "project_dir": "/proj/my-app",
         "app_name": "my-app-staging",
@@ -595,6 +605,7 @@ async fn register_app_without_variant_has_none() {
 
     let req = serde_json::json!({
         "type": "RegisterApp",
+        "app_namespace": "my-app", "environment": "development", "config_file": "/proj/my-app/tako.toml",
         "config_path": "/proj/my-app/tako.toml",
         "project_dir": "/proj/my-app",
         "app_name": "my-app",
@@ -640,6 +651,7 @@ async fn variant_and_non_variant_coexist_in_list() {
     // Register "app-foo" without variant from /proj1
     let req = serde_json::json!({
         "type": "RegisterApp",
+        "app_namespace": "app", "environment": "development", "config_file": "/proj1/tako.toml",
         "config_path": "/proj1/tako.toml",
         "project_dir": "/proj1",
         "app_name": "app-foo",
@@ -658,6 +670,7 @@ async fn variant_and_non_variant_coexist_in_list() {
     //  this tests that both can coexist with different project_dirs)
     let req = serde_json::json!({
         "type": "RegisterApp",
+        "app_namespace": "app", "environment": "development", "config_file": "/proj2/tako.toml",
         "config_path": "/proj2/tako.toml",
         "project_dir": "/proj2",
         "app_name": "app-foo-proj2",
@@ -710,6 +723,7 @@ async fn register_app_spawns_process_and_sets_pid() {
 
     let req = serde_json::json!({
         "type": "RegisterApp",
+        "app_namespace": "spawn-test", "environment": "development", "config_file": "/tmp/test-spawn/tako.toml",
         "config_path": "/tmp/test-spawn/tako.toml",
         "project_dir": tmp.path().to_str().unwrap(),
         "app_name": "spawn-test",
@@ -761,6 +775,9 @@ async fn unregister_app_kills_running_process() {
         s.apps.insert(
             "/tmp/test-kill/tako.toml".to_string(),
             state::RuntimeApp {
+                app_namespace: "app".into(),
+                config_file: "/tmp/tako.toml".into(),
+                environment: "development".into(),
                 compose: None,
                 project_dir: tmp.path().to_string_lossy().to_string(),
                 name: "kill-test".to_string(),
@@ -817,15 +834,27 @@ fn variant_persisted_in_sqlite() {
     let s = state.lock().unwrap();
     let db = s.db.as_ref().unwrap();
 
-    db.register("/proj/tako.toml", "/proj", "my-app", Some("staging"))
-        .unwrap();
+    db.register(
+        "/proj/tako.toml",
+        "/proj/tako.toml",
+        "/proj",
+        "my-app",
+        Some("staging"),
+    )
+    .unwrap();
     let app = db.get("/proj/tako.toml").unwrap().unwrap();
     assert_eq!(app.name, "my-app");
     assert_eq!(app.variant.as_deref(), Some("staging"));
 
     // Re-register without variant clears it.
-    db.register("/proj/tako.toml", "/proj", "my-app", None)
-        .unwrap();
+    db.register(
+        "/proj/tako.toml",
+        "/proj/tako.toml",
+        "/proj",
+        "my-app",
+        None,
+    )
+    .unwrap();
     let app = db.get("/proj/tako.toml").unwrap().unwrap();
     assert!(app.variant.is_none());
 }
@@ -858,6 +887,9 @@ async fn wake_on_request_spawns_exactly_one_process() {
         s.apps.insert(
             config_path.clone(),
             state::RuntimeApp {
+                app_namespace: "app".into(),
+                config_file: "/tmp/tako.toml".into(),
+                environment: "development".into(),
                 compose: None,
                 project_dir: tmp.path().to_str().unwrap().to_string(),
                 name: "wake-race-test".to_string(),

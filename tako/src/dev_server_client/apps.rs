@@ -15,6 +15,8 @@ pub struct ListedApp {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct RegisteredAppInfo {
+    pub config_file: String,
+    pub environment: String,
     pub config_path: String,
     pub project_dir: String,
     pub app_name: String,
@@ -29,6 +31,9 @@ pub struct RegisteredAppInfo {
 }
 
 pub struct RegisterAppRequest<'a> {
+    pub app_namespace: &'a str,
+    pub config_file: &'a str,
+    pub environment: &'a str,
     pub compose_default_host: Option<&'a str>,
     pub compose_base_host: Option<&'a str>,
     pub compose: Option<&'a tako_core::compose::ComposeConfig>,
@@ -102,6 +107,8 @@ pub async fn list_registered_apps() -> Result<Vec<RegisteredAppInfo>, Box<dyn st
         .filter_map(|a| {
             let hosts = json_string_array(&a, "hosts");
             Some(RegisteredAppInfo {
+                config_file: a.get("config_file")?.as_str()?.to_string(),
+                environment: a.get("environment")?.as_str()?.to_string(),
                 config_path: a.get("config_path")?.as_str()?.to_string(),
                 project_dir: a.get("project_dir")?.as_str()?.to_string(),
                 app_name: a.get("app_name")?.as_str()?.to_string(),
@@ -149,6 +156,9 @@ pub async fn register_app(
     let mut c = LineClient::new(stream);
     let mut req = serde_json::json!({
         "type": "RegisterApp",
+        "app_namespace": args.app_namespace,
+        "config_file": args.config_file,
+        "environment": args.environment,
         "compose": args.compose,
         "compose_default_host": args.compose_default_host,
         "compose_base_host": args.compose_base_host,

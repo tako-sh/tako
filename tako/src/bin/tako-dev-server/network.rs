@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 pub fn install(state: &Arc<Mutex<State>>, workflows: &tako_workflows::WorkflowManager) {
     let state = Arc::downgrade(state);
-    workflows.set_network_router(Arc::new(move |_caller, target, invocation| {
+    workflows.set_network_router(Arc::new(move |caller, target, invocation| {
         let Some(state) = state.upgrade() else {
             return tako_core::Response::coded_error(
                 tako_core::ErrorCode::Unavailable,
@@ -12,7 +12,12 @@ pub fn install(state: &Arc<Mutex<State>>, workflows: &tako_workflows::WorkflowMa
         };
         let selected = {
             let state = state.lock().unwrap();
-            let mut matches = state.apps.iter().filter(|(_, app)| app.name == target);
+            let Some(caller) = state.apps.values().find(|app| app.name == caller) else {
+                return tako_core::Response::error("unknown development caller");
+            };
+            let mut matches = state.apps.iter().filter(|(_, app)| {
+                app.app_namespace == target && app.environment == caller.environment
+            });
             let first = matches
                 .next()
                 .map(|(key, app)| (key.clone(), app.clone(), state.routes.clone()));

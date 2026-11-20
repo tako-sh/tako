@@ -413,7 +413,7 @@ async fn activate_after_readiness(
     if let Some(runtime) = &app.compose {
         let containers = runtime.containers().await?;
         let mut ports = std::collections::HashMap::new();
-        for (service, settings) in runtime.config.routed_services("development") {
+        for (service, settings) in runtime.config.routed_services(runtime.local_environment()) {
             let port = containers
                 .iter()
                 .find(|c| c.service == service && c.healthy())

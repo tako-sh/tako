@@ -208,6 +208,8 @@ fn registered_app(
     status: &str,
 ) -> crate::dev_server_client::RegisteredAppInfo {
     crate::dev_server_client::RegisteredAppInfo {
+        config_file: config_path.to_string(),
+        environment: "development".into(),
         config_path: config_path.into(),
         project_dir: "/projects".into(),
         app_name: name.into(),

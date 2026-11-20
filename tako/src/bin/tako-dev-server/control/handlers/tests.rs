@@ -4,7 +4,14 @@ use super::apps::build_worker_env;
 fn build_worker_env_sets_data_dir_under_project() {
     let env = build_worker_env(
         "demo",
-        std::path::Path::new("/tmp/myproj"),
+        &std::collections::HashMap::from([
+            (
+                "TAKO_DATA_DIR".into(),
+                "/tmp/myproj/.tako/data/envs/test-e2e/app".into(),
+            ),
+            ("ENV".into(), "test-e2e".into()),
+            ("GREETING".into(), "test".into()),
+        ]),
         std::path::Path::new("/tmp/internal.sock"),
         Some("src"),
     );
@@ -15,7 +22,9 @@ fn build_worker_env_sets_data_dir_under_project() {
     );
     assert_eq!(
         env.get("TAKO_DATA_DIR").map(String::as_str),
-        Some("/tmp/myproj/.tako/data/app"),
+        Some("/tmp/myproj/.tako/data/envs/test-e2e/app"),
     );
     assert_eq!(env.get("TAKO_APP_ROOT").map(String::as_str), Some("src"));
+    assert_eq!(env.get("ENV").map(String::as_str), Some("test-e2e"));
+    assert_eq!(env.get("GREETING").map(String::as_str), Some("test"));
 }

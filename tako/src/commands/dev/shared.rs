@@ -6,6 +6,35 @@ pub(crate) fn load_dev_tako_toml(config_path: &Path) -> crate::config::Result<Ta
     TakoToml::load_from_file(config_path)
 }
 
+pub(crate) fn validate_dev_environment(config: &TakoToml, environment: &str) -> Result<(), String> {
+    crate::config::validate_environment_name(environment).map_err(|e| e.to_string())?;
+    if environment != "development"
+        && !config.envs.contains_key(environment)
+        && !config.vars_per_env.contains_key(environment)
+        && !config.compose.as_ref().is_some_and(|compose| {
+            compose
+                .services
+                .values()
+                .any(|service| service.envs.contains_key(environment))
+        })
+    {
+        return Err(format!("Environment '{environment}' is not configured"));
+    }
+    Ok(())
+}
+
+/// The daemon treats this as an opaque registration key, not a filesystem path.
+pub(crate) fn dev_config_key(config_path: &Path, environment: &str) -> String {
+    let config_path = config_path
+        .canonicalize()
+        .unwrap_or_else(|_| config_path.to_path_buf());
+    if environment == "development" {
+        config_path.display().to_string()
+    } else {
+        format!("{environment}:{}", config_path.display())
+    }
+}
+
 pub(crate) fn port_from_listen(listen: &str) -> Option<u16> {
     listen
         .rsplit(':')

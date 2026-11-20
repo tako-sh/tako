@@ -349,9 +349,11 @@ impl ComposeRuntime {
         default_host: String,
         base_host: Option<String>,
     ) -> Self {
-        self.config = self
-            .config
-            .for_development(&default_host, base_host.as_deref());
+        self.config = self.config.for_local_environment(
+            self.local_environment(),
+            &default_host,
+            base_host.as_deref(),
+        );
         self.development_hosts = Some((default_host, base_host));
         self
     }
@@ -363,7 +365,11 @@ impl ComposeRuntime {
         let mut runtime = self.clone();
         runtime.config = load_config(&self.directory, &self.config.file)?;
         if let Some((host, base)) = &self.development_hosts {
-            runtime.config = runtime.config.for_development(host, base.as_deref());
+            runtime.config = runtime.config.for_local_environment(
+                self.local_environment(),
+                host,
+                base.as_deref(),
+            );
         }
         runtime.ingress_ports.clear();
         Ok(runtime)
@@ -376,6 +382,13 @@ impl ComposeRuntime {
                 "bind": {"create_host_path": false}
             })
         })
+    }
+
+    pub fn local_environment(&self) -> &str {
+        self.env
+            .get("ENV")
+            .map(String::as_str)
+            .unwrap_or("development")
     }
 
     fn inject_shared_data(&self, service: &mut Value) {

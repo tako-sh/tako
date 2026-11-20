@@ -92,6 +92,7 @@ async fn compose_apps_route_independently_and_keep_redis_data_across_restart() {
         "127.0.0.1".into(),
     )));
     let register = serde_json::json!({"type":"RegisterApp", "config_path":key,
+        "config_file":key, "environment":"development", "app_namespace":"compose-example",
         "project_dir":project.path(), "app_name":"compose-example", "hosts":["shop.test", "api.shop.test"],
         "command":[], "env":{}, "compose":config});
 

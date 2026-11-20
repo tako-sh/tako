@@ -13,6 +13,8 @@ pub(super) fn list_registered_apps(state: &Arc<Mutex<State>>) -> Response {
         .map(|(config_path, a)| {
             let (tunnel_url, tunnel_expires_at) = tunnel_info(a);
             protocol::RegisteredAppInfo {
+                config_file: a.config_file.clone(),
+                environment: a.environment.clone(),
                 config_path: config_path.clone(),
                 project_dir: a.project_dir.clone(),
                 app_name: a.name.clone(),

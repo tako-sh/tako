@@ -123,7 +123,8 @@ fn listed_app_record(app: &RegisteredAppInfo) -> Value {
         "status": app.status,
         "url": listed_app_url(app),
         "tunnel": app.tunnel_url,
-        "config": app.config_path,
+        "config": app.config_file,
+        "env": app.environment,
     })
 }
 
@@ -241,6 +242,8 @@ mod tests {
     #[test]
     fn list_record_includes_app_url_and_null_tunnel() {
         let app = RegisteredAppInfo {
+            config_file: "/tmp/tako.toml".into(),
+            environment: "development".into(),
             config_path: "/tmp/tako.toml".to_string(),
             project_dir: "/tmp".to_string(),
             app_name: "demo".to_string(),

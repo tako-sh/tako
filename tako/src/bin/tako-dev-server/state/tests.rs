@@ -16,6 +16,7 @@ fn open_creates_db_and_schema() {
         columns,
         vec![
             "config_path".to_string(),
+            "config_file".to_string(),
             "project_dir".to_string(),
             "name".to_string(),
             "variant".to_string(),
@@ -27,10 +28,36 @@ fn open_creates_db_and_schema() {
 }
 
 #[test]
+fn environment_registrations_survive_cleanup_and_stop_independently() {
+    let (tmp, store) = temp_store();
+    let file = tmp.path().join("app.toml");
+    std::fs::write(&file, "").unwrap();
+    let file = file.to_str().unwrap();
+    let test_key = format!("test-e2e:{file}");
+    store
+        .register(file, file, tmp.path().to_str().unwrap(), "app", None)
+        .unwrap();
+    store
+        .register(
+            &test_key,
+            file,
+            tmp.path().to_str().unwrap(),
+            "app-test-e2e",
+            None,
+        )
+        .unwrap();
+    assert!(store.cleanup_stale().unwrap().is_empty());
+    assert_eq!(store.list().unwrap().len(), 2);
+    store.unregister(&test_key).unwrap();
+    assert!(store.get(file).unwrap().is_some());
+}
+
+#[test]
 fn register_and_get() {
     let (_tmp, store) = temp_store();
     store
         .register(
+            "/home/user/my-app/tako.toml",
             "/home/user/my-app/tako.toml",
             "/home/user/my-app",
             "my-app",
@@ -54,6 +81,7 @@ fn register_with_variant() {
     store
         .register(
             "/home/user/my-app/tako.toml",
+            "/home/user/my-app/tako.toml",
             "/home/user/my-app",
             "my-app",
             Some("staging"),
@@ -69,12 +97,24 @@ fn register_with_variant() {
 fn register_upserts_name_and_updates_timestamp() {
     let (_tmp, store) = temp_store();
     store
-        .register("/proj/tako.toml", "/proj", "old-name", None)
+        .register(
+            "/proj/tako.toml",
+            "/proj/tako.toml",
+            "/proj",
+            "old-name",
+            None,
+        )
         .unwrap();
     let first = store.get("/proj/tako.toml").unwrap().unwrap();
 
     store
-        .register("/proj/tako.toml", "/proj", "new-name", None)
+        .register(
+            "/proj/tako.toml",
+            "/proj/tako.toml",
+            "/proj",
+            "new-name",
+            None,
+        )
         .unwrap();
     let second = store.get("/proj/tako.toml").unwrap().unwrap();
 
@@ -87,7 +127,7 @@ fn register_upserts_name_and_updates_timestamp() {
 fn set_enabled_toggle() {
     let (_tmp, store) = temp_store();
     store
-        .register("/proj/tako.toml", "/proj", "app", None)
+        .register("/proj/tako.toml", "/proj/tako.toml", "/proj", "app", None)
         .unwrap();
 
     assert!(store.set_enabled("/proj/tako.toml", false).unwrap());
@@ -103,7 +143,7 @@ fn set_enabled_toggle() {
 fn unregister_app() {
     let (_tmp, store) = temp_store();
     store
-        .register("/proj/tako.toml", "/proj", "app", None)
+        .register("/proj/tako.toml", "/proj/tako.toml", "/proj", "app", None)
         .unwrap();
 
     assert!(store.unregister("/proj/tako.toml").unwrap());
@@ -124,6 +164,7 @@ fn cleanup_stale_removes_apps_without_tako_toml() {
     store
         .register(
             real_config.to_str().unwrap(),
+            real_config.to_str().unwrap(),
             real_proj.to_str().unwrap(),
             "real",
             None,
@@ -131,6 +172,7 @@ fn cleanup_stale_removes_apps_without_tako_toml() {
         .unwrap();
     store
         .register(
+            "/nonexistent/proj/preview.toml",
             "/nonexistent/proj/preview.toml",
             "/nonexistent/proj",
             "stale",

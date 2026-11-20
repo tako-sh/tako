@@ -22,6 +22,9 @@ fn idle_wake_app(directory: &std::path::Path) -> (Arc<Mutex<State>>, String) {
         s.apps.insert(
             config_path.clone(),
             RuntimeApp {
+                app_namespace: "app".into(),
+                config_file: "/tmp/tako.toml".into(),
+                environment: "development".into(),
                 compose: None,
                 project_dir: directory.display().to_string(),
                 name: "wake".to_string(),
@@ -278,6 +281,9 @@ async fn readiness_keeps_waiting_when_route_becomes_active_without_fd4_signal() 
         s.apps.insert(
             config_path.clone(),
             RuntimeApp {
+                app_namespace: "app".into(),
+                config_file: "/tmp/tako.toml".into(),
+                environment: "development".into(),
                 compose: None,
                 project_dir: "/tmp/tako-readiness".to_string(),
                 name: "readiness".to_string(),
@@ -678,6 +684,9 @@ async fn spawn_app_exposes_bootstrap_envelope_on_fd3() {
         "postgres://localhost/dev".to_string(),
     )]);
     let app = RuntimeApp {
+        app_namespace: "app".into(),
+        config_file: "/tmp/tako.toml".into(),
+        environment: "development".into(),
         compose: None,
         project_dir: tmp.path().display().to_string(),
         name: "bootstrap-test".to_string(),
@@ -723,6 +732,9 @@ async fn spawn_app_exposes_bootstrap_envelope_on_fd3() {
 #[test]
 fn readiness_failure_message_uses_client_hint() {
     let app = RuntimeApp {
+        app_namespace: "app".into(),
+        config_file: "/tmp/tako.toml".into(),
+        environment: "development".into(),
         compose: None,
         project_dir: "/tmp/tako-readiness".to_string(),
         name: "readiness".to_string(),

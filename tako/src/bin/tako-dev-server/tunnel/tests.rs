@@ -882,6 +882,9 @@ pub(super) fn tunnel_state_with_app(
     state.lock().expect("state lock").apps.insert(
         config_path.to_string(),
         crate::state::RuntimeApp {
+            app_namespace: "app".into(),
+            config_file: "/tmp/tako.toml".into(),
+            environment: "development".into(),
             compose: None,
             project_dir: "/tmp".to_string(),
             name: "app".to_string(),

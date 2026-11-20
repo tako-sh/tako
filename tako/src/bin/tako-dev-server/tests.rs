@@ -88,6 +88,9 @@ fn insert_test_app(state: &Arc<Mutex<State>>, project_dir: &str, name: &str) {
     s.apps.insert(
         config_path.clone(),
         state::RuntimeApp {
+            app_namespace: name.into(),
+            config_file: config_path.to_string(),
+            environment: "development".into(),
             compose: None,
             project_dir: project_dir.to_string(),
             name: name.to_string(),
@@ -123,6 +126,9 @@ fn runtime_app_with_env(
     env: std::collections::HashMap<String, String>,
 ) -> state::RuntimeApp {
     state::RuntimeApp {
+        app_namespace: name.into(),
+        config_file: "/tmp/tako.toml".into(),
+        environment: "development".into(),
         compose: None,
         project_dir: "/tmp/proj".to_string(),
         name: name.to_string(),
@@ -160,13 +166,29 @@ async fn network_calls_route_to_registered_apps_with_authenticated_internal_http
     use tokio::io::AsyncReadExt;
     let (state, tmp) = test_state();
     insert_test_app(&state, "/tmp/network-mail", "mail");
+    insert_test_app(&state, "/tmp/network-mail-test", "mail-test-e2e");
+    insert_test_app(&state, "/tmp/network-web", "web-test-e2e");
+    {
+        let mut state = state.lock().unwrap();
+        let mail = state
+            .apps
+            .get_mut("/tmp/network-mail-test/tako.toml")
+            .unwrap();
+        mail.app_namespace = "mail".into();
+        mail.environment = "test-e2e".into();
+        state
+            .apps
+            .get_mut("/tmp/network-web/tako.toml")
+            .unwrap()
+            .environment = "test-e2e".into();
+    }
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     state
         .lock()
         .unwrap()
         .routes
-        .activate_with_port("reg:/tmp/network-mail/tako.toml", port);
+        .activate_with_port("reg:/tmp/network-mail-test/tako.toml", port);
     let backend = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.unwrap();
         let mut stream = tokio::io::BufReader::new(stream);
@@ -184,7 +206,7 @@ async fn network_calls_route_to_registered_apps_with_authenticated_internal_http
             headers.push_str(&line.to_ascii_lowercase());
         }
         assert!(headers.starts_with("post /network http/1.1\r\n"));
-        assert!(headers.contains("host: mail.tako\r\n"));
+        assert!(headers.contains("host: mail-test-e2e.tako\r\n"));
         assert!(headers.contains("x-tako-internal-token: dev-token\r\n"));
         let mut body = vec![0; length];
         stream.read_exact(&mut body).await.unwrap();
@@ -203,7 +225,7 @@ async fn network_calls_route_to_registered_apps_with_authenticated_internal_http
     tako_socket::write_json_line(
         &mut socket,
         &tako_core::Command::NetworkCall {
-            app: "web".into(),
+            app: "web-test-e2e".into(),
             address: "mail.send-email".into(),
             request: tako_core::network::NetworkRequest::Enqueue {
                 payload: serde_json::json!({"to":"a@example.com"}),
@@ -223,4 +245,37 @@ async fn network_calls_route_to_registered_apps_with_authenticated_internal_http
     .unwrap();
     assert_eq!(response.data().unwrap()["id"], "remote-run");
     backend.await.unwrap();
+    state
+        .lock()
+        .unwrap()
+        .apps
+        .remove("/tmp/network-mail-test/tako.toml");
+    let mut socket = tokio::net::UnixStream::connect(workflows.socket_path())
+        .await
+        .unwrap();
+    tako_socket::write_json_line(
+        &mut socket,
+        &tako_core::Command::NetworkCall {
+            app: "web-test-e2e".into(),
+            address: "mail.send-email".into(),
+            request: tako_core::network::NetworkRequest::Enqueue {
+                payload: serde_json::json!({}),
+                opts: Default::default(),
+            },
+        },
+    )
+    .await
+    .unwrap();
+    let response: tako_core::Response = tokio::time::timeout(
+        Duration::from_secs(2),
+        tako_socket::read_json_line(&mut BufReader::new(socket)),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .unwrap();
+    assert!(
+        response.data().is_none(),
+        "must not fall back to development"
+    );
 }

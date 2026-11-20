@@ -31,13 +31,6 @@ impl ProjectContext {
             None => crate::config::SecretsStore::load_with_config(&self.project_dir, &config),
         }
     }
-
-    pub fn config_key(&self) -> String {
-        std::fs::canonicalize(&self.config_path)
-            .unwrap_or_else(|_| self.config_path.clone())
-            .to_string_lossy()
-            .to_string()
-    }
 }
 
 pub fn resolve(config: Option<&Path>) -> Result<ProjectContext, Box<dyn std::error::Error>> {

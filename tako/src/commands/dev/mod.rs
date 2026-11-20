@@ -106,5 +106,6 @@ pub(crate) use shared::{
 };
 
 pub use runner::{ls, run, stop};
+pub(crate) use shared::dev_config_key;
 #[cfg(test)]
 mod tests;
