@@ -58,7 +58,11 @@ fn servers_add_requires_native_network_without_writing_inventory() {
         &tako_home,
     );
     assert!(!out.status.success());
-    assert!(stderr_str(&out).contains("No network configured"));
+    assert!(
+        stderr_str(&out).contains("No network on this machine"),
+        "{}",
+        stderr_str(&out)
+    );
     assert!(!tako_home.join("networks/identities.json").exists());
 }
 
@@ -126,7 +130,7 @@ fn legacy_inventory_does_not_grant_server_membership() {
 }
 
 #[test]
-fn network_commands_use_explicit_then_chosen_then_sole_network() {
+fn network_commands_use_explicit_or_sole_network_without_a_saved_default() {
     let temp = TempDir::new().unwrap();
     let tako_home = temp.path().join("tako-home");
     let run = |args: &[&str]| run_tako_with_env(args, temp.path(), temp.path(), &tako_home);
@@ -176,7 +180,7 @@ fn network_commands_use_explicit_then_chosen_then_sole_network() {
     let ambiguous = add(&[]);
     assert!(!ambiguous.status.success());
     assert!(
-        stderr_str(&ambiguous).contains("tako network use"),
+        stderr_str(&ambiguous).contains("Pass --network with one of: default, selected"),
         "{}",
         stderr_str(&ambiguous)
     );
@@ -185,25 +189,19 @@ fn network_commands_use_explicit_then_chosen_then_sole_network() {
             .as_array()
             .unwrap()
             .iter()
-            .all(|network| network["default"] == false)
+            .all(|network| network.get("default").is_none())
     );
 
     let inventory_before = fs::read(tako_home.join("networks/identities.json")).unwrap();
     let used = run(&["--json", "network", "use", "selected"]);
-    assert!(used.status.success(), "{}", stderr_str(&used));
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&used.stdout).unwrap()["id"],
-        selected_id.as_str()
-    );
-    assert_eq!(network_of(add(&[])), "selected");
-    // Explicit arguments always override the chosen network.
+    assert!(!used.status.success(), "there is no saved default network");
+    assert_eq!(network_of(add(&["--network", &selected_id])), "selected");
     assert_eq!(network_of(add(&["--network", "default"])), "default");
-    let listed: serde_json::Value =
-        serde_json::from_slice(&run(&["--json", "network", "list"]).stdout).unwrap();
-    for network in listed["networks"].as_array().unwrap() {
-        assert_eq!(network["default"], network["name"] == "selected");
-    }
-    assert!(!run(&["network", "use", "missing"]).status.success());
+    assert!(
+        !add(&[]).status.success(),
+        "explicit selection is per command"
+    );
+    assert!(!add(&["--network", "missing"]).status.success());
     assert_eq!(
         fs::read(tako_home.join("networks/identities.json")).unwrap(),
         inventory_before
@@ -251,7 +249,7 @@ fn bare_server_names_resolve_in_the_selected_network() {
     ]);
     assert!(!unknown.status.success());
     assert!(
-        stderr_str(&unknown).contains("not configured"),
+        stderr_str(&unknown).contains("Network 'missing' is not on this machine"),
         "{}",
         stderr_str(&unknown)
     );

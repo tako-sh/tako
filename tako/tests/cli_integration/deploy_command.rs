@@ -153,10 +153,15 @@ route = "prod.example.com"
 fn test_deploy_requires_network_before_building() {
     let temp = TempDir::new().unwrap();
     fs::write(temp.path().join("tako.toml"), "name='app'\nmain='missing.js'\nruntime='node'\n[envs.production]\nroute='app.example.com'\n").unwrap();
-    let output = run_tako(&["deploy", "--env", "production"], temp.path());
+    let output = run_tako_with_env(
+        &["deploy", "--env", "production"],
+        temp.path(),
+        temp.path(),
+        &temp.path().join("tako-home"),
+    );
     assert!(!output.status.success());
     assert!(
-        stderr_str(&output).contains("network ID"),
+        stderr_str(&output).contains("No network on this machine"),
         "{}",
         stderr_str(&output)
     );
@@ -227,8 +232,8 @@ libc = "glibc"
 
 #[test]
 fn test_deploy_validates_server_exists() {
-    let temp = TempDir::new().unwrap();
-    let project_dir = temp.path().to_path_buf();
+    let fixture = super::native_management::Fixture::with_servers(&["edge"]);
+    let project_dir = fixture.directory.path().to_path_buf();
 
     // Create tako.toml referencing a server that doesn't exist.
     fs::write(
@@ -252,9 +257,14 @@ servers = ["nonexistent-server"]
     .unwrap();
     fs::write(project_dir.join("index.ts"), "export default {}").unwrap();
 
-    let output = run_tako(&["deploy", "--env", "production"], &project_dir);
+    let output = run_tako_with_env(
+        &["--dry-run", "deploy", "--env", "production"],
+        &project_dir,
+        &fixture.home,
+        &fixture.tako_home,
+    );
 
-    // Should fail because server doesn't exist in global [[servers]] config
+    // The selected network exists, but its membership does not contain this server.
     assert!(
         !output.status.success(),
         "Deploy should fail with unknown server"
@@ -262,10 +272,7 @@ servers = ["nonexistent-server"]
 
     let stderr = stderr_str(&output);
     assert!(
-        stderr.contains("nonexistent-server")
-            || stderr.contains("not found")
-            || stderr.contains("config.toml")
-            || stderr.contains("Server"),
+        stderr.contains("Server 'nonexistent-server' is not a trusted server"),
         "Should mention missing server: {}",
         stderr
     );
@@ -279,6 +286,13 @@ fn test_deploy_validates_no_servers_configured() {
     let tako_home = temp.path().join("tako-home");
     fs::create_dir_all(&home).unwrap();
     fs::create_dir_all(&tako_home).unwrap();
+    let created = run_tako_with_env(
+        &["--ci", "network", "create", "fleet"],
+        &project_dir,
+        &home,
+        &tako_home,
+    );
+    assert!(created.status.success(), "{}", stderr_str(&created));
 
     // Create tako.toml with env but no server reference
     fs::write(
@@ -303,7 +317,7 @@ route = "prod.example.com"
     fs::write(project_dir.join("index.js"), "export default {}").unwrap();
 
     let output = run_tako_with_env(
-        &["deploy", "--env", "production"],
+        &["--dry-run", "deploy", "--env", "production"],
         &project_dir,
         &home,
         &tako_home,
@@ -317,8 +331,8 @@ route = "prod.example.com"
 
     let stderr = stderr_str(&output);
     assert!(
-        stderr.contains("network ID in tako.toml"),
-        "Should include add-server hint: {}",
+        stderr.contains("no trusted servers"),
+        "Should identify the network's missing servers: {}",
         stderr
     );
 }
