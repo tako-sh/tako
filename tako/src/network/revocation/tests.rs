@@ -344,8 +344,6 @@ fn new_attempt_uses_a_surviving_issuer_and_keeps_what_the_target_approved() {
             .exists()
     );
     let mut sent = Vec::new();
-    // Approvals precede revocation, even when the test finishes within one clock tick.
-    let revoked_at = network::now().unwrap() + 1;
     let result = run_with(
         &alias,
         &target.to_string(),
