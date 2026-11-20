@@ -168,6 +168,8 @@ async fn network_calls_route_to_registered_apps_with_authenticated_internal_http
     insert_test_app(&state, "/tmp/network-mail", "mail");
     insert_test_app(&state, "/tmp/network-mail-test", "mail-test-e2e");
     insert_test_app(&state, "/tmp/network-web", "web-test-e2e");
+    insert_test_app(&state, "/tmp/network-web-dev", "web");
+    insert_test_app(&state, "/tmp/network-mail-checkout", "mail-checkout");
     {
         let mut state = state.lock().unwrap();
         let mail = state
@@ -181,16 +183,27 @@ async fn network_calls_route_to_registered_apps_with_authenticated_internal_http
             .get_mut("/tmp/network-web/tako.toml")
             .unwrap()
             .environment = "test-e2e".into();
+        state
+            .apps
+            .get_mut("/tmp/network-mail-checkout/tako.toml")
+            .unwrap()
+            .app_namespace = "mail".into();
     }
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    state
-        .lock()
-        .unwrap()
-        .routes
-        .activate_with_port("reg:/tmp/network-mail-test/tako.toml", port);
+    for key in [
+        "/tmp/network-mail-test/tako.toml",
+        "/tmp/network-mail/tako.toml",
+        "/tmp/network-mail-checkout/tako.toml",
+    ] {
+        state
+            .lock()
+            .unwrap()
+            .routes
+            .activate_with_port(&format!("reg:{key}"), port);
+    }
     let backend = tokio::spawn(async move {
-        for _ in 0..2 {
+        for host in ["mail-test-e2e", "mail-test-e2e", "mail", "mail-checkout"] {
             let (stream, _) = listener.accept().await.unwrap();
             let mut stream = tokio::io::BufReader::new(stream);
             let mut headers = String::new();
@@ -207,7 +220,10 @@ async fn network_calls_route_to_registered_apps_with_authenticated_internal_http
                 headers.push_str(&line.to_ascii_lowercase());
             }
             assert!(headers.starts_with("post /network http/1.1\r\n"));
-            assert!(headers.contains("host: mail-test-e2e.tako\r\n"));
+            assert!(
+                headers.contains(&format!("host: {host}.tako\r\n")),
+                "{headers}"
+            );
             assert!(headers.contains("x-tako-internal-token: dev-token\r\n"));
             let mut body = vec![0; length];
             stream.read_exact(&mut body).await.unwrap();
@@ -224,6 +240,8 @@ async fn network_calls_route_to_registered_apps_with_authenticated_internal_http
     for (caller, address) in [
         ("web-test-e2e", "mail.send-email"),
         ("mail-test-e2e", "send-email"),
+        ("web", "mail.send-email"),
+        ("web", "mail-checkout.send-email"),
     ] {
         let mut socket = tokio::net::UnixStream::connect(workflows.socket_path())
             .await
