@@ -66,8 +66,7 @@ fn read_env_names(project_dir: &Path) -> Vec<String> {
 }
 
 /// Read storage binding names from `tako.toml` environment assignments, or
-/// from the selected config when one was given. Development names are
-/// preferred because that is what `tako dev` injects.
+/// from the selected config when one was given, across all environments.
 fn read_storage_names(project_dir: &Path, config: Option<&TakoToml>) -> Vec<String> {
     match config {
         Some(config) => config_binding_names(config, |env| &env.storages),
@@ -75,7 +74,7 @@ fn read_storage_names(project_dir: &Path, config: Option<&TakoToml>) -> Vec<Stri
     }
 }
 
-/// Read database binding names, with the same preference as storages.
+/// Read database binding names across all environments.
 fn read_database_names(project_dir: &Path, config: Option<&TakoToml>) -> Vec<String> {
     match config {
         Some(config) => config_binding_names(config, |env| &env.databases),
@@ -88,13 +87,6 @@ fn config_binding_names(
     config: &TakoToml,
     bindings: impl Fn(&crate::config::EnvConfig) -> &std::collections::HashMap<String, String>,
 ) -> Vec<String> {
-    if let Some(development) = config.envs.get("development")
-        && !bindings(development).is_empty()
-    {
-        let mut names: Vec<String> = bindings(development).keys().cloned().collect();
-        names.sort();
-        return names;
-    }
     config
         .envs
         .values()
@@ -104,8 +96,7 @@ fn config_binding_names(
         .collect()
 }
 
-/// Binding names from `[envs.development].<key>` when present, otherwise
-/// from every environment.
+/// Binding names from every environment.
 fn read_binding_names(project_dir: &Path, key: &str) -> Vec<String> {
     let config_path = project_dir.join("tako.toml");
     let Ok(content) = fs::read_to_string(&config_path) else {
@@ -119,15 +110,6 @@ fn read_binding_names(project_dir: &Path, key: &str) -> Vec<String> {
     let Some(envs) = parsed.get("envs").and_then(|value| value.as_table()) else {
         return Vec::new();
     };
-
-    if let Some(dev) = envs.get("development")
-        && let Some(bindings) = dev.get(key).and_then(|s| s.as_table())
-        && !bindings.is_empty()
-    {
-        let mut names: Vec<String> = bindings.keys().cloned().collect();
-        names.sort();
-        return names;
-    }
 
     let mut names_set = std::collections::BTreeSet::new();
     for env_value in envs.values() {
@@ -480,8 +462,26 @@ fn write_tako_declarations_with_network_options(
     let secret_names = super::secret_names(project_dir, config, environment)?;
     let storage_names = read_storage_names(project_dir, config);
     let database_names = read_database_names(project_dir, config);
-    let env_names = read_env_names(project_dir);
-    let var_names = read_var_names(project_dir);
+    let (env_names, var_names) = if let Some(config) = config {
+        use std::collections::BTreeSet;
+        let envs: BTreeSet<_> = ["development", "production"]
+            .into_iter()
+            .chain(config.envs.keys().map(String::as_str))
+            .chain(config.vars_per_env.keys().map(String::as_str))
+            .chain(environment)
+            .map(str::to_owned)
+            .collect();
+        let vars: BTreeSet<_> = config
+            .vars
+            .keys()
+            .chain(config.vars_per_env.values().flat_map(|vars| vars.keys()))
+            .filter(|name| name.as_str() != "ENV")
+            .cloned()
+            .collect();
+        (envs.into_iter().collect(), vars.into_iter().collect())
+    } else {
+        (read_env_names(project_dir), read_var_names(project_dir))
+    };
     let output_dir = generated_output_dir(project_dir, &js_app_root_dir(project_dir, app_root));
     let path = resolve_declaration_path(&output_dir);
     let mut channel_types = generate_channel_types_with_command(

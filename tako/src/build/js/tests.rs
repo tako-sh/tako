@@ -324,6 +324,68 @@ fn write_tako_declarations_report_unreadable_secrets() {
 }
 
 #[test]
+fn declarations_include_custom_environment_secrets_and_bindings_alongside_development() {
+    let dir = TempDir::new().unwrap();
+    fs::create_dir(dir.path().join(".tako")).unwrap();
+    fs::write(
+        dir.path().join(".tako/state.local.json"),
+        r#"{"values":{"development":{"key_id":"aaaaaaaaaaaaaaaa","app":{"DEV_KEY":{"value":"x"}}},"test-e2e":{"key_id":"aaaaaaaaaaaaaaaa","app":{"E2E_KEY":{"value":"y"}}}}}"#,
+    ).unwrap();
+    let source = r#"
+        [envs.development]
+        storages = { uploads = "dev_uploads" }
+        databases = { main = "dev_main" }
+        [envs.test-e2e]
+        route = "app-test-e2e.test"
+        storages = { fixtures = "local" }
+        databases = { assertions = "test_main" }
+        [vars.test-e2e]
+        TEST_MODE = "on"
+    "#;
+    fs::write(dir.path().join("tako.toml"), source).unwrap();
+    let config = TakoToml::parse(source).unwrap();
+    for selected in [false, true] {
+        if selected {
+            fs::rename(dir.path().join("tako.toml"), dir.path().join("app.toml")).unwrap();
+            write_tako_declarations_with_config(
+                dir.path(),
+                BuildAdapter::Unknown,
+                &config,
+                Some("test-e2e"),
+            )
+            .unwrap();
+        } else {
+            write_tako_declarations(dir.path()).unwrap();
+        }
+        let content = fs::read_to_string(dir.path().join("tako.d.ts")).unwrap();
+        assert!(content.contains("\"test-e2e\""), "{content}");
+        assert!(content.contains("TEST_MODE"), "{content}");
+        for name in ["DEV_KEY", "E2E_KEY"] {
+            assert!(
+                content.contains(&format!("readonly {name}: string;")),
+                "{content}"
+            );
+        }
+        for name in ["uploads", "fixtures"] {
+            assert!(
+                content.contains(&format!(
+                    "readonly {name}: import(\"tako.sh\").TakoStorage;"
+                )),
+                "{content}"
+            );
+        }
+        for name in ["main", "assertions"] {
+            assert!(
+                content.contains(&format!(
+                    "readonly {name}: import(\"tako.sh\").TakoDatabase;"
+                )),
+                "{content}"
+            );
+        }
+    }
+}
+
+#[test]
 fn write_tako_declarations_with_storages_generate_typed_interface_augmentation() {
     let dir = TempDir::new().unwrap();
     fs::write(
