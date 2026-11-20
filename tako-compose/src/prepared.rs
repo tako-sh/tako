@@ -197,6 +197,7 @@ pub fn remove_release_preparations(release: &Path, app_data: &Path) -> Result<()
         if directory.starts_with(release) {
             let removed = tempfile::Builder::new()
                 .prefix(".remove-")
+                .permissions(std::fs::Permissions::from_mode(0o700))
                 .tempdir_in(&root)
                 .map_err(|e| e.to_string())?;
             // A later preparation must never reuse a partially deleted snapshot.
@@ -506,6 +507,7 @@ mod tests {
         let root = runtime.preparation_root().unwrap();
         let removed = tempfile::Builder::new()
             .prefix(".remove-")
+            .permissions(std::fs::Permissions::from_mode(0o700))
             .tempdir_in(root.parent().unwrap())
             .unwrap()
             .keep();
