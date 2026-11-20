@@ -139,6 +139,22 @@ impl ServerState {
             // Before the app's processes start, so they can reach them.
             self.databases
                 .apply_bindings(&config.deployment_id(), &[&config.databases]);
+            if config.compose.is_some() {
+                // Re-bind the group's socket before re-attaching its SDK
+                // containers. They keep the stored token.
+                config.compose_token = self
+                    .state_store
+                    .get_compose_token(&app_name)
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(app = %app_name, "Failed to read the Compose SDK token: {}", e);
+                        errors.push(format!("{app_name}: {e}"));
+                        None
+                    });
+                if let Err(error) = self.prepare_compose_sdk(&mut config) {
+                    tracing::error!(app = %app_name, %error, "Failed to prepare the Compose SDK runtime");
+                    errors.push(format!("{app_name}: {error}"));
+                }
+            }
 
             let app = self.app_manager.register_app(config.clone());
             self.load_balancer.register_app(app.clone());

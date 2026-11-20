@@ -51,7 +51,7 @@ pub(crate) async fn gather() -> Result<Vec<NetworkReport>, String> {
     let aliases = LocalNetworks::load().map_err(|error| error.to_string())?;
     let reports = aliases.networks.values().map(|alias| async move {
         NetworkReport {
-            name: alias.name.clone(),
+            name: alias.alias.clone(),
             id: alias.id.clone(),
             result: network(alias).await.map_err(|error| error.to_string()),
         }

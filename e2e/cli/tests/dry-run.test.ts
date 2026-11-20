@@ -15,7 +15,6 @@ import { join } from "node:path";
 
 let tempDir: string;
 let takoHome: string;
-let networkId: string;
 
 beforeEach(async () => {
   // Network persistence rejects symlink ancestors, including macOS /var.
@@ -42,8 +41,13 @@ async function setupProject(
   let takoToml = `name = "dry-run-app"\nruntime = "node"\npreset = "node"\nmain = "index.ts"\n\n[envs.${envName}]\nroute = "dry-run-app.example.com"\n`;
   if (serverNames.length > 0) {
     const network = networkFixture(takoHome, serverEntries);
-    networkId = network;
-    takoToml += `network = "${network}"\nservers = [${serverNames.map((n) => `"${n}"`).join(", ")}]\n`;
+    takoToml += `servers = [${serverNames.map((n) => `"${n}"`).join(", ")}]\n`;
+    // Record the environment's network the way a deploy does.
+    await mkdir(join(tempDir, ".tako"), { recursive: true });
+    await writeFile(
+      join(tempDir, ".tako", "project.json"),
+      JSON.stringify({ environments: { [envName]: { network } } }),
+    );
   }
   await writeFile(join(tempDir, "tako.toml"), takoToml);
 }
@@ -321,7 +325,6 @@ describe("container and Compose deployment plans", () => {
 [compose]
 file = "compose.yaml"
 [envs.production]
-network = "${networkId}"
 servers = ["prod"]
 `,
     );
@@ -348,7 +351,6 @@ sdk = false
 port = 80
 health_path = "/"
 [envs.production]
-network = "${networkId}"
 route = "image.example.com"
 servers = ["prod"]
 `,

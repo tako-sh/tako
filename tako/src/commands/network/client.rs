@@ -13,8 +13,6 @@ pub enum ClientCommands {
     Add {
         /// Client name, such as `alice-laptop` or `github-ci`
         name: tako_network::DeviceName,
-        #[arg(long)]
-        network: Option<String>,
         /// Restrict the client to deploying this app/environment; repeat for more
         #[arg(long, value_name = "APP/ENV")]
         deploy: Vec<tako_network::AppEnv>,
@@ -32,8 +30,6 @@ pub enum ClientCommands {
     /// Refresh and list clients in the network
     #[command(visible_alias = "ls")]
     List {
-        #[arg(long)]
-        network: Option<String>,
         /// Also list revoked, expired, and replaced keys
         #[arg(long)]
         all: bool,
@@ -44,8 +40,6 @@ pub enum ClientCommands {
     Revoke {
         /// Client name or device ID
         client: String,
-        #[arg(long)]
-        network: Option<String>,
         /// Also revoke every client it invited, and the clients those invited
         #[arg(long)]
         include_invited: bool,
@@ -231,17 +225,13 @@ pub(super) fn run(command: ClientCommands) -> Result<()> {
     match command {
         ClientCommands::Add {
             name,
-            network,
             deploy,
             expires_in,
             yes,
             identity,
-        } => add(&name, network.as_deref(), deploy, expires_in, yes, identity),
-        ClientCommands::List {
-            network: value,
-            all,
-        } => {
-            let alias = network::resolve_network(value.as_deref())?;
+        } => add(&name, deploy, expires_in, yes, identity),
+        ClientCommands::List { all } => {
+            let alias = network::resolve_network(None)?;
             let profile = if output::is_dry_run() {
                 network::load_profile(&alias)?
             } else {
@@ -256,7 +246,7 @@ pub(super) fn run(command: ClientCommands) -> Result<()> {
                 return output::json_result(serde_json::json!({
                     "ok": true,
                     "command": "network client list",
-                    "network": alias.name,
+                    "network": alias.alias,
                     "clients": rows.iter().map(ClientRow::json).collect::<Vec<_>>(),
                 }));
             }
@@ -316,14 +306,13 @@ pub(super) fn run(command: ClientCommands) -> Result<()> {
         }
         ClientCommands::Revoke {
             client,
-            network: value,
             include_invited,
             yes,
         } => {
             if include_invited {
-                revoke_with_invited(&client, value.as_deref(), yes)
+                revoke_with_invited(&client, yes)
             } else {
-                revoke(&client, value.as_deref())
+                revoke(&client)
             }
         }
     }
@@ -331,17 +320,16 @@ pub(super) fn run(command: ClientCommands) -> Result<()> {
 
 fn add(
     name: &tako_network::DeviceName,
-    network: Option<&str>,
     deploy: Vec<tako_network::AppEnv>,
     expires_in: u64,
     yes: bool,
     identity: bool,
 ) -> Result<()> {
-    let alias = network::resolve_network(network)?;
+    let alias = network::resolve_network(None)?;
     if output::is_dry_run() {
         return finish(
             "Would create a client invitation",
-            serde_json::json!({"dry_run":true,"network":alias.name,"client":name}),
+            serde_json::json!({"dry_run":true,"network":alias.alias,"client":name}),
         );
     }
     let full = deploy.is_empty();
@@ -456,7 +444,7 @@ fn add(
     let invitation = invitation.encode()?;
     if output::is_json() {
         output::json_result(serde_json::json!({
-            "network": alias.name,
+            "network": alias.alias,
             "client": name,
             "invitation": invitation.as_str(),
             "expires_at": expires_at,
@@ -497,7 +485,7 @@ fn print_identity(
 ) -> Result<()> {
     let identity = {
         let _temporary = network::identity::TemporaryState::new()?;
-        let joined = redeem(invitation)?;
+        let joined = redeem(invitation, &alias.alias)?;
         // Admission answers the server's key check with the new device's keys.
         network::client::refresh(&joined)?;
         network::identity::encode(&joined)?
@@ -511,7 +499,7 @@ fn print_identity(
     }
     if output::is_json() {
         output::json_result(serde_json::json!({
-            "network": alias.name,
+            "network": alias.alias,
             "client": name,
             "identity": identity.as_str(),
             "replaced": replaced,
@@ -539,8 +527,8 @@ fn print_identity(
     Ok(())
 }
 
-fn revoke(client: &str, value: Option<&str>) -> Result<()> {
-    let alias = network::resolve_network(value)?;
+fn revoke(client: &str) -> Result<()> {
+    let alias = network::resolve_network(None)?;
     let profile = if output::is_dry_run() {
         network::load_profile(&alias)?
     } else {
@@ -569,7 +557,7 @@ fn revoke(client: &str, value: Option<&str>) -> Result<()> {
         network::revocation::project(&alias, &device)?;
         return finish(
             "Would revoke the client",
-            serde_json::json!({"dry_run": true, "network": alias.name, "client": name, "device": device, "invited": invited}),
+            serde_json::json!({"dry_run": true, "network": alias.alias, "client": name, "device": device, "invited": invited}),
         );
     }
     let revocation = network::revocation::run(&alias, &device)?;
@@ -580,7 +568,7 @@ fn revoke(client: &str, value: Option<&str>) -> Result<()> {
     }
     finish(
         &format!("Revoked {name}"),
-        serde_json::json!({"network": alias.name, "client": name, "revocation": revocation, "invited": invited, "enforcement": "pending"}),
+        serde_json::json!({"network": alias.alias, "client": name, "revocation": revocation, "invited": invited, "enforcement": "pending"}),
     )?;
     invited_hint(&name, &invited);
     output::hint(
@@ -590,8 +578,8 @@ fn revoke(client: &str, value: Option<&str>) -> Result<()> {
 }
 
 /// Revoke a client together with every client it invited.
-fn revoke_with_invited(client: &str, value: Option<&str>, yes: bool) -> Result<()> {
-    let alias = network::resolve_network(value)?;
+fn revoke_with_invited(client: &str, yes: bool) -> Result<()> {
+    let alias = network::resolve_network(None)?;
     let profile = if output::is_dry_run() {
         network::load_profile(&alias)?
     } else {
@@ -625,7 +613,7 @@ fn revoke_with_invited(client: &str, value: Option<&str>, yes: bool) -> Result<(
     if output::is_dry_run() {
         return finish(
             "Would revoke the client and the clients it invited",
-            serde_json::json!({"dry_run": true, "network": alias.name, "client": name, "revoked": listed(&targets)}),
+            serde_json::json!({"dry_run": true, "network": alias.alias, "client": name, "revoked": listed(&targets)}),
         );
     }
     if !yes && !invited.is_empty() {
@@ -668,7 +656,7 @@ fn revoke_with_invited(client: &str, value: Option<&str>, yes: bool) -> Result<(
     };
     finish(
         &message,
-        serde_json::json!({"network": alias.name, "client": name, "revoked": listed(&targets), "revocations": revocations, "enforcement": "pending"}),
+        serde_json::json!({"network": alias.alias, "client": name, "revoked": listed(&targets), "revocations": revocations, "enforcement": "pending"}),
     )?;
     output::hint(
         "Servers enforce the revocations as they reach them. Unreachable servers remain pending.",
@@ -676,7 +664,7 @@ fn revoke_with_invited(client: &str, value: Option<&str>, yes: bool) -> Result<(
     Ok(())
 }
 
-pub(super) fn join(from_stdin: bool) -> Result<()> {
+pub(super) fn join(from_stdin: bool, alias: Option<&str>) -> Result<()> {
     if output::is_dry_run() {
         return finish(
             "Would join a network with a new local identity",
@@ -695,20 +683,44 @@ pub(super) fn join(from_stdin: bool) -> Result<()> {
     } else {
         Zeroizing::new(output::password_field("Invitation or identity")?)
     };
-    let alias = if network::identity::is_identity(&encoded) {
-        network::identity::store(&encoded)?
+    let identity = network::identity::is_identity(&encoded);
+    let invitation = if identity {
+        None
     } else {
-        redeem(&Invitation::decode(&encoded)?)?
+        Some(Invitation::decode(&encoded)?)
     };
-    network::state::pull(&alias, None)?;
+    let descriptor = match &invitation {
+        Some(invitation) => invitation.network.clone(),
+        None => network::identity::network_of(&encoded)?,
+    };
+    // A retried join keeps the alias this machine already has for the network.
+    let networks = crate::config::LocalNetworks::load()?;
+    let alias = match networks.networks.get(&descriptor.id.to_string()) {
+        Some(existing) if alias.is_none_or(|alias| alias == existing.alias) => {
+            existing.alias.clone()
+        }
+        Some(existing) => {
+            return Err(format!(
+                "This machine already has network {} as '{}'. Rename it with `tako network rename`.",
+                descriptor.id, existing.alias
+            )
+            .into());
+        }
+        None => super::choose_alias(&networks, descriptor.name.as_str(), alias, "join")?,
+    };
+    let local = match &invitation {
+        None => network::identity::store(&encoded, Some(&alias))?,
+        Some(invitation) => redeem(invitation, &alias)?,
+    };
+    network::state::pull(&local, None)?;
     finish(
-        &format!("Joined network {}", alias.name),
-        serde_json::to_value(&alias)?,
+        &format!("Joined network {}", network::network_label(&local)),
+        serde_json::to_value(&local)?,
     )
 }
 
 /// Enroll this device with an invitation and save its pending profile.
-fn redeem(invitation: &Invitation) -> Result<crate::config::LocalNetwork> {
+fn redeem(invitation: &Invitation, alias: &str) -> Result<crate::config::LocalNetwork> {
     let directory = crate::paths::network_state_dir()?
         .join("network-joins")
         .join(invitation.network.id.to_string());
@@ -787,7 +799,7 @@ fn redeem(invitation: &Invitation) -> Result<crate::config::LocalNetwork> {
                 );
             }
             pending.validate_for(&keys, network::now()?)?;
-            network::save_profile(&Profile::Pending { profile: pending })?
+            network::save_profile_as(&Profile::Pending { profile: pending }, Some(alias))?
         },
     )
 }

@@ -198,7 +198,7 @@ pub(super) async fn upgrade_servers(
     network: Option<&str>,
     force: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let servers = crate::commands::helpers::load_management_servers(None, None).await?;
+    let servers = crate::commands::helpers::load_management_servers(None).await?;
     if servers.is_empty() {
         output::error("No servers configured.");
         output::hint(&format!(
@@ -217,7 +217,7 @@ pub(super) async fn upgrade_servers(
         let (local, names) =
             crate::commands::helpers::network_servers(&networks, &servers, network)?;
         if names.is_empty() {
-            output::error(&format!("No servers in network {}.", local.name));
+            output::error(&format!("No servers in network {}.", local.alias));
             return Ok(());
         }
         names

@@ -199,11 +199,19 @@ bind_fixture_target() {
   # owns placement; enrolled membership supplies the selected server.
   bun -e '
     const fs = require("node:fs");
+    const path = require("node:path");
     const file = process.argv[1];
     let source = fs.readFileSync(file, "utf8");
-    source = source.replace(/^(network|servers)\s*=.*$/gm, "");
-    source = source.replace(/^\[envs\.production\]$/m, `[envs.production]\nnetwork = "${process.argv[2]}"\nservers = ["${process.argv[3]}"]`);
+    source = source.replace(/^servers\s*=.*$/gm, "");
+    source = source.replace(/^\[envs\.production\]$/m, `[envs.production]\nservers = ["${process.argv[3]}"]`);
     fs.writeFileSync(file, source);
+    // The project records its environment network the way a deploy does.
+    const state = path.join(path.dirname(file), ".tako");
+    fs.mkdirSync(state, { recursive: true });
+    fs.writeFileSync(
+      path.join(state, "project.json"),
+      JSON.stringify({ environments: { production: { network: process.argv[2] } } }, null, 2) + "\n",
+    );
   ' "$config" "$NETWORK_ID" "$server"
 }
 
@@ -334,6 +342,9 @@ fixture_has_secrets_for_env() {
 }
 
 seed_fixture_secrets() {
+  if [[ "$FIXTURE_REL" == "e2e/fixtures/compose/sdk" ]]; then
+    printf '%s' 'compose-sdk-secret' | HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" secrets set SDK_FIXTURE_SECRET --env production
+  fi
   if [[ "$FIXTURE_REL" == examples/go/* ]]; then
     for name in API_KEY DATABASE_URL EXAMPLE_SECRET; do
       printf '%s' 'tako-example-secret' | HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" secrets set "$name" --env production
@@ -986,6 +997,107 @@ run_archive_rollback_checks() {
   mv "$TMP_ROOT/archive-original-index.ts" "$PROJECT_DIR/index.ts"
 }
 
+run_compose_sdk_checks() {
+  local server_host=$1 route_host=$2 first_release=$3
+  local body="$TMP_ROOT/compose-sdk-body.json" headers="$TMP_ROOT/compose-sdk-headers"
+  local web_id worker_id redis_id nginx_id marker status
+  echo "Checking Compose SDK services on $server_host"
+  sdk_container_ids() {
+    ssh_exec "$server_host" "docker ps --no-trunc --filter label=sh.tako.compose.service=$1 --format '{{.ID}}'" | sort
+  }
+  sdk_get() {
+    status=$(fetch_route_path "$server_host" "$route_host" "$1" "$headers" "$body" || true)
+    if [[ "$status" != 200 ]]; then
+      echo "Compose SDK request $1 failed: HTTP $status" >&2
+      cat "$body" >&2 || true
+      return 1
+    fi
+  }
+  sdk_assert_data() {
+    sdk_get /data
+    if ! jq -e --arg marker "$marker" '.value == $marker' "$body" >/dev/null; then
+      echo "tako.dataDir did not keep its contents:" >&2
+      cat "$body" >&2
+      return 1
+    fi
+  }
+  sdk_wait_for_ticks() {
+    local ticks
+    for _ in $(seq 1 60); do
+      sdk_get /ticks
+      ticks=$(jq -r '.ticks' "$body")
+      if [[ -n "$ticks" ]]; then
+        return 0
+      fi
+      sleep 0.5
+    done
+    echo "The worker's cron schedule never fired" >&2
+    return 1
+  }
+
+  # The plain routed service keeps working beside the SDK services.
+  status=$(fetch_route_path "$server_host" "nginx.$route_host" / "$headers" "$body" || true)
+  if [[ "$status" != 200 ]]; then
+    echo "Plain Compose service nginx did not answer: HTTP $status" >&2
+    return 1
+  fi
+  # Channels belong to SDK services; a plain service's route says so.
+  status=$(fetch_route_path "$server_host" "nginx.$route_host" /_tako/channels/sse/demo "$headers" "$body" || true)
+  if [[ "$status" != 404 ]] || ! grep -Fq "sdk: true" "$body"; then
+    echo "Channel request on a plain service did not explain sdk: true (HTTP $status)" >&2
+    cat "$body" >&2 || true
+    return 1
+  fi
+  sdk_get /
+  jq -e --arg app "$APP_NAME/production" '.app == $app' "$body" >/dev/null
+
+  # Workflows enqueued by web run in the worker, which publishes to a channel
+  # that a subscriber receives through the web route.
+  run_channels_workflows_checks "$server_host" "$route_host"
+  sdk_wait_for_ticks
+
+  marker="data-$(date +%s%N)"
+  post_route_json "$server_host" "$route_host" /data "{\"value\":\"$marker\"}" "Data directory write"
+  sdk_assert_data
+
+  # A deploy replaces SDK services and keeps the data directory.
+  echo "// redeploy $(date +%s%N)" >> "$PROJECT_DIR/index.ts"
+  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" deploy --env production --yes
+  sdk_assert_data
+  run_channels_workflows_checks "$server_host" "$route_host"
+
+  # A server restart re-binds the group socket and re-attaches containers.
+  web_id=$(sdk_container_ids web)
+  ssh_exec "$server_host" 'pkill -KILL -x tako-server'
+  start_tako_server "$server_host"
+  [[ $(sdk_container_ids web) == "$web_id" ]]
+  run_universal_http_checks "$server_host" "$route_host" /opt/tako
+  sdk_assert_data
+  run_channels_workflows_checks "$server_host" "$route_host"
+
+  # A secret rotation replaces web and worker, but not redis or nginx.
+  web_id=$(sdk_container_ids web)
+  worker_id=$(sdk_container_ids worker)
+  redis_id=$(sdk_container_ids redis)
+  nginx_id=$(sdk_container_ids nginx)
+  printf '%s' "rotated-$(date +%s%N)" | HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" secrets set SDK_FIXTURE_SECRET --env production
+  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" deploy --env production --yes
+  [[ $(sdk_container_ids web) != "$web_id" ]]
+  [[ $(sdk_container_ids worker) != "$worker_id" ]]
+  [[ $(sdk_container_ids redis) == "$redis_id" ]]
+  [[ $(sdk_container_ids nginx) == "$nginx_id" ]]
+  run_secret_checks "$server_host" "$route_host"
+  run_channels_workflows_checks "$server_host" "$route_host"
+
+  # Rollback restores the first release, its runtime, and the same data.
+  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" releases rollback "$first_release" --env production --yes
+  [[ "$(basename "$(resolve_current_release_link "$server_host")")" == "$first_release" ]]
+  sdk_get /
+  jq -e --arg build "$first_release" '.build == $build' "$body" >/dev/null
+  sdk_assert_data
+  run_channels_workflows_checks "$server_host" "$route_host"
+}
+
 run_universal_http_checks() {
   local server_host=$1
   local route_host=$2
@@ -1093,7 +1205,9 @@ run_admin_recovery_checks() {
   local source="$TMP_ROOT/recovery-source"
   local host invitation client_home project
   mkdir -p "$source"
-  printf 'name = "admin-recovery"\n[envs.production]\nnetwork = "%s"\nroute = "recovery.example.test"\n' "$NETWORK_ID" > "$source/tako.toml"
+  printf 'name = "admin-recovery"\n[envs.production]\nroute = "recovery.example.test"\n' > "$source/tako.toml"
+  mkdir -p "$source/.tako"
+  printf '{"environments":{"production":{"network":"%s"}}}\n' "$NETWORK_ID" > "$source/.tako/project.json"
   printf '%s' 'recovery-fixture-value' | HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" \
     "$TAKO_BIN" --ci --config "$source/tako.toml" secrets set RECOVERY_TOKEN --env production
   HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$source/tako.toml" secrets sync --env production
@@ -1110,6 +1224,9 @@ run_admin_recovery_checks() {
     mkdir -p "$client_home" "$project"
     chmod 0700 "$client_home"
     cp "$source/tako.toml" "$project/tako.toml"
+    # A clone brings the tracked project record along.
+    mkdir -p "$project/.tako"
+    cp "$source/.tako/project.json" "$project/.tako/project.json"
     printf '%s' "$invitation" | HOME="$client_home" TAKO_HOME="$client_home/tako" \
       "$TAKO_BIN" --ci network join --invitation-stdin
     unset invitation
@@ -1202,9 +1319,12 @@ let source = readFileSync(path, "utf8");
 const config = Bun.TOML.parse(source);
 const keys = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
   "SSL_CERT_FILE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "BUN_CONFIG_MAX_HTTP_REQUESTS"];
+// Compose reserves proxy and CA names for its own client, so a Compose
+// fixture receives them prefixed and passes them to its build explicitly.
+const name = key => (config.compose ? `E2E_${key}` : key);
 const entries = keys
-  .filter(key => process.env[key] && config.vars?.production?.[key] === undefined)
-  .map(key => `${key} = ${JSON.stringify(process.env[key])}`).join("\n");
+  .filter(key => process.env[key] && config.vars?.production?.[name(key)] === undefined)
+  .map(key => `${name(key)} = ${JSON.stringify(process.env[key])}`).join("\n");
 if (entries) {
   const section = /^\[vars\.production\][^\n]*$/m;
   source = section.test(source)
@@ -1316,6 +1436,9 @@ for entry in "${SERVERS[@]}"; do
   fi
   if [[ "$FIXTURE_REL" == "examples/compose/bun-redis" ]]; then
     run_compose_lifecycle_checks "$server" "$ROUTE_HOST" "$CURRENT_VERSION"
+  fi
+  if [[ "$FIXTURE_REL" == "e2e/fixtures/compose/sdk" ]]; then
+    run_compose_sdk_checks "$server" "$ROUTE_HOST" "$CURRENT_VERSION"
   fi
 
   echo "=== $server passed ==="

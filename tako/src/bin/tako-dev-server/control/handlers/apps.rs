@@ -119,6 +119,21 @@ pub(super) async fn register_app(
             .map_err(|e| format!("failed to generate dev bootstrap token: {e}"))?,
     };
 
+    let compose = compose
+        .map(|runtime| {
+            crate::compose::with_sdk(
+                &state,
+                runtime,
+                crate::compose::DevelopmentSdk {
+                    app_name: &app_name,
+                    token: &bootstrap_token,
+                    env: &env,
+                    secrets: &secrets,
+                    storages: &storages,
+                },
+            )
+        })
+        .transpose()?;
     let databases = crate::databases::connect(&config_path, &databases)
         .await
         .map_err(|e| format!("failed to serve local databases: {e}"))?;
@@ -135,7 +150,15 @@ pub(super) async fn register_app(
         }
     }
 
-    let (url, workflows, internal_socket, worker_log_buffer, worker_app_root, old_app_name) = {
+    let (
+        url,
+        workflows,
+        internal_socket,
+        worker_log_buffer,
+        worker_app_root,
+        old_app_name,
+        compose_workflows,
+    ) = {
         let mut s = state.lock().unwrap();
         s.cancel_idle_exit();
         let old_app_name = s.apps.get(&config_path).map(|app| app.name.clone());
@@ -175,6 +198,7 @@ pub(super) async fn register_app(
         // The new registration has no process or tunnel yet. Its recovery
         // snapshot must not replay the previous registration's ready/error state.
         s.events.forget_app(&config_path);
+        let compose_workflows = compose.clone();
         s.apps.insert(
             config_path.clone(),
             RuntimeApp {
@@ -260,25 +284,34 @@ pub(super) async fn register_app(
             worker_log_buffer,
             worker_app_root,
             old_app_name,
+            compose_workflows,
         )
     };
 
-    ensure_workflow_runtime(
-        workflows.clone(),
-        internal_socket,
-        &app_name,
-        &project_dir,
-        worker_command.as_deref(),
+    if !crate::compose::ensure_workflows(
+        workflows.as_ref(),
+        compose_workflows.as_ref(),
         workflow_retention_ms,
-        worker_app_root.as_deref(),
-        WorkerBindings {
-            storages: app_storages,
-            secrets: app_secrets,
-            databases: app_databases,
-        },
-        worker_log_buffer,
     )
-    .await;
+    .await
+    {
+        ensure_workflow_runtime(
+            workflows.clone(),
+            internal_socket,
+            &app_name,
+            &project_dir,
+            worker_command.as_deref(),
+            workflow_retention_ms,
+            worker_app_root.as_deref(),
+            WorkerBindings {
+                storages: app_storages,
+                secrets: app_secrets,
+                databases: app_databases,
+            },
+            worker_log_buffer,
+        )
+        .await;
+    }
     if let (Some(workflows), Some(old_app_name)) = (workflows, old_app_name)
         && old_app_name != app_name
     {
@@ -355,6 +388,7 @@ async fn ensure_workflow_runtime(
         databases,
         log_sink,
         isolation: None,
+        external: false,
     };
     if let Err(e) = workflows.ensure(&app, workflow_retention_ms, spec_fn).await {
         tracing::warn!(
@@ -435,6 +469,7 @@ pub(super) async fn unregister_app(state: &Arc<Mutex<State>>, config_path: Strin
         && !app_name.is_empty()
     {
         workflows.stop(&app_name, Duration::from_secs(1)).await;
+        workflows.stop_pinned_socket(&app_name).await;
     }
     crate::databases::release(&config_path).await;
 
@@ -456,6 +491,38 @@ pub(super) async fn restart_app(state: &Arc<Mutex<State>>, config_path: String) 
     let refreshed = match refreshed {
         Ok(runtime) => runtime,
         Err(message) => return Response::Error { message },
+    };
+    // A restart can add or remove sdk: true services.
+    let refreshed = match refreshed {
+        Some(runtime) => {
+            let app = state.lock().unwrap().apps.get(&config_path).map(|app| {
+                (
+                    app.name.clone(),
+                    app.bootstrap_token.clone(),
+                    app.env.clone(),
+                    app.secrets.clone(),
+                    app.storages.clone(),
+                )
+            });
+            match app {
+                Some((app_name, token, env, secrets, storages)) => match crate::compose::with_sdk(
+                    state,
+                    runtime,
+                    crate::compose::DevelopmentSdk {
+                        app_name: &app_name,
+                        token: &token,
+                        env: &env,
+                        secrets: &secrets,
+                        storages: &storages,
+                    },
+                ) {
+                    Ok(runtime) => Some(runtime),
+                    Err(message) => return Response::Error { message },
+                },
+                None => Some(runtime),
+            }
+        }
+        None => None,
     };
     // A new PID is published before readiness. Retire the previous routes
     // before stopping containers so that PID cannot expose stale ports.
@@ -514,18 +581,41 @@ pub(super) async fn restart_app(state: &Arc<Mutex<State>>, config_path: String) 
         log_buffer,
     )) = restart
     {
-        ensure_workflow_runtime(
-            workflows,
-            internal_socket,
-            &app_name,
-            &project_dir,
-            worker_command.as_deref(),
+        let compose = state
+            .lock()
+            .unwrap()
+            .apps
+            .get(&config_path)
+            .and_then(|app| app.compose.clone());
+        // The reload removed the last sdk: true service; nothing mounts the
+        // group's pinned socket any more.
+        if let Some(workflows) = workflows.as_ref()
+            && compose
+                .as_ref()
+                .is_some_and(|runtime| runtime.sdk().is_none())
+        {
+            workflows.stop_pinned_socket(&app_name).await;
+        }
+        if !crate::compose::ensure_workflows(
+            workflows.as_ref(),
+            compose.as_ref(),
             workflow_retention_ms,
-            app_root.as_deref(),
-            bindings,
-            Some(log_buffer),
         )
-        .await;
+        .await
+        {
+            ensure_workflow_runtime(
+                workflows,
+                internal_socket,
+                &app_name,
+                &project_dir,
+                worker_command.as_deref(),
+                workflow_retention_ms,
+                app_root.as_deref(),
+                bindings,
+                Some(log_buffer),
+            )
+            .await;
+        }
     }
 
     let log_buffer = {

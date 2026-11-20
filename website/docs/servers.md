@@ -37,7 +37,7 @@ tako network status production --json
 
 Replace the example IP with your server's reachable address. Bootstrap installs the native network components over administrator SSH, generates server keys on the host, enrolls its membership, and starts the service. Without an explicit SSH user, Tako uses `root`. With no host in an interactive terminal, Tako prompts for `admin@host`.
 
-`--network` selects a shared network name or stable ID. If omitted, Tako uses the network chosen with `tako network use`, or the only configured network. An explicit `--network` always takes precedence. Create or import a network first; with several networks and no choice, pass `--network`. `--ssh-key` selects the bootstrap key. The bootstrap SSH host and the key's absolute path are saved locally for subsequent reload, upgrade, and remove commands on this workstation. These SSH settings are scoped to the server and local network identity and are not exported with network membership. Use `--port` for a custom SSH port and `--http-port` / `--https-port` for public listeners (defaults `80` / `443`). `--wireguard-endpoint` overrides the advertised IP and UDP port (default: the host's IP on UDP `51820`); it does not change the saved SSH host.
+`--network` selects the network by this machine's alias or its stable ID. If omitted, Tako uses this machine's only network, or asks in an interactive terminal when there are several. Create or join a network first; without a terminal and with several networks, pass `--network`. `--ssh-key` selects the bootstrap key. The bootstrap SSH host and the key's absolute path are saved locally for subsequent reload, upgrade, and remove commands on this workstation. These SSH settings are scoped to the server and local network identity and are not exported with network membership. Use `--port` for a custom SSH port and `--http-port` / `--https-port` for public listeners (defaults `80` / `443`). `--wireguard-endpoint` overrides the advertised IP and UDP port (default: the host's IP on UDP `51820`); it does not change the saved SSH host.
 
 Allow the configured HTTPS port for management and the WireGuard UDP endpoint for private traffic. Deployments use signed pinned HTTPS without requiring a workstation WireGuard interface. See [Native networks](/networks/) for enrollment, permissions, routing, and connectivity limits.
 
@@ -45,7 +45,7 @@ Allow the configured HTTPS port for management and the WireGuard UDP endpoint fo
 
 Tako manages its own WireGuard network. Provider selection and Tailscale/NetBird integrations have been removed. The `--vpn`, `--no-test`, `--install`, and server `--description` flags are no longer available.
 
-To replace an old installation, preserve its app data and keys, create a Tako network, re-enroll each server with the command above, and set `[envs.<env>].network` to its stable ID. File-based inventories and their old `[[servers]]` entries are no longer read. To preserve placement in each project, set the environment’s `servers` list to the corresponding enrolled server names. Older native identities also need fresh enrollment; see [Native networks](/networks/) for the version-2 identity boundary.
+To replace an old installation, preserve its app data and keys, create a Tako network, and re-enroll each server with the command above. Each environment's next deploy records the network in `.tako/project.json`. File-based inventories and their old `[[servers]]` entries are no longer read. To preserve placement in each project, set the environment’s `servers` list to the corresponding enrolled server names. Older native identities also need fresh enrollment; see [Native networks](/networks/) for the version-2 identity boundary.
 
 ### Install directly on the server
 
@@ -70,12 +70,11 @@ tako network server upgrade production/edge
 tako network server upgrade production/edge --force
 tako network server remove production/edge
 tako network server remove production/edge --uninstall --yes
-tako network use production
-tako network server reload edge
-tako network server upgrade
+tako network server reload edge --network production
+tako network server upgrade --network production
 ```
 
-Use the exact selector shown by `tako network server list --json`, or a bare server name. A bare name resolves in `--network`, then the network chosen with `tako network use`, then the only configured network. `tako network server upgrade` without a name upgrades every server in that network. The selector normally has the form `network-name/server-name`. If enrolled networks share a name, it becomes `network-name/NETWORK_ID/server-name`. Duplicate server names within a network also append `/SERVER_DEVICE_ID`. Ambiguous short names are rejected. App placement in `[envs.<env>].servers` uses enrolled server names or device IDs within that environment's network; do not put maintenance selectors there.
+Use the exact selector shown by `tako network server list --json`, or a bare server name. The selector has the form `<alias>/<server>`, where the alias is this machine's name for the network. Aliases are unique on a machine, so networks that share a name still get distinct selectors. Duplicate server names within a network also append `/<device-id>`. A bare name resolves in `--network`, or in the only network; with several networks, pass `--network`. Interactive server pickers list every `<alias>/<server>`. `tako network server upgrade` without a name upgrades every server in that network. Ambiguous short names are rejected. App placement in `[envs.<env>].servers` uses enrolled server names or device IDs within that environment's network; do not put maintenance selectors there.
 
 `reload` is zero-downtime by default. Its `--force` flag performs a restart. `upgrade` installs a candidate `tako-server` binary, enters upgrade mode, and checks its protocol against the CLI and every active release before reloading. It checks again after readiness, then restarts the running network agent and optional running standby on the installed binary before leaving upgrade mode. An intentionally stopped standby stays stopped. Rollback also refreshes these companion processes. A mismatch fails before reload; any failure after reload begins restores and restarts the previous binary before upgrade mode ends. `upgrade --force` attempts a protocol mismatch but keeps readiness and rollback enabled. `network server revoke <selector>` revokes the server's network membership after confirmation. Enforcement on offline peers remains pending until they reconnect. It does not uninstall the service or delete app data.
 
@@ -85,15 +84,15 @@ Maintenance runs through restricted, root-owned helpers. Upgrades accept only of
 
 ## Map an app to servers
 
-Copy the stable ID from `tako network list --json`:
+An environment deploys to every trusted server in its network unless `servers` lists some of them by enrolled name or device ID:
 
 ```toml
 [envs.production]
 route = "app.example.com"
-network = "0123456789abcdef0123456789abcdef"
+servers = ["edge"]
 ```
 
-Use the actual network ID. Trusted members supply deployment targets. See [Deployment](/deployment/#configure-an-environment), and configure shared primitive state before deploying to multiple servers.
+The network itself is recorded in `.tako/project.json` by the environment's first deploy. See [Deployment](/deployment/#configure-an-environment). Before deploying workflows to multiple servers, set `postgres_url` or mark every workflow `local: true`; channels, presence, and stores need no extra setup.
 
 ## Verify access
 

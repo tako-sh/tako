@@ -47,6 +47,12 @@ pub(crate) struct Plan {
 
 impl Plan {
     pub fn new(mut model: Value, runtime: &ComposeRuntime) -> Result<Self, String> {
+        if runtime.sdk.is_none() && runtime.config.has_sdk_services() {
+            return Err(
+                "Compose sdk: true services need the group's Tako runtime, which is unavailable"
+                    .into(),
+            );
+        }
         let definitions = model["services"]
             .as_object_mut()
             .ok_or("Compose has no services")?;
@@ -224,6 +230,12 @@ impl Plan {
             identity["ingress_port"] = serde_json::to_value(runtime.ingress_ports.get(&plan.name))
                 .map_err(|e| e.to_string())?;
             identity["managed_shared_data"] = runtime.shared_mount().unwrap_or(Value::Null);
+            // Only SDK services carry the runtime, so plain services keep
+            // their identity and are replaced only when they change.
+            let sdk = runtime.sdk_identity(&plan.name);
+            if !sdk.is_null() {
+                identity["sdk"] = sdk;
+            }
             plan.fingerprint = hex::encode(Sha256::digest(
                 serde_json::to_vec(&identity).map_err(|e| e.to_string())?,
             ));
@@ -248,7 +260,7 @@ impl Plan {
         service: &ServicePlan,
         slot: u32,
         runtime: &ComposeRuntime,
-    ) -> Value {
+    ) -> Result<Value, String> {
         let mut model = self.model.clone();
         let mut definition = model["services"][&service.name].clone();
         let object = definition.as_object_mut().unwrap();
@@ -274,6 +286,7 @@ impl Plan {
             }
         }
         runtime.inject_shared_data(&mut definition);
+        runtime.inject_tako(&service.name, &mut definition)?;
         definition["labels"][SERVICE_LABEL] = json!(service.name);
         definition["labels"][SLOT_LABEL] = json!(slot.to_string());
         definition["labels"][FINGERPRINT_LABEL] = json!(service.fingerprint);
@@ -286,7 +299,7 @@ impl Plan {
                 json!([{"host_ip":"127.0.0.1", "published":"0", "target":port, "protocol":"tcp"}]);
         }
         model["services"] = json!({ (service.generation(slot)): definition });
-        model
+        Ok(model)
     }
 }
 

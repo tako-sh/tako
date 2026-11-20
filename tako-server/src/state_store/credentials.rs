@@ -35,6 +35,17 @@ impl SqliteStateStore {
         self.set_encrypted_row("app_runtime_credentials", app, &json)
     }
 
+    /// The Compose group's SDK token, created by its first deploy with an
+    /// `sdk: true` service and committed with that deployment.
+    pub fn get_compose_token(&self, app: &str) -> Result<Option<String>, StateStoreError> {
+        self.get_encrypted_row("app_compose_tokens", app)?
+            .map(|token| {
+                String::from_utf8(token)
+                    .map_err(|e| StateStoreError::InvalidData(format!("decode Compose token: {e}")))
+            })
+            .transpose()
+    }
+
     pub fn get_runtime_credentials(
         &self,
         app: &str,

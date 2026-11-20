@@ -17,47 +17,9 @@ impl crate::ServerState {
         } else {
             tako_core::ApplicationKind::Application
         };
-        let applications = config
-            .compose
-            .as_ref()
-            .map(|compose| {
-                compose
-                    .services
-                    .iter()
-                    .map(|(service, settings)| tako_core::ComposeApplicationStatus {
-                        name: format!("{}/{}", app.name(), service),
-                        service: service.clone(),
-                        state: if config.stopped || config.compose_stopped.contains(service) {
-                            tako_core::AppState::Stopped
-                        } else if app.get_instances().iter().any(|i| {
-                            i.compose_service().as_ref() == Some(service)
-                                && i.state() == tako_core::InstanceState::Healthy
-                        }) {
-                            tako_core::AppState::Running
-                        } else {
-                            match app.state() {
-                                tako_core::AppState::Running => tako_core::AppState::Error,
-                                state => state,
-                            }
-                        },
-                        routes: settings
-                            .envs
-                            .get(&config.environment)
-                            .map(|e| e.routes())
-                            .unwrap_or_default(),
-                        instances: app
-                            .get_instances()
-                            .iter()
-                            .filter(|i| i.compose_service().as_ref() == Some(service))
-                            .map(|i| i.status())
-                            .collect(),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let (services, services_error) = if let Some(compose) = config.compose {
+        let (services, services_error) = if let Some(compose) = config.compose.clone() {
             let mut env = config.env_vars.clone();
-            env.extend(config.secrets);
+            env.extend(config.secrets.clone());
             if let Some(data) = config
                 .env_vars
                 .get(crate::release::TAKO_SHARED_DATA_DIR_ENV)
@@ -70,11 +32,14 @@ impl crate::ServerState {
             if let Some(data) = config.env_vars.get(crate::release::TAKO_APP_DATA_DIR_ENV) {
                 env.insert(crate::release::TAKO_APP_DATA_DIR_ENV.into(), data.clone());
             }
-            let result =
-                match crate::compose_runtime::ComposeRuntime::new(config.path, compose, env) {
-                    Ok(runtime) => runtime.status().await,
-                    Err(error) => Err(error),
-                };
+            let result = match crate::compose_runtime::ComposeRuntime::new(
+                config.path.clone(),
+                compose,
+                env,
+            ) {
+                Ok(runtime) => runtime.status().await,
+                Err(error) => Err(error),
+            };
             match result {
                 Ok(services) => (services, None),
                 Err(error) => (Vec::new(), Some(error)),
@@ -82,6 +47,61 @@ impl crate::ServerState {
         } else {
             (Vec::new(), None)
         };
+        let applications = config
+            .compose
+            .as_ref()
+            .map(|compose| {
+                compose
+                    .services
+                    .iter()
+                    .map(|(service, settings)| {
+                        let kind = settings.kind();
+                        // HTTP apps are ready through their instances. Workers
+                        // have no backend pool; their containers report state.
+                        let running = match kind {
+                            tako_core::compose::ComposeServiceKind::Http => {
+                                app.get_instances().iter().any(|i| {
+                                    i.compose_service().as_ref() == Some(service)
+                                        && i.state() == tako_core::InstanceState::Healthy
+                                })
+                            }
+                            tako_core::compose::ComposeServiceKind::Worker => worker_running(
+                                services.iter().filter(|s| &s.service == service),
+                                app.compose_desired_replicas(service)
+                                    .or_else(|| config.compose_replicas.get(service).copied()),
+                            ),
+                        };
+                        tako_core::ComposeApplicationStatus {
+                            name: format!("{}/{}", app.name(), service),
+                            service: service.clone(),
+                            kind,
+                            sdk: settings.sdk,
+                            state: if config.stopped || config.compose_stopped.contains(service) {
+                                tako_core::AppState::Stopped
+                            } else if running {
+                                tako_core::AppState::Running
+                            } else {
+                                match app.state() {
+                                    tako_core::AppState::Running => tako_core::AppState::Error,
+                                    state => state,
+                                }
+                            },
+                            routes: settings
+                                .envs
+                                .get(&config.environment)
+                                .map(|e| e.routes())
+                                .unwrap_or_default(),
+                            instances: app
+                                .get_instances()
+                                .iter()
+                                .filter(|i| i.compose_service().as_ref() == Some(service))
+                                .map(|i| i.status())
+                                .collect(),
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
 
         let status = AppStatus {
             kind,
@@ -134,5 +154,54 @@ impl crate::ServerState {
             })
             .collect();
         Response::ok(serde_json::json!({ "routes": routes }))
+    }
+}
+
+/// A worker has no backend pool: it runs when every container is running and
+/// healthy, or finished successfully. A worker with no containers runs as
+/// desired only when the rollout planned zero replicas for it.
+fn worker_running<'a>(
+    mut containers: impl Iterator<Item = &'a tako_core::ComposeServiceStatus> + Clone,
+    desired_replicas: Option<u32>,
+) -> bool {
+    (containers.clone().next().is_some() || desired_replicas == Some(0))
+        && containers.all(|s| {
+            (s.state == "running" && (s.health.is_empty() || s.health == "healthy"))
+                || (s.state == "exited" && s.exit_code == 0)
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::worker_running;
+    use tako_core::ComposeServiceStatus;
+
+    fn container(state: &str, health: &str, exit_code: i64) -> ComposeServiceStatus {
+        ComposeServiceStatus {
+            service: "worker".into(),
+            state: state.into(),
+            health: health.into(),
+            exit_code,
+        }
+    }
+
+    #[test]
+    fn a_worker_planned_with_zero_replicas_runs_without_containers() {
+        assert!(worker_running(std::iter::empty(), Some(0)));
+        assert!(!worker_running(std::iter::empty(), Some(2)));
+        assert!(!worker_running(std::iter::empty(), None));
+    }
+
+    #[test]
+    fn a_worker_runs_only_while_every_container_is_healthy_or_completed() {
+        let healthy = [container("running", "", 0), container("exited", "", 0)];
+        assert!(worker_running(healthy.iter(), Some(2)));
+        let failed = [
+            container("running", "healthy", 0),
+            container("exited", "", 1),
+        ];
+        assert!(!worker_running(failed.iter(), Some(2)));
+        let starting = [container("running", "starting", 0)];
+        assert!(!worker_running(starting.iter(), Some(1)));
     }
 }

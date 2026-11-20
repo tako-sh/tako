@@ -239,7 +239,7 @@ const published = await siteEvents.publish({
 });
 ```
 
-`publish()` requires the Tako server runtime and returns the published `ChannelMessage`. It reaches only subscribers bound to the same params, so a parameterized channel publishes with `chat({ roomId }).publish(...)`. Browser code does not call it. An SSE browser only receives events, while a WebSocket browser sends `{ type, data }` through its connection.
+`publish()` requires the Tako server runtime and returns the published `ChannelMessage`. In a Docker Compose group, any `sdk: true` service can publish, and subscribers connect through an SDK HTTP app's route; see [Compose channels](/docker-compose/#channels-and-workflows). It reaches only subscribers bound to the same params, so a parameterized channel publishes with `chat({ roomId }).publish(...)`. Browser code does not call it. An SSE browser only receives events, while a WebSocket browser sends `{ type, data }` through its connection.
 
 `close()` ends a durable stream for good: `await chat({ roomId }).close()`. Subscribers receive every earlier message and then the end of the stream, and later publishes to it fail with a `TakoError` whose `reason` is `"channel_closed"`. Params the channel's schema rejects fail with `reason: "channel_params_invalid"`, and a channel the deployed build does not define with `reason: "channel_unknown"`. See [Stream A Reply That Survives A Refresh](#stream-a-reply-that-survives-a-refresh). Go has no server-side publish or close; Go apps can register a definition and serve its authorization, and can [publish to a JavaScript-owned network channel](/network-primitives/) but not close one.
 
@@ -406,12 +406,12 @@ Replay storage is a deployment choice for durable channels; application publish 
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
 | Local development              | In-memory for the current dev daemon process                                                                              |
 | One production server          | Tako-managed SQLite (`channels.sqlite`) by default                                                                        |
-| Native network servers         | Bounded SQLite replay replication and fanout over native private transport; Postgres can remain the shared replay backend |
+| Several servers in a network   | Bounded SQLite replay replication and fanout over native private transport; Postgres can remain the shared replay backend |
 | Explicit Postgres backend      | Shared schema `tako_channels`, keyed by deployed app id; supported on one or multiple servers                             |
 
 Native brokers exchange events only with trusted active server peers. Replay has byte and event-count limits; membership changes, transport gaps, or expired history can require a reset. The JavaScript SDK keeps reset messages out of business handlers and resumes subscriptions. Custom channels must reload authoritative application state through their recovery callback; stores reload their authorized snapshot. Reconnect does not recover missing business records by itself.
 
-Native environments selected with `[envs.<env>].network` can use SQLite for durable channel replay, presence, and store notifications across servers. No Postgres credential is required for those capabilities. If `postgres_url` is configured, Tako keeps using it; invalid or unreadable credentials fail deployment rather than silently switching backends.
+Every deploy targets a network, so durable channel replay, presence, and store notifications use SQLite across the network's servers. No Postgres credential is required for those capabilities. If `postgres_url` is configured, Tako keeps using it; invalid or unreadable credentials fail deployment rather than silently switching backends.
 
 To select shared Postgres explicitly:
 

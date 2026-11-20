@@ -35,7 +35,7 @@ Then deploy with `tako deploy --env production`.
 
 Each environment can bind a different database under the same name, such as `main = "shop"` in production and `main = "shop_staging"` in staging; app code reads the binding name. When an environment lacks a binding name that another environment has, `tako deploy` warns, since that database is missing when the app runs there. Development is checked only when `[envs.development].databases` is set.
 
-`tako sqlite` commands find the network from the project's environments. When they use several networks, pass `--network <id>`.
+`tako sqlite` commands use `--network` when given, else the network the project's environments record in `.tako/project.json`, else this machine's only network, else they ask in an interactive terminal. When the environments record several networks, pass `--network <alias-or-id>`.
 
 ## Use it from application code
 

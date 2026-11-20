@@ -1,0 +1,51 @@
+# Two services run the Tako SDK: `web` (an HTTP app) and `worker` (an
+# always-on workflow worker). `redis` and `nginx` stay ordinary Compose
+# services and receive nothing from Tako.
+services:
+  web:
+    build: &build
+      context: .
+      # A proxied test runner passes its proxy to `bun install`. Compose
+      # reserves the proxy names for its client, so the runner supplies them
+      # as E2E_-prefixed app variables.
+      args:
+        HTTP_PROXY: ${E2E_HTTP_PROXY:-}
+        HTTPS_PROXY: ${E2E_HTTPS_PROXY:-}
+        NO_PROXY: ${E2E_NO_PROXY:-}
+    command: [bun, node_modules/tako.sh/dist/entrypoints/bun-server.mjs, index.ts]
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379
+    x-tako:
+      sdk: true
+      envs:
+        production:
+          route: compose-sdk.example.com
+  worker:
+    build: *build
+    command: [bun, node_modules/tako.sh/dist/entrypoints/bun-worker.mjs]
+    environment:
+      TAKO_WORKER_CONCURRENCY: "4"
+    x-tako:
+      sdk: true
+  nginx:
+    image: docker.io/library/nginx:1.27-alpine
+    expose: ["80"]
+    x-tako:
+      envs:
+        production:
+          route: nginx.compose-sdk.example.com
+  redis:
+    image: docker.io/library/redis:7-alpine
+    command: [redis-server, --appendonly, "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+volumes:
+  redis-data:

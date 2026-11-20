@@ -23,6 +23,8 @@ const (
 	WorkflowSocketEnv = "TAKO_INTERNAL_SOCKET"
 	// AppNameEnv is the environment variable containing the current Tako app name.
 	AppNameEnv = "TAKO_APP_NAME"
+	// ComposeServiceEnv is set by Tako on every Compose service with x-tako.
+	ComposeServiceEnv = "TAKO_COMPOSE_SERVICE"
 )
 
 // EnqueueOpts controls per-enqueue behavior. Nil fields fall back to
@@ -78,6 +80,11 @@ func NewClient(socketPath, app string) *Client {
 func ClientFromEnv() (*Client, error) {
 	sock := os.Getenv(WorkflowSocketEnv)
 	if sock == "" {
+		// Tako marks every Compose x-tako service, but gives the runtime
+		// only to sdk: true ones.
+		if service := os.Getenv(ComposeServiceEnv); service != "" {
+			return nil, fmt.Errorf("tako: this Compose service (%q) isn't marked `sdk: true` in x-tako, so it has no Tako runtime for workflows; add `sdk: true` to services.%s.x-tako in the Compose file", service, service)
+		}
 		return nil, errors.New("tako: " + WorkflowSocketEnv + " is not set")
 	}
 	app := os.Getenv(AppNameEnv)

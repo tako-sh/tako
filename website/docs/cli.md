@@ -4,7 +4,7 @@ description: "Look up Tako command groups, global options, environment selection
 ---
 
 ```bash
-tako [--version] [-v|--verbose] [--ci] [--json] [--dry-run] [-c|--config <CONFIG>] [--ssh-passphrase <PASSPHRASE>] <command>
+tako [--version] [-v|--verbose] [--ci] [--json] [--dry-run] [-c|--config <CONFIG>] [--ssh-passphrase <PASSPHRASE>] [--network <NETWORK>] <command>
 ```
 
 Progress, prompts, and diagnostics normally go to stderr. Command results and machine-readable data go to stdout. Interactive `tako dev` owns stdout for its live interface and logs; `tako run` preserves child stdout.
@@ -22,16 +22,25 @@ Use `tako <command> --help` or the connected MCP tool's schema for the exact arg
 | `--dry-run`                     | Preview supported changes. A command that cannot preview its changes exits with an error before running. |
 | `-c`, `--config <CONFIG>`       | Use an explicit config file. `.toml` is appended when omitted.                                           |
 | `--ssh-passphrase <PASSPHRASE>` | Use a passphrase for encrypted local SSH keys.                                                           |
+| `--network <NETWORK>`           | Network to act on, by local alias or stable ID. See [Choosing a network](#choosing-a-network).           |
 
 App-scoped commands that honor `-c`: `agents`, `mcp`, `init`, `dev`, `run`, `logs`, `deploy`, `releases`, `backups`, `delete`, `secrets`, `credentials`, `storages`, `generate`, and project-context `scale`, `status`, and `doctor`.
 
 Preview changes with `--dry-run` on `agents`, `deploy`, `scale`, `delete`, `connect`, `disconnect`, `ssh`, `secrets sync`, `secrets migrate`, `secrets clear`, `backups now/download/restore`, and `workflows retry/cancel`. Network membership commands also support previews, including server add, revoke, remove, drain, and resume. Read-only commands still report their results.
 
-The config file's parent directory determines the project root and local `.tako/` state. Config files in the same directory share secret drafts; a bound environment cannot be reused for another app or network. See [alternate configurations](/secrets/#use-an-alternate-configuration).
+The config file's parent directory determines the project root, its tracked `.tako/project.json`, and local `.tako/` state. Config files in the same directory share environment networks and secret drafts; unpublished drafts cannot move to another app or network. See [alternate configurations](/secrets/#use-an-alternate-configuration).
 
 For finite commands, `--json` prints one final object. Commands without a specialized schema use `{"ok":true,"command":"<command>"}`. Failures print `{"ok":false,"error":{"message":"..."}}` on stdout and the human-readable error on stderr. Specialized objects: `status` includes `servers` and, in a project, `project`; `doctor` includes paths, CA, dev server, apps, proxy checks, and network reachability; `network server list`, `secrets list`, `credentials list`, `dev list`, `backups list`/`status`, and `releases list` include their collections; `backups download` and `backups restore` include the backup entry and what they wrote; `secrets clear` includes `environment`, the `cleared` secret names, and `dry_run`. Streaming exceptions keep stdout as JSONL until interrupted: `tako logs --tail --json` emits one log record per line, and `tako dev --json` emits a ready object, then log and event records, with no logo or TUI. `tako run` is also an exception: child stdout stays untouched and no JSON result object is appended.
 
 Installed CLIs send an anonymous event per command so we can count unique users and see which commands run. Set `TAKO_TELEMETRY=0` to opt out. See [Usage stats](#usage-stats).
+
+### Choosing a network
+
+Every command accepts the global `--network <alias-or-id>`, before or after the subcommand. It takes this machine's [alias](/networks/#name-networks-on-this-machine) for a network or its stable ID; the shared network name is not looked up. There is no default network.
+
+Project commands pick an environment's network from `--network`, then the network recorded for the environment in `.tako/project.json`, then this machine's only network. Otherwise an interactive terminal asks, and without a terminal the command fails and lists this machine's aliases. Inside a project, pass `--env` and leave the network to the record. `deploy` records the network it used; with a `--network` that differs from the record, it asks to move the environment and fails without a terminal. `secrets set`, `rm`, and `sync` record a network only when the environment has none yet. Other uses of `--network` apply for that run only. `development` never has a network. See [Choose an environment's network](/networks/#choose-an-environments-network).
+
+Network commands take the network as an argument or with `--network`, else use the only network, else ask in a terminal, else fail.
 
 ## Project Setup
 
@@ -39,7 +48,7 @@ Installed CLIs send an anonymous event per command so we can count unique users 
 tako init
 ```
 
-Creates `tako.toml`, updates `.gitignore`, detects runtime and preset, asks for app name and production route, and installs the SDK package for JS and Go projects. If the production route is a wildcard route, init can collect and encrypt the Cloudflare credential required for Let's Encrypt DNS-01. Interactive init then offers coding agent setup with a default of yes; non-interactive init leaves agent settings alone.
+Creates `tako.toml`, updates `.gitignore` so `.tako/` stays ignored except the tracked `.tako/project.json`, detects runtime and preset, asks for app name and production route, and installs the SDK package for JS and Go projects. If the production route is a wildcard route, init can collect and encrypt the Cloudflare credential required for Let's Encrypt DNS-01. Interactive init then offers coding agent setup with a default of yes; non-interactive init leaves agent settings alone.
 
 ```bash
 tako generate
@@ -172,7 +181,7 @@ Secrets are not process env vars. `tako run` is local-only in v0; it does not ru
 tako deploy [--env <env>] [-y|--yes] [--force] [--description <text>]
 ```
 
-Builds locally, uploads artifacts over signed HTTP management, prepares every mapped server, runs the optional release command on the leader, rolls instances, and finalizes the release. Before the release command, it snapshots each bound [hosted database](/databases/) that changed and has backups configured; deploys do not create full-directory archives. `--env` defaults to `production`. `development` is reserved for `tako dev`. Deploy requires the CLI, server, and release artifact to use the same protocol version; a mismatch fails before release commands, workflows, or app processes start. `--force` attempts the deploy despite a mismatch but does not skip normal validation or readiness checks. It is separate from `--yes`, which only skips confirmation.
+Uses the environment's [network](#choosing-a-network) and records it in `.tako/project.json`; in an interactive terminal it offers to add a server when that network has none yet. Builds locally, uploads artifacts over signed HTTP management, prepares every mapped server, runs the optional release command on the leader, rolls instances, and finalizes the release. Before the release command, it snapshots each bound [hosted database](/databases/) that changed and has backups configured; deploys do not create full-directory archives. `--env` defaults to `production`. `development` is reserved for `tako dev`. Deploy requires the CLI, server, and release artifact to use the same protocol version; a mismatch fails before release commands, workflows, or app processes start. `--force` attempts the deploy despite a mismatch but does not skip normal validation or readiness checks. It is separate from `--yes`, which only skips confirmation.
 
 ```bash
 tako logs [--env <env>] [--tail] [--days N]
@@ -187,7 +196,7 @@ tako scale --reset [--service <service>] [--env <env>] [--server <server>] [--ap
 
 Changes desired instance count on targeted servers. From a project, app identity is resolved from the config. Outside a project, pass `--app`, either as a base app with `--env` or as a full `{app}/{env}` deployment id.
 
-For a Compose group with exactly one `x-tako` app, that app is the default scale target. With multiple apps, supply `--service`. Untagged Docker services can also be selected with `--service`. The count is a persistent override that survives deploys, rollbacks, and restarts. `--reset` clears the selected service override and applies its current Compose `deploy.replicas` default (one when omitted). Supply either a count or `--reset`. These flags require a Compose app. Scaling a stopped app or group updates its count for the next start without resuming it. See [Compose scaling](/docker-compose/#scale-individual-services) for limits and shared-volume behavior.
+For a Compose group with exactly one HTTP app, that app is the default scale target. With multiple HTTP apps, supply `--service`; SDK workers and untagged Docker services are always selected with `--service`. The count is a persistent override that survives deploys, rollbacks, and restarts. `--reset` clears the selected service override and applies its current Compose `deploy.replicas` default (one when omitted). Supply either a count or `--reset`. These flags require a Compose app. Scaling a stopped app or group updates its count for the next start without resuming it. See [Compose scaling](/docker-compose/#scale-individual-services) for limits and shared-volume behavior.
 
 ```bash
 tako stop [--service <service>] [--env <env>] [--server <server>] [--app <app>]
@@ -196,7 +205,7 @@ tako start [--service <service>] [--env <env>] [--server <server>] [--app <app>]
 
 Stops or starts an existing deployment. From a project, pass `--env` to use its configured servers, or select `--server` (defaulting to the production environment when `--env` is omitted). Outside a project, pass `--server` and either `--app <app>/<env>` or `--app <app> --env <env>`. Both commands support global `--dry-run` and `--json`.
 
-For Compose, `--service` selects an `x-tako` app; omitting it selects the whole group, including its ordinary Docker services. Stopped apps retain their routes and configured replica counts. The stopped state survives deploys, rollbacks, and server restarts; requests do not wake them. Starting a group preserves apps that were individually stopped. Start the group before starting one of its apps. Explicitly stopped dependencies stay stopped even when a consumer starts or is redeployed. See [Compose start and stop](/docker-compose/#start-and-stop-apps).
+For Compose, `--service` selects an `x-tako` service, including SDK workers; omitting it selects the whole group, including its ordinary Docker services. Stopped apps retain their routes and configured replica counts. The stopped state survives deploys, rollbacks, and server restarts; requests do not wake them. Starting a group preserves apps that were individually stopped. Start the group before starting one of its apps. Explicitly stopped dependencies stay stopped even when a consumer starts or is redeployed. See [Compose start and stop](/docker-compose/#start-and-stop-apps).
 
 For native apps, stop also stops workflow workers. Unlike `scale 0`, it prevents automatic cold starts. Start resumes the configured instance count and workflows; for an app configured with zero minimum instances, it warms one instance without changing that minimum.
 
@@ -227,29 +236,31 @@ Lists release/build history or rolls an environment back to a previous release. 
 ## Networks
 
 ```bash
-tako network create <name>
-tako network client add <name> [--network <id-or-name>] [--deploy <app/env>]... [--expires-in <seconds>] [--identity] [--yes]
-tako network client list [--network <id-or-name>] [--all]
-tako network client revoke <name> [--network <id-or-name>] [--include-invited] [--yes]
-tako network join [--invitation-stdin]
+tako network create <name> [--alias <alias>]
+tako network client add <name> [--network <alias-or-id>] [--deploy <app/env>]... [--expires-in <seconds>] [--identity] [--yes]
+tako network client list [--network <alias-or-id>] [--all]
+tako network client revoke <name> [--network <alias-or-id>] [--include-invited] [--yes]
+tako network join [--alias <alias>] [--invitation-stdin]
 tako network sync [network]
 tako network export [network] --output <file>
-tako network list --json
-tako network use <network>
+tako network list [--json]
+tako network rename <alias-or-id> <new-alias>
 tako network status [network] --json
-tako network server revoke <server> [--network <id-or-name>]
-tako network server drain <server> [--network <id-or-name>] [--timeout <seconds>]
-tako network server resume <server> [--network <id-or-name>]
+tako network server revoke <server> [--network <alias-or-id>]
+tako network server drain <server> [--network <alias-or-id>] [--timeout <seconds>]
+tako network server resume <server> [--network <alias-or-id>]
 tako connect [network]
 tako disconnect [network]
-tako ssh <server> [--network <id-or-name>] [-- <command>...]
+tako ssh <server> [--network <alias-or-id>] [-- <command>...]
 ```
 
-Commands that act on one network take it from an explicit `--network` or positional network argument first, then from the network chosen with `tako network use`, then from the only configured network. With several networks and no choice, name the network in the command. The project's `tako.toml` does not select a network for these commands; deploy, secrets, and other app commands use the network of the selected environment. `network use` accepts a name or stable ID and stores the choice on this machine; `network list --json` marks the network those commands use with `"default": true`.
+A positional `[network]` takes an alias or stable ID, like `--network`; passing both with different networks is an error. Without either, these commands use this machine's only network, ask in an interactive terminal when it has several, and fail otherwise. Project commands choose the network of the selected environment instead; see [Choosing a network](#choosing-a-network).
 
-Invitations are single-use, expire after 3600 seconds by default (`client add --expires-in` accepts 60–86400), and are redeemed through their issuing server. `join` prompts for the invitation or a client identity, or reads either from stdin. `network sync` pulls published ciphertext without publishing worktree drafts. Network names are shared and currently immutable.
+Each machine names its networks by local aliases, unique on that machine; the shared network name is immutable and may repeat across networks. `create` uses the name as the alias; when that alias is taken here, an interactive terminal asks for another, suggesting `<name>-2`, and without a terminal `create` fails and asks for `--alias`. `join` asks for the alias in a terminal, suggesting the network name or `<name>-2` when taken; `--alias` skips the question, and without a terminal `join` uses the name when free and otherwise fails and asks for `--alias`. Rejoining a network this machine already has keeps its alias. `rename` changes only this machine's alias. `list` prints `alias`, or `alias (name)` when they differ; `list --json` returns `{"networks": [{"alias", "name", "id", "device"}]}`. Aliases start with a lowercase letter, use lowercase letters, digits, and `-`, are at most 63 characters, and can't look like a network ID.
 
-Each device generates and retains its own keys. Without `--deploy`, a client gets full access, including the `tako` SSH shell and `connect`; repeat `--deploy` to restrict it to deploying exact app/environment scopes. Deploy clients cannot `connect` or `ssh`. `client add --identity` prints a client identity instead of an invitation: the new client's keys and network profile in one string, on stdout, for machines that keep no state, such as CI. Set it as `TAKO_CLIENT_IDENTITY` and every command acts as that client, keeping its keys in a private temporary directory rather than the Tako home; `join` with an identity stores it like a joined device. Anyone holding an identity is that client until `client revoke`, so prefer `--deploy` for identities; a full-access identity prints a warning. `client revoke` revokes only that client and lists the clients it invited, which keep their access; `--include-invited` also revokes them and every client they invited, after a confirmation that names them all (`--yes` skips it). It refuses when that set includes the client running the command or would leave the network without a full client, before revoking any of them. Export contains public network configuration, not private keys or app secrets.
+Invitations are single-use, expire after 3600 seconds by default (`client add --expires-in` accepts 60–86400), and are redeemed through their issuing server. `join` prompts for the invitation or a client identity, or reads either from stdin. `network sync` pulls published ciphertext without publishing worktree drafts.
+
+Each device generates and retains its own keys. Without `--deploy`, a client gets full access, including the `tako` SSH shell and `connect`; repeat `--deploy` to restrict it to deploying exact app/environment scopes. Deploy clients cannot `connect` or `ssh`. `client add --identity` prints a client identity instead of an invitation: the new client's keys and network profile in one string, on stdout, for machines that keep no state, such as CI. Set it as `TAKO_CLIENT_IDENTITY` and every command acts as that client, keeping its keys in a private temporary directory rather than the Tako home. The identity holds exactly one network, so commands use it without `--network`; a network recorded for the environment in `.tako/project.json` must be that one; `join` with an identity stores it like a joined device. Anyone holding an identity is that client until `client revoke`, so prefer `--deploy` for identities; a full-access identity prints a warning. `client revoke` revokes only that client and lists the clients it invited, which keep their access; `--include-invited` also revokes them and every client they invited, after a confirmation that names them all (`--yes` skips it). It refuses when that set includes the client running the command or would leave the network without a full client, before revoking any of them. Export contains public network configuration, not private keys or app secrets.
 
 `drain` and `resume` require full access and a unique member name or device ID. Drain defaults to 120 seconds and accepts `0..3600`; zero requests immediate force. Inspect the structured completion report, not only the drained intent. See [Native server maintenance](/operations/#native-server-maintenance).
 
@@ -268,26 +279,26 @@ Requires root and a running native network agent with intact state and keys. Pri
 ## Servers
 
 ```bash
-tako network server add [admin@host] [--network <id-or-name>] [--name <name>] [--wireguard-endpoint <ip:udp-port>] [--port <ssh-port>] [--ssh-key <path>] [--http-port <port>] [--https-port <port>]
+tako network server add [admin@host] [--network <alias-or-id>] [--name <name>] [--wireguard-endpoint <ip:udp-port>] [--port <ssh-port>] [--ssh-key <path>] [--http-port <port>] [--https-port <port>]
 tako network server list
 tako network server ls
 tako status
-tako network server reload <name> [--network <id-or-name>] [--force]
-tako network server upgrade [name] [--network <id-or-name>] [--force]
-tako network server revoke [name] [--network <id-or-name>]
-tako network server remove [name] [--network <id-or-name>] [--uninstall] [-y|--yes]
-tako network server rm [name] [--network <id-or-name>] [--uninstall] [-y|--yes]
+tako network server reload <name> [--network <alias-or-id>] [--force]
+tako network server upgrade [name] [--network <alias-or-id>] [--force]
+tako network server revoke [name] [--network <alias-or-id>]
+tako network server remove [name] [--network <alias-or-id>] [--uninstall] [-y|--yes]
+tako network server rm [name] [--network <alias-or-id>] [--uninstall] [-y|--yes]
 ```
 
-`network server add` bootstraps over administrator SSH and enrolls the server's own keys, HTTPS pins, and endpoint in a Tako network. No `[[servers]]` entry is written. Without `--network`, it uses the network chosen with `tako network use` or the only configured network. Create or import a network first; with several networks and no choice, pass `--network`.
+`network server add` bootstraps over administrator SSH and enrolls the server's own keys, HTTPS pins, and endpoint in a Tako network. No `[[servers]]` entry is written. Without `--network`, it uses this machine's only network, or asks in an interactive terminal when there are several. Create or join a network first; without a terminal and with several networks, pass `--network`.
 
 Without a host, an interactive terminal prompts for `admin@host`. An omitted SSH user defaults to `root`. Public HTTP and HTTPS ports default to `80` and `443`. `--ssh-key` selects a private key for bootstrap and saves its absolute path locally for SSH maintenance (reload, upgrade, remove). This selection stays on the workstation; normal HTTPS management uses the enrolled device identity. External VPN providers and the old `--vpn`, `--install`, `--no-test`, and server `--description` options are removed. See [Servers](/servers/#choose-the-vpn-provider) to replace an old setup.
 
-`status` prints a deployment snapshot grouped by server, with compact server summary, routes, and app rows. An app whose instances the server had to replace shows a `Restarts` row with the restart count, the last exit (crashed, unhealthy, or failed to start, with its exit code or signal), and when the next restart is due while restarts are backing off. `--json` reports the same under `recovery` in each app status.
+`status` prints a deployment snapshot grouped by server, with compact server summary, routes, and app rows. With several networks, an interactive terminal (without `--json`) asks for all networks or one; `--network` narrows it to one, and without a terminal it shows every network. An app whose instances the server had to replace shows a `Restarts` row with the restart count, the last exit (crashed, unhealthy, or failed to start, with its exit code or signal), and when the next restart is due while restarts are backing off. `--json` reports the same under `recovery` in each app status.
 
-Inside a project (the current directory's `tako.toml`, or `-c`), `status` also shows its resources without reading or showing any value. Under each server, `Databases` lists the Tako-hosted databases homed there and which of the project's app environments bind them. After the servers, an `App` block lists each environment: its network and target servers, the number of app secrets (`tako secrets list` shows their names), which provider credentials are set, its storage bindings and whether S3 credentials exist, whether a backup key exists, and each database binding with its server. A deploy client sees the databases and servers and a note that secrets need a full client. `--json` adds `databases` (`name`, `bound_by`) to each server and a top-level `project` object, `null` outside a project: `{"app", "environments": [{"name", "network", "access": "local"|"full"|"deploy"|"unknown", "servers", "secrets": <count>|null, "credentials": [<name>]|null, "storages": [{"binding", "resource", "credentials": true|false|null}], "backup_key": true|false|null, "databases": [{"binding", "database", "server"}], "note"}]}`. `null` means this device can't see that value.
+Inside a project (the current directory's `tako.toml`, or `-c`), `status` also shows its resources without reading or showing any value. Under each server, `Databases` lists the Tako-hosted databases homed there and which of the project's app environments bind them. After the servers, an `App` block lists each environment: the network recorded for it in `.tako/project.json` and its target servers, the number of app secrets (`tako secrets list` shows their names), which provider credentials are set, its storage bindings and whether S3 credentials exist, whether a backup key exists, and each database binding with its server. A deploy client sees the databases and servers and a note that secrets need a full client. `--json` adds `databases` (`name`, `bound_by`) to each server and a top-level `project` object, `null` outside a project: `{"app", "environments": [{"name", "network", "access": "local"|"full"|"deploy"|"unknown", "servers", "secrets": <count>|null, "credentials": [<name>]|null, "storages": [{"binding", "resource", "credentials": true|false|null}], "backup_key": true|false|null, "databases": [{"binding", "database", "server"}], "note"}]}`. `null` means this device can't see that value.
 
-Maintenance commands accept the exact selector shown by `network server list --json`, usually `network-name/server-name`, which names its own network. A bare server name resolves in `--network`, then the network chosen with `tako network use`, then the only configured network. `upgrade` without a name upgrades every server in that network. Without a name, `revoke` and `remove` prompt with that network's servers, or with every server when no network applies; see [Server maintenance](/servers/#server-maintenance). `network server reload` performs a zero-downtime service reload by default. Its `--force` flag performs a full restart. `network server upgrade` checks the candidate protocol against the CLI and every active app before reload, checks again after readiness, and restores and restarts the previous binary if the upgrade fails. `network server upgrade --force` attempts an incompatible upgrade but keeps readiness and rollback checks enabled. `network server revoke` revokes the server's network membership without deleting app data; clients it approved keep theirs. `network server remove` (alias `rm`) takes the server out of the network for good over administrator SSH: it lists the apps on the server, publishes the revocation, then deletes every app, its releases, volumes, databases, and backups on the server, and the server's network identity and state. Tako stays installed, so `network server add` can enroll the machine in any network again; `--uninstall` also removes the service, binaries, and service files. Revocation failure stops before deletion; cleanup failure after revocation reports removal as incomplete and names the helper to finish it over SSH. Offline peers enforce the revocation when they reconnect. Removing the last server of a network requires `--yes`, as do non-interactive runs. `--dry-run` performs neither revocation nor deletion. `--json` reports `{"network", "server", "apps", "uninstalled"}`; `apps` is `null` when the server could not list them.
+Maintenance commands accept the exact selector shown by `network server list --json`, `<alias>/<server>`, which names its own network by this machine's alias. Two servers with the same name in one network get `<alias>/<server>/<device-id>`. A bare server name resolves in `--network`, or in the only network; with several networks, pass `--network`. `upgrade` without a name upgrades every server in that network. Without a name, `revoke` and `remove` prompt with that network's servers, or with every `<alias>/<server>` when the machine has several networks and no `--network`; see [Server maintenance](/servers/#server-maintenance). `network server reload` performs a zero-downtime service reload by default. Its `--force` flag performs a full restart. `network server upgrade` checks the candidate protocol against the CLI and every active app before reload, checks again after readiness, and restores and restarts the previous binary if the upgrade fails. `network server upgrade --force` attempts an incompatible upgrade but keeps readiness and rollback checks enabled. `network server revoke` revokes the server's network membership without deleting app data; clients it approved keep theirs. `network server remove` (alias `rm`) takes the server out of the network for good over administrator SSH: it lists the apps on the server, publishes the revocation, then deletes every app, its releases, volumes, databases, and backups on the server, and the server's network identity and state. Tako stays installed, so `network server add` can enroll the machine in any network again; `--uninstall` also removes the service, binaries, and service files. Revocation failure stops before deletion; cleanup failure after revocation reports removal as incomplete and names the helper to finish it over SSH. Offline peers enforce the revocation when they reconnect. Removing the last server of a network requires `--yes`, as do non-interactive runs. `--dry-run` performs neither revocation nor deletion. `--json` reports `{"network", "server", "apps", "uninstalled"}`; `apps` is `null` when the server could not list them.
 
 ## Secrets
 
@@ -296,16 +307,16 @@ tako secrets set <NAME> [--env <env>] [--expires-on <when>]
 tako secrets add <NAME> ...
 tako secrets rm <NAME> [--env <env>] [--yes]
 tako secrets list
-tako secrets sync [--env <env>] [--retry-expired]
+tako secrets sync [--env <env>] [--network <alias-or-id>] [--retry-expired]
 tako secrets clear --env <env> [--yes]
 tako secrets migrate
 tako secrets key export [--env <env>]
 tako secrets key import [--env <env>] [--passphrase]
 ```
 
-Secrets are app-facing values delivered to SDKs. Values are encrypted in ignored worktree-local `.tako/state.local.json`; keys are stored outside the project. Interactive prompts accept pasted multiline values and ask before trimming surrounding whitespace; non-interactive commands read the full stdin stream. Set/remove commands only edit local drafts. Deploy and `secrets sync` pull published state, preserve local edits, and publish per-key changes for the selected environment. Sync does not restart running apps; deploy to apply values. `secrets list` reads local state only. For each environment it shows `[set] by <device>` with the device that published the current value, `[draft]` for a change in this worktree that is not published yet, or `[set]` when the environment has no network; `--json` adds the same per environment as `last_changed`. Network-bound secrets, provider credentials, storage credentials, and backup keys are replicated as ciphertext between servers. Authorized clients cache them through HTTPS.
+Secrets are app-facing values delivered to SDKs. Values are encrypted in ignored worktree-local `.tako/state.local.json`; keys are stored outside the project. Interactive prompts accept pasted multiline values and ask before trimming surrounding whitespace; non-interactive commands read the full stdin stream. Set/remove commands only edit local drafts. An environment without a network keeps them as drafts until its first deploy or `secrets sync` picks a network, records it, and publishes them; `--network` on set or remove binds the draft to that network instead, recording it when the environment has none. Deploy and `secrets sync` pull published state, preserve local edits, and publish per-key changes for the selected environment. `secrets sync` without `--env` syncs every environment that has a recorded network. Sync does not restart running apps; deploy to apply values. `secrets list` reads local state only. For each environment it shows `[set] by <device>` with the device that published the current value, `[draft]` for a change in this worktree that is not published yet, or `[set]` when the environment has no network; `--json` adds the same per environment as `last_changed`. Network-bound secrets, provider credentials, storage credentials, and backup keys are replicated as ciphertext between servers. Authorized clients cache them through HTTPS.
 
-`secrets clear` deletes every app secret of one environment from that environment's network and publishes the deletions immediately, unlike `set` and `rm`. It first pulls published state, so values published from other devices or worktrees are deleted too, and it discards this worktree's unpublished app drafts for the environment. Another worktree's unpublished edit to a cleared name is published again by that worktree's next sync or deploy. If clearing stops partway, its deletions remain saved drafts; rerun it, or the next sync or deploy publishes them. Other unpublished drafts, such as provider credentials, stay local. Storage credentials and backup keys are kept. Interactive runs list the names and ask for confirmation; non-interactive runs require `--yes`. `--dry-run` previews from local drafts and the device cache without contacting the network. Running apps keep their values until their next deployment.
+`secrets clear` deletes every app secret of one environment from that environment's network (or the `--network` one, for that run) and publishes the deletions immediately, unlike `set` and `rm`. It first pulls published state, so values published from other devices or worktrees are deleted too, and it discards this worktree's unpublished app drafts for the environment. Another worktree's unpublished edit to a cleared name is published again by that worktree's next sync or deploy. If clearing stops partway, its deletions remain saved drafts; rerun it, or the next sync or deploy publishes them. Other unpublished drafts, such as provider credentials, stay local. Storage credentials and backup keys are kept. Interactive runs list the names and ask for confirmation; non-interactive runs require `--yes`. `--dry-run` previews from local drafts and the device cache without contacting the network. Running apps keep their values until their next deployment.
 
 Secret state retains the current value per key and versioned deletions. Pending publication requests expire after seven days; `--retry-expired` explicitly replaces expired requests with the current local drafts as new changes. Review the drafts first, since they can overwrite remote changes to those keys.
 
@@ -328,7 +339,7 @@ Running `tako credentials` without a subcommand lists credentials. Set and remov
 
 Provider credentials are Tako-owned runtime credentials, not app secrets. Supported names are `ssl.cloudflare` and `postgres_url`. They are encrypted in the local state and the network state, never exposed to app code, and published by `tako secrets sync` or deploy. Running processes receive the new bindings on deploy.
 
-`ssl.cloudflare` powers Let's Encrypt DNS-01 and Cloudflare Origin CA. `postgres_url` enables shared channel replay, Presence membership, Store invalidation, and workflow state for multi-server deployments. It is a provider credential and is not exposed to app code.
+`ssl.cloudflare` powers Let's Encrypt DNS-01 and Cloudflare Origin CA. `postgres_url` moves channel replay, Presence membership, Store invalidation, and workflow state to shared Postgres. Multi-server workflows need it unless every workflow is `local: true`; channels, presence, and stores work across a network's servers without it. It is a provider credential and is not exposed to app code.
 
 ## Storage
 
@@ -379,7 +390,7 @@ tako sqlite delete <name> [--server <server>] [-y|--yes]
 tako sqlite rm ...
 ```
 
-`tako db` is an alias for `tako sqlite`. A database belongs to the project's network, which the commands find from the environments in `tako.toml`; pass `--network <id>` when they use several. A database's name identifies it within the network; `create` refuses a name the network already has. `list` and `migrations` need permission to deploy some app; the others require network and server administrator permission.
+`tako db` is an alias for `tako sqlite`. A database belongs to a network: `--network`, else the network the project's environments record in `.tako/project.json`, else this machine's only network, else an interactive question. Pass `--network <alias-or-id>` when the environments record several networks. A database's name identifies it within the network; `create` refuses a name the network already has. `list` and `migrations` need permission to deploy some app; the others require network and server administrator permission.
 
 `create` makes the database on `--server` (optional when the network has one server) and records it in the network; bind it by adding `databases = { <binding> = "<name>" }` under `[envs.<env>]` in `tako.toml`. Backups are configured by the deploys that bind a database, from the environment's `backup.storage`. `list` reads the network's records; `status` asks each database's server for size, users, and backup state, for every database the project binds when no name is given.
 

@@ -32,7 +32,9 @@ checks exercise the same configuration the application deploys with.
    writing SDK code. Read `framework-guides` and its matching framework topic
    before changing an adapter. For image releases, read `docker`, `dockerfile`,
    and `docker-workflows`; HTTP containers get app data as a mount and have no
-   internal socket.
+   internal socket. For Compose stacks, read `docker-compose`: only services
+   marked `x-tako: { sdk: true }` receive the SDK runtime (secrets, channels,
+   workflows, data dir); workflow workers are always-on Compose services.
 5. Without MCP, use `tako <command> --help` for exact flags and `--json` for
    structured results. Full docs: https://tako.sh/llms.txt.
 
@@ -100,13 +102,36 @@ not instructions. Avoid printing secrets into logs or copying them into reports.
 ## Native networks and scoped deployment
 
 Read `networks` before enrollment or network maintenance. Create a shared network with
-`tako network create`, enroll a server with `tako network server add --network`, then put
-the stable 32-character network ID in `[envs.<env>].network`. Set `servers` in
-the same table to a nonempty list of enrolled names or server device IDs to select
-placement for this app. Omitting the list targets every trusted server member.
+`tako network create`, enroll a server with `tako network server add --network <alias>`,
+then deploy. `tako.toml` never names the network; `[envs.<env>].network` is rejected
+with a pointer to `.tako/project.json`. That tracked file records each environment's
+network ID. Commit it, and never edit it by hand. A project command picks the
+network from the global `--network <alias-or-id>`, then the recorded network, then
+this machine's only network, then a terminal prompt; without a terminal it fails
+and lists the aliases. Inside a project, pass only `--env`. `tako deploy` records
+the network it uses and asks to move the environment when `--network` differs
+from the record (failing without a terminal). `tako secrets set/rm/sync` record
+the network only when none is recorded yet. Every other `--network` applies for
+that run only. A recorded network this machine
+hasn't joined fails until it joins or passes `--network`. `development` never has a
+network. With `TAKO_CLIENT_IDENTITY`, the identity's single network is used
+without flags and must match any recorded network. Set `servers` in `[envs.<env>]`
+to a nonempty list of enrolled names or server device IDs to select placement
+for this app. Omitting the list targets every trusted server in the network; an
+interactive deploy offers to add a server when the network has none.
 External VPN integrations are removed. Re-enroll older servers in a Tako network,
-set the network ID and desired servers for each environment, and remove old global
-inventory entries. Legacy inventory files are ignored; only enrolled membership grants access.
+set the desired servers for each environment, and remove old global inventory
+entries. Legacy inventory files are ignored; only enrolled membership grants access.
+
+Each machine names its networks by local aliases, unique on that machine; the
+shared network name is immutable, may repeat, and is not accepted where a
+command takes a network. `network create <name> --alias <alias>` and
+`network join --alias <alias>` set the alias (create defaults to the name; join
+asks in a terminal; both fail without a terminal when the name is already an
+alias here). `network rename <alias-or-id> <new-alias>` changes only this
+machine's alias. `network list --json` returns `alias`, `name`, `id`, and `device`
+for each network. There is no default network: network commands take an argument
+or `--network`, else use the only network, else prompt, else fail.
 
 Enroll each new laptop or sandbox with `network client add <name>` and
 `network join`. A full client creates a single-use invitation. Without flags the
@@ -119,12 +144,19 @@ that client without writing keys to the Tako home. Never copy a joined device's
 private keys; create an identity or a new invitation instead. Clients never connect to other clients and do not
 run Corrosion. Servers replicate network state.
 
-Keep `tako.toml` in Git; keep `.tako/` ignored. Each worktree has separate secret
-drafts. Set/remove changes remain local until deploy or `secrets sync` publishes
-the selected environment. `secrets clear --env <env>` is the exception: it deletes
+Keep `tako.toml` and `.tako/project.json` in Git; keep the rest of `.tako/` ignored.
+Each worktree has separate secret drafts. Set/remove changes remain local until
+deploy or `secrets sync` publishes the selected environment; an environment with
+no network yet keeps them local until its first deploy or sync picks one.
+`secrets sync` without `--env` syncs the environments that have a recorded network. `secrets clear --env <env>` is the exception: it deletes
 every app secret of that environment from its network at once, keeping credentials,
 storage keys, and backup keys. Use it when an environment is retired or moves to
-another network; `tako delete` never removes secrets. `network sync` only refreshes the device cache. Sync
+another network; `tako delete` never removes secrets. Moving an environment does
+not copy its secrets to the new network: set them with
+`tako secrets set --env <env> --network <new>` before `tako deploy --env <env> --network <new>`.
+A checkout whose drafts are all published follows the move; unpublished drafts for
+the old network block the move until published there
+(`tako secrets sync --env <env> --network <old>`) or removed. `network sync` only refreshes the device cache. Sync
 does not restart running apps. Different keys merge independently; the same key
 uses deterministic logical last-write-wins. Coordinate concurrent releases and
 multi-key rotations. Network state retains only each key's current encrypted
@@ -143,11 +175,12 @@ network agent. It cannot restore a network after every copy and key is lost.
 
 Deploy loads membership and cached values only for its selected environment's
 network; an unrelated inactive membership must not block it. Honor `--config`:
-its parent directory determines the project and draft store. Configs sharing a
-directory share drafts, and an environment already bound to another app/network
-cannot be silently reused. Use a separate worktree for a different target.
-For maintenance, copy the exact selector from `network server list --json`;
-colliding network or server names add stable IDs to that selector.
+its parent directory determines the project, `.tako/project.json`, and draft store.
+Configs sharing a directory share environment networks and drafts, and unpublished
+drafts cannot move to another app/network. Use a separate worktree for a different target.
+For maintenance, copy the exact `<alias>/<server>` selector from
+`network server list --json`; duplicate server names in one network add the device
+ID. A bare server name needs `--network` when the machine has several networks.
 `network server revoke` revokes only membership and keeps the server's apps and data.
 To retire a server or move it to another network, `network server remove <server>`
 revokes it, then deletes every app, its data and backups on it, and its network
@@ -192,10 +225,8 @@ Ordinary Cloudflare HTTP forwarding headers remain supported.
 
 Use `tako network server drain <server> --network <alias> --timeout 120 --json` and
 `tako network server resume <server> --network <alias> --json` for server maintenance.
-Network commands without a network argument use the network chosen with
-`tako network use <network>`, then the only configured network; pass `--network`
-when several networks exist. Check `tako network list --json` for the default.
-For server drain, `status = "draining"` means cleanup is pending. Completion requires
+With several networks, `tako status` asks in a terminal for one or all; pass
+`--network` to narrow it. For server drain, `status = "draining"` means cleanup is pending. Completion requires
 all proxy processes on the server to be quiescent. Inspect completion, timeout,
 forced work, remaining work, and errors. Do not describe forced or incomplete
 cleanup as graceful. Drain/resume does not migrate volumes, durable workflows,
@@ -250,8 +281,8 @@ history expires. React's optional `onResync` can be async but does not delay
 reconnect. Stores reload through their authorized loader automatically after
 subscription readiness. Native brokers replicate bounded SQLite replay and fan
 out to trusted server peers; presence uses expiring server-bound leases. This
-is not permanent history or durable workflow migration. Native multi-server
-durable channel/presence/store delivery can use SQLite without Postgres;
+is not permanent history or durable workflow migration. Every deploy targets a
+network, so multi-server durable channel/presence/store delivery uses SQLite without Postgres;
 ephemeral channels use memory-only delivery. Configured credentials remain in use; credential
 read or validation failures must not trigger a backend fallback. Multi-server
 workflows still require Postgres unless intentionally local. Test expired history

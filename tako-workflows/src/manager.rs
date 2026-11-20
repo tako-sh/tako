@@ -26,7 +26,7 @@ use super::dispatcher::WorkDispatcher;
 use super::enqueue::{RunsDb, RunsDbError, WorkflowStoreConfig};
 use super::enqueue_socket::{
     AppHandlers, AppLookup, ChannelPublishFn, EnqueueSocketHandle, NetworkCallFn, OnEnqueue,
-    PeerAuthFn, spawn as spawn_internal_socket,
+    PeerAuthFn, SocketOptions, pinned_app_auth, spawn as spawn_internal_socket, spawn_with_options,
 };
 use super::in_flight::InFlightLimiter;
 use super::supervisor::{WorkerSpec, WorkerSupervisor};
@@ -109,6 +109,9 @@ pub struct WorkflowManager {
     data_dir: PathBuf,
     apps: Arc<RwLock<HashMap<String, AppWorkflow>>>,
     socket: parking_lot::Mutex<Option<EnqueueSocketHandle>>,
+    /// Per-app sockets that serve only their app, keyed by app, with the
+    /// symlink path each one owns.
+    pinned_sockets: parking_lot::Mutex<HashMap<String, (PathBuf, EnqueueSocketHandle)>>,
     postgres_url: parking_lot::Mutex<Option<PostgresUrlResolver>>,
     /// Server-side channel `publish` relay used by SDK channel handles.
     /// Snapshotted at `start_socket` time and passed into the socket's
@@ -275,6 +278,7 @@ impl WorkflowManager {
             data_dir: data_dir.into(),
             apps: Arc::new(RwLock::new(HashMap::new())),
             socket: parking_lot::Mutex::new(None),
+            pinned_sockets: parking_lot::Mutex::new(HashMap::new()),
             postgres_url: parking_lot::Mutex::new(None),
             channel_publish: parking_lot::Mutex::new(None),
             peer_auth: parking_lot::Mutex::new(None),
@@ -340,13 +344,74 @@ impl WorkflowManager {
         if guard.is_some() {
             return Ok(());
         }
+        let (lookup, publisher, route) = self.socket_handlers();
+        let peer_auth = self.peer_auth.lock().clone();
+        *guard = Some(spawn_internal_socket(
+            self.socket_path(),
+            lookup,
+            publisher,
+            peer_auth,
+            Some(route),
+        )?);
+        Ok(())
+    }
+
+    /// Bring up a socket that serves only `app`, whatever the caller's Unix
+    /// identity, at `symlink_path` with the given file mode. For processes
+    /// that cannot present a per-app identity, such as Compose containers,
+    /// which reach it through a mounted directory. Idempotent for the same
+    /// path; a new path replaces the app's previous socket. A successor
+    /// server process binds its own socket and swaps the shared symlink.
+    pub fn start_pinned_socket(
+        &self,
+        app: &str,
+        symlink_path: &Path,
+        mode: u32,
+    ) -> Result<(), WorkflowManagerError> {
+        let mut sockets = self.pinned_sockets.lock();
+        if sockets
+            .get(app)
+            .is_some_and(|(path, _)| path == symlink_path)
+        {
+            return Ok(());
+        }
+        let (lookup, publisher, route) = self.socket_handlers();
+        let handle = spawn_with_options(
+            symlink_path,
+            lookup,
+            publisher,
+            Some(pinned_app_auth(app)),
+            Some(route),
+            SocketOptions { mode: Some(mode) },
+        )?;
+        sockets.insert(app.to_string(), (symlink_path.to_path_buf(), handle));
+        Ok(())
+    }
+
+    /// Stop an app's pinned socket and remove its symlink. Returns the
+    /// symlink path it served.
+    pub async fn stop_pinned_socket(&self, app: &str) -> Option<PathBuf> {
+        let (path, handle) = self.pinned_sockets.lock().remove(app)?;
+        handle.shutdown().await;
+        let _ = std::fs::remove_file(&path);
+        Some(path)
+    }
+
+    pub fn pinned_socket_path(&self, app: &str) -> Option<PathBuf> {
+        self.pinned_sockets
+            .lock()
+            .get(app)
+            .map(|(path, _)| path.clone())
+    }
+
+    /// The command handlers every internal socket shares.
+    fn socket_handlers(&self) -> (AppLookup, Option<ChannelPublishFn>, NetworkCallFn) {
         let apps = self.apps.clone();
         let lookup: AppLookup = Arc::new(move |app: &str| {
             let apps = apps.read();
             apps.get(app).map(AppWorkflow::handlers)
         });
         let publisher = self.channel_publish.lock().clone();
-        let peer_auth = self.peer_auth.lock().clone();
         let network_call = self.network_call.clone();
         let route: NetworkCallFn = Arc::new(move |caller, target, invocation| {
             let route = network_call.read().clone();
@@ -358,14 +423,7 @@ impl WorkflowManager {
                 ),
             }
         });
-        *guard = Some(spawn_internal_socket(
-            self.socket_path(),
-            lookup,
-            publisher,
-            peer_auth,
-            Some(route),
-        )?);
-        Ok(())
+        (lookup, publisher, route)
     }
 
     /// Configure or reconfigure workflows for an app. Called on deploy.
@@ -863,6 +921,12 @@ impl WorkflowManager {
         if let Some(handle) = socket {
             handle.shutdown().await;
         }
+        // Keep each pinned symlink: a successor may already serve it, and
+        // the next start re-binds it otherwise.
+        let pinned: Vec<_> = self.pinned_sockets.lock().drain().collect();
+        for (_, (_, handle)) in pinned {
+            handle.shutdown().await;
+        }
     }
 }
 
@@ -939,6 +1003,7 @@ pub fn worker_spec_for_command(
         log_sink: None,
         isolation,
         lanes: Vec::new(),
+        external: false,
     }
 }
 
@@ -964,7 +1029,83 @@ mod tests {
             log_sink: None,
             isolation: None,
             lanes: Vec::new(),
+            external: false,
         }
+    }
+
+    #[tokio::test]
+    async fn external_workers_use_a_pinned_socket_and_only_the_release_registers() {
+        use tako_socket::{read_json_line, write_json_line};
+        let tmp = tempfile::tempdir().unwrap();
+        let m = WorkflowManager::new(tmp.path());
+        let prepared = m
+            .prepare(
+                WorkflowStoreConfig::sqlite(tmp.path().join("workflows.sqlite")),
+                None,
+                WorkerSpec::external("shop/production", "v2"),
+                ScheduleActivation::Deploy,
+            )
+            .await
+            .unwrap();
+        prepared.supervisor.start().await.unwrap();
+        m.install("shop/production", prepared);
+        let socket = tmp.path().join("group").join("internal.sock");
+        m.start_pinned_socket("shop/production", &socket, 0o666)
+            .unwrap();
+        // Idempotent for the same path.
+        m.start_pinned_socket("shop/production", &socket, 0o666)
+            .unwrap();
+        let send = async |command: tako_core::Command| -> tako_core::Response {
+            let stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+            let (r, mut w) = stream.into_split();
+            let mut r = tokio::io::BufReader::new(r);
+            write_json_line(&mut w, &command).await.unwrap();
+            read_json_line(&mut r).await.unwrap().unwrap()
+        };
+        let register = |build: &str| tako_core::Command::RegisterSchedules {
+            app: "shop/production".into(),
+            build: Some(build.into()),
+            schedules: vec![tako_core::ScheduleSpec {
+                name: "nightly".into(),
+                cron: "0 0 * * *".into(),
+                max_attempts: None,
+            }],
+        };
+        // Enqueue works before any worker runs: nothing is spawned.
+        let enqueued = send(tako_core::Command::EnqueueRun {
+            app: "shop/production".into(),
+            name: "send".into(),
+            payload: serde_json::json!({}),
+            opts: Default::default(),
+        })
+        .await;
+        assert!(enqueued.is_ok(), "{enqueued:?}");
+        assert!(!m.supervisor_for("shop/production").unwrap().is_running());
+        // A worker of another build cannot replace the release's schedules.
+        assert_eq!(send(register("v1")).await.data().unwrap()["count"], 0);
+        assert_eq!(send(register("v2")).await.data().unwrap()["count"], 1);
+        let claimed = send(tako_core::Command::ClaimRun {
+            app: "shop/production".into(),
+            worker_id: "worker-default-1".into(),
+            names: vec!["send".into()],
+            lease_ms: 30_000,
+        })
+        .await;
+        assert_eq!(claimed.data().unwrap()["name"], "send");
+        let foreign = send(tako_core::Command::EnqueueRun {
+            app: "other/production".into(),
+            name: "send".into(),
+            payload: serde_json::json!({}),
+            opts: Default::default(),
+        })
+        .await;
+        assert!(foreign.error_message().unwrap().contains("app mismatch"));
+        assert_eq!(
+            m.stop_pinned_socket("shop/production").await.as_deref(),
+            Some(socket.as_path())
+        );
+        assert!(!socket.exists());
+        m.shutdown_all(Duration::from_secs(1)).await;
     }
 
     fn invalid_start_spec(cwd: PathBuf, _db: PathBuf) -> WorkerSpec {
@@ -982,6 +1123,7 @@ mod tests {
             log_sink: None,
             isolation: None,
             lanes: Vec::new(),
+            external: false,
         }
     }
 

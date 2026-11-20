@@ -26,7 +26,7 @@ pub(super) async fn remove_server(
     removal: Removal,
     assume_yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let servers = crate::commands::helpers::load_management_servers(None, None).await?;
+    let servers = crate::commands::helpers::load_management_servers(None).await?;
     if servers.is_empty() {
         return Err("No servers configured. Run 'tako network server add' to add one.".into());
     }
@@ -58,7 +58,7 @@ pub(super) async fn remove_server(
     let network_name = server
         .native
         .as_ref()
-        .map(|target| target.network.name.clone());
+        .map(|target| target.network.alias.clone());
 
     if is_last_server(&servers, &server) {
         let network = network_name.as_deref().unwrap_or_default();
@@ -253,11 +253,11 @@ fn last_server_now(target: &crate::management_http::NativeTarget) -> Option<Stri
             Ok(true) => None,
             Ok(false) => Some(format!(
                 "is the last server in network {}",
-                target.network.name
+                target.network.alias
             )),
             Err(error) => Some(format!(
                 "may be the last server in network {}: membership could not be refreshed ({error})",
-                target.network.name
+                target.network.alias
             )),
         }
     })

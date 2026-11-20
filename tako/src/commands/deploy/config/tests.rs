@@ -474,116 +474,14 @@ fn resolve_deploy_servers_errors_for_non_production_without_mapping() {
     assert!(err.contains("No servers configured for environment 'staging'"));
 }
 
-#[test]
-fn persist_server_env_mapping_updates_env_server_list() {
-    let temp_dir = TempDir::new().unwrap();
-    std::fs::write(
-        temp_dir.path().join("tako.toml"),
-        r#"
-name = "test-app"
-
-[envs.production]
-route = "app.example.com"
-"#,
-    )
-    .unwrap();
-
-    persist_server_env_mapping(
-        &temp_dir.path().join("tako.toml"),
-        "tako-server",
-        "production",
-    )
-    .unwrap();
-
-    let saved = TakoToml::load_from_dir(temp_dir.path()).unwrap();
-    assert_eq!(saved.get_servers_for_env("production"), vec!["tako-server"]);
-}
-
 #[tokio::test]
-async fn resolve_deploy_servers_with_setup_persists_single_server_mapping() {
-    let config = TakoToml {
-        name: Some("test-app".to_string()),
-        envs: [(
-            "production".to_string(),
-            EnvConfig {
-                route: Some("app.example.com".to_string()),
-                ..Default::default()
-            },
-        )]
-        .into_iter()
-        .collect(),
-        ..Default::default()
-    };
-    let mut servers = ServerInventory::default();
-    servers.servers.insert(
-        "solo".to_string(),
-        ServerEntry {
-            host: "127.0.0.1".to_string(),
-            port: 22,
-            description: None,
-            ..Default::default()
-        },
-    );
-
-    let temp_dir = TempDir::new().unwrap();
-    std::fs::write(
-        temp_dir.path().join("tako.toml"),
-        r#"
-name = "test-app"
-
-[envs.production]
-route = "app.example.com"
-"#,
-    )
-    .unwrap();
-
-    let resolved = resolve_deploy_server_names_with_setup(
-        &config,
-        &mut servers,
-        "production",
-        &temp_dir.path().join("tako.toml"),
-    )
-    .await
-    .unwrap();
-    assert_eq!(resolved, vec!["solo".to_string()]);
-
-    let saved = TakoToml::load_from_dir(temp_dir.path()).unwrap();
-    assert_eq!(saved.get_servers_for_env("production"), vec!["solo"]);
-}
-
-#[tokio::test]
-async fn resolve_deploy_servers_with_setup_requires_interactive_selection_when_multiple_servers() {
+async fn resolve_deploy_servers_with_setup_reports_the_error_without_a_network() {
     let config = TakoToml::default();
     let mut servers = ServerInventory::default();
-    servers.servers.insert(
-        "a".to_string(),
-        ServerEntry {
-            host: "10.0.0.1".to_string(),
-            port: 22,
-            description: None,
-            ..Default::default()
-        },
-    );
-    servers.servers.insert(
-        "b".to_string(),
-        ServerEntry {
-            host: "10.0.0.2".to_string(),
-            port: 22,
-            description: Some("backup".to_string()),
-            ..Default::default()
-        },
-    );
-
-    let temp_dir = TempDir::new().unwrap();
-    let err = resolve_deploy_server_names_with_setup(
-        &config,
-        &mut servers,
-        "production",
-        &temp_dir.path().join("tako.toml"),
-    )
-    .await
-    .unwrap_err();
-    assert!(err.contains("No servers configured for environment 'production'"));
+    let err = resolve_deploy_server_names_with_setup(&config, &mut servers, "production")
+        .await
+        .unwrap_err();
+    assert!(err.contains("No servers"), "{err}");
 }
 
 #[test]

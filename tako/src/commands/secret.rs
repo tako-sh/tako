@@ -471,6 +471,21 @@ fn read_secret_value_and_expires_on_in_wizard(
     }
 }
 
+/// A secret edit for an environment that already has a network, or one named
+/// with `--network`, binds its draft to that network and records it. Without
+/// either, the draft stays local until the environment's first deploy or sync.
+fn record_env_network(
+    context: &crate::commands::project_context::ProjectContext,
+    env: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    crate::commands::env_network::resolve_if_known(
+        &context.project_dir,
+        env,
+        crate::commands::env_network::Purpose::Record,
+    )?;
+    Ok(())
+}
+
 fn resolve_secret_set_input(
     context: &crate::commands::project_context::ProjectContext,
     requested_env: Option<&str>,
@@ -478,7 +493,10 @@ fn resolve_secret_set_input(
     requested_expires_on: Option<String>,
 ) -> Result<Option<SecretSetInput>, Box<dyn std::error::Error>> {
     let secrets = match requested_env {
-        Some(env) => context.load_secrets_for_environment(Some(env))?,
+        Some(env) => {
+            record_env_network(context, env)?;
+            context.load_secrets_for_environment(Some(env))?
+        }
         None => crate::config::SecretsStore::load_for_key_recovery(&context.project_dir)?,
     };
     let requested_expires_on = requested_expires_on
@@ -548,6 +566,7 @@ fn resolve_secret_set_input(
 
         match choice {
             SecretEnvironmentChoice::Existing(env) => {
+                record_env_network(context, &env)?;
                 let secrets = context.load_secrets_for_environment(Some(&env))?;
                 if secrets.contains(&env, name) {
                     wizard.set_visible("Override", true);
@@ -637,6 +656,7 @@ fn resolve_secret_set_input(
                         continue 'name;
                     }
 
+                    record_env_network(context, &env)?;
                     let secrets = context.load_secrets_for_environment(Some(&env))?;
                     if secrets.contains(&env, name) {
                         wizard.set_visible("Override", true);
@@ -763,6 +783,9 @@ async fn remove_secret(
     env: Option<&str>,
     assume_yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(env) = env {
+        record_env_network(context, env)?;
+    }
     let mut secrets = context.load_secrets_for_environment(env)?;
 
     if let Some(env) = env {

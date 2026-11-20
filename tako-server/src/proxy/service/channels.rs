@@ -31,6 +31,14 @@ use ws::ChannelWebSocketAuth;
 mod drain;
 mod ws;
 
+/// Channel and store requests reached a route of a Compose service that
+/// does not run the Tako SDK runtime.
+pub(crate) fn plain_service_channel_error(service: &str) -> String {
+    format!(
+        "Compose service '{service}' isn't marked sdk: true in x-tako, so it cannot serve channels; route /_tako/channels through an sdk: true service"
+    )
+}
+
 struct SharedAppResolver {
     app_name: String,
     compose_service: Option<Arc<str>>,
@@ -185,6 +193,26 @@ impl TakoProxy {
                 return self.write_channel_error(session, error).await;
             }
         };
+        // Only an SDK service can authorize channels and load stores. Say so
+        // instead of failing authorization against a plain service.
+        if let Some(service) = ctx.compose_service.as_deref()
+            && let Some(app) = self.lb.app_manager().get_app(app_name)
+            && app
+                .config
+                .read()
+                .compose
+                .as_ref()
+                .is_some_and(|compose| !compose.is_sdk(service))
+        {
+            ctx.observation.set_handler("channel", "error");
+            return self
+                .write_json_response(
+                    session,
+                    404,
+                    &serde_json::json!({"error": plain_service_channel_error(service)}),
+                )
+                .await;
+        }
         let is_store = route.channel.starts_with(STORE_CHANNEL_PREFIX);
         if is_store && !valid_store_name(&route.channel[STORE_CHANNEL_PREFIX.len()..]) {
             return self

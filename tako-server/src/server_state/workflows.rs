@@ -91,7 +91,13 @@ impl ServerState {
                 return Err(StateStoreError::InvalidData(e.to_string()));
             }
         };
-        if manifest.release_kind == crate::app_command::ReleaseKind::Compose {
+        let compose = manifest.release_kind == crate::app_command::ReleaseKind::Compose;
+        if compose
+            && !manifest
+                .compose
+                .as_ref()
+                .is_some_and(|compose| compose.has_sdk_services())
+        {
             return Ok(None);
         }
         let data_paths = match ensure_app_runtime_data_dirs(&self.runtime.data_dir, app_name) {
@@ -101,6 +107,34 @@ impl ServerState {
                 return Err(StateStoreError::InvalidData(error.to_string()));
             }
         };
+        if compose {
+            // Workers are always-on Compose services that reach the group's
+            // pinned socket. Tako never spawns them. Every group with an SDK
+            // service gets a runtime, so HTTP services can enqueue first.
+            let build = manifest
+                .env_vars
+                .get("TAKO_BUILD")
+                .filter(|build| !build.is_empty())
+                .cloned()
+                .unwrap_or_else(|| manifest.version.clone());
+            let store = match bindings.postgres_url {
+                Some(url) => tako_workflows::WorkflowStoreConfig::postgres(url.clone(), app_name),
+                None => tako_workflows::WorkflowStoreConfig::sqlite(
+                    self.workflows.workflows_db_path(app_name),
+                ),
+            };
+            return self
+                .workflows
+                .prepare(
+                    store,
+                    manifest.workflow_retention_ms,
+                    tako_workflows::WorkerSpec::external(app_name, &build),
+                    activation,
+                )
+                .await
+                .map(Some)
+                .map_err(|error| StateStoreError::InvalidData(error.to_string()));
+        }
         let internal_socket = self.workflows.socket_path();
 
         let WorkflowBindings {

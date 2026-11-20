@@ -241,13 +241,6 @@ fn format_environment_not_found_error_handles_empty_and_non_empty_env_list() {
 
 #[test]
 fn deploy_error_message_helpers_include_expected_text() {
-    let no_servers = format_no_servers_for_env_error("production");
-    assert!(no_servers.contains("No servers configured for environment 'production'"));
-
-    let no_global = format_no_global_servers_error();
-    assert!(no_global.contains("No servers have been added"));
-    assert!(no_global.contains("tako network server add <host>"));
-
     let missing_server = format_server_not_found_error("prod");
     assert!(missing_server.contains("Server 'prod' not found"));
 

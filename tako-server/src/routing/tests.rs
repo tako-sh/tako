@@ -639,7 +639,7 @@ fn compose_routes_select_app_services_and_inherit_source_ip() {
         "file":"compose.yaml", "services": {
             "web":{"envs":{"production":{"route":"example.com"}}},
             "api":{"envs":{"production":{"routes":["api.example.com", "example.com/api/*"],"source_ip":"direct"}}},
-            "private":{}
+            "private":{"http":true}
         }
     })).unwrap();
     let config = crate::instances::AppConfig {

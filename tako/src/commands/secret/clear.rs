@@ -8,14 +8,15 @@ pub(super) async fn clear_secrets(
     assume_yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     crate::config::validate_environment_name(env)?;
-    let config = crate::config::TakoToml::load_from_file(&context.config_path)?;
-    if !config
-        .envs
-        .get(env)
-        .is_some_and(|spec| spec.network.is_some())
+    if crate::commands::env_network::resolve_if_known(
+        &context.project_dir,
+        env,
+        crate::commands::env_network::Purpose::Use,
+    )?
+    .is_none()
     {
         return Err(format!(
-            "Environment '{env}' has no network in tako.toml. Set [envs.{env}].network to clear its secrets."
+            "Environment '{env}' has no network yet, so it has no published secrets to clear."
         )
         .into());
     }
@@ -23,8 +24,7 @@ pub(super) async fn clear_secrets(
 
     if output::is_dry_run() {
         // Preview from this device's cache and drafts without contacting the network.
-        let names =
-            crate::network::secrets::preview_clear(&context.project_dir, &config, &app, env)?;
+        let names = crate::network::secrets::preview_clear(&context.project_dir, &app, env)?;
         output::dry_run_skip(&format!("Clear {} from {env}", secret_count(names.len())));
         return finish(env, &names, true);
     }
@@ -38,13 +38,12 @@ pub(super) async fn clear_secrets(
         let names = tokio::task::block_in_place(|| {
             crate::network::secrets::sync_environment(
                 &context.project_dir,
-                &config,
                 &app,
                 env,
                 false,
                 false,
             )?;
-            crate::network::secrets::preview_clear(&context.project_dir, &config, &app, env)
+            crate::network::secrets::preview_clear(&context.project_dir, &app, env)
         })?;
         if names.is_empty() {
             output::info(&format!("No secrets to clear in {}", output::strong(env)));
@@ -70,7 +69,7 @@ pub(super) async fn clear_secrets(
     }
 
     let cleared = tokio::task::block_in_place(|| {
-        crate::network::secrets::clear_environment(&context.project_dir, &config, &app, env)
+        crate::network::secrets::clear_environment(&context.project_dir, &app, env)
     })?;
     super::refresh_generated_files_after_secret_change(
         &context.project_dir,

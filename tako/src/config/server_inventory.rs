@@ -145,19 +145,15 @@ impl ServerInventory {
                 Err(error) if network.is_none() => {
                     crate::commands::helpers::warn_network(&format!(
                         "Skipping network {}: {error}",
-                        local.name
+                        local.alias
                     ));
                     continue;
                 }
                 Err(error) => return Err(ConfigError::Validation(error.to_string())),
             };
             inventory.servers.extend(
-                crate::commands::helpers::native_server_entries(
-                    local,
-                    &profile,
-                    &networks.server_namespace(local),
-                )
-                .map_err(ConfigError::Validation)?,
+                crate::commands::helpers::native_server_entries(local, &profile, &local.alias)
+                    .map_err(ConfigError::Validation)?,
             );
         }
         Ok(inventory)

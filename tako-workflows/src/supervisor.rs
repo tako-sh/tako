@@ -79,9 +79,34 @@ pub struct WorkerSpec {
     pub isolation: Option<tako_spawn::ProcessIsolation>,
     /// Named worker groups. Empty uses a single default lane.
     pub lanes: Vec<WorkerLane>,
+    /// Workers run outside Tako, such as always-on Compose services. The
+    /// supervisor never spawns them; they claim work through the socket.
+    pub external: bool,
 }
 
 impl WorkerSpec {
+    /// A runtime whose workers Tako never spawns. `build` is the release the
+    /// workers run, which alone may register schedules.
+    pub fn external(app: &str, build: &str) -> Self {
+        Self {
+            app: app.to_string(),
+            workers: 0,
+            // Each worker sets its own concurrency (`TAKO_WORKER_CONCURRENCY`).
+            concurrency: u32::MAX,
+            idle_timeout_ms: 0,
+            command: Vec::new(),
+            cwd: PathBuf::new(),
+            env: HashMap::from([("TAKO_BUILD".to_string(), build.to_string())]),
+            secrets: HashMap::new(),
+            storages: HashMap::new(),
+            databases: HashMap::new(),
+            log_sink: None,
+            isolation: None,
+            lanes: Vec::new(),
+            external: true,
+        }
+    }
+
     /// Env vars this supervisor always sets for workers, independent of
     /// the caller-supplied `env`. Caller's `env` is layered on top.
     fn resolved_lanes(&self) -> Vec<WorkerLane> {
@@ -211,6 +236,9 @@ impl WorkerSupervisor {
     /// Launch all always-on workers. No-op when `workers == 0`
     /// (scale-to-zero: `wake()` spawns on demand).
     pub async fn start(&self) -> Result<(), SupervisorError> {
+        if self.spec.external {
+            return Ok(());
+        }
         let mut state = self.state.lock();
         for lane in self.spec.resolved_lanes() {
             for _ in 0..lane.workers {
@@ -240,6 +268,10 @@ impl WorkerSupervisor {
     }
 
     fn wake_lanes(&self, lanes: &[WorkerLane]) -> Result<(), SupervisorError> {
+        if self.spec.external {
+            // External workers poll for work and register their schedules.
+            return Ok(());
+        }
         let mut state = self.state.lock();
         if state.shutting_down {
             return Ok(());
@@ -286,6 +318,14 @@ impl WorkerSupervisor {
     /// possibly process the job.
     pub fn check_startup_health(&self) -> Result<(), String> {
         let mut state = self.state.lock();
+        if self.spec.external {
+            // The queue is durable: accept work while external workers start.
+            return if state.shutting_down {
+                Err("workflow runtime is draining".into())
+            } else {
+                Ok(())
+            };
+        }
         Self::process_exits(&mut state, self.spec.log_sink.as_ref());
         match Self::unhealthy_reason(&state) {
             Some(reason) => Err(reason),

@@ -119,10 +119,21 @@ impl Instance {
     }
 
     pub(super) fn new_inner(id: String, build_version: String, log_handle: AppLogHandle) -> Self {
+        Self::new_inner_with_token(id, build_version, log_handle, None)
+    }
+
+    /// `token` replaces the random internal token, for processes that already
+    /// hold a shared one, such as Compose SDK containers.
+    pub(super) fn new_inner_with_token(
+        id: String,
+        build_version: String,
+        log_handle: AppLogHandle,
+        token: Option<String>,
+    ) -> Self {
         Self {
             id,
             build_version,
-            internal_token: generate_internal_token(),
+            internal_token: token.unwrap_or_else(generate_internal_token),
             sdk_health: AtomicBool::new(true),
             health_probe: RwLock::new(None),
             upstream: RwLock::new(None),

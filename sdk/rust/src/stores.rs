@@ -87,7 +87,10 @@ impl fmt::Display for StoreError {
             Self::ScopeTooLarge => f.write_str("Store parameters exceed 16 KiB"),
             Self::TooLarge => f.write_str("Store payload exceeds 1 MiB"),
             Self::Loader(message) => write!(f, "Store loader failed: {message}"),
-            Self::RuntimeUnavailable => f.write_str("Store invalidation requires the Tako runtime"),
+            Self::RuntimeUnavailable => match crate::compose_sdk_hint() {
+                Some(hint) => f.write_str(&hint),
+                None => f.write_str("Store invalidation requires the Tako runtime"),
+            },
             Self::Timeout => f.write_str("Store invalidation timed out"),
             Self::Io(error) => write!(f, "Store invalidation transport failed: {error}"),
             Self::Protocol => f.write_str("invalid Store invalidation response"),

@@ -49,10 +49,10 @@ fn visit(command: &Command, path: Vec<String>, tools: &mut BTreeMap<String, Comm
         let name = format!("tako_{}", path.join("_").replace('-', "_"));
         let names: Vec<_> = path.iter().map(String::as_str).collect();
         let read_only = crate::cli::is_read_only(&names);
-        // Retrying a run only adds work and choosing a default network only
-        // changes a local preference; every other write may stop or remove work.
+        // Retrying a run only adds work and renaming a network only changes
+        // this machine's alias; every other write may stop or remove work.
         let destructive =
-            !read_only && !matches!(names[..], ["workflows", "retry"] | ["network", "use"]);
+            !read_only && !matches!(names[..], ["workflows", "retry"] | ["network", "rename"]);
         let description = format!(
             "{}\nUses the configured Tako project and CLI credentials. {}{}",
             command
@@ -97,7 +97,27 @@ fn visit(command: &Command, path: Vec<String>, tools: &mut BTreeMap<String, Comm
     }
 }
 
-fn exposed(argument: &clap::Arg, path: &[&str]) -> bool {
+/// The global `--network` flag's clap ID; tools call it `network`.
+const NETWORK_FLAG: &str = "network_flag";
+
+/// A tool input's name: the argument's ID, except `network` for the global
+/// `--network` flag.
+fn property_name(argument: &clap::Arg) -> &str {
+    match argument.get_id().as_str() {
+        NETWORK_FLAG => "network",
+        id => id,
+    }
+}
+
+fn exposed(command: &Command, argument: &clap::Arg, path: &[&str]) -> bool {
+    // A command that names its network positionally takes it that way.
+    if argument.get_id() == NETWORK_FLAG
+        && command
+            .get_arguments()
+            .any(|other| other.get_id() == "network")
+    {
+        return false;
+    }
     !SKIP.contains(&argument.get_id().as_str())
         && !argument.is_hide_set()
         && argument.get_id() != "tail"
@@ -131,9 +151,9 @@ fn schema(command: &Command, path: &[&str]) -> Map<String, Value> {
     let mut required = Vec::new();
     for argument in command
         .get_arguments()
-        .filter(|argument| exposed(argument, path))
+        .filter(|argument| exposed(command, argument, path))
     {
-        let name = argument.get_id().as_str();
+        let name = property_name(argument);
         let mut property = if matches!(
             argument.get_action(),
             ArgAction::SetTrue | ArgAction::SetFalse
@@ -188,9 +208,9 @@ impl CommandTool {
         for argument in self
             .command
             .get_arguments()
-            .filter(|argument| exposed(argument, &path))
+            .filter(|argument| exposed(&self.command, argument, &path))
         {
-            let name = argument.get_id().as_str();
+            let name = property_name(argument);
             let Some(value) = input.get(name) else {
                 if argument.is_required_set() {
                     return Err(format!("Missing required argument: {name}"));

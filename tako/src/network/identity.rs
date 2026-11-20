@@ -49,13 +49,18 @@ pub(crate) fn encode(alias: &LocalNetwork) -> Result<Zeroizing<String>> {
     Ok(identity)
 }
 
-/// Store an identity in the current network state, like a joined device.
-pub(crate) fn store(value: &str) -> Result<LocalNetwork> {
-    store_keys_and_profile(value).map(|(alias, _)| alias)
+/// Store an identity in the current network state, like a joined device,
+/// naming its network `alias` on this machine.
+pub(crate) fn store(value: &str, alias: Option<&str>) -> Result<LocalNetwork> {
+    store_keys_and_profile(value, alias).map(|(local, _)| local)
 }
 
-/// [`store`], also returning the path of the stored key file.
-fn store_keys_and_profile(value: &str) -> Result<(LocalNetwork, std::path::PathBuf)> {
+/// The network an identity belongs to, without storing anything.
+pub(crate) fn network_of(value: &str) -> Result<tako_network::NetworkDescriptor> {
+    Ok(decode(value)?.profile.snapshot().network.clone())
+}
+
+fn decode(value: &str) -> Result<Contents> {
     let encoded = value
         .trim()
         .strip_prefix(PREFIX)
@@ -68,8 +73,15 @@ fn store_keys_and_profile(value: &str) -> Result<(LocalNetwork, std::path::PathB
             .decode(encoded)
             .map_err(|_| "Client identity is malformed")?,
     );
-    let contents: Contents =
-        serde_json::from_slice(&json).map_err(|_| "Client identity is malformed")?;
+    Ok(serde_json::from_slice(&json).map_err(|_| "Client identity is malformed")?)
+}
+
+/// [`store`], also returning the path of the stored key file.
+fn store_keys_and_profile(
+    value: &str,
+    alias: Option<&str>,
+) -> Result<(LocalNetwork, std::path::PathBuf)> {
+    let contents = decode(value)?;
     let path = super::keys_path(&contents.profile.request().request_id)?;
     super::private_directory(path.parent().ok_or("Invalid key path")?)?;
     match std::fs::read_to_string(&path) {
@@ -81,7 +93,7 @@ fn store_keys_and_profile(value: &str) -> Result<(LocalNetwork, std::path::PathB
         Err(error) => return Err(error.into()),
     }
     // Saving checks that the profile and the keys belong to the same device.
-    Ok((super::save_profile(&contents.profile)?, path))
+    Ok((super::save_profile_as(&contents.profile, alias)?, path))
 }
 
 /// While alive, this process keeps its network state in a private temporary
@@ -153,7 +165,8 @@ pub(crate) fn activate_from_env() -> Result<Option<TemporaryState>> {
         return Ok(None);
     }
     let state = TemporaryState::new()?;
-    let (_, keys) = store_keys_and_profile(&value).map_err(|error| format!("{ENV}: {error}"))?;
+    let (_, keys) =
+        store_keys_and_profile(&value, None).map_err(|error| format!("{ENV}: {error}"))?;
     *ACTIVE_KEYS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(keys);
@@ -279,9 +292,9 @@ mod tests {
     fn identities_and_invitations_are_told_apart_by_prefix() {
         assert!(is_identity("  tako-identity-v1-abc"));
         assert!(!is_identity("tako-invite-abc"));
-        let error = store("tako-identity-v9-abc").unwrap_err().to_string();
+        let error = store("tako-identity-v9-abc", None).unwrap_err().to_string();
         assert!(error.contains("newer Tako version"), "{error}");
-        let error = store("tako-identity-v1-!!!").unwrap_err().to_string();
+        let error = store("tako-identity-v1-!!!", None).unwrap_err().to_string();
         assert!(error.contains("malformed"), "{error}");
     }
 }

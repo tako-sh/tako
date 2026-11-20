@@ -531,7 +531,7 @@ fn compose_loads_service_routes_and_local_app_defaults() {
         "name = 'shop'\n[compose]\nfile = 'compose.yaml'\n[envs.production]\nservers = ['prod']\n",
     )
     .unwrap();
-    std::fs::write(dir.path().join("compose.yaml"), "services:\n  web:\n    image: nginx\n    x-tako:\n      envs:\n        production:\n          route: example.com\n  api:\n    image: nginx\n    x-tako:\n      envs:\n        production:\n          route: api.example.com\n  private:\n    image: nginx\n    x-tako: {}\n  redis:\n    image: redis\n").unwrap();
+    std::fs::write(dir.path().join("compose.yaml"), "services:\n  web:\n    image: nginx\n    x-tako:\n      envs:\n        production:\n          route: example.com\n  api:\n    image: nginx\n    x-tako:\n      envs:\n        production:\n          route: api.example.com\n  private:\n    image: nginx\n    x-tako: {http: true}\n  redis:\n    image: redis\n").unwrap();
     let config = TakoToml::load_from_dir(dir.path()).unwrap();
     assert_eq!(
         config.get_routes("production").unwrap(),
@@ -550,6 +550,13 @@ fn compose_loads_service_routes_and_local_app_defaults() {
         ]
     );
     assert!(TakoToml::parse("[compose]\nfile='compose.yaml'\nport=3000").is_err());
+    std::fs::write(
+        dir.path().join("compose.yaml"),
+        "services:\n  private:\n    image: nginx\n    x-tako: {}\n",
+    )
+    .unwrap();
+    let error = TakoToml::load_from_dir(dir.path()).unwrap_err().to_string();
+    assert!(error.contains("`http: true`"), "{error}");
     assert!(
         TakoToml::parse("[compose]\nfile='compose.yaml'\n[envs.production]\nroute='example.com'")
             .is_err()

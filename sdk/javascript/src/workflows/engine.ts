@@ -20,6 +20,7 @@ import {
   type WorkflowDiscoveryOptions,
 } from "./discovery";
 import { WorkflowsClient, type ScheduleSpec } from "./rpc-client";
+import { composeSdkHint } from "../tako/secrets";
 import type { WorkflowRuntimeOpts } from "./types";
 import type { RunId, SignalRunStatus } from "./types";
 import { Worker, type RegisteredWorkflow, type WorkflowHandler } from "./worker";
@@ -153,7 +154,8 @@ export class WorkflowEngine {
     }
     if (!this.client) {
       throw new Error(
-        "Workflow engine has no RPC client. Set TAKO_INTERNAL_SOCKET + TAKO_APP_NAME or call setClient().",
+        composeSdkHint() ??
+          "Workflow engine has no RPC client. Set TAKO_INTERNAL_SOCKET + TAKO_APP_NAME or call setClient().",
       );
     }
     return this.client;

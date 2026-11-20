@@ -1,0 +1,7 @@
+name = "compose-sdk"
+
+[compose]
+file = "compose.yaml"
+
+[envs.production]
+servers = ["prod"]

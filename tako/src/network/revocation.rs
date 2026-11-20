@@ -314,7 +314,7 @@ fn publish(
     result.map_err(|error| {
         format!(
         "Revocation {} remains pending with issuer {}; retry device {} on network '{}': {error}",
-        journal.expected.id, journal.issuer, journal.expected.target, alias.name
+        journal.expected.id, journal.issuer, journal.expected.target, alias.alias
     ).into()
     })
 }

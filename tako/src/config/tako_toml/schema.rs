@@ -166,11 +166,6 @@ pub struct BuildStage {
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct EnvConfig {
-    /// Native network, identified by its stable 32-character hexadecimal ID
-    /// (see `tako network list`). Local aliases are not portable project configuration.
-    #[cfg_attr(test, schemars(regex(pattern = r"^[0-9a-f]{32}$")))]
-    pub network: Option<String>,
-
     /// Route: an exact host, wildcard host, or either with a path, such as
     /// `app.example.com`, `*.example.com`, or `example.com/api/*`.
     /// Mutually exclusive with `routes`.
@@ -179,7 +174,8 @@ pub struct EnvConfig {
     /// Multiple routes. Mutually exclusive with `route`.
     pub routes: Option<Vec<String>>,
 
-    /// Deployment targets. In a native network these are enrolled names or device IDs.
+    /// Deployment targets: enrolled server names or device IDs in the
+    /// environment's network. Omit to target every server in it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub servers: Vec<String>,
 

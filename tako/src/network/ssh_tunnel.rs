@@ -190,7 +190,7 @@ pub(crate) fn proxy_main() -> ! {
         let [network, server] = args.as_slice() else {
             return Err("Invalid private SSH proxy arguments".into());
         };
-        let alias = super::resolve_network(Some(network))?;
+        let alias = super::find_network(network)?;
         let profile = super::load_profile(&alias)?;
         let keys = LocalDeviceKeys::load(&super::keys_path(&profile.request().request_id)?)?;
         let config = configuration(&profile, &keys, &server.parse()?)?;

@@ -68,7 +68,7 @@ describe("tako workflows", () => {
     expect(screen).toContain("<RUN_ID>");
   });
 
-  test("JSON failure without servers is a structured error", async () => {
+  test("JSON failure without a network is a structured error", async () => {
     const { screen, exitCode } = await run(["--json", "workflows", "list", "--env", "production"], {
       cwd: project,
       env,
@@ -76,7 +76,7 @@ describe("tako workflows", () => {
     });
     expect(exitCode).toBe(1);
     expect(screen).toMatch(/"ok":\s*false/);
-    expect(screen).toContain("No servers have been added");
+    expect(screen).toContain("No network on this machine");
   });
 
   test("refuses the development environment", async () => {

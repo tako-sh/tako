@@ -30,19 +30,7 @@ pub(crate) fn resolve_backup_target(
                 )
                 .into());
             }
-            let mapped = if tako_config
-                .envs
-                .get(&env)
-                .is_some_and(|env| env.network.is_some())
-            {
-                helpers::resolve_servers_for_env(tako_config, servers, &env)?
-            } else {
-                tako_config
-                    .get_servers_for_env(&env)
-                    .into_iter()
-                    .map(str::to_owned)
-                    .collect()
-            };
+            let mapped = helpers::resolve_servers_for_env(tako_config, servers, &env)?;
             if !mapped.is_empty() && !mapped.iter().any(|name| name == server_name) {
                 return Err(format!(
                     "Server '{}' is not configured for environment '{}'.",

@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -758,5 +759,18 @@ func TestServerErrorsMatchTheirSentinel(t *testing.T) {
 	}
 	if len(errorCodes) != 8 {
 		t.Fatalf("expected the 8 server codes, got %d", len(errorCodes))
+	}
+}
+
+func TestClientFromEnvExplainsAComposeServiceWithoutSDK(t *testing.T) {
+	t.Setenv(ComposeServiceEnv, "worker")
+	t.Setenv(WorkflowSocketEnv, "")
+	_, err := ClientFromEnv()
+	if err == nil || !strings.Contains(err.Error(), "isn't marked `sdk: true` in x-tako") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	t.Setenv(ComposeServiceEnv, "")
+	if _, err := ClientFromEnv(); err == nil || strings.Contains(err.Error(), "sdk: true") {
+		t.Fatalf("outside Compose the plain error stays: %v", err)
 	}
 }

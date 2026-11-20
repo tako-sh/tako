@@ -502,6 +502,7 @@ fn expired_server_pins_are_pruned_on_load_and_import_without_extending_own_membe
     profile.validate(&keys).unwrap();
     store_keys(&profile.request().request_id, &keys).unwrap();
     let alias = LocalNetwork {
+        alias: "test".into(),
         name: "test".into(),
         id: profile.snapshot().network.id.to_string(),
         device: own.to_string(),

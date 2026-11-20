@@ -57,18 +57,18 @@ pub(super) async fn add(
     ports: ServerInstallPorts,
     endpoint: Option<SocketAddr>,
 ) -> Result<()> {
-    let alias = network::resolve_network(Some(network))?;
+    let alias = network::find_network(network)?;
     let profile = network::load_profile(&alias)?;
     let default_name = host.split('.').next().unwrap_or("server").replace(':', "-");
     let name: DeviceName = name.unwrap_or(&default_name).parse()?;
     if output::is_dry_run() {
         output::dry_run_skip(&format!(
             "Install and enroll server {name} ({host}) in network {}",
-            alias.name
+            alias.alias
         ));
         if output::is_json() {
             output::json_result(
-                serde_json::json!({"dry_run": true, "network": alias.name, "server": name, "host": host, "operator": operator}),
+                serde_json::json!({"dry_run": true, "network": alias.alias, "server": name, "host": host, "operator": operator}),
             )?;
         }
         return Ok(());
@@ -338,11 +338,11 @@ pub(super) async fn add(
     }
     output::success(&format!(
         "Added {} to {}",
-        enrollment.request.name, alias.name
+        enrollment.request.name, alias.alias
     ));
     if output::is_json() {
         output::json_result(
-            serde_json::json!({"network": alias.name, "id": network_id, "server": device, "name": enrollment.request.name}),
+            serde_json::json!({"network": alias.alias, "id": network_id, "server": device, "name": enrollment.request.name}),
         )?;
     }
     Ok(())

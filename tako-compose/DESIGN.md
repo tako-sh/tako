@@ -16,12 +16,20 @@ update planner below.
 - Each replica has a stable slot. An unchanged healthy container keeps its ID,
   endpoint, and data across deployment and server restart.
 - Every service with `x-tako` is a Tako app; untagged services remain Docker services.
-  The project is an application group, and routes select the group plus app service.
+  Routes in any environment or `http: true` make an HTTP app with a backend pool;
+  `sdk: true` alone makes an SDK worker or job. The project is an application
+  group, and routes select the group plus app service.
+- `sdk: true` services receive the group's SDK runtime after fingerprinting:
+  identity, envelope, pinned socket mount and data mount. The envelope digest,
+  build and mounts join their fingerprints, so only they are replaced on every
+  deploy and secret change. The envelope reaches Docker on stdin; development
+  overrides reference it through a client-only variable.
 - A tagged stateless app defaults to start-first. Other services
   and services with writable persistent volumes default to stop-first.
   `deploy.update_config.order` may explicitly allow or prevent overlap.
-- New containers must pass Docker readiness. Every tagged app must also accept
-  a connection on its private port and pass stability checks before routes change.
+- New containers must pass Docker readiness. Every HTTP app must also accept
+  a connection on its private port and pass stability checks before routes change;
+  SDK HTTP apps must answer the authenticated SDK `/status` check.
   Ports come from Compose expose/ports or image EXPOSE; no HTTP path is assumed.
 - Read x-tako metadata from captured source before normalization: Docker removes
   service extensions from config output. Compare it with release metadata.

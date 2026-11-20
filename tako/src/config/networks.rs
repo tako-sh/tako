@@ -1,12 +1,15 @@
 use super::{ConfigError, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-/// Local identity pointer with a name read from the shared network descriptor.
+/// A network this machine belongs to. `alias` is this machine's own name for
+/// the network and is unique on it; `name` is the name every member shares,
+/// read from the network descriptor, and need not be unique.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct LocalNetwork {
+    pub alias: String,
     pub name: String,
     pub id: String,
     pub device: String,
@@ -14,18 +17,8 @@ pub struct LocalNetwork {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LocalNetworks {
+    /// By stable network ID.
     pub networks: BTreeMap<String, LocalNetwork>,
-    /// Stable ID chosen with `tako network use`.
-    pub selected: Option<String>,
-    /// Why the saved choice could not be read. It is reported only by commands
-    /// that rely on it, so `tako network use` can still replace it.
-    selected_error: Option<String>,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SelectedNetwork {
-    id: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -33,6 +26,9 @@ struct SelectedNetwork {
 struct IdentityPointer {
     id: String,
     device: String,
+    /// Pointers saved before aliases existed have none; loading gives them one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    alias: Option<String>,
 }
 
 fn invalid(error: impl std::fmt::Display) -> ConfigError {
@@ -44,11 +40,9 @@ fn index_path() -> Result<PathBuf> {
         .join("networks")
         .join("identities.json"))
 }
-fn selected_path(index: &Path) -> PathBuf {
-    index.with_file_name("selected.json")
-}
 impl LocalNetwork {
     pub fn validate(&self) -> Result<()> {
+        validate_network_alias(&self.alias)?;
         validate_network_name(&self.name)?;
         validate_network_id(&self.id)?;
         self.device
@@ -57,7 +51,10 @@ impl LocalNetwork {
         Ok(())
     }
     pub fn profile_path(&self) -> Result<PathBuf> {
-        self.validate()?;
+        validate_network_id(&self.id)?;
+        self.device
+            .parse::<tako_network::DeviceId>()
+            .map_err(invalid)?;
         Ok(crate::paths::network_state_dir()
             .map_err(invalid)?
             .join("networks")
@@ -71,12 +68,25 @@ pub fn validate_network_name(name: &str) -> Result<()> {
         .map(|_| ())
         .map_err(invalid)
 }
+/// Aliases follow network-name rules and never look like a network ID, so
+/// `--network` reads the same value the same way on every machine.
+pub fn validate_network_alias(alias: &str) -> Result<()> {
+    if alias.parse::<tako_network::NetworkName>().is_err() {
+        return Err(invalid(format!(
+            "Network alias '{alias}' must start with a lowercase letter and use only lowercase letters, digits, and '-', at most 63 characters"
+        )));
+    }
+    if alias.parse::<tako_network::NetworkId>().is_ok() {
+        return Err(invalid(format!(
+            "Network alias '{alias}' looks like a network ID; choose another"
+        )));
+    }
+    Ok(())
+}
 pub fn validate_network_id(id: &str) -> Result<()> {
     id.parse::<tako_network::NetworkId>()
         .map(|_| ())
-        .map_err(|_| {
-            invalid("Network must be its stable ID. Find it with `tako network list --json`.")
-        })
+        .map_err(|_| invalid(format!("'{id}' is not a network ID")))
 }
 
 impl LocalNetworks {
@@ -86,9 +96,11 @@ impl LocalNetworks {
     pub fn load_from_file(path: &Path) -> Result<Self> {
         let pointers = Self::read_pointers(path)?;
         let mut networks = BTreeMap::new();
+        let mut unnamed = Vec::new();
         for pointer in pointers {
             let mut local = LocalNetwork {
-                name: "network".into(),
+                alias: String::new(),
+                name: String::new(),
                 id: pointer.id,
                 device: pointer.device,
             };
@@ -113,26 +125,32 @@ impl LocalNetworks {
                 ));
             }
             local.name = profile.snapshot().network.name.to_string();
+            match pointer.alias {
+                Some(alias) => {
+                    validate_network_alias(&alias)?;
+                    local.alias = alias;
+                }
+                None => unnamed.push(local.id.clone()),
+            }
             if networks.insert(local.id.clone(), local).is_some() {
                 return Err(invalid("Duplicate network identity pointer"));
             }
         }
-        let (selected, selected_error) = match Self::read_selected(&selected_path(path)) {
-            Ok(selected) => (selected, None),
-            Err(error) => (None, Some(error.to_string())),
-        };
-        Ok(Self {
-            networks,
-            selected,
-            selected_error,
-        })
-    }
-    fn read_selected(path: &Path) -> Result<Option<String>> {
-        if !path.try_exists().map_err(invalid)? {
-            return Ok(None);
+        let mut seen = BTreeSet::new();
+        for local in networks.values().filter(|local| !local.alias.is_empty()) {
+            if !seen.insert(local.alias.clone()) {
+                return Err(invalid(format!(
+                    "Two networks on this machine share the alias '{}'; rename one with `tako network rename`",
+                    local.alias
+                )));
+            }
         }
-        let selected: SelectedNetwork = crate::network::read_json(path).map_err(invalid)?;
-        Ok(Some(selected.id))
+        let mut loaded = Self { networks };
+        for id in unnamed {
+            let alias = loaded.free_alias(&loaded.networks[&id].name);
+            loaded.networks.get_mut(&id).unwrap().alias = alias;
+        }
+        Ok(loaded)
     }
     fn read_pointers(path: &Path) -> Result<Vec<IdentityPointer>> {
         if !path.try_exists().map_err(invalid)? {
@@ -140,97 +158,68 @@ impl LocalNetworks {
         }
         crate::network::read_json(path).map_err(invalid)
     }
-    pub fn select(&self, name_or_id: Option<&str>) -> Result<&LocalNetwork> {
-        if let Some(value) = name_or_id {
-            if let Some(local) = self.networks.get(value) {
-                return Ok(local);
-            }
-            let matches: Vec<_> = self.networks.values().filter(|n| n.name == value).collect();
-            return match matches.as_slice() {
-                [local] => Ok(local),
-                [] => Err(invalid(format!(
-                    "Network '{value}' is not configured on this machine"
-                ))),
-                _ => Err(invalid(format!(
-                    "Network name '{value}' is ambiguous; use its ID from `tako network list --json`"
-                ))),
-            };
-        }
-        if let Some(error) = &self.selected_error {
-            return Err(invalid(format!(
-                "Could not read the network chosen with `tako network use` ({error}). Run `tako network use <network>` to choose again or name the network in the command."
-            )));
-        }
-        if let Some(id) = &self.selected {
-            return self.networks.get(id).ok_or_else(|| {
-                invalid(
-                    "The network chosen with `tako network use` is no longer configured on this machine. Run `tako network use <network>` or name the network in the command.",
-                )
+
+    /// The network with this alias, or with this stable ID.
+    pub fn find(&self, alias_or_id: &str) -> Option<&LocalNetwork> {
+        self.networks
+            .values()
+            .find(|local| local.alias == alias_or_id)
+            .or_else(|| self.networks.get(alias_or_id))
+    }
+
+    /// The named network, or the only one. Several networks and no name is an
+    /// error: there is no default network, so the caller asks or fails.
+    pub fn select(&self, alias_or_id: Option<&str>) -> Result<&LocalNetwork> {
+        if let Some(value) = alias_or_id {
+            return self.find(value).ok_or_else(|| {
+                invalid(format!(
+                    "Network '{value}' is not on this machine. Run `tako network list` to see its networks."
+                ))
             });
         }
-        match self.networks.len() {
-            0 => Err(invalid(
-                "No network configured. Run `tako network create` or `tako network join`.",
+        let mut networks = self.networks.values();
+        match (networks.next(), networks.next()) {
+            (None, _) => Err(invalid(
+                "No network on this machine. Run `tako network create` or `tako network join`.",
             )),
-            1 => Ok(self.networks.values().next().unwrap()),
-            _ => Err(invalid(
-                "More than one network is configured. Run `tako network use <network>` or name the network in the command.",
-            )),
+            (Some(only), None) => Ok(only),
+            _ => Err(invalid(format!(
+                "This machine has several networks. Pass --network with one of: {}.",
+                self.aliases().join(", ")
+            ))),
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn with_choice(
-        networks: impl IntoIterator<Item = LocalNetwork>,
-        selected: Option<&str>,
-    ) -> Self {
-        Self {
-            networks: networks
-                .into_iter()
-                .map(|network| (network.id.clone(), network))
-                .collect(),
-            selected: selected.map(str::to_string),
-            selected_error: None,
-        }
-    }
-
-    /// Whether a choice from `tako network use` exists, even an unreadable one.
-    pub fn has_choice(&self) -> bool {
-        self.selected.is_some() || self.selected_error.is_some()
-    }
-
-    /// Make a network the default for commands that do not name one.
-    pub fn use_network(name_or_id: &str) -> Result<LocalNetwork> {
-        let index = index_path()?;
-        let local = Self::load_from_file(&index)?
-            .select(Some(name_or_id))?
-            .clone();
-        let path = selected_path(&index);
-        crate::network::private_directory(path.parent().unwrap()).map_err(invalid)?;
-        crate::network::write_json(
-            &path,
-            &SelectedNetwork {
-                id: local.id.clone(),
-            },
-            true,
-        )
-        .map_err(invalid)?;
-        Ok(local)
-    }
-
-    /// Keep inventory selectors unique even when shared network names collide.
-    pub(crate) fn server_namespace(&self, local: &LocalNetwork) -> String {
-        if self
+    /// Aliases in a stable order for choices and messages.
+    pub fn aliases(&self) -> Vec<String> {
+        let mut aliases: Vec<_> = self
             .networks
             .values()
-            .any(|other| other.name == local.name && other.id != local.id)
-        {
-            format!("{}/{}", local.name, local.id)
-        } else {
-            local.name.clone()
-        }
+            .map(|local| local.alias.clone())
+            .collect();
+        aliases.sort();
+        aliases
     }
 
+    /// `name` when no network here uses it as an alias, else `name-2`,
+    /// `name-3`, and so on.
+    pub fn free_alias(&self, name: &str) -> String {
+        let taken = |alias: &str| self.networks.values().any(|local| local.alias == alias);
+        if !taken(name) && validate_network_alias(name).is_ok() {
+            return name.to_string();
+        }
+        (2..)
+            .map(|n| {
+                let suffix = format!("-{n}");
+                let base = &name[..name.len().min(63 - suffix.len())];
+                format!("{}{suffix}", base.trim_end_matches('-'))
+            })
+            .find(|alias| !taken(alias) && validate_network_alias(alias).is_ok())
+            .unwrap()
+    }
+
+    /// Record a network's identity under its alias. The alias must not name
+    /// another network on this machine.
     pub fn save_identity(local: &LocalNetwork) -> Result<()> {
         local.validate()?;
         let path = index_path()?;
@@ -238,69 +227,141 @@ impl LocalNetworks {
         let lock =
             crate::network::private_file(&path.with_extension("lock"), true).map_err(invalid)?;
         lock.lock().map_err(invalid)?;
-        let mut pointers = Self::read_pointers(&path)?;
-        pointers.retain(|p| p.id != local.id);
-        pointers.push(IdentityPointer {
-            id: local.id.clone(),
-            device: local.device.clone(),
-        });
-        crate::network::write_json(&path, &pointers, true).map_err(invalid)
+        let mut networks = Self::load_from_file(&path)?;
+        if let Some(other) = networks
+            .networks
+            .values()
+            .find(|other| other.alias == local.alias && other.id != local.id)
+        {
+            return Err(invalid(format!(
+                "Alias '{}' already names network {} on this machine; choose another",
+                local.alias, other.id
+            )));
+        }
+        networks.networks.insert(local.id.clone(), local.clone());
+        networks.write(&path)
+    }
+
+    /// Give a network a different alias on this machine. Other members keep
+    /// their own aliases and the shared name.
+    pub fn rename(alias_or_id: &str, alias: &str) -> Result<LocalNetwork> {
+        validate_network_alias(alias)?;
+        let path = index_path()?;
+        crate::network::private_directory(path.parent().unwrap()).map_err(invalid)?;
+        let lock =
+            crate::network::private_file(&path.with_extension("lock"), true).map_err(invalid)?;
+        lock.lock().map_err(invalid)?;
+        let mut networks = Self::load_from_file(&path)?;
+        let mut local = networks.select(Some(alias_or_id))?.clone();
+        if let Some(other) = networks.find(alias)
+            && other.id != local.id
+        {
+            return Err(invalid(format!(
+                "Alias '{alias}' already names network {} on this machine",
+                other.id
+            )));
+        }
+        local.alias = alias.to_string();
+        networks.networks.insert(local.id.clone(), local.clone());
+        networks.write(&path)?;
+        Ok(local)
+    }
+
+    fn write(&self, path: &Path) -> Result<()> {
+        let pointers: Vec<_> = self
+            .networks
+            .values()
+            .map(|local| IdentityPointer {
+                id: local.id.clone(),
+                device: local.device.clone(),
+                alias: Some(local.alias.clone()),
+            })
+            .collect();
+        crate::network::write_json(path, &pointers, true).map_err(invalid)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn network(alias: &str, name: &str, id: char) -> LocalNetwork {
+        LocalNetwork {
+            alias: alias.into(),
+            name: name.into(),
+            id: id.to_string().repeat(32),
+            device: "b".repeat(64),
+        }
+    }
+
     #[test]
-    fn same_name_requires_an_id_and_pointer_contains_no_name_or_membership() {
-        let a = LocalNetwork {
-            name: "work".into(),
+    fn aliases_select_networks_that_share_a_name() {
+        let a = network("work", "work", 'a');
+        let b = network("work-2", "work", 'c');
+        let networks = LocalNetworks {
+            networks: BTreeMap::from([(a.id.clone(), a.clone()), (b.id.clone(), b.clone())]),
+        };
+        assert_eq!(networks.select(Some("work")).unwrap(), &a);
+        assert_eq!(networks.select(Some("work-2")).unwrap(), &b);
+        assert_eq!(networks.select(Some(&b.id)).unwrap(), &b);
+        assert!(networks.select(Some("missing")).is_err());
+        // No default: several networks and no name fails with every alias.
+        let error = networks.select(None).unwrap_err().to_string();
+        assert!(error.contains("work, work-2"), "{error}");
+        let only = LocalNetworks {
+            networks: BTreeMap::from([(a.id.clone(), a.clone())]),
+        };
+        assert_eq!(only.select(None).unwrap(), &a);
+        assert!(LocalNetworks::default().select(None).is_err());
+    }
+
+    #[test]
+    fn free_alias_suffixes_a_taken_name() {
+        let a = network("work", "work", 'a');
+        let mut networks = LocalNetworks {
+            networks: BTreeMap::from([(a.id.clone(), a)]),
+        };
+        assert_eq!(networks.free_alias("home"), "home");
+        assert_eq!(networks.free_alias("work"), "work-2");
+        let b = network("work-2", "work", 'c');
+        networks.networks.insert(b.id.clone(), b);
+        assert_eq!(networks.free_alias("work"), "work-3");
+        let long = "a".repeat(63);
+        let c = network(&long, &long, 'd');
+        networks.networks.insert(c.id.clone(), c);
+        let alias = networks.free_alias(&long);
+        assert_eq!(alias.len(), 63);
+        assert!(alias.ends_with("-2"));
+    }
+
+    #[test]
+    fn aliases_follow_name_rules_and_never_look_like_an_id() {
+        assert!(validate_network_alias("prod-eu").is_ok());
+        assert!(validate_network_alias("prod_eu").is_err());
+        assert!(validate_network_alias("Prod").is_err());
+        assert!(validate_network_alias(&"a".repeat(32)).is_err());
+    }
+
+    #[test]
+    fn pointers_without_an_alias_load_with_the_name() {
+        let pointer: IdentityPointer =
+            serde_json::from_value(serde_json::json!({"id": "a".repeat(32), "device": "b"}))
+                .unwrap();
+        assert!(pointer.alias.is_none());
+        let pointer = serde_json::to_value(IdentityPointer {
             id: "a".repeat(32),
             device: "b".repeat(64),
-        };
-        let mut b = a.clone();
-        b.id = "c".repeat(32);
-        let mut networks = LocalNetworks {
-            networks: BTreeMap::from([(a.id.clone(), a.clone()), (b.id.clone(), b.clone())]),
-            ..Default::default()
-        };
-        assert!(networks.select(Some("work")).is_err());
-        assert_eq!(networks.select(Some(&a.id)).unwrap(), &a);
-        assert!(networks.select(None).is_err());
-        networks.selected = Some(b.id.clone());
-        assert_eq!(networks.select(None).unwrap(), &b);
-        // An explicit network always overrides the chosen default.
-        assert_eq!(networks.select(Some(&a.id)).unwrap(), &a);
-        networks.networks.remove(&b.id);
-        // A stale choice fails instead of silently selecting the sole network.
-        assert!(networks.select(None).is_err());
-        networks.selected = None;
-        assert_eq!(networks.select(None).unwrap(), &a);
-        let pointer = serde_json::to_value(IdentityPointer {
-            id: a.id,
-            device: a.device,
+            alias: Some("work".into()),
         })
         .unwrap();
         assert!(pointer.get("name").is_none());
-    }
-    #[test]
-    fn unreadable_choice_fails_only_when_a_command_relies_on_it() {
-        let directory = tempfile::TempDir::new().unwrap();
-        let index = directory.path().join("identities.json");
-        std::fs::write(selected_path(&index), b"not json").unwrap();
-        let networks = LocalNetworks::load_from_file(&index).unwrap();
-        assert!(networks.has_choice());
-        let error = networks.select(None).unwrap_err().to_string();
-        assert!(error.contains("tako network use"), "{error}");
+        assert_eq!(pointer["alias"], "work");
     }
 
     #[test]
     fn identity_paths_reject_traversal() {
-        let local = LocalNetwork {
-            name: "work".into(),
-            id: "../secret".into(),
-            device: "b".repeat(64),
-        };
+        let mut local = network("work", "work", 'a');
+        local.id = "../secret".into();
         assert!(local.profile_path().is_err());
     }
 }

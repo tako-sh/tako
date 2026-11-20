@@ -61,15 +61,23 @@ async fn run_async(
     match cmd {
         ReleaseCommands::List { env } => {
             let env = resolve_env_name(env.as_deref(), &tako_config)?;
-            let servers =
-                super::helpers::load_management_servers(Some(&tako_config), Some(&env)).await?;
+            let servers = super::env_network::servers(
+                &context.project_dir,
+                &env,
+                super::env_network::Purpose::Use,
+            )
+            .await?;
             let server_names = resolve_server_names_for_env(&tako_config, &servers, &env)?;
             list_releases(&app_name, &env, &server_names, &servers).await
         }
         ReleaseCommands::Rollback { release, env, yes } => {
             let env = resolve_env_name(env.as_deref(), &tako_config)?;
-            let servers =
-                super::helpers::load_management_servers(Some(&tako_config), Some(&env)).await?;
+            let servers = super::env_network::servers(
+                &context.project_dir,
+                &env,
+                super::env_network::Purpose::Use,
+            )
+            .await?;
             let server_names = resolve_server_names_for_env(&tako_config, &servers, &env)?;
             rollback_release(&app_name, &release, &env, yes, &server_names, &servers).await
         }

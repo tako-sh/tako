@@ -36,6 +36,15 @@ pub fn validate_storages_for_deployment(
 
         match resource.provider {
             tako_core::StorageProvider::Local => {
+                if config
+                    .compose
+                    .as_ref()
+                    .is_some_and(|compose| compose.has_sdk_services())
+                {
+                    result.error(format!(
+                        "Storage '{binding_name}' uses local storage, which Compose sdk: true services cannot reach; use S3 storage"
+                    ));
+                }
                 if env_name != "development" && server_count != 1 {
                     result.error(format!(
                         "Storage '{binding_name}' uses local storage in environment '{env_name}', but local storage requires exactly one server"
@@ -333,6 +342,46 @@ storages = { uploads = "local" }
         let result =
             validate_storages_for_deployment(&config, &SecretsStore::default(), "production", 1);
         assert!(!result.has_errors(), "{:?}", result.errors);
+    }
+
+    #[test]
+    fn deploy_validation_rejects_local_storage_for_compose_sdk_services() {
+        let mut config = TakoToml::parse(
+            r#"
+name = "demo"
+
+[compose]
+file = "compose.yaml"
+
+[envs.production]
+servers = ["prod-a"]
+storages = { uploads = "local" }
+"#,
+        )
+        .unwrap();
+        let mut services: std::collections::BTreeMap<
+            String,
+            tako_core::compose::ComposeServiceConfig,
+        > = serde_json::from_value(serde_json::json!({"web": {"http": true}})).unwrap();
+        config.compose = Some(tako_core::compose::ComposeConfig {
+            file: "compose.yaml".into(),
+            services: services.clone(),
+        });
+        let plain =
+            validate_storages_for_deployment(&config, &SecretsStore::default(), "production", 1);
+        assert!(!plain.has_errors(), "{:?}", plain.errors);
+        services.get_mut("web").unwrap().sdk = true;
+        config.compose.as_mut().unwrap().services = services;
+        let result =
+            validate_storages_for_deployment(&config, &SecretsStore::default(), "production", 1);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.contains("use S3 storage")),
+            "{:?}",
+            result.errors
+        );
     }
 
     #[test]

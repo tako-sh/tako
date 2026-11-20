@@ -23,7 +23,7 @@ describe("native server enrollment", () => {
       options(),
     );
     expect(result.exitCode).not.toBe(0);
-    expect(result.screen).toContain("No network configured");
+    expect(result.screen).toContain("No network on this machine");
   });
 
   test("rejects removed provider flags", async () => {

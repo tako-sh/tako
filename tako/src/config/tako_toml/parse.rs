@@ -52,6 +52,14 @@ impl TakoToml {
                     }
                 }
             }
+            if compose.has_sdk_services() {
+                validate_compose_sdk_workflows(&config.workflows)?;
+                for server in config.servers.per_server.values() {
+                    if let Some(workflows) = &server.workflows {
+                        validate_compose_sdk_workflows(workflows)?;
+                    }
+                }
+            }
         }
         Ok(config)
     }
@@ -165,11 +173,13 @@ impl TakoToml {
                         "[envs.{env_name}].backup no longer lists SQLite files. Create a hosted database with `tako sqlite create`, load the file with `tako sqlite import`, and bind it in [envs.{env_name}].databases. Hosted databases are snapshotted to the storage set in [databases.<name>].backup."
                     )));
                 }
+                if env_value.get("network").is_some() {
+                    return Err(ConfigError::Validation(format!(
+                        "[envs.{env_name}].network moved out of tako.toml: Tako records each environment's network in .tako/project.json. Remove the line; the next `tako deploy --env {env_name}` uses this machine's only network, or asks which one, and records it."
+                    )));
+                }
                 let env_config: EnvConfig = toml::from_str(&toml::to_string(env_value)?)?;
-                if env_config.network.is_some()
-                    && env_value.get("servers").is_some()
-                    && env_config.servers.is_empty()
-                {
+                if env_value.get("servers").is_some() && env_config.servers.is_empty() {
                     return Err(ConfigError::Validation(format!(
                         "[envs.{env_name}].servers is empty. List at least one server or omit the field to target the whole network."
                     )));
@@ -637,4 +647,21 @@ fn parse_string_array(raw: &toml::Value, key: &str) -> Result<Option<Vec<String>
         out.push(s.to_string());
     }
     Ok(Some(out))
+}
+
+/// Compose SDK workflow workers are always-on Compose services. Tako never
+/// spawns them, so worker commands, counts and concurrency do not apply.
+fn validate_compose_sdk_workflows(workflows: &WorkflowsConfig) -> Result<()> {
+    let configures_workers = |worker: &WorkflowWorkerConfig| {
+        worker.run.is_some() || worker.workers.is_some() || worker.concurrency.is_some()
+    };
+    if configures_workers(&workflows.base)
+        || !workflows.groups.is_empty()
+        || workflows.groups.values().any(configures_workers)
+    {
+        return Err(ConfigError::Validation(
+            "Compose groups with sdk: true services run workflow workers as Compose services; remove [workflows] run, workers, concurrency and worker groups (set TAKO_WORKFLOW_WORKER and TAKO_WORKER_CONCURRENCY in the worker's Compose environment)".into(),
+        ));
+    }
+    Ok(())
 }

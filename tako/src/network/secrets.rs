@@ -44,10 +44,7 @@ struct Pending {
 fn lock(project: &Path) -> Result<std::fs::File> {
     let directory = project.join(".tako");
     super::private_directory(&directory)?;
-    let ignore = directory.join(".gitignore");
-    if !ignore.try_exists()? {
-        super::write_bytes(&ignore, b"*\n", false)?;
-    }
+    crate::config::ensure_state_gitignore(&directory)?;
     let lock = super::private_file(&directory.join("state.lock"), true)?;
     lock.lock()?;
     Ok(lock)
@@ -118,11 +115,11 @@ pub(crate) fn load_local_with_config(
         // Read saved networks only for an environment that needs one, so an
         // unreadable profile never breaks apps that use no network.
         let mut saved_networks = None;
-        for (env, spec) in &config.envs {
+        for env in config.envs.keys() {
             if environment.is_some_and(|selected| selected != env) {
                 continue;
             }
-            let Some(id) = spec.network.as_deref() else {
+            let Some(id) = crate::commands::env_network::current_id(project, env)? else {
                 continue;
             };
             let scope: AppEnv = format!("{app}/{env}").parse()?;
@@ -131,18 +128,28 @@ pub(crate) fn load_local_with_config(
                 .values
                 .targets
                 .insert(env.clone(), (scope.clone(), network.clone()));
-            if state.environments.contains_key(env) {
-                bind(&mut state, env, &scope, &network)?;
+            if state
+                .environments
+                .get(env)
+                .is_some_and(|entry| entry.network == network && entry.scope == scope)
+            {
                 continue;
             }
+            // Unbound, or bound to another network or app: start from the
+            // target's cache. A binding elsewhere gives way only when nothing
+            // in it is unpublished.
             let networks = match &mut saved_networks {
                 Some(networks) => &*networks,
                 empty => &*empty.insert(LocalNetworks::load()?),
             };
-            let Ok(alias) = networks.select(Some(id)) else {
-                continue;
+            let cached = match networks.networks.get(&id) {
+                Some(alias) => read_cache(alias)?.map(|cache| (alias, cache)),
+                None => None,
             };
-            let Some(cache) = read_cache(alias)? else {
+            let Some((alias, cache)) = cached else {
+                if state.environments.contains_key(env) {
+                    bind(&mut state, env, &scope, &network)?;
+                }
                 continue;
             };
             let profile = super::load_profile(alias)?;
@@ -189,6 +196,22 @@ fn bind<'a>(
     scope: &AppEnv,
     network: &NetworkId,
 ) -> Result<&'a mut EnvironmentState> {
+    if let Some(entry) = state.environments.get(env)
+        && (&entry.network != network || &entry.scope != scope)
+    {
+        let current = local::rows(state.values.environments.get(env))?;
+        if !entry.pending.is_empty() || !unpublished(entry, &current).is_empty() {
+            return Err(format!(
+                "This checkout has unpublished {env} secrets for app {} on network {}. Publish them with `tako secrets sync --env {env} --network {}`, or remove them.",
+                entry.scope, entry.network, entry.network
+            )
+            .into());
+        }
+        // Every value here is a copy of what the other network has, so the
+        // environment starts over from its new network.
+        state.environments.remove(env);
+        state.values.environments.remove(env);
+    }
     let entry = state
         .environments
         .entry(env.into())
@@ -198,11 +221,22 @@ fn bind<'a>(
             base: vec![],
             pending: vec![],
         });
-    if &entry.network != network || &entry.scope != scope {
-        return Err("This checkout's secret drafts are bound to another app or network. Use a fresh worktree for a different deployment target".into());
-    }
     Ok(entry)
 }
+/// Whether this checkout has unpublished `env` secrets bound to a network
+/// other than `network`. Reads local state only.
+pub(crate) fn unpublished_elsewhere(project: &Path, env: &str, network: &str) -> Result<bool> {
+    let state = read_workspace(project)?;
+    let Some(entry) = state.environments.get(env) else {
+        return Ok(false);
+    };
+    if entry.network.to_string() == network {
+        return Ok(false);
+    }
+    let current = local::rows(state.values.environments.get(env))?;
+    Ok(!entry.pending.is_empty() || !unpublished(entry, &current).is_empty())
+}
+
 /// Rows whose local value differs from the last published one, including
 /// rows whose publication is not confirmed yet.
 fn unpublished(entry: &EnvironmentState, current: &Rows) -> BTreeSet<RowKey> {
@@ -248,16 +282,13 @@ pub(crate) fn last_changes(
     let mut changes = BTreeMap::new();
     let (Some(app), Some(id)) = (
         config.name.as_deref(),
-        config
-            .envs
-            .get(env)
-            .and_then(|spec| spec.network.as_deref()),
+        crate::commands::env_network::current_id(project, env)?,
     ) else {
         return Ok(changes);
     };
     let scope: AppEnv = format!("{app}/{env}").parse()?;
     let networks = LocalNetworks::load()?;
-    let Ok(alias) = networks.select(Some(id)) else {
+    let Some(alias) = networks.networks.get(&id) else {
         return Ok(changes);
     };
     if let Some(cache) = read_cache(alias)? {
@@ -318,8 +349,11 @@ fn merge_remote(
     profile: &Profile,
     cache: &SharedSnapshot,
 ) -> Result<()> {
+    // Bind first: moving to another network drops the old network's copies,
+    // and rows read before that would come back as drafts for the new one.
+    bind(state, env, scope, &cache.network)?;
     let current = local::rows(state.values.environments.get(env))?;
-    let dirty = unpublished(bind(state, env, scope, &cache.network)?, &current);
+    let dirty = unpublished(&state.environments[env], &current);
     let keys = LocalDeviceKeys::load(&super::keys_path(&profile.request().request_id)?)?;
     let device = profile.request().device_id_for(&cache.network)?;
     let permissions = profile.snapshot().permissions(&device, super::now()?)?;
@@ -384,26 +418,23 @@ fn merge_remote(
     Ok(())
 }
 
-fn environment_target(config: &TakoToml, app: &str, env: &str) -> Result<(LocalNetwork, AppEnv)> {
-    let id = config
-        .envs
-        .get(env)
-        .and_then(|spec| spec.network.as_deref())
-        .ok_or("Set this environment's network ID in tako.toml before synchronizing secrets")?;
-    let alias = LocalNetworks::load()?.select(Some(id))?.clone();
+/// The environment's network, which the command resolved before acting.
+fn environment_target(project: &Path, app: &str, env: &str) -> Result<(LocalNetwork, AppEnv)> {
+    let id = crate::commands::env_network::current_id(project, env)?
+        .ok_or_else(|| format!("Environment '{env}' has no network yet; deploy it first"))?;
+    let alias = LocalNetworks::load()?.select(Some(&id))?.clone();
     let scope: AppEnv = format!("{app}/{env}").parse()?;
     Ok((alias, scope))
 }
 
 pub(crate) fn sync_environment(
     project: &Path,
-    config: &TakoToml,
     app: &str,
     env: &str,
     publish: bool,
     retry_expired: bool,
 ) -> Result<SecretsStore> {
-    let (alias, scope) = environment_target(config, app, env)?;
+    let (alias, scope) = environment_target(project, app, env)?;
     let _lock = lock(project)?;
     let mut state = read_workspace(project)?;
     let (profile, cache) = pull(&alias, Some(scope.clone()))?;
@@ -432,13 +463,8 @@ pub(crate) fn sync_environment(
 
 /// Names `clear_environment` would delete, from this worktree's drafts and the
 /// device's cached network state. Reads no network and writes nothing.
-pub(crate) fn preview_clear(
-    project: &Path,
-    config: &TakoToml,
-    app: &str,
-    env: &str,
-) -> Result<Vec<String>> {
-    let (alias, scope) = environment_target(config, app, env)?;
+pub(crate) fn preview_clear(project: &Path, app: &str, env: &str) -> Result<Vec<String>> {
+    let (alias, scope) = environment_target(project, app, env)?;
     let network: NetworkId = alias.id.parse()?;
     let mut state = read_workspace(project)?;
     bind(&mut state, env, &scope, &network)?;
@@ -468,13 +494,8 @@ pub(crate) fn preview_clear(
 /// worktree's drafts, publishing the deletions immediately. Unpublished drafts
 /// of other kinds, such as provider credentials, stay local. Storage
 /// credentials and backup keys are never touched: retained backups need them.
-pub(crate) fn clear_environment(
-    project: &Path,
-    config: &TakoToml,
-    app: &str,
-    env: &str,
-) -> Result<Vec<String>> {
-    let (alias, scope) = environment_target(config, app, env)?;
+pub(crate) fn clear_environment(project: &Path, app: &str, env: &str) -> Result<Vec<String>> {
+    let (alias, scope) = environment_target(project, app, env)?;
     let _lock = lock(project)?;
     let mut state = read_workspace(project)?;
     // Merge first so values published by other devices or worktrees are known

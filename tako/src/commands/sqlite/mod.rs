@@ -27,9 +27,6 @@ use target::{Home, resolve_home};
 
 #[derive(Args)]
 pub struct SqliteArgs {
-    /// Network of the databases, when the project's environments use several
-    #[arg(long, global = true)]
-    network: Option<String>,
     #[command(subcommand)]
     command: SqliteCommands,
 }
@@ -194,28 +191,33 @@ pub fn run(args: SqliteArgs, config_path: Option<&Path>) -> Result<(), Box<dyn s
     rt.block_on(run_async(args, config_path))
 }
 
-/// The network a project's databases live in: the one its environments
-/// use, or `requested`.
-fn project_network(config: &TakoToml, requested: Option<&str>) -> Result<String, String> {
+/// The network a project's databases live in: `requested`, else the one its
+/// environments record, else this machine's only network or the one picked.
+fn project_network(
+    project_dir: &Path,
+    config: &TakoToml,
+    requested: Option<&str>,
+) -> Result<crate::config::LocalNetwork, Box<dyn std::error::Error>> {
+    if let Some(requested) = requested {
+        return crate::network::find_network(requested);
+    }
+    let file = crate::config::ProjectFile::load(project_dir)?;
     let networks: BTreeSet<&str> = config
         .envs
-        .iter()
-        .filter(|(name, _)| name.as_str() != "development")
-        .filter_map(|(_, env)| env.network.as_deref())
+        .keys()
+        .filter(|name| name.as_str() != "development")
+        .filter_map(|env| file.network(env))
         .collect();
-    if let Some(requested) = requested {
-        return Ok(requested.to_owned());
-    }
     match networks.len() {
-        1 => Ok(networks.into_iter().next().expect("one network").to_owned()),
-        0 => Err(
-            "No environment in tako.toml sets `network`. Databases live on native network servers; set [envs.<env>].network, or pass --network."
-                .into(),
-        ),
+        0 => Ok(crate::network::resolve_network(None)?),
+        1 => Ok(crate::network::find_network(
+            networks.into_iter().next().expect("one network"),
+        )?),
         _ => Err(format!(
             "This project's environments use several networks ({}); pass --network.",
             networks.into_iter().collect::<Vec<_>>().join(", ")
-        )),
+        )
+        .into()),
     }
 }
 
@@ -267,14 +269,14 @@ impl Context {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let project = project_context::resolve_existing(config_path)?;
         let config = TakoToml::load_from_file(&project.config_path)?;
-        let network = project_network(&config, network)?;
+        let network = project_network(&project.project_dir, &config, network)?;
         let servers =
-            crate::commands::helpers::load_management_servers(Some(&config), None).await?;
+            crate::commands::helpers::load_management_servers(Some(vec![network.clone()])).await?;
         Ok(Self {
             project_dir: project.project_dir,
             config_path: project.config_path,
             config,
-            network,
+            network: network.id,
             servers,
         })
     }
@@ -520,7 +522,7 @@ async fn run_async(
     args: SqliteArgs,
     config_path: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let network = args.network.as_deref();
+    let network = crate::network::network_flag();
     match args.command {
         SqliteCommands::Create { name, server } => {
             let ctx = Context::load(config_path, network).await?;
@@ -1933,30 +1935,22 @@ mod tests {
     }
 
     #[test]
-    fn the_network_comes_from_the_project() {
-        let one = TakoToml::parse(
-            "name = \"shop\"\n[envs.production]\nroute = \"a.example.com\"\nnetwork = \"0123456789abcdef0123456789abcdef\"\n[envs.staging]\nroute = \"b.example.com\"\nnetwork = \"0123456789abcdef0123456789abcdef\"\n",
+    fn the_network_comes_from_the_project_record() {
+        let _home = crate::network::tests::TestHome::new();
+        let project = tempfile::TempDir::new().unwrap();
+        let config = TakoToml::parse(
+            "name = \"shop\"\n[envs.production]\nroute = \"a.example.com\"\n[envs.staging]\nroute = \"b.example.com\"\n",
         )
         .unwrap();
-        assert_eq!(
-            project_network(&one, None).unwrap(),
-            "0123456789abcdef0123456789abcdef"
-        );
-        let two = TakoToml::parse(
-            "name = \"shop\"\n[envs.production]\nroute = \"a.example.com\"\nnetwork = \"0123456789abcdef0123456789abcdef\"\n[envs.staging]\nroute = \"b.example.com\"\nnetwork = \"fedcba9876543210fedcba9876543210\"\n",
-        )
-        .unwrap();
-        assert!(
-            project_network(&two, None)
-                .unwrap_err()
-                .contains("--network")
-        );
-        assert_eq!(
-            project_network(&two, Some("fedcba9876543210fedcba9876543210")).unwrap(),
-            "fedcba9876543210fedcba9876543210"
-        );
-        let none = TakoToml::parse("name = \"shop\"\n").unwrap();
-        assert!(project_network(&none, None).is_err());
+        // Nothing recorded and no network on this machine.
+        let error = project_network(project.path(), &config, None).unwrap_err();
+        assert!(error.to_string().contains("No network"), "{error}");
+        let mut file = crate::config::ProjectFile::default();
+        file.set_network("production", "0123456789abcdef0123456789abcdef");
+        file.set_network("staging", "fedcba9876543210fedcba9876543210");
+        file.save(project.path()).unwrap();
+        let error = project_network(project.path(), &config, None).unwrap_err();
+        assert!(error.to_string().contains("--network"), "{error}");
     }
 
     #[test]

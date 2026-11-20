@@ -57,7 +57,8 @@ impl ComposeRuntime {
                 serde_json::from_slice(&output).map_err(|_| "Invalid prepared image metadata")?;
             let id = image["id"].as_str().ok_or("Prepared image has no ID")?;
             if runtime.is_ingress(name) {
-                let port = crate::ingress_port(name, service, &image["ports"])?;
+                let port =
+                    crate::http_port(name, service, &image["ports"], runtime.config.is_sdk(name))?;
                 runtime.ingress_ports.insert(name.clone(), port);
             }
             for target in image["volumes"]
@@ -176,7 +177,7 @@ impl Rollout {
                 let mut candidate = if let Some(container) = matched {
                     container.clone()
                 } else {
-                    let model = self.plan.container_model(service, slot, &self.runtime);
+                    let model = self.plan.container_model(service, slot, &self.runtime)?;
                     self.runtime
                         .create_container(model, &service.generation(slot))
                         .await?
@@ -201,7 +202,7 @@ impl Rollout {
                     }
                 }
                 if !(candidate.running() || (service.completed && candidate.completed())) {
-                    let model = self.plan.container_model(service, slot, &self.runtime);
+                    let model = self.plan.container_model(service, slot, &self.runtime)?;
                     self.runtime
                         .start_service(&model, &candidate.generation)
                         .await?;

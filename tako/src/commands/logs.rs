@@ -8,7 +8,6 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 use crate::commands::project_context;
-use crate::commands::server;
 use crate::config::{ServerInventory, TakoToml};
 use crate::output;
 use json::JsonLogWriter;
@@ -53,8 +52,16 @@ async fn run_async(
         super::log_style::set_app_runtime(runtime.clone());
     }
     let env = super::helpers::resolve_env_silent(requested_env);
-    let mut servers =
-        super::helpers::load_management_servers(Some(&tako_config), Some(&env)).await?;
+    let network = if tako_config.envs.contains_key(env.as_str()) {
+        Some(super::env_network::resolve(
+            &context.project_dir,
+            &env,
+            super::env_network::Purpose::Use,
+        )?)
+    } else {
+        None
+    };
+    let mut servers = super::helpers::load_management_servers(network.map(|n| vec![n])).await?;
 
     let app_name = crate::app::require_app_name_from_config_path(&context.config_path)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?;
@@ -504,32 +511,6 @@ async fn resolve_log_server_names(
             super::helpers::validate_server_names(&resolved, servers)
                 .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
             Ok(resolved)
-        }
-        Err(_)
-            if env == "production"
-                && servers.is_empty()
-                && !tako_config
-                    .envs
-                    .get(env)
-                    .is_some_and(|env| env.network.is_some()) =>
-        {
-            if server::prompt_to_add_server(
-                "No servers have been added. Logs need at least one server.",
-            )
-            .await?
-            .is_some()
-            {
-                *servers = crate::commands::helpers::load_management_servers(None, None).await?;
-                if servers.len() == 1 {
-                    let only = servers.names()[0];
-                    return Ok(vec![only.to_string()]);
-                }
-            }
-            Err(
-                "No servers have been added. Run 'tako network server add <host>' first, \
-                 then add it under [envs.production].servers in tako.toml."
-                    .into(),
-            )
         }
         Err(e) => Err(e.into()),
     }

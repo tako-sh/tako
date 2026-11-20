@@ -10,9 +10,13 @@ use tokio::process::{Child, Command};
 const TAKO_APP_DATA_DIR_ENV: &str = "TAKO_DATA_DIR";
 const TAKO_SHARED_DATA_DIR_ENV: &str = "TAKO_SHARED_DATA_DIR";
 const SHARED_DATA_MOUNT: &str = "/tako/shared-data";
+/// The group's internal socket directory inside `sdk: true` services.
+pub const SDK_SOCKET_MOUNT: &str = "/run/tako";
+/// The group's app data directory inside `sdk: true` services.
+pub const SDK_DATA_MOUNT: &str = "/tako/data";
 mod config;
 mod engine;
-pub use config::{ingress_port, load_config};
+pub use config::{SDK_DEFAULT_PORT, http_port, ingress_port, load_config};
 mod native_network;
 pub use native_network::NativeNetwork;
 mod plan;
@@ -46,7 +50,13 @@ pub async fn cleanup_pending_project(project: &str) -> Result<(), String> {
 /// Remove every owned container before deleting its prepared inputs. Named
 /// volumes remain available if the same app/environment is deployed again.
 pub async fn remove_app_containers(app_data: &Path) -> Result<(), String> {
-    cleanup_pending_project(&format!("tako-{}", digest(&app_data.to_string_lossy()))).await
+    cleanup_pending_project(&production_project(app_data)).await
+}
+
+/// The production Compose project of an app data directory. It survives
+/// releases, so the group's socket directory can be named after it.
+pub fn production_project(app_data: &Path) -> String {
+    format!("tako-{}", digest(&app_data.to_string_lossy()))
 }
 use tako_core::compose::ComposeConfig;
 
@@ -127,7 +137,42 @@ pub struct ComposeRuntime {
     stopped_services: BTreeSet<String>,
     native_network: Option<NativeNetwork>,
     ingress_ports: BTreeMap<String, u16>,
+    sdk: Option<SdkRuntime>,
 }
+
+/// The Tako runtime that `sdk: true` services receive. One group is one Tako
+/// app: every SDK service shares this identity, token, socket and data.
+// Do not derive Debug: the envelope carries secret values.
+#[derive(Clone)]
+pub struct SdkRuntime {
+    /// `TAKO_APP_NAME`: the group's deployment ID, or the dev app name.
+    pub app_name: String,
+    /// The group's internal token. The bootstrap envelope carries it.
+    pub token: String,
+    /// The `TAKO_BOOTSTRAP_DATA` envelope, with the token, group secrets and
+    /// S3 storages.
+    pub envelope: String,
+    /// `TAKO_BUILD`.
+    pub build: String,
+    /// `ENV`.
+    pub environment: String,
+    /// Host directory of the group's pinned internal socket, mounted
+    /// read-only at [`SDK_SOCKET_MOUNT`].
+    pub socket_dir: PathBuf,
+    /// Host app data directory, mounted read-write at [`SDK_DATA_MOUNT`].
+    pub data_dir: PathBuf,
+    /// The `Host` of SDK readiness requests: `<app>.tako`.
+    pub health_host: String,
+}
+
+/// Name of the internal socket in [`SdkRuntime::socket_dir`].
+pub const SDK_SOCKET_FILE: &str = "internal.sock";
+/// Variable that marks every `x-tako` service, so an SDK can explain a
+/// missing `sdk: true`.
+pub const TAKO_COMPOSE_SERVICE_ENV: &str = "TAKO_COMPOSE_SERVICE";
+/// Client variable that carries the envelope to a development override.
+/// Production never puts the envelope in the client environment.
+const DEV_BOOTSTRAP_ENV: &str = "TAKO_DEV_BOOTSTRAP_DATA";
 
 impl std::fmt::Debug for ComposeRuntime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -191,7 +236,78 @@ impl ComposeRuntime {
             stopped_services: BTreeSet::new(),
             native_network: None,
             ingress_ports: BTreeMap::new(),
+            sdk: None,
         })
+    }
+
+    /// Give `sdk: true` services the Tako runtime.
+    pub fn with_sdk(mut self, sdk: SdkRuntime) -> Self {
+        if self.development {
+            // The development override references this client variable, so
+            // the project directory never holds the envelope.
+            self.env
+                .insert(DEV_BOOTSTRAP_ENV.into(), sdk.envelope.clone());
+        }
+        self.sdk = Some(sdk);
+        self
+    }
+
+    /// Drop the Tako runtime, for a reloaded group with no `sdk: true`
+    /// services left.
+    pub fn without_sdk(mut self) -> Self {
+        self.env.remove(DEV_BOOTSTRAP_ENV);
+        self.sdk = None;
+        self
+    }
+
+    pub fn sdk(&self) -> Option<&SdkRuntime> {
+        self.sdk.as_ref()
+    }
+
+    /// The internal socket path SDK services see.
+    pub fn sdk_socket_path() -> String {
+        format!("{SDK_SOCKET_MOUNT}/{SDK_SOCKET_FILE}")
+    }
+
+    /// What a development override adds to each `x-tako` service. Secret
+    /// values are `${...}` references to the development client environment.
+    fn development_services(
+        &self,
+        ports: &BTreeMap<String, (u16, u16)>,
+    ) -> Result<BTreeMap<String, DevelopmentService>, String> {
+        let literal = |value: &str| value.replace('$', "$$");
+        let mut services = BTreeMap::new();
+        for (name, settings) in &self.config.services {
+            let mut service = DevelopmentService::default();
+            service
+                .environment
+                .push((TAKO_COMPOSE_SERVICE_ENV.into(), literal(name)));
+            if settings.sdk {
+                let sdk = self.sdk.as_ref().ok_or_else(|| {
+                    format!("Compose service '{name}' is marked sdk: true, but Tako has no SDK runtime for this app")
+                })?;
+                let port = ports.get(name).map(|(_, port)| *port);
+                for (key, value) in self.sdk_environment(name, sdk, port) {
+                    service.environment.push((key.into(), literal(&value)));
+                }
+                service.environment.push((
+                    tako_core::bootstrap::TAKO_BOOTSTRAP_DATA_ENV.into(),
+                    format!("${{{DEV_BOOTSTRAP_ENV}}}"),
+                ));
+                service.volumes.extend(sdk_mounts(sdk).map(|mut mount| {
+                    let source = literal(mount["source"].as_str().unwrap_or_default());
+                    mount["source"] = json!(source);
+                    mount
+                }));
+                #[cfg(unix)]
+                if let Ok(metadata) = std::fs::metadata(&sdk.data_dir) {
+                    use std::os::unix::fs::MetadataExt;
+                    service.group_add.push(metadata.gid().to_string());
+                }
+            }
+            services.insert(name.clone(), service);
+        }
+        Ok(services)
     }
 
     pub fn with_native_network(mut self, network: NativeNetwork) -> Self {
@@ -281,6 +397,90 @@ impl ComposeRuntime {
                 groups.push(json!(metadata.gid().to_string()));
                 service["group_add"] = json!(groups);
             }
+        }
+    }
+
+    /// Add the Tako runtime to an `x-tako` service definition, after its
+    /// fingerprint is computed. Values travel to Docker on stdin, never through
+    /// the client environment or a file.
+    fn inject_tako(&self, name: &str, service: &mut Value) -> Result<(), String> {
+        let Some(settings) = self.config.services.get(name) else {
+            return Ok(());
+        };
+        if !service["environment"].is_object() {
+            service["environment"] = json!({});
+        }
+        service["environment"][TAKO_COMPOSE_SERVICE_ENV] = json!(name);
+        if !settings.sdk {
+            return Ok(());
+        }
+        let sdk = self.sdk.as_ref().ok_or_else(|| {
+            format!("Compose service '{name}' is marked sdk: true, but Tako has no SDK runtime for this group")
+        })?;
+        let port = self.ingress_ports.get(name).copied();
+        for (key, value) in self.sdk_environment(name, sdk, port) {
+            service["environment"][key] = json!(value);
+        }
+        service["environment"][tako_core::bootstrap::TAKO_BOOTSTRAP_DATA_ENV] = json!(sdk.envelope);
+        let mut volumes = service["volumes"].as_array().cloned().unwrap_or_default();
+        volumes.extend(sdk_mounts(sdk));
+        service["volumes"] = json!(volumes);
+        #[cfg(unix)]
+        if let Ok(metadata) = std::fs::metadata(&sdk.data_dir) {
+            use std::os::unix::fs::MetadataExt;
+            let mut groups = service["group_add"].as_array().cloned().unwrap_or_default();
+            let group = json!(metadata.gid().to_string());
+            // The shared data directory may already have added this group;
+            // Compose rejects duplicates.
+            if !groups.contains(&group) {
+                groups.push(group);
+            }
+            service["group_add"] = json!(groups);
+        }
+        Ok(())
+    }
+
+    /// Non-secret runtime variables of one SDK service.
+    fn sdk_environment(
+        &self,
+        name: &str,
+        sdk: &SdkRuntime,
+        port: Option<u16>,
+    ) -> Vec<(&'static str, String)> {
+        let mut environment = vec![
+            (
+                tako_core::instance_env::TAKO_APP_NAME_ENV,
+                sdk.app_name.clone(),
+            ),
+            (
+                tako_core::instance_env::TAKO_INTERNAL_SOCKET_ENV,
+                Self::sdk_socket_path(),
+            ),
+            (TAKO_APP_DATA_DIR_ENV, SDK_DATA_MOUNT.into()),
+            ("TAKO_BUILD", sdk.build.clone()),
+            ("ENV", sdk.environment.clone()),
+        ];
+        if self.is_ingress(name) {
+            environment.push((tako_core::instance_env::HOST_ENV, "0.0.0.0".into()));
+            if let Some(port) = port {
+                environment.push((tako_core::instance_env::PORT_ENV, port.to_string()));
+            }
+        }
+        environment
+    }
+
+    /// The SDK runtime's part of a service's fingerprint. Every deploy and
+    /// every secret change replaces SDK services, and only them.
+    fn sdk_identity(&self, name: &str) -> Value {
+        match (&self.sdk, self.config.is_sdk(name)) {
+            (Some(sdk), true) => json!({
+                "app": sdk.app_name,
+                "envelope": hex::encode(Sha256::digest(sdk.envelope.as_bytes())),
+                "build": sdk.build,
+                "environment": sdk.environment,
+                "mounts": sdk_mounts(sdk),
+            }),
+            _ => Value::Null,
         }
     }
 
@@ -413,6 +613,7 @@ impl ComposeRuntime {
         if !self.development {
             validation::validate_resources(&model, false, Some(&self.env))?;
         }
+        validation::validate_tako_services(&model, &self.config)?;
         if self.env.contains_key(TAKO_SHARED_DATA_DIR_ENV) {
             for service in model["services"]
                 .as_object()
@@ -433,8 +634,9 @@ impl ComposeRuntime {
         Ok(model)
     }
 
+    /// HTTP apps own a backend pool. SDK workers, plain services and jobs do not.
     pub fn is_ingress(&self, service: &str) -> bool {
-        self.config.services.contains_key(service)
+        self.config.is_http(service)
     }
 
     pub fn ingress_count(&self, replicas: &BTreeMap<String, u32>) -> u32 {
@@ -628,19 +830,24 @@ impl ComposeRuntime {
                     serde_json::from_slice(&output).map_err(|_| "Invalid image port metadata")?;
                 ports.insert(
                     service.clone(),
-                    (0, ingress_port(service, definition, &exposed)?),
+                    (
+                        0,
+                        http_port(service, definition, &exposed, self.config.is_sdk(service))?,
+                    ),
                 );
             }
             images.insert(service.clone(), image);
         }
         let override_path = self.directory.join(&self.override_file);
         std::fs::create_dir_all(override_path.parent().unwrap()).map_err(|e| e.to_string())?;
+        let tako = self.development_services(&ports)?;
         write_private(
             &override_path,
-            render_override_with_shared_data(
+            render_development_override(
                 &images,
                 &ports,
                 self.env.get(TAKO_SHARED_DATA_DIR_ENV).map(String::as_str),
+                &tako,
             )
             .as_bytes(),
         )?;
@@ -671,12 +878,7 @@ impl ComposeRuntime {
                 }
             })
             .await;
-            ready.map_err(|_| {
-                format!(
-                    "Compose service '{}' did not become ready",
-                    container.service
-                )
-            })??;
+            ready.map_err(|_| self.readiness_error(&container.service))??;
         }
         self.command(true)
             .args(["logs", "--follow", "--no-color", "--tail", "100"])
@@ -757,6 +959,22 @@ impl ComposeRuntime {
             })
             .collect())
     }
+}
+
+/// The socket directory (read-only) and app data directory of SDK services.
+/// Mounting the socket's directory, not the file, lets a successor server
+/// re-bind it without breaking running containers.
+fn sdk_mounts(sdk: &SdkRuntime) -> [Value; 2] {
+    [
+        json!({
+            "type": "bind", "source": sdk.socket_dir, "target": SDK_SOCKET_MOUNT,
+            "read_only": true, "bind": {"create_host_path": false}
+        }),
+        json!({
+            "type": "bind", "source": sdk.data_dir, "target": SDK_DATA_MOUNT,
+            "bind": {"create_host_path": false}
+        }),
+    ]
 }
 
 fn image_fingerprint(metadata: &Value) -> Result<String, String> {
@@ -883,13 +1101,23 @@ pub fn render_override(
     images: &BTreeMap<String, String>,
     ports: &BTreeMap<String, (u16, u16)>,
 ) -> String {
-    render_override_with_shared_data(images, ports, None)
+    render_development_override(images, ports, None, &BTreeMap::new())
 }
 
-fn render_override_with_shared_data(
+/// What a development override adds to one `x-tako` service.
+#[derive(Default)]
+struct DevelopmentService {
+    /// Values are Compose-interpolated: `$$` is a literal dollar.
+    environment: Vec<(String, String)>,
+    volumes: Vec<Value>,
+    group_add: Vec<String>,
+}
+
+fn render_development_override(
     images: &BTreeMap<String, String>,
     ports: &BTreeMap<String, (u16, u16)>,
     shared: Option<&str>,
+    tako: &BTreeMap<String, DevelopmentService>,
 ) -> String {
     let mut text = String::from("services:\n");
     for (service, image) in images {
@@ -906,16 +1134,47 @@ fn render_override_with_shared_data(
         } else {
             text.push_str("[]\n");
         }
+        let mut environment = Vec::new();
+        let mut volumes = Vec::new();
+        let mut groups = Vec::new();
         if let Some(source) = shared {
-            text.push_str(&format!("    volumes:\n      - type: bind\n        source: {}\n        target: /tako/shared-data\n        bind: {{create_host_path: false}}\n    environment:\n      TAKO_SHARED_DATA_DIR: /tako/shared-data\n", json!(source)));
+            volumes.push(json!({
+                "type": "bind", "source": source, "target": SHARED_DATA_MOUNT,
+                "bind": {"create_host_path": false}
+            }));
+            environment.push((
+                TAKO_SHARED_DATA_DIR_ENV.to_string(),
+                SHARED_DATA_MOUNT.to_string(),
+            ));
             #[cfg(unix)]
             if let Ok(metadata) = std::fs::metadata(source) {
                 use std::os::unix::fs::MetadataExt;
-                text.push_str(&format!(
-                    "    group_add: [{}]\n",
-                    json!(metadata.gid().to_string())
-                ));
+                groups.push(metadata.gid().to_string());
             }
+        }
+        if let Some(service) = tako.get(service) {
+            environment.extend(service.environment.iter().cloned());
+            volumes.extend(service.volumes.iter().cloned());
+            for group in &service.group_add {
+                if !groups.contains(group) {
+                    groups.push(group.clone());
+                }
+            }
+        }
+        if !volumes.is_empty() {
+            text.push_str("    volumes:\n");
+            for volume in volumes {
+                text.push_str(&format!("      - {volume}\n"));
+            }
+        }
+        if !environment.is_empty() {
+            text.push_str("    environment:\n");
+            for (key, value) in environment {
+                text.push_str(&format!("      {}: {}\n", json!(key), json!(value)));
+            }
+        }
+        if !groups.is_empty() {
+            text.push_str(&format!("    group_add: {}\n", json!(groups)));
         }
     }
     text
@@ -1040,13 +1299,231 @@ mod tests {
                 .to_string();
             assert_eq!(service["group_add"], json!(["123", gid]));
         }
-        let development = render_override_with_shared_data(
+        let development = render_development_override(
             &BTreeMap::from([("web".into(), "image".into())]),
             &BTreeMap::from([("web".into(), (1234, 8080))]),
             Some(&runtime.env[TAKO_SHARED_DATA_DIR_ENV]),
+            &BTreeMap::new(),
         );
-        assert!(development.contains("TAKO_SHARED_DATA_DIR: /tako/shared-data"));
-        assert!(development.contains("create_host_path: false"));
+        assert!(development.contains("\"TAKO_SHARED_DATA_DIR\": \"/tako/shared-data\""));
+        assert!(development.contains("\"create_host_path\":false"));
+    }
+
+    #[test]
+    fn development_override_references_the_envelope_without_writing_secrets() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("compose.yaml"), "services: {}\n").unwrap();
+        let config = ComposeConfig {
+            file: "compose.yaml".into(),
+            services: serde_json::from_value(json!({
+                "web": {"sdk": true, "envs": {"development": {"route": "shop.test"}}},
+                "worker": {"sdk": true},
+                "grafana": {"http": true}
+            }))
+            .unwrap(),
+        };
+        let runtime = ComposeRuntime::development(
+            directory.path().into(),
+            config,
+            HashMap::new(),
+            "sdk-test",
+        )
+        .unwrap()
+        .with_sdk(SdkRuntime {
+            app_name: "shop".into(),
+            token: "dev-token".into(),
+            envelope: json!({"token":"dev-token","secrets":{"API_KEY":"top-secret"}}).to_string(),
+            build: "dev".into(),
+            environment: "development".into(),
+            socket_dir: directory.path().join("socket"),
+            data_dir: directory.path().join(".tako/data/app"),
+            health_host: "shop.tako".into(),
+        });
+        // Only the development client carries the envelope.
+        assert!(runtime.env[DEV_BOOTSTRAP_ENV].contains("top-secret"));
+        let ports = BTreeMap::from([("web".into(), (0, 3000)), ("grafana".into(), (0, 3000))]);
+        let images: BTreeMap<String, String> = ["web", "worker", "grafana", "redis"]
+            .into_iter()
+            .map(|name| (name.to_string(), format!("{name}:dev")))
+            .collect();
+        let text = render_development_override(
+            &images,
+            &ports,
+            None,
+            &runtime.development_services(&ports).unwrap(),
+        );
+        assert!(!text.contains("top-secret"), "{text}");
+        assert!(!text.contains("dev-token"), "{text}");
+        assert!(text.contains("\"TAKO_BOOTSTRAP_DATA\": \"${TAKO_DEV_BOOTSTRAP_DATA}\""));
+        assert!(text.contains("\"TAKO_INTERNAL_SOCKET\": \"/run/tako/internal.sock\""));
+        assert!(text.contains("\"PORT\": \"3000\""));
+        assert!(text.contains("\"TAKO_COMPOSE_SERVICE\": \"grafana\""));
+        let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(&text).unwrap();
+        let services = &parsed["services"];
+        assert!(services["worker"]["environment"].get("PORT").is_none());
+        assert!(
+            services["grafana"]["environment"]
+                .get("TAKO_APP_NAME")
+                .is_none()
+        );
+        assert!(services["redis"].get("environment").is_none());
+    }
+
+    #[test]
+    fn a_reload_without_sdk_services_drops_the_runtime_and_its_envelope() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("compose.yaml"),
+            "services:\n  web:\n    image: web\n    x-tako: {sdk: true, http: true}\n",
+        )
+        .unwrap();
+        let config = load_config(directory.path(), "compose.yaml").unwrap();
+        let runtime = ComposeRuntime::development(
+            directory.path().into(),
+            config,
+            HashMap::new(),
+            "sdk-reload-test",
+        )
+        .unwrap()
+        .with_sdk(SdkRuntime {
+            app_name: "shop".into(),
+            token: "dev-token".into(),
+            envelope: json!({"token":"dev-token","secrets":{"API_KEY":"top-secret"}}).to_string(),
+            build: "dev".into(),
+            environment: "development".into(),
+            socket_dir: directory.path().join("socket"),
+            data_dir: directory.path().join(".tako/data/app"),
+            health_host: "shop.tako".into(),
+        });
+        // The Compose file drops sdk: true; the reload clones the old runtime.
+        std::fs::write(
+            directory.path().join("compose.yaml"),
+            "services:\n  web:\n    image: web\n    x-tako: {http: true}\n",
+        )
+        .unwrap();
+        let reloaded = runtime.reload_development().unwrap();
+        assert!(!reloaded.config.has_sdk_services());
+        assert!(reloaded.sdk().is_some(), "a reload alone keeps the binding");
+        let reloaded = reloaded.without_sdk();
+        assert!(reloaded.sdk().is_none());
+        assert!(!reloaded.env.contains_key(DEV_BOOTSTRAP_ENV));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker Compose with shared host/container loopback and project paths"]
+    async fn development_sdk_services_start_with_the_runtime_and_pass_sdk_readiness() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path();
+        std::fs::write(
+            project.join("compose.yaml"),
+            "services:\n  web:\n    build: .\n    command: [sh, -c, 'exec nc -lk -p \"$$PORT\" -e /handler.sh']\n    x-tako: {sdk: true, http: true}\n  worker:\n    build: .\n    command: [sleep, '3600']\n    x-tako: {sdk: true}\n  plain:\n    build: .\n    command: [sleep, '3600']\n",
+        )
+        .unwrap();
+        std::fs::write(
+            project.join("Dockerfile"),
+            "FROM docker.io/library/busybox:1.37\nCOPY handler.sh /handler.sh\nRUN chmod 0755 /handler.sh\n",
+        )
+        .unwrap();
+        // Answers Tako's SDK check only with the token from the envelope.
+        std::fs::write(
+            project.join("handler.sh"),
+            r#"#!/bin/sh
+token=$(printf '%s' "$TAKO_BOOTSTRAP_DATA" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+auth=
+read -r method path version
+while IFS= read -r line; do
+  line=$(printf '%s' "$line" | tr -d '\r')
+  [ -z "$line" ] && break
+  case "$line" in
+    [Xx]-[Tt]ako-[Ii]nternal-[Tt]oken:*) auth=$(printf '%s' "${line#*:}" | tr -d ' ') ;;
+  esac
+done
+if [ -n "$token" ] && [ "$auth" = "$token" ]; then
+  printf 'HTTP/1.1 200 OK\r\nx-tako-internal-token: %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n' "$token"
+else
+  printf 'HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'
+fi
+"#,
+        )
+        .unwrap();
+        let data = project.join(".tako/data/app");
+        std::fs::create_dir_all(&data).unwrap();
+        let socket_dir = project.join("socket");
+        std::fs::create_dir_all(&socket_dir).unwrap();
+        let _listener =
+            std::os::unix::net::UnixListener::bind(socket_dir.join(SDK_SOCKET_FILE)).unwrap();
+        let config = load_config(project, "compose.yaml").unwrap();
+        let runtime = ComposeRuntime::development(
+            project.into(),
+            config,
+            HashMap::from([
+                (TAKO_APP_DATA_DIR_ENV.into(), data.display().to_string()),
+                ("API_KEY".into(), "top-secret".into()),
+            ]),
+            "sdk-development-test",
+        )
+        .unwrap()
+        .with_development_hosts("sdk.test".into(), None)
+        .with_sdk(SdkRuntime {
+            app_name: "sdk".into(),
+            token: "dev-token".into(),
+            envelope: json!({"token":"dev-token","secrets":{"API_KEY":"top-secret"},"storages":{},"databases":{}}).to_string(),
+            build: "dev".into(),
+            environment: "development".into(),
+            socket_dir: socket_dir.clone(),
+            data_dir: data.clone(),
+            health_host: "sdk.tako".into(),
+        });
+        struct Cleanup(ComposeRuntime);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = self
+                    .0
+                    .command(true)
+                    .into_std()
+                    .args(["down", "--volumes", "--remove-orphans"])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status();
+            }
+        }
+        let _cleanup = Cleanup(runtime.clone());
+        let _logs = runtime.start_development().await.unwrap();
+        let generated = std::fs::read_to_string(project.join(&runtime.override_file)).unwrap();
+        assert!(!generated.contains("top-secret"), "{generated}");
+        assert!(!generated.contains("dev-token"), "{generated}");
+        let containers = runtime.containers().await.unwrap();
+        let id = |service: &str| {
+            containers
+                .iter()
+                .find(|c| c.service == service)
+                .unwrap()
+                .id
+                .clone()
+        };
+        let exec = |id: String, script: &'static str| async move {
+            let output = tokio::process::Command::new("docker")
+                .args(["exec", &id, "sh", "-c", script])
+                .output()
+                .await
+                .unwrap();
+            (
+                output.status.success(),
+                String::from_utf8_lossy(&output.stdout).trim().to_string(),
+            )
+        };
+        let (ok, envelope) = exec(id("web"), "printenv TAKO_BOOTSTRAP_DATA").await;
+        assert!(ok && envelope.contains("top-secret"));
+        assert_eq!(
+            exec(
+                id("worker"),
+                "test -S /run/tako/internal.sock && printenv TAKO_APP_NAME"
+            )
+            .await,
+            (true, "sdk".into())
+        );
+        assert!(!exec(id("plain"), "printenv TAKO_BOOTSTRAP_DATA").await.0);
+        runtime.stop().await.unwrap();
     }
 
     #[test]
