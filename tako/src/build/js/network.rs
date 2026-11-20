@@ -81,8 +81,7 @@ pub(super) fn generate(
     if source.is_file() {
         generator.arg(source);
     } else {
-        check_sdk_tool(project, "tako-sh-gen-network-types")?;
-        generator.arg("run").arg("tako-sh-gen-network-types");
+        generator.arg(sdk_tool_path(project, "tako-gen-network-types")?);
     }
     let mut process = generator
         .arg(&root)

@@ -36,7 +36,7 @@ function escapeJsdocText(value: string): string {
 if (import.meta.main) {
   const channelsDir = Bun.argv[2];
   if (!channelsDir) {
-    console.error("usage: tako-sh-gen-channel-types <channels-dir>");
+    console.error("usage: tako-gen-channel-types <channels-dir>");
     process.exit(2);
   }
   process.stdout.write(

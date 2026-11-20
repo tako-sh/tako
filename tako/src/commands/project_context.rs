@@ -109,6 +109,9 @@ fn resolve_existing_from_cwd(
 ) -> Result<ProjectContext, Box<dyn std::error::Error>> {
     let context = resolve_from_cwd(cwd, config)?;
     if !context.config_path.is_file() {
+        if config.is_none() {
+            return Err("tako.toml not found".into());
+        }
         return Err(format!("Config file not found: {}", context.config_path.display()).into());
     }
     Ok(context)

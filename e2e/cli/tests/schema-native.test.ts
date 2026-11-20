@@ -128,11 +128,6 @@ func TestRoundtrip(t *testing.T) {
         join(producer, "tako.toml"),
         'name = "mail"\nruntime = "bun"\napp_root = "."\nschemas = ["../go-app/tako-schema.json", "../rust-app/tako-schema.json"]\n',
       );
-      await mkdir(join(producer, "node_modules/.bin"), { recursive: true });
-      await symlink(
-        join(repo, "sdk/javascript/dist/gen-network-types.mjs"),
-        join(producer, "node_modules/.bin/tako-sh-gen-network-types"),
-      );
       await run(producer, [binary, "--ci", "gen"]);
       const main = join(producer, "main.ts");
       await writeFile(
