@@ -127,4 +127,6 @@ Every metric includes a `server` label so one scraper can distinguish hosts in a
 
 After scaling, inspect status and request the real app hostname. After rollback, confirm the selected release is current and exercise the failing request again. A rollback restores release code; use [Backups](/backups/) for app data recovery. Application schema changes must remain compatible with the release you restore.
 
+Rollback extracts the original uploaded archive and prepares its runtime dependencies again before switching traffic. It takes longer than switching to an already-prepared directory and can fail if required packages or images are unavailable. A failed preparation keeps the current release serving and retains the archive for a later retry. See [Deployment](/deployment/) for release retention and working-directory cleanup.
+
 Use finite log history or MCP's bounded local log tool for agent inspection. Keep `--tail` for an intentionally attached terminal. Detailed failures are in app logs; a generic production 5xx response alone does not identify its cause.

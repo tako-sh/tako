@@ -3,15 +3,7 @@ use futures_util::StreamExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 fn upload_request() -> (Request<Full<Bytes>>, SignedRequest) {
-    let mut archive = tar::Builder::new(Vec::new());
-    let mut header = tar::Header::new_gnu();
-    header.set_size(5);
-    header.set_mode(0o644);
-    header.set_cksum();
-    archive
-        .append_data(&mut header, "hello.txt", &b"hello"[..])
-        .unwrap();
-    let archive = zstd::stream::encode_all(&archive.into_inner().unwrap()[..], 0).unwrap();
+    let archive = release_archive();
     let digest = hex::encode(Sha256::digest(&archive));
     let descriptor = tako_core::release_artifact_upload_auth_body(
         "demo/production",

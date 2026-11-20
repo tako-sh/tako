@@ -180,6 +180,13 @@ pub fn remove_release_preparations(release: &Path, app_data: &Path) -> Result<()
     for entry in std::fs::read_dir(&root).map_err(|e| e.to_string())? {
         let path = entry.map_err(|e| e.to_string())?.path();
         create_private_directory(&path)?;
+        if path
+            .file_name()
+            .is_some_and(|name| name.as_encoded_bytes().starts_with(b".remove-"))
+        {
+            std::fs::remove_dir_all(path).map_err(|e| e.to_string())?;
+            continue;
+        }
         let record = path.join("release.json");
         if !record.exists() {
             continue;
@@ -188,7 +195,14 @@ pub fn remove_release_preparations(release: &Path, app_data: &Path) -> Result<()
             serde_json::from_slice(&std::fs::read(record).map_err(|e| e.to_string())?)
                 .map_err(|_| "Invalid private Compose release record")?;
         if directory.starts_with(release) {
-            std::fs::remove_dir_all(path).map_err(|e| e.to_string())?;
+            let removed = tempfile::Builder::new()
+                .prefix(".remove-")
+                .permissions(std::fs::Permissions::from_mode(0o700))
+                .tempdir_in(&root)
+                .map_err(|e| e.to_string())?;
+            // A later preparation must never reuse a partially deleted snapshot.
+            std::fs::rename(path, removed.path().join("tree")).map_err(|e| e.to_string())?;
+            removed.close().map_err(|e| e.to_string())?;
         }
     }
     Ok(())
@@ -481,6 +495,33 @@ mod tests {
         remove_release_preparations(&runtime.directory, data).unwrap();
         assert!(!runtime.preparation_root().unwrap().exists());
         assert!(outside.join("private.log").is_file());
+    }
+
+    #[test]
+    fn interrupted_private_input_removal_does_not_reuse_the_old_snapshot() {
+        let (_dir, runtime) = fixture("services: {web: {image: busybox}}\n");
+        let (_, snapshot) = runtime.snapshot().unwrap();
+        runtime
+            .commit_preparation(snapshot, BTreeMap::new())
+            .unwrap();
+        let root = runtime.preparation_root().unwrap();
+        let removed = tempfile::Builder::new()
+            .prefix(".remove-")
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir_in(root.parent().unwrap())
+            .unwrap()
+            .keep();
+        std::fs::rename(&root, removed.join("tree")).unwrap();
+        std::fs::remove_file(removed.join("tree/release.json")).unwrap();
+        let data = Path::new(&runtime.env[crate::TAKO_APP_DATA_DIR_ENV]);
+        remove_release_preparations(&runtime.directory, data).unwrap();
+        assert!(!removed.exists());
+        assert!(runtime.prepared().is_err());
+        let (_, snapshot) = runtime.snapshot().unwrap();
+        runtime
+            .commit_preparation(snapshot, BTreeMap::new())
+            .unwrap();
+        assert!(runtime.prepared().is_ok());
     }
 
     #[test]

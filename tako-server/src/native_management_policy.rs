@@ -229,6 +229,8 @@ pub(crate) fn authorize_command(
     let app_root = Path::new("apps").join(scope.as_str());
     let releases = app_root.join("releases");
     validate_managed_directories(context.data_dir, &releases)?;
+    let archives = app_root.join("archives");
+    validate_managed_directories(context.data_dir, &archives)?;
     // Backup, workflow and runtime handlers also access these app-owned roots.
     validate_managed_directories(context.data_dir, &app_root.join("data/app"))?;
     validate_managed_directories(context.data_dir, &app_root.join("data/tako"))?;
@@ -295,11 +297,24 @@ pub(crate) fn authorize_command(
         | Command::CleanupRelease { version, .. }
         | Command::FinalizeRelease { version, .. } => {
             validate_version_path(context.data_dir, &releases, version)?;
+            validate_version_path(context.data_dir, &archives, version)?;
         }
         Command::Rollback { version, .. } => {
             validate_version_path(context.data_dir, &releases, version)?;
+            validate_version_path(context.data_dir, &archives, version)?;
             let path = context.data_dir.join(&releases).join(version);
-            validate_release_path(context.data_dir, scope, path.to_str().ok_or(PATH_DENIED)?)?;
+            if path.is_dir() {
+                validate_release_path(context.data_dir, scope, path.to_str().ok_or(PATH_DENIED)?)?;
+            }
+            let archive = context
+                .data_dir
+                .join(&archives)
+                .join(version)
+                .join("release.tar.zst");
+            let metadata = std::fs::symlink_metadata(archive).map_err(|_| PATH_DENIED)?;
+            if !metadata.file_type().is_file() {
+                return Err(PATH_DENIED);
+            }
         }
         Command::BackupNow { .. }
         | Command::ListBackups { .. }
@@ -515,6 +530,9 @@ mod tests {
             for app in ["demo/staging", "demo/production", "other/staging"] {
                 std::fs::create_dir_all(dir.path().join("apps").join(app).join("releases/v1"))
                     .unwrap();
+                let archive = dir.path().join("apps").join(app).join("archives/v1");
+                std::fs::create_dir_all(&archive).unwrap();
+                std::fs::write(archive.join("release.tar.zst"), b"original").unwrap();
             }
             let scope: AppEnv = tako_core::deployment_app_id("demo", "staging")
                 .parse()
@@ -1041,6 +1059,31 @@ mod tests {
             ),
             Ok(())
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rollback_accepts_archived_releases_but_rejects_redirected_archives() {
+        use std::os::unix::fs::symlink;
+        let f = Fixture::new();
+        let unarchived = f.dir.path().join("apps/demo/staging/releases/unarchived");
+        std::fs::create_dir_all(&unarchived).unwrap();
+        assert!(
+            f.authorize(&f.decode_command(json!({"command":"rollback","version":"unarchived"})))
+                .is_err()
+        );
+        let root = f.dir.path().join("apps/demo/staging/archives/old");
+        std::fs::create_dir_all(&root).unwrap();
+        let archive = root.join("release.tar.zst");
+        std::fs::write(&archive, b"archive").unwrap();
+        let command = f.decode_command(json!({"command":"rollback","version":"old"}));
+        assert_eq!(f.authorize(&command), Ok(()));
+        std::fs::remove_file(&archive).unwrap();
+        symlink(f.dir.path().join("outside.tar.zst"), &archive).unwrap();
+        assert!(f.authorize(&command).is_err());
+        std::fs::remove_dir_all(&root).unwrap();
+        symlink(f.release("other/staging"), &root).unwrap();
+        assert!(f.authorize(&command).is_err());
     }
 
     #[cfg(unix)]

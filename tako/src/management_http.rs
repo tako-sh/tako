@@ -380,6 +380,7 @@ fn management_rpc_timeout_for_command(command: &Command) -> Duration {
             Duration::from_secs((*timeout_seconds).min(3600) + 30)
         }
         Command::ResumeServer
+        | Command::PrepareReleaseUpload { .. }
         | Command::PrepareRelease { .. }
         | Command::PrepareDeploy { .. }
         | Command::CleanupPreparedDeploy { .. }
@@ -420,7 +421,6 @@ fn management_rpc_timeout_for_command(command: &Command) -> Duration {
         | Command::EnterUpgrading { .. }
         | Command::ExitUpgrading { .. }
         | Command::InjectChallengeToken { .. }
-        | Command::PrepareReleaseUpload { .. }
         | Command::CheckDeploySpace { .. }
         | Command::DatabaseStatus { .. }
         | Command::ListBackups { .. }
@@ -624,6 +624,13 @@ mod tests {
 
     #[test]
     fn release_lifecycle_commands_use_long_rpc_timeout() {
+        assert_eq!(
+            management_rpc_timeout_for_command(&Command::PrepareReleaseUpload {
+                app: "demo/production".into(),
+                version: "v1".into(),
+            }),
+            MANAGEMENT_DEPLOY_RPC_TIMEOUT
+        );
         assert_eq!(
             management_rpc_timeout_for_command(&Command::Stop {
                 app: "demo/production".into(),

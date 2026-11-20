@@ -590,6 +590,22 @@ impl WorkflowManager {
         }
     }
 
+    /// Working directories still needed by current or draining release workers.
+    pub fn release_paths(&self, app: &str) -> std::collections::BTreeSet<PathBuf> {
+        let mut paths = std::collections::BTreeSet::new();
+        if let Some(entry) = self.apps.read().get(app) {
+            paths.insert(entry.supervisor.working_directory().to_path_buf());
+        }
+        for retired in self.retired.lock().iter() {
+            if retired.app == app
+                && (!retired.task.is_finished() || retired.supervisor.remaining_children() > 0)
+            {
+                paths.insert(retired.supervisor.working_directory().to_path_buf());
+            }
+        }
+        paths
+    }
+
     /// Stop the worker but keep the DB around (app is paused).
     pub async fn stop(&self, app: &str, drain_timeout: Duration) {
         let entry = self.apps.write().remove(app);
@@ -1255,9 +1271,15 @@ mod tests {
         })
         .await
         .unwrap();
-        m.ensure("a", None, |db| dummy_spec(tmp.path().into(), db))
+        let next_release = tmp.path().join("next");
+        std::fs::create_dir(&next_release).unwrap();
+        m.ensure("a", None, |db| dummy_spec(next_release.clone(), db))
             .await
             .unwrap();
+        assert_eq!(
+            m.release_paths("a"),
+            std::collections::BTreeSet::from([tmp.path().to_path_buf(), next_release.clone(),])
+        );
         m.begin_server_drain();
         assert_eq!(m.server_drain_status().workers, 1);
         assert_eq!(m.force_server_drain(), (1, 0));
@@ -1269,6 +1291,10 @@ mod tests {
         .await
         .unwrap();
         assert!(!old.is_running());
+        assert_eq!(
+            m.release_paths("a"),
+            std::collections::BTreeSet::from([next_release])
+        );
     }
 
     /// A deploy that replaces a runtime leaves its workers finishing runs

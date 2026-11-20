@@ -28,6 +28,24 @@ fn empty_challenge_tokens() -> ChallengeTokens {
     Arc::new(parking_lot::RwLock::new(HashMap::new()))
 }
 
+fn retain_test_release(release: &Path) {
+    let root = release
+        .parent()
+        .unwrap()
+        .with_file_name("archives")
+        .join(release.file_name().unwrap());
+    std::fs::create_dir_all(&root).unwrap();
+    let encoder = zstd::stream::write::Encoder::new(
+        std::fs::File::create(root.join("release.tar.zst")).unwrap(),
+        3,
+    )
+    .unwrap();
+    let mut archive = tar::Builder::new(encoder);
+    archive.append_dir_all(".", release).unwrap();
+    archive.into_inner().unwrap().finish().unwrap();
+    std::fs::copy(release.join("app.json"), root.join("app.json")).unwrap();
+}
+
 fn write_release_manifest(
     release_dir: &Path,
     runtime: &str,

@@ -522,6 +522,7 @@ services:
         .to_string(),
     )
     .unwrap();
+    retain_test_release(&release);
     let runtime = ComposeRuntime::new(
         release.clone(),
         compose.clone(),
@@ -895,6 +896,7 @@ services:
     manifest["version"] = serde_json::json!("v2");
     manifest["compose"] = serde_json::to_value(&private_compose).unwrap();
     std::fs::write(private_release.join("app.json"), manifest.to_string()).unwrap();
+    retain_test_release(&private_release);
     let private_runtime = ComposeRuntime::new(
         private_release.clone(),
         private_compose,

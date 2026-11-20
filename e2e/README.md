@@ -53,6 +53,7 @@ just e2e examples/compose/bun-redis
 ```
 
 This runs the global e2e harness in `e2e/run.sh` against the fixture path.
+Set `E2E_PROJECT_NAME` to a unique Docker Compose project name when running multiple worktrees concurrently (default: `tako-e2e`). Prebuilt images must use that project's `<project>-runner`, `<project>-server-ubuntu`, and `<project>-server-alma` tags.
 The runner disables CLI telemetry so local and CI test runs do not send usage stats.
 The harness generates an ephemeral SSH keypair per run inside a disposable Docker volume and enrolls both Ubuntu and AlmaLinux test hosts through `tako network server add`. It uses the mounted binaries, real Corrosion replication, and pinned HTTPS management. It never uses the developer's SSH keys.
 Server containers run systemd with privileged access and private cgroup namespaces so the production service lifecycle and cgroup limits can be exercised. No host cgroup filesystem is bind-mounted. A separate disposable administrator account performs bootstrap; app checks use the production `tako` account and its restricted sudo policy.

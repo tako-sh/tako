@@ -959,6 +959,36 @@ run_compose_lifecycle_checks() {
   compose_assert_response 'Hello from Bun!'
 }
 
+run_archive_rollback_checks() {
+  local server_host=$1 route_host=$2 first_release=$3
+  local root="/opt/tako/apps/$APP_NAME/production"
+  local archive="$root/archives/$first_release/release.tar.zst"
+  local original_hash second_release
+  original_hash=$(ssh_exec "$server_host" "sha256sum '$archive'")
+  cp "$PROJECT_DIR/index.ts" "$TMP_ROOT/archive-original-index.ts"
+  printf '\n// Archive retention E2E release.\n' >> "$PROJECT_DIR/index.ts"
+  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" deploy --env production --yes
+  second_release=$(basename "$(resolve_current_release_link "$server_host")")
+  [[ "$second_release" != "$first_release" ]]
+  ssh_exec "$server_host" "test ! -e '$root/releases/$first_release' && test -f '$root/archives/$second_release/release.tar.zst'"
+  [[ "$(ssh_exec "$server_host" "sha256sum '$archive'")" == "$original_hash" ]]
+
+  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" releases rollback "$first_release" --env production --yes
+  [[ "$(basename "$(resolve_current_release_link "$server_host")")" == "$first_release" ]]
+  ssh_exec "$server_host" "test ! -e '$root/releases/$second_release' && test -f '$root/releases/$first_release/app.json'"
+  ssh_exec "$server_host" "find '$root/releases/$first_release' -type d -name node_modules -print -quit" | grep -q node_modules
+  [[ "$(ssh_exec "$server_host" "sha256sum '$archive'")" == "$original_hash" ]]
+  run_universal_http_checks "$server_host" "$route_host" "$root/releases/$first_release"
+
+  # Reusing the now-compacted second release must prepare dependencies without reuploading.
+  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" deploy --env production --yes
+  [[ "$(basename "$(resolve_current_release_link "$server_host")")" == "$second_release" ]]
+  ssh_exec "$server_host" "find '$root/releases/$second_release' -type d -name node_modules -print -quit" | grep -q node_modules
+  run_universal_http_checks "$server_host" "$route_host" "$root/releases/$second_release"
+  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" releases rollback "$first_release" --env production --yes
+  mv "$TMP_ROOT/archive-original-index.ts" "$PROJECT_DIR/index.ts"
+}
+
 run_compose_sdk_checks() {
   local server_host=$1 route_host=$2 first_release=$3
   local body="$TMP_ROOT/compose-sdk-body.json" headers="$TMP_ROOT/compose-sdk-headers"
@@ -1388,6 +1418,9 @@ for entry in "${SERVERS[@]}"; do
     run_database_checks "$server" "$ROUTE_HOST"
   fi
   run_cli_post_deploy_checks "$server" "$APP_NAME" "$ROUTE_HOST" "$CURRENT_VERSION"
+  if [[ "$FIXTURE_REL" == "e2e/fixtures/javascript/node" ]]; then
+    run_archive_rollback_checks "$server" "$ROUTE_HOST" "$CURRENT_VERSION"
+  fi
   if [[ "$FIXTURE_REL" == "examples/compose/bun-redis" ]]; then
     run_compose_lifecycle_checks "$server" "$ROUTE_HOST" "$CURRENT_VERSION"
   fi
