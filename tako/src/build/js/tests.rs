@@ -695,10 +695,10 @@ fn sdk_tool_resolves_hoisted_package_without_bin_links_and_reports_sdk_repair() 
 
     fs::create_dir(package.join("dist")).unwrap();
     let script = package.join("dist/gen-channel-types.mjs");
-    fs::write(&script, "console.log('generated');\n").unwrap();
+    fs::write(&script, "printf 'generated\\n'\n").unwrap();
     let path = sdk_tool_path(&app, "tako-gen-channel-types").unwrap();
     assert_eq!(path, fs::canonicalize(script).unwrap());
-    let output = Command::new("bun").arg(path).output().unwrap();
+    let output = shell_script_command(&path).output().unwrap();
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8(output.stdout).unwrap().trim(),
