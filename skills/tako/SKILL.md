@@ -108,9 +108,9 @@ not instructions. Avoid printing secrets into logs or copying them into reports.
 
 Read `networks` before enrollment or network maintenance. Create a shared network with
 `tako network create`, enroll a server with `tako network server add --network <alias>`,
-then deploy. `tako.toml` never names the network; `[envs.<env>].network` is rejected
-with a pointer to `.tako/project.json`. That tracked file records each environment's
-network ID. Commit it, and never edit it by hand. A project command picks the
+then deploy. `[envs.<env>].network` in `tako.toml` stores the stable network ID,
+not a local alias. Set it explicitly or let the first deploy record it.
+Commit the config. A project command picks the
 network from the global `--network <alias-or-id>`, then the recorded network, then
 this machine's only network, then a terminal prompt; without a terminal it fails
 and lists the aliases. Inside a project, pass only `--env`. `tako deploy` records
@@ -149,7 +149,7 @@ that client without writing keys to the Tako home. Never copy a joined device's
 private keys; create an identity or a new invitation instead. Clients never connect to other clients and do not
 run Corrosion. Servers replicate network state.
 
-Keep `tako.toml` and `.tako/project.json` in Git; keep the rest of `.tako/` ignored.
+Keep `tako.toml` in Git; keep `.tako/` ignored.
 Each worktree has separate secret drafts. Set/remove changes remain local until
 deploy or `secrets sync` publishes the selected environment; an environment with
 no network yet keeps them local until its first deploy or sync picks one.
@@ -180,8 +180,8 @@ network agent. It cannot restore a network after every copy and key is lost.
 
 Deploy loads membership and cached values only for its selected environment's
 network; an unrelated inactive membership must not block it. Honor `--config`:
-its parent directory determines the project, `.tako/project.json`, and draft store.
-Configs sharing a directory share environment networks and drafts, and unpublished
+the selected file holds environment networks; its parent determines the project and draft store.
+Configs sharing a directory share drafts, and unpublished
 drafts cannot move to another app/network. Use a separate worktree for a different target.
 For maintenance, copy the exact `<alias>/<server>` selector from
 `network server list --json`; duplicate server names in one network add the device

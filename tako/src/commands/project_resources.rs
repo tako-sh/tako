@@ -117,7 +117,7 @@ pub(crate) fn load(
     let mut databases = BTreeMap::new();
     let mut envs = Vec::new();
     for name in environment_names(&config, &secrets) {
-        let network_id = super::env_network::current_id(&context.project_dir, &name)?;
+        let network_id = super::env_network::current_id(&config, &name);
         let alias = network_id.as_deref().and_then(|id| {
             aliases
                 .as_ref()

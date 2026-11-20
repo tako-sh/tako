@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { tmpdir } from "node:os";
 
-import { setChannelSocketPublisher } from "../src/channels";
+import { setChannelSocketCloser, setChannelSocketPublisher } from "../src/channels";
 import { createEntrypoint, signalReadyPortOnFd } from "../src/tako/create-entrypoint";
 
 const originalArgv = [...process.argv];
@@ -15,6 +15,7 @@ const originalAppRoot = process.env.TAKO_APP_ROOT;
 
 afterEach(() => {
   setChannelSocketPublisher(null);
+  setChannelSocketCloser(null);
   process.argv = [...originalArgv];
   process.chdir(originalCwd);
   if (originalAppRoot === undefined) {

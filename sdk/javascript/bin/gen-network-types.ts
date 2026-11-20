@@ -8,7 +8,7 @@ export { generateNetworkTypes };
 if (import.meta.main) {
   const [root, declarationDir, app] = Bun.argv.slice(2);
   if (!root || !declarationDir || !app) {
-    throw new Error("usage: tako-sh-gen-network-types <app-root> <declaration-dir> <app-name>");
+    throw new Error("usage: tako-gen-network-types <app-root> <declaration-dir> <app-name>");
   }
   process.stdout.write(
     JSON.stringify(

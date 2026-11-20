@@ -188,15 +188,12 @@ pub(super) async fn sync_secrets(
         Some(env) if config.envs.contains_key(env) => vec![env.to_owned()],
         Some(_) => return Err("Environment is not configured in tako.toml".into()),
         // Without --env, sync the environments that have a network.
-        None => {
-            let file = crate::config::ProjectFile::load(&context.project_dir)?;
-            config
-                .envs
-                .keys()
-                .filter(|env| file.network(env).is_some())
-                .cloned()
-                .collect()
-        }
+        None => config
+            .envs
+            .iter()
+            .filter(|(_, spec)| spec.network.is_some())
+            .map(|(env, _)| env.clone())
+            .collect(),
     };
     if environments.is_empty() {
         return Err(
@@ -207,7 +204,7 @@ pub(super) async fn sync_secrets(
     for env in environments {
         // An environment named here gets a network now if it has none.
         crate::commands::env_network::resolve(
-            &context.project_dir,
+            &context.config_path,
             &env,
             crate::commands::env_network::Purpose::Record,
         )?;

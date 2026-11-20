@@ -464,7 +464,7 @@ fn project_native_environment_never_falls_back_to_legacy_inventory() {
     fs::write(directory.path().join("tako.toml"), format!("name = 'demo'\nimage = 'example/demo:latest'\n[envs.production]\nnetwork = '{id}'\nroute = 'demo.example.com'\n")).unwrap();
     for command in [
         vec!["logs"],
-        vec!["scale", "2"],
+        vec!["scale", "2", "--env", "production"],
         vec!["releases", "list"],
         vec!["backups", "status"],
         vec!["deploy", "--yes"],
@@ -475,11 +475,82 @@ fn project_native_environment_never_falls_back_to_legacy_inventory() {
         assert!(!output.status.success(), "{args:?}");
         let error = stderr_str(&output);
         assert!(
-            error.contains(&format!("Network '{id}' is not configured")),
+            error.contains(&id) && error.contains("hasn't joined"),
             "{args:?}: {error}"
         );
         assert!(!error.contains("No SSH keys"), "{args:?}: {error}");
     }
+}
+
+#[test]
+fn secret_network_recording_uses_only_the_selected_config() {
+    let fixture = Fixture::with_servers(&["edge"]);
+    let project = fixture.directory.path();
+    let original =
+        "# deployment\nname = 'demo'\n[envs.production]\nroute = 'demo.example.test' # public\n";
+    let default = project.join("tako.toml");
+    let alternate = project.join("release.toml");
+    fs::write(&default, original).unwrap();
+    fs::write(&alternate, original).unwrap();
+
+    let preview = run_tako_with_env(
+        &[
+            "--ci",
+            "--config",
+            "release",
+            "--network",
+            "fleet",
+            "--dry-run",
+            "secrets",
+            "sync",
+            "--env",
+            "production",
+        ],
+        project,
+        &fixture.home,
+        &fixture.tako_home,
+    );
+    assert!(preview.status.success(), "{}", stderr_str(&preview));
+    assert_eq!(fs::read_to_string(&alternate).unwrap(), original);
+    assert!(!project.join(".tako").exists());
+
+    let set = run_tako_with_stdin_and_env(
+        &[
+            "--ci",
+            "--config",
+            "release",
+            "--network",
+            "fleet",
+            "secrets",
+            "set",
+            "TOKEN",
+            "--env",
+            "production",
+        ],
+        project,
+        "local draft",
+        &fixture.home,
+        &fixture.tako_home,
+    );
+    assert!(set.status.success(), "{}", stderr_str(&set));
+    let written = fs::read_to_string(&alternate).unwrap();
+    assert!(written.starts_with(original), "{written}");
+    let config: toml::Value = toml::from_str(&written).unwrap();
+    assert_eq!(
+        config["envs"]["production"]["network"].as_str(),
+        Some(fixture.profile.snapshot.network.id.to_string().as_str())
+    );
+    assert_eq!(fs::read_to_string(&default).unwrap(), original);
+    assert!(!project.join(".tako/project.json").exists());
+
+    let list = run_tako_with_env(
+        &["--ci", "--config", "release", "--json", "secrets", "list"],
+        project,
+        &fixture.home,
+        &fixture.tako_home,
+    );
+    assert!(list.status.success(), "{}", stderr_str(&list));
+    assert!(stdout_str(&list).contains("TOKEN") || stderr_str(&list).contains("TOKEN"));
 }
 
 #[test]

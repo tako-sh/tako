@@ -51,7 +51,7 @@ async fn run_async(
     let servers = super::env_network::servers_for_target(
         project_context
             .as_ref()
-            .map(|context| context.project_dir.as_path()),
+            .map(|context| context.config_path.as_path()),
         project_tako.as_ref(),
         target.env_name.as_deref(),
     )

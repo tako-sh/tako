@@ -97,9 +97,9 @@
       "name": "tako.sh",
       "version": "0.0.0",
       "bin": {
-        "tako-sh-gen-channel-types": "./dist/gen-channel-types.mjs",
-        "tako-sh-gen-network-types": "./dist/gen-network-types.mjs",
-        "tako-sh-gen-store-types": "./dist/gen-store-types.mjs",
+        "tako-gen-channel-types": "./dist/gen-channel-types.mjs",
+        "tako-gen-network-types": "./dist/gen-network-types.mjs",
+        "tako-gen-store-types": "./dist/gen-store-types.mjs",
         "tako-worker": "./dist/entrypoints/bun-worker.mjs",
         "tako.sh": "./dist/cli.mjs",
       },

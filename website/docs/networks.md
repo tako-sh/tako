@@ -5,7 +5,7 @@ description: "Create a Tako network, enroll servers and devices, deploy over pin
 
 A native network identifies trusted devices and servers without an external account. Each device generates its own keys. Every network has a stable 32-character hexadecimal ID and a name shared by every member. The name is set when the network is created, can't change, and may repeat across networks. Each machine also gives every network it belongs to a local [alias](#name-networks-on-this-machine), unique on that machine. Commands take a network by alias or ID, never by its shared name.
 
-A project records each environment's network ID in `.tako/project.json`, which you commit to Git. Inside a project, pass `--env` and Tako finds the network; see [Choose an environment's network](#choose-an-environments-network).
+A project stores each environment's network ID in `[envs.<env>].network` in `tako.toml`, which you commit to Git. Inside a project, pass `--env` and Tako finds the network; see [Choose an environment's network](#choose-an-environments-network).
 
 Network commands such as `network status`, `network client add`, `network server add`, `connect`, and `ssh` act on the network passed as an argument or with the global `--network` flag. Without one, they use this machine's only network. With several, an interactive terminal asks which one; without a terminal the command fails and lists this machine's aliases. There is no default network. [Server maintenance selectors](/servers/#server-maintenance) name their network by alias, such as `production/edge-a`.
 
@@ -32,10 +32,11 @@ Stopping the native network agent withdraws its WireGuard peers and SSH grants. 
 
 A public listener configured with mandatory `trusted_proxy.proxy_protocol` cannot also accept direct native pinned HTTPS. Remove that mandatory listener setting before native enrollment; the server refuses to start with both enabled. Ordinary Cloudflare HTTP forwarding headers remain supported without PROXY protocol. Review the listener configuration before bootstrap so enrollment does not leave a server awaiting an incompatible restart.
 
-`tako.toml` does not name the network. The first `tako deploy --env production` uses this machine's only network, or asks which one, and records it in `.tako/project.json`:
+Set the network ID from `tako network list --json` in `tako.toml`. If omitted, the first `tako deploy --env production` uses this machine's only network, or asks which one, and records its ID in the same table:
 
 ```toml
 [envs.production]
+network = "0123456789abcdef0123456789abcdef"
 route = "app.example.com"
 ```
 
@@ -61,26 +62,24 @@ Deploy resolves membership and cached secret values for the selected environment
 
 ## Choose an environment's network
 
-`.tako/project.json` records the network each environment deploys to, by ID:
+`tako.toml` stores the network each environment deploys to, by ID:
 
-```json
-{
-  "environments": {
-    "production": { "network": "0123456789abcdef0123456789abcdef" }
-  }
-}
+```toml
+[envs.production]
+network = "0123456789abcdef0123456789abcdef"
+route = "app.example.com"
 ```
 
-Tako writes this file; don't edit it by hand. Commit it so every clone deploys each environment to the same network. It holds project state that Tako may extend later. The rest of `.tako/`, including `state.local.json`, stays ignored. `tako init` and the first recording make sure the repository's `.gitignore` has `**/.tako/*` followed by `!**/.tako/project.json`, and recording writes `.tako/.gitignore` with `*` and `!project.json`. A rule that ignores the `.tako` directory itself, such as `.tako/`, is replaced, because Git can't re-include a file inside an ignored directory. If Git still ignores the file, Tako warns.
+Set the ID yourself or let Tako record it on first deploy. Commit the config so every clone deploys each environment to the same network. Recording preserves comments and formatting and honors `--config`; alternate config files have their own environment networks. `.tako/`, including `state.local.json`, stays local and ignored.
 
 A project command picks the environment's network in this order:
 
 1. The global `--network <alias-or-id>`.
-2. The network recorded for the environment in `.tako/project.json`.
+2. `[envs.<env>].network` in the selected TOML config.
 3. This machine's only network.
 4. In an interactive terminal, a `Network for <env>` question. Without a terminal, the command fails, lists this machine's aliases, and asks for `--network`.
 
-`tako deploy` puts an environment on a network, so it records the network it used and prints a hint to commit `.tako/project.json`. When `--network` names a different network than the recorded one, it asks to move the environment (the default answer is no) and then rewrites the record; without a terminal it fails. A move is refused before anything is recorded while this checkout has unpublished secret drafts for the old network. `tako secrets set`, `rm`, and `sync` record the network only when the environment has none yet; with a different `--network` they act on that network for that run, which publishes drafts written for another network. Other commands, such as `logs`, `releases list`, `releases rollback`, `start`, `stop`, `scale`, `delete`, `backups`, `workflows`, and `secrets clear`, use `--network` for that run only and leave the record unchanged.
+`tako deploy` puts an environment on a network, so it records the network it used and prints a hint to commit the config. When `--network` names a different network than the configured one, it asks to move the environment (the default answer is no) and then updates `network`; without a terminal it fails. A move is refused before anything is recorded while this checkout has unpublished secret drafts for the old network. `tako secrets set`, `rm`, and `sync` record the network only when the environment has none yet; with a different `--network` they act on that network for that run, which publishes drafts written for another network. Other commands, such as `logs`, `releases list`, `releases rollback`, `start`, `stop`, `scale`, `delete`, `backups`, `workflows`, and `secrets clear`, use `--network` for that run only and leave the config unchanged.
 
 A recorded network that this machine hasn't joined fails the command with a hint to run `tako network join` or pass `--network`. The `development` environment runs locally with `tako dev` and never has a network. In CI, `TAKO_CLIENT_IDENTITY` holds exactly one network, so commands use it without flags; a network recorded for the environment must be that one.
 
@@ -102,7 +101,7 @@ tako network list --json
 - `network rename <alias-or-id> <new-alias>` changes only this machine's alias. Other members keep theirs, and the shared name stays the same.
 - `network list` prints each alias, with the shared name in parentheses when the two differ, such as `prod-eu (production)`. `--json` returns `{"networks": [{"alias", "name", "id", "device"}]}`.
 
-`.tako/project.json` records networks by ID, so aliases never reach committed files.
+`tako.toml` records networks by ID, so aliases never reach committed files.
 
 ## Enroll another laptop or sandbox
 
@@ -122,7 +121,7 @@ tako network sync production
 tako deploy --env production --ci
 ```
 
-The clone brings `.tako/project.json`, so `tako deploy --env production` uses the network recorded for production, whatever this machine calls it. `join` prompts for the invitation and this machine's [alias](#name-networks-on-this-machine) for the network; automation can supply the invitation on stdin with `--invitation-stdin` and the alias with `--alias`. Each joining device generates its own signing, WireGuard, and encryption keys. An invitation is a one-use enrollment credential, not a reusable device key. It expires after one hour by default; `client add --expires-in` accepts 60–86400 seconds. The issuing server must be reachable to redeem it. Retrying the same join on the same machine can recover a lost response; another machine cannot reuse the invitation.
+The clone brings `tako.toml`, so `tako deploy --env production` uses the network configured for production, whatever this machine calls it. `join` prompts for the invitation and this machine's [alias](#name-networks-on-this-machine) for the network; automation can supply the invitation on stdin with `--invitation-stdin` and the alias with `--alias`. Each joining device generates its own signing, WireGuard, and encryption keys. An invitation is a one-use enrollment credential, not a reusable device key. It expires after one hour by default; `client add --expires-in` accepts 60–86400 seconds. The issuing server must be reachable to redeem it. Retrying the same join on the same machine can recover a lost response; another machine cannot reuse the invitation.
 
 A client has one of two access levels. A **full** client, the default, can do everything in the network: decrypt shared app secrets, provider credentials, storage credentials, and backup keys, deploy any app, invite and revoke clients, add servers, open the `tako` shell, and join the private network with `tako connect`. A **deploy** client, created with one or more `--deploy app/env` scopes, can only release code to those environments: deploy, run the release command, roll back, and read status and releases. It cannot read or change secrets or credentials, read logs, scale, stop, delete, or manage backups and workflows. It manages over pinned HTTPS and never becomes a WireGuard peer, so `tako connect` and `tako ssh` refuse it. Treat a network as the trust boundary: put people or environments you do not fully trust on a separate network. Network access does not replace application authentication.
 
@@ -148,7 +147,7 @@ tako network export production --output production.public.json
 
 Network export contains public membership and server trust information. It contains neither private device keys nor app secrets, and it cannot enroll a different device by itself. Use an invitation to enroll a new device.
 
-Network membership grants access according to the device's access level; published secrets are encrypted to authorized device keys. Keep `tako.toml` and `.tako/project.json`, which records each environment's network ID, in Git. Keep the rest of `.tako/` local and ignored. An invitation restores access to the network state, but cannot recover another machine's unpublished drafts. Back up server state and the keys of at least one full client.
+Network membership grants access according to the device's access level; published secrets are encrypted to authorized device keys. Keep `tako.toml`, including each environment's network ID, in Git. Keep `.tako/` local and ignored. An invitation restores access to the network state, but cannot recover another machine's unpublished drafts. Back up server state and the keys of at least one full client.
 
 See [Secrets](/secrets/) for worktree isolation, publication, and migration from a tracked secret file. Legacy environment-key import/export remains available for migration and explicit recovery; it is no longer the normal new-device workflow.
 

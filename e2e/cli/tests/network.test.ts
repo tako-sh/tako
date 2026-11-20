@@ -15,13 +15,8 @@ async function project(appRoot = "packages/api/src") {
   temps.push(root);
   const app = join(root, appRoot);
   await mkdir(app, { recursive: true });
-  await mkdir(join(root, "node_modules/.bin"), { recursive: true });
+  await mkdir(join(root, "node_modules"), { recursive: true });
   await symlink(join(repo, "sdk/javascript"), join(root, "node_modules/tako.sh"));
-  for (const kind of ["channel", "network", "store"])
-    await symlink(
-      join(repo, `sdk/javascript/dist/gen-${kind}-types.mjs`),
-      join(root, `node_modules/.bin/tako-sh-gen-${kind}-types`),
-    );
   await writeFile(join(root, "package.json"), '{"type":"module","dependencies":{"tako.sh":"*"}}');
   await writeFile(
     join(root, "tako.toml"),

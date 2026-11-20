@@ -649,37 +649,52 @@ fn channel_codegen_command(
         return Ok(command);
     }
 
-    check_sdk_tool(project_dir, "tako-sh-gen-channel-types")?;
     let mut command = codegen_command();
     command
-        .arg("run")
-        .arg("tako-sh-gen-channel-types")
+        .arg(sdk_tool_path(project_dir, "tako-gen-channel-types")?)
         .arg(channels_dir)
         .arg(declaration_dir);
     command.current_dir(project_dir);
     Ok(command)
 }
 
-/// Check that the project's installed `tako.sh` provides `tool`, so an old SDK
-/// is named with its update command instead of a bare "Script not found".
-pub(super) fn check_sdk_tool(project_dir: &Path, tool: &str) -> std::io::Result<()> {
+/// Resolve the installed SDK's entrypoint directly; package-manager bin links
+/// may be missing even when the package is installed.
+fn sdk_tool_path(project_dir: &Path, tool: &str) -> std::io::Result<PathBuf> {
     let Some(manifest) = project_dir
         .ancestors()
         .map(|dir| dir.join("node_modules/tako.sh/package.json"))
         .find(|path| path.is_file())
     else {
         return Err(std::io::Error::other(format!(
-            "tako.sh is not installed. Add it with `{}`.",
+            "Tako JavaScript SDK is not installed. Run `{}`.",
             sdk_update_command(project_dir)
         )));
     };
     let package: serde_json::Value = serde_json::from_slice(&fs::read(&manifest)?)?;
-    if package["bin"].get(tool).is_some() {
-        return Ok(());
+    let package_dir = fs::canonicalize(manifest.with_file_name(""))?;
+    let entrypoint = package["bin"][tool]
+        .as_str()
+        .map(|path| package_dir.join(path));
+    if let Some(path) = &entrypoint
+        && path.is_file()
+    {
+        return Ok(path.clone());
+    }
+    if package_dir.join("src/index.ts").is_file() && package["scripts"]["build"].is_string() {
+        let action = if entrypoint.is_some() {
+            "Build"
+        } else {
+            "Update and build"
+        };
+        return Err(std::io::Error::other(format!(
+            "{action} the workspace Tako JavaScript SDK: run `bun run build` in '{}', then retry.",
+            package_dir.display()
+        )));
     }
     let installed = package["version"].as_str().unwrap_or("unknown");
     Err(std::io::Error::other(format!(
-        "tako.sh {installed} is older than this CLI and has no `{tool}`. Update it with `{}`.",
+        "Tako JavaScript SDK ({installed}) is incomplete or incompatible with this CLI. Reinstall it with `{}`.",
         sdk_update_command(project_dir)
     )))
 }
@@ -713,8 +728,7 @@ fn generate_store_types_with_command(
     if repo_script.is_file() {
         command.arg(repo_script);
     } else {
-        check_sdk_tool(project_dir, "tako-sh-gen-store-types")?;
-        command.arg("run").arg("tako-sh-gen-store-types");
+        command.arg(sdk_tool_path(project_dir, "tako-gen-store-types")?);
     }
     command
         .arg(&stores_dir)

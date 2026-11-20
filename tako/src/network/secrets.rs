@@ -44,9 +44,12 @@ struct Pending {
 fn lock(project: &Path) -> Result<std::fs::File> {
     let directory = project.join(".tako");
     super::private_directory(&directory)?;
-    crate::config::ensure_state_gitignore(&directory)?;
     let lock = super::private_file(&directory.join("state.lock"), true)?;
     lock.lock()?;
+    let ignore = directory.join(".gitignore");
+    if !ignore.try_exists()? {
+        super::write_bytes(&ignore, b"*\n", false)?;
+    }
     Ok(lock)
 }
 
@@ -119,7 +122,7 @@ pub(crate) fn load_local_with_config(
             if environment.is_some_and(|selected| selected != env) {
                 continue;
             }
-            let Some(id) = crate::commands::env_network::current_id(project, env)? else {
+            let Some(id) = crate::commands::env_network::current_id(config, env) else {
                 continue;
             };
             let scope: AppEnv = format!("{app}/{env}").parse()?;
@@ -282,7 +285,7 @@ pub(crate) fn last_changes(
     let mut changes = BTreeMap::new();
     let (Some(app), Some(id)) = (
         config.name.as_deref(),
-        crate::commands::env_network::current_id(project, env)?,
+        crate::commands::env_network::current_id(config, env),
     ) else {
         return Ok(changes);
     };
@@ -419,10 +422,9 @@ fn merge_remote(
 }
 
 /// The environment's network, which the command resolved before acting.
-fn environment_target(project: &Path, app: &str, env: &str) -> Result<(LocalNetwork, AppEnv)> {
-    let id = crate::commands::env_network::current_id(project, env)?
-        .ok_or_else(|| format!("Environment '{env}' has no network yet; deploy it first"))?;
-    let alias = LocalNetworks::load()?.select(Some(&id))?.clone();
+fn environment_target(app: &str, env: &str) -> Result<(LocalNetwork, AppEnv)> {
+    let alias = crate::commands::env_network::resolved(env)
+        .ok_or_else(|| format!("Environment '{env}' has no resolved network"))?;
     let scope: AppEnv = format!("{app}/{env}").parse()?;
     Ok((alias, scope))
 }
@@ -434,7 +436,7 @@ pub(crate) fn sync_environment(
     publish: bool,
     retry_expired: bool,
 ) -> Result<SecretsStore> {
-    let (alias, scope) = environment_target(project, app, env)?;
+    let (alias, scope) = environment_target(app, env)?;
     let _lock = lock(project)?;
     let mut state = read_workspace(project)?;
     let (profile, cache) = pull(&alias, Some(scope.clone()))?;
@@ -464,7 +466,7 @@ pub(crate) fn sync_environment(
 /// Names `clear_environment` would delete, from this worktree's drafts and the
 /// device's cached network state. Reads no network and writes nothing.
 pub(crate) fn preview_clear(project: &Path, app: &str, env: &str) -> Result<Vec<String>> {
-    let (alias, scope) = environment_target(project, app, env)?;
+    let (alias, scope) = environment_target(app, env)?;
     let network: NetworkId = alias.id.parse()?;
     let mut state = read_workspace(project)?;
     bind(&mut state, env, &scope, &network)?;
@@ -495,7 +497,7 @@ pub(crate) fn preview_clear(project: &Path, app: &str, env: &str) -> Result<Vec<
 /// of other kinds, such as provider credentials, stay local. Storage
 /// credentials and backup keys are never touched: retained backups need them.
 pub(crate) fn clear_environment(project: &Path, app: &str, env: &str) -> Result<Vec<String>> {
-    let (alias, scope) = environment_target(project, app, env)?;
+    let (alias, scope) = environment_target(app, env)?;
     let _lock = lock(project)?;
     let mut state = read_workspace(project)?;
     // Merge first so values published by other devices or worktrees are known

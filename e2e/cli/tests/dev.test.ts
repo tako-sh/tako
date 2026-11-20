@@ -50,19 +50,6 @@ function prepareFixture(name: string) {
     join(CLI_MODULES, "@libsql", "client"),
     join(pd, "node_modules", "@libsql", "client"),
   );
-  // An install also links the SDK's bin entries. A release build of `tako`
-  // runs the type generators through them, and dev refuses to start when
-  // generation fails.
-  const bin = join(pd, "node_modules", ".bin");
-  mkdirSync(bin, { recursive: true });
-  for (const [name, script] of [
-    ["tako-sh-gen-channel-types", "gen-channel-types.mjs"],
-    ["tako-sh-gen-network-types", "gen-network-types.mjs"],
-    ["tako-sh-gen-store-types", "gen-store-types.mjs"],
-  ] as const) {
-    symlinkSync(join("..", "tako.sh", "dist", script), join(bin, name));
-  }
-
   const lf = join(tempDir, "dev.log");
   return { tempDir, pd, lf };
 }
