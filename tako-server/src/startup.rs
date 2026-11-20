@@ -217,6 +217,7 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         },
     );
     crate::operations::recover_interrupted_restores(&data_dir, recovery_mode);
+    crate::operations::sweep_release_staging_dirs(&data_dir, recovery_mode);
     if recovery_mode != crate::operations::RecoveryMode::Standby {
         // A backup or restore that still runs, in another server process,
         // holds the lock in its work directory.

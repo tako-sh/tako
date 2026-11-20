@@ -365,6 +365,50 @@ fn clear_pending_marker(archive_root: &Path) -> Result<(), String> {
         .map_err(|error| format!("finalize release archive: {error}"))
 }
 
+pub(crate) fn sweep_release_staging_dirs(data_dir: &Path, mode: super::RecoveryMode) {
+    // Only cold-start recovery holds an exclusive data-dir lease. A successor
+    // or standby may share this directory with an upload that is still running.
+    if mode != super::RecoveryMode::Primary {
+        return;
+    }
+    let directories = |root: &Path| {
+        let entries = match std::fs::symlink_metadata(root) {
+            Ok(metadata) if metadata.is_dir() => std::fs::read_dir(root),
+            Ok(_) => return None,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(error) => Err(error),
+        };
+        match entries {
+            Ok(entries) => Some(entries.filter_map(|entry| match entry {
+                Ok(entry) if entry.file_type().is_ok_and(|kind| kind.is_dir()) => {
+                    Some(entry.path())
+                }
+                _ => None,
+            })),
+            Err(error) => {
+                tracing::warn!(path = %root.display(), %error, "Could not inspect release staging directories");
+                None
+            }
+        }
+    };
+    // Interrupted first deployments may have no durable app record yet.
+    for app in directories(&data_dir.join("apps")).into_iter().flatten() {
+        for environment in directories(&app).into_iter().flatten() {
+            for (subdir, prefix) in [("releases", ".extract-"), ("archives", ".upload-")] {
+                for path in directories(&environment.join(subdir)).into_iter().flatten() {
+                    if path
+                        .file_name()
+                        .is_some_and(|name| name.as_encoded_bytes().starts_with(prefix.as_bytes()))
+                        && let Err(error) = std::fs::remove_dir_all(&path)
+                    {
+                        tracing::warn!(path = %path.display(), %error, "Could not remove abandoned release staging directory");
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn prepare_release_upload_inner(
     paths: ReleasePaths,
     active: bool,
@@ -700,6 +744,44 @@ mod tests {
             std::fs::read(archive_root.join("release.tar.zst")).unwrap(),
             b"original"
         );
+    }
+
+    #[test]
+    fn startup_sweeps_abandoned_release_staging_without_touching_retained_releases() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("apps/unregistered/production");
+        let staged = [
+            app.join("releases/.extract-interrupted"),
+            app.join("archives/.upload-interrupted"),
+        ];
+        let retained = [
+            app.join("releases/v1"),
+            app.join("archives/v1"),
+            app.join("archives/pending"),
+        ];
+        for path in staged.iter().chain(&retained) {
+            std::fs::create_dir_all(path).unwrap();
+            std::fs::write(path.join("payload"), b"unchanged").unwrap();
+        }
+        std::fs::write(app.join("archives/pending/pending"), []).unwrap();
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(outside.join("production/releases/.extract-keep")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, temp.path().join("apps/redirected")).unwrap();
+        for mode in [
+            super::super::RecoveryMode::Standby,
+            super::super::RecoveryMode::Successor,
+        ] {
+            sweep_release_staging_dirs(temp.path(), mode);
+            assert!(staged.iter().all(|path| path.is_dir()));
+        }
+        sweep_release_staging_dirs(temp.path(), super::super::RecoveryMode::Primary);
+        assert!(staged.iter().all(|path| !path.exists()));
+        for path in retained {
+            assert_eq!(std::fs::read(path.join("payload")).unwrap(), b"unchanged");
+        }
+        assert!(app.join("archives/pending/pending").is_file());
+        assert!(outside.join("production/releases/.extract-keep").is_dir());
     }
 
     #[test]

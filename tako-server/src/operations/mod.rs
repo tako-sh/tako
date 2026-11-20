@@ -24,7 +24,7 @@ mod lifecycle;
 pub(crate) mod logs;
 mod queries;
 mod release_artifacts;
-pub(crate) use release_artifacts::available_bytes;
+pub(crate) use release_artifacts::{available_bytes, sweep_release_staging_dirs};
 mod releases;
 #[cfg(test)]
 pub(crate) use releases::ReleaseRun;
