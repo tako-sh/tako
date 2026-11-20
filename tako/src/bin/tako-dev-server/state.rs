@@ -355,7 +355,34 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
         return create_apps_table(conn);
     }
 
-    // v0: no migrations — drop and recreate if schema doesn't match.
+    // Preserve registration identities so startup can reap children left by an older daemon.
+    if !columns.iter().any(|column| column == "config_file")
+        && [
+            "config_path",
+            "project_dir",
+            "name",
+            "variant",
+            "is_enabled",
+            "created_at",
+            "updated_at",
+        ]
+        .iter()
+        .all(|column| columns.iter().any(|c| c == column))
+    {
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| format!("migrate apps: {e}"))?;
+        tx.execute_batch(
+            "ALTER TABLE apps ADD COLUMN config_file TEXT NOT NULL DEFAULT '';
+             UPDATE apps SET config_file = config_path;",
+        )
+        .map_err(|e| format!("migrate apps config_file: {e}"))?;
+        return tx
+            .commit()
+            .map_err(|e| format!("commit apps migration: {e}"));
+    }
+
+    // v0: recreate other mismatched schemas.
     let expected = [
         "config_file",
         "config_path",

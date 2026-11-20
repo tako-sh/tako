@@ -53,6 +53,54 @@ fn environment_registrations_survive_cleanup_and_stop_independently() {
 }
 
 #[test]
+fn adding_config_file_preserves_registrations_for_orphan_cleanup() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db_path = tmp.path().join("dev-server.sqlite");
+    let config = tmp.path().join("preview.toml");
+    let config = config.to_str().unwrap();
+    let project = tmp.path().to_str().unwrap();
+    let conn = tako_sqlite::open_local(&db_path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE apps (config_path TEXT PRIMARY KEY, project_dir TEXT NOT NULL,
+         name TEXT NOT NULL, variant TEXT, is_enabled INTEGER NOT NULL DEFAULT 1,
+         created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0);",
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO apps VALUES (?1, ?2, 'app', 'preview', 0, 123, 456)",
+        (config, project),
+    )
+    .unwrap();
+    drop(conn);
+    let mut child = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    write_pid_file(project, config, child.id());
+    let store = DevStateStore::open(&db_path).unwrap();
+    let apps = store.list().unwrap();
+    for app in &apps {
+        kill_orphaned_process(&app.project_dir, &app.config_path);
+    }
+    if apps.is_empty() {
+        child.kill().unwrap();
+    }
+    assert!(!child.wait().unwrap().success());
+    assert_eq!(apps.len(), 1);
+    assert_eq!(apps[0].config_file, config);
+    assert_eq!(apps[0].config_path, config);
+    assert_eq!(apps[0].variant.as_deref(), Some("preview"));
+    assert!(!apps[0].is_enabled);
+    assert_eq!((apps[0].created_at, apps[0].updated_at), (123, 456));
+    assert!(read_pid_file(project, config).is_none());
+    drop(store);
+    assert_eq!(
+        DevStateStore::open(db_path).unwrap().list().unwrap().len(),
+        1
+    );
+}
+
+#[test]
 fn register_and_get() {
     let (_tmp, store) = temp_store();
     store
