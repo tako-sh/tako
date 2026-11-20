@@ -680,30 +680,74 @@ fn shell_script_command(path: &Path) -> Command {
 }
 
 #[test]
-fn sdk_tool_check_names_the_installed_sdk_and_its_update() {
+fn sdk_tool_resolves_hoisted_package_without_bin_links_and_reports_sdk_repair() {
     let workspace = TempDir::new().unwrap();
     let package = workspace.path().join("node_modules/tako.sh");
     fs::create_dir_all(&package).unwrap();
     fs::write(
         package.join("package.json"),
-        r#"{"name":"tako.sh","version":"0.0.0-9ae824f","bin":{"tako-sh-gen-channel-types":"./dist/gen-channel-types.mjs"}}"#,
+        r#"{"name":"tako.sh","version":"0.0.0-9ae824f","bin":{"tako-gen-channel-types":"./dist/gen-channel-types.mjs"}}"#,
     )
     .unwrap();
     // Workspaces hoist the SDK above the app.
     let app = workspace.path().join("apps/web");
     fs::create_dir_all(&app).unwrap();
 
-    check_sdk_tool(&app, "tako-sh-gen-channel-types").unwrap();
-    let error = check_sdk_tool(&app, "tako-sh-gen-network-types")
+    fs::create_dir(package.join("dist")).unwrap();
+    let script = package.join("dist/gen-channel-types.mjs");
+    fs::write(&script, "printf 'generated\\n'\n").unwrap();
+    let path = sdk_tool_path(&app, "tako-gen-channel-types").unwrap();
+    assert_eq!(path, fs::canonicalize(script).unwrap());
+    let output = shell_script_command(&path).output().unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim(),
+        "generated"
+    );
+    let error = sdk_tool_path(&app, "tako-gen-network-types")
         .unwrap_err()
         .to_string();
-    assert!(error.contains("tako.sh 0.0.0-9ae824f"), "{error}");
-    assert!(error.contains("`tako-sh-gen-network-types`"), "{error}");
+    assert!(error.contains("SDK (0.0.0-9ae824f)"), "{error}");
+    assert!(!error.contains("tako-gen-"), "{error}");
     assert!(error.contains("tako.sh@latest"), "{error}");
 
     let bare = TempDir::new().unwrap();
-    let error = check_sdk_tool(bare.path(), "tako-sh-gen-network-types")
+    let error = sdk_tool_path(bare.path(), "tako-gen-network-types")
         .unwrap_err()
         .to_string();
-    assert!(error.contains("tako.sh is not installed"), "{error}");
+    assert!(error.contains("SDK is not installed"), "{error}");
+    assert!(error.contains("bun add tako.sh@latest"), "{error}");
+}
+
+#[test]
+fn sdk_tool_reports_missing_build_output_before_spawning_a_generator() {
+    let workspace = TempDir::new().unwrap();
+    let package = workspace.path().join("node_modules/tako.sh");
+    fs::create_dir_all(&package).unwrap();
+    fs::write(
+        package.join("package.json"),
+        r#"{"name":"tako.sh","version":"0.0.0","bin":{"tako-gen-channel-types":"./dist/gen-channel-types.mjs"},"scripts":{"build":"bun --bun tsdown"}}"#,
+    )
+    .unwrap();
+    let error = sdk_tool_path(workspace.path(), "tako-gen-channel-types")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("Reinstall it with `bun add tako.sh@latest`"),
+        "{error}"
+    );
+    assert!(!error.contains("tako-gen-"), "{error}");
+
+    fs::create_dir(package.join("src")).unwrap();
+    fs::write(package.join("src/index.ts"), "").unwrap();
+    let error = sdk_tool_path(workspace.path(), "tako-gen-channel-types")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("Build the workspace Tako JavaScript SDK"),
+        "{error}"
+    );
+    assert!(error.contains("run `bun run build`"), "{error}");
+    assert!(!error.contains("tako.sh@latest"), "{error}");
+    assert!(!error.contains("tako-gen-"), "{error}");
 }

@@ -29,7 +29,7 @@ export async function generateStoreTypes(
 if (import.meta.main) {
   const storesDir = Bun.argv[2];
   if (!storesDir) {
-    console.error("usage: tako-sh-gen-store-types <stores-dir> [declaration-dir]");
+    console.error("usage: tako-gen-store-types <stores-dir> [declaration-dir]");
     process.exit(2);
   }
   const declarationDir = Bun.argv[3];

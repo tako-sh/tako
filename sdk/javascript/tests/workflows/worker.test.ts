@@ -89,6 +89,10 @@ class MockServer {
   }
 
   private handleConnection(socket: Socket): void {
+    // Teardown can close a client while a heartbeat reply is still in flight.
+    socket.on("error", (error: NodeJS.ErrnoException) => {
+      if (error.code !== "EPIPE" && error.code !== "ECONNRESET") throw error;
+    });
     let buf = "";
     socket.on("data", (chunk: Buffer) => {
       buf += chunk.toString("utf8");
