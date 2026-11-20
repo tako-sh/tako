@@ -177,6 +177,12 @@ pub(super) async fn prepare(
 
     // Check if a dev server is already running and needs a restart.
     let existing_info = crate::dev_server_client::info().await.ok();
+    let protocol_mismatch = existing_info
+        .as_ref()
+        .is_some_and(|info| !crate::dev_server_client::current_protocol(info));
+    if protocol_mismatch && !restart {
+        return Err(crate::dev_server_client::DAEMON_UPGRADE_HINT.into());
+    }
     let existing_listen = existing_info.as_ref().and_then(|v| {
         v.get("info")
             .and_then(|i| i.get("listen"))
@@ -197,7 +203,7 @@ pub(super) async fn prepare(
         .unwrap_or(false);
     let restart_for_ca = ca_changed && existing_info.is_some();
 
-    if restart_for_listen || restart_for_dns || restart_for_ca {
+    if protocol_mismatch || restart_for_listen || restart_for_dns || restart_for_ca {
         warn_restart_stops_apps(&config_key).await;
         crate::dev_server_client::stop_server().await?;
         wait_for_dev_server_stopped(&listen_addr).await;
@@ -226,17 +232,6 @@ pub(super) async fn prepare(
     inject_dev_data_dir(&project_dir, &mut env, environment).map_err(|e| e.to_string())?;
     let secrets =
         inject_dev_secrets(&project_dir, &cfg, &mut env, environment).map_err(|e| e.to_string())?;
-
-    if runtime_adapter.preset_group() == PresetGroup::Js {
-        crate::build::js::write_generated_files_with_schemas(
-            &project_dir,
-            runtime_adapter,
-            &cfg,
-            Some(environment),
-            false,
-        )
-        .map_err(|error| error.to_string())?;
-    }
 
     let (cmd, readiness_failure_hint, worker_command) = if cfg.compose.is_some() {
         (Vec::new(), None, None)

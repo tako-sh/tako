@@ -18,6 +18,8 @@ https://<app>.test/
 
 The CLI is a client for a persistent `tako-dev-server` daemon. It starts the daemon when needed, registers the selected config file, streams logs, and attaches to existing sessions. `tako dev --json` skips the logo and TUI and writes JSONL to stdout: a ready object with the app URL, then log and event records.
 
+After upgrading Tako, an older daemon may still be running. The CLI checks its protocol before starting or listing apps and reports a mismatch rather than an empty app list. Run `tako dev --restart` to replace an incompatible daemon. This stops its other local apps; run `tako dev` in each project you want to start again.
+
 For an agent, inspect existing apps with `tako dev list --json`, then use `tako dev --background --json` or the `tako_dev` MCP tool. These return after readiness instead of holding the tool call open. Verify through the returned HTTPS URL; raw framework ports bypass Tako. See [Background development for agents](#background-development-for-agents) for restart and finite-log behavior.
 
 ## What `tako dev` Does
@@ -34,6 +36,8 @@ For an agent, inspect existing apps with `tako dev list --json`, then use `tako 
 For [network primitives](/network-primitives/), run both apps under this daemon and use `app.primitive` addresses. List producer schemas under root-level `schemas`. Changes to local schema files or definitions in `network-handlers/`, `channels/`, and `workflows/` refresh JavaScript network types. Generated declaration changes do not restart the app. Remote sources stay pinned until `tako gen --update-schemas`; rerun `tako gen` after changing types imported from elsewhere in the project. Generate native Go/Rust files explicitly before building those apps.
 
 Tako does not watch arbitrary source files for restart. Framework dev servers and runtimes own hot reload.
+
+Generated JavaScript storage and database declarations include binding names across the selected config's environments. Secret declarations include names from the environments loaded by the command, including its selected environment and local drafts. Declaring a name does not bind it at runtime: the selected environment still determines the values and resources available to the app.
 
 Local startup has no readiness deadline, so native builds such as `cargo run` can finish compiling. Every 30 seconds, Tako logs an informational “App has not started after 30s; still waiting…” message with the total elapsed time (30s, 60s, 90s, and so on). The app becomes ready when it signals its bound port; an exited process or a closed or invalid readiness pipe is a startup failure. Stop, restart, and config reload can interrupt the wait. This does not change deployment or Compose health-check timeouts.
 
@@ -142,7 +146,7 @@ tako dev stop --env test-e2e
 The selected environment supplies routes, variables, secrets, storage bindings,
 and database bindings; `ENV` and `tako.env` reflect it. Shared `[vars]` still apply.
 Custom local environments bind only their own databases. Their local database
-files and app data live under `.tako/data/envs/<env>/`; ordinary development keeps
+files and app data live under `.tako/data/envs/<env>/` (names longer than 255 bytes use `~` followed by their SHA-256 digest); ordinary development keeps
 `.tako/data/`. The database files are local even if that environment also deploys
 to a server. External storage bindings still use their configured provider.
 

@@ -223,6 +223,7 @@ impl FakeDevServer {
                         "Info" => serde_json::json!({
                                 "type": "Info",
                                 "info": {
+                                "protocol_version": tako_core::PROTOCOL_VERSION,
                                 "listen": "127.0.0.1:8443",
                                 "port": 8443,
                                 "advertised_ip": "127.0.0.1",

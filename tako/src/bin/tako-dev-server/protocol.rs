@@ -300,6 +300,7 @@ pub struct AppInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DevInfo {
+    pub protocol_version: u32,
     /// Where the daemon proxy is currently listening.
     pub listen: String,
     pub port: u16,
@@ -382,6 +383,7 @@ mod tests {
 
         let resp = Response::Info {
             info: DevInfo {
+                protocol_version: tako_core::PROTOCOL_VERSION,
                 listen: "127.0.0.1:8443".to_string(),
                 port: 8443,
                 advertised_ip: "127.0.0.1".to_string(),

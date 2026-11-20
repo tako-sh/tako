@@ -64,6 +64,7 @@ pub(super) fn info(state: &Arc<Mutex<State>>) -> Response {
     let s = state.lock().unwrap();
     Response::Info {
         info: protocol::DevInfo {
+            protocol_version: tako_core::PROTOCOL_VERSION,
             listen: s.listen_addr.clone(),
             port: advertised_https_port(&s),
             advertised_ip: s.advertised_ip.clone(),

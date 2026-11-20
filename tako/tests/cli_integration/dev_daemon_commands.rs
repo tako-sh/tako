@@ -24,7 +24,8 @@ fn dev_stop_all_attempts_remaining_apps_and_reports_every_failure() {
                     "app_name": name, "environment": environment,
                     "config_file": format!("/{name}/tako.toml"),
                     "config_path": format!("{environment}:/{name}/tako.toml"),
-                    "project_dir": format!("/{name}"), "upstream_port": 0
+                    "project_dir": format!("/{name}"), "upstream_port": 0,
+                    "hosts": [], "status": "running"
                 })
             })
             .collect();
@@ -102,4 +103,33 @@ fn dev_doctor_prints_info() {
         "expected Apps section: {}",
         combined
     );
+}
+
+#[test]
+fn old_daemon_is_reported_instead_of_an_empty_app_list() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("home");
+    let tako_home = temp.path().join("tako-home");
+    fs::create_dir_all(&home).unwrap();
+    let _fake = FakeDevServer::start_with_handler(&tako_home, |request| {
+        (request["type"] == "Info").then(|| {
+            serde_json::json!({
+                "type": "Info", "info": { "listen": "127.0.0.1:8443" }
+            })
+        })
+    })
+    .unwrap();
+    for args in [
+        vec!["dev", "list", "--json"],
+        vec!["dev", "stop", "--all", "--json"],
+    ] {
+        let out = run_tako_with_env(&args, temp.path(), &home, &tako_home);
+        assert!(!out.status.success(), "{}", stdout_str(&out));
+        let output = format!("{}{}", stdout_str(&out), stderr_str(&out));
+        assert!(
+            output.contains("daemon protocol does not match"),
+            "{output}"
+        );
+        assert!(output.contains("tako dev --restart"), "{output}");
+    }
 }

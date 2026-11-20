@@ -106,13 +106,21 @@ pub async fn ls(environment: Option<&str>) -> Result<(), Box<dyn std::error::Err
     }
     let apps = match crate::dev_server_client::list_registered_apps().await {
         Ok(apps) => apps,
-        Err(_) => {
+        Err(error)
+            if error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+                matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                )
+            }) =>
+        {
             if crate::output::is_json() {
                 return crate::output::json_result(super::json::list_record(&[]));
             }
             crate::output::muted("No dev server running.");
             return Ok(());
         }
+        Err(error) => return Err(error),
     };
     let apps: Vec<_> = apps
         .into_iter()
