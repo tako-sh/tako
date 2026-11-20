@@ -145,7 +145,7 @@ Each server retains the original uploaded archive byte-for-byte, alongside relea
 
 After finalize, inactive working directories are removed once no HTTP instances, draining workflow workers, or Compose containers reference them. Deferred cleanup runs every minute. A candidate being prepared stays extracted until it is finalized or cleaned up. Dependency-manager caches and container images have separate lifecycles.
 
-Non-active releases older than 30 days or beyond 50 total releases are pruned, including their archives. Referenced releases and pending candidates are protected; an abandoned preparation becomes eligible for pruning after 30 days. Releases uploaded before archive retention was introduced keep their existing directories until normal retention removes them; Tako cannot recreate their original uploaded bytes.
+Non-active releases older than 30 days or beyond 50 total releases are pruned, including their archives. Referenced releases and pending candidates are protected; an abandoned preparation becomes eligible for pruning after 30 days. Release history and rollback require a retained original archive. Directory-only releases are unsupported, and their inactive working directories are eligible for cleanup.
 
 If desired instances are `0`, deploy still starts one warm instance for the new build so traffic works immediately. It can later idle out.
 

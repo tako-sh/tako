@@ -395,6 +395,7 @@ async fn rollback_keeps_the_provisioned_backup_binding() {
     let mut archive = tar::Builder::new(encoder);
     archive.append_dir_all(".", &release).unwrap();
     archive.into_inner().unwrap().finish().unwrap();
+    std::fs::remove_dir_all(&release).unwrap();
     state
         .store_uploaded_release_artifact(app_id, "v1", &archive_path)
         .unwrap();

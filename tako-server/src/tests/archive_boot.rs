@@ -191,6 +191,58 @@ async fn release_upload_lifecycle_extracts_and_finalizes_release() {
 }
 
 #[tokio::test]
+async fn directory_only_releases_are_not_history_or_rollback_targets() {
+    let temp = TempDir::new().unwrap();
+    let state = ServerState::new(
+        temp.path().into(),
+        Arc::new(CertManager::new(CertManagerConfig {
+            cert_dir: temp.path().join("certs"),
+            ..Default::default()
+        })),
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let app = "my-app/production";
+    let release = crate::release::app_release_root(temp.path(), app, "old");
+    std::fs::create_dir_all(&release).unwrap();
+    write_release_manifest(&release, "node", "index.js", &[], None, 300);
+    state.app_manager.register_app(AppConfig {
+        name: "my-app".into(),
+        environment: "production".into(),
+        version: "current".into(),
+        ..Default::default()
+    });
+    let Response::Ok { data } = state.list_releases(app).await else {
+        panic!("expected release list");
+    };
+    let history: tako_core::ListReleasesResponse = serde_json::from_value(data).unwrap();
+    assert!(history.releases.is_empty());
+    let Response::Ok { data } = state.prepare_release_upload(app, "old").await else {
+        panic!("expected upload plan");
+    };
+    let plan: tako_core::ReleaseUploadPlan = serde_json::from_value(data).unwrap();
+    assert!(plan.upload_required && plan.preparation_required);
+    let response = state.rollback_app(app, "old").await;
+    assert!(
+        response
+            .error_message()
+            .unwrap()
+            .contains("Release archive")
+    );
+    assert!(release.is_dir());
+    let upload = temp.path().join("upload.tar.zst");
+    write_test_release_archive(&upload);
+    assert!(
+        state
+            .store_uploaded_release_artifact(app, "old", &upload)
+            .is_err()
+    );
+    state.compact_app_releases(app).await.unwrap();
+    assert!(!release.exists());
+}
+
+#[tokio::test]
 async fn failed_rollback_preserves_preexisting_dependencies_and_preparation_state() {
     let temp = TempDir::new().unwrap();
     let state = ServerState::new(

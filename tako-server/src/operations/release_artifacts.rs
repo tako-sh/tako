@@ -137,6 +137,12 @@ impl crate::ServerState {
                 preparation_required,
             ));
         }
+        if paths.release_path.exists() {
+            return Err(format!(
+                "Release {} exists without a retained archive",
+                paths.release_path.display()
+            ));
+        }
 
         let extracted = tempfile::Builder::new()
             .prefix(".extract-")
@@ -165,11 +171,9 @@ impl crate::ServerState {
             replace_logs_with_shared_link(temp_release_path, &paths.shared_logs)?;
             std::fs::rename(staged.path(), &paths.archive_root)
                 .map_err(|e| format!("publish release archive: {e}"))?;
-            if !paths.release_path.is_dir() {
-                std::fs::rename(temp_release_path, &paths.release_path).map_err(|e| {
-                    format!("activate release dir {}: {e}", paths.release_path.display())
-                })?;
-            }
+            std::fs::rename(temp_release_path, &paths.release_path).map_err(|e| {
+                format!("activate release dir {}: {e}", paths.release_path.display())
+            })?;
             Ok::<(), String>(())
         })();
 
@@ -247,6 +251,9 @@ impl crate::ServerState {
                 paths.release_path.display()
             ));
         }
+        if !paths.archive_root.join("release.tar.zst").is_file() {
+            return Err("Cannot finalize a release without a retained archive".into());
+        }
 
         let current_link = paths.app_root.join("current");
         let temp_link = paths
@@ -260,17 +267,15 @@ impl crate::ServerState {
 
         std::fs::rename(&temp_link, &current_link)
             .map_err(|e| format!("update current symlink {}: {e}", current_link.display()))?;
-        if paths.archive_root.is_dir() {
-            std::fs::remove_file(paths.archive_root.join("pending"))
-                .or_else(|e| {
-                    if e.kind() == std::io::ErrorKind::NotFound {
-                        Ok(())
-                    } else {
-                        Err(e)
-                    }
-                })
-                .map_err(|e| format!("finalize release archive: {e}"))?;
-        }
+        std::fs::remove_file(paths.archive_root.join("pending"))
+            .or_else(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    Ok(())
+                } else {
+                    Err(e)
+                }
+            })
+            .map_err(|e| format!("finalize release archive: {e}"))?;
         prune_old_releases(&paths.releases_root, &paths.release_path, &protected);
         if let Err(error) = compact_releases(&paths.releases_root, &paths.release_path, &protected)
         {
@@ -369,22 +374,19 @@ fn prepare_release_upload_inner(
             preparation_required,
         ));
     }
-    let missing = !paths.release_path.is_dir();
-    Ok(release_upload_plan(&paths.release_path, missing, missing))
+    Ok(release_upload_plan(&paths.release_path, true, true))
 }
 
 fn restore_release_artifact(paths: &ReleasePaths, active: bool) -> Result<(PathBuf, bool), String> {
-    let pending = paths.archive_root.join("pending").exists();
-    if paths.archive_root.is_dir() {
-        std::fs::write(paths.archive_root.join("pending"), [])
-            .map_err(|e| format!("mark release preparation: {e}"))?;
-    }
-    if paths.release_path.is_dir() {
-        return Ok((paths.release_path.clone(), pending && !active));
-    }
     let archive = paths.archive_root.join("release.tar.zst");
     if !archive.is_file() {
         return Err(format!("Release archive {} not found", archive.display()));
+    }
+    let pending = paths.archive_root.join("pending").exists();
+    std::fs::write(paths.archive_root.join("pending"), [])
+        .map_err(|e| format!("mark release preparation: {e}"))?;
+    if paths.release_path.is_dir() {
+        return Ok((paths.release_path.clone(), pending && !active));
     }
     std::fs::create_dir_all(&paths.releases_root).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&paths.shared_logs).map_err(|e| e.to_string())?;
@@ -435,29 +437,24 @@ pub(super) fn release_entries(
     releases_root: &Path,
 ) -> Result<std::collections::BTreeMap<String, PathBuf>, std::io::Error> {
     let mut releases = std::collections::BTreeMap::new();
-    for root in [
-        releases_root.to_path_buf(),
-        releases_root.with_file_name("archives"),
-    ] {
-        let entries = match std::fs::read_dir(&root) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error),
+    let entries = match std::fs::read_dir(releases_root.with_file_name("archives")) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(releases),
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let Some(version) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
         };
-        for entry in entries {
-            let entry = entry?;
-            let Some(version) = entry.file_name().to_str().map(str::to_owned) else {
-                continue;
-            };
-            if !entry.file_type()?.is_dir()
-                || version.starts_with(".upload-")
-                || version.starts_with(".extract-")
-                || validate_release_version(&version).is_err()
-            {
-                continue;
-            }
-            releases.insert(version, entry.path());
+        if !entry.file_type()?.is_dir()
+            || version.starts_with(".upload-")
+            || validate_release_version(&version).is_err()
+            || !entry.path().join("release.tar.zst").is_file()
+        {
+            continue;
         }
+        releases.insert(version, entry.path());
     }
     Ok(releases)
 }
@@ -467,14 +464,29 @@ fn compact_releases(
     active_release: &Path,
     protected: &std::collections::BTreeSet<PathBuf>,
 ) -> Result<(), String> {
-    for (version, metadata_root) in release_entries(releases_root).map_err(|e| e.to_string())? {
-        let path = releases_root.join(version);
+    let entries = match std::fs::read_dir(releases_root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let version = entry.file_name();
+        let Some(version) = version.to_str() else {
+            continue;
+        };
+        if version.starts_with(".extract-")
+            || version.starts_with(".upload-")
+            || validate_release_version(version).is_err()
+            || !entry.file_type().map_err(|e| e.to_string())?.is_dir()
+        {
+            continue;
+        }
+        let path = entry.path();
+        let metadata_root = releases_root.with_file_name("archives").join(version);
         if path == active_release
-            || metadata_root == path
-            || !path.is_dir()
             || protected.iter().any(|used| used.starts_with(&path))
             || metadata_root.join("pending").exists()
-            || !metadata_root.join("release.tar.zst").is_file()
         {
             continue;
         }
@@ -506,7 +518,7 @@ fn prune_old_releases(
         {
             continue;
         }
-        let Ok(metadata) = std::fs::metadata(release_timestamp_path(&metadata_root)) else {
+        let Ok(metadata) = std::fs::metadata(metadata_root.join("release.tar.zst")) else {
             continue;
         };
         let Ok(modified) = metadata.modified() else {
@@ -533,20 +545,6 @@ fn prune_old_releases(
     };
     for (path, _) in retained.into_iter().skip(non_active_limit) {
         let _ = remove_retained_release(&path);
-    }
-}
-
-pub(super) fn release_timestamp_path(metadata_root: &Path) -> PathBuf {
-    let archive = metadata_root.join("release.tar.zst");
-    if metadata_root
-        .parent()
-        .and_then(Path::file_name)
-        .is_some_and(|name| name == "archives")
-        && archive.is_file()
-    {
-        archive
-    } else {
-        metadata_root.to_path_buf()
     }
 }
 
@@ -618,13 +616,22 @@ mod tests {
             .count()
     }
 
+    fn create_retained_release(root: &Path, name: &str, modified: SystemTime) -> PathBuf {
+        let release = create_release(root, name, modified);
+        let archive_root = create_release(&root.with_file_name("archives"), name, modified);
+        let archive = archive_root.join("release.tar.zst");
+        std::fs::write(&archive, b"original").unwrap();
+        filetime::set_file_mtime(archive, FileTime::from_system_time(modified)).unwrap();
+        release
+    }
+
     #[test]
     fn archive_retention_counts_each_release_once_and_removes_expired_archives() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("releases");
         let archives = temp.path().join("archives");
         let now = SystemTime::now();
-        let active = create_release(&root, "active", now);
+        let active = create_retained_release(&root, "active", now);
         for index in 0..55 {
             let version = format!("r{index:03}");
             let archive_root = create_release(&archives, &version, now);
@@ -663,9 +670,9 @@ mod tests {
         let root = temp.path().join("releases");
         let active = create_release(&root, "active", SystemTime::now());
         let old = create_release(&root, "old", SystemTime::now());
-        let legacy = create_release(&root, "legacy", SystemTime::now());
+        let unarchived = create_release(&root, "unarchived", SystemTime::now());
         std::fs::write(
-            legacy.join("release.tar.zst"),
+            unarchived.join("release.tar.zst"),
             b"app-owned file, not a retained upload",
         )
         .unwrap();
@@ -677,7 +684,7 @@ mod tests {
         compact_releases(&root, &active, &Default::default()).unwrap();
         assert!(!old.exists());
         assert!(active.is_dir());
-        assert!(legacy.is_dir());
+        assert!(!unarchived.exists());
         assert_eq!(
             std::fs::read(archive_root.join("release.tar.zst")).unwrap(),
             b"original"
@@ -687,12 +694,12 @@ mod tests {
     #[test]
     fn prune_old_releases_caps_total_release_count() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let root = temp.path();
+        let root = &temp.path().join("releases");
         let now = SystemTime::now();
-        let active = create_release(root, "r054", now - Duration::from_secs(54));
+        let active = create_retained_release(root, "r054", now - Duration::from_secs(54));
 
         for index in 0..54 {
-            create_release(
+            create_retained_release(
                 root,
                 &format!("r{index:03}"),
                 now - Duration::from_secs(index),
@@ -714,13 +721,13 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("releases");
         let now = SystemTime::now();
-        let active = create_release(&root, "current", now);
-        let referenced = create_release(
+        let active = create_retained_release(&root, "current", now);
+        let referenced = create_retained_release(
             &root,
             "referenced",
             now - OLD_RELEASE_RETENTION - Duration::from_secs(1),
         );
-        let obsolete = create_release(
+        let obsolete = create_retained_release(
             &root,
             "obsolete",
             now - OLD_RELEASE_RETENTION - Duration::from_secs(1),
@@ -753,11 +760,11 @@ mod tests {
     #[test]
     fn prune_old_releases_removes_non_active_releases_by_age() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let root = temp.path();
+        let root = &temp.path().join("releases");
         let now = SystemTime::now();
-        let active = create_release(root, "active", now - OLD_RELEASE_RETENTION * 2);
-        let expired = create_release(root, "expired", now - OLD_RELEASE_RETENTION * 2);
-        let fresh = create_release(root, "fresh", now - Duration::from_secs(60));
+        let active = create_retained_release(root, "active", now - OLD_RELEASE_RETENTION * 2);
+        let expired = create_retained_release(root, "expired", now - OLD_RELEASE_RETENTION * 2);
+        let fresh = create_retained_release(root, "fresh", now - Duration::from_secs(60));
 
         prune_old_releases(root, &active, &Default::default());
 

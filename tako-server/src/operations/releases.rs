@@ -318,7 +318,7 @@ impl crate::ServerState {
             releases.push(ReleaseInfo {
                 current: current_version.as_deref() == Some(version.as_str()),
                 deployed_at_unix_secs: directory_modified_unix_secs(
-                    &super::release_artifacts::release_timestamp_path(&release_root),
+                    &release_root.join("release.tar.zst"),
                 ),
                 version,
                 commit_message: metadata.commit_message,

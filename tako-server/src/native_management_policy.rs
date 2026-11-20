@@ -305,16 +305,15 @@ pub(crate) fn authorize_command(
             let path = context.data_dir.join(&releases).join(version);
             if path.is_dir() {
                 validate_release_path(context.data_dir, scope, path.to_str().ok_or(PATH_DENIED)?)?;
-            } else {
-                let archive = context
-                    .data_dir
-                    .join(&archives)
-                    .join(version)
-                    .join("release.tar.zst");
-                let metadata = std::fs::symlink_metadata(archive).map_err(|_| PATH_DENIED)?;
-                if !metadata.file_type().is_file() {
-                    return Err(PATH_DENIED);
-                }
+            }
+            let archive = context
+                .data_dir
+                .join(&archives)
+                .join(version)
+                .join("release.tar.zst");
+            let metadata = std::fs::symlink_metadata(archive).map_err(|_| PATH_DENIED)?;
+            if !metadata.file_type().is_file() {
+                return Err(PATH_DENIED);
             }
         }
         Command::BackupNow { .. }
@@ -531,6 +530,9 @@ mod tests {
             for app in ["demo/staging", "demo/production", "other/staging"] {
                 std::fs::create_dir_all(dir.path().join("apps").join(app).join("releases/v1"))
                     .unwrap();
+                let archive = dir.path().join("apps").join(app).join("archives/v1");
+                std::fs::create_dir_all(&archive).unwrap();
+                std::fs::write(archive.join("release.tar.zst"), b"original").unwrap();
             }
             let scope: AppEnv = tako_core::deployment_app_id("demo", "staging")
                 .parse()
@@ -1064,6 +1066,12 @@ mod tests {
     fn rollback_accepts_archived_releases_but_rejects_redirected_archives() {
         use std::os::unix::fs::symlink;
         let f = Fixture::new();
+        let unarchived = f.dir.path().join("apps/demo/staging/releases/unarchived");
+        std::fs::create_dir_all(&unarchived).unwrap();
+        assert!(
+            f.authorize(&f.decode_command(json!({"command":"rollback","version":"unarchived"})))
+                .is_err()
+        );
         let root = f.dir.path().join("apps/demo/staging/archives/old");
         std::fs::create_dir_all(&root).unwrap();
         let archive = root.join("release.tar.zst");
