@@ -64,19 +64,31 @@ pub(super) fn short_path_hash(s: &str) -> String {
     format!("{:04x}", hasher.finish() & 0xFFFF)
 }
 
+pub(super) fn bounded_dev_name(name: &str) -> String {
+    if name.len() <= 63 {
+        return name.to_string();
+    }
+    use sha2::{Digest, Sha256};
+    let hash = hex::encode(Sha256::digest(name.as_bytes()));
+    let prefix = sanitize_name_segment(name);
+    let prefix = prefix[..prefix.len().min(54)].trim_end_matches('-');
+    format!("{prefix}-{}", &hash[..8])
+}
+
 pub(super) fn disambiguate_app_name(
     candidate: &str,
     config_path: &str,
     existing: &[(String, String)],
 ) -> String {
+    let candidate = bounded_dev_name(candidate);
     let dominated = |name: &str| -> bool {
         existing
             .iter()
             .any(|(n, other_config)| n == name && other_config != config_path)
     };
 
-    if !dominated(candidate) {
-        return candidate.to_string();
+    if !dominated(&candidate) {
+        return candidate;
     }
 
     if let Some(leaf) = Path::new(config_path)
@@ -86,14 +98,14 @@ pub(super) fn disambiguate_app_name(
     {
         let seg = sanitize_name_segment(leaf);
         if !seg.is_empty() {
-            let with_dir = format!("{candidate}-{seg}");
+            let with_dir = bounded_dev_name(&format!("{candidate}-{seg}"));
             if !dominated(&with_dir) {
                 return with_dir;
             }
         }
     }
 
-    format!("{candidate}-{}", short_path_hash(config_path))
+    bounded_dev_name(&format!("{candidate}-{}", short_path_hash(config_path)))
 }
 
 pub(super) async fn try_list_registered_app_names() -> Vec<(String, String)> {
@@ -291,6 +303,7 @@ pub(super) fn inject_dev_secrets(
 ) -> Result<std::collections::HashMap<String, String>, Box<dyn std::error::Error>> {
     let secrets = load_dev_secrets(project_dir, config, environment)?;
     env.extend(secrets.clone());
+    env.insert("ENV".into(), environment.into());
     Ok(secrets)
 }
 

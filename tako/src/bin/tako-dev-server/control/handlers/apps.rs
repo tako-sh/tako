@@ -91,6 +91,7 @@ pub(super) async fn register_app(
                 .map_err(|e| e.to_string())?;
             let mut compose_env = env.clone();
             compose_env.extend(secrets.clone());
+            compose_env.insert("ENV".into(), environment.clone());
             let identity = if environment == "development" {
                 format!(
                     "{}:{}",

@@ -12,19 +12,24 @@ pub fn install(state: &Arc<Mutex<State>>, workflows: &tako_workflows::WorkflowMa
         };
         let selected = {
             let state = state.lock().unwrap();
-            let Some(caller) = state.apps.values().find(|app| app.name == caller) else {
+            let Some((caller_key, caller)) = state.apps.iter().find(|(_, app)| app.name == caller)
+            else {
                 return tako_core::Response::error("unknown development caller");
             };
-            let mut matches = state.apps.iter().filter(|(_, app)| {
-                app.app_namespace == target && app.environment == caller.environment
-            });
-            let first = matches
-                .next()
-                .map(|(key, app)| (key.clone(), app.clone(), state.routes.clone()));
-            if matches.next().is_some() {
-                return tako_core::Response::error("ambiguous development app namespace");
+            if target == caller.name {
+                Some((caller_key.clone(), caller.clone(), state.routes.clone()))
+            } else {
+                let mut matches = state.apps.iter().filter(|(_, app)| {
+                    app.app_namespace == target && app.environment == caller.environment
+                });
+                let first = matches
+                    .next()
+                    .map(|(key, app)| (key.clone(), app.clone(), state.routes.clone()));
+                if matches.next().is_some() {
+                    return tako_core::Response::error("ambiguous development app namespace");
+                }
+                first
             }
-            first
         };
         let Some((key, app, routes)) = selected else {
             return tako_core::Response::error("unknown development app");

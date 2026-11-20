@@ -197,12 +197,13 @@ async function waitForAppPid(lf: string, timeoutMs = 30_000): Promise<number> {
 describe.skipIf(SKIP)("tako dev fixtures", () => {
   test("custom environments coexist and restart/stop independently", async () => {
     const { tempDir, pd } = prepareFixture("bun");
+    const appName = `dev-env-${"a".repeat(47)}`;
     // Exercise explicit config selection without a default tako.toml.
     renameSync(join(pd, "tako.toml"), join(pd, "app.toml"));
     writeFileSync(
       join(pd, "app.toml"),
       `
-name = "dev-env-e2e"
+name = "${appName}"
 runtime = "bun"
 [vars.development]
 GREETING = "development"
@@ -211,7 +212,6 @@ GREETING = "test"
 [envs.development]
 databases = { main = "same-name" }
 [envs.test-e2e]
-route = "dev-env-e2e-tests.test"
 databases = { main = "same-name" }
 `,
     );
@@ -228,7 +228,8 @@ export default async function fetch(request: Request) {
     if (request.method === "POST") await db.execute("INSERT INTO items VALUES ('item')");
     const result = await db.execute("SELECT count(*) AS count FROM items");
     return Response.json({ env: tako.env, greeting: process.env.GREETING,
-      secret: tako.secrets.TEST_VALUE, dataDir: process.env.TAKO_DATA_DIR,
+      secret: tako.secrets.TEST_VALUE, envSecret: tako.secrets.ENV,
+      dataDir: process.env.TAKO_DATA_DIR,
       count: Number(result.rows[0].count), pid: process.pid });
   } finally { db.close(); }
 }
@@ -262,6 +263,7 @@ export default async function fetch(request: Request) {
     try {
       await cli(["secrets", "set", "TEST_VALUE", "--env", "development"], "dev-secret");
       await cli(["secrets", "set", "TEST_VALUE", "--env", "test-e2e"], "test-secret");
+      await cli(["secrets", "set", "ENV", "--env", "test-e2e"], "production");
       const dev = await cli(["dev", "--background"]);
       const test = await cli(["dev", "--env", "test-e2e", "--background"]);
       expect(test.url).not.toBe(dev.url);
@@ -277,6 +279,7 @@ export default async function fetch(request: Request) {
         env: "test-e2e",
         greeting: "test",
         secret: "test-secret",
+        envSecret: "production",
         count: 0,
       });
       expect(isolated.dataDir).not.toBe(normal.dataDir);

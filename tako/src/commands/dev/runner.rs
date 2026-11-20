@@ -46,9 +46,18 @@ pub async fn stop(
             crate::output::muted("No registered dev apps.");
             return Ok(());
         }
+        let mut failures = Vec::new();
         for app in &apps {
-            crate::dev_server_client::unregister_app(&app.config_path).await?;
-            crate::output::success(&format!("Stopped {}", crate::output::strong(&app.app_name)));
+            match crate::dev_server_client::unregister_app(&app.config_path).await {
+                Ok(()) => crate::output::success(&format!(
+                    "Stopped {}",
+                    crate::output::strong(&app.app_name)
+                )),
+                Err(error) => failures.push(format!("{}: {error}", app.app_name)),
+            }
+        }
+        if !failures.is_empty() {
+            return Err(format!("Failed to stop dev apps: {}", failures.join("; ")).into());
         }
         return Ok(());
     }

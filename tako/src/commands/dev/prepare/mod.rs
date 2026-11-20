@@ -124,6 +124,7 @@ pub(super) async fn prepare(
     } else {
         format!("{base_name}-{environment}")
     };
+    let base_name = bounded_dev_name(&base_name);
     let app_name = if let Some(ref v) = variant {
         format!("{base_name}-{v}")
     } else {

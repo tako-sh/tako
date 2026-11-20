@@ -45,11 +45,12 @@ use prepare::tls::{
     ca_fingerprint, ca_fingerprint_path_for_home, record_dev_ca_fingerprint_for_home,
 };
 use project::{
-    compute_dev_env, compute_dev_hosts, compute_display_routes, dev_startup_lines, dev_url,
-    disambiguate_app_name, has_explicit_dev_preset, infer_preset_name_from_ref,
-    inject_dev_allowed_hosts, inject_dev_data_dir, inject_dev_secrets, preferred_public_url,
-    readiness_failure_hint_for_dev_command, resolve_dev_preset_ref, resolve_dev_run_command,
-    resolve_dev_worker_command, resolve_effective_dev_build_adapter, try_list_registered_app_names,
+    bounded_dev_name, compute_dev_env, compute_dev_hosts, compute_display_routes,
+    dev_startup_lines, dev_url, disambiguate_app_name, has_explicit_dev_preset,
+    infer_preset_name_from_ref, inject_dev_allowed_hosts, inject_dev_data_dir, inject_dev_secrets,
+    preferred_public_url, readiness_failure_hint_for_dev_command, resolve_dev_preset_ref,
+    resolve_dev_run_command, resolve_dev_worker_command, resolve_effective_dev_build_adapter,
+    try_list_registered_app_names,
 };
 #[cfg(test)]
 use project::{
