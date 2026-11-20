@@ -1,4 +1,5 @@
-FROM docker.io/oven/bun:1-alpine
+# Repeated remote builds must not exhaust Docker Hub's anonymous CI pull quota.
+FROM mirror.gcr.io/oven/bun:1-alpine
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
 ARG NO_PROXY
