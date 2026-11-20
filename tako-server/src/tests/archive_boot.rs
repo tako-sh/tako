@@ -276,7 +276,7 @@ async fn periodic_cleanup_expires_archives_without_another_deployment() {
     let draining = app.allocate_instance();
     app.config.write().version = "current".into();
 
-    state.compact_app_releases(app_name).await.unwrap();
+    state.compact_inactive_releases().await;
 
     for version in ["archived", "abandoned"] {
         assert!(!root.join("archives").join(version).exists(), "{version}");
@@ -296,9 +296,73 @@ async fn periodic_cleanup_expires_archives_without_another_deployment() {
     }
     assert!(root.join("archives/pending/pending").is_file());
     app.remove_instance(&draining.id);
-    state.compact_app_releases(app_name).await.unwrap();
+    state.compact_inactive_releases().await;
     assert!(!root.join("archives/referenced").exists());
     assert!(!root.join("releases/referenced").exists());
+}
+
+#[tokio::test]
+async fn periodic_cleanup_finds_interrupted_first_deployments() {
+    let temp = TempDir::new().unwrap();
+    let state = ServerState::new(
+        temp.path().into(),
+        Arc::new(CertManager::new(CertManagerConfig {
+            cert_dir: temp.path().join("certs"),
+            ..Default::default()
+        })),
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let app = "unregistered/production";
+    let root = temp.path().join("apps").join(app);
+    let upload = temp.path().join("upload.tar.zst");
+    write_test_release_archive(&upload);
+    let expired = filetime::FileTime::from_system_time(
+        std::time::SystemTime::now() - Duration::from_secs(31 * 24 * 60 * 60),
+    );
+    for version in ["abandoned", "pending"] {
+        state
+            .store_uploaded_release_artifact(app, version, &upload)
+            .unwrap();
+        let archive = root.join("archives").join(version);
+        filetime::set_file_mtime(archive.join("release.tar.zst"), expired).unwrap();
+    }
+    filetime::set_file_mtime(root.join("archives/abandoned/pending"), expired).unwrap();
+    let staged = root.join("releases/.extract-in-progress");
+    std::fs::create_dir(&staged).unwrap();
+    // Discovery must not follow an app symlink outside the managed tree.
+    let outside = temp.path().join("outside/production");
+    let outside_archive = outside.join("archives/expired/release.tar.zst");
+    std::fs::create_dir_all(outside_archive.parent().unwrap()).unwrap();
+    std::fs::write(&outside_archive, b"outside").unwrap();
+    filetime::set_file_mtime(&outside_archive, expired).unwrap();
+    std::os::unix::fs::symlink(temp.path().join("outside"), temp.path().join("apps/linked"))
+        .unwrap();
+    assert!(state.app_manager.list_apps().is_empty());
+
+    let management = state.management_lock.lock().await;
+    state.compact_inactive_releases().await;
+    assert!(root.join("archives/abandoned/pending").is_file());
+    drop(management);
+    state.compact_inactive_releases().await;
+
+    assert!(!root.join("archives/abandoned").exists());
+    assert!(!root.join("releases/abandoned").exists());
+    assert!(root.join("releases/pending/app.json").is_file());
+    assert!(root.join("archives/pending/pending").is_file());
+    assert_eq!(
+        std::fs::read(root.join("archives/pending/release.tar.zst")).unwrap(),
+        std::fs::read(&upload).unwrap(),
+    );
+    assert!(staged.is_dir());
+    assert_eq!(std::fs::read(&outside_archive).unwrap(), b"outside");
+
+    // A finalized release stays protected if recovery has not registered its app.
+    assert!(state.finalize_release(app, "pending").await.is_ok());
+    state.compact_inactive_releases().await;
+    assert!(root.join("releases/pending/app.json").is_file());
+    assert!(root.join("archives/pending/release.tar.zst").is_file());
 }
 
 #[tokio::test]

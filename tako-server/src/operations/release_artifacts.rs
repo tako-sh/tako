@@ -292,8 +292,8 @@ impl crate::ServerState {
             let protected = self.release_references(app).await?;
             tokio::task::spawn_blocking(move || {
                 let _lease = lease;
-                prune_old_releases(&paths.releases_root, &paths.release_path, &protected);
-                compact_releases(&paths.releases_root, &paths.release_path, &protected)
+                prune_old_releases(&paths.releases_root, Some(&paths.release_path), &protected);
+                compact_releases(&paths.releases_root, Some(&paths.release_path), &protected)
             })
             .await
             .map_err(|error| error.to_string())?
@@ -305,7 +305,44 @@ impl crate::ServerState {
         Ok(())
     }
 
+    pub(crate) async fn compact_inactive_releases(&self) {
+        let data_dir = self.runtime.data_dir.clone();
+        let apps = tokio::task::spawn_blocking(move || {
+            let mut apps = Vec::new();
+            for app in release_directories(&data_dir.join("apps")) {
+                for environment in release_directories(&app) {
+                    let name = format!(
+                        "{}/{}",
+                        app.file_name().unwrap_or_default().to_string_lossy(),
+                        environment
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                    );
+                    if validate_app_name(&name).is_ok() {
+                        apps.push(name);
+                    }
+                }
+            }
+            apps
+        })
+        .await;
+        let apps = match apps {
+            Ok(apps) => apps,
+            Err(error) => {
+                tracing::warn!(%error, "Could not discover release directories");
+                return;
+            }
+        };
+        for app in apps {
+            if let Err(error) = self.compact_app_releases(&app).await {
+                tracing::warn!(%app, %error, "Could not clean up inactive release files");
+            }
+        }
+    }
+
     pub(crate) async fn compact_app_releases(&self, app_name: &str) -> Result<(), String> {
+        validate_app_name(app_name)?;
         let Some(lease) = self.release_cleanup_lease().await? else {
             return Ok(());
         };
@@ -318,15 +355,23 @@ impl crate::ServerState {
         let Ok(guard) = lock.try_lock_owned() else {
             return Ok(());
         };
-        let Some(app) = self.app_manager.get_app(app_name) else {
-            return Ok(());
+        let app_root = app_root(&self.runtime.data_dir, app_name);
+        let releases_root = app_root.join("releases");
+        let current = match std::fs::read_link(app_root.join("current")) {
+            Ok(path) => Some(path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(format!("inspect current release: {error}")),
         };
-        let paths = self.release_paths(app_name, &app.version())?;
-        if std::fs::read_link(paths.app_root.join("current"))
-            .is_ok_and(|current| current == paths.release_path)
-        {
-            clear_pending_marker(&paths.archive_root)?;
-        }
+        let active = if let Some(app) = self.app_manager.get_app(app_name) {
+            let paths = self.release_paths(app_name, &app.version())?;
+            if current.as_ref() == Some(&paths.release_path) {
+                clear_pending_marker(&paths.archive_root)?;
+            }
+            Some(paths.release_path)
+        } else {
+            // Recovery may not have registered a previously finalized app.
+            current
+        };
         let protected =
             tokio::time::timeout(Duration::from_secs(1), self.release_references(app_name))
                 .await
@@ -335,8 +380,8 @@ impl crate::ServerState {
                 })??;
         tokio::task::spawn_blocking(move || {
             let _guards = (lease, management, guard);
-            prune_old_releases(&paths.releases_root, &paths.release_path, &protected);
-            compact_releases(&paths.releases_root, &paths.release_path, &protected)
+            prune_old_releases(&releases_root, active.as_deref(), &protected);
+            compact_releases(&releases_root, active.as_deref(), &protected)
         })
         .await
         .map_err(|error| error.to_string())?
@@ -360,11 +405,11 @@ impl crate::ServerState {
         &self,
         app: &str,
     ) -> Result<std::collections::BTreeSet<PathBuf>, String> {
+        let mut paths = self.workflows.release_paths(app);
         let Some(app) = self.app_manager.get_app(app) else {
-            return Ok(Default::default());
+            return Ok(paths);
         };
         let config = app.config.read().clone();
-        let mut paths = self.workflows.release_paths(&app.name());
         for instance in app.get_instances() {
             paths.insert(app_release_root(
                 &self.runtime.data_dir,
@@ -415,40 +460,45 @@ fn clear_pending_marker(archive_root: &Path) -> Result<(), String> {
         .map_err(|error| format!("finalize release archive: {error}"))
 }
 
+fn release_directories(root: &Path) -> impl Iterator<Item = PathBuf> {
+    let entries = match std::fs::symlink_metadata(root) {
+        Ok(metadata) if metadata.is_dir() => match std::fs::read_dir(root) {
+            Ok(entries) => Some(entries),
+            Err(error) => {
+                tracing::warn!(path = %root.display(), %error, "Could not inspect release directories");
+                None
+            }
+        },
+        Ok(_) => None,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            tracing::warn!(path = %root.display(), %error, "Could not inspect release directories");
+            None
+        }
+    };
+    entries
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| match entry {
+            Ok(entry) if entry.file_type().is_ok_and(|kind| kind.is_dir()) => Some(entry.path()),
+            _ => None,
+        })
+}
+
 pub(crate) fn sweep_release_staging_dirs(data_dir: &Path, mode: super::RecoveryMode) {
     // Only cold-start recovery holds an exclusive data-dir lease. A successor
     // or standby may share this directory with an upload that is still running.
     if mode != super::RecoveryMode::Primary {
         return;
     }
-    let directories = |root: &Path| {
-        let entries = match std::fs::symlink_metadata(root) {
-            Ok(metadata) if metadata.is_dir() => std::fs::read_dir(root),
-            Ok(_) => return None,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
-            Err(error) => Err(error),
-        };
-        match entries {
-            Ok(entries) => Some(entries.filter_map(|entry| match entry {
-                Ok(entry) if entry.file_type().is_ok_and(|kind| kind.is_dir()) => {
-                    Some(entry.path())
-                }
-                _ => None,
-            })),
-            Err(error) => {
-                tracing::warn!(path = %root.display(), %error, "Could not inspect release staging directories");
-                None
-            }
-        }
-    };
     // Interrupted first deployments may have no durable app record yet.
-    for app in directories(&data_dir.join("apps")).into_iter().flatten() {
-        for environment in directories(&app).into_iter().flatten() {
+    for app in release_directories(&data_dir.join("apps")) {
+        for environment in release_directories(&app) {
             for (subdir, prefixes) in [
                 ("releases", [".extract-", ".remove-"]),
                 ("archives", [".upload-", ".remove-"]),
             ] {
-                for path in directories(&environment.join(subdir)).into_iter().flatten() {
+                for path in release_directories(&environment.join(subdir)) {
                     if path.file_name().is_some_and(|name| {
                         prefixes
                             .iter()
@@ -575,7 +625,7 @@ pub(super) fn release_entries(
 
 fn compact_releases(
     releases_root: &Path,
-    active_release: &Path,
+    active_release: Option<&Path>,
     protected: &std::collections::BTreeSet<PathBuf>,
 ) -> Result<(), String> {
     let entries = match std::fs::read_dir(releases_root) {
@@ -603,7 +653,7 @@ fn compact_releases(
         }
         let path = entry.path();
         let metadata_root = releases_root.with_file_name("archives").join(version);
-        if path == active_release
+        if active_release == Some(path.as_path())
             || protected.iter().any(|used| used.starts_with(&path))
             || metadata_root.join("pending").exists()
         {
@@ -616,7 +666,7 @@ fn compact_releases(
 
 fn prune_old_releases(
     releases_root: &Path,
-    active_release: &Path,
+    active_release: Option<&Path>,
     protected: &std::collections::BTreeSet<PathBuf>,
 ) {
     let Ok(entries) = release_entries(releases_root) else {
@@ -626,7 +676,7 @@ fn prune_old_releases(
     let mut retained = Vec::new();
     for (version, metadata_root) in entries {
         let path = releases_root.join(version);
-        if path == active_release
+        if active_release == Some(path.as_path())
             || protected.iter().any(|used| used.starts_with(&path))
             || std::fs::metadata(metadata_root.join("pending"))
                 .and_then(|metadata| metadata.modified())
@@ -657,7 +707,7 @@ fn prune_old_releases(
         b_modified.cmp(a_modified).then_with(|| b_path.cmp(a_path))
     });
 
-    let non_active_limit = if active_release.is_dir() {
+    let non_active_limit = if active_release.is_some_and(Path::is_dir) {
         MAX_RELEASE_RETENTION_COUNT.saturating_sub(1)
     } else {
         MAX_RELEASE_RETENTION_COUNT
@@ -794,7 +844,7 @@ mod tests {
             FileTime::from_system_time(now - OLD_RELEASE_RETENTION * 2),
         )
         .unwrap();
-        prune_old_releases(&root, &active, &Default::default());
+        prune_old_releases(&root, Some(&active), &Default::default());
         assert_eq!(
             release_entries(&root).unwrap().len(),
             MAX_RELEASE_RETENTION_COUNT
@@ -820,9 +870,9 @@ mod tests {
         let archive_root = create_release(&temp.path().join("archives"), "old", SystemTime::now());
         std::fs::write(archive_root.join("release.tar.zst"), b"original").unwrap();
         let protected = std::collections::BTreeSet::from([old.join("app")]);
-        compact_releases(&root, &active, &protected).unwrap();
+        compact_releases(&root, Some(&active), &protected).unwrap();
         assert!(old.is_dir());
-        compact_releases(&root, &active, &Default::default()).unwrap();
+        compact_releases(&root, Some(&active), &Default::default()).unwrap();
         assert!(!old.exists());
         assert!(active.is_dir());
         assert!(!unarchived.exists());
@@ -887,7 +937,7 @@ mod tests {
             );
         }
 
-        prune_old_releases(root, &active, &Default::default());
+        prune_old_releases(root, Some(&active), &Default::default());
 
         assert_eq!(release_dirs(root), MAX_RELEASE_RETENTION_COUNT);
         assert!(active.is_dir());
@@ -928,12 +978,12 @@ mod tests {
             std::fs::write(preparation.join("source.txt"), "mounted input").unwrap();
         }
         let protected = std::collections::BTreeSet::from([referenced.join("app")]);
-        prune_old_releases(&root, &active, &protected);
+        prune_old_releases(&root, Some(&active), &protected);
         assert!(referenced.is_dir());
         assert!(private.join("referenced/source.txt").is_file());
         assert!(!obsolete.exists());
         assert!(!private.join("obsolete").exists());
-        prune_old_releases(&root, &active, &Default::default());
+        prune_old_releases(&root, Some(&active), &Default::default());
         assert!(!referenced.exists());
         assert!(!private.join("referenced").exists());
     }
@@ -947,7 +997,7 @@ mod tests {
         let expired = create_retained_release(root, "expired", now - OLD_RELEASE_RETENTION * 2);
         let fresh = create_retained_release(root, "fresh", now - Duration::from_secs(60));
 
-        prune_old_releases(root, &active, &Default::default());
+        prune_old_releases(root, Some(&active), &Default::default());
 
         assert!(active.is_dir());
         assert!(fresh.is_dir());
