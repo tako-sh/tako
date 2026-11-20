@@ -779,8 +779,8 @@ pub(crate) async fn stale_app_cleanup_loop(state: Arc<Mutex<State>>) {
             removed.extend(
                 s.apps
                     .iter()
-                    .filter(|(key, app)| {
-                        app.compose.is_some() && !std::path::Path::new(key).exists()
+                    .filter(|(_, app)| {
+                        app.compose.is_some() && !std::path::Path::new(&app.config_file).exists()
                     })
                     .map(|(key, _)| key.clone()),
             );

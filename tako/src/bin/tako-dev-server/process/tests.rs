@@ -57,6 +57,54 @@ fn idle_wake_app(directory: &std::path::Path) -> (Arc<Mutex<State>>, String) {
     (state, config_path)
 }
 
+#[tokio::test(start_paused = true)]
+async fn compose_cleanup_uses_config_file_for_environment_registrations() {
+    let directory = tempfile::tempdir().unwrap();
+    let (state, config_file) = idle_wake_app(directory.path());
+    std::fs::write(&config_file, "name = \"wake\"\n").unwrap();
+    std::fs::write(
+        directory.path().join("compose.yaml"),
+        "services:\n  web:\n    image: busybox\n    x-tako: {http: true}\n",
+    )
+    .unwrap();
+    let key = format!("test-e2e:{config_file}");
+    let runtime = tako_compose::ComposeRuntime::development(
+        directory.path().into(),
+        tako_compose::load_config(directory.path(), "compose.yaml").unwrap(),
+        Default::default(),
+        &key,
+    )
+    .unwrap();
+    {
+        let mut s = state.lock().unwrap();
+        let mut app = s.apps.remove(&config_file).unwrap();
+        app.config_file = config_file.clone();
+        app.environment = "test-e2e".into();
+        app.compose = Some(runtime);
+        s.apps.insert(key.clone(), app);
+    }
+    // Hold startup's lifecycle lock so cleanup can cancel it without calling Docker.
+    let lock = crate::compose::app_lock(&state, &key);
+    let _guard = lock.lock().await;
+    let mut cancelled = startup_cancellation(&state, &key);
+    let mut cleanup = Box::pin(stale_app_cleanup_loop(state.clone()));
+    tokio::select! {
+        _ = &mut cleanup => panic!("cleanup loop unexpectedly exited"),
+        _ = cancelled.changed() => panic!("existing config must not trigger Compose cleanup"),
+        _ = tokio::time::sleep(Duration::from_secs(61)) => {}
+    }
+    assert!(state.lock().unwrap().apps.contains_key(&key));
+
+    std::fs::remove_file(&config_file).unwrap();
+    tokio::select! {
+        _ = &mut cleanup => panic!("cleanup loop unexpectedly exited"),
+        result = cancelled.changed() => result.unwrap(),
+        _ = tokio::time::sleep(Duration::from_secs(60)) => {
+            panic!("deleted config must trigger Compose cleanup")
+        }
+    }
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn private_wake_uses_registration_without_a_matching_public_route() {
