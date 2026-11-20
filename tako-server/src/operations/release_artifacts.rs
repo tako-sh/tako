@@ -267,15 +267,9 @@ impl crate::ServerState {
 
         std::fs::rename(&temp_link, &current_link)
             .map_err(|e| format!("update current symlink {}: {e}", current_link.display()))?;
-        std::fs::remove_file(paths.archive_root.join("pending"))
-            .or_else(|e| {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    Ok(())
-                } else {
-                    Err(e)
-                }
-            })
-            .map_err(|e| format!("finalize release archive: {e}"))?;
+        if let Err(error) = clear_pending_marker(&paths.archive_root) {
+            tracing::warn!(app, %error, "Could not clear release preparation marker; periodic cleanup will retry");
+        }
         prune_old_releases(&paths.releases_root, &paths.release_path, &protected);
         if let Err(error) = compact_releases(&paths.releases_root, &paths.release_path, &protected)
         {
@@ -298,6 +292,11 @@ impl crate::ServerState {
             return Ok(());
         };
         let paths = self.release_paths(app_name, &app.version())?;
+        if std::fs::read_link(paths.app_root.join("current"))
+            .is_ok_and(|current| current == paths.release_path)
+        {
+            clear_pending_marker(&paths.archive_root)?;
+        }
         let protected =
             tokio::time::timeout(Duration::from_secs(1), self.release_references(app_name))
                 .await
@@ -352,6 +351,18 @@ impl crate::ServerState {
             shared_logs,
         })
     }
+}
+
+fn clear_pending_marker(archive_root: &Path) -> Result<(), String> {
+    std::fs::remove_file(archive_root.join("pending"))
+        .or_else(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                Ok(())
+            } else {
+                Err(error)
+            }
+        })
+        .map_err(|error| format!("finalize release archive: {error}"))
 }
 
 fn prepare_release_upload_inner(

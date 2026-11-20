@@ -347,6 +347,53 @@ async fn release_finalization_succeeds_when_compaction_fails_and_cleanup_retries
     assert!(root.join("archives/v1/release.tar.zst").is_file());
 }
 
+#[tokio::test]
+async fn release_finalization_succeeds_when_pending_cleanup_fails_and_retries() {
+    let temp = TempDir::new().unwrap();
+    let state = ServerState::new(
+        temp.path().into(),
+        Arc::new(CertManager::new(CertManagerConfig {
+            cert_dir: temp.path().join("certs"),
+            ..Default::default()
+        })),
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let app = "my-app/production";
+    let root = temp.path().join("apps").join(app);
+    let upload = temp.path().join("upload.tar.zst");
+    write_test_release_archive(&upload);
+    let release = state
+        .store_uploaded_release_artifact(app, "v1", &upload)
+        .unwrap();
+    let pending = root.join("archives/v1/pending");
+    std::fs::remove_file(&pending).unwrap();
+    std::fs::create_dir(&pending).unwrap();
+    state.app_manager.register_app(AppConfig {
+        name: "my-app".into(),
+        environment: "production".into(),
+        version: "v1".into(),
+        ..Default::default()
+    });
+    state.compact_app_releases(app).await.unwrap();
+    assert!(
+        pending.is_dir(),
+        "an unfinalized candidate must stay pending"
+    );
+    assert!(state.finalize_release(app, "v1").await.is_ok());
+    assert_eq!(
+        std::fs::read_link(root.join("current")).unwrap(),
+        Path::new(&release.path)
+    );
+    assert!(pending.is_dir());
+    std::fs::remove_dir(&pending).unwrap();
+    std::fs::write(&pending, []).unwrap();
+    state.compact_app_releases(app).await.unwrap();
+    assert!(!pending.exists());
+    assert!(Path::new(&release.path).is_dir());
+}
+
 #[test]
 fn archive_restoration_queues_on_the_blocking_pool_for_upload_and_rollback() {
     let runtime = tokio::runtime::Builder::new_current_thread()
