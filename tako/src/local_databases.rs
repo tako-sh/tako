@@ -58,6 +58,12 @@ pub(crate) fn data_root(project_dir: &Path, environment: &str) -> PathBuf {
     let root = project_dir.join(".tako").join("data");
     if environment == "development" {
         root
+    } else if environment.len() > 255 {
+        // '~' cannot occur in an environment name, so the hashed and literal namespaces are disjoint.
+        root.join("envs").join(format!(
+            "~{}",
+            hex::encode(Sha256::digest(environment.as_bytes()))
+        ))
     } else {
         root.join("envs").join(environment)
     }
@@ -367,6 +373,29 @@ route = "empty.test"
             "keep"
         );
         assert!(dev_files(&project, &cfg, "empty").is_empty());
+    }
+
+    #[test]
+    fn long_environment_components_are_stable_distinct_and_creatable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let boundary = "a".repeat(255);
+        let literal = data_root(tmp.path(), &boundary);
+        assert_eq!(literal.file_name().unwrap(), boundary.as_str());
+        let long = format!("{boundary}b");
+        let hashed = data_root(tmp.path(), &long);
+        assert_eq!(hashed, data_root(tmp.path(), &long));
+        assert_ne!(hashed, data_root(tmp.path(), &format!("{boundary}c")));
+        assert!(
+            hashed
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with('~')
+        );
+        for path in [literal, hashed] {
+            std::fs::create_dir_all(path.join("app")).unwrap();
+        }
     }
 
     #[test]
