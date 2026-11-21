@@ -449,7 +449,11 @@ tako version
 
 `completions` installs bash, zsh, and fish completion scripts for shells that are on `PATH`. zsh is installed only when a writable directory is already on `fpath`; otherwise Tako prints how to add one.
 
-When `tako upgrade` installs a new release, it stops the local dev server and all its apps, across environments. If the daemon acknowledges shutdown but needs more than a minute to stop its apps, the upgrade succeeds and shutdown continues in the background. Let it finish before running `tako dev` again in each project (with the original `--config` and `--env`, if used). If the CLI is already current, running apps keep serving. On macOS, official CLI upgrades support Apple Silicon and Intel. Intel builds publish separately after each release. If an Intel download is temporarily unavailable, retry once that build finishes.
+When `tako upgrade` installs a new release, it asks the local dev server to shut down across all environments. If the daemon acknowledges shutdown but needs more than a minute to finish, the upgrade succeeds and shutdown continues in the background. Let it finish before running `tako dev` again in each project (with the original `--config` and `--env`, if used). If the CLI is already current, running apps keep serving.
+
+For Compose apps, the daemon logs Docker cleanup errors in `dev-server.log` in the Tako data directory. Containers can remain running after such an error; use `docker ps` to check.
+
+On macOS, official CLI upgrades support Apple Silicon and Intel. Intel builds publish separately after each release. If an Intel download is temporarily unavailable, retry once that build finishes.
 
 `uninstall` removes local Tako binaries, local data, completion scripts, and platform-specific dev services/config after confirmation.
 

@@ -212,8 +212,8 @@ pub enum Commands {
 
     /// Upgrade the local tako CLI to the latest version
     ///
-    /// Installing a new version stops the local dev server and its apps. Run
-    /// `tako dev` in each project when you want to start it again.
+    /// Installing a new version requests shutdown of the local dev server.
+    /// Run `tako dev` in each project when you want to start it again.
     Upgrade,
 
     /// Install shell completions

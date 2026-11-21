@@ -64,7 +64,7 @@ async fn run_upgrade(task: LocalUpgradeTask) -> Result<(), Box<dyn std::error::E
     }
     match stop {
         DevServerStop::Stopped => output::hint(
-            "Stopped the local dev server and its apps. Run `tako dev` in each project to start it again.",
+            "Stopped the local dev server. Run `tako dev` in each project to resume development.",
         ),
         DevServerStop::StillStopping => output::hint(
             "The local dev server is still shutting down. Let it finish before running `tako dev` again.",
