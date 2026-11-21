@@ -271,6 +271,7 @@ impl FakeDevServer {
                     }
                 }
             }
+            let _ = fs::remove_file(sock_path2);
         });
 
         // Wait until the socket exists so callers can connect reliably.

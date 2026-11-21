@@ -1,6 +1,52 @@
 use crate::support::*;
 
 #[test]
+fn upgrade_stops_daemon_only_after_installing_a_new_release() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = TempDir::new().unwrap();
+    let home = temp.path();
+    let sock = home.join("dev-server.sock");
+    let _daemon = FakeDevServer::start(home).unwrap();
+    let brew = home.join("brew");
+    fs::write(
+        &brew,
+        r#"#!/bin/sh
+case "$1" in
+    --version) echo Homebrew ;;
+    list) read -r version < version; echo "tako $version" ;;
+    upgrade) [ "$RELEASE" != fail ] && echo "$RELEASE" > version ;;
+    *) exit 1 ;;
+esac
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(brew, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(home.join("version"), "1\n").unwrap();
+    let upgrade = |release| {
+        let path = home.to_str().unwrap();
+        run_tako_with_extra_env(
+            &["upgrade", "--ci", "--json"],
+            home,
+            &[
+                ("HOME", path),
+                ("TAKO_HOME", path),
+                ("PATH", path),
+                ("RELEASE", release),
+            ],
+        )
+    };
+
+    assert!(!upgrade("fail").status.success());
+    assert!(sock.exists());
+    assert!(upgrade("1").status.success());
+    assert!(sock.exists());
+    let out = upgrade("2");
+    assert!(out.status.success(), "{}", stderr_str(&out));
+    assert!(!sock.exists(), "upgrade returned before daemon shutdown");
+    assert!(upgrade("3").status.success(), "an absent daemon is a no-op");
+}
+
+#[test]
 fn dev_stop_all_attempts_remaining_apps_and_reports_every_failure() {
     let temp = TempDir::new().unwrap();
     let home = temp.path().join("home");

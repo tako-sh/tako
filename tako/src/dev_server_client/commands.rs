@@ -74,8 +74,40 @@ pub async fn info() -> Result<serde_json::Value, Box<dyn std::error::Error>> {
 }
 
 pub async fn stop_server() -> Result<(), Box<dyn std::error::Error>> {
+    request_stop(UnixStream::connect(socket_path()?).await?).await
+}
+
+pub(crate) async fn stop_server_if_running() -> Result<bool, Box<dyn std::error::Error>> {
     let sock = socket_path()?;
-    let stream = UnixStream::connect(&sock).await?;
+    tokio::time::timeout(std::time::Duration::from_secs(60), stop_and_wait(&sock))
+        .await
+        .map_err(|_| "timed out waiting for the local dev server to stop")?
+}
+
+async fn stop_and_wait(sock: &std::path::Path) -> Result<bool, Box<dyn std::error::Error>> {
+    use std::io::ErrorKind;
+    let stream = match UnixStream::connect(sock).await {
+        Ok(stream) => stream,
+        Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused) => {
+            return Ok(false);
+        }
+        Err(e) => return Err(e.into()),
+    };
+    // Older daemons can exit before flushing Stopping. Socket removal follows app cleanup.
+    if let Err(e) = request_stop(stream).await
+        && !e
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|e| e.kind() == ErrorKind::UnexpectedEof)
+    {
+        return Err(e);
+    }
+    while sock.try_exists()? {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    Ok(true)
+}
+
+async fn request_stop(stream: UnixStream) -> Result<(), Box<dyn std::error::Error>> {
     let mut c = LineClient::new(stream);
     c.send_line(r#"{"type":"StopServer"}"#).await?;
     let line = c.read_line().await?;
