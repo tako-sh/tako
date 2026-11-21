@@ -211,6 +211,9 @@ pub enum Commands {
     Workflows(workflows::WorkflowCommands),
 
     /// Upgrade the local tako CLI to the latest version
+    ///
+    /// Installing a new version requests shutdown of the local dev server.
+    /// Run `tako dev` in each project when you want to start it again.
     Upgrade,
 
     /// Install shell completions

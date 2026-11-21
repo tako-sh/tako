@@ -35,72 +35,64 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn run_upgrade(task: LocalUpgradeTask) -> Result<(), Box<dyn std::error::Error>> {
-    match detect_cli_upgrade_method_runtime() {
-        CliUpgradeMethod::Installer => run_installer_upgrade(task).await,
-        CliUpgradeMethod::Homebrew => run_brew_upgrade(task).await,
-    }
-}
-
-async fn run_installer_upgrade(task: LocalUpgradeTask) -> Result<(), Box<dyn std::error::Error>> {
-    let result: Result<UpdateCheck, Box<dyn std::error::Error>> = async {
-        let (os, arch) = detect_platform()?;
-        let install_dir = resolve_install_dir();
-        let url = tarball_url(os, arch);
-        check_and_install(&url, &install_dir).await
-    }
-    .await;
-    match result {
-        Ok(UpdateCheck::AlreadyCurrent) => {
-            task.succeed("Already on the latest version");
-            if !task.is_rendered() {
-                output::info("Already on the latest version");
+    use crate::dev_server_client::DevServerStop;
+    let result = match detect_cli_upgrade_method_runtime() {
+        CliUpgradeMethod::Installer => run_installer_upgrade().await,
+        CliUpgradeMethod::Homebrew => run_brew_upgrade(),
+    };
+    let (label, stop) = match result {
+        Ok(None) => (
+            "Already on the latest version".to_string(),
+            DevServerStop::NotNeeded,
+        ),
+        Ok(Some(label)) => match crate::dev_server_client::stop_server_if_running().await {
+            Ok(stop) => (label, stop),
+            Err(error) => {
+                let message = format!("{label}, but could not stop the local dev server: {error}");
+                task.fail("Dev server shutdown failed", &message);
+                return Err(message.into());
             }
-        }
-        Ok(UpdateCheck::Available { version }) => {
-            let task_label = format!("Upgraded to {version}");
-            task.succeed(task_label);
-            if !task.is_rendered() {
-                output::info(&format!("Upgraded to {}", output::strong(&version)));
-            }
-        }
+        },
         Err(error) => {
             task.fail("Upgrade failed", error.to_string());
             return Err(error);
         }
+    };
+    task.succeed(&label);
+    if !task.is_rendered() {
+        output::info(&label);
+    }
+    match stop {
+        DevServerStop::Stopped => output::hint(
+            "Stopped the local dev server. Run `tako dev` in each project to resume development.",
+        ),
+        DevServerStop::StillStopping => output::hint(
+            "The local dev server is still shutting down. Let it finish before running `tako dev` again.",
+        ),
+        DevServerStop::NotNeeded => {}
     }
     Ok(())
 }
 
-async fn check_and_install(
-    url: &str,
-    install_dir: &Path,
-) -> Result<UpdateCheck, Box<dyn std::error::Error>> {
+async fn run_installer_upgrade() -> Result<Option<String>, Box<dyn std::error::Error>> {
     match check_for_updates().await? {
-        UpdateCheck::AlreadyCurrent => Ok(UpdateCheck::AlreadyCurrent),
+        UpdateCheck::AlreadyCurrent => Ok(None),
         UpdateCheck::Available { version } => {
-            download_and_install(url, install_dir).await?;
-            Ok(UpdateCheck::Available { version })
+            let (os, arch) = detect_platform()?;
+            download_and_install(&tarball_url(os, arch), &resolve_install_dir()).await?;
+            Ok(Some(format!("Upgraded to {version}")))
         }
     }
 }
 
-async fn run_brew_upgrade(task: LocalUpgradeTask) -> Result<(), Box<dyn std::error::Error>> {
-    match run_local_upgrade_command("brew", &["upgrade", "tako"]) {
-        Ok(()) => {
-            task.succeed("Upgraded via Homebrew");
-            if !task.is_rendered() {
-                output::info("Upgraded via Homebrew");
-            }
-        }
-        Err(error) => {
-            task.fail("Upgrade failed", error.clone());
-            return Err(error.into());
-        }
-    }
-    Ok(())
+fn run_brew_upgrade() -> Result<Option<String>, Box<dyn std::error::Error>> {
+    // `brew upgrade` also succeeds when nothing changed.
+    let before = homebrew_formula_versions()?;
+    run_local_upgrade_command("brew", &["upgrade", "tako"])?;
+    Ok((homebrew_formula_versions()? != before).then(|| "Upgraded via Homebrew".into()))
 }
 
-fn run_local_upgrade_command(binary: &str, args: &[&str]) -> Result<(), String> {
+fn run_local_upgrade_command(binary: &str, args: &[&str]) -> Result<String, String> {
     let result = Command::new(binary)
         .args(args)
         .stdin(Stdio::null())
@@ -110,7 +102,7 @@ fn run_local_upgrade_command(binary: &str, args: &[&str]) -> Result<(), String> 
         .map_err(|e| format!("failed to start {}: {}", binary, e))?;
 
     if result.status.success() {
-        return Ok(());
+        return Ok(String::from_utf8_lossy(&result.stdout).trim().to_owned());
     }
 
     let stderr = String::from_utf8_lossy(&result.stderr);
@@ -128,11 +120,8 @@ fn build_cli_upgrade_detection_context() -> CliUpgradeDetectionContext {
     CliUpgradeDetectionContext {
         current_exe: std::env::current_exe().unwrap_or_else(|_| PathBuf::from("tako")),
         has_brew,
-        brew_formula_installed: if has_brew {
-            homebrew_formula_installed("tako")
-        } else {
-            false
-        },
+        brew_formula_installed: has_brew
+            && homebrew_formula_versions().is_ok_and(|s| !s.is_empty()),
     }
 }
 
@@ -161,20 +150,8 @@ fn is_homebrew_path(path: &Path) -> bool {
         || value.contains("/Cellar/tako/")
 }
 
-fn homebrew_formula_installed(formula: &str) -> bool {
-    let output = Command::new("brew")
-        .args(["list", "--formula", "--versions", formula])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output();
-
-    match output {
-        Ok(output) if output.status.success() => {
-            !String::from_utf8_lossy(&output.stdout).trim().is_empty()
-        }
-        _ => false,
-    }
+fn homebrew_formula_versions() -> Result<String, String> {
+    run_local_upgrade_command("brew", &["list", "--formula", "--versions", "tako"])
 }
 
 fn command_exists(name: &str) -> bool {
