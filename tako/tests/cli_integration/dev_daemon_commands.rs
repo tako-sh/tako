@@ -44,6 +44,10 @@ esac
     assert!(out.status.success(), "{}", stderr_str(&out));
     assert!(!sock.exists(), "upgrade returned before daemon shutdown");
     assert!(upgrade("3").status.success(), "an absent daemon is a no-op");
+    drop(std::os::unix::net::UnixListener::bind(&sock).unwrap());
+    assert!(sock.exists(), "fixture should leave a stale socket");
+    let out = upgrade("4");
+    assert!(out.status.success(), "stale socket: {}", stderr_str(&out));
 }
 
 #[test]

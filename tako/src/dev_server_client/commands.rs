@@ -88,7 +88,15 @@ async fn stop_and_wait(sock: &std::path::Path) -> Result<bool, Box<dyn std::erro
     use std::io::ErrorKind;
     let stream = match UnixStream::connect(sock).await {
         Ok(stream) => stream,
-        Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused) => {
+        Err(e)
+            if matches!(
+                e.kind(),
+                ErrorKind::NotFound
+                    | ErrorKind::ConnectionRefused
+                    | ErrorKind::NotConnected
+                    | ErrorKind::ConnectionReset
+            ) =>
+        {
             return Ok(false);
         }
         Err(e) => return Err(e.into()),
