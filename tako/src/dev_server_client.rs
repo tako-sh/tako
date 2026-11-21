@@ -9,7 +9,7 @@ pub use apps::{
     ListedApp, RegisterAppRequest, RegisteredAppInfo, connect_client, list_apps,
     list_registered_apps, register_app, registered_tunnel_enabled, restart_app, unregister_app,
 };
-pub(crate) use commands::stop_server_if_running;
+pub(crate) use commands::{DevServerStop, stop_server_if_running};
 pub use commands::{info, stop_server, toggle_lan, toggle_tunnel};
 #[allow(unused_imports)]
 pub(crate) use connection::LineClient;

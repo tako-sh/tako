@@ -35,14 +35,18 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn run_upgrade(task: LocalUpgradeTask) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::dev_server_client::DevServerStop;
     let result = match detect_cli_upgrade_method_runtime() {
         CliUpgradeMethod::Installer => run_installer_upgrade().await,
         CliUpgradeMethod::Homebrew => run_brew_upgrade(),
     };
-    let (label, stopped) = match result {
-        Ok(None) => ("Already on the latest version".to_string(), false),
+    let (label, stop) = match result {
+        Ok(None) => (
+            "Already on the latest version".to_string(),
+            DevServerStop::NotNeeded,
+        ),
         Ok(Some(label)) => match crate::dev_server_client::stop_server_if_running().await {
-            Ok(stopped) => (label, stopped),
+            Ok(stop) => (label, stop),
             Err(error) => {
                 let message = format!("{label}, but could not stop the local dev server: {error}");
                 task.fail("Dev server shutdown failed", &message);
@@ -58,10 +62,14 @@ async fn run_upgrade(task: LocalUpgradeTask) -> Result<(), Box<dyn std::error::E
     if !task.is_rendered() {
         output::info(&label);
     }
-    if stopped {
-        output::hint(
+    match stop {
+        DevServerStop::Stopped => output::hint(
             "Stopped the local dev server and its apps. Run `tako dev` in each project to start it again.",
-        );
+        ),
+        DevServerStop::StillStopping => output::hint(
+            "The local dev server is still shutting down. Let it finish before running `tako dev` again.",
+        ),
+        DevServerStop::NotNeeded => {}
     }
     Ok(())
 }
