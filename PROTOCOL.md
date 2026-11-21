@@ -93,6 +93,17 @@ Every reply is `tako_core::Response`: `{"status":"ok","data":...}` or `{"status"
 
 SDKs decide lost ownership only from `run_not_owned` on a worker write, never from message text: other messages, such as the `run_id_conflict` one, echo caller-chosen values. A network recipient replies with the same shape; a rejection from its own internal socket keeps its code, not its message. JavaScript exposes the code as `TakoError.reason` (with `code: "TAKO_RPC_ERROR"`), Go as `*ServerError.Code` matched by sentinels such as `ErrRunNotOwned` with `errors.Is`, and Rust as `tako::ErrorCode` (`ErrorCode::of(&io::Error)` for network calls, `StoreError::Rejected(Option<ErrorCode>)` for Store invalidations).
 
+## Server-local cache
+
+The server-local cache uses the internal socket, not a network address.
+`{command:"cache", app, operation:"get"|"delete", key}` reads or removes a key
+in the authenticated app/environment; `"put"` also takes `json` (serialized
+JSON, at most 256 KiB) and a positive integer `ttl_ms`. Keys are nonblank and
+at most 1 KiB of UTF-8. Get replies carry the JSON **string** on a hit (including
+`"null"`) or `null` on a miss. Writes reply with `null`. Management rejects
+this command. `tako-server` owns `data/tako/cache.redb`; SDKs never open it.
+The dev daemon and one-shot local run host use the same implementation.
+
 ## Network primitives
 
 `network_call` is an internal-socket command with `{app, address, request}`. `app` remains the authenticated caller identity. `address` is a bare primitive name or `namespace.primitive`; a qualified namespace selects another app in the caller's environment. URLs, paths, extra dots, and caller-selected environments are rejected. `tako-core/src/network.rs` owns the invocation shapes and address grammar.

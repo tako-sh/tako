@@ -97,7 +97,7 @@ export default function fetch(request: Request) {
 | `tako.secrets`  | Typed secret bag (interface regenerated from the local secret state and published cache)                 |
 | `tako.storages` | Typed storage bag (interface regenerated from `tako.toml`)                         |
 | `tako.databases` | Typed database bindings, each `{ url, authToken }` for libSQL drivers              |
-| `tako.cache`    | SQLite-backed server-side key/value cache                                          |
+| `tako.cache`    | Client for the server-owned, bounded JSON cache                                    |
 | `tako.logger`   | Structured JSON logger (`tako.logger.info(...)`)                                   |
 | `Env`           | TypeScript union of configured environment names                                   |
 | `TakoSecrets`   | TypeScript interface of secret names                                               |
@@ -133,7 +133,7 @@ if (!profile) {
 await tako.cache.delete(`profile:${userId}`);
 ```
 
-`get(key)` returns `undefined` for missing or expired keys. `put(key, value, { ttl })` stores a JSON-serializable value; `ttl` is milliseconds. `delete(key)` removes one key. Native dev and deploy runtimes store cache entries in Tako-managed local SQLite outside app backups. Container releases set `TAKO_DATA_DIR` to the mounted app data path, but the cache file sits beside that mount in the container's own filesystem, so entries are lost when the container is replaced and are not shared between instances.
+`get(key)` returns `undefined` for missing, evicted, or expired keys. `put(key, value, { ttl })` stores up to 256 KiB of serialized JSON; `ttl` is milliseconds and keys are limited to 1 KiB. `delete(key)` removes one key. The runtime owns a persistent redb cache per app/environment on each server; backups omit it. It requires the internal socket (native, SDK-enabled Compose services, and socket-equipped workers; standalone HTTP containers have none). A writable `TAKO_DATA_DIR` is not a substitute.
 
 ## Images
 

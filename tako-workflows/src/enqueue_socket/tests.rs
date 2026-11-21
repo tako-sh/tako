@@ -30,6 +30,32 @@ fn lookup_for(map: std::collections::HashMap<String, Arc<RunsDb>>) -> AppLookup 
 }
 
 #[test]
+fn cache_authenticates_before_opening_an_app_store() {
+    let lookup: AppLookup = Arc::new(|_| panic!("cache must not require a workflow worker"));
+    let cache: CacheFn = Arc::new(|app, _| {
+        assert_eq!(app, "web/staging");
+        Response::ok("null")
+    });
+    let auth = pinned_app_auth("web/staging");
+    let send = |app: &str| {
+        handle_command(
+            &lookup,
+            None,
+            Some(&auth),
+            Some(1),
+            None,
+            Some(&cache),
+            Command::Cache {
+                app: app.into(),
+                request: tako_core::CacheRequest::Get { key: "k".into() },
+            },
+        )
+    };
+    assert!(send("web/production").error_message().is_some());
+    assert_eq!(send("web/staging").data(), Some(&serde_json::json!("null")));
+}
+
+#[test]
 fn network_calls_authenticate_the_caller_before_resolving_the_destination() {
     let lookup = lookup_for(Default::default());
     let auth: PeerAuthFn = Arc::new(|app, uid| {
@@ -64,6 +90,7 @@ fn network_calls_authenticate_the_caller_before_resolving_the_destination() {
             Some(&auth),
             Some(1001),
             Some(&route),
+            None,
             command("web/staging", "mail.send-email")
         )
         .data()
@@ -82,6 +109,7 @@ fn network_calls_authenticate_the_caller_before_resolving_the_destination() {
                 Some(&auth),
                 uid,
                 Some(&route),
+                None,
                 command(app, address)
             )
             .data()
@@ -139,6 +167,7 @@ fn channel_publish_passes_the_stream_params_and_build_to_the_publisher() {
             Some(&publish),
             Some(&auth),
             Some(1001),
+            None,
             None,
             command(app, extra),
         );
@@ -211,6 +240,7 @@ fn channel_close_reaches_the_publisher_with_its_stream_and_reports_failures() {
             Some(&auth),
             Some(1001),
             None,
+            None,
             command,
         )
     };
@@ -260,6 +290,7 @@ fn channel_close_reaches_the_publisher_with_its_stream_and_reports_failures() {
         None,
         Some(&auth),
         Some(1001),
+        None,
         None,
         command("web", "chat", "channel_close"),
     );
@@ -382,7 +413,10 @@ async fn pinned_socket_serves_only_its_app_through_a_moved_directory_and_a_rebin
             None,
             Some(pinned_app_auth("shop/production")),
             None,
-            SocketOptions { mode: Some(0o666) },
+            SocketOptions {
+                mode: Some(0o666),
+                cache: None,
+            },
         )
         .unwrap()
     };
@@ -1095,7 +1129,7 @@ fn assert_same_process_takeover(db: Arc<RunsDb>, expire: impl FnOnce(&str)) {
             })
         })
     };
-    let call = |cmd| handle_command(&lookup, None, None, None, None, cmd);
+    let call = |cmd| handle_command(&lookup, None, None, None, None, None, cmd);
     let claim = || {
         let response = call(Command::ClaimRun {
             app: "a".into(),
@@ -1248,6 +1282,7 @@ fn assert_remote_reclaim_recovers_budget(
             None,
             None,
             None,
+            None,
             Command::ClaimRun {
                 app: "a".into(),
                 worker_id: "worker".into(),
@@ -1357,7 +1392,7 @@ fn operator_workflow_commands_are_rejected_on_the_internal_socket() {
                 id: id.clone(),
             },
         ] {
-            let response = handle_command(&lookup, None, Some(&auth), Some(1000), None, cmd);
+            let response = handle_command(&lookup, None, Some(&auth), Some(1000), None, None, cmd);
             assert!(
                 response
                     .error_message()

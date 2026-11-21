@@ -14,6 +14,7 @@ tako-network = { path = "../tako-network" }
 zeroize = "1"
 tako-channels = { path = "../tako-channels" }
 tako-core = { path = "../tako-core" }
+tako-cache = { path = "../tako-cache" }
 tako-compose = { path = "../tako-compose" }
 tako-images = { path = "../tako-images" }
 tako-runtime = { path = "../tako-runtime" }

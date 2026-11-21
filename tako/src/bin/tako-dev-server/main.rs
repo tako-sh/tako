@@ -192,18 +192,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ));
     }
 
-    let internal_socket_path = match workflows.start_socket() {
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to start internal socket; workflow enqueue / channel publish will not work");
-            None
-        }
-        Ok(()) => {
-            let path = workflows.socket_path();
-            tracing::info!(socket = %path.display(), "internal socket listening");
-            Some(path)
-        }
-    };
-
     let events_for_relay = events.clone();
     let mut st = State::new(
         shutdown_tx,
@@ -215,7 +203,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         listen_addr,
         args.dns_ip,
     );
-    st.internal_socket = internal_socket_path;
     st.workflows = Some(workflows.clone());
 
     // Open the SQLite state store (persistent registrations only; runtime state is in-memory).
@@ -238,7 +225,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let state = Arc::new(Mutex::new(st));
+    {
+        let registry = Arc::downgrade(&state);
+        let caches = tako_cache::Caches::default();
+        workflows.set_cache(Arc::new(move |name, request| {
+            let dir = registry.upgrade().and_then(|state| {
+                let state = state.lock().ok()?;
+                let app = state.apps.values().find(|app| app.name == name)?;
+                let data = std::path::Path::new(app.env.get("TAKO_DATA_DIR")?);
+                Some(data.parent()?.join("tako"))
+            });
+            match dir {
+                Some(dir) => caches.reply(&dir, request),
+                None => tako_core::Response::error("unknown development cache"),
+            }
+        }));
+    }
     network::install(&state, &workflows);
+    workflows.start_socket()?;
+    state.lock().unwrap().internal_socket = Some(workflows.socket_path());
 
     // Events relay: broadcast to subscribers + trigger wake-on-request.
     {

@@ -199,9 +199,56 @@ fn local_id(path: &Path) -> DatabaseId {
 pub(crate) struct LocalDatabases {
     runtime: Option<tokio::runtime::Runtime>,
     connections: HashMap<String, DatabaseConnection>,
+    cache_socket: Option<(tako_workflows::EnqueueSocketHandle, tempfile::TempDir)>,
 }
 
 impl LocalDatabases {
+    /// `tako run` need not start the dev daemon. Serve the same cache file
+    /// and protocol on a private, app-pinned socket for the child's lifetime.
+    pub(crate) fn serve_run_cache(
+        &mut self,
+        project: &Path,
+        environment: &str,
+        env: &mut HashMap<String, String>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use std::sync::Arc;
+        use tako_core::instance_env::{TAKO_APP_NAME_ENV, TAKO_INTERNAL_SOCKET_ENV};
+        use tako_workflows::enqueue_socket::{SocketOptions, pinned_app_auth, spawn_with_options};
+        let dir = data_root(project, environment).join("tako");
+        std::fs::create_dir_all(&dir)?;
+        let tmp = tempfile::tempdir()?;
+        let socket = tmp.path().join("c.sock");
+        if self.runtime.is_none() {
+            self.runtime = Some(
+                tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(1)
+                    .enable_all()
+                    .build()?,
+            );
+        }
+        let _guard = self.runtime.as_ref().expect("initialized runtime").enter();
+        let caches = tako_cache::Caches::default();
+        let app = format!("local/{environment}");
+        let handle = spawn_with_options(
+            &socket,
+            Arc::new(|_| None),
+            None,
+            Some(pinned_app_auth(&app)),
+            None,
+            SocketOptions {
+                mode: Some(0o600),
+                cache: Some(Arc::new(move |_, req| caches.reply(&dir, req))),
+            },
+        )?;
+        env.insert(
+            TAKO_INTERNAL_SOCKET_ENV.into(),
+            socket.display().to_string(),
+        );
+        env.insert(TAKO_APP_NAME_ENV.into(), app);
+        self.cache_socket = Some((handle, tmp));
+        Ok(())
+    }
+
     pub(crate) fn connections(&self) -> &HashMap<String, DatabaseConnection> {
         &self.connections
     }
@@ -215,6 +262,7 @@ impl LocalDatabases {
         if bindings.is_empty() {
             return Ok(Self {
                 runtime: None,
+                cache_socket: None,
                 connections: HashMap::new(),
             });
         }
@@ -280,6 +328,7 @@ impl LocalDatabases {
         });
         Ok(Self {
             runtime: Some(runtime),
+            cache_socket: None,
             connections,
         })
     }

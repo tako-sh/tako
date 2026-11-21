@@ -367,6 +367,7 @@ fn is_transient_tako_sqlite_file(relative_path: &Path) -> bool {
     name == CHANNELS_DB_FILENAME
         || CHANNELS_DB_COMPANION_FILENAMES.contains(&name)
         || name == CACHE_DB_FILENAME
+        || name == tako_cache::FILE_NAME
         || CACHE_DB_COMPANION_FILENAMES.contains(&name)
 }
 
@@ -743,11 +744,15 @@ fn restore_data_tree_with(
 }
 
 fn remove_transient_tako_sqlite_stores(data_root: &Path) -> Result<(), String> {
-    for name in [CHANNELS_DB_FILENAME, CACHE_DB_FILENAME]
-        .into_iter()
-        .chain(CHANNELS_DB_COMPANION_FILENAMES)
-        .chain(CACHE_DB_COMPANION_FILENAMES)
-        .chain(WORKFLOWS_DB_COMPANION_FILENAMES)
+    for name in [
+        CHANNELS_DB_FILENAME,
+        CACHE_DB_FILENAME,
+        tako_cache::FILE_NAME,
+    ]
+    .into_iter()
+    .chain(CHANNELS_DB_COMPANION_FILENAMES)
+    .chain(CACHE_DB_COMPANION_FILENAMES)
+    .chain(WORKFLOWS_DB_COMPANION_FILENAMES)
     {
         let path = data_root.join(TAKO_DATA_DIR).join(name);
         match std::fs::remove_file(&path) {
@@ -1482,6 +1487,7 @@ services:
         }
         std::fs::write(tako.join("cache.sqlite-wal"), b"wal").unwrap();
         std::fs::write(tako.join("cache.sqlite-shm"), b"shm").unwrap();
+        std::fs::write(tako.join(tako_cache::FILE_NAME), b"cache").unwrap();
 
         let workflows_db = tako.join("workflows.sqlite");
         {
@@ -1496,6 +1502,7 @@ services:
         assert!(!dest.join("tako/channels.sqlite-wal").exists());
         assert!(!dest.join("tako/channels.sqlite-shm").exists());
         assert!(!dest.join("tako/cache.sqlite").exists());
+        assert!(!dest.join("tako/cache.redb").exists());
         assert!(!dest.join("tako/cache.sqlite-wal").exists());
         assert!(!dest.join("tako/cache.sqlite-shm").exists());
         assert!(dest.join("tako/workflows.sqlite").exists());
@@ -1566,6 +1573,7 @@ services:
         std::fs::write(extracted.join("tako/channels.sqlite-wal"), b"wal").unwrap();
         std::fs::write(extracted.join("tako/channels.sqlite-shm"), b"shm").unwrap();
         std::fs::write(extracted.join("tako/cache.sqlite"), b"cache").unwrap();
+        std::fs::write(extracted.join("tako/cache.redb"), b"cache").unwrap();
         std::fs::write(extracted.join("tako/cache.sqlite-wal"), b"wal").unwrap();
         std::fs::write(extracted.join("tako/cache.sqlite-shm"), b"shm").unwrap();
         std::fs::write(extracted.join("tako/workflows.sqlite"), b"workflows").unwrap();
@@ -1580,6 +1588,7 @@ services:
         assert!(!data_root.join("tako/channels.sqlite-wal").exists());
         assert!(!data_root.join("tako/channels.sqlite-shm").exists());
         assert!(!data_root.join("tako/cache.sqlite").exists());
+        assert!(!data_root.join("tako/cache.redb").exists());
         assert!(!data_root.join("tako/cache.sqlite-wal").exists());
         assert!(!data_root.join("tako/cache.sqlite-shm").exists());
         assert!(data_root.join("tako/workflows.sqlite").exists());

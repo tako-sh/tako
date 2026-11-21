@@ -572,6 +572,7 @@ impl crate::ServerState {
             | Command::WaitForRun { .. }
             | Command::Signal { .. }
             | Command::NetworkCall { .. }
+            | Command::Cache { .. }
         | Command::ChannelPublish { .. }
             | Command::ChannelClose { .. } => Response::error(
                 "workflow/channel commands must be sent over the internal socket, not the management socket"

@@ -1,0 +1,6 @@
+{
+  "app": "demo",
+  "command": "cache",
+  "key": "profile:1",
+  "operation": "get"
+}

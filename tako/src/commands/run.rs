@@ -34,7 +34,7 @@ pub fn run(
     // Served for as long as the command runs. Only development has local
     // databases; hosted ones are reachable only from deployed apps.
     let bindings = crate::local_databases::development_bindings(&config);
-    let databases = if env == DEFAULT_RUN_ENV {
+    let mut databases = if env == DEFAULT_RUN_ENV {
         let migrated = crate::local_databases::migrate_development(&context.project_dir, &config)?;
         for warning in &migrated.warnings {
             crate::output::warning(warning);
@@ -55,6 +55,7 @@ pub fn run(
         }
         crate::local_databases::LocalDatabases::start(&context.project_dir, &Default::default())?
     };
+    databases.serve_run_cache(&context.project_dir, env, &mut child_env)?;
     child_env.insert(
         tako_core::bootstrap::TAKO_BOOTSTRAP_DATA_ENV.to_string(),
         tako_core::bootstrap::envelope_string(

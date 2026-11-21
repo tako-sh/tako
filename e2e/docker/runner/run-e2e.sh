@@ -1405,6 +1405,9 @@ for entry in "${SERVERS[@]}"; do
 
   run_universal_http_checks "$server" "$ROUTE_HOST" "$APP_RELEASE_DIR"
   run_secret_checks "$server" "$ROUTE_HOST"
+  if [[ "$FIXTURE_REL" == "e2e/fixtures/javascript/bun" ]]; then
+    post_route_json "$server" "$ROUTE_HOST" /cache '{}' "Server-owned cache"
+  fi
   if [[ "$FIXTURE_REL" == "e2e/fixtures/javascript/node" ]]; then
     run_local_storage_checks "$server" "$ROUTE_HOST"
   fi

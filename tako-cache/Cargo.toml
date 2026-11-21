@@ -1,0 +1,13 @@
+[package]
+name = "tako-cache"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+redb = "5"
+tako-core = { path = "../tako-core" }
+serde_json = { workspace = true, features = ["raw_value"] }
+
+[dev-dependencies]
+tempfile = "3"

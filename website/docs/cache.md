@@ -1,9 +1,9 @@
 ---
 title: Cache
-description: "Cache server-side JSON values with Tako's SQLite-backed cache, choose TTLs and tenant-safe keys, and understand per-server persistence limits."
+description: "Cache JSON on your Tako server with per-key TTLs, bounded disk and memory use, and keys scoped to the reader."
 ---
 
-`tako.cache` is a server-side JSON cache in the JavaScript and TypeScript SDK. Use it for values that can be recomputed, such as an expensive query result or an external API response. It requires a Tako-managed runtime with `TAKO_DATA_DIR` set and Bun or Node.js with `node:sqlite` support.
+`tako.cache` is the JavaScript and TypeScript client for Tako's server-owned JSON cache. Use it for values that can be recomputed, such as an expensive query result or an external API response. App code calls the runtime over its internal socket; it needs no database driver.
 
 Go and Rust currently have no equivalent SDK cache API. Use an application-owned cache library for those backends; the snippets below specifically demonstrate `tako.cache`.
 
@@ -37,11 +37,17 @@ There is no automatic connection between your database writes and this cache. Co
 
 ## Persistence and isolation
 
-Entries live in Tako-managed `cache.sqlite`, separately from your app-owned data directory. Processes using the same cache path share the SQLite file. The cache is local to each server and is not replicated through `postgres_url`. App data backups omit it.
+`tako-server` stores entries in `data/tako/cache.redb`, outside the app-owned data directory and outside backups. Workers and instances of the same app/environment on one server share entries across releases and restarts. Different environments and servers have independent caches. `tako dev` and `tako run` share the selected local environment's cache.
+
+Each store has a 64 MiB budget for JSON, keys, and per-entry overhead. Keys are limited to 1 KiB of UTF-8 and values to 256 KiB of serialized JSON. Writes reclaim expired entries even if nobody reads those keys; under pressure the soonest-expiring entries go first. Always handle a miss before the TTL. redb reuses freed pages, so the file can stay at its high-water mark. The byte budget is not an exact filesystem-size limit.
+
+The server keeps up to eight database handles hot, with a 1 MiB page cache each (8 MiB of configured page cache across apps). Other memory, such as requests in flight and filesystem caching, is additional. Less active apps reopen their existing store on demand.
 
 Include the tenant, user, data version, and other authorization-relevant inputs in keys when results differ by reader. Authorize the request before returning private cached data. Do not treat a cache key as an access check.
 
-Container releases receive `TAKO_DATA_DIR`, but the cache file sits beside that directory, outside the persistent data mount. Inside a container it is created in the container's own filesystem (`/tako/tako/cache.sqlite` with the default data path): entries are lost when the container is replaced, instances do not share them, and the image's user must be able to create that directory. Browser code cannot use this server cache.
+Native processes, container workers with an internal socket, and Compose services with `x-tako: { sdk: true }` can use the cache. Standalone HTTP container releases have no internal socket. An app data mount alone does not grant access. Browser code cannot use this cache.
+
+Upgrade the server and SDK together. The new cache starts cold. After every old SDK process has stopped, the old `data/tako/cache.sqlite` and its `-wal` and `-shm` companions can be removed to reclaim their disk space.
 
 ## Choose the right cache
 

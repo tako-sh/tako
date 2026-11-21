@@ -242,7 +242,7 @@ if (!cached) {
 await tako.cache.delete(`profile:${userId}`);
 ```
 
-`get(key)` returns `undefined` for missing or expired keys. `put(key, value, { ttl })` stores a JSON-serializable value; `ttl` is milliseconds. `delete(key)` removes one key. Cache entries are stored in Tako-managed SQLite and are not included in app data backups.
+`get(key)` returns `undefined` for missing, evicted, or expired keys. `put(key, value, { ttl })` stores up to 256 KiB of JSON; `ttl` is milliseconds. `delete(key)` removes one key. The SDK calls the runtime over its internal socket. Tako manages persistence, eviction, and isolation per app/environment and server. Cache entries survive restarts and are excluded from backups.
 
 ## Channels
 

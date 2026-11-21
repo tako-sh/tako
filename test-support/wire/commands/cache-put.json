@@ -1,0 +1,8 @@
+{
+  "app": "demo",
+  "command": "cache",
+  "json": "null",
+  "key": "profile:1",
+  "operation": "put",
+  "ttl_ms": 60000
+}

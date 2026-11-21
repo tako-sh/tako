@@ -116,6 +116,20 @@ impl ServerState {
 
         let workflows = Arc::new(crate::workflows::WorkflowManager::new(data_dir.clone()));
         {
+            let data_dir = data_dir.clone();
+            let caches = tako_cache::Caches::default();
+            workflows.set_cache(Arc::new(move |app, request| {
+                if let Err(error) = crate::release::validate_app_name(app) {
+                    return tako_core::Response::coded_error(
+                        tako_core::ErrorCode::InvalidRequest,
+                        error,
+                    );
+                }
+                let dir = crate::release::app_runtime_data_paths(&data_dir, app).tako;
+                caches.reply(&dir, request)
+            }));
+        }
+        {
             let state_store = state_store.clone();
             workflows.set_postgres_url_resolver(Arc::new(move |app| {
                 state_store

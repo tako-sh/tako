@@ -280,7 +280,7 @@ Use the matching JavaScript, Go, or Rust [Secrets example](/secrets/#read-from-a
 
 Storage bindings from `[envs.development].storages` are delivered through `tako.storages`. In development, undeclared storage resource names default to local storage. Backup storage is not exposed to the SDK unless the same resource is also bound as app storage.
 
-Use `tako.cache` for server-side caching of JSON-serializable values. `get<T>(key)` returns `T | undefined`, `put(key, value, { ttl })` stores a value with a TTL in milliseconds, and `delete(key)` removes one key. Cache entries use Tako-managed local SQLite and are not included in app data backups.
+Use `tako.cache` for server-side caching of JSON-serializable values. `get<T>(key)` returns `T | undefined`, `put(key, value, { ttl })` stores a value with a TTL in milliseconds, and `delete(key)` removes one key. The runtime owns the [bounded disk cache](/cache), which persists across restarts and is excluded from backups.
 
 See [Secrets](/secrets/) for value rotation and SDK access, [Storage](/storage/) for upload/download URLs, [Cache](/cache/) for key isolation and TTLs, and [Images](/images/) for public optimization. These primitives have their own configuration and persistence boundaries.
 
