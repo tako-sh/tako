@@ -365,12 +365,17 @@ impl Context {
         )?)
     }
 
+    /// A database of the network, whether or not its home is still a member.
+    fn record(&self, name: &str) -> Result<DatabaseRecord, Box<dyn std::error::Error>> {
+        tako_core::validate_database_name(name)?;
+        Ok(find_record(&self.records()?, name)?.clone())
+    }
+
     /// A database of the network and its home server.
     fn database(&self, name: &str) -> Result<(DatabaseRecord, Home), Box<dyn std::error::Error>> {
-        tako_core::validate_database_name(name)?;
-        let records = self.records()?;
-        let record = find_record(&records, name)?;
-        Ok((record.clone(), self.database_home(record)?))
+        let record = self.record(name)?;
+        let home = self.database_home(&record)?;
+        Ok((record, home))
     }
 
     fn database_home(&self, record: &DatabaseRecord) -> Result<Home, Box<dyn std::error::Error>> {
